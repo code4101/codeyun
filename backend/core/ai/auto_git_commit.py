@@ -30,8 +30,8 @@ AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT = 80
 AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS = 32
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = 2700
 AUTO_GIT_COMMIT_ORPHANED_QUEUE_GRACE_SECONDS = 60
-AUTO_GIT_COMMIT_MIN_CHANGED_LINES = 1000
-AUTO_GIT_COMMIT_MAX_DAYS_WITH_CHANGES = 7
+AUTO_GIT_COMMIT_MIN_CHANGED_LINES = 500
+AUTO_GIT_COMMIT_MAX_DAYS_WITH_CHANGES = 1
 AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
 PYXLLIB_VERSION_FILE = "src/pyxllib/__init__.py"
 
@@ -349,6 +349,12 @@ def mark_stale_auto_git_commit_runs(
     ).all()
     changed_count = 0
     for run in runs:
+        if run.queue_task_id:
+            from backend.core.jobs.local_runtime import ACTIVE_LOCAL_JOB_STATUSES, get_local_job_run
+
+            local_job = get_local_job_run(str(run.queue_task_id))
+            if local_job is not None and local_job.status in ACTIVE_LOCAL_JOB_STATUSES:
+                continue
         heartbeat = run.heartbeat_at or run.updated_at or run.started_at or run.created_at
         is_orphaned_queued = (
             run.status == "pending"
@@ -364,8 +370,8 @@ def mark_stale_auto_git_commit_runs(
             run.stage = "orphaned_queue"
             run.stage_label = "队列任务丢失"
             run.error_message = (
-                "自动提交任务仍处于 queued 状态，但当前执行队列中没有对应 auto_git_commit 任务；"
-                "通常是一次性本地入口、服务重启或进程退出导致的内存队列丢失。"
+                "自动提交任务仍处于 queued 状态，但对应 Local Job 已不存在或中断；"
+                "通常是 Worker 未成功启动或执行进程异常退出。"
             )
         else:
             run.stage = "stale"
@@ -429,15 +435,13 @@ def create_auto_git_commit_run(
     session.refresh(run)
 
     if enqueue:
-        queue_task_id = background_task_queue.enqueue(
-            "auto_git_commit",
-            run_auto_git_commit_worker,
-            session.get_bind(),
-            run.id,
-            metadata={"run_id": run.id, "trigger_reason": trigger_reason},
-            raise_on_failure=True,
+        from backend.core.jobs.local_runtime import submit_local_job
+
+        local_job = submit_local_job(
+            job_type="maintenance.auto-git-commit",
+            payload={"run_id": run.id, "trigger_reason": trigger_reason},
         )
-        run.queue_task_id = queue_task_id
+        run.queue_task_id = local_job.id
         run.updated_at = time.time()
         session.add(run)
         session.commit()

@@ -259,6 +259,31 @@ def test_extract_ocr_spatial_document_preserves_native_lines_and_parent_links() 
     assert [token["parent_line_id"] for token in result["tokens"]] == ["line-0", "line-0", "line-1", "line-1"]
 
 
+def test_extract_ocr_spatial_document_orders_mixed_font_title_geometrically() -> None:
+    from backend.core.ocr.spatial_document import extract_ocr_spatial_document
+
+    result = extract_ocr_spatial_document({
+        # Simulate a detector returning the smaller, lower “领” after the
+        # right-side “规则”, despite all three boxes belonging to one visual row.
+        "rec_texts": ["首", "规则", "领"],
+        "rec_boxes": [
+            [45, 70, 105, 130],
+            [450, 78, 550, 118],
+            [110, 95, 145, 130],
+        ],
+        "text_word": [["首"], ["规", "则"], ["领"]],
+        "text_word_boxes": [
+            [[45, 70, 105, 130]],
+            [[450, 78, 500, 118], [501, 78, 550, 118]],
+            [[110, 95, 145, 130]],
+        ],
+    })
+
+    assert [line["text"] for line in result["lines"]] == ["首", "领", "规则"]
+    assert "".join(line["text"] for line in result["lines"]) == "首领规则"
+    assert [token["text"] for token in result["tokens"]] == ["首", "领", "规", "则"]
+
+
 def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

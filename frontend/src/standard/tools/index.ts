@@ -10,6 +10,7 @@ import imageBrowserPage from './image-browser'
 import musicToolsPage from './music-tools'
 import openScoreStudyPage from './open-score-study'
 import passwordGeneratorPage from './password-generator'
+import webOutlinePage from './web-outline'
 
 const pages: AppPageDefinition[] = [
   passwordGeneratorPage,
@@ -17,6 +18,7 @@ const pages: AppPageDefinition[] = [
   imageBrowserPage,
   musicToolsPage,
   openScoreStudyPage,
+  webOutlinePage,
   aiConfigPage,
   aiChatPage,
   aiReductionPage,

@@ -1,45 +1,56 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
+import SchedulerTimeSequenceDialog from './SchedulerTimeSequenceDialog.vue';
 import {
-  advanceNextFanxiuDataAnnotationSchedulerTask,
   ensureFanxiuDataAnnotationDoctorWatch,
   getFanxiuDataAnnotationDoctorWatchLatest,
-  getFanxiuDataAnnotationRuntimeCellLogs,
-  getFanxiuDataAnnotationRuntimeStatus,
+  getFanxiuBehaviorTreeRuntimeCellLogs,
+  getFanxiuBehaviorTreeRuntimeStatus,
+  getFanxiuInfoWindowStatus,
   getFanxiuDataAnnotationSchedulerPlan,
   getFanxiuDataAnnotationSchedulerTasks,
+  getFanxiuGameStateInspectionStatus,
   runNowFanxiuDataAnnotationSchedulerTask,
-  saveFanxiuDataAnnotationSchedulerTasks,
+  setFanxiuDataAnnotationSchedulerTaskNextTime,
+  restartFanxiuBehaviorTreeRuntimeDevice,
   setFanxiuDataAnnotationSchedulerSettings,
-  setFanxiuDataAnnotationRuntimeBehaviorTree,
-  setFanxiuDataAnnotationRuntimeGuard,
-  setFanxiuDataAnnotationRuntimeGuardGroup,
-  stopFanxiuDataAnnotationRuntimeCurrentTask,
+  setFanxiuBehaviorTreeRuntimeBehaviorTree,
+  setFanxiuBehaviorTreeRuntimeGuard,
+  setFanxiuBehaviorTreeRuntimeGuardGroup,
+  setFanxiuInfoWindowSettings,
+  stopFanxiuBehaviorTreeRuntimeCurrentTask,
   type FanxiuDataAnnotationDoctorWatchLatestResponse,
-  type FanxiuDataAnnotationRuntimeCellLog,
-  type FanxiuDataAnnotationRuntimeLogEntry,
-  type FanxiuDataAnnotationRuntimeGuardItem,
-  type FanxiuDataAnnotationRuntimeStatus,
+  type FanxiuBehaviorTreeRuntimeCellLog,
+  type FanxiuBehaviorTreeRuntimeLogEntry,
+  type FanxiuBehaviorTreeRuntimeGuardItem,
+  type FanxiuBehaviorTreeRuntimeStatus,
   type FanxiuDataAnnotationSchedulerPlanResponse,
   type FanxiuDataAnnotationSchedulerTaskItem,
+  type FanxiuGameStateInspectionStatus,
+  type FanxiuInfoWindowControlStatus,
+  type FanxiuInfoWindowSettings,
 } from '@/api/fanxiu';
 
 const route = useRoute();
 const router = useRouter();
 
 const entryId = ref(String(route.query.entry_id || ''));
-const runtimeStatus = ref<FanxiuDataAnnotationRuntimeStatus | null>(null);
+const runtimeStatus = ref<FanxiuBehaviorTreeRuntimeStatus | null>(null);
 const schedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
 const schedulerPlan = ref<FanxiuDataAnnotationSchedulerPlanResponse | null>(null);
+// PRODUCT CONTRACT: 游戏状态巡检是行为树 Runtime 页的固定一级能力，不是可被“精简 UI”删除的诊断装饰。
+// 若调整布局，必须保留状态接口、周期刷新、巡检项和最近检查结果的可见 UI，并同步通过契约测试。
+const gameStateInspection = ref<FanxiuGameStateInspectionStatus | null>(null);
+const infoWindowStatus = ref<FanxiuInfoWindowControlStatus | null>(null);
 const doctorWatchLatest = ref<FanxiuDataAnnotationDoctorWatchLatestResponse | null>(null);
 const schedulerJobGroupEnabled = ref(true);
-const cellLogs = ref<FanxiuDataAnnotationRuntimeCellLog[]>([]);
+const cellLogs = ref<FanxiuBehaviorTreeRuntimeCellLog[]>([]);
 const activeCellIndex = ref(0);
-const logs = ref<FanxiuDataAnnotationRuntimeLogEntry[]>([]);
+const logs = ref<FanxiuBehaviorTreeRuntimeLogEntry[]>([]);
 const loading = ref(false);
 const logsLoading = ref(false);
 const actionLoading = ref('');
@@ -52,13 +63,12 @@ const contextMenu = ref({
   title: '',
   task: null as FanxiuDataAnnotationSchedulerTaskItem | null,
 });
-const schedulerRuleDialog = ref({
+const schedulerTimeDialog = ref({
   visible: false,
   task: null as FanxiuDataAnnotationSchedulerTaskItem | null,
-  dispatchLevel: 0,
-  dispatchOrder: 0,
-  retryPolicy: 'standard' as 'standard' | 'immediate',
+  nextTime: '',
 });
+const schedulerTimeSequenceDialog = ref<InstanceType<typeof SchedulerTimeSequenceDialog> | null>(null);
 let pollTimer: number | null = null;
 let pollTick = 0;
 let polling = false;
@@ -74,14 +84,31 @@ const DOCTOR_ENSURE_COOLDOWN_MS = 30000;
 
 const devices = computed(() => taskStore.devices);
 const behaviorTreeEnabled = computed(() => runtimeStatus.value?.behavior_tree_enabled ?? true);
+type KernelDisplayState = 'loading' | 'disabled' | 'enabled' | 'error';
+const kernelDisplayState = computed<KernelDisplayState>(() => {
+  if (runtimeStatus.value === null) return 'loading';
+  if (!behaviorTreeEnabled.value) return 'disabled';
+  if (runtimeStatus.value.kernel?.alive === true) return 'enabled';
+  if (runtimeStatus.value.kernel?.alive === false) return 'error';
+  return 'loading';
+});
 const guardGroupEnabled = computed(() => runtimeStatus.value?.guard_group_enabled ?? true);
-const guardEnabled = computed(() => Boolean(runtimeStatus.value?.guard_enabled));
 const guardItemEnabled = (guardId: string) => Boolean(runtimeStatus.value?.guard_items?.[guardId]?.enabled);
 const machineName = 'codepc_mf';
 const runtimeMessage = computed(() => runtimeStatus.value?.message || '-');
 const kernelMessageText = computed(() => String(runtimeStatus.value?.kernel?.execution_state || 'dead'));
-const kernelToggleText = computed(() => (behaviorTreeEnabled.value ? '内核开启' : '内核关闭'));
-const kernelToggleTitle = computed(() => (behaviorTreeEnabled.value ? '点击关闭内核' : '点击打开内核'));
+const kernelToggleText = computed(() => ({
+  loading: '加载中',
+  disabled: '内核关闭',
+  enabled: '内核开启',
+  error: '内核异常',
+}[kernelDisplayState.value]));
+const kernelToggleTitle = computed(() => ({
+  loading: '正在读取内核状态',
+  disabled: '点击打开内核',
+  enabled: '点击关闭内核',
+  error: '内核子进程已停止，点击关闭后可重新开启',
+}[kernelDisplayState.value]));
 const runtimeSecondaryMessage = computed(() => {
   const message = runtimeMessage.value.trim();
   if (!message || message === '-') return '';
@@ -97,7 +124,51 @@ const schedulerOwnerTitle = computed(() => (
     ? '工程调度：自动提交到期 Cell'
     : 'AI 调度：工程暂停自动提交'
 ));
-const guardItems = computed<FanxiuDataAnnotationRuntimeGuardItem[]>(() => {
+const gameStateInspectionStatusText = computed(() => {
+  const status = gameStateInspection.value?.status || '';
+  if (status === 'paused') return '已暂停';
+  if (status === 'starting') return '启动中';
+  if (status === 'error' || status === 'unavailable') return '异常';
+  return gameStateInspection.value?.probe_count ? '运行中' : '运行中，暂无巡检项';
+});
+const gameStateInspectionStatusClass = computed(() => (
+  ['error', 'unavailable'].includes(gameStateInspection.value?.status || '')
+    ? 'is-error'
+    : gameStateInspection.value?.status === 'paused'
+      ? 'is-paused'
+      : 'is-running'
+));
+const gameStateInspectionIntervalText = computed(() => {
+  const seconds = Number(gameStateInspection.value?.interval_seconds || 60);
+  return seconds % 60 === 0 ? `每 ${seconds / 60} 分钟` : `每 ${seconds} 秒`;
+});
+const gameStateInspectionProbeText = computed(() => (
+  (gameStateInspection.value?.probes || [])
+    .map((probe) => String(probe.label || probe.id || '').trim())
+    .filter(Boolean)
+    .join('、')
+  || '暂无'
+));
+const defaultInfoWindowSettings: FanxiuInfoWindowSettings = {
+  enabled: true,
+  active_recognition: false,
+  show_scene_id: true,
+  show_scene_score: true,
+  show_scene_identity_shapes: true,
+  show_all_shapes: false,
+};
+const infoWindowSettings = computed(() => infoWindowStatus.value?.settings || defaultInfoWindowSettings);
+const infoWindowStatusText = computed(() => {
+  if (!infoWindowSettings.value.enabled) return '已关闭';
+  if (infoWindowStatus.value?.renderer?.visible) return '显示中';
+  if (infoWindowStatus.value?.renderer?.running) return '等待 MuMu';
+  return '启动中';
+});
+const infoWindowStatusClass = computed(() => {
+  if (!infoWindowSettings.value.enabled) return 'is-paused';
+  return infoWindowStatus.value?.renderer?.visible ? 'is-running' : '';
+});
+const guardItems = computed<FanxiuBehaviorTreeRuntimeGuardItem[]>(() => {
   const items = runtimeStatus.value?.guard_items || {};
   return Object.values(items).map((item) => ({
     ...item,
@@ -113,29 +184,26 @@ const guardGroupTitle = computed(() => (
     : '守护组已关闭；单个守护配置仍保留，但不会自动执行'
 ));
 const isBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (['go_scene', 'hide_floating_window'].includes(task.task_type)) return false;
+  if (['go_scene', 'hide_floating_window', 'maintenance_recovery'].includes(task.task_type)) return false;
   const label = task.label || '';
   if (/到.*#\d+|隐藏浮动窗|到世界|到设置页/.test(label)) return false;
   return true;
 };
 
 const taskTriggerValue = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  const exact = parseRuntimeTime(task.retry_after || task.next_time || '');
-  if (exact) return exact.getTime();
-  const clock = [...(task.schedule_times || [])].filter(Boolean).sort()[0] || '';
-  return clock ? Date.parse(`1970-01-01T${clock}`) : Number.POSITIVE_INFINITY;
+  const exact = parseRuntimeTime(task.next_time || '');
+  return exact?.getTime() ?? Number.POSITIVE_INFINITY;
 };
 
 const shouldShowBusinessTask = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
   if (!isBusinessTask(task)) return false;
-  return task.supported !== false || task.enabled || ['daily', 'weekly', 'dynamic', 'manual'].includes(task.schedule_kind || '');
+  return task.supported !== false;
 };
 
 const businessTasks = computed(() => schedulerTasks.value
   .filter(shouldShowBusinessTask)
   .sort((a, b) => (
-    Number(!a.enabled) - Number(!b.enabled)
-    || taskTriggerValue(a) - taskTriggerValue(b)
+    taskTriggerValue(a) - taskTriggerValue(b)
     || (Number(a.dispatch_order) > 0 ? Number(a.dispatch_order) : 10000)
       - (Number(b.dispatch_order) > 0 ? Number(b.dispatch_order) : 10000)
     || String(a.label || a.id).localeCompare(String(b.label || b.id), 'zh-CN')
@@ -201,13 +269,12 @@ const formatHeartbeatAge = (seconds: number) => {
 const doctorHeartbeatText = computed(() => {
   const heartbeat = doctorHeartbeat.value;
   if (!doctorWatchLatest.value?.exists) return '';
-  if (heartbeat.active && heartbeat.auto_run_due_enabled) return '外部 Scheduler 在线 · 自动派发开启';
-  if (heartbeat.active) return '巡检在线 · 自动派发关闭';
+  if (heartbeat.active) return '外部 Scheduler 在线';
   const age = Number(heartbeat.age_seconds || 0);
   return age > 0 ? `外部 Scheduler 失联 ${formatHeartbeatAge(age)}` : '外部 Scheduler 未确认';
 });
 const doctorHeartbeatClass = computed(() => (
-  doctorHeartbeat.value.active && doctorHeartbeat.value.auto_run_due_enabled ? 'is-ok' : 'is-error'
+  doctorHeartbeat.value.active ? 'is-ok' : 'is-error'
 ));
 const doctorStaleText = computed(() => {
   const due = Number(doctorSnapshot.value.due_task_count || 0);
@@ -222,13 +289,7 @@ const doctorStaleText = computed(() => {
 });
 
 const taskMetaText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  const triggerLabels: Record<string, string> = {
-    daily: '每日',
-    weekly: '每周',
-    dynamic: '动态',
-    manual: '手动',
-  };
-  return triggerLabels[task.trigger_kind || task.schedule_kind || ''] || task.trigger_kind || task.schedule_kind || '手动';
+  return task.trigger_description || '';
 };
 
 const pad2 = (value: number) => String(value).padStart(2, '0');
@@ -257,17 +318,20 @@ const formatRuntimeTime = (value: string) => {
 };
 
 const nextTriggerText = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (task.retry_after) return formatRuntimeTime(task.retry_after);
   if (task.next_time) return formatRuntimeTime(task.next_time);
   return '';
 };
 
 const nextTriggerTitle = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  if (task.retry_after) return `重试时间 ${task.retry_after}`;
-  if (task.next_time) return task.next_time || '';
-  if (task.schedule_kind === 'dynamic') return '动态作业未记录下次时间';
-  if (task.schedule_kind === 'manual') return '手动触发的作业实例没有固定下次触发时间';
-  return '';
+  if (!task.next_time) return '作业尚未设置下次触发时间';
+  const bias = Number(task.schedule_bias_minutes || 0);
+  if (bias <= 0) return task.next_time;
+  return `原始 ${task.original_next_time || task.next_time}；时间编排 +${bias} 分钟`;
+};
+
+const canRunTaskEarly = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+  const nextTime = parseRuntimeTime(task.next_time || '');
+  return Boolean(nextTime && nextTime.getTime() > Date.now());
 };
 
 const taskDispatchLevel = (task: FanxiuDataAnnotationSchedulerTaskItem) => (
@@ -278,22 +342,18 @@ const taskDispatchLevelClass = (task: FanxiuDataAnnotationSchedulerTaskItem) => 
   `is-level-${taskDispatchLevel(task)}`
 );
 
-const canAdvanceTaskNext = (task: FanxiuDataAnnotationSchedulerTaskItem | null) => (
-  Boolean(task && ['daily', 'weekly'].includes(task.schedule_kind || ''))
-);
-
-const logSourceText = (entry: FanxiuDataAnnotationRuntimeLogEntry) => {
+const logSourceText = (entry: FanxiuBehaviorTreeRuntimeLogEntry) => {
   const file = String(entry.source_file || '').trim();
   const line = entry.source_line ? `:${entry.source_line}` : '';
   const expr = String(entry.source_expr || '').trim();
   return file && expr ? `${file}${line}  ${expr}` : '';
 };
 
-const logEntryKey = (entry: FanxiuDataAnnotationRuntimeLogEntry, index: number) => (
+const logEntryKey = (entry: FanxiuBehaviorTreeRuntimeLogEntry, index: number) => (
   entry.id || `${entry.ts || ''}-${entry.time}-${entry.kind}-${entry.scope || ''}-${entry.item_id || ''}-${entry.message}-${index}`
 );
 
-const sameLogEntries = (left: FanxiuDataAnnotationRuntimeLogEntry[], right: FanxiuDataAnnotationRuntimeLogEntry[]) => (
+const sameLogEntries = (left: FanxiuBehaviorTreeRuntimeLogEntry[], right: FanxiuBehaviorTreeRuntimeLogEntry[]) => (
   left.length === right.length
   && left.every((item, index) => {
     const other = right[index];
@@ -363,21 +423,145 @@ const openContextLogs = () => {
   });
 };
 
-const runContextTaskNow = () => {
+const runContextTaskNow = async () => {
   const task = contextMenu.value.task;
   closeLogMenu();
   if (!task) return;
-  void runAction(`run-now:${task.id}`, () => runNowFanxiuDataAnnotationSchedulerTask(entryId.value, task.id, {}, true));
+  if (!entryId.value) {
+    ElMessage.warning('未找到 mf 设备入口');
+    return;
+  }
+  actionLoading.value = `run-current:${task.id}`;
+  try {
+    const status = await runNowFanxiuDataAnnotationSchedulerTask(
+      entryId.value,
+      task.id,
+      {},
+      true,
+      'current',
+    );
+    if (status.status === 'error' || status.status === 'stopped') {
+      ElMessage.error(status.error || status.message || `${task.label}运行失败`);
+    } else {
+      ElMessage.success(`${task.label}已立即运行（按当前时间）`);
+    }
+    await Promise.allSettled([
+      refreshScheduler(),
+      refreshStatus(),
+      refreshSchedulerPlan(),
+      refreshDoctorWatchLatest(),
+      refreshCellLogs(),
+    ]);
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '立即运行失败');
+  } finally {
+    actionLoading.value = '';
+  }
 };
 
-const advanceContextTaskNext = () => {
+const runContextTaskEarly = async () => {
   const task = contextMenu.value.task;
   closeLogMenu();
-  if (!canAdvanceTaskNext(task)) return;
-  void runAction(`advance-next:${task.id}`, async () => {
-    await advanceNextFanxiuDataAnnotationSchedulerTask(entryId.value, task.id);
-    ElMessage.success('已推进到下一次触发');
-  });
+  if (!task) return;
+  if (!canRunTaskEarly(task)) {
+    ElMessage.warning(task.next_time ? '该作业已经到期，请使用立即运行' : '该作业没有计划时间，不能提前运行');
+    return;
+  }
+  if (!entryId.value) {
+    ElMessage.warning('未找到 mf 设备入口');
+    return;
+  }
+  actionLoading.value = `run-planned:${task.id}`;
+  try {
+    const status = await runNowFanxiuDataAnnotationSchedulerTask(
+      entryId.value,
+      task.id,
+      {},
+      true,
+      'planned',
+    );
+    if (status.status === 'error' || status.status === 'stopped') {
+      ElMessage.error(status.error || status.message || `${task.label}运行失败`);
+    } else {
+      ElMessage.success(`${task.label}已提前运行（按计划时间）`);
+    }
+    await Promise.allSettled([
+      refreshScheduler(),
+      refreshStatus(),
+      refreshSchedulerPlan(),
+      refreshDoctorWatchLatest(),
+      refreshCellLogs(),
+    ]);
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '提前运行失败');
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
+const clearContextTaskSchedule = async () => {
+  const task = contextMenu.value.task;
+  closeLogMenu();
+  if (!task) return;
+  if (!entryId.value) {
+    ElMessage.warning('未找到 mf 设备入口');
+    return;
+  }
+  actionLoading.value = `next-time:${task.id}`;
+  try {
+    await setFanxiuDataAnnotationSchedulerTaskNextTime(entryId.value, task.id, null);
+    schedulerTasks.value = schedulerTasks.value.map(item => (
+      item.id === task.id
+        ? { ...item, next_time: null, original_next_time: null, schedule_bias_minutes: 0 }
+        : item
+    ));
+    ElMessage.success(`${task.label}已取消执行`);
+    void Promise.allSettled([refreshStatus(), refreshSchedulerPlan()]);
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '取消安排失败');
+  } finally {
+    actionLoading.value = '';
+  }
+};
+
+const openContextTaskTime = () => {
+  const task = contextMenu.value.task;
+  closeLogMenu();
+  if (!task) return;
+  schedulerTimeDialog.value = {
+    visible: true,
+    task,
+    nextTime: task.original_next_time || task.next_time || '',
+  };
+};
+
+const saveContextTaskTime = async () => {
+  const task = schedulerTimeDialog.value.task;
+  const nextTime = schedulerTimeDialog.value.nextTime;
+  if (!task || !nextTime) {
+    ElMessage.warning('请选择时间');
+    return;
+  }
+  if (!entryId.value) {
+    ElMessage.warning('未找到 mf 设备入口');
+    return;
+  }
+  actionLoading.value = `next-time:${task.id}`;
+  try {
+    const result = await setFanxiuDataAnnotationSchedulerTaskNextTime(entryId.value, task.id, nextTime);
+    schedulerTasks.value = schedulerTasks.value.map(item => (
+      item.id === task.id
+        ? { ...item, next_time: result.next_time, original_next_time: result.next_time, schedule_bias_minutes: 0 }
+        : item
+    ));
+    schedulerTimeDialog.value.visible = false;
+    ElMessage.success(`${task.label}已设置执行时间`);
+    void Promise.allSettled([refreshStatus(), refreshSchedulerPlan()]);
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '设置时间失败');
+  } finally {
+    actionLoading.value = '';
+  }
 };
 
 const openDoctorAnnotationTarget = () => {
@@ -408,7 +592,7 @@ const warnRefreshFailure = (scope: string, error: unknown) => {
 };
 
 const applyCellLogsPayload = (
-  nextCells: FanxiuDataAnnotationRuntimeCellLog[],
+  nextCells: FanxiuBehaviorTreeRuntimeCellLog[],
   options: { latestOnly?: boolean } = {},
 ) => {
   const previousCellId = currentCellLog.value?.id || '';
@@ -434,19 +618,19 @@ const applyCellLogsPayload = (
   }
 };
 
-const applyStatus = (status: FanxiuDataAnnotationRuntimeStatus) => {
+const applyStatus = (status: FanxiuBehaviorTreeRuntimeStatus) => {
   runtimeStatus.value = status;
 };
 
 const refreshStatus = async () => {
-  const status = await getFanxiuDataAnnotationRuntimeStatus(entryId.value, { includeCellLogs: false, includeLogs: false });
+  const status = await getFanxiuBehaviorTreeRuntimeStatus(entryId.value, { includeCellLogs: false, includeLogs: false });
   applyStatus(status);
 };
 
 const refreshLogs = async (options: { latestOnly?: boolean } = {}) => {
   logsLoading.value = true;
   try {
-    const response = await getFanxiuDataAnnotationRuntimeCellLogs(
+    const response = await getFanxiuBehaviorTreeRuntimeCellLogs(
       options.latestOnly ? CELL_LOG_POLL_LIMIT : CELL_LOG_LIMIT,
       options.latestOnly ? CELL_LOG_POLL_ENTRY_LIMIT : CELL_LOG_ENTRY_LIMIT,
     );
@@ -473,6 +657,14 @@ const refreshSchedulerPlan = async () => {
   const response = await getFanxiuDataAnnotationSchedulerPlan();
   schedulerPlan.value = response;
   schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
+};
+
+const refreshGameStateInspection = async () => {
+  gameStateInspection.value = await getFanxiuGameStateInspectionStatus();
+};
+
+const refreshInfoWindow = async () => {
+  infoWindowStatus.value = await getFanxiuInfoWindowStatus(entryId.value);
 };
 
 const refreshDoctorWatchLatest = async () => {
@@ -531,12 +723,19 @@ const scheduleLogsRefresh = () => {
 const refreshAll = async () => {
   loading.value = true;
   try {
-    const [statusResult, schedulerResult] = await Promise.allSettled([refreshStatus(), refreshSchedulerTasks()]);
+    const [statusResult, schedulerResult, infoWindowResult] = await Promise.allSettled([
+      refreshStatus(),
+      refreshSchedulerTasks(),
+      refreshInfoWindow(),
+    ]);
     if (statusResult.status === 'rejected') {
       warnRefreshFailure('refresh status', statusResult.reason);
     }
     if (schedulerResult.status === 'rejected') {
       warnRefreshFailure('refresh scheduler', schedulerResult.reason);
+    }
+    if (infoWindowResult.status === 'rejected') {
+      warnRefreshFailure('refresh info window', infoWindowResult.reason);
     }
   } finally {
     loading.value = false;
@@ -548,9 +747,12 @@ const refreshAll = async () => {
   void refreshDoctorWatchPanel().catch((error) => {
     warnRefreshFailure('refresh doctor watch', error);
   });
+  void refreshGameStateInspection().catch((error) => {
+    warnRefreshFailure('refresh game state inspection', error);
+  });
 };
 
-const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotationRuntimeStatus | void>) => {
+const runAction = async (name: string, action: () => Promise<FanxiuBehaviorTreeRuntimeStatus | void>) => {
   if (!entryId.value) {
     ElMessage.warning('未找到 mf 设备入口');
     return;
@@ -559,7 +761,12 @@ const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotatio
   try {
     const status = await action();
     if (status) applyStatus(status);
-    const followups = [refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+    const followups = [
+      refreshLogs(),
+      refreshScheduler(),
+      refreshDoctorWatchLatest(),
+      refreshGameStateInspection(),
+    ];
     await Promise.all(followups);
     ensureDoctorWatchInBackground();
   } catch (error: any) {
@@ -569,9 +776,7 @@ const runAction = async (name: string, action: () => Promise<FanxiuDataAnnotatio
   }
 };
 
-const toggleGuard = () => runAction('guard', () => setFanxiuDataAnnotationRuntimeGuard(entryId.value, !guardEnabled.value, 2, 'close_popups'));
-
-const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuDataAnnotationRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
+const toggleGuardGroupEnabled = () => runAction('guard-group', () => setFanxiuBehaviorTreeRuntimeGuardGroup(entryId.value, !guardGroupEnabled.value));
 
 const changeSchedulerOwner = async (value: string) => {
   if (!['engineering', 'ai'].includes(value)) return;
@@ -582,7 +787,13 @@ const changeSchedulerOwner = async (value: string) => {
     const response = await setFanxiuDataAnnotationSchedulerSettings(owner === 'engineering', entryId.value);
     schedulerTasks.value = response.tasks || [];
     schedulerJobGroupEnabled.value = response.job_group_enabled ?? true;
-    const followups = [refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
+    const followups = [
+      refreshStatus(),
+      refreshLogs(),
+      refreshScheduler(),
+      refreshDoctorWatchLatest(),
+      refreshGameStateInspection(),
+    ];
     await Promise.all(followups);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
@@ -593,66 +804,65 @@ const changeSchedulerOwner = async (value: string) => {
 
 const toggleKernelEnabled = () => runAction(
   'kernel-toggle',
-  () => setFanxiuDataAnnotationRuntimeBehaviorTree(entryId.value, !behaviorTreeEnabled.value),
+  () => setFanxiuBehaviorTreeRuntimeBehaviorTree(entryId.value, !behaviorTreeEnabled.value),
 );
 
-const toggleGuardItem = (itemId: string) => {
-  if (itemId === 'close_popups') {
-    void toggleGuard();
+const restartSimulator = async () => {
+  if (!entryId.value) {
+    ElMessage.warning('未找到 mf 设备入口');
     return;
   }
-  void runAction(`guard:${itemId}`, () => setFanxiuDataAnnotationRuntimeGuard(entryId.value, !guardItemEnabled(itemId), 2, itemId));
-};
-
-const toggleTaskEnabled = async (task: FanxiuDataAnnotationSchedulerTaskItem) => {
-  const willEnable = !task.enabled;
-  actionLoading.value = `enable:${task.id}`;
   try {
-    const response = await saveFanxiuDataAnnotationSchedulerTasks([{ ...task, enabled: willEnable }]);
-    schedulerTasks.value = response.tasks || [];
-    schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    const followups = [refreshStatus(), refreshLogs(), refreshScheduler(), refreshDoctorWatchLatest()];
-    await Promise.all(followups);
+    await ElMessageBox.confirm(
+      '重启会中断当前作业并重新启动游戏，是否继续？',
+      '重启模拟器',
+      {
+        confirmButtonText: '重启',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+  } catch {
+    return;
+  }
+
+  actionLoading.value = 'device-restart';
+  try {
+    const result = await restartFanxiuBehaviorTreeRuntimeDevice(entryId.value);
+    applyStatus(result.runtime);
+    ElMessage.success(result.message || '模拟器已重启');
+    await Promise.all([
+      refreshLogs(),
+      refreshScheduler(),
+      refreshSchedulerPlan(),
+      refreshDoctorWatchLatest(),
+      refreshGameStateInspection(),
+    ]);
+    ensureDoctorWatchInBackground();
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
+    ElMessage.error(error?.response?.data?.detail || error?.message || '模拟器重启失败');
   } finally {
     actionLoading.value = '';
   }
 };
 
-const openContextTaskRules = () => {
-  const task = contextMenu.value.task;
-  closeLogMenu();
-  if (!task) return;
-  schedulerRuleDialog.value = {
-    visible: true,
-    task,
-    dispatchLevel: taskDispatchLevel(task),
-    dispatchOrder: Math.min(9999, Math.max(0, Number(task.dispatch_order) || 0)),
-    retryPolicy: task.retry_policy === 'immediate' ? 'immediate' : 'standard',
-  };
+const toggleGuardItem = (itemId: string) => {
+  void runAction(`guard:${itemId}`, () => setFanxiuBehaviorTreeRuntimeGuard(entryId.value, !guardItemEnabled(itemId), 2, itemId));
 };
 
-const saveSchedulerRules = async () => {
-  const task = schedulerRuleDialog.value.task;
-  if (!task) return;
-  const dispatchLevel = Math.min(5, Math.max(0, Math.trunc(Number(schedulerRuleDialog.value.dispatchLevel) || 0)));
-  const dispatchOrder = Math.min(9999, Math.max(0, Math.trunc(Number(schedulerRuleDialog.value.dispatchOrder) || 0)));
-  const retryPolicy = schedulerRuleDialog.value.retryPolicy === 'immediate' ? 'immediate' : 'standard';
-  actionLoading.value = `rules:${task.id}`;
+const setInfoWindowSetting = async (key: keyof FanxiuInfoWindowSettings, value: boolean) => {
+  if (actionLoading.value === 'info-window') return;
+  const previous = infoWindowStatus.value;
+  const settings = { ...infoWindowSettings.value, [key]: value };
+  if (previous) {
+    infoWindowStatus.value = { ...previous, settings };
+  }
+  actionLoading.value = 'info-window';
   try {
-    const response = await saveFanxiuDataAnnotationSchedulerTasks([{
-      ...task,
-      dispatch_level: dispatchLevel,
-      dispatch_order: dispatchOrder,
-      retry_policy: retryPolicy,
-    }]);
-    schedulerTasks.value = response.tasks || [];
-    schedulerJobGroupEnabled.value = response.job_group_enabled ?? schedulerJobGroupEnabled.value;
-    schedulerRuleDialog.value.visible = false;
-    ElMessage.success('调度规则已保存');
+    infoWindowStatus.value = await setFanxiuInfoWindowSettings(entryId.value, settings);
   } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败');
+    infoWindowStatus.value = previous;
+    ElMessage.error(error?.response?.data?.detail || error?.message || '信息窗设置保存失败');
   } finally {
     actionLoading.value = '';
   }
@@ -673,8 +883,20 @@ const startPolling = () => {
           warnRefreshFailure('poll refresh status', error);
         }
         if (syncSlowState) {
-          const slowRefreshes = [refreshLogs({ latestOnly: true }), refreshScheduler(), refreshDoctorWatchLatest()];
-          const scopes = ['poll refresh logs', 'poll refresh scheduler', 'poll refresh doctor watch'];
+          const slowRefreshes = [
+            refreshLogs({ latestOnly: true }),
+            refreshScheduler(),
+            refreshDoctorWatchLatest(),
+            refreshGameStateInspection(),
+            refreshInfoWindow(),
+          ];
+          const scopes = [
+            'poll refresh logs',
+            'poll refresh scheduler',
+            'poll refresh doctor watch',
+            'poll refresh game state inspection',
+            'poll refresh info window',
+          ];
           const results = await Promise.allSettled(slowRefreshes);
           results.forEach((result, index) => {
             if (result.status === 'rejected') {
@@ -729,24 +951,118 @@ onUnmounted(() => {
     <header class="runtime-header">
       <div>
         <div class="runtime-title">
-          <h2>凡修行为树</h2>
+          <h2>行为树 Runtime</h2>
         </div>
         <div class="runtime-header-controls">
           <el-button
             class="kernel-toggle-button"
-            :class="{ 'is-enabled': behaviorTreeEnabled }"
+            :class="{ 'is-enabled': kernelDisplayState === 'enabled', 'is-error': kernelDisplayState === 'error' }"
             size="small"
             :loading="actionLoading === 'kernel-toggle'"
+            :disabled="kernelDisplayState === 'loading'"
             :title="kernelToggleTitle"
             @click="toggleKernelEnabled"
           >
             {{ kernelToggleText }}
+          </el-button>
+          <el-button
+            size="small"
+            :loading="actionLoading === 'device-restart'"
+            :disabled="Boolean(actionLoading) && actionLoading !== 'device-restart'"
+            @click="restartSimulator"
+          >
+            重启模拟器
           </el-button>
         </div>
       </div>
     </header>
 
     <main class="runtime-main" v-loading="loading">
+      <!--
+        PRODUCT CONTRACT — DO NOT DELETE:
+        游戏状态巡检是用户依赖的行为树 Runtime 常驻 UI。重构只能调整呈现，不能删除本区、状态请求或轮询。
+        backend/tests/test_fanxiu_runtime_page_contract.py 会锁定这条产品约束。
+      -->
+      <section class="runtime-section" data-testid="game-state-inspection-panel">
+        <div class="section-title inspection-section-title">
+          <div>
+            <h3>{{ gameStateInspection?.name || '游戏状态巡检' }}</h3>
+            <p>{{ gameStateInspection?.description || '通过只读游戏 Runtime 数据定期检查游戏状态，并按业务事实提前相关作业' }}</p>
+          </div>
+          <span class="inspection-status" :class="gameStateInspectionStatusClass">
+            {{ gameStateInspectionStatusText }}
+          </span>
+        </div>
+        <div class="inspection-facts">
+          <span>周期 <strong>{{ gameStateInspectionIntervalText }}</strong></span>
+          <span>巡检项 <strong>{{ gameStateInspectionProbeText }}</strong></span>
+          <span>最近检查 <strong>{{ gameStateInspection?.last_checked_at || '-' }}</strong></span>
+          <span>结果 <strong>{{ gameStateInspection?.last_message || '-' }}</strong></span>
+        </div>
+      </section>
+
+      <section class="runtime-section" data-testid="fanxiu-info-window-panel">
+        <div class="section-title info-window-title">
+          <div class="info-window-heading">
+            <h3>凡修信息窗</h3>
+            <span class="inspection-status" :class="infoWindowStatusClass">{{ infoWindowStatusText }}</span>
+          </div>
+          <el-switch
+            :model-value="infoWindowSettings.enabled"
+            :loading="actionLoading === 'info-window'"
+            aria-label="开关凡修信息窗"
+            @change="setInfoWindowSetting('enabled', Boolean($event))"
+          />
+        </div>
+        <div class="info-window-options" :class="{ 'is-disabled': !infoWindowSettings.enabled }">
+          <label title="默认关闭；开启后优先读取最近识别结果，仅当结果已超过 5 秒才主动识别并更新时间">
+            <span>主动识别</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.active_recognition"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('active_recognition', Boolean($event))"
+            />
+          </label>
+          <label>
+            <span>场景编号</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.show_scene_id"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_scene_id', Boolean($event))"
+            />
+          </label>
+          <label>
+            <span>识别置信度</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.show_scene_score"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_scene_score', Boolean($event))"
+            />
+          </label>
+          <label title="显示当前已识别场景中标记为 isSceneIdentity 的 Shape">
+            <span>场景标识框</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.show_scene_identity_shapes"
+              :disabled="!infoWindowSettings.enabled || infoWindowSettings.show_all_shapes || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_scene_identity_shapes', Boolean($event))"
+            />
+          </label>
+          <label title="显示当前已识别场景中的全部非分组 Shape，包含场景标识框">
+            <span>全部 Shape</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.show_all_shapes"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_all_shapes', Boolean($event))"
+            />
+          </label>
+        </div>
+      </section>
+
       <section class="runtime-section">
         <div class="section-title group-section-title">
           <h3>守护</h3>
@@ -805,7 +1121,16 @@ onUnmounted(() => {
 
       <section class="runtime-section">
         <div class="section-title group-section-title">
-          <h3>作业</h3>
+          <div class="job-title">
+            <h3>作业</h3>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              title="编排同一原始时间的作业顺序"
+              @click="schedulerTimeSequenceDialog?.open()"
+            >时间编排</el-button>
+          </div>
           <div class="section-actions">
             <span class="runtime-control-label-group">
               <span class="runtime-control-label">调度器</span>
@@ -822,8 +1147,12 @@ onUnmounted(() => {
                 </template>
                 <div class="runtime-help-doc">
                   <h4>调度来源</h4>
-                  <p>工程模式自动提交到期 Cell；AI 模式暂停工程自动提交。</p>
+                  <p>工程模式自动提交到期 Cell；切换到 AI 会停止当前工程 Cell，并暂停后续工程提交。</p>
+                  <p>AI 或人工提交的普通 Cell 不会被这次切换误停。</p>
                   <p>两者都通过同一个 Kernel Cell 入口执行。</p>
+                  <h4>手动运行</h4>
+                  <p><strong>提前运行（按计划时间）</strong>：默认方式。作业立即执行；业务时间模拟为原下次触发时间后 1 分钟，适合提前完成定时作业，并可能把下次时间直接推进到下一周期。</p>
+                  <p><strong>立即运行（按当前时间）</strong>：作业立即执行；窗口判断和下一次时间都使用真实此刻。</p>
                 </div>
               </el-popover>
             </span>
@@ -851,7 +1180,6 @@ onUnmounted(() => {
               <col class="col-index" />
               <col class="col-name" />
               <col class="col-exec" />
-              <col class="col-enable" />
               <col class="col-level" />
               <col class="col-trigger" />
             </colgroup>
@@ -859,8 +1187,7 @@ onUnmounted(() => {
               <tr>
                 <th>序号</th>
                 <th>名称</th>
-                <th>触发</th>
-                <th>启用</th>
+                <th>触发说明</th>
                 <th>级别</th>
                 <th>下次触发</th>
               </tr>
@@ -876,16 +1203,6 @@ onUnmounted(() => {
                 <td :title="task.label"><strong>{{ task.label }}</strong></td>
                 <td :title="taskMetaText(task)">{{ taskMetaText(task) }}</td>
                 <td>
-                  <button
-                    class="enable-dot"
-                    :class="{ enabled: task.enabled }"
-                    type="button"
-                    :disabled="actionLoading === `enable:${task.id}`"
-                    title="切换启用"
-                    @click="toggleTaskEnabled(task)"
-                  />
-                </td>
-                <td>
                   <span class="dispatch-level-value">{{ taskDispatchLevel(task) }}级</span>
                 </td>
                 <td :title="nextTriggerTitle(task)">
@@ -893,7 +1210,7 @@ onUnmounted(() => {
                 </td>
               </tr>
               <tr v-if="!businessTasks.length">
-                <td colspan="6" class="empty-cell">暂无作业</td>
+                <td colspan="5" class="empty-cell">暂无作业</td>
               </tr>
             </tbody>
           </table>
@@ -968,50 +1285,32 @@ onUnmounted(() => {
     </main>
 
     <el-dialog
-      v-model="schedulerRuleDialog.visible"
-      title="调度规则"
-      width="420px"
+      v-model="schedulerTimeDialog.visible"
+      title="执行时间"
+      width="360px"
       destroy-on-close
     >
-      <div class="scheduler-rule-form">
-        <label>
-          <span>调度级别</span>
-          <el-input-number
-            v-model="schedulerRuleDialog.dispatchLevel"
-            :min="0"
-            :max="5"
-            controls-position="right"
-          />
-        </label>
-        <label>
-          <span>软顺序</span>
-          <el-input-number
-            v-model="schedulerRuleDialog.dispatchOrder"
-            :min="0"
-            :max="9999"
-            :step="10"
-            controls-position="right"
-          />
-        </label>
-        <p>同级且同一触发时间的作业按较小数字先运行；0 表示未指定。</p>
-        <label>
-          <span>失败重试</span>
-          <el-select v-model="schedulerRuleDialog.retryPolicy">
-            <el-option label="标准（先让同批其它作业运行）" value="standard" />
-            <el-option label="立即（成功前保持当前顺序）" value="immediate" />
-          </el-select>
-        </label>
-        <p>两种策略都不改原触发时间，也不会自动加入十分钟冷却。</p>
-      </div>
+      <el-date-picker
+        v-model="schedulerTimeDialog.nextTime"
+        type="datetime"
+        format="YYYY-MM-DD HH:mm"
+        value-format="YYYY-MM-DD HH:mm:ss"
+        placeholder="选择执行时间"
+        style="width: 100%"
+      />
       <template #footer>
-        <el-button @click="schedulerRuleDialog.visible = false">取消</el-button>
+        <el-button @click="schedulerTimeDialog.visible = false">取消</el-button>
         <el-button
           type="primary"
-          :loading="Boolean(schedulerRuleDialog.task && actionLoading === `rules:${schedulerRuleDialog.task.id}`)"
-          @click="saveSchedulerRules"
-        >保存</el-button>
+          :loading="Boolean(schedulerTimeDialog.task && actionLoading === `next-time:${schedulerTimeDialog.task.id}`)"
+          @click="saveContextTaskTime"
+        >确定</el-button>
       </template>
     </el-dialog>
+    <SchedulerTimeSequenceDialog
+      ref="schedulerTimeSequenceDialog"
+      @saved="refreshScheduler"
+    />
 
     <div
       v-if="contextMenu.visible"
@@ -1019,13 +1318,16 @@ onUnmounted(() => {
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       @click.stop
     >
-      <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">触发一次</button>
-      <button v-if="contextMenu.task" type="button" @click="openContextTaskRules">调度规则</button>
       <button
-        v-if="canAdvanceTaskNext(contextMenu.task)"
+        v-if="contextMenu.task"
         type="button"
-        @click="advanceContextTaskNext"
-      >推进到下次</button>
+        :disabled="!canRunTaskEarly(contextMenu.task)"
+        :title="canRunTaskEarly(contextMenu.task) ? '立即运行，并把业务时间模拟为原下次触发时间后 1 分钟' : (contextMenu.task.next_time ? '该作业已经到期，请使用立即运行' : '该作业没有计划时间')"
+        @click="runContextTaskEarly"
+      >提前运行（按计划时间）</button>
+      <button v-if="contextMenu.task" type="button" @click="runContextTaskNow">立即运行（按当前时间）</button>
+      <button v-if="contextMenu.task" type="button" @click="clearContextTaskSchedule">取消执行</button>
+      <button v-if="contextMenu.task" type="button" @click="openContextTaskTime">执行时间…</button>
       <button type="button" @click="openContextLogs">日志</button>
     </div>
   </div>
@@ -1123,6 +1425,85 @@ onUnmounted(() => {
   font-size: 15px;
 }
 
+.inspection-section-title {
+  align-items: flex-start;
+}
+
+.inspection-section-title > div {
+  min-width: 0;
+}
+
+.inspection-section-title p {
+  margin: 5px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.inspection-status {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 10px;
+  color: #64748b;
+  background: #f1f5f9;
+}
+
+.inspection-status.is-running {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.inspection-status.is-error {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.inspection-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  padding-top: 9px;
+  border-top: 1px solid #e5e7eb;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.inspection-facts strong {
+  margin-left: 4px;
+  color: #374151;
+  font-weight: 500;
+}
+
+.info-window-title {
+  margin-bottom: 8px;
+}
+
+.info-window-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.info-window-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  padding-top: 9px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.info-window-options.is-disabled {
+  opacity: 0.55;
+}
+
+.info-window-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #374151;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .section-title span,
 .muted {
   color: #6b7280;
@@ -1167,6 +1548,18 @@ onUnmounted(() => {
 
 .scheduler-owner-select {
   width: 66px;
+}
+
+.kernel-toggle-button.is-error {
+  color: #b91c1c;
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.job-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .scheduler-owner-select :deep(.el-select__wrapper) {
@@ -1368,29 +1761,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.scheduler-rule-form {
-  display: grid;
-  gap: 8px;
-}
-
-.scheduler-rule-form label {
-  display: grid;
-  grid-template-columns: 72px max-content;
-  align-items: center;
-  gap: 10px;
-}
-
-.scheduler-rule-form p {
-  margin: 0 0 8px 82px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.scheduler-rule-form .el-select {
-  width: 240px;
 }
 
 .runtime-state-section {
@@ -1612,6 +1982,12 @@ onUnmounted(() => {
 
 .runtime-context-menu button:hover {
   background: #f3f4f6;
+}
+
+.runtime-context-menu button:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+  background: transparent;
 }
 
 @media (max-width: 900px) {

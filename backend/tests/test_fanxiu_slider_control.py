@@ -9,7 +9,7 @@ from backend.core.fanxiu.data_annotation.slider_control import (
     DiscreteSliderScale,
     read_labeled_percentage,
 )
-from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 
 
 def _finish(generator):
@@ -21,10 +21,7 @@ def _finish(generator):
 
 
 def _tokens(text: str, *, x: float = 100, y: float = 400, h: float = 40) -> list[dict]:
-    return [
-        {"text": char, "x": x + index * 20, "y": y, "w": 18, "h": h}
-        for index, char in enumerate(text)
-    ]
+    return [{"text": text, "x": x, "y": y, "w": max(18, len(text) * 20), "h": h}]
 
 
 def test_discrete_slider_scale_maps_twenty_positions_to_thumb_centers():
@@ -50,7 +47,7 @@ def test_balanced_points_fill_the_less_used_item_and_prefer_first_on_ties():
 
 
 def test_runtime_slider_rechecks_and_applies_a_bounded_correction(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     image = {
         "id": 358,
         "title": "设置难度",
@@ -109,8 +106,90 @@ def test_runtime_slider_rechecks_and_applies_a_bounded_correction(monkeypatch):
     assert drags[1][0] < drags[1][2]
 
 
+def test_runtime_slider_retries_a_transient_empty_ocr_frame_after_drag(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    image = {
+        "id": 358,
+        "title": "设置难度",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "难度条", "x": 226 / 900, "y": 700 / 1600, "w": 492 / 900, "h": 32 / 1600},
+        ],
+    }
+    runtime = runner._fanxiu_runtime({"images": {358: image}}, stop_event=threading.Event())
+    readings = iter(
+        (
+            {"tokens": _tokens("暴击【27%】")},
+            {"tokens": []},
+            {"tokens": _tokens("暴击【30%】")},
+        )
+    )
+    drags: list[tuple[float, float, float, float, int]] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(runner, "_shared_spatial_ocr_result", lambda _ctx, _frame: next(readings))
+    monkeypatch.setattr(
+        runner,
+        "_drag_frame_point",
+        lambda _ctx, _image, x1, y1, x2, y2, *, duration_ms: drags.append((x1, y1, x2, y2, duration_ms)),
+    )
+
+    result = _finish(
+        runtime.set_slider_value(
+            358,
+            "暴击",
+            30,
+            track="难度条",
+            minimum=0,
+            maximum=57,
+            step=3,
+            settle_seconds=0,
+        )
+    )
+
+    assert result["after"] == 30
+    assert len(drags) == 1
+
+
+def test_drag_floating_slider_to_edge_starts_from_live_thumb(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    image = {
+        "id": 514,
+        "title": "使用道具",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "title": "数量滑块游标",
+                "x": 0.25,
+                "y": 0.55,
+                "w": 0.04,
+                "h": 0.04,
+                "floating": True,
+                "imageMatchRole": "required",
+            }
+        ],
+    }
+    runtime = runner._fanxiu_runtime({"images": {514: image}}, stop_event=threading.Event())
+    drags = []
+    monkeypatch.setattr(runtime, "cur_frame", lambda update=True: "frame")
+    monkeypatch.setattr(runner, "_shape_center", lambda *_args, **_kwargs: (315.0, 905.0))
+    monkeypatch.setattr(
+        runner,
+        "_drag_frame_point",
+        lambda _ctx, _image, x1, y1, x2, y2, *, duration_ms: drags.append(
+            (x1, y1, x2, y2, duration_ms)
+        ),
+    )
+
+    runtime.drag_shape_to_frame_edge(514, "数量滑块游标", direction="right")
+
+    assert drags == [(315.0, 905.0, 882.0, 905.0, 600)]
+
+
 def test_runtime_balanced_points_rechecks_each_increment(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     image = {
         "id": 358,
         "title": "设置难度",

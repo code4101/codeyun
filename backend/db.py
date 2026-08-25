@@ -33,7 +33,9 @@ if DATABASE_URL.startswith("sqlite"):
         try:
             cursor.execute("PRAGMA busy_timeout=30000")
             if ":memory:" not in DATABASE_URL:
-                cursor.execute("PRAGMA journal_mode=WAL")
+                current_journal_mode = cursor.execute("PRAGMA journal_mode").fetchone()
+                if not current_journal_mode or str(current_journal_mode[0]).lower() != "wal":
+                    cursor.execute("PRAGMA journal_mode=WAL")
         finally:
             cursor.close()
 

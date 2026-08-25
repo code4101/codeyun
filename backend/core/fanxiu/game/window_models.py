@@ -180,13 +180,18 @@ class FanxiuGameWindow2ServiceBurstFrameRequest(FanxiuGameWindow2ServiceSaveFram
 class FanxiuDataAnnotationAssetTreeRequest(BaseModel):
     entry_id: str
     tree: list[dict[str, Any]] = Field(default_factory=list)
-    base_updated_at: Optional[float] = None
+    base_revision: Optional[str] = None
 
 
 class FanxiuDataAnnotationSaveFrameRequest(BaseModel):
     entry_id: str
-    current_frame_data_url: str = Field(min_length=1)
+    current_frame_data_url: Optional[str] = None
     filename: Optional[str] = None
+    fresh_capture: bool = False
+    asset_node: Optional[dict[str, Any]] = None
+    parent_id: Optional[str] = None
+    after_node_id: Optional[str] = None
+    base_revision: Optional[str] = None
 
 
 class FanxiuGameWindow2BurstListRequest(BaseModel):

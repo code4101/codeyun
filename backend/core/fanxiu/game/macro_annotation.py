@@ -27,8 +27,49 @@ from backend.models import User
 
 
 _OCR_FRAME_CACHE_MAX_SIZE = 32
+FANXIU_PADDLE_OCR_OPTIONS = {
+    "lang": "ch",
+    # PP-OCRv5's general recognizer can emit Japanese/Korean lookalikes for
+    # stylized Chinese game fonts. PP-OCRv4's Chinese model is constrained to
+    # Chinese and English and correctly reads the same Fanxiu reference frames.
+    "ocr_version": "PP-OCRv4",
+}
 _ocr_frame_cache: OrderedDict[tuple[str, str], FanxiuDataAnnotationOcrFrameResponse] = OrderedDict()
 _ocr_frame_cache_lock = threading.Lock()
+
+
+def _fanxiu_ocr_character_allowed(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        character in "\r\n\t"
+        or 0x20 <= codepoint <= 0x7E  # English, digits and ASCII punctuation.
+        or 0x3400 <= codepoint <= 0x4DBF  # CJK Extension A.
+        or 0x4E00 <= codepoint <= 0x9FFF  # Common Chinese ideographs.
+        or 0xF900 <= codepoint <= 0xFAFF  # CJK compatibility ideographs.
+        or 0x20000 <= codepoint <= 0x2FA1F  # Supplementary CJK ideographs.
+        or 0x3000 <= codepoint <= 0x303F  # Chinese punctuation.
+        or 0xFE10 <= codepoint <= 0xFE1F
+        or 0xFE30 <= codepoint <= 0xFE4F
+        or 0xFF01 <= codepoint <= 0xFF5E  # Full-width ASCII forms.
+    )
+
+
+def _filter_fanxiu_ocr_text(value: Any) -> str:
+    return "".join(character for character in str(value or "") if _fanxiu_ocr_character_allowed(character))
+
+
+def _filter_fanxiu_spatial_ocr_document(document: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    result: dict[str, list[dict[str, Any]]] = {"lines": [], "tokens": []}
+    for key in ("lines", "tokens"):
+        items = document.get(key) if isinstance(document.get(key), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = _filter_fanxiu_ocr_text(item.get("text"))
+            if not text.strip():
+                continue
+            result[key].append({**item, "text": text})
+    return result
 
 
 def _ocr_frame_cache_key(image_bytes: bytes, options: dict[str, Any] | None) -> tuple[str, str]:
@@ -192,7 +233,11 @@ def _build_game_macro_ocr_context(image_data_url: str) -> str:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as file:
             file.write(image_bytes)
             temp_path = Path(file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        preview = run_paddle_ocr_preview(
+            temp_path,
+            shape_type="rectangle",
+            options=FANXIU_PADDLE_OCR_OPTIONS,
+        )
         return _summarize_game_macro_ocr_document(preview)
     except Exception as exc:
         return f"OCR 不可用：{exc}"
@@ -214,18 +259,20 @@ def _recognize_data_annotation_ocr_frame(
         image_bytes = _decode_game_macro_data_url_to_bytes(image_data_url)
         if not image_bytes:
             return FanxiuDataAnnotationOcrFrameResponse()
-        cache_key = _ocr_frame_cache_key(image_bytes, options)
+        canonical_options = {**FANXIU_PADDLE_OCR_OPTIONS, **dict(options or {})}
+        cache_key = _ocr_frame_cache_key(image_bytes, canonical_options)
         cached = _get_cached_ocr_frame(cache_key)
         if cached is not None:
             return cached
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as file:
             file.write(image_bytes)
             temp_path = Path(file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle", options=options)
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle", options=canonical_options)
         document = preview.get("document") or {}
         flags = document.get("flags") if isinstance(document, dict) else {}
         payload = flags.get("paddleocr_payload") if isinstance(flags, dict) else None
         spatial_document = extract_ocr_spatial_document(payload) if isinstance(payload, dict) else {"lines": [], "tokens": []}
+        spatial_document = _filter_fanxiu_spatial_ocr_document(spatial_document)
         lines = [
             FanxiuDataAnnotationOcrFrameLine.model_validate(item)
             for item in spatial_document["lines"]

@@ -1,4 +1,4 @@
-from backend.core.fanxiu.data_annotation.runtime_runner import DataAnnotationRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
 
 
 class _Runtime:
@@ -10,7 +10,7 @@ class _Runtime:
 
 
 def test_mail_delete_348_is_business_confirm_not_cancel():
-    runner = DataAnnotationRuntimeRunner.__new__(DataAnnotationRuntimeRunner)
+    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
     runtime = _Runtime()
 
     runner._click_confirmed_mail_delete_prompt(runtime, 348, frame_data_url="frame348")

@@ -691,6 +691,130 @@ def decrypt_wechat_v3_db(in_path: Path, out_path: Path, key_hex: str) -> bool:
     return True
 
 
+def _iter_decrypted_wx3_wal_frames(db_path: Path, wal_path: Path, key_hex: str):
+    try:
+        with db_path.open("rb") as handle:
+            first_page = handle.read(WX3_PAGE_SIZE)
+        wal_data = wal_path.read_bytes()
+    except OSError:
+        return
+    if len(first_page) < WX3_PAGE_SIZE or len(wal_data) < 32:
+        return
+    try:
+        page_size = struct.unpack(">I", wal_data[8:12])[0]
+    except struct.error:
+        return
+    if page_size <= 0 or page_size > 65536:
+        return
+    key = bytes.fromhex(key_hex)
+    derived_key = hashlib.pbkdf2_hmac("sha1", key, first_page[:16], 64000, WX3_KEY_SIZE)
+    pos = 32
+    frame_index = 0
+    while pos + 24 + page_size <= len(wal_data):
+        frame_header = wal_data[pos : pos + 24]
+        try:
+            page_no, db_size = struct.unpack(">II", frame_header[:8])
+        except struct.error:
+            break
+        page = wal_data[pos + 24 : pos + 24 + page_size]
+        try:
+            payload = page[16:] if page_no == 1 else page
+            plain = AES.new(derived_key, AES.MODE_CBC, payload[-WX3_RESERVE_SIZE:-32]).decrypt(
+                payload[:-WX3_RESERVE_SIZE]
+            )
+            data = (SQLITE_HEADER + plain if page_no == 1 else plain) + payload[-WX3_RESERVE_SIZE:]
+        except Exception:
+            data = b""
+        if data:
+            yield {"frame_index": frame_index, "page_no": page_no, "db_size": db_size, "data": data}
+        frame_index += 1
+        pos += 24 + page_size
+
+
+_XML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.DOTALL | re.IGNORECASE)
+_XML_CONTENT_RE = re.compile(r"<content>(.*?)</content>", re.DOTALL | re.IGNORECASE)
+_LOOSE_XML_TITLE_RE = re.compile(r"<title>(.*?)(?:</|/ ype>| appattach|<type>)", re.DOTALL | re.IGNORECASE)
+_LOOSE_XML_CONTENT_RE = re.compile(
+    r"(?:<content>|content>)(.*?)(?:</content>|/ msgsource| wxid_[A-Za-z0-9_-]{4,}|<msgsource>|$)",
+    re.DOTALL | re.IGNORECASE,
+)
+_MEDIA_PATH_HINT_RE = re.compile(
+    r"FileStorage\\MsgAttach\\[A-Za-z0-9]+\\(?:Thumb|Image)\\20\d{2}-\d{2}\\[^\\\x00\r\n<>\"|]+\.(?:dat|jpg|jpeg|png|gif|webp|bmp)",
+    re.IGNORECASE,
+)
+
+
+def _clean_wal_text(value: str) -> str:
+    value = value.replace("\r\n", "\n").replace("\r", "\n")
+    value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]+", " ", value)
+    value = re.sub(r"[ \t]{2,}", " ", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return html.unescape(html.unescape(value)).strip()
+
+
+def _extract_xml_field(pattern: re.Pattern[str], text: str) -> str:
+    match = pattern.search(text)
+    return _clean_wal_text(match.group(1)) if match else ""
+
+
+def _extract_chat_wal_fragments_from_text(
+    text: str,
+    *,
+    chat_username: str,
+    q: str | None,
+    source_db: str,
+    frame_index: int,
+    page_no: int,
+    contacts: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    fragments: list[dict[str, Any]] = []
+    needle = q.strip() if q else ""
+    for match in re.finditer(re.escape(chat_username), text):
+        context = text[max(0, match.start() - 500) : match.start() + 3200]
+        cleaned_context = _clean_wal_text(context)
+        media_match = _MEDIA_PATH_HINT_RE.search(context)
+        title = _extract_xml_field(_XML_TITLE_RE, cleaned_context) or _extract_xml_field(
+            _LOOSE_XML_TITLE_RE, cleaned_context
+        )
+        content = _extract_xml_field(_XML_CONTENT_RE, cleaned_context) or _extract_xml_field(
+            _LOOSE_XML_CONTENT_RE, cleaned_context
+        )
+        message_text = title or content
+        if title and content and content not in title:
+            message_text = f"{title}\n引用：{content}"
+        if not message_text:
+            body_match = re.search(
+                re.escape(chat_username) + r"(?P<body>.*?)(?:<msgsource>|wxid_[A-Za-z0-9_-]{4,}|\Z)",
+                cleaned_context,
+                flags=re.DOTALL,
+            )
+            message_text = _clean_wal_text(body_match.group("body")) if body_match else cleaned_context
+        if needle and needle not in message_text and needle not in cleaned_context:
+            continue
+        sender_username = None
+        sender_candidates = re.findall(r"(wxid_[A-Za-z0-9_-]{4,}|[A-Za-z][A-Za-z0-9_-]{3,31})", cleaned_context)
+        for candidate in sender_candidates:
+            if candidate in contacts:
+                sender_username = candidate
+                break
+        if sender_username is None and sender_candidates:
+            sender_username = sender_candidates[0]
+        fragments.append(
+            {
+                "source_db": source_db,
+                "frame_index": frame_index,
+                "page_no": page_no,
+                "source": chat_username,
+                "sender_username_hint": sender_username,
+                "sender_name_hint": _display_name(sender_username, contacts) if sender_username else None,
+                "message_text": message_text[:2000],
+                "context_text": cleaned_context[:3000],
+                "media_path_hint": media_match.group(0) if media_match else None,
+            }
+        )
+    return fragments
+
+
 class WeChatLegacyDbStorage:
     """Query decrypted WeChat 3.x databases while exposing the 4.x page schema."""
 
@@ -706,6 +830,10 @@ class WeChatLegacyDbStorage:
     def multi_path(self) -> Path:
         return self.root / "Msg" / "Multi"
 
+    @property
+    def multi_search_chat_msg_path(self) -> Path:
+        return self.root / "Msg" / "MultiSearchChatMsg.db"
+
     def _message_db_paths(self) -> list[Path]:
         if not self.multi_path.exists():
             return []
@@ -714,6 +842,9 @@ class WeChatLegacyDbStorage:
     def _message_db_index(self, path: Path) -> int:
         match = re.search(r"MSG(\d+)\.db$", path.name, flags=re.IGNORECASE)
         return int(match.group(1)) if match else 0
+
+    def _live_db_path_for_decrypted_message_db(self, live: LegacyWeChatLiveInfo, db_path: Path) -> Path:
+        return live.account_root / "Msg" / "Multi" / db_path.name
 
     def _self_username(self) -> str | None:
         value = (os.environ.get("CODEYUN_WECHAT_LEGACY_SELF_USERNAME") or "").strip()
@@ -731,6 +862,7 @@ class WeChatLegacyDbStorage:
         databases = {
             "micro_msg": _is_sqlite_db(self.micro_msg_path),
             "message": bool(message_dbs),
+            "multi_search_chat_msg": _is_sqlite_db(self.multi_search_chat_msg_path),
         }
         for path in message_dbs:
             databases[f"message_{self._message_db_index(path)}"] = _is_sqlite_db(path)
@@ -874,6 +1006,7 @@ class WeChatLegacyDbStorage:
     def _iter_live_db_files(self, account_root: Path) -> list[Path]:
         msg_root = account_root / "Msg"
         paths = [msg_root / "MicroMsg.db"]
+        paths.append(msg_root / "MultiSearchChatMsg.db")
         paths.extend(sorted((msg_root / "Multi").glob("MSG*.db")))
         paths.extend(sorted((msg_root / "Multi").glob("MediaMSG*.db")))
         return [path for path in paths if path.exists()]
@@ -1472,7 +1605,85 @@ class WeChatLegacyDbStorage:
                 "resource": resource,
             }
             items.append(item)
-        return {"total": total, "items": items, "table_name": "MSG"}
+        payload = {"total": total, "items": items, "table_name": "MSG"}
+        if offset == 0 and order_desc:
+            fragments = self.live_wal_fragments(chat_username=chat_username, q=q, limit=min(80, max(limit * 3, 20)))
+            if fragments:
+                payload["live_wal_fragments"] = fragments
+        return payload
+
+    def live_wal_fragments(self, chat_username: str, q: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        live = find_live_legacy_wechat_account()
+        if not live:
+            return []
+        if self._self_username() and live.wxid != self._self_username():
+            return []
+        contacts = self._contact_map()
+        fragments: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for db_path in self._message_db_paths():
+            live_db = self._live_db_path_for_decrypted_message_db(live, db_path)
+            wal_path = Path(os.fspath(live_db) + "-wal")
+            if not live_db.exists() or not wal_path.exists():
+                continue
+            for frame in _iter_decrypted_wx3_wal_frames(live_db, wal_path, live.key_hex):
+                text = frame["data"].decode("utf-8", errors="ignore")
+                if chat_username not in text:
+                    continue
+                for fragment in _extract_chat_wal_fragments_from_text(
+                    text,
+                    chat_username=chat_username,
+                    q=q,
+                    source_db=f"MSG{self._message_db_index(db_path)}.db-wal",
+                    frame_index=frame["frame_index"],
+                    page_no=frame["page_no"],
+                    contacts=contacts,
+                ):
+                    dedupe_key = (fragment.get("message_text") or "", fragment.get("media_path_hint") or "")
+                    if dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    fragment["resource"] = self._wal_fragment_resource_payload(fragment)
+                    fragments.append(fragment)
+                    if len(fragments) >= limit:
+                        return fragments
+        return fragments
+
+    def _wal_fragment_resource_payload(self, fragment: dict[str, Any]) -> dict[str, Any] | None:
+        raw_path = str(fragment.get("media_path_hint") or "")
+        if not raw_path:
+            return None
+        account_root = self._media_account_root()
+        if not account_root:
+            return None
+        source = self._resolve_media_source_path(raw_path, account_root)
+        if not source:
+            return None
+        kind = "image" if source.suffix.lower() in {".dat", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"} else "file"
+        export = self._export_legacy_media_file(
+            source,
+            kind=kind,
+            stem=f"wx3_wal_{fragment.get('frame_index')}_{source.stem}",
+            original_file_name=source.name,
+        )
+        if not export:
+            return None
+        return {
+            "resource_count": 1,
+            "total_size": int(export.get("size") or 0),
+            "resource_types": kind,
+            "data_indexes": "",
+            "items": [
+                {
+                    "resource_id": None,
+                    "type": 3 if kind == "image" else 49,
+                    "size": int(export.get("size") or 0),
+                    "data_index": None,
+                    "packed_text": fragment.get("message_text") or "",
+                    "export": export,
+                }
+            ],
+        }
 
     def _query_message_page(
         self,
@@ -1580,7 +1791,10 @@ class WeChatLegacyDbStorage:
         return [{"local_type": key, "count": value} for key, value in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
 
     def _database_path(self, database: str) -> Path:
-        mapping = {"micro_msg": self.micro_msg_path}
+        mapping = {
+            "micro_msg": self.micro_msg_path,
+            "multi_search_chat_msg": self.multi_search_chat_msg_path,
+        }
         for path in self._message_db_paths():
             mapping[f"message_{self._message_db_index(path)}"] = path
         if database in mapping:
@@ -1589,7 +1803,12 @@ class WeChatLegacyDbStorage:
 
     def schema_overview(self) -> list[dict[str, Any]]:
         items = []
-        for name, path in {"micro_msg": self.micro_msg_path, **{f"message_{self._message_db_index(p)}": p for p in self._message_db_paths()}}.items():
+        db_paths = {
+            "micro_msg": self.micro_msg_path,
+            "multi_search_chat_msg": self.multi_search_chat_msg_path,
+            **{f"message_{self._message_db_index(p)}": p for p in self._message_db_paths()},
+        }
+        for name, path in db_paths.items():
             item = {"name": name, "path": os.fspath(path), "exists": path.exists(), "objects": 0, "tables": []}
             if _is_sqlite_db(path):
                 conn = _connect_readonly(path)
@@ -1641,7 +1860,7 @@ class WeChatLegacyDbStorage:
             params: list[Any] = []
             if q:
                 needle = f"%{_safe_like(q.strip())}%"
-                clauses = [f'CAST("{column}" AS TEXT) LIKE ? ESCAPE "\\\\"' for column in columns]
+                clauses = [f'CAST("{column}" AS TEXT) LIKE ? ESCAPE \'\\\'' for column in columns]
                 params = [needle] * len(columns)
             where_sql = f" WHERE {' OR '.join(clauses)}" if clauses else ""
             total = conn.execute(f'SELECT COUNT(*) FROM "{table}"{where_sql}', params).fetchone()[0]

@@ -1,6 +1,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from backend.app import app
 from backend.core.ai import chat as ai_chat
 from backend.core.ai.chat import OllamaClientError, chat_with_provider, get_ai_provider_status, stream_chat_with_provider
@@ -129,10 +131,9 @@ def test_ai_chat_providers(client):
     assert payload["items"][1]["requires_api_key"] is True
 
 
-def test_ai_chat_providers_anonymous_hide_server_managed_cloud_config(client, monkeypatch):
+def test_ai_chat_providers_anonymous_hide_account_managed_cloud_config(client, monkeypatch):
     monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
     monkeypatch.setenv("CODEYUN_AI_DEFAULT_PROVIDER", "deepseek")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "server-deepseek-key")
     _clear_settings_cache()
     try:
         response = client.get("/api/ai-chat/providers")
@@ -180,9 +181,8 @@ def test_ai_chat_saved_configs_anonymous_returns_empty(client):
     }
 
 
-def test_ai_chat_status_anonymous_does_not_inherit_server_managed_cloud_api_key(client, monkeypatch):
+def test_ai_chat_status_anonymous_does_not_inherit_system_ai_resource(client, monkeypatch):
     monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "server-deepseek-key")
     _clear_settings_cache()
     try:
         response = client.post(
@@ -202,9 +202,8 @@ def test_ai_chat_status_anonymous_does_not_inherit_server_managed_cloud_api_key(
     assert "未填写 API Key" in payload["error"]
 
 
-def test_ai_chat_anonymous_chat_does_not_inherit_server_managed_cloud_api_key(client, monkeypatch):
+def test_ai_chat_anonymous_chat_does_not_inherit_system_ai_resource(client, monkeypatch):
     monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "server-deepseek-key")
     _clear_settings_cache()
     try:
         response = client.post(
@@ -532,6 +531,49 @@ def test_ai_chat_ollama_alias_runs_with_think_false(monkeypatch):
     assert captured["json"]["model"] == "qwen3.5:4b"
     assert captured["json"]["think"] is False
     assert response["model"] == "qwen3.5:4b-instruct"
+    assert response["content"] == "OK"
+
+
+@pytest.mark.parametrize(
+    ("alias", "runtime_model"),
+    [
+        ("qwen3-vl:4b-instruct", "qwen3-vl:4b"),
+        ("qwen3-vl:8b-instruct", "qwen3-vl:8b"),
+    ],
+)
+def test_ai_chat_ollama_vision_alias_runs_with_think_false(monkeypatch, alias, runtime_model):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "model": runtime_model,
+                "message": {
+                    "role": "assistant",
+                    "content": "OK",
+                },
+            }
+
+    def fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.core.ai.chat.requests.post", fake_post)
+
+    response = chat_with_provider(
+        provider_id="ollama",
+        base_url="http://127.0.0.1:11434",
+        messages=[{"role": "user", "content": "只回复OK"}],
+        model=alias,
+    )
+
+    assert captured["json"]["model"] == runtime_model
+    assert captured["json"]["think"] is False
+    assert response["model"] == alias
     assert response["content"] == "OK"
 
 

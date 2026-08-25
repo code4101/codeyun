@@ -19,6 +19,8 @@ os.environ.setdefault("CODEYUN_LOAD_DOTENV", "0")
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="codeyun-pytest-data-")
 os.environ.setdefault("CODEYUN_DATA_DIR", TEST_DATA_DIR)
 os.environ.setdefault("CODEYUN_MACHINE_STATE_DIR", os.path.join(TEST_DATA_DIR, "machine-state"))
+os.environ.setdefault("KQ_DATABASE_PATH", os.path.join(TEST_DATA_DIR, "attendance.sqlite3"))
+os.environ.setdefault("KQ_RESOURCE_CACHE_ROOT", os.path.join(TEST_DATA_DIR, "attendance-resource-cache"))
 
 from backend.app import app
 from backend.db import get_session

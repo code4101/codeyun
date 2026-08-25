@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable
 from backend.core.ai.auto_git_commit import AUTO_GIT_COMMIT_MIN_CHANGED_LINES
 from backend.core.ai.git_tools import GitToolError, inspect_git_repository
 from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -513,10 +514,11 @@ def run_idle_maintenance_once(
 
 
 def enqueue_idle_maintenance() -> str | None:
-    task_id, _created = background_task_queue.enqueue_once(
-        IDLE_MAINTENANCE_QUEUE_NAME,
-        run_idle_maintenance_once,
-        metadata={"task_key": IDLE_MAINTENANCE_TASK_KEY},
-        resource_lock="resource:repo",
+    active = find_active_local_job_run("maintenance.idle")
+    if active is not None:
+        return active.id
+    submitted = submit_local_job(
+        job_type="maintenance.idle",
+        payload={"task_key": IDLE_MAINTENANCE_TASK_KEY},
     )
-    return task_id
+    return submitted.id

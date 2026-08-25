@@ -119,7 +119,7 @@ export function getDirectoryOpenKeys(nodes: AppDirectoryNode[], menuPath: string
     const nextAncestors = nodeIsSubmenu ? [...ancestors, node.key] : ancestors
     if (node.menuItems.some((item) => item.path === menuPath)) {
       openKeys.push(...ancestors)
-      if (node.children.length > 0) {
+      if (nodeIsSubmenu) {
         openKeys.push(node.key)
       }
       return true

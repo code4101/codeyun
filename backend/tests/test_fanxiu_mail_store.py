@@ -6,9 +6,9 @@ from pathlib import Path
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from backend.core.fanxiu.packet.tcp_flow import _patch_fanxiu_schema_long_list, _trim_value
-from backend.core.fanxiu.packet.tcp_flow import _resolve_fanxiu_message_text_assets
-from backend.core.fanxiu.packet import tcp_flow as fanxiu_tcp_flow
+from backend.core.fanxiu.history_museum.packet_capture.tcp_flow import _patch_fanxiu_schema_long_list, _trim_value
+from backend.core.fanxiu.history_museum.packet_capture.tcp_flow import _resolve_fanxiu_message_text_assets
+from backend.core.fanxiu.history_museum.packet_capture import tcp_flow as fanxiu_tcp_flow
 from backend.core.fanxiu.mail.store import (
     align_fanxiu_mail_records_claimable_between_times,
     mark_fanxiu_mail_action,
@@ -20,11 +20,16 @@ from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
     fanxiu_mail_action_policy_for_rewards,
     fanxiu_mail_desired_status_for_rewards,
+    fanxiu_mail_prayer_target,
+    fanxiu_mail_prayer_values_by_category,
+    fanxiu_mail_reward_prayer_value,
     fanxiu_mail_rewards_unresolved,
+    fanxiu_mail_title_force_claim_allowed,
+    fanxiu_mail_title_is_always_claim,
     fanxiu_mail_visible_group_action_policy,
 )
-from backend.core.fanxiu.mail import packet_sync as fanxiu_mail_packet_sync
-from backend.core.fanxiu.packet import insight_worker as fanxiu_packet_insight_worker
+from backend.core.fanxiu.history_museum.packet_capture import mail_sync as fanxiu_mail_packet_sync
+from backend.core.fanxiu.history_museum.packet_capture import insight_worker as fanxiu_packet_insight_worker
 from backend.api import fanxiu as fanxiu_api
 from backend.models import FanxiuMailRecord
 from scripts.verify_fanxiu_mail_records import _missing_reward_field_names
@@ -756,19 +761,45 @@ def test_mail_policy_claims_known_safe_rewards():
     ]) == "claim"
 
 
-def test_mail_policy_holds_faze_and_protected_resources():
+def test_mail_policy_title_override_uses_explicit_whitelist():
+    assert fanxiu_mail_title_is_always_claim("宗门灵泉活动收益")
+    assert fanxiu_mail_title_is_always_claim("魔狱封阵奖励")
+    assert fanxiu_mail_title_is_always_claim("跨服魔狱封阵奖励补发")
+    assert not fanxiu_mail_title_is_always_claim("香车馈赠")
+    assert not fanxiu_mail_title_is_always_claim("道场关闭")
+    assert not fanxiu_mail_title_is_always_claim("宗门镇邪活动奖励")
+    assert not fanxiu_mail_title_is_always_claim("宗门灵泉活动预告")
+
+
+def test_mail_policy_title_whitelist_never_overrides_faze_or_unknown_rewards():
+    assert fanxiu_mail_title_force_claim_allowed(
+        "魔狱封阵奖励",
+        [{"item_name": "灵石", "item_type": "货币", "amount": 100}],
+    )
+    assert not fanxiu_mail_title_force_claim_allowed(
+        "魔狱封阵奖励",
+        [{"item_name": "魔道法则", "item_type": "法则", "amount": 1}],
+    )
+    assert not fanxiu_mail_title_force_claim_allowed(
+        "魔狱封阵奖励",
+        [{"item_name": "未知道具 #10080012", "amount": 1}],
+    )
+    assert not fanxiu_mail_title_force_claim_allowed("魔狱封阵奖励", [])
+
+
+def test_mail_policy_holds_faze_but_claims_low_value_prayer_resources():
     assert fanxiu_mail_action_policy_for_rewards([
         {"item_id": "10080012", "item_name": "魔道法则", "item_type": "法则"},
     ]) == ""
     assert fanxiu_mail_action_policy_for_rewards([
         {"item_id": "5030001", "item_name": "淬体精魄", "item_type": "丹药"},
-    ]) == ""
+    ], prayer_category="炼丹") == "claim"
     assert fanxiu_mail_action_policy_for_rewards([
         {"item_id": "19070082", "item_name": "炼丹灵草匣", "item_type": "礼包宝匣"},
-    ]) == ""
+    ], prayer_category="淬体") == "claim"
     assert fanxiu_mail_action_policy_for_rewards([
         {"item_id": "7020014", "item_name": "瑶池玉莲", "item_type": "NPC礼物"},
-    ]) == ""
+    ], prayer_category="淬体") == "claim"
 
 
 def test_mail_policy_claims_four_ke_before_protected_resources_but_after_faze():
@@ -810,6 +841,70 @@ def test_mail_policy_keeps_unknown_rewards_without_locking_or_claiming():
 
     assert fanxiu_mail_desired_status_for_rewards(rewards) == "留存"
     assert fanxiu_mail_action_policy_for_rewards(rewards) == ""
+
+
+def test_mail_policy_exposes_prayer_values_for_downstream_flows():
+    assert fanxiu_mail_reward_prayer_value({"item_name": "淬体精魄"}) == 10
+    assert fanxiu_mail_reward_prayer_value({"item_name": "神品灵草匣"}) == 500
+    assert fanxiu_mail_reward_prayer_value({"item_name": "炼丹灵草宝匣"}) == 100
+    assert fanxiu_mail_reward_prayer_value({"item_name": "洗灵奇石"}) == 10
+    assert fanxiu_mail_reward_prayer_value({"item_name": "造化青莲"}) == 0
+    assert fanxiu_mail_reward_prayer_value({"item_name": "灵石"}) is None
+
+
+def test_mail_policy_calculates_prayer_value_vector_with_amounts():
+    rewards = [
+        {"item_name": "炼丹灵草匣", "amount": 2},
+        {"item_name": "淬体精魄", "amount": 42},
+        {"item_name": "珍品饲灵丸", "amount": 2},
+        {"item_name": "洗灵奇石", "amount": 20},
+        {"item_name": "瑶池玉莲", "amount": 2},
+        {"item_name": "灵石", "amount": 9999},
+    ]
+
+    assert fanxiu_mail_prayer_values_by_category(rewards) == {
+        "炼丹": 100,
+        "淬体": 420,
+        "灵兽": 200,
+        "洗灵": 200,
+        "仙花": 200,
+    }
+    assert fanxiu_mail_prayer_target(rewards) == ("淬体", 420)
+
+
+def test_mail_policy_claims_only_on_target_prayer_week_above_threshold():
+    rewards = [
+        {"item_name": "淬体精魄", "amount": 30},
+        {"item_name": "珍品饲灵丸", "amount": 4},
+    ]
+
+    assert fanxiu_mail_prayer_target(rewards) == ("灵兽", 400)
+    assert fanxiu_mail_action_policy_for_rewards(rewards, prayer_category="淬体") == ""
+    assert fanxiu_mail_action_policy_for_rewards(rewards, prayer_category="灵兽") == "claim"
+
+
+def test_mail_policy_uses_prayer_tie_break_priority():
+    rewards = [
+        {"item_name": "炼丹灵草匣", "amount": 6},
+        {"item_name": "淬体精魄", "amount": 30},
+        {"item_name": "洗灵奇石", "amount": 30},
+        {"item_name": "瑶池玉莲", "amount": 3},
+    ]
+
+    assert fanxiu_mail_prayer_target(rewards) == ("仙花", 300)
+    assert fanxiu_mail_action_policy_for_rewards(rewards, prayer_category="洗灵") == ""
+    assert fanxiu_mail_action_policy_for_rewards(rewards, prayer_category="仙花") == "claim"
+
+
+def test_mail_policy_claims_prayer_mail_at_or_below_value_threshold():
+    assert fanxiu_mail_action_policy_for_rewards(
+        [{"item_name": "珍品饲灵丸", "amount": 2}],
+        prayer_category="炼丹",
+    ) == "claim"
+    assert fanxiu_mail_action_policy_for_rewards(
+        [{"item_name": "淬体精魄", "amount": 21}],
+        prayer_category="炼丹",
+    ) == ""
 
 
 def test_mail_policy_claims_domain_blessing_points_after_item_resolution():
@@ -1097,6 +1192,38 @@ def test_mail_decoder_patch_reads_i18n_param_number_as_double():
     patched = _patch_fanxiu_schema_long_list(FakeSchema())
 
     assert patched.by_name["I18nParam2Num"].ops[0] == ("primitive", "value", "Double")
+
+
+def test_packet_decoder_patch_reads_sparse_shared_type_list():
+    from types import SimpleNamespace
+
+    from pyxllib.file.packetstream import VarintBinaryReader
+
+    class FakeSchema:
+        by_name = {}
+        by_id = {7: SimpleNamespace(name="Team")}
+
+        def _read_list(self, *_args, **_kwargs):
+            raise AssertionError("sparse list should be handled by the CodeYun patch")
+
+        def _parse_class(self, reader, _info, *, depth):
+            return {"value": reader.read_int(), "depth": depth}
+
+    # 5 logical slots, 2 serialized items, shared type id 7, values 11/13.
+    reader = VarintBinaryReader(bytes([10, 4, 1, 14, 22, 26]))
+    patched = _patch_fanxiu_schema_long_list(FakeSchema())
+
+    result = patched._read_list(reader, write_method="List", depth=2)
+
+    assert result == {
+        "_count": 2,
+        "_declared_count": 5,
+        "_type_id": 7,
+        "_type": "Team",
+        "_sparse": True,
+        "items": [{"value": 11, "depth": 2}, {"value": 13, "depth": 2}],
+    }
+    assert reader.left() == 0
 
 
 def test_mail_decoder_trim_keeps_full_mailvo_business_list():
@@ -1820,7 +1947,7 @@ def test_mail_records_endpoint_can_filter_packet_source(monkeypatch):
     assert response.records[0]["source"] == "packet"
 
 
-def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_time(monkeypatch):
+def test_mail_records_endpoint_defaults_to_current_runtime_model_and_sorts_by_mail_time(monkeypatch):
     session = _session()
     packet, _ = upsert_fanxiu_mail_fact(
         session,
@@ -1828,8 +1955,8 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
         mail_id="packet-1",
         mail_type="1101",
         create_time_text="2026年06月05日13:07",
-        source="packet",
-        status="seen",
+        source="runtime_memory",
+        status="留存",
         payload={"mail_content_text": "分红发放正文"},
     )
     newer_packet, _ = upsert_fanxiu_mail_fact(
@@ -1838,8 +1965,8 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
         mail_id="packet-2",
         mail_type="1101",
         create_time_text="2026年06月06日20:00",
-        source="packet",
-        status="seen",
+        source="runtime_memory",
+        status="留存",
         payload={"mail_rewards": [{"item_id": "1", "item_name": "灵石", "icon": "icon_charge_0001"}]},
     )
     orphan, _ = upsert_fanxiu_mail_fact(
@@ -1847,8 +1974,8 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
         title="未知邮件动作packet-3",
         mail_id="packet-3",
         create_time_text="2026年06月06日05:00",
-        source="packet_orphan_action",
-        status="seen",
+        source="runtime_memory",
+        status="留存",
     )
     packet.last_seen_at = 2000
     packet.updated_at = 2000
@@ -1856,6 +1983,9 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
     newer_packet.updated_at = 1000
     orphan.last_seen_at = 3000
     orphan.updated_at = 3000
+    packet.present_in_runtime = True
+    newer_packet.present_in_runtime = True
+    orphan.present_in_runtime = True
     session.add(packet)
     session.add(newer_packet)
     session.add(orphan)
@@ -1867,13 +1997,14 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
         offset=0,
         status="",
         action_policy="",
+        source="all",
         current_user=object(),
         session=session,
     )
 
-    assert response.count == 2
-    assert response.total == 2
-    assert [record["mail_id"] for record in response.records] == ["packet-2", "packet-1"]
+    assert response.count == 3
+    assert response.total == 3
+    assert [record["mail_id"] for record in response.records] == ["packet-2", "packet-3", "packet-1"]
     assert response.records[0]["create_time_text"] == "2026年06月06日20:00"
 
     with_empty_actions = fanxiu_api.list_fanxiu_mail_records(
@@ -1881,6 +2012,7 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
         offset=0,
         status="",
         action_policy="",
+        source="all",
         include_empty_actions=True,
         current_user=object(),
         session=session,
@@ -1893,12 +2025,12 @@ def test_mail_records_endpoint_defaults_to_packet_evidence_and_sorts_by_mail_tim
         offset=0,
         status="",
         action_policy="",
-        source="packet",
+        source="runtime_memory",
         include_empty_actions=False,
         current_user=object(),
         session=session,
     )
-    assert [record["mail_id"] for record in packet_only.records] == ["packet-2", "packet-1"]
+    assert [record["mail_id"] for record in packet_only.records] == ["packet-2", "packet-3", "packet-1"]
 
 
 def test_mail_records_endpoint_hides_unresolved_orphan_attachment_evidence_by_default(monkeypatch):
@@ -1940,6 +2072,7 @@ def test_mail_records_endpoint_hides_unresolved_orphan_attachment_evidence_by_de
         offset=0,
         status="",
         action_policy="",
+        source="all",
         include_empty_actions=True,
         current_user=object(),
         session=session,

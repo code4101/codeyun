@@ -1,22 +1,70 @@
 from types import SimpleNamespace
 from pathlib import Path
 import sys
+import threading
 
 import pytest
 
 import backend.core.fanxiu.game.window_actions as window_actions
 import backend.core.fanxiu.runtime.mumu_control as mumu
 
+_REAL_SCHEDULE_LOGIN_AFTER_RESTART = mumu._schedule_login_job_after_mumu_restart
+_REAL_ENSURE_MUMU_ADB_ROOT = mumu.ensure_mumu_adb_root
+
 
 @pytest.fixture(autouse=True)
 def _patch_mumu_device_health_logs(monkeypatch, tmp_path):
     monkeypatch.setattr(mumu, "_mumu_device_health_log_dir", lambda: tmp_path)
+    monkeypatch.setattr(mumu, "_mumu_manager_discovery_cache_path", lambda: tmp_path / "manager_discovery.json")
+    monkeypatch.setattr(mumu, "_mumu_manager_discovery_lock_path", lambda: tmp_path / "manager_discovery.lock")
+    monkeypatch.setattr(
+        mumu,
+        "_schedule_login_job_after_mumu_restart",
+        lambda **_kwargs: {"ok": True, "task_id": "login-game", "next_time": "now"},
+    )
+    monkeypatch.setattr(
+        mumu,
+        "ensure_mumu_adb_root",
+        lambda **_kwargs: {"ok": True, "identity": "uid=0(root)"},
+    )
+    monkeypatch.setattr(
+        mumu.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline in unit test")),
+    )
     monkeypatch.setattr(mumu, "_collect_mumu_host_resource_snapshot", lambda: {"memory": {"available_mb": 123}})
     monkeypatch.setattr(
         mumu,
         "_collect_mumu_native_diagnostics",
         lambda: {"suspected_causes": ["probe"], "marker_lines": [{"file": "shell.log", "line": "VERR_TEST"}]},
     )
+    with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
+        mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
+        mumu._MUMU_MANAGER_VM_INDEX_CACHE.clear()
+    yield
+    with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
+        mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
+        mumu._MUMU_MANAGER_VM_INDEX_CACHE.clear()
+
+
+def test_successful_mumu_restart_only_makes_login_job_due(monkeypatch):
+    from backend.core.fanxiu.data_annotation import behavior_tree_control
+
+    calls = []
+    monkeypatch.setattr(
+        behavior_tree_control,
+        "schedule_login_job_first",
+        lambda **kwargs: calls.append(kwargs) or "2026-08-03 12:30:00",
+    )
+
+    result = _REAL_SCHEDULE_LOGIN_AFTER_RESTART()
+
+    assert result == {
+        "ok": True,
+        "task_id": "login-game",
+        "next_time": "2026-08-03 12:30:00",
+    }
+    assert len(calls) == 1
 
 
 class _Frame:
@@ -48,8 +96,68 @@ def test_adb_mjpeg_stream_skips_capture_errors_without_emitting_non_image_parts(
 
     assert calls["count"] == 2
     assert b"Content-Type: image/png" in part
+    assert b"Content-Length: 9\r\n\r\n" in part
     assert b"text/plain" not in part
     assert b"png-frame" in part
+
+
+def test_adb_frame_sequence_advances_even_when_pixels_are_identical(monkeypatch):
+    monkeypatch.setattr(mumu, "screencap_mumu_adb_png", lambda: (b"same-png", {}))
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_data", None)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_timestamp", 0.0)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_captured_at", 0.0)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_sequence", 0)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_consecutive_failures", 0)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_last_error", "")
+
+    first, first_status = mumu.capture_fresh_mumu_adb_stream_frame()
+    second, second_status = mumu.capture_fresh_mumu_adb_stream_frame()
+
+    assert first == second == b"same-png"
+    assert first_status["sequence"] == 1
+    assert second_status["sequence"] == 2
+    assert second_status["ready"] is True
+
+
+def test_forced_fresh_frame_never_falls_back_to_cached_bytes(monkeypatch):
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_data", b"stale-png")
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_timestamp", mumu.time.monotonic())
+    monkeypatch.setattr(
+        mumu,
+        "screencap_mumu_adb_png",
+        lambda: (_ for _ in ()).throw(RuntimeError("capture failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="capture failed"):
+        mumu.capture_fresh_mumu_adb_stream_frame()
+
+
+def test_frame_status_remains_readable_while_capture_is_blocked(monkeypatch):
+    capture_started = threading.Event()
+    release_capture = threading.Event()
+    captured = []
+
+    def slow_capture():
+        capture_started.set()
+        assert release_capture.wait(2)
+        return b"new-png", {}
+
+    monkeypatch.setattr(mumu, "screencap_mumu_adb_png", slow_capture)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_data", None)
+    monkeypatch.setattr(mumu, "_mumu_adb_stream_frame_timestamp", 0.0)
+    capture_thread = threading.Thread(target=mumu.capture_fresh_mumu_adb_stream_frame)
+    capture_thread.start()
+    assert capture_started.wait(1)
+
+    status_thread = threading.Thread(target=lambda: captured.append(mumu.get_mumu_adb_stream_frame_status()))
+    status_thread.start()
+    status_thread.join(0.5)
+    try:
+        assert not status_thread.is_alive()
+        assert captured[0]["ready"] is False
+    finally:
+        release_capture.set()
+        capture_thread.join(2)
 
 
 def _patch_window_fallback(monkeypatch):
@@ -117,6 +225,7 @@ def test_capture_mumu_window_frame_defaults_to_real_mumu_window_and_auto_mode(mo
 def test_target_mumu_main_window_rect_defaults_to_recorded_desktop_geometry(monkeypatch):
     monkeypatch.delenv(mumu.MUMU_MAIN_WINDOW_RECT_ENV, raising=False)
 
+    assert mumu.DEFAULT_MUMU_MAIN_WINDOW_RECT == (-647, 43, 629, 1155)
     assert mumu._target_mumu_main_window_rect() == mumu.DEFAULT_MUMU_MAIN_WINDOW_RECT
 
 
@@ -309,6 +418,43 @@ def test_run_mumu_adb_input_connects_tcp_serial_before_shell(monkeypatch):
     assert result["adb_serial"] == "192.168.31.181:5555"
 
 
+def test_run_mumu_adb_input_falls_back_to_manager_when_adb_cannot_inject(monkeypatch):
+    commands = []
+
+    monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(
+        mumu,
+        "_run_mumu_manager_input",
+        lambda command, **kwargs: commands.append((command, kwargs))
+        or {"input": "mumu-manager-sh", "adb_serial": kwargs["serial"], "vmindex": "1"},
+    )
+
+    def fake_run(command, **_kwargs):
+        if command[1] == "connect":
+            return SimpleNamespace(returncode=0, stdout="connected", stderr="")
+        if command[-2:] == ["wm", "size"]:
+            return SimpleNamespace(returncode=0, stdout="Physical size: 900x1600", stderr="")
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="java.lang.SecurityException: Injecting to another application requires INJECT_EVENTS permission",
+        )
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    result = mumu._run_mumu_adb_input("input swipe 1 2 3 4 1000", timeout_s=7)
+
+    assert result["input"] == "mumu-manager-sh"
+    assert commands == [
+        (
+            "input swipe 1 2 3 4 1000",
+            {"serial": "192.168.31.181:5555", "timeout_s": 7},
+        )
+    ]
+
+
 def test_mumu_adb_port_check_recovers_local_port(monkeypatch):
     for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -454,11 +600,11 @@ def test_screencap_ignores_stale_adb_failure_cache(monkeypatch):
     assert mumu._get_mumu_adb_failure_cache() is None
 
 
-def test_mumu_device_health_check_uses_one_minute_cache(monkeypatch):
+def test_mumu_device_health_check_prefers_adb_and_uses_one_minute_cache(monkeypatch):
     mumu.reset_mumu_device_health_state()
     calls = []
 
-    def fake_player_info(vmindex="1"):
+    def fake_adb_health_info(vmindex="1"):
         calls.append(vmindex)
         return {
             "index": str(vmindex),
@@ -467,7 +613,12 @@ def test_mumu_device_health_check_uses_one_minute_cache(monkeypatch):
             "player_state": "start_finished",
         }
 
-    monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", fake_adb_health_info)
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_manager_player_info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("healthy ADB must bypass MuMuManager")),
+    )
     monkeypatch.setattr(mumu, "_mumu_device_health_check_interval", lambda default=60.0: 60.0)
 
     first = mumu.mumu_device_health_check()
@@ -476,6 +627,37 @@ def test_mumu_device_health_check_uses_one_minute_cache(monkeypatch):
     assert first["status"] == "healthy"
     assert second["status"] == "healthy"
     assert calls == ["1"]
+
+
+def test_mumu_adb_health_info_reports_online_without_manager(monkeypatch):
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+    connections = []
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_create_connection(address, *, timeout):
+        connections.append((address, timeout))
+        return FakeSocket()
+
+    monkeypatch.setattr(mumu.socket, "create_connection", fake_create_connection)
+
+    info = mumu._mumu_adb_health_info("1")
+
+    assert info == {
+        "index": "1",
+        "is_process_started": True,
+        "is_android_started": True,
+        "player_state": "start_finished",
+        "adb_host_ip": "192.168.31.181",
+        "adb_port": 5555,
+        "health_source": "adb_socket",
+    }
+    assert connections == [(("192.168.31.181", 5555), mumu._mumu_adb_port_probe_timeout())]
 
 
 def test_mumu_adb_failures_recover_only_after_three_recent_failures(monkeypatch):
@@ -550,8 +732,80 @@ def test_mumu_adb_failure_defers_recovery_during_startup_grace(monkeypatch):
     assert recoveries == []
 
 
+def test_login_barrier_outlives_timed_startup_grace(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    now = 1_000.0
+    monkeypatch.setattr(mumu, "_mumu_device_last_recovery_at", lambda: 600.0)
+    monkeypatch.setattr(
+        mumu,
+        "_read_mumu_device_recovery_state",
+        lambda: {"startup_grace_active": True},
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_device_startup_grace_seconds",
+        lambda default=300.0: 300.0,
+    )
+
+    state = mumu.mumu_device_startup_grace_state(now=now)
+
+    assert state["active"] is False
+    assert state["login_required"] is True
+
+
+def test_black_frame_requires_sustained_observation_outside_startup(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    now = {"value": 1000.0}
+    monkeypatch.setattr(mumu.time, "time", lambda: now["value"])
+    monkeypatch.setattr(mumu, "_read_mumu_device_recovery_state", lambda: {})
+    monkeypatch.setattr(mumu, "_mumu_device_last_recovery_at", lambda: 0.0)
+    monkeypatch.setattr(mumu, "_mumu_frame_unusable_recovery_seconds", lambda default=30.0: 30.0)
+    checks = []
+    recoveries = []
+    monkeypatch.setattr(mumu, "mumu_device_health_check", lambda **kwargs: checks.append(kwargs) or {"status": "broken"})
+    monkeypatch.setattr(mumu, "recover_mumu_device", lambda **kwargs: recoveries.append(kwargs) or {"recovered": True})
+
+    first = mumu.record_mumu_adb_failure("MuMu ADB截图疑似黑屏", recover=True)
+    now["value"] += 10.0
+    second = mumu.record_mumu_adb_failure("MuMu ADB截图疑似黑屏", recover=True)
+    now["value"] += 21.0
+    third = mumu.record_mumu_adb_failure("MuMu ADB截图疑似黑屏", recover=True)
+
+    assert first["recovery_deferred"] == "frame_unusable_observation_window"
+    assert first["frame_unusable_recovery_seconds"] == 30.0
+    assert second["recovery_deferred"] == "frame_unusable_observation_window"
+    assert second["frame_unusable_recovery_seconds"] == 30.0
+    assert checks == [{"vmindex": "1", "force": True}]
+    assert recoveries == [{"vmindex": "1", "reason": "adb_failure:MuMu ADB截图疑似黑屏", "force_restart": True}]
+    assert third["recovered"] is True
+
+
+def test_mumu_recovery_failure_keeps_startup_grace_active(monkeypatch, tmp_path):
+    mumu.reset_mumu_device_health_state()
+    recovery_state_path = tmp_path / "recovery_state.json"
+    monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: recovery_state_path)
+    monkeypatch.setattr(mumu, "_mumu_device_auto_recovery_enabled", lambda: True)
+    monkeypatch.setattr(
+        mumu,
+        "mumu_device_health_check",
+        lambda **_kwargs: {
+            "status": "stopped",
+            "info": {"is_process_started": False},
+        },
+    )
+    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("launch failed")))
+
+    result = mumu.recover_mumu_device(reason="startup_failure")
+
+    assert result["recovered"] is False
+    assert result["startup_grace_active"] is True
+    persisted = mumu.json.loads(recovery_state_path.read_text(encoding="utf-8"))
+    assert persisted["startup_grace_active"] is True
+
+
 def test_mumu_device_health_reports_starting_before_android_started(monkeypatch):
     mumu.reset_mumu_device_health_state()
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", lambda vmindex="1": None)
     monkeypatch.setattr(
         mumu,
         "_mumu_manager_player_info",
@@ -566,6 +820,117 @@ def test_mumu_device_health_reports_starting_before_android_started(monkeypatch)
     result = mumu.mumu_device_health_check(force=True)
 
     assert result["status"] == "starting"
+
+
+def test_mumu_manager_discovery_is_cached_across_hot_path_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mumu, "_mumu_manager_path", lambda: Path("MuMuManager.exe"))
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=mumu.json.dumps({
+                "1": {
+                    "index": "1",
+                    "is_process_started": True,
+                    "adb_host_ip": "192.168.31.181",
+                    "adb_port": 5555,
+                }
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    first = mumu._mumu_manager_adb_serial_candidates()
+    second = mumu._mumu_manager_adb_serial_candidates()
+
+    assert first == ["192.168.31.181:5555"]
+    assert second == first
+    assert len(calls) == 1
+    assert mumu._read_mumu_manager_discovery_cache()["vmindex_by_serial"] == {
+        "192.168.31.181:5555": "1"
+    }
+
+
+def test_mumu_manager_discovery_rejects_wildcard_adb_hosts():
+    serials, vmindex_by_serial = mumu._mumu_manager_serials_from_info({
+        "1": {
+            "index": "1",
+            "is_process_started": True,
+            "adb_host_ip": "0.0.0.0",
+            "adb_port": 5555,
+        },
+        "2": {
+            "index": "2",
+            "is_process_started": True,
+            "adb_host_ip": "::",
+            "adb_port": 5555,
+        },
+    })
+
+    assert serials == []
+    assert vmindex_by_serial == {}
+
+
+def test_mumu_manager_discovery_cache_drops_wildcard_mapping():
+    mumu._write_mumu_manager_discovery_cache(
+        ["0.0.0.0:5555", "192.168.31.181:5555"],
+        {"0.0.0.0:5555": "1", "192.168.31.181:5555": "1"},
+    )
+
+    persisted = mumu._read_mumu_manager_discovery_cache()
+    assert persisted["serials"] == ["192.168.31.181:5555"]
+    assert persisted["vmindex_by_serial"] == {"192.168.31.181:5555": "1"}
+
+
+def test_mumu_manager_discovery_reuses_persisted_cache_without_spawning(monkeypatch):
+    mumu._write_mumu_manager_discovery_cache(
+        ["192.168.31.181:5555"],
+        {"192.168.31.181:5555": "1"},
+    )
+    with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
+        mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
+        mumu._MUMU_MANAGER_VM_INDEX_CACHE.clear()
+    monkeypatch.setattr(
+        mumu,
+        "run_quiet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("persisted cache must bypass MuMuManager")),
+    )
+
+    assert mumu._mumu_manager_adb_serial_candidates() == ["192.168.31.181:5555"]
+    assert mumu._mumu_manager_vmindex_for_adb_serial("192.168.31.181:5555") == "1"
+
+
+def test_mumu_manager_forced_refresh_respects_cross_process_cooldown(monkeypatch):
+    mumu._write_mumu_manager_discovery_cache(
+        ["192.168.31.181:5555"],
+        {"192.168.31.181:5555": "1"},
+    )
+    monkeypatch.setattr(
+        mumu,
+        "run_quiet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fresh peer cache must coalesce refresh")),
+    )
+
+    assert mumu._mumu_manager_adb_serial_candidates(force_refresh=True) == ["192.168.31.181:5555"]
+
+
+def test_mumu_manager_refresh_failure_keeps_stale_working_address(monkeypatch):
+    mumu._write_mumu_manager_discovery_cache(
+        ["192.168.31.181:5555"],
+        {"192.168.31.181:5555": "1"},
+        updated_at=mumu.time.time() - 3600,
+    )
+    monkeypatch.setattr(mumu, "_mumu_manager_path", lambda: Path("MuMuManager.exe"))
+    monkeypatch.setattr(
+        mumu,
+        "run_quiet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("MuMuManager crashed")),
+    )
+
+    assert mumu._mumu_manager_adb_serial_candidates(force_refresh=True) == ["192.168.31.181:5555"]
 
 
 def test_mumu_device_health_events_are_written_as_jsonl(tmp_path):
@@ -714,6 +1079,7 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
         encoding="utf-8",
     )
     controls = []
+    lifecycle = []
     checks = {"count": 0}
 
     def fake_player_info(vmindex="1"):
@@ -733,7 +1099,21 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
         }
 
     monkeypatch.setattr(mumu, "_close_mumu_adb_session", lambda: None)
-    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *args, **kwargs: controls.append((args, kwargs)) or {})
+    monkeypatch.setattr(mumu, "_terminate_orphaned_mumu_vm_processes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        mumu,
+        "_schedule_login_job_after_mumu_restart",
+        lambda **_kwargs: lifecycle.append("login_intent") or {
+            "ok": True, "task_id": "login-game", "next_time": "now"
+        },
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_manager_control",
+        lambda *args, **kwargs: (
+            lifecycle.append("vm_control"), controls.append((args, kwargs)), {}
+        )[-1],
+    )
     monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
     monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(mumu, "ensure_mumu_adb_resolution", lambda **_kwargs: {"ok": True})
@@ -746,6 +1126,79 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
 
     assert result["recovered"] is True
     assert controls == [(("1", "launch"), {"timeout": 15})]
+    assert lifecycle == ["login_intent", "vm_control"]
+    assert result["login_scheduler"]["task_id"] == "login-game"
+
+
+def test_terminate_orphaned_mumu_vm_processes_only_targets_requested_index(monkeypatch):
+    calls = []
+
+    class FakeProcess:
+        def __init__(self, pid, command):
+            self.pid = pid
+            self.info = {"pid": pid, "name": "MuMuNxDevice.exe", "cmdline": command}
+
+        def terminate(self):
+            calls.append(("terminate", self.pid))
+
+        def kill(self):
+            calls.append(("kill", self.pid))
+
+    processes = [
+        FakeProcess(101, ["MuMuNxDevice.exe", "-v", "1"]),
+        FakeProcess(202, ["MuMuNxDevice.exe", "-v", "2"]),
+        FakeProcess(303, ["other.exe", "-v", "1"]),
+    ]
+    processes[2].info["name"] = "other.exe"
+    monkeypatch.setattr(mumu.psutil, "process_iter", lambda _attrs: processes)
+    monkeypatch.setattr(mumu.psutil, "wait_procs", lambda items, timeout: (list(items), []))
+
+    result = mumu._terminate_orphaned_mumu_vm_processes("1")
+
+    assert result == [101]
+    assert calls == [("terminate", 101)]
+
+
+def test_force_restart_cleans_target_process_after_manager_shutdown(monkeypatch, tmp_path):
+    mumu.reset_mumu_device_health_state()
+    monkeypatch.setenv(mumu.MUMU_DEVICE_AUTO_RECOVERY_ENV, "1")
+    monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: tmp_path / "recovery_state.json")
+    checks = {"count": 0}
+    controls = []
+    cleaned = []
+
+    def fake_player_info(vmindex="1"):
+        checks["count"] += 1
+        return {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+        }
+
+    monkeypatch.setattr(mumu, "_close_mumu_adb_session", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_manager_player_info", fake_player_info)
+    monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *args, **kwargs: controls.append((args, kwargs)) or {})
+    monkeypatch.setattr(
+        mumu,
+        "_terminate_orphaned_mumu_vm_processes",
+        lambda vmindex: cleaned.append(vmindex) or [39040],
+    )
+    monkeypatch.setattr(mumu, "wait_mumu_adb_online", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "ensure_mumu_adb_resolution", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "normalize_mumu_desktop_window_size", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu, "_mumu_manager_launch_app", lambda *_args, **_kwargs: {"errcode": 0})
+    monkeypatch.setattr(mumu, "wait_mumu_recovery_frame_ready", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mumu.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = mumu.recover_mumu_device(reason="maintenance", force_restart=True)
+
+    assert cleaned == ["1"]
+    assert controls[:2] == [
+        (("1", "shutdown"), {"timeout": 15}),
+        (("1", "launch"), {"timeout": 15}),
+    ]
+    assert result["terminated_orphaned_process_ids"] == [39040]
 
 
 def test_ensure_mumu_adb_resolution_repairs_wrong_wm_size(monkeypatch):
@@ -780,6 +1233,28 @@ def test_ensure_mumu_adb_resolution_repairs_wrong_wm_size(monkeypatch):
     assert result["after"]["size"] == "Physical size: 900x1600"
     assert any("wm size 900x1600" in " ".join(command) for command in commands)
     assert any("wm density 320" in " ".join(command) for command in commands)
+
+
+def test_ensure_mumu_adb_root_restarts_adbd_and_verifies_identity(monkeypatch):
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:7555"])
+    monkeypatch.setattr(mumu.time, "sleep", lambda *_args, **_kwargs: None)
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(tuple(str(part) for part in command))
+        if tuple(command[-2:]) == ("shell", "id"):
+            return SimpleNamespace(returncode=0, stdout="uid=0(root) gid=0(root)", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    result = _REAL_ENSURE_MUMU_ADB_ROOT(vmindex="1")
+
+    assert result["ok"] is True
+    assert "uid=0(root)" in result["identity"]
+    assert ("-s", "127.0.0.1:7555", "root") in [command[1:] for command in commands]
+    assert ("-s", "127.0.0.1:7555", "shell", "id") in [command[1:] for command in commands]
 
 
 def test_recover_mumu_device_records_resolution_check(monkeypatch, tmp_path):
@@ -867,7 +1342,7 @@ def test_recover_mumu_device_rejects_process_healthy_when_frame_stays_black(monk
     assert result["status"] == "broken"
     assert "frame stays black" in result["last_error"]
     persisted = mumu.json.loads((tmp_path / "recovery_state.json").read_text(encoding="utf-8"))
-    assert persisted["startup_grace_active"] is False
+    assert persisted["startup_grace_active"] is True
 
 
 def test_recover_mumu_device_skips_auto_recovery_when_disabled(monkeypatch):
@@ -945,3 +1420,28 @@ def test_mumu_adb_session_ignores_cached_proxy_device_by_default(monkeypatch):
     assert data.startswith(b"\x89PNG")
     assert attempted[0] == "127.0.0.1:7555"
     assert meta["adb_serial"] == "127.0.0.1:7555"
+
+
+def test_mumu_adb_candidates_keep_cached_manager_device_during_transient_manager_failure(monkeypatch):
+    for key in mumu.MUMU_ADB_SERIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv(mumu.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
+    mumu._MUMU_ADB_SESSION.clear()
+    with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
+        mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
+        mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.add("192.168.31.181:5555")
+    mumu._MUMU_ADB_SESSION["serial"] = "192.168.31.181:5555"
+    monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: [])
+    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "devices", lambda: [])
+
+    try:
+        assert mumu._mumu_adb_serial_candidates() == [
+            "192.168.31.181:5555",
+            "127.0.0.1:7555",
+            "127.0.0.1:16416",
+            "127.0.0.1:5555",
+        ]
+    finally:
+        mumu._MUMU_ADB_SESSION.clear()
+        with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
+            mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()

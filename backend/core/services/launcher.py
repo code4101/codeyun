@@ -12,6 +12,7 @@ from backend.core.services._subprocess import (
     managed_child_env,
     node_npm_command,
     node_script_command,
+    no_window_subprocess_kwargs,
     popen_background,
     popen_python_module_background,
     popen_python_script_background,
@@ -22,6 +23,7 @@ from backend.core.services._subprocess import (
     resolve_python,
     resolve_pythonw,
     run_hidden,
+    run_hidden_console_tree_safe,
     run_hidden_tree_safe,
 )
 
@@ -36,6 +38,12 @@ def run_quiet_tree_safe(command: list[str], **kwargs: Any) -> subprocess.Complet
     """Run a bounded command and terminate all descendants on timeout."""
 
     return run_hidden_tree_safe(command, **kwargs)
+
+
+def run_quiet_inherited_console_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Run a bounded command whose native descendants inherit a hidden console."""
+
+    return run_hidden_console_tree_safe(command, **kwargs)
 
 
 def check_call_quiet(command: list[str], **kwargs: Any) -> None:

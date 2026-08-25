@@ -186,6 +186,89 @@ def import_mobile_trade_detail_record(
     }
 
 
+def import_trade_history_rows(
+    session: Session,
+    *,
+    user_id: int,
+    rows: list[dict[str, str]],
+    account_label: str | None = None,
+) -> dict[str, Any]:
+    """Import rows read from Eastmoney's general historical-deal table."""
+    normalized_account_label = (account_label or _get_latest_account_label(session, user_id=user_id)).strip()
+    normalized_rows = [
+        _normalize_trade_row(row, TRADE_SOURCE_NORMAL, normalized_account_label)
+        for row in rows
+    ]
+    for normalized in normalized_rows:
+        _validate_imported_trade_record(normalized)
+
+    trade_dates = [item["trade_date"] for item in normalized_rows if item["trade_date"]]
+    now = time.time()
+    run = EastmoneyTradeSyncRun(
+        user_id=user_id,
+        account_label=normalized_account_label,
+        start_date=min(trade_dates, default=""),
+        end_date=max(trade_dates, default=""),
+        status="running",
+        captured_at=now,
+        started_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    inserted = 0
+    updated = 0
+    try:
+        for normalized in normalized_rows:
+            existing = _find_existing_trade_record(
+                session,
+                user_id=user_id,
+                account_label=normalized_account_label,
+                normalized=normalized,
+            )
+            if existing is None:
+                session.add(
+                    EastmoneyTradeRecord(
+                        user_id=user_id,
+                        sync_run_id=run.id,
+                        account_label=normalized_account_label,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        created_at=now,
+                        updated_at=now,
+                        **normalized,
+                    )
+                )
+                inserted += 1
+            else:
+                _apply_trade_record_update(existing, normalized, run.id, normalized_account_label)
+                session.add(existing)
+                updated += 1
+
+        run.status = "success"
+        run.inserted_count = inserted
+        run.updated_count = updated
+        run.trade_record_count = inserted + updated
+        run.finished_at = time.time()
+        run.updated_at = run.finished_at
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return serialize_sync_run(run)
+    except Exception:
+        session.rollback()
+        run.status = "failed"
+        run.error_message = "历史成交批量导入失败"
+        run.finished_at = time.time()
+        run.updated_at = run.finished_at
+        session.add(run)
+        session.commit()
+        raise
+
+
 def import_pdf_statement(
     session: Session,
     *,
@@ -1085,6 +1168,24 @@ def _find_existing_trade_record(
     if exact is not None:
         return exact
 
+    deal_id = normalized["deal_id"]
+    if deal_id:
+        deal_matches = session.exec(
+            select(EastmoneyTradeRecord).where(
+                EastmoneyTradeRecord.user_id == user_id,
+                EastmoneyTradeRecord.deal_id == deal_id,
+                EastmoneyTradeRecord.trade_date == normalized["trade_date"],
+                EastmoneyTradeRecord.security_code == normalized["security_code"],
+            )
+        ).all()
+        compatible_deal_matches = [
+            record
+            for record in deal_matches
+            if _account_labels_compatible(record.account_label, account_label)
+        ]
+        if len(compatible_deal_matches) == 1:
+            return compatible_deal_matches[0]
+
     if not all(
         [
             account_label,
@@ -1110,7 +1211,8 @@ def _find_existing_trade_record(
     matches = [
         record
         for record in candidates
-        if _numbers_equal(record.quantity_value, normalized["quantity_value"])
+        if (not deal_id or not record.deal_id)
+        and _numbers_equal(record.quantity_value, normalized["quantity_value"])
         and _numbers_equal(record.price_value, normalized["price_value"])
         and _numbers_equal(record.amount_value, normalized["amount_value"])
     ]
@@ -1128,7 +1230,8 @@ def _find_existing_trade_record(
     compatible_matches = [
         record
         for record in compatible_candidates
-        if _account_labels_compatible(record.account_label, account_label)
+        if (not deal_id or not record.deal_id)
+        and _account_labels_compatible(record.account_label, account_label)
         and _numbers_equal(record.quantity_value, normalized["quantity_value"])
         and _numbers_equal(record.price_value, normalized["price_value"])
         and _numbers_equal(record.amount_value, normalized["amount_value"])

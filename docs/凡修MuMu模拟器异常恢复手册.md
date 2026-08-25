@@ -178,7 +178,12 @@ Windows 事件日志里如果出现 `Microsoft-Windows-Resource-Exhaustion-Detec
 - Runtime 页面「守护 / 设备健康」控制的是低频 `resident_heartbeat` 健康检查；ADB 取帧失败时仍有截图基础设施兜底恢复，用于在真实截图链路断开时尽快恢复可取帧状态。
 - 低频设备健康守护和 ADB 取帧失败兜底共用同一套 MuMu 恢复锁、跨进程冷却和诊断日志，不应并发执行多个 `shutdown -> launch`。
 - 常驻服务 tick 只读缓存状态，不每轮启动外部命令。
-- 默认每 60 秒最多执行一次真实 `MuMuManager info` 健康检查。
+- 正常健康检查优先探测已缓存的 ADB 地址；只要 ADB 在线，就不启动
+  `MuMuManager.exe`。Manager 只用于首次发现设备，或 ADB 确认失联后的低频刷新。
+- Manager 发现结果写入系统临时目录
+  `%TEMP%\codeyun\fanxiu_mumu_device_health\manager_discovery.json`，供后端、
+  Kernel、Scheduler 等进程共享；刷新使用跨进程文件锁和冷却，避免多个进程并发
+  执行 `MuMuManager info`。
 - 单次 ADB 截图失败只累计失败，不立即重启模拟器。
 - 连续 3 次 ADB 取帧失败后，才升级执行一次真实健康检查。
 - 连续 ADB 失败本身也可以触发恢复：真实案例里出现过 `MuMuManager info` 仍显示 `is_android_started=true / player_state=start_finished`，但 `screencap` 连接被拒绝或被远端重置，此时应强制重建安卓容器。
@@ -197,7 +202,7 @@ Windows 事件日志里如果出现 `Microsoft-Windows-Resource-Exhaustion-Detec
 - Windows 桌面上的 MuMu 主窗口被校正到当前 DPI 下的默认大小。150% 缩放下，非 DPI aware 脚本读到的主窗口目标约为 `607x1111` 逻辑像素；DPI aware 后端进程会读到约 `910x1666` 物理坐标。两者对应同一个渲染子窗口物理尺寸 `900x1600`。
 - 凡修游戏包 `com.frxxcrjpwssc3.ggws` 被拉到前台。
 
-恢复层不负责关闭公告、点击「进入游戏」、处理活动弹窗或推进游戏流程。这些仍交给 Runtime 场景识别、已标注弹窗守护和具体业务任务处理。
+恢复层不负责关闭公告、点击「进入游戏」、处理活动弹窗或推进游戏流程。这些仍交给 Runtime 的统一场景识别及具体业务任务处理；已标注弹窗作为业务 Layer 0 的候选子组件参与同一次图裁决。
 
 ## 启动凡修游戏
 

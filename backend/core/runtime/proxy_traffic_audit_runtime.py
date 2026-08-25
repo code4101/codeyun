@@ -162,7 +162,7 @@ def get_proxy_traffic_audit_status(*, include_summary: bool = True) -> dict[str,
 
 
 def start_proxy_traffic_audit(wait_seconds: float = 2.0) -> dict[str, Any]:
-    status = get_proxy_traffic_audit_status()
+    status = get_proxy_traffic_audit_status(include_summary=False)
     if status.get("running"):
         return {"status": "started", "service": status}
 
@@ -202,7 +202,7 @@ def start_proxy_traffic_audit(wait_seconds: float = 2.0) -> dict[str, Any]:
 
     deadline = time.monotonic() + max(0.0, float(wait_seconds))
     while time.monotonic() <= deadline:
-        status = get_proxy_traffic_audit_status()
+        status = get_proxy_traffic_audit_status(include_summary=False)
         if status.get("running"):
             status["started_pid"] = proc.pid
             return {"status": "started", "service": status}
@@ -210,7 +210,7 @@ def start_proxy_traffic_audit(wait_seconds: float = 2.0) -> dict[str, Any]:
             break
         time.sleep(0.2)
 
-    status = get_proxy_traffic_audit_status()
+    status = get_proxy_traffic_audit_status(include_summary=False)
     status["started_pid"] = proc.pid
     if status.get("process_count"):
         return {"status": "starting", "service": status}
@@ -228,7 +228,7 @@ def stop_proxy_traffic_audit(timeout: float = 5.0) -> dict[str, Any]:
     return {
         "status": "stopped",
         "stopped_pids": [item["pid"] for item in processes if item.get("pid") is not None],
-        "service": get_proxy_traffic_audit_status(),
+        "service": get_proxy_traffic_audit_status(include_summary=False),
     }
 
 

@@ -1,6 +1,6 @@
 from typing import Any, Optional, List
 from sqlmodel import Field, SQLModel, Relationship
-from sqlalchemy import Column, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Column, Index, JSON, String, Text, UniqueConstraint
 import time
 import socket
 import uuid
@@ -190,6 +190,44 @@ class MobileSmsMessage(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class WeChatMoment(SQLModel, table=True):
+    """Durable CodeYun projection of a WeChat Moments timeline item."""
+
+    __tablename__ = "wechatmoment"
+    __table_args__ = (
+        UniqueConstraint("account_key", "moment_id", name="uq_wechatmoment_account_moment"),
+        Index("ix_wechatmoment_account_published", "account_key", "published_at"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(primary_key=True)
+    device_id: str = Field(default="", index=True)
+    account_key: str = Field(index=True)
+    moment_id: str = Field(index=True)
+    source_tid: str = Field(default="")
+    author_username: str = Field(default="", index=True)
+    author_nickname: str = Field(default="", index=True)
+    published_at: int = Field(default=0, index=True)
+    content_available: bool = Field(default=False, index=True)
+    content_type: int = Field(default=0, index=True)
+    content_text: str = Field(default="", sa_column=Column(Text))
+    title: str = Field(default="", sa_column=Column(Text))
+    description: str = Field(default="", sa_column=Column(Text))
+    content_url: str = Field(default="", sa_column=Column(Text))
+    location_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    media_json: list = Field(default_factory=list, sa_column=Column(JSON))
+    likes_json: list = Field(default_factory=list, sa_column=Column(JSON))
+    comments_json: list = Field(default_factory=list, sa_column=Column(JSON))
+    source_archive_path: str = Field(default="")
+    source_content_hash: str = Field(default="", index=True)
+    source_is_read: Optional[bool] = Field(default=None, index=True)
+    source_last_read_at: Optional[int] = Field(default=None, index=True)
+    first_seen_at: float = Field(default_factory=time.time, index=True)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
 class FanxiuPseudoCodeCard(SQLModel, table=True):
     __tablename__ = "fanxiupseudocodecard"
     __table_args__ = {"extend_existing": True}
@@ -205,10 +243,75 @@ class FanxiuPseudoCodeCard(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class FanxiuStorageBagItemSetting(SQLModel, table=True):
+    """User-managed settings for a stable storage-bag item type."""
+
+    __tablename__ = "fanxiustoragebagitemsetting"
+    __table_args__ = {"extend_existing": True}
+
+    base_id: int = Field(primary_key=True)
+    auto_claim: bool = Field(default=False, index=True)
+    note: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    operation_template: str = Field(default="", index=True)
+    yield_mode: str = Field(default="", index=True)
+    analysis_status: str = Field(default="pending", index=True)
+    analysis_fingerprint: str = Field(default="", index=True)
+    analysis_reason: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    analyzed_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
+class FanxiuStorageBagOpenEvent(SQLModel, table=True):
+    """Immutable audit row for one verified storage-bag use/open action."""
+
+    __tablename__ = "fanxiustoragebagopenevent"
+    __table_args__ = (
+        UniqueConstraint("action_key", name="uq_fanxiustoragebagopenevent_action_key"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    action_key: str = Field(index=True)
+    base_id: int = Field(index=True)
+    operation_template: str = Field(default="", index=True)
+    opened_count: int = Field(default=0)
+    rewards: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    runtime_before_fingerprint: str = Field(default="", index=True)
+    runtime_after_fingerprint: str = Field(default="", index=True)
+    evidence: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time, index=True)
+
+
+class FanxiuStorageBagYieldAggregate(SQLModel, table=True):
+    """Materialized cumulative totals used to render per-open averages."""
+
+    __tablename__ = "fanxiustoragebagyieldaggregate"
+    __table_args__ = {"extend_existing": True}
+
+    base_id: int = Field(primary_key=True)
+    opened_count: int = Field(default=0)
+    total_rewards: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    average_yield: str = Field(default="", sa_column=Column(Text, nullable=False, server_default=""))
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
 class FanxiuPlayerProfileRecord(SQLModel, table=True):
     __tablename__ = "fanxiuplayerprofilerecord"
     __table_args__ = (
         UniqueConstraint("packet_id", name="uq_fanxiuplayerprofilerecord_packet_id"),
+        Index(
+            "ix_fanxiuplayerprofilerecord_role_date_battle",
+            "role_id_text",
+            "captured_date",
+            "battle_score",
+        ),
+        Index(
+            "ix_fanxiuplayerprofilerecord_role_xianlv_time_score",
+            "role_id_text",
+            "xianlv_team_observed_at",
+            "xianlv_team_fight_score_max",
+        ),
         {"extend_existing": True},
     )
 
@@ -232,6 +335,9 @@ class FanxiuPlayerProfileRecord(SQLModel, table=True):
     captured_date: str = Field(default="", index=True)
     battle_score: Optional[float] = Field(default=None)
     battle_score_text: str = Field(default="")
+    xianlv_team_fight_score_max: Optional[float] = Field(default=None)
+    xianlv_team_fight_score_text: str = Field(default="")
+    xianlv_team_observed_at: str = Field(default="")
     special_attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     immortal_attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
     combat_attributes: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
@@ -242,25 +348,48 @@ class FanxiuPlayerProfileRecord(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
-class FanxiuLingquanQuestion(SQLModel, table=True):
-    """CodeYun-owned Lingquan question bank entry."""
+class FanxiuChoiceKnowledge(SQLModel, table=True):
+    """Shared Fanxiu knowledge for text answers and ordered choice options."""
 
-    __tablename__ = "fanxiulingquanquestion"
+    __tablename__ = "fanxiuchoiceknowledge"
     __table_args__ = (
-        UniqueConstraint("group_name", "normalized_question", name="uq_fanxiulingquanquestion_group_question"),
+        UniqueConstraint(
+            "domain",
+            "group_name",
+            "normalized_prompt",
+            name="uq_fanxiuchoiceknowledge_domain_group_prompt",
+        ),
         {"extend_existing": True},
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    group_name: str = Field(default="玩法知识", index=True)
-    question: str = Field(sa_column=Column(Text))
-    normalized_question: str = Field(default="", index=True)
-    answer: str = Field(sa_column=Column(Text))
-    enabled: bool = Field(default=True, index=True)
+    domain: str = Field(index=True)
+    group_name: str = Field(default="", index=True)
+    prompt: str = Field(sa_column=Column(Text))
+    normalized_prompt: str = Field(default="", index=True)
+    interaction_mode: str = Field(default="choice_click", index=True)
+    contexts: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    options: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    options_complete: bool = Field(default=False, index=True)
     order_index: int = Field(default=0, index=True)
     source: str = Field(default="manual", index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+
+    @property
+    def question(self) -> str:
+        """Expose the legacy Lingquan prompt name during API migration."""
+
+        return self.prompt
+
+    @property
+    def answer(self) -> str:
+        """Return the first currently positive answer for legacy callers."""
+
+        for option in self.options:
+            if int(option.get("status") or 0) == 1:
+                return str(option.get("text") or "")
+        return ""
 
 
 class FanxiuPacketBusinessRecord(SQLModel, table=True):
@@ -332,6 +461,15 @@ class FanxiuMailRecord(SQLModel, table=True):
     create_time_ms: Optional[int] = Field(default=None, index=True)
     source: str = Field(default="", index=True)
     status: str = Field(default="seen", index=True)
+    runtime_status: str = Field(default="", index=True)
+    desired_status: str = Field(default="", index=True)
+    present_in_runtime: bool = Field(default=False, index=True)
+    reward_getted: Optional[bool] = Field(default=None, index=True)
+    has_attachment: bool = Field(default=False, index=True)
+    attachment_count: int = Field(default=0)
+    runtime_index: Optional[int] = Field(default=None, index=True)
+    runtime_sequence_fingerprint: str = Field(default="", index=True)
+    last_runtime_sync_at: str = Field(default="", index=True)
     locked: bool = Field(default=False, index=True)
     action_policy: str = Field(default="", index=True)
     last_action_error: str = Field(default="", sa_column=Column(Text))
@@ -340,6 +478,276 @@ class FanxiuMailRecord(SQLModel, table=True):
     last_seen_at: float = Field(default_factory=time.time, index=True)
     last_seen_capture_at: str = Field(default="", index=True)
     payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuYunmengTrialActivity(SQLModel, table=True):
+    """Persisted Yunmeng Trial event snapshot populated by an Agent collector."""
+
+    __tablename__ = "fanxiuyunmengtrialactivity"
+    __table_args__ = (
+        UniqueConstraint(
+            "cross_count",
+            "start_date",
+            "end_date",
+            name="uq_fanxiuyunmengtrialactivity_scope_dates",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    cross_count: int = Field(default=0, index=True)
+    start_date: str = Field(index=True)
+    end_date: str = Field(index=True)
+    game_rank_activity_id: Optional[int] = Field(default=None, index=True)
+    game_shop_base_id: Optional[int] = Field(default=None, index=True)
+    currency_type: Optional[int] = Field(default=None, index=True)
+    current_currency: int = Field(default=0)
+    cumulative_currency: int = Field(default=0)
+    resource_strategy: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    captured_at: str = Field(default="", index=True)
+    source_kind: str = Field(default="instrumentation", index=True)
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuYunmengTrialShopItem(SQLModel, table=True):
+    __tablename__ = "fanxiuyunmengtrialshopitem"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_id",
+            "goods_id",
+            name="uq_fanxiuyunmengtrialshopitem_activity_goods",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_id: str = Field(foreign_key="fanxiuyunmengtrialactivity.id", index=True)
+    goods_id: int = Field(index=True)
+    item_id: int = Field(index=True)
+    source_order: int = Field(default=0, index=True)
+    priority_order: Optional[int] = Field(default=None, index=True)
+    locked: bool = Field(default=False, index=True)
+    name: str = Field(default="", index=True)
+    goods_num: int = Field(default=1)
+    token_cost: int = Field(default=0)
+    purchase_limit: int = Field(default=0)
+    purchased_count: int = Field(default=0)
+    discount: Optional[int] = Field(default=None)
+    original_price: Optional[int] = Field(default=None)
+    show_limit: str = Field(default="", sa_column=Column(Text))
+    disappear_limit: str = Field(default="", sa_column=Column(Text))
+    raw_data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuYunmengTrialRanking(SQLModel, table=True):
+    __tablename__ = "fanxiuyunmengtrialranking"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_id",
+            "ranking_scope",
+            "rank",
+            "role_key",
+            name="uq_fanxiuyunmengtrialranking_activity_scope_rank_role",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_id: str = Field(foreign_key="fanxiuyunmengtrialactivity.id", index=True)
+    ranking_scope: str = Field(default="personal", index=True)
+    rank: int = Field(default=0, index=True)
+    score: int = Field(default=0, index=True)
+    role_key: str = Field(default="", index=True)
+    name: str = Field(default="", index=True)
+    server_id: Optional[int] = Field(default=None, index=True)
+    club_name: str = Field(default="")
+    is_self: bool = Field(default=False, index=True)
+    raw_data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuYunmengTrialMeasurement(SQLModel, table=True):
+    """Immutable score/currency observation collected from the live Lua runtime."""
+
+    __tablename__ = "fanxiuyunmengtrialmeasurement"
+    __table_args__ = ({"extend_existing": True},)
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_id: str = Field(foreign_key="fanxiuyunmengtrialactivity.id", index=True)
+    captured_at: str = Field(index=True)
+    score: int = Field(default=0)
+    exchange_currency: int = Field(default=0)
+    rank: Optional[int] = Field(default=None)
+    challenge_count_delta: Optional[int] = Field(default=None)
+    note: str = Field(default="", sa_column=Column(Text))
+    source_kind: str = Field(default="runtime_memory", index=True)
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time, index=True)
+
+
+class FanxiuExchangeActivity(SQLModel, table=True):
+    """Generic persisted exchange-event snapshot populated by an Agent collector."""
+
+    __tablename__ = "fanxiuexchangeactivity"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_type",
+            "cross_count",
+            "start_date",
+            "end_date",
+            name="uq_fanxiuexchangeactivity_type_scope_dates",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_type: str = Field(index=True)
+    cross_count: int = Field(default=0, index=True)
+    start_date: str = Field(index=True)
+    end_date: str = Field(index=True)
+    game_rank_activity_id: Optional[int] = Field(default=None, index=True)
+    game_shop_base_id: Optional[int] = Field(default=None, index=True)
+    currency_type: Optional[int] = Field(default=None, index=True)
+    currency_name: str = Field(default="兑币")
+    current_currency: int = Field(default=0)
+    cumulative_currency: int = Field(default=0)
+    resource_strategy: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    captured_at: str = Field(default="", index=True)
+    source_kind: str = Field(default="instrumentation", index=True)
+    evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuExchangeActivityObservation(SQLModel, table=True):
+    """Immutable occurrence snapshot for current/end/final activity analysis."""
+
+    __tablename__ = "fanxiuexchangeactivityobservation"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_id",
+            "fingerprint",
+            name="uq_fanxiuexchangeactivityobservation_activity_fingerprint",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_id: str = Field(foreign_key="fanxiuexchangeactivity.id", index=True)
+    captured_at: str = Field(default="", index=True)
+    lifecycle_phase: str = Field(default="active", index=True)
+    snapshot_kind: str = Field(default="running", index=True)
+    current_currency: int = Field(default=0)
+    cumulative_currency: int = Field(default=0)
+    shop_status: str = Field(default="", index=True)
+    rankings_status: str = Field(default="", index=True)
+    fingerprint: str = Field(index=True)
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time, index=True)
+
+
+class FanxiuExchangeShopItem(SQLModel, table=True):
+    __tablename__ = "fanxiuexchangeshopitem"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_id",
+            "goods_id",
+            name="uq_fanxiuexchangeshopitem_activity_goods",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_id: str = Field(foreign_key="fanxiuexchangeactivity.id", index=True)
+    goods_id: int = Field(index=True)
+    item_id: int = Field(index=True)
+    source_order: int = Field(default=0, index=True)
+    priority_order: Optional[int] = Field(default=None, index=True)
+    locked: bool = Field(default=False, index=True)
+    name: str = Field(default="", index=True)
+    goods_num: int = Field(default=1)
+    token_cost: int = Field(default=0)
+    purchase_limit: int = Field(default=0)
+    purchased_count: int = Field(default=0)
+    discount: Optional[int] = Field(default=None)
+    original_price: Optional[int] = Field(default=None)
+    show_limit: str = Field(default="", sa_column=Column(Text))
+    disappear_limit: str = Field(default="", sa_column=Column(Text))
+    raw_data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuExchangeRanking(SQLModel, table=True):
+    __tablename__ = "fanxiuexchangeranking"
+    __table_args__ = (
+        UniqueConstraint(
+            "activity_id", "ranking_scope", "rank", "role_key",
+            name="uq_fanxiuexchangeranking_activity_scope_rank_role",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    activity_id: str = Field(foreign_key="fanxiuexchangeactivity.id", index=True)
+    ranking_scope: str = Field(default="personal", index=True)
+    rank: int = Field(default=0, index=True)
+    score: int = Field(default=0, index=True)
+    role_key: str = Field(default="", index=True)
+    name: str = Field(default="", index=True)
+    server_id: Optional[int] = Field(default=None, index=True)
+    server_name: str = Field(default="")
+    club_name: str = Field(default="")
+    is_self: bool = Field(default=False, index=True)
+    is_reward_guard: bool = Field(default=False, index=True)
+    is_last_player: bool = Field(default=False, index=True)
+    has_player: bool = Field(default=True, index=True)
+    reward_rank_start: Optional[int] = Field(default=None)
+    reward_rank_end: Optional[int] = Field(default=None)
+    captured_at: str = Field(default="", index=True)
+    raw_data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuRankingLifecycleCheckpoint(SQLModel, table=True):
+    """Durable result of one ranking occurrence lifecycle checkpoint."""
+
+    __tablename__ = "fanxiurankinglifecyclecheckpoint"
+    __table_args__ = (
+        UniqueConstraint(
+            "instance_key",
+            "checkpoint_kind",
+            "business_date",
+            name="uq_fanxiurankingcheckpoint_instance_kind_date",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    task_id: str = Field(default="ranking-lifecycle", index=True)
+    activity_type: str = Field(index=True)
+    family: str = Field(index=True)
+    instance_key: str = Field(index=True)
+    runtime_id: str = Field(default="", index=True)
+    activity_id: int = Field(default=0, index=True)
+    checkpoint_kind: str = Field(index=True)
+    business_date: str = Field(index=True)
+    due_at: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    attempt_count: int = Field(default=0)
+    retry_at: str = Field(default="", index=True)
+    completed_at: str = Field(default="", index=True)
+    message: str = Field(default="", sa_column=Column(Text))
+    result: dict = Field(default_factory=dict, sa_column=Column(JSON))
     evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
@@ -586,6 +994,39 @@ class LibraryReadingState(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class LibraryAnnotation(SQLModel, table=True):
+    __tablename__ = "libraryannotation"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "resource_type",
+            "resource_id",
+            "chapter_id",
+            "id",
+            name="uq_libraryannotation_user_resource_id",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    resource_type: str = Field(default="rich-text", index=True, max_length=40)
+    resource_id: str = Field(index=True, max_length=160)
+    chapter_id: str = Field(default="", index=True, max_length=512)
+    kind: str = Field(default="highlight", index=True, max_length=24)
+    color: str = Field(default="yellow", max_length=32)
+    quote_text: str = Field(default="", sa_column=Column(Text))
+    prefix_text: str = Field(default="", sa_column=Column(Text))
+    suffix_text: str = Field(default="", sa_column=Column(Text))
+    start_offset: int = Field(default=0)
+    end_offset: int = Field(default=0)
+    source_revision: str = Field(default="", max_length=128)
+    comment_text: str = Field(default="", sa_column=Column(Text))
+    position_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class LibraryBookAsset(SQLModel, table=True):
     __tablename__ = "librarybookasset"
     __table_args__ = (
@@ -616,9 +1057,11 @@ class LibraryBookPlacement(SQLModel, table=True):
     book_asset_id: str = Field(foreign_key="librarybookasset.id", index=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     bookshelf_id: Optional[str] = Field(default=None, index=True)
+    folder_id: Optional[str] = Field(default=None, index=True)
     shelf_index: int = Field(default=0, index=True)
     position_index: int = Field(default=0, index=True)
     orientation: str = Field(default="spine_vertical", max_length=32)
+    article_reading_mode: Optional[str] = Field(default=None, max_length=16)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -634,6 +1077,23 @@ class PdfLibraryBookshelf(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     name: str = Field(default="", max_length=80)
     sort_index: int = Field(default=0, index=True)
+    logical_page_target_characters: int = Field(default=1600)
+    article_reading_mode: str = Field(default="scroll", max_length=16)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class PdfBookshelfViewSetting(SQLModel, table=True):
+    __tablename__ = "pdfbookshelfviewsetting"
+    __table_args__ = (
+        UniqueConstraint("bookshelf_id", "user_id", name="uq_pdfbookshelfviewsetting_bookshelf_user"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    bookshelf_id: str = Field(foreign_key="pdflibrarybookshelf.id", index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    thickness_scale: float = Field(default=1.0)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -649,9 +1109,32 @@ class PdfBookshelfPlacement(SQLModel, table=True):
     pdf_document_id: str = Field(index=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     bookshelf_id: Optional[str] = Field(default=None, index=True)
+    folder_id: Optional[str] = Field(default=None, index=True)
     shelf_index: int = Field(default=0, index=True)
     position_index: int = Field(default=0, index=True)
     orientation: str = Field(default="spine_vertical", max_length=32)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class LibraryFolder(SQLModel, table=True):
+    __tablename__ = "libraryfolder"
+    __table_args__ = (
+        UniqueConstraint("bookshelf_id", "owner_user_id", "name", name="uq_libraryfolder_shelf_owner_name"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    owner_user_id: int = Field(foreign_key="user.id", index=True)
+    bookshelf_id: str = Field(foreign_key="pdflibrarybookshelf.id", index=True)
+    name: str = Field(default="资料夹", max_length=80)
+    color_override: Optional[str] = Field(default=None, max_length=32)
+    min_thickness_mm: Optional[float] = Field(default=None)
+    fixed_thickness_mm: Optional[float] = Field(default=None)
+    shelf_index: int = Field(default=0, index=True)
+    position_index: int = Field(default=0, index=True)
+    orientation: str = Field(default="spine_vertical", max_length=32)
+    metadata_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -1194,6 +1677,155 @@ class SheetPageSnapshot(SQLModel, table=True):
     defined_names_context_json: Optional[dict[str, Any]] = Field(default=None, sa_column=Column(JSON, nullable=True))
     created_at: float = Field(default_factory=time.time, index=True)
     updated_at: float = Field(default_factory=time.time, index=True)
+
+
+class AttendanceDataImport(SQLModel, table=True):
+    """One immutable source-file ingestion attempt for attendance master data."""
+
+    __tablename__ = "attendance_data_import"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_type",
+            "scope_key",
+            "content_sha256",
+            name="uq_attendance_data_import_source",
+        ),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    dataset_type: str = Field(index=True)
+    scope_key: str = Field(index=True)
+    source_filename: str = Field(default="")
+    content_sha256: str = Field(index=True)
+    byte_size: int = Field(default=0)
+    raw_file_path: str = Field(default="")
+    collector_device: str = Field(default="", index=True)
+    collected_at: float = Field(default=0)
+    received_at: float = Field(default_factory=time.time, index=True)
+    completed_at: float = Field(default=0)
+    status: str = Field(default="processing", index=True)
+    total_rows: int = Field(default=0)
+    inserted_rows: int = Field(default=0)
+    updated_rows: int = Field(default=0)
+    unchanged_rows: int = Field(default=0)
+    skipped_rows: int = Field(default=0)
+    conflict_rows: int = Field(default=0)
+    error_summary: str = Field(default="")
+
+
+class AttendanceUser(SQLModel, table=True):
+    """Current Xiaoetong user master, unique within one shop."""
+
+    __tablename__ = "attendance_user"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "xiaoe_user_id", name="uq_attendance_user_shop_source"),
+        Index("ix_attendance_user_shop_bind_phone", "shop_id", "bind_phone"),
+        Index("ix_attendance_user_shop_collect_phone", "shop_id", "collect_phone"),
+        Index("ix_attendance_user_shop_receive_phone", "shop_id", "last_receive_phone"),
+        Index("ix_attendance_user_shop_real_name", "shop_id", "real_name"),
+        Index("ix_attendance_user_shop_nickname", "shop_id", "nickname"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    shop_id: int = Field(index=True)
+    xiaoe_user_id: str = Field(index=True)
+    nickname: str = Field(default="")
+    real_name: str = Field(default="")
+    from_channel: str = Field(default="")
+    bind_phone: str = Field(default="")
+    collect_phone: str = Field(default="")
+    last_receive_phone: str = Field(default="")
+    account_status: str = Field(default="")
+    remark_name: str = Field(default="")
+    registered_at: str = Field(default="")
+    row_hash: str = Field(default="", index=True)
+    source_payload_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    first_seen_at: float = Field(default_factory=time.time)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    last_import_id: str = Field(default="", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class LocalJobRun(SQLModel, table=True):
+    """Durable execution record for a whitelisted local one-shot job."""
+
+    __tablename__ = "localjobrun"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: Optional[int] = Field(default=None, index=True)
+    job_type: str = Field(index=True)
+    resource_key: str = Field(default="", index=True)
+    status: str = Field(default="queued", index=True)
+    stage: str = Field(default="queued", index=True)
+    message: str = Field(default="等待本地 Worker 执行")
+    input_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None)
+    worker_pid: Optional[int] = Field(default=None, index=True)
+    worker_started_at: Optional[float] = Field(default=None)
+    heartbeat_at: Optional[float] = Field(default=None, index=True)
+    cancel_requested_at: Optional[float] = Field(default=None, index=True)
+    stdout_path: str = Field(default="")
+    stderr_path: str = Field(default="")
+    attempt_count: int = Field(default=0)
+    queued_at: float = Field(default_factory=time.time, index=True)
+    started_at: Optional[float] = Field(default=None, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time, index=True)
+
+
+class AttendancePaymentLedger(SQLModel, table=True):
+    """Immutable-ish WeChat Pay ledger event imported from source CSV."""
+
+    __tablename__ = "attendance_payment_ledger"
+    __table_args__ = (
+        UniqueConstraint("merchant_id", "voucher_id", name="uq_attendance_payment_ledger_voucher"),
+        Index("ix_attendance_payment_ledger_merchant_flow", "merchant_id", "flow_order"),
+        Index("ix_attendance_payment_ledger_merchant_event", "merchant_id", "event_time"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    merchant_id: str = Field(index=True)
+    event_time: str = Field(default="", index=True)
+    business_order: str = Field(default="", index=True)
+    flow_order: str = Field(default="", index=True)
+    money_cents: int = Field(default=0)
+    balance_cents: int = Field(default=0)
+    submitter: str = Field(default="")
+    fee_cents: int = Field(default=0)
+    voucher_id: str = Field(index=True)
+    row_hash: str = Field(default="", index=True)
+    source_payload_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    last_import_id: str = Field(default="", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AttendancePaymentOrder(SQLModel, table=True):
+    """Fast local order projection derived exclusively from payment ledger rows."""
+
+    __tablename__ = "attendance_payment_order"
+    __table_args__ = (
+        UniqueConstraint("merchant_id", "flow_order", name="uq_attendance_payment_order_flow"),
+        Index("ix_attendance_payment_order_merchant_voucher", "merchant_id", "merchant_order_id"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    merchant_id: str = Field(index=True)
+    flow_order: str = Field(index=True)
+    merchant_order_id: str = Field(default="", index=True)
+    paid_at: str = Field(default="", index=True)
+    paid_amount_cents: int = Field(default=0)
+    refunded_amount_cents: int = Field(default=0)
+    net_amount_cents: int = Field(default=0)
+    last_event_at: str = Field(default="")
+    updated_at: float = Field(default_factory=time.time)
 
 
 class WorkbookDocument(SQLModel, table=True):

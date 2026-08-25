@@ -2,7 +2,7 @@
   <ClusterFileBrowserPage
     ref="browserRef"
     fixed-device-id="codepc_mf"
-    fixed-root-path="D:\home\chenkunze\data\m2311禅课合辑"
+    fixed-root-path="E:\data\m2311禅课合辑"
   >
     <template #toolbar-after="slotProps">
       <div class="chan-random-actions">

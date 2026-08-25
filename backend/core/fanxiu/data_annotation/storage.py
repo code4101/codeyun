@@ -7,7 +7,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
+
+from filelock import FileLock
+from pyxllib.autogui import image_number as runtime_image_number
 
 from backend.core.settings import get_settings
 from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
@@ -27,6 +30,24 @@ class FanxiuDataAnnotationImageAsset:
     sidecar_path: Path
     exists: bool
     storage_kind: AssetStorageKind
+
+
+@dataclass(frozen=True)
+class FanxiuDataAnnotationAssetTreeSnapshot:
+    tree: list[dict[str, Any]]
+    revision: str
+    updated_at: float
+    exists: bool
+
+
+@dataclass(frozen=True)
+class FanxiuDataAnnotationFrameTreeSave:
+    asset: FanxiuDataAnnotationImageAsset
+    snapshot: FanxiuDataAnnotationAssetTreeSnapshot
+
+
+class FanxiuDataAnnotationAssetTreeConflict(RuntimeError):
+    pass
 
 
 def sanitize_data_annotation_entry_id(entry_id: str | None = None) -> str:
@@ -116,11 +137,19 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     tmp.replace(path)
 
 
+def _image_suffix_from_bytes(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    return None
+
+
 def _filename_number(filename: str) -> int | None:
-    match = re.fullmatch(r"0*(\d+)\.[^.]+", Path(str(filename or "")).name)
-    if not match:
-        return None
-    return int(match.group(1))
+    # Scene identity is defined by the Runtime parser, including prefixed
+    # assets such as ``lingxiao-preview-580.png``.  Scanning only pure numeric
+    # filenames forgets real IDs and can allocate an already-used scene.
+    return runtime_image_number({"filename": Path(str(filename or "")).name})
 
 
 def _asset_tree_image_numbers(entry_id: str | None = None) -> list[int]:
@@ -168,7 +197,16 @@ def save_data_annotation_image_bytes(
     filename: str | None = None,
 ) -> FanxiuDataAnnotationImageAsset:
     safe_entry_id = sanitize_data_annotation_entry_id(entry_id)
-    resolved_filename = filename or next_data_annotation_image_filename(safe_entry_id)
+    actual_suffix = _image_suffix_from_bytes(data)
+    if filename:
+        normalized_filename = normalize_data_annotation_image_filename(filename)
+        resolved_filename = (
+            str(Path(normalized_filename).with_suffix(actual_suffix))
+            if actual_suffix
+            else normalized_filename
+        )
+    else:
+        resolved_filename = next_data_annotation_image_filename(safe_entry_id, suffix=actual_suffix or ".png")
     asset = resolve_data_annotation_image_asset(resolved_filename, entry_id=safe_entry_id)
     _atomic_write_bytes(asset.path, data)
     return FanxiuDataAnnotationImageAsset(
@@ -194,7 +232,7 @@ def _image_filename_from_node(node: dict[str, Any], index: int) -> str:
 
 
 def normalize_data_annotation_shape_load_directions(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """将 shape 的窗口加载方向迁移为 ``loadDirection`` 主字段。"""
+    """Normalize the small, orthogonal window-loading annotation contract."""
 
     legacy_keys = ("contentDirection", "content_direction", "内容方向")
     direction_aliases = {
@@ -230,6 +268,22 @@ def normalize_data_annotation_shape_load_directions(nodes: list[dict[str, Any]])
             normalized.pop(key, None)
         if has_direction:
             normalized["loadDirection"] = normalize_direction(direction)
+        load_mode = normalized.pop("load_mode", normalized.pop("loadMode", None))
+        load_boundary = normalized.pop(
+            "load_boundary", normalized.pop("loadBoundary", None)
+        )
+        initial_position = normalized.pop(
+            "load_initial_position", normalized.pop("loadInitialPosition", None)
+        )
+        # Keep the asset contract sparse. Missing values mean the common case:
+        # continuous stepping, a bounded control, and an initial cursor at the
+        # canonical starting edge. Only exceptional behavior needs annotation.
+        if str(load_mode or "").strip().lower() == "paged":
+            normalized["loadMode"] = "paged"
+        if str(load_boundary or "").strip().lower() == "cyclic":
+            normalized["loadBoundary"] = "cyclic"
+        if str(initial_position or "").strip().lower() == "unknown":
+            normalized["loadInitialPosition"] = "unknown"
         children = normalized.get("children")
         if isinstance(children, list):
             normalized["children"] = [
@@ -248,6 +302,78 @@ def normalize_data_annotation_shape_load_directions(nodes: list[dict[str, Any]])
                 for shape in shapes
                 if isinstance(shape, dict)
             ]
+        children = normalized.get("children")
+        if isinstance(children, list):
+            normalized["children"] = [
+                normalize_node(child)
+                for child in children
+                if isinstance(child, dict)
+            ]
+        return normalized
+
+    return [normalize_node(node) for node in nodes if isinstance(node, dict)]
+
+
+def normalize_data_annotation_scene_parent_ids(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize the raw scene-level parent list without resolving inheritance."""
+
+    def scene_number(node: dict[str, Any]) -> int | None:
+        filename_number = _filename_number(str(node.get("filename") or ""))
+        if filename_number is not None:
+            return filename_number
+        for key in ("title", "id"):
+            match = re.search(r"(?:^|#|[^\d])0*(\d{1,6})(?=[^\d]|$)", str(node.get(key) or ""))
+            if match:
+                return int(match.group(1))
+        return None
+
+    def normalize_parent_ids(value: Any, *, current_scene_id: int | None) -> str:
+        raw_items = value if isinstance(value, list) else re.split(r"[,，]", str(value or ""))
+        seen: set[int] = set()
+        result: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip().lstrip("#")
+            if not text.isdigit():
+                continue
+            parent_id = int(text)
+            if parent_id <= 0 or parent_id == current_scene_id or parent_id in seen:
+                continue
+            seen.add(parent_id)
+            result.append(str(parent_id))
+        return ",".join(result)
+
+    def normalize_node(node: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(node)
+        if normalized.get("type") == "image" and "parentSceneIds" in normalized:
+            parent_ids = normalize_parent_ids(
+                normalized.get("parentSceneIds"),
+                current_scene_id=scene_number(normalized),
+            )
+            if parent_ids:
+                normalized["parentSceneIds"] = parent_ids
+            else:
+                normalized.pop("parentSceneIds", None)
+        children = normalized.get("children")
+        if isinstance(children, list):
+            normalized["children"] = [
+                normalize_node(child)
+                for child in children
+                if isinstance(child, dict)
+            ]
+        return normalized
+
+    return [normalize_node(node) for node in nodes if isinstance(node, dict)]
+
+
+def normalize_data_annotation_image_titles(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep image titles as optional human nicknames, never duplicated filenames."""
+
+    def normalize_node(node: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(node)
+        if normalized.get("type") == "image":
+            title = str(normalized.get("title") or "").strip()
+            filename = str(normalized.get("filename") or "").strip()
+            normalized["title"] = "" if filename and title.casefold() == filename.casefold() else title
         children = normalized.get("children")
         if isinstance(children, list):
             normalized["children"] = [
@@ -292,8 +418,7 @@ def _normalize_asset_tree_images(
         decoded = _decode_data_url(str(data_url or "")) if data_url else None
         if decoded:
             filename = _image_filename_from_node(normalized, image_count)
-            asset = resolve_data_annotation_image_asset(filename, entry_id=safe_entry_id)
-            _atomic_write_bytes(asset.path, decoded)
+            asset = save_data_annotation_image_bytes(decoded, entry_id=safe_entry_id, filename=filename)
             normalized["filename"] = asset.filename
             return normalized
 
@@ -305,8 +430,208 @@ def _normalize_asset_tree_images(
                 missing.append(asset.filename)
         return normalized
 
-    normalized_tree = [normalize_node(node) for node in nodes if isinstance(node, dict)]
+    normalized_tree = normalize_data_annotation_image_titles(
+        [normalize_node(node) for node in nodes if isinstance(node, dict)]
+    )
     return normalized_tree, missing
+
+
+def _asset_tree_revision(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _asset_tree_lock(path: Path) -> FileLock:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return FileLock(str(path.with_name(f"{path.name}.lock")), timeout=30)
+
+
+def _read_asset_tree_unlocked(path: Path) -> FanxiuDataAnnotationAssetTreeSnapshot:
+    if not path.is_file():
+        return FanxiuDataAnnotationAssetTreeSnapshot(tree=[], revision="", updated_at=0.0, exists=False)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = []
+    return FanxiuDataAnnotationAssetTreeSnapshot(
+        tree=payload if isinstance(payload, list) else [],
+        revision=_asset_tree_revision(path),
+        updated_at=path.stat().st_mtime,
+        exists=True,
+    )
+
+
+def read_data_annotation_asset_tree_snapshot(path: Path) -> FanxiuDataAnnotationAssetTreeSnapshot:
+    with _asset_tree_lock(path):
+        return _read_asset_tree_unlocked(path)
+
+
+def save_data_annotation_asset_tree_snapshot(
+    path: Path,
+    tree: list[dict[str, Any]],
+    *,
+    entry_id: str | None = None,
+    expected_revision: str | None = None,
+    before_write: Callable[[], None] | None = None,
+) -> FanxiuDataAnnotationAssetTreeSnapshot:
+    with _asset_tree_lock(path):
+        current_revision = _asset_tree_revision(path)
+        if expected_revision is not None and expected_revision != current_revision:
+            raise FanxiuDataAnnotationAssetTreeConflict("资产树版本已变化")
+        normalized_tree, missing = _normalize_asset_tree_images(tree, entry_id=entry_id)
+        normalized_tree = normalize_data_annotation_shape_load_directions(normalized_tree)
+        normalized_tree = normalize_data_annotation_scene_parent_ids(normalized_tree)
+        if missing:
+            joined = "、".join(str(item) for item in missing[:10])
+            raise FileNotFoundError(f"资产树引用的图片不存在：{joined}")
+        if before_write is not None:
+            before_write()
+        write_data_annotation_json(path, normalized_tree)
+        return _read_asset_tree_unlocked(path)
+
+
+def save_data_annotation_frame_tree_node(
+    path: Path,
+    data: bytes,
+    node: dict[str, Any],
+    *,
+    entry_id: str | None = None,
+    parent_id: str | None = None,
+    after_node_id: str | None = None,
+    expected_revision: str | None = None,
+    before_write: Callable[[], None] | None = None,
+) -> FanxiuDataAnnotationFrameTreeSave:
+    """Persist one captured frame and its stable-ID tree insertion as one operation.
+
+    A stale tree revision is safe for a new node: the insertion is replayed on the
+    latest tree while holding the same cross-process lock.  Reusing an existing ID,
+    or losing the stable parent/anchor, is a real semantic conflict and fails before
+    any image is written.
+    """
+
+    node_id = str(node.get("id") or "").strip()
+    if not node_id:
+        raise ValueError("资产节点缺少稳定 ID")
+    if node.get("type") != "image":
+        raise ValueError("保存帧只能创建 image 节点")
+
+    def find_node(nodes: list[dict[str, Any]], target_id: str) -> dict[str, Any] | None:
+        for item in nodes:
+            if str(item.get("id") or "") == target_id:
+                return item
+            children = item.get("children")
+            if isinstance(children, list):
+                found = find_node(children, target_id)
+                if found is not None:
+                    return found
+        return None
+
+    def find_siblings(nodes: list[dict[str, Any]], target_id: str) -> tuple[list[dict[str, Any]], int] | None:
+        for index, item in enumerate(nodes):
+            if str(item.get("id") or "") == target_id:
+                return nodes, index
+            children = item.get("children")
+            if isinstance(children, list):
+                found = find_siblings(children, target_id)
+                if found is not None:
+                    return found
+        return None
+
+    with _asset_tree_lock(path):
+        current = _read_asset_tree_unlocked(path)
+        tree = json.loads(json.dumps(current.tree, ensure_ascii=False))
+        if find_node(tree, node_id) is not None:
+            raise FanxiuDataAnnotationAssetTreeConflict(f"资产节点 {node_id} 已存在")
+
+        if parent_id:
+            parent = find_node(tree, parent_id)
+            if parent is None or parent.get("type") != "folder":
+                raise FanxiuDataAnnotationAssetTreeConflict(f"目标目录 {parent_id} 已变化")
+            target = parent.setdefault("children", [])
+            if not isinstance(target, list):
+                raise FanxiuDataAnnotationAssetTreeConflict(f"目标目录 {parent_id} 已变化")
+            insert_at = len(target)
+        elif after_node_id:
+            location = find_siblings(tree, after_node_id)
+            if location is None:
+                raise FanxiuDataAnnotationAssetTreeConflict(f"插入锚点 {after_node_id} 已变化")
+            target, anchor_index = location
+            insert_at = anchor_index + 1
+        else:
+            target = tree
+            insert_at = len(target)
+
+        # A revision mismatch alone is not a conflict: this unique stable-ID
+        # insertion does not overwrite any existing node and is applied to latest.
+        _ = expected_revision
+        asset: FanxiuDataAnnotationImageAsset | None = None
+        try:
+            requested_filename = str(node.get("filename") or "").strip() or None
+            if requested_filename:
+                requested_asset = resolve_data_annotation_image_asset(requested_filename, entry_id=entry_id)
+                if requested_asset.exists:
+                    raise FanxiuDataAnnotationAssetTreeConflict(
+                        f"资产图片 {requested_asset.filename} 已存在"
+                    )
+                requested_number = _filename_number(requested_asset.filename)
+                expected_filename = next_data_annotation_image_filename(entry_id)
+                expected_number = _filename_number(expected_filename)
+                if requested_number is None or requested_number != expected_number:
+                    requested_label = (
+                        f"#{requested_number}" if requested_number is not None else requested_asset.filename
+                    )
+                    raise ValueError(
+                        f"新增资产编号必须连续：当前应为 #{expected_number}，不能创建 {requested_label}"
+                    )
+            asset = save_data_annotation_image_bytes(
+                data,
+                entry_id=entry_id,
+                filename=requested_filename,
+            )
+            inserted = dict(node)
+            inserted.pop("imageDataUrl", None)
+            inserted["filename"] = asset.filename
+            target.insert(insert_at, inserted)
+            normalized_tree, missing = _normalize_asset_tree_images(tree, entry_id=entry_id)
+            normalized_tree = normalize_data_annotation_shape_load_directions(normalized_tree)
+            normalized_tree = normalize_data_annotation_scene_parent_ids(normalized_tree)
+            if missing:
+                joined = "、".join(str(item) for item in missing[:10])
+                raise FileNotFoundError(f"资产树引用的图片不存在：{joined}")
+            if before_write is not None:
+                before_write()
+            write_data_annotation_json(path, normalized_tree)
+            return FanxiuDataAnnotationFrameTreeSave(asset=asset, snapshot=_read_asset_tree_unlocked(path))
+        except Exception:
+            if asset is not None:
+                for candidate in (asset.path, asset.sidecar_path):
+                    try:
+                        candidate.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            raise
+
+
+def update_data_annotation_asset_tree(
+    path: Path,
+    update: Callable[[list[dict[str, Any]]], bool],
+    *,
+    before_write: Callable[[], None] | None = None,
+) -> FanxiuDataAnnotationAssetTreeSnapshot:
+    """Apply one semantic mutation to the latest tree under a cross-process lock."""
+
+    with _asset_tree_lock(path):
+        current = _read_asset_tree_unlocked(path)
+        tree = json.loads(json.dumps(current.tree, ensure_ascii=False))
+        if not update(tree):
+            return current
+        normalized_tree = normalize_data_annotation_shape_load_directions(tree)
+        normalized_tree = normalize_data_annotation_scene_parent_ids(normalized_tree)
+        if before_write is not None:
+            before_write()
+        write_data_annotation_json(path, normalized_tree)
+        return _read_asset_tree_unlocked(path)
 
 
 def save_data_annotation_asset_tree_bundle(
@@ -314,11 +639,11 @@ def save_data_annotation_asset_tree_bundle(
     tree: list[dict[str, Any]],
     *,
     entry_id: str | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
-    normalized_tree, missing = _normalize_asset_tree_images(tree, entry_id=entry_id)
-    normalized_tree = normalize_data_annotation_shape_load_directions(normalized_tree)
-    if missing:
-        joined = "、".join(str(item) for item in missing[:10])
-        raise FileNotFoundError(f"资产树引用的图片不存在：{joined}")
-    write_data_annotation_json(path, normalized_tree)
-    return normalized_tree
+    return save_data_annotation_asset_tree_snapshot(
+        path,
+        tree,
+        entry_id=entry_id,
+        before_write=before_write,
+    ).tree

@@ -23,6 +23,26 @@ export type FanxiuRewardRow = {
 
 const FORMULA_EDGE_RE = /[0-9=+\-*/×()（）]/
 
+const FANXIU_LIGHT_RICH_COLOR_MAP: Record<string, string> = {
+  '#017077': '#007f86',
+  '#193970': '#245da8',
+  '#2a4b10': '#2f8f1d',
+  '#3e147d': '#6a3eb1',
+  '#73123a': '#b22666',
+  '#864c00': '#b16a00',
+  '#9e1e09': '#c83b22',
+}
+
+const FANXIU_DARK_RICH_COLOR_MAP: Record<string, string> = {
+  '#017077': '#18e5e3',
+  '#193970': '#9dc8ff',
+  '#2a4b10': '#b9f08f',
+  '#3e147d': '#caa7ff',
+  '#73123a': '#ff8ac7',
+  '#864c00': '#ffd45f',
+  '#9e1e09': '#ff9f8b',
+}
+
 export function normalizeFanxiuRichText(value: unknown) {
   return String(value || '')
     .replace(/<color=#[0-9a-fA-F]{3,8}>/g, '')
@@ -145,6 +165,39 @@ export function renderFanxiuRichText(
     plainStart = index
   }
   return output + renderFanxiuPlainRichText(text.slice(plainStart))
+}
+
+export function renderFanxiuTaggedRichText(
+  value: unknown,
+  options: {
+    tone?: 'light' | 'dark'
+    linkTargetGroups?: Map<string, FanxiuResourceLinkTarget[]>
+  } = {},
+) {
+  const raw = String(value || '')
+  const colorMap = options.tone === 'light'
+    ? FANXIU_LIGHT_RICH_COLOR_MAP
+    : FANXIU_DARK_RICH_COLOR_MAP
+  const tagRe = /<color=(#[0-9a-fA-F]{3,8})>|<\/color>|<size=([0-9]{1,3})>|<\/size>/g
+  let output = ''
+  let lastIndex = 0
+  for (const match of raw.matchAll(tagRe)) {
+    output += renderFanxiuRichText(raw.slice(lastIndex, match.index), options.linkTargetGroups)
+    if (match[1]) {
+      const sourceColor = match[1].toLowerCase()
+      const color = colorMap[sourceColor] ?? sourceColor
+      output += `<span class="fanxiu-rich-color" style="color:${escapeFanxiuHtml(color)}">`
+    } else if (match[0] === '</color>') {
+      output += '</span>'
+    } else if (match[2]) {
+      output += '<span>'
+    } else {
+      output += '</span>'
+    }
+    lastIndex = (match.index ?? 0) + match[0].length
+  }
+  output += renderFanxiuRichText(raw.slice(lastIndex), options.linkTargetGroups)
+  return output.replace(/\n/g, '<br>')
 }
 
 export function parseFanxiuEffectRows(value: unknown): FanxiuEffectRow[] {

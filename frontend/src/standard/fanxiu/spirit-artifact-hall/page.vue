@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Aim, ArrowDown, ArrowUp } from '@element-plus/icons-vue';
+import { Aim, ArrowDown, ArrowUp, Refresh } from '@element-plus/icons-vue';
 import {
   getFanxiuSpiritArtifactHall,
   recognizeFanxiuSpiritArtifactAttributes,
@@ -49,6 +49,12 @@ type SpiritArtifactPartRow = Record<StatColumnKey, string> & {
   statRawValues: Record<StatColumnKey, string>;
   exclusiveStats: Record<string, string>;
   exclusiveStatRawValues: Record<string, string>;
+  runtimeBaseId: number;
+  runtimeItemId: string;
+  runtimeWareId: number;
+  runtimePart: number;
+  runtimeRefineNum: number;
+  runtimeIsBreak: boolean;
 };
 
 type SpiritArtifact = {
@@ -205,6 +211,16 @@ const artifactSeeds = [
       { key: '灵暴', label: '灵暴', baseValue: '2.4万', baseRawValue: 24000, minWidth: 76 },
     ],
   },
+  {
+    name: '六界轮回盘',
+    parts: ['珠', '盘', '焰', '环', '荧', '晶'],
+    exclusiveStats: [
+      { key: '神识全技能增伤', label: '神识全技能增伤', baseValue: '', baseRawValue: 0, minWidth: 120 },
+      { key: '神识暴击', label: '神识暴击', baseValue: '', baseRawValue: 0, minWidth: 88 },
+      { key: '神识暴击附伤', label: '神识暴击附伤', baseValue: '', baseRawValue: 0, minWidth: 112 },
+      { key: '神识最终增伤', label: '神识最终增伤', baseValue: '', baseRawValue: 0, minWidth: 104 },
+    ],
+  },
 ];
 
 function createExclusiveStats(columns: ExclusiveStatColumn[], savedStats: unknown = {}) {
@@ -228,6 +244,10 @@ function formatStatColumnLabel(column: { label: string; baseValue?: string }) {
   return column.baseValue ? `${column.label}${column.baseValue}` : column.label;
 }
 
+function formatRuntimeTime(timestamp: number) {
+  return timestamp > 0 ? new Date(timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+}
+
 function createPartRow(
   partName: string,
   index: number,
@@ -243,6 +263,12 @@ function createPartRow(
     statRawValues: createStatRawValues(),
     exclusiveStats: createExclusiveStats(exclusiveStats),
     exclusiveStatRawValues: createExclusiveStatRawValues(exclusiveStats),
+    runtimeBaseId: 0,
+    runtimeItemId: '',
+    runtimeWareId: 0,
+    runtimePart: 0,
+    runtimeRefineNum: 0,
+    runtimeIsBreak: false,
     ...emptyStats,
   };
 }
@@ -252,6 +278,11 @@ const recognizingAttributes = ref(false);
 const recognizingMarket = ref(false);
 const recognizingStorageBag = ref(false);
 const loading = ref(false);
+const runtimeComplete = ref(false);
+const runtimeSource = ref('');
+const runtimeError = ref('');
+const runtimeEquippedCount = ref(0);
+const runtimeUpdatedAt = ref(0);
 const saving = ref(false);
 const pageHydrated = ref(false);
 const editingStatCell = ref<EditingStatCell>(null);
@@ -355,6 +386,9 @@ function normalizeStatDisplayValue(value: unknown, baseRawValue: number) {
     return '';
   }
   if (parsePercentText(text) !== null) {
+    return text;
+  }
+  if (baseRawValue <= 0) {
     return text;
   }
   const rawValue = parseRawAttributeValue(text);
@@ -523,16 +557,29 @@ function normalizeStorageBagItems(items: unknown): SpiritArtifactStorageBagItem[
 }
 
 function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): SpiritArtifact[] {
-  const savedByName = new Map((snapshot.artifacts || []).map(artifact => [artifact.name, artifact]));
-  return artifactSeeds.map((seed, artifactIndex) => {
-    const savedArtifact = savedByName.get(seed.name);
-    const savedRowsByPart = new Map((savedArtifact?.rows || []).map(row => [row.part_name, row]));
+  const runtimeArtifacts = snapshot.artifacts || [];
+  if (runtimeArtifacts.length <= 0) {
+    return createDefaultArtifacts();
+  }
+  return runtimeArtifacts.map((savedArtifact, artifactIndex) => {
+    const seed = artifactSeeds.find(candidate => candidate.name === savedArtifact.name);
+    const dynamicKeys = new Set<string>();
+    for (const row of savedArtifact.rows || []) {
+      Object.keys((row as any).exclusive_stats || (row as any).exclusiveStats || {}).forEach(key => dynamicKeys.add(key));
+    }
+    const exclusiveStats: ExclusiveStatColumn[] = [
+      ...(seed?.exclusiveStats || []),
+      ...[...dynamicKeys]
+        .filter(key => !seed?.exclusiveStats.some(column => column.key === key))
+        .map(key => ({ key, label: key, baseValue: '', baseRawValue: 0, minWidth: Math.max(76, key.length * 14) })),
+    ];
+    const savedRows = [...(savedArtifact.rows || [])].sort((left, right) => left.order - right.order);
     return {
       order: artifactIndex + 1,
-      name: seed.name,
-      exclusiveStats: seed.exclusiveStats,
-      rows: seed.parts.map((partName, partIndex) => {
-        const savedRow = savedRowsByPart.get(partName);
+      name: savedArtifact.name,
+      exclusiveStats,
+      rows: savedRows.map((savedRow, partIndex) => {
+        const partName = savedRow.part_name || seed?.parts[partIndex] || `部位 ${partIndex + 1}`;
         const rawSavedRow = (savedRow || {}) as any;
         const savedStatRawValues = rawSavedRow.stat_raw_values || rawSavedRow.statRawValues || {};
         const statRawValues = Object.fromEntries(
@@ -560,13 +607,13 @@ function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): Spirit
           chaosPower: normalizeStatDisplayValue(rawSavedRow.chaos_power, statColumnByKey.chaosPower.baseRawValue),
           attack: normalizeStatDisplayValue(rawSavedRow.attack, statColumnByKey.attack.baseRawValue),
           exclusiveStats: Object.fromEntries(
-            seed.exclusiveStats.map(column => [
+            exclusiveStats.map(column => [
               column.key,
               normalizeStatDisplayValue(savedExclusiveStats[column.key], column.baseRawValue),
             ]),
           ),
           exclusiveStatRawValues: Object.fromEntries(
-            seed.exclusiveStats.map(column => [
+            exclusiveStats.map(column => [
               column.key,
               normalizeSavedRawValue(
                 savedExclusiveStats[column.key],
@@ -578,6 +625,12 @@ function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): Spirit
           spiritPower: normalizeStatDisplayValue(rawSavedRow.spirit_power, statColumnByKey.spiritPower.baseRawValue),
           health: normalizeStatDisplayValue(rawSavedRow.health, statColumnByKey.health.baseRawValue),
           defense: normalizeStatDisplayValue(rawSavedRow.defense, statColumnByKey.defense.baseRawValue),
+          runtimeBaseId: normalizeNonNegativeInteger(rawSavedRow.runtime_base_id),
+          runtimeItemId: String(rawSavedRow.runtime_item_id || ''),
+          runtimeWareId: normalizeNonNegativeInteger(rawSavedRow.runtime_ware_id),
+          runtimePart: normalizeNonNegativeInteger(rawSavedRow.runtime_part),
+          runtimeRefineNum: normalizeNonNegativeInteger(rawSavedRow.runtime_refine_num),
+          runtimeIsBreak: Boolean(rawSavedRow.runtime_is_break),
         };
       }),
     };
@@ -628,6 +681,13 @@ function artifactsToSnapshot(): FanxiuSpiritArtifactHallSnapshot {
         part_name: choice.partName,
       })),
     })),
+    runtime_source: runtimeSource.value,
+    runtime_complete: runtimeComplete.value,
+    runtime_error: runtimeError.value,
+    runtime_updated_at: runtimeUpdatedAt.value,
+    runtime_item_count: runtimeEquippedCount.value,
+    runtime_equipped_count: runtimeEquippedCount.value,
+    runtime_debug: {},
   };
 }
 
@@ -678,6 +738,11 @@ async function loadArtifacts() {
     marketCurrencyCount.value = normalizeMarketCurrencyCount(snapshot.market_currency_count);
     marketItems.value = normalizeMarketItems(snapshot.market_items);
     storageBagItems.value = normalizeStorageBagItems(snapshot.storage_bag_items);
+    runtimeComplete.value = Boolean(snapshot.runtime_complete);
+    runtimeSource.value = snapshot.runtime_source || '';
+    runtimeError.value = snapshot.runtime_error || '';
+    runtimeEquippedCount.value = normalizeNonNegativeInteger(snapshot.runtime_equipped_count);
+    runtimeUpdatedAt.value = Number(snapshot.runtime_updated_at || 0);
     await nextTick();
     pageHydrated.value = true;
   } catch (error) {
@@ -685,8 +750,14 @@ async function loadArtifacts() {
     marketCurrencyCount.value = 0;
     marketItems.value = [];
     storageBagItems.value = [];
+    runtimeComplete.value = false;
+    runtimeSource.value = '';
+    runtimeError.value = '';
+    runtimeEquippedCount.value = 0;
+    runtimeUpdatedAt.value = 0;
     await nextTick();
-    pageHydrated.value = true;
+    // 读取失败时保留只读默认表，避免 watch 把空白兜底数据自动写回仓库。
+    pageHydrated.value = false;
     const anyError = error as any;
     ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '读取灵器数据失败');
   } finally {
@@ -1104,6 +1175,9 @@ function startStatCellEdit(
   percentValue: string,
   baseRawValue: number,
 ) {
+  if (runtimeComplete.value) {
+    return;
+  }
   editingStatCell.value = {
     artifactName: artifact.name,
     rowOrder: row.order,
@@ -1170,7 +1244,7 @@ function commitStatCellEdit(
 }
 
 watch(
-  [artifacts, marketItems, marketCurrencyCount, storageBagItems],
+  [marketItems, marketCurrencyCount, storageBagItems],
   () => {
     scheduleSave();
   },
@@ -1191,11 +1265,34 @@ onBeforeUnmount(() => {
 <template>
   <div class="spirit-artifact-page" v-loading="loading">
     <div class="page-header">
-      <h2 class="page-title">道具仓库 · 4 灵器</h2>
+      <h2 class="page-title">道具仓库 · {{ artifacts.length }} 灵器</h2>
     </div>
 
     <div class="recognition-toolbar">
       <el-button
+        v-if="runtimeComplete"
+        type="primary"
+        :icon="Refresh"
+        :loading="loading"
+        class="recognition-button"
+        @click="loadArtifacts"
+      >
+        刷新数据库快照
+      </el-button>
+      <el-tag
+        v-if="runtimeComplete"
+        :type="runtimeSource === 'lua_main_state_server_sync' ? 'success' : 'primary'"
+        effect="plain"
+        :title="runtimeSource"
+      >
+        {{ runtimeSource === 'lua_main_state_server_sync' ? '服务器装配引用' : '游戏运行态主槽' }}
+        · {{ runtimeEquippedCount }}/{{ artifacts.length * 6 }}
+      </el-tag>
+      <span v-if="runtimeComplete && runtimeUpdatedAt" class="runtime-time">
+        {{ formatRuntimeTime(runtimeUpdatedAt) }}
+      </span>
+      <el-button
+        v-if="!runtimeComplete"
         type="primary"
         :icon="Aim"
         :loading="recognizingRanks"
@@ -1205,6 +1302,7 @@ onBeforeUnmount(() => {
         识别阶数
       </el-button>
       <el-button
+        v-if="!runtimeComplete"
         type="primary"
         plain
         :icon="Aim"
@@ -1214,6 +1312,9 @@ onBeforeUnmount(() => {
       >
         识别属性
       </el-button>
+      <el-tag v-if="!runtimeComplete" type="warning" effect="plain">
+        {{ runtimeError ? '运行态不可用，显示已保存数据' : '等待游戏运行态' }}
+      </el-tag>
       <span v-if="saving" class="save-status">保存中...</span>
     </div>
 
@@ -1378,6 +1479,7 @@ onBeforeUnmount(() => {
                 controls-position="right"
                 size="small"
                 class="integer-input"
+                :disabled="runtimeComplete"
               />
             </template>
           </el-table-column>
@@ -1391,6 +1493,7 @@ onBeforeUnmount(() => {
                 controls-position="right"
                 size="small"
                 class="integer-input"
+                :disabled="runtimeComplete"
               />
             </template>
           </el-table-column>
@@ -1406,7 +1509,7 @@ onBeforeUnmount(() => {
                 <span class="percent-stepper__controls">
                   <el-button
                     :icon="ArrowUp"
-                    :disabled="!canStepArtifactPeerless(row, 'artifactPeerless1', 1)"
+                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless1', 1)"
                     size="small"
                     text
                     class="percent-stepper__button"
@@ -1415,7 +1518,7 @@ onBeforeUnmount(() => {
                   />
                   <el-button
                     :icon="ArrowDown"
-                    :disabled="!canStepArtifactPeerless(row, 'artifactPeerless1', -1)"
+                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless1', -1)"
                     size="small"
                     text
                     class="percent-stepper__button"
@@ -1443,7 +1546,7 @@ onBeforeUnmount(() => {
                 <span class="percent-stepper__controls">
                   <el-button
                     :icon="ArrowUp"
-                    :disabled="!canStepArtifactPeerless(row, 'artifactPeerless2', 1)"
+                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless2', 1)"
                     size="small"
                     text
                     class="percent-stepper__button"
@@ -1452,7 +1555,7 @@ onBeforeUnmount(() => {
                   />
                   <el-button
                     :icon="ArrowDown"
-                    :disabled="!canStepArtifactPeerless(row, 'artifactPeerless2', -1)"
+                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless2', -1)"
                     size="small"
                     text
                     class="percent-stepper__button"
@@ -1601,6 +1704,12 @@ onBeforeUnmount(() => {
 .save-status {
   color: #64748b;
   font-size: 13px;
+}
+
+.runtime-time {
+  color: #909399;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .market-panel {

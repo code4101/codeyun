@@ -1,7 +1,18 @@
 from __future__ import annotations
 
-from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens, locate_text_box, query_ocr_lines, query_spatial_ocr
-from backend.core.fanxiu.runtime.behavior_tree import create_fanxiu_runtime_runner
+import pytest
+
+from backend.core.fanxiu.data_annotation.ocr_spatial import (
+    OcrTextMatchAmbiguousError,
+    find_text_matches,
+    group_ocr_tokens,
+    locate_text_box,
+    query_ocr_lines,
+    query_spatial_ocr,
+    segment_ocr_tokens,
+    select_text_match,
+)
+from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 
 
 def _tokens(text: str, *, x: float = 0, y: float = 10, width: float = 20, height: float = 20, line_id: str | None = None, line_order: int = 0):
@@ -42,6 +53,17 @@ def test_spatial_ocr_groups_rows_by_geometry_without_line_metadata():
     tokens = _tokens("甲乙", x=10, y=10, line_id="line-0") + _tokens("丙丁", x=10, y=60, line_id="line-1", line_order=1)
 
     assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["甲乙", "丙丁"]
+
+
+def test_linked_tokens_ignore_non_geometric_engine_line_order() -> None:
+    tokens = [
+        {"text": "首", "x": 45, "y": 70, "w": 60, "h": 60, "parent_line_id": "line-0", "line_order": 0, "order": 0},
+        {"text": "规", "x": 450, "y": 78, "w": 50, "h": 40, "parent_line_id": "line-1", "line_order": 1, "order": 0},
+        {"text": "则", "x": 501, "y": 78, "w": 49, "h": 40, "parent_line_id": "line-1", "line_order": 1, "order": 1},
+        {"text": "领", "x": 110, "y": 95, "w": 35, "h": 35, "parent_line_id": "line-2", "line_order": 2, "order": 0},
+    ]
+
+    assert [fragment["text"] for fragment in group_ocr_tokens(tokens)] == ["首", "领", "规则"]
 
 
 def test_paddle_parent_lines_keep_distant_gui_labels_separate_on_the_same_row():
@@ -93,6 +115,63 @@ def test_locate_substring_never_crosses_paddle_parent_lines():
     assert locate_text_box(tokens, "白玉京") is None
 
 
+def test_text_matches_split_dense_parent_line_by_geometry_and_keep_real_tokens():
+    tokens = (
+        _tokens("仙窍", x=100, y=100, width=20, height=30, line_id="menu")
+        + _tokens("修炼", x=190, y=100, width=20, height=30, line_id="menu")
+    )
+
+    matches = find_text_matches(tokens, "修炼")
+
+    assert [
+        "".join(token["text"] for token in segment)
+        for segment in segment_ocr_tokens(tokens)
+    ] == ["仙窍", "修炼"]
+    assert len(matches) == 1
+    assert matches[0].box == {"x": 190.0, "y": 100.0, "w": 40.0, "h": 30.0}
+    assert [token["text"] for token in matches[0].tokens] == ["修", "炼"]
+    assert matches[0].point(
+        anchor="top_center",
+        offset=(0, -1),
+        offset_unit="height",
+    ) == (210.0, 70.0)
+    assert matches[0].point(
+        anchor="top_left",
+        offset=(0, 2),
+        offset_unit="height",
+    ) == (190.0, 160.0)
+
+
+def test_text_match_never_bridges_a_large_gap_inside_one_parent_line():
+    tokens = [
+        {"text": "修", "x": 100, "y": 100, "w": 20, "h": 30, "parent_line_id": "menu", "order": 0},
+        {"text": "炼", "x": 180, "y": 100, "w": 20, "h": 30, "parent_line_id": "menu", "order": 1},
+    ]
+
+    assert find_text_matches(tokens, "修炼") == []
+
+
+def test_text_match_rejects_partial_multi_character_token_without_real_boxes():
+    tokens = [
+        {"text": "仙窍修炼", "x": 100, "y": 100, "w": 160, "h": 30, "parent_line_id": "menu", "order": 0},
+    ]
+
+    assert find_text_matches(tokens, "修炼") == []
+    assert len(find_text_matches(tokens, "仙窍修炼")) == 1
+
+
+def test_text_match_requires_explicit_disambiguation_for_duplicates():
+    matches = find_text_matches(
+        _tokens("修炼", x=100, y=100, line_id="top")
+        + _tokens("修炼", x=100, y=200, line_id="bottom", line_order=1),
+        "修炼",
+    )
+
+    with pytest.raises(OcrTextMatchAmbiguousError, match="存在 2 个命中"):
+        select_text_match(matches, "修炼")
+    assert select_text_match(matches, "修炼", occurrence=1) == matches[1]
+
+
 def test_spatial_ocr_includes_character_at_thirty_percent_overlap():
     result = query_spatial_ocr(
         _tokens("天地", y=0),
@@ -112,7 +191,7 @@ def test_spatial_ocr_excludes_character_below_thirty_percent_even_when_center_in
 
 
 def test_shape_match_keeps_exact_token_box():
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     image = {"id": 34, "width": 900, "height": 1600}
     shape = {
         "title": "左侧菜单",
@@ -142,7 +221,7 @@ def test_shape_match_keeps_exact_token_box():
 
 
 def test_shape_ocr_reuses_one_token_cache_for_multiple_shapes(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     image = {"id": 322, "width": 900, "height": 1600}
     first = {"title": "前半", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "是否创建", "ocrMatchMode": "contains", "x": 0.08, "y": 0.29, "w": 0.2, "h": 0.06}
     second = {"title": "整句", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "是否创建队伍", "ocrMatchMode": "contains", "x": 0.08, "y": 0.29, "w": 0.4, "h": 0.06}
@@ -161,7 +240,7 @@ def test_shape_ocr_reuses_one_token_cache_for_multiple_shapes(monkeypatch):
 
 
 def test_runtime_fragments_use_cached_native_lines_not_token_geometry(monkeypatch):
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     native_lines = [
         {"line_id": "line-0", "order": 0, "text": "盟玉清道宗12/12", "x": 71, "y": 883, "w": 359, "h": 31, "source": "paddle"},
         {"line_id": "line-1", "order": 1, "text": "太明玉墟", "x": 638, "y": 886, "w": 116, "h": 31, "source": "paddle"},

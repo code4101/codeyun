@@ -8,6 +8,7 @@ from typing import Any
 NOTE_COMPLETION_PROGRESS_EXPR_FIELD = "__completion_progress_expr"
 
 _PERCENT_TOKEN_RE = re.compile(r"(?P<number>(?:\d+(?:\.\d*)?)|(?:\.\d+))\s*%")
+_DEFAULT_FULL_PROGRESS_RE = re.compile(r"^(?:1(?:\.0+)?|100(?:\.0+)?%)$")
 
 
 def is_note_system_custom_field_key(key: Any) -> bool:
@@ -79,6 +80,21 @@ def evaluate_completion_progress_expr(value: Any) -> float | None:
         return None
 
     return max(0.0, min(1.0, float(result)))
+
+
+def is_default_full_completion_progress_expr(value: Any) -> bool:
+    """Return whether an explicit expression only repeats the done-stage default."""
+    text = normalize_completion_progress_expr(value)
+    return bool(text and _DEFAULT_FULL_PROGRESS_RE.fullmatch(re.sub(r"\s+", "", text)))
+
+
+def resolve_completion_progress(lifecycle_stage: Any, expr: Any) -> float | None:
+    """Resolve effective progress; a done note without an expression is complete."""
+    explicit = evaluate_completion_progress_expr(expr)
+    if explicit is not None:
+        return explicit
+    normalized_stage = str(lifecycle_stage or "").strip().lower()
+    return 1.0 if normalized_stage in {"done", "predone"} else None
 
 
 def get_custom_field_value(custom_fields: Any, key: str) -> Any:

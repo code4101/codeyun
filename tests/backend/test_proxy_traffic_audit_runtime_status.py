@@ -64,3 +64,40 @@ def test_runtime_management_uses_lightweight_proxy_traffic_status(monkeypatch):
     assert captured == [False]
     assert item["status"]["last_sample_summary"] == "2 connections"
     assert item["status"]["top_hosts"] == []
+
+
+def test_start_proxy_traffic_audit_uses_lightweight_status(monkeypatch):
+    captured: list[bool] = []
+
+    def fake_status(*, include_summary: bool = True):
+        captured.append(include_summary)
+        return {"running": True, "pids": [123]}
+
+    monkeypatch.setattr(proxy_traffic_audit_runtime, "get_proxy_traffic_audit_status", fake_status)
+
+    result = proxy_traffic_audit_runtime.start_proxy_traffic_audit()
+
+    assert result["status"] == "started"
+    assert captured == [False]
+
+
+def test_stop_proxy_traffic_audit_uses_lightweight_status(monkeypatch):
+    captured: list[bool] = []
+
+    monkeypatch.setattr(
+        proxy_traffic_audit_runtime,
+        "list_proxy_traffic_audit_processes",
+        lambda: [],
+    )
+    monkeypatch.setattr(proxy_traffic_audit_runtime.time, "sleep", lambda _seconds: None)
+
+    def fake_status(*, include_summary: bool = True):
+        captured.append(include_summary)
+        return {"running": False, "pids": []}
+
+    monkeypatch.setattr(proxy_traffic_audit_runtime, "get_proxy_traffic_audit_status", fake_status)
+
+    result = proxy_traffic_audit_runtime.stop_proxy_traffic_audit()
+
+    assert result["status"] == "stopped"
+    assert captured == [False]

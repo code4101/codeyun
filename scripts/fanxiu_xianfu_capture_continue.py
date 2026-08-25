@@ -14,15 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.fanxiu.runtime.behavior_tree import (
+from backend.core.fanxiu.behavior_tree.runtime import (
     DEFAULT_FANXIU_ENTRY_ID,
-    create_fanxiu_runtime_runner,
+    create_behavior_tree_runtime_runner,
     data_annotation_asset_tree_path,
 )
-from backend.core.fanxiu.data_annotation.runtime_runner import (
+from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
     _parse_xianfu_visit_cd_seconds,
 )
-from backend.core.fanxiu.data_annotation.runtime_control import read_scheduler_tasks
+from backend.core.fanxiu.data_annotation.behavior_tree_control import read_scheduler_tasks
 from backend.core.temp_paths import codeyun_temp_root
 from scripts.fanxiu_xianfu_migration_probe import (
     DEFAULT_OLD_XIANFU_ROOT,
@@ -370,7 +370,7 @@ def main() -> int:
             _print_json({"ok": False, "reason": "prepare_runtime_failed", "prepare_runtime": prepare_result, "prepare_results": prepare_results})
             return 1
 
-    runner = create_fanxiu_runtime_runner()
+    runner = create_behavior_tree_runtime_runner()
     tree = runner._load_asset_tree(asset_tree)
     ctx = {
         "entry": _LocalEntry(),

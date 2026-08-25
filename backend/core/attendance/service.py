@@ -45,9 +45,10 @@ ATTENDANCE_ORDER_OPERATION_PASSWORD_ENV = "XL_KQ_PAY_PASSWORD"
 ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY = "browser_device_entry_id"
 ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY = "data_device_entry_id"
 ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY = "step_device_entry_ids"
-ATTENDANCE_STEP_NUMBERS = (1, 2, 3, 4, 5, 6)
-ATTENDANCE_BROWSER_STEP_NUMBERS = {1, 4, 6}
+ATTENDANCE_STEP_NUMBERS = (0, 1, 2, 3, 4, 5, 6)
+ATTENDANCE_BROWSER_STEP_NUMBERS = {0, 1, 4, 6}
 ATTENDANCE_STEP_TITLES = {
+    0: "step0 浏览器同步动态课程目录与表格模板",
     1: "step1 课程数据浏览器导入原始数据",
     2: "step2 课程数据聚合与写回",
     3: "step3 课程数据返款计算与高亮",
@@ -147,9 +148,9 @@ def normalize_attendance_step_number(value: Any) -> int:
     try:
         step_number = int(value)
     except (TypeError, ValueError) as exc:
-        raise AttendanceServiceError("课程数据步骤编号必须是 1-6") from exc
+        raise AttendanceServiceError("课程数据步骤编号必须是 0-6") from exc
     if step_number not in ATTENDANCE_STEP_NUMBERS:
-        raise AttendanceServiceError("课程数据步骤编号必须是 1-6")
+        raise AttendanceServiceError("课程数据步骤编号必须是 0-6")
     return step_number
 
 

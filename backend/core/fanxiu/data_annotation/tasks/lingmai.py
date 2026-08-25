@@ -2,29 +2,28 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
-
-from sqlmodel import Session
+from typing import Any, Mapping
 
 from backend.core.fanxiu.catalog.server_relations import classify_fanxiu_target_relation
-from backend.core.fanxiu.data_annotation.tasks.daofa import current_player_battle_score
-from backend.core.fanxiu.packet.current_facts import (
-    get_latest_fanxiu_lingmai_scene_seat_facts,
-    get_latest_fanxiu_lingmai_self_seat_facts,
-)
-from backend.core.fanxiu.packet.service_runtime import (
-    request_fanxiu_packet_service_catch_up,
-    start_fanxiu_packet_service,
-)
-from backend.db import engine
-
-
 LINGMAI_SHENMAI_ROOM_ID = 10
 LINGMAI_UNION_SHENMAI_ROOM_ID = 17
+LINGMAI_UNION_SHENGMAI_ROOM_ID = 18
 LINGMAI_SHENMAI_ROOM_IDS = (LINGMAI_SHENMAI_ROOM_ID, LINGMAI_UNION_SHENMAI_ROOM_ID)
-LINGMAI_SAFE_BATTLE_RATIO = 0.90
+LINGMAI_SUPPORTED_ROOM_IDS = (*LINGMAI_SHENMAI_ROOM_IDS, LINGMAI_UNION_SHENGMAI_ROOM_ID)
+LINGMAI_SAFE_BATTLE_RATIO = 1.0
+LINGMAI_SHENGMAI_MIN_STRENGTH = 300
 LINGMAI_DEFAULT_RETRY_SECONDS = 1800
 LINGMAI_PROTECTION_RETRY_GRACE_MS = 5000
+
+
+def lingmai_facts_retry_seconds(payload: Mapping[str, Any]) -> int:
+    """Back off incomplete Runtime facts without creating a minute-level loop."""
+
+    return int(
+        payload.get("lingmai_facts_retry_seconds")
+        or payload.get("lingmai_no_target_retry_seconds")
+        or 1800
+    )
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -49,24 +48,22 @@ def select_lingmai_seat_action(
     seat_facts: dict[str, Any],
     *,
     self_seat_facts: dict[str, Any],
+    self_group_facts: dict[str, Any] | None = None,
     player_profile: dict[str, Any],
+    current_strength: int | float | None = None,
+    target_room_id: int | None = None,
     data_dir: str | Path | None = None,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    """Choose an empty Shenmai seat or the weakest safe non-friendly target."""
+    """Choose an empty seat or the weakest beatable non-friendly target.
 
-    if not seat_facts.get("available"):
-        return {"ok": False, "status": "invalid_facts", "reason": "seat_roster_missing", "action": None}
-    room_id = _int_or_none(seat_facts.get("room_id"))
-    if room_id not in LINGMAI_SHENMAI_ROOM_IDS:
-        return {"ok": False, "status": "invalid_facts", "reason": "not_shenmai_room", "action": None}
+    Shengmai is an upgrade tier.  It is considered only with at least 300
+    strength so one 150-point kick/seat action still leaves a second action in
+    reserve if the player is immediately displaced.
+    """
 
     if not self_seat_facts.get("available"):
         return {"ok": False, "status": "invalid_facts", "reason": "self_seat_missing", "action": None}
-    roster_pcap = str((seat_facts.get("evidence") or {}).get("pcap_name") or "")
-    self_seat_pcap = str((self_seat_facts.get("evidence") or {}).get("pcap_name") or "")
-    if roster_pcap and self_seat_pcap and roster_pcap != self_seat_pcap:
-        return {"ok": False, "status": "invalid_facts", "reason": "self_seat_roster_round_mismatch", "action": None}
     if not player_profile.get("available"):
         return {"ok": False, "status": "invalid_profile", "reason": "self_profile_missing", "action": None}
     self_role_id = _int_or_none(player_profile.get("role_id"))
@@ -77,18 +74,52 @@ def select_lingmai_seat_action(
     self_seat = self_seat_facts.get("seat") if isinstance(self_seat_facts.get("seat"), dict) else None
     self_owner = self_seat.get("owner") if isinstance(self_seat, dict) and isinstance(self_seat.get("owner"), dict) else None
     self_seat_role_id = _int_or_none(self_owner.get("role_id")) if self_owner else None
+    room_id = _int_or_none(seat_facts.get("room_id"))
+    expected_room_id = _int_or_none(target_room_id) or room_id
+    if expected_room_id not in LINGMAI_SUPPORTED_ROOM_IDS:
+        return {"ok": False, "status": "invalid_facts", "reason": "unsupported_lingmai_room", "action": None}
+    strength = _number_or_none(current_strength)
+    if expected_room_id == LINGMAI_UNION_SHENGMAI_ROOM_ID:
+        if strength is None:
+            return {"ok": False, "status": "invalid_facts", "reason": "strength_missing", "action": None}
+        if strength < LINGMAI_SHENGMAI_MIN_STRENGTH:
+            return {
+                "ok": True,
+                "status": "fallback_shenmai",
+                "reason": "shengmai_strength_reserve_insufficient",
+                "action": "fallback_shenmai",
+                "strength": strength,
+                "minimum_strength": LINGMAI_SHENGMAI_MIN_STRENGTH,
+                "room_id": expected_room_id,
+            }
+
     if self_seat_facts.get("seated"):
         if self_seat_role_id != self_role_id:
             return {"ok": False, "status": "invalid_facts", "reason": "self_seat_owner_mismatch", "action": None}
-        return {
-            "ok": True,
-            "status": "already_seated",
-            "action": "already_seated",
-            "target": None,
-            "self_seat": self_seat,
-            "room_id": room_id,
-        }
+        own_room_id = _int_or_none(self_seat_facts.get("room_id"))
+        if own_room_id is None:
+            own_room_id = _int_or_none(seat_facts.get("room_id"))
+        if own_room_id not in LINGMAI_SUPPORTED_ROOM_IDS:
+            return {"ok": False, "status": "invalid_facts", "reason": "not_shenmai_room", "action": None}
+        if own_room_id == expected_room_id or (
+            own_room_id == LINGMAI_UNION_SHENGMAI_ROOM_ID
+            and expected_room_id in LINGMAI_SHENMAI_ROOM_IDS
+        ):
+            return {
+                "ok": True,
+                "status": "already_seated",
+                "action": "already_seated",
+                "target": None,
+                "self_seat": self_seat,
+                "room_id": own_room_id,
+            }
 
+    if not seat_facts.get("available"):
+        return {"ok": False, "status": "invalid_facts", "reason": "seat_roster_missing", "action": None}
+    if room_id != expected_room_id:
+        return {"ok": False, "status": "invalid_facts", "reason": "target_room_roster_mismatch", "action": None}
+    if room_id not in LINGMAI_SUPPORTED_ROOM_IDS:
+        return {"ok": False, "status": "invalid_facts", "reason": "not_shenmai_room", "action": None}
     available_count = _int_or_none(seat_facts.get("available_count"))
     if available_count is None:
         return {"ok": False, "status": "invalid_facts", "reason": "available_count_missing", "action": None}
@@ -104,6 +135,15 @@ def select_lingmai_seat_action(
 
     if not seat_facts.get("complete"):
         return {"ok": False, "status": "invalid_facts", "reason": "seat_roster_incomplete", "action": None}
+    self_team_uid = _int_or_none(self_owner.get("team_uid")) if self_owner else None
+    if self_team_uid is None:
+        self_team_uid = _int_or_none(player_profile.get("team_uid"))
+    if self_team_uid is None:
+        # Compatibility for older snapshots/tests that exposed the player's
+        # group only through ``union_group_facts``.
+        self_team_uid = _int_or_none((self_group_facts or {}).get("veins_group"))
+    if room_id in {LINGMAI_UNION_SHENMAI_ROOM_ID, LINGMAI_UNION_SHENGMAI_ROOM_ID} and self_team_uid is None:
+        return {"ok": False, "status": "invalid_facts", "reason": "self_veins_group_missing", "action": None}
     current_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     safe_battle_max = self_battle * LINGMAI_SAFE_BATTLE_RATIO
     eligible: list[dict[str, Any]] = []
@@ -128,6 +168,10 @@ def select_lingmai_seat_action(
         if role_id == self_role_id:
             rejected["self"] += 1
             continue
+        target_group_uid = _int_or_none(owner.get("team_uid"))
+        if self_team_uid is not None and target_group_uid == self_team_uid:
+            rejected["friendly"] += 1
+            continue
         relation = classify_fanxiu_target_relation(
             is_npc=False,
             server_id=owner.get("server_id"),
@@ -136,7 +180,7 @@ def select_lingmai_seat_action(
         if relation.get("camp") != "non_friendly":
             rejected["friendly"] += 1
             continue
-        if battle_score > safe_battle_max:
+        if battle_score >= safe_battle_max:
             rejected["unsafe_power"] += 1
             continue
 
@@ -148,6 +192,8 @@ def select_lingmai_seat_action(
             "name": name,
             "server_id": _int_or_none(owner.get("server_id")),
             "alliance_id": _int_or_none(owner.get("alliance_id")),
+            "team_uid": target_group_uid,
+            "team_name": str(owner.get("team_name") or ""),
             "battle_score": battle_score,
             "protect_end_time": protect_end_time,
             "relation": relation,
@@ -167,7 +213,10 @@ def select_lingmai_seat_action(
     retry_reason = None
     if target is None:
         if future:
-            retry_at_ms = int(future[0]["protect_end_time"]) + LINGMAI_PROTECTION_RETRY_GRACE_MS
+            retry_at_ms = min(
+                int(future[0]["protect_end_time"]) + LINGMAI_PROTECTION_RETRY_GRACE_MS,
+                current_ms + LINGMAI_DEFAULT_RETRY_SECONDS * 1000,
+            )
             retry_reason = "earliest_beatable_protection_end"
         else:
             retry_at_ms = current_ms + LINGMAI_DEFAULT_RETRY_SECONDS * 1000
@@ -178,6 +227,11 @@ def select_lingmai_seat_action(
         "status": "kick" if target is not None else "retry",
         "action": "kick" if target is not None else "retry",
         "target": target,
+        # GUI rows can change between the Runtime snapshot and OCR.  Expose
+        # every currently-authorized beatable target so the caller can choose
+        # the weakest one that is still visible instead of binding the whole
+        # action to a single rapidly-stale name.
+        "eligible_targets": eligible,
         "eligible_count": len(eligible),
         "future_count": len(future),
         "future_target": future[0] if future else None,
@@ -186,8 +240,75 @@ def select_lingmai_seat_action(
         "rejected": rejected,
         "safe_battle_ratio": LINGMAI_SAFE_BATTLE_RATIO,
         "safe_battle_max": safe_battle_max,
+        "strength": strength,
+        "minimum_shengmai_strength": LINGMAI_SHENGMAI_MIN_STRENGTH,
         "available_count": available_count,
         "room_id": room_id,
+    }
+
+
+def read_and_select_lingmai_runtime_action(
+    *,
+    snapshot: dict[str, Any] | None = None,
+    data_dir: str | Path | None = None,
+    now_ms: int | None = None,
+    target_room_id: int | None = None,
+) -> dict[str, Any]:
+    """Read Lingmai seats from memory and choose a safe action without GUI OCR."""
+
+    if snapshot is None:
+        from backend.core.fanxiu.instrumentation.lingmai import read_lingmai_snapshot
+
+        snapshot = read_lingmai_snapshot()
+    runtime_snapshot = dict(snapshot)
+    if runtime_snapshot.get("available") is False:
+        return {
+            "ok": False,
+            "status": "runtime_unavailable",
+            "reason": str(runtime_snapshot.get("reason") or "lingmai_runtime_unavailable"),
+            "action": None,
+            "source": "runtime_memory",
+            "runtime_snapshot": runtime_snapshot,
+        }
+    roster_key = (
+        "shengmai_roster"
+        if target_room_id is not None and int(target_room_id) == LINGMAI_UNION_SHENGMAI_ROOM_ID
+        else "shenmai_roster"
+    )
+    seat_facts = runtime_snapshot.get(roster_key) if isinstance(runtime_snapshot.get(roster_key), dict) else {}
+    self_seat = (
+        runtime_snapshot.get("self_seat_facts")
+        if isinstance(runtime_snapshot.get("self_seat_facts"), dict)
+        else {}
+    )
+    self_group = (
+        runtime_snapshot.get("union_group_facts")
+        if isinstance(runtime_snapshot.get("union_group_facts"), dict)
+        else {}
+    )
+    profile = (
+        runtime_snapshot.get("self_profile")
+        if isinstance(runtime_snapshot.get("self_profile"), dict)
+        else {}
+    )
+    selection = select_lingmai_seat_action(
+        seat_facts,
+        self_seat_facts=self_seat,
+        self_group_facts=self_group,
+        player_profile=profile,
+        current_strength=runtime_snapshot.get("strength"),
+        target_room_id=target_room_id,
+        data_dir=data_dir,
+        now_ms=now_ms,
+    )
+    return {
+        **selection,
+        "source": "runtime_memory",
+        "seat_facts": seat_facts,
+        "self_seat_facts": self_seat,
+        "self_group_facts": self_group,
+        "player_profile": profile,
+        "runtime_snapshot": runtime_snapshot,
     }
 
 
@@ -195,35 +316,38 @@ def refresh_and_select_lingmai_seat_action(
     *,
     data_dir: str | Path | None = None,
     since_seconds: int = 1200,
+    target_room_id: int = LINGMAI_UNION_SHENMAI_ROOM_ID,
 ) -> dict[str, Any]:
-    """Catch up live packets, normalize the Shenmai roster, then choose one action."""
+    """Read live seat truth from Runtime memory and choose a safe action.
 
-    start_result = start_fanxiu_packet_service()
-    catch_up = request_fanxiu_packet_service_catch_up(
-        reason="daily-lingmai-select-seat-action",
-        wait_seconds=120.0,
-    )
-    with Session(engine) as session:
-        seat_facts = get_latest_fanxiu_lingmai_scene_seat_facts(
-            session,
-            since_seconds=max(60, int(since_seconds)),
-        )
-        self_seat_facts = get_latest_fanxiu_lingmai_self_seat_facts(
-            session,
-            since_seconds=max(60, int(since_seconds)),
-        )
-    profile = current_player_battle_score()
-    selection = select_lingmai_seat_action(
-        seat_facts,
-        self_seat_facts=self_seat_facts,
-        player_profile=profile,
+    ``since_seconds`` remains in the public signature for old callers, but is
+    deliberately ignored. Seat selection must not start packet capture or
+    interpret a missing Runtime roster as an empty room.  Stable account
+    Missing account identity or battle score is a Runtime completeness defect;
+    callers retry after the model is loaded instead of reading capture history.
+    """
+
+    _ = since_seconds
+    return read_and_select_lingmai_runtime_action(
         data_dir=data_dir,
+        target_room_id=target_room_id,
     )
-    return {
-        **selection,
-        "start_result": start_result,
-        "catch_up": catch_up,
-        "seat_facts": seat_facts,
-        "self_seat_facts": self_seat_facts,
-        "player_profile": profile,
-    }
+
+
+def refresh_lingmai_daily_status(
+    *,
+    since_seconds: int = 300,
+    wait_seconds: float = 30.0,
+    union_only: bool = True,
+) -> dict[str, Any]:
+    """Read today's authoritative Lingmai status from Runtime memory only.
+
+    The caller invokes this only after entering the Lingmai pages, where the
+    game's ``LuaUnionVenisMgr`` model is loaded. Missing/incomplete Runtime
+    fields are returned as unknown and must never be rewritten as completion.
+    """
+
+    from backend.core.fanxiu.instrumentation.lingmai import read_lingmai_snapshot
+
+    _ = (since_seconds, wait_seconds, union_only)
+    return read_lingmai_snapshot()

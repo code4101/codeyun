@@ -2038,7 +2038,7 @@ onBeforeUnmount(() => {
           :workbook-id="workbookId"
           :sheet-id="tab.sheet.sheet_id"
           default-height-mode="content"
-          :show-title-input="false"
+          :show-sheet-menu="false"
           :empty-text="tab.emptyText"
         />
         <el-empty

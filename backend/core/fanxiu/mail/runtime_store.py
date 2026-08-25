@@ -14,7 +14,7 @@ def _sqlmodel_mail_record() -> tuple[Any, Any, Any]:
     return Session, select, FanxiuMailRecord
 
 
-def trace_packet_mail_gap(
+def trace_runtime_mail_gap(
     engine_getter: EngineGetter,
     *,
     title: str,
@@ -22,88 +22,111 @@ def trace_packet_mail_gap(
     window_minutes: int = 8,
     max_sources: int = 24,
 ) -> dict[str, Any]:
-    from backend.core.fanxiu.mail.packet_sync import trace_fanxiu_mail_packet_gap
+    """Retained diagnostic shape; runtime-gap tracing has been retired."""
 
-    Session, _select, _mail_record = _sqlmodel_mail_record()
-    with Session(engine_getter()) as session:
-        return trace_fanxiu_mail_packet_gap(
-            session,
-            title=title,
-            time_text=time_text,
-            window_minutes=window_minutes,
-            max_sources=max_sources,
-        )
+    del engine_getter, window_minutes, max_sources
+    return {
+        "ok": False,
+        "available": False,
+        "source": "runtime_memory",
+        "reason": "runtime_gap_tracing_retired",
+        "title": title,
+        "time_text": time_text,
+        "sources": [],
+    }
 
 
-def pending_packet_mail_records(engine_getter: EngineGetter) -> list[Any]:
+def pending_runtime_mail_records(engine_getter: EngineGetter) -> list[Any]:
+    """Compatibility name: current candidates now come only from MailMgr."""
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return list(
             session.exec(
                 select(FanxiuMailRecord).where(
-                    FanxiuMailRecord.source == "packet",
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                     FanxiuMailRecord.locked == False,  # noqa: E712
                 )
             ).all()
         )
 
 
-def pending_packet_mail_action_candidates(engine_getter: EngineGetter, policies: set[str]) -> list[Any]:
-    Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
-    with Session(engine_getter()) as session:
-        return list(
-            session.exec(
-                select(FanxiuMailRecord).where(
-                    FanxiuMailRecord.source == "packet",
-                    FanxiuMailRecord.action_policy.in_(tuple(sorted(policies))),
-                    FanxiuMailRecord.locked == False,  # noqa: E712
-                    FanxiuMailRecord.status.not_in(("claimed", "deleted", "missing_from_list")),
-                )
-            ).all()
-        )
+def current_runtime_mail_sequence(engine_getter: EngineGetter) -> list[Any]:
+    """Return the latest complete MailMgr sequence in its original UI order."""
 
-
-def mark_packet_mail_record_missing_from_list(
-    engine_getter: EngineGetter,
-    record: Any,
-    *,
-    reason: str,
-    marked_at: str,
-) -> None:
-    import time
-
-    Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
-    mail_key = str(getattr(record, "mail_key", "") or "").strip()
-    if not mail_key:
-        return
-    with Session(engine_getter()) as session:
-        current = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_key == mail_key)).first()
-        if current is None:
-            return
-        evidence = dict(current.evidence or {})
-        evidence.update(
-            {
-                "runtime_action": "missing_from_list",
-                "missing_from_list_at": marked_at,
-                "missing_from_list_reason": reason,
-            }
-        )
-        current.status = "missing_from_list"
-        current.action_policy = ""
-        current.evidence = evidence
-        current.updated_at = time.time()
-        session.add(current)
-        session.commit()
-
-
-def packet_mail_records_same_title(engine_getter: EngineGetter, normalized_title: str, *, limit: int = 5) -> list[Any]:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return list(
             session.exec(
                 select(FanxiuMailRecord)
                 .where(
-                    FanxiuMailRecord.source == "packet",
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
+                    FanxiuMailRecord.runtime_index.is_not(None),
+                )
+                .order_by(FanxiuMailRecord.runtime_index.asc())
+            ).all()
+        )
+
+
+def current_runtime_mail_sequence_snapshot(engine_getter: EngineGetter) -> dict[str, Any]:
+    """Build a validated alignment snapshot from the durable Runtime projection."""
+
+    rows = current_runtime_mail_sequence(engine_getter)
+    indices = [row.runtime_index for row in rows]
+    fingerprints = {
+        str(row.runtime_sequence_fingerprint or "") for row in rows
+    }
+    fingerprints.discard("")
+    complete = indices == list(range(len(rows))) and len(fingerprints) <= 1
+    return {
+        "ok": complete,
+        "complete": complete,
+        "decoded_count": len(rows),
+        "total": len(rows),
+        "sequence_fingerprint": next(iter(fingerprints), ""),
+        "items": [row.model_dump() for row in rows],
+        "reason": "" if complete else "数据库中的动态邮件序号不连续或快照指纹不一致",
+    }
+
+
+def pending_runtime_mail_action_candidates(engine_getter: EngineGetter, policies: set[str]) -> list[Any]:
+    Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
+    with Session(engine_getter()) as session:
+        return list(
+            session.exec(
+                select(FanxiuMailRecord).where(
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
+                    FanxiuMailRecord.runtime_status == "unclaimed",
+                    FanxiuMailRecord.action_policy.in_(tuple(sorted(policies))),
+                    FanxiuMailRecord.locked == False,  # noqa: E712
+                )
+            ).all()
+        )
+
+
+def mark_runtime_mail_record_missing_from_list(
+    engine_getter: EngineGetter,
+    record: Any,
+    *,
+    reason: str,
+    marked_at: str,
+) -> None:
+    # GUI absence is not authoritative. A complete MailMgr snapshot alone may
+    # mark a record absent, so this legacy visual inference intentionally does nothing.
+    del engine_getter, record, reason, marked_at
+
+
+def runtime_mail_records_same_title(engine_getter: EngineGetter, normalized_title: str, *, limit: int = 5) -> list[Any]:
+    Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
+    with Session(engine_getter()) as session:
+        return list(
+            session.exec(
+                select(FanxiuMailRecord)
+                .where(
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                     FanxiuMailRecord.normalized_title == normalized_title,
                 )
                 .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
@@ -112,12 +135,13 @@ def packet_mail_records_same_title(engine_getter: EngineGetter, normalized_title
         )
 
 
-def packet_mail_records_same_time(engine_getter: EngineGetter, normalized_time: str, *, limit: int | None = None) -> list[Any]:
+def runtime_mail_records_same_time(engine_getter: EngineGetter, normalized_time: str, *, limit: int | None = None) -> list[Any]:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     query = (
         select(FanxiuMailRecord)
         .where(
-            FanxiuMailRecord.source == "packet",
+            FanxiuMailRecord.source == "runtime_memory",
+            FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
             FanxiuMailRecord.create_time_text == normalized_time,
         )
         .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
@@ -128,7 +152,7 @@ def packet_mail_records_same_time(engine_getter: EngineGetter, normalized_time: 
         return list(session.exec(query).all())
 
 
-def packet_mail_records_for_visible_row_exact(
+def runtime_mail_records_for_visible_row_exact(
     engine_getter: EngineGetter,
     *,
     normalized_title: str,
@@ -140,7 +164,8 @@ def packet_mail_records_for_visible_row_exact(
             session.exec(
                 select(FanxiuMailRecord)
                 .where(
-                    FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                     FanxiuMailRecord.normalized_title == normalized_title,
                     FanxiuMailRecord.create_time_text == normalized_time,
                 )
@@ -149,14 +174,15 @@ def packet_mail_records_for_visible_row_exact(
         )
 
 
-def packet_mail_records_for_visible_row_same_time(engine_getter: EngineGetter, normalized_time: str) -> list[Any]:
+def runtime_mail_records_for_visible_row_same_time(engine_getter: EngineGetter, normalized_time: str) -> list[Any]:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return list(
             session.exec(
                 select(FanxiuMailRecord)
                 .where(
-                    FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                     FanxiuMailRecord.create_time_text == normalized_time,
                 )
                 .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
@@ -164,14 +190,15 @@ def packet_mail_records_for_visible_row_same_time(engine_getter: EngineGetter, n
         )
 
 
-def packet_mail_records_by_normalized_title(engine_getter: EngineGetter, normalized_title: str, *, limit: int = 20) -> list[Any]:
+def runtime_mail_records_by_normalized_title(engine_getter: EngineGetter, normalized_title: str, *, limit: int = 20) -> list[Any]:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return list(
             session.exec(
                 select(FanxiuMailRecord)
                 .where(
-                    FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                     FanxiuMailRecord.normalized_title == normalized_title,
                 )
                 .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
@@ -180,44 +207,49 @@ def packet_mail_records_by_normalized_title(engine_getter: EngineGetter, normali
         )
 
 
-def recent_packet_mail_records(engine_getter: EngineGetter, *, limit: int = 200) -> list[Any]:
+def recent_runtime_mail_records(engine_getter: EngineGetter, *, limit: int = 200) -> list[Any]:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return list(
             session.exec(
                 select(FanxiuMailRecord)
-                .where(FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")))
+                .where(
+                    FanxiuMailRecord.source == "runtime_memory",
+                    FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
+                )
                 .order_by(FanxiuMailRecord.create_time_ms.desc(), FanxiuMailRecord.id.desc())
                 .limit(limit)
             ).all()
         )
 
 
-def find_packet_mail_record_exact(engine_getter: EngineGetter, *, normalized_title: str, normalized_time: str) -> Any | None:
+def find_runtime_mail_record_exact(engine_getter: EngineGetter, *, normalized_title: str, normalized_time: str) -> Any | None:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return session.exec(
             select(FanxiuMailRecord).where(
-                FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
+                FanxiuMailRecord.source == "runtime_memory",
+                FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                 FanxiuMailRecord.normalized_title == normalized_title,
                 FanxiuMailRecord.create_time_text == normalized_time,
             )
         ).first()
 
 
-def find_packet_mail_record_by_raw_title(engine_getter: EngineGetter, *, title: str, normalized_time: str) -> Any | None:
+def find_runtime_mail_record_by_raw_title(engine_getter: EngineGetter, *, title: str, normalized_time: str) -> Any | None:
     Session, select, FanxiuMailRecord = _sqlmodel_mail_record()
     with Session(engine_getter()) as session:
         return session.exec(
             select(FanxiuMailRecord).where(
-                FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")),
+                FanxiuMailRecord.source == "runtime_memory",
+                FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
                 FanxiuMailRecord.title == title,
                 FanxiuMailRecord.create_time_text == normalized_time,
             )
         ).first()
 
 
-def update_packet_mail_action(
+def update_runtime_mail_action(
     engine_getter: EngineGetter,
     *,
     mail_key: str,
@@ -233,7 +265,7 @@ def update_packet_mail_action(
         return updated
 
 
-def align_packet_mail_records_claimable_between_visible_neighbors(
+def align_runtime_mail_records_claimable_between_visible_neighbors(
     engine_getter: EngineGetter,
     *,
     newer_time_text: str,

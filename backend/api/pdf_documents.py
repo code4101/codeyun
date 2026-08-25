@@ -22,7 +22,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Qu
 from fastapi.responses import FileResponse, StreamingResponse
 from jose import JWTError, jwt
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pypdf import PdfReader
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
@@ -44,7 +44,9 @@ from backend.models import (
     DeviceFile,
     LibraryBookAsset,
     LibraryBookPlacement,
+    LibraryFolder,
     PdfBookshelfPlacement,
+    PdfBookshelfViewSetting,
     PdfDocument,
     PdfLibraryBookshelf,
     PdfPageNote,
@@ -55,6 +57,7 @@ from backend.models import (
     generate_sheet_document_id,
 )
 from backend.core.resources.identity import RESOURCE_TYPE_PDF, allocate_resource_id
+from backend.core.library.book_metadata import normalize_book_start_date
 
 
 router = APIRouter()
@@ -111,6 +114,7 @@ class PdfAccessCapabilities(BaseModel):
     can_read: bool = False
     can_update_state: bool = False
     can_update_page_notes: bool = False
+    can_copy_to_library: bool = False
     can_manage_access: bool = False
 
 
@@ -149,17 +153,33 @@ class PdfBookshelfPlacementPayload(BaseModel):
     shelf_index: int = Field(ge=0, le=9999)
     position_index: int = Field(ge=0, le=999999)
     orientation: Literal["spine_vertical", "spine_horizontal", "cover_front"] = "spine_vertical"
+    folder_id: str | None = None
 
 
 class PdfBookshelfLayoutUpdateRequest(BaseModel):
     placements: list[PdfBookshelfPlacementPayload] = Field(default_factory=list, max_length=10000)
 
 
+class LibraryBookshelfLayoutItemPayload(BaseModel):
+    resource_type: Literal["pdf", "book_asset", "folder"]
+    resource_id: str
+    shelf_index: int = Field(ge=0, le=9999)
+    position_index: int = Field(ge=0, le=999999)
+
+
+class LibraryBookshelfLayoutUpdateRequest(BaseModel):
+    bookshelf_id: str
+    items: list[LibraryBookshelfLayoutItemPayload] = Field(default_factory=list, max_length=10000)
+
+
 class PdfLibraryBookshelfPayload(BaseModel):
     id: str
     name: str
     sort_index: int
+    logical_page_target_characters: int = 1600
+    article_reading_mode: Literal["scroll", "paginated"] = "scroll"
     book_count: int = 0
+    folder_count: int = 0
     owner_user_id: int
     owner_username: str = ""
     is_owned: bool = True
@@ -168,10 +188,14 @@ class PdfLibraryBookshelfPayload(BaseModel):
 
 class PdfLibraryBookshelfCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    logical_page_target_characters: int = Field(default=1600, ge=500, le=5000)
+    article_reading_mode: Literal["scroll", "paginated"] = "scroll"
 
 
 class PdfLibraryBookshelfUpdateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    logical_page_target_characters: int | None = Field(default=None, ge=500, le=5000)
+    article_reading_mode: Literal["scroll", "paginated"] | None = None
 
 
 class PdfMoveToBookshelfRequest(BaseModel):
@@ -181,6 +205,65 @@ class PdfMoveToBookshelfRequest(BaseModel):
 class PdfMetadataUpdateRequest(BaseModel):
     display_title: str = Field(min_length=1, max_length=80)
     display_author: str = Field(default="", max_length=60)
+    start_date: str = Field(default="", max_length=10)
+    display_subtitle: str = Field(default="", max_length=120)
+    display_translator: str = Field(default="", max_length=60)
+    display_edition: str = Field(default="", max_length=60)
+    display_volume: str = Field(default="", max_length=60)
+    source_display_name: str | None = Field(default=None, max_length=512)
+    description: str = Field(default="", max_length=4000)
+    tags: list[str] = Field(default_factory=list, max_length=30)
+    cover_color_override: str | None = Field(default=None, max_length=32)
+
+    @field_validator("start_date")
+    @classmethod
+    def validate_start_date(cls, value: str) -> str:
+        return normalize_book_start_date(value)
+
+
+class PdfBookAppearancePayload(BaseModel):
+    cover_color_override: str | None = None
+
+
+class PdfBookCopyRequest(BaseModel):
+    target_bookshelf_id: str = Field(min_length=1, max_length=64)
+    shelf_index: int = Field(default=0, ge=0, le=9999)
+    include_notes: bool = True
+    include_reading_progress: bool = False
+
+
+class PdfPageNotesClearResult(BaseModel):
+    deleted_count: int = 0
+
+
+class LibraryFolderCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    shelf_index: int = Field(default=0, ge=0, le=9999)
+
+
+class LibraryFolderUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    color_override: str | None = Field(default=None, max_length=32)
+    min_thickness_mm: float | None = Field(default=None, ge=0.1, le=200)
+    fixed_thickness_mm: float | None = Field(default=None, ge=0.1, le=200)
+
+
+class LibraryFolderMoveItemRequest(BaseModel):
+    folder_id: str | None = None
+    shelf_index: int = Field(default=0, ge=0, le=9999)
+
+
+class LibraryFolderPayload(BaseModel):
+    id: str
+    bookshelf_id: str
+    name: str
+    color_override: str | None = None
+    min_thickness_mm: float | None = None
+    fixed_thickness_mm: float | None = None
+    shelf_index: int = 0
+    position_index: int = 0
+    orientation: Literal["spine_vertical", "spine_horizontal", "cover_front"] = "spine_vertical"
+    member_count: int = 0
 
 
 class PdfDocumentDetail(BaseModel):
@@ -188,6 +271,15 @@ class PdfDocumentDetail(BaseModel):
     title: str
     display_title: str
     display_author: str = ""
+    start_date: str = ""
+    display_subtitle: str = ""
+    display_translator: str = ""
+    display_edition: str = ""
+    display_volume: str = ""
+    imported_filename: str = ""
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+    appearance: PdfBookAppearancePayload = Field(default_factory=PdfBookAppearancePayload)
     display_title_status: Literal["pending", "ready"] = "ready"
     owner_user_id: int | None = None
     source_device_id: str = ""
@@ -312,6 +404,7 @@ def _build_resource_access(role: str | None, current_user: User | None) -> PdfRe
             can_read=can_read,
             can_update_state=can_read and current_user is not None,
             can_update_page_notes=can_read and current_user is not None,
+            can_copy_to_library=can_read and current_user is not None,
             can_manage_access=rank >= RESOURCE_ACCESS_ROLE_RANK["manager"],
         ),
     )
@@ -677,12 +770,21 @@ def _serialize_library_bookshelves(
         ).all()
         if placement.bookshelf_id is not None
     )
+    folder_counts = Counter(
+        folder.bookshelf_id
+        for folder in session.exec(
+            select(LibraryFolder).where(LibraryFolder.owner_user_id == current_user.id)
+        ).all()
+    )
     return [
         PdfLibraryBookshelfPayload(
             id=bookshelf.id,
             name=bookshelf.name,
             sort_index=bookshelf.sort_index,
+            logical_page_target_characters=bookshelf.logical_page_target_characters,
+            article_reading_mode=bookshelf.article_reading_mode,
             book_count=counts[bookshelf.id],
+            folder_count=folder_counts[bookshelf.id],
             owner_user_id=bookshelf.user_id,
             owner_username=current_user.username,
             is_owned=True,
@@ -748,15 +850,49 @@ def _serialize_shared_bookshelf(
         ).all()
         if placement.book_asset_id in dynamic_asset_ids
     )
+    folder_count = len(session.exec(
+        select(LibraryFolder).where(LibraryFolder.bookshelf_id == bookshelf.id)
+    ).all())
     return PdfLibraryBookshelfPayload(
         id=bookshelf.id,
         name=bookshelf.name,
         sort_index=bookshelf.sort_index,
+        logical_page_target_characters=bookshelf.logical_page_target_characters,
+        article_reading_mode=bookshelf.article_reading_mode,
         book_count=book_count,
+        folder_count=folder_count,
         owner_user_id=bookshelf.user_id,
         owner_username=owner.username if owner is not None else "",
         is_owned=bookshelf.user_id == current_user.id,
         access=access,
+    )
+
+
+def _serialize_library_folder(session: Session, folder: LibraryFolder) -> LibraryFolderPayload:
+    member_count = len(session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.folder_id == folder.id)
+        .where(PdfBookshelfPlacement.user_id == folder.owner_user_id)
+    ).all())
+    member_count += len(session.exec(
+        select(LibraryBookPlacement)
+        .where(LibraryBookPlacement.folder_id == folder.id)
+        .where(LibraryBookPlacement.user_id == folder.owner_user_id)
+    ).all())
+    orientation = folder.orientation if folder.orientation in {
+        "spine_vertical", "spine_horizontal", "cover_front"
+    } else "spine_vertical"
+    return LibraryFolderPayload(
+        id=folder.id,
+        bookshelf_id=folder.bookshelf_id,
+        name=folder.name,
+        color_override=folder.color_override,
+        min_thickness_mm=folder.min_thickness_mm,
+        fixed_thickness_mm=folder.fixed_thickness_mm,
+        shelf_index=max(int(folder.shelf_index or 0), 0),
+        position_index=max(int(folder.position_index or 0), 0),
+        orientation=orientation,
+        member_count=member_count,
     )
 
 
@@ -828,11 +964,26 @@ def _serialize_pdf_detail(
         placement_user_id=placement_user_id,
     )
     can_see_source = access.capabilities.can_manage_access
+    metadata_json = dict(document.metadata_json or {})
+    naming = dict(metadata_json.get("title_naming") or {})
+    appearance = dict(metadata_json.get("library_appearance") or {})
+    imported_filename = str(metadata_json.get("imported_filename") or document.title or "未命名 PDF")
     return PdfDocumentDetail(
         id=_require_pdf_numeric_id(document),
         title=document.title or "未命名 PDF",
         display_title=_pdf_display_title(document),
         display_author=_pdf_display_author(document),
+        start_date=str(metadata_json.get("start_date") or ""),
+        display_subtitle=str(naming.get("display_subtitle") or ""),
+        display_translator=str(naming.get("display_translator") or ""),
+        display_edition=str(naming.get("display_edition") or ""),
+        display_volume=str(naming.get("display_volume") or ""),
+        imported_filename=imported_filename,
+        description=str(metadata_json.get("library_description") or ""),
+        tags=[str(tag) for tag in (metadata_json.get("library_tags") or []) if str(tag).strip()],
+        appearance=PdfBookAppearancePayload(
+            cover_color_override=(str(appearance.get("cover_color_override") or "").strip() or None),
+        ),
         display_title_status=_pdf_display_title_status(document),
         owner_user_id=document.owner_user_id,
         source_device_id=(document.source_device_id or "") if can_see_source else "",
@@ -846,6 +997,7 @@ def _serialize_pdf_detail(
             shelf_index=max(int(bookshelf_placement.shelf_index or 0), 0),
             position_index=max(int(bookshelf_placement.position_index or 0), 0),
             orientation=bookshelf_placement.orientation or "spine_vertical",
+            folder_id=bookshelf_placement.folder_id,
         ) if bookshelf_placement is not None else None,
         created_at=document.created_at,
         updated_at=document.updated_at,
@@ -1221,10 +1373,18 @@ def _schedule_pdf_display_title_generation(
 ) -> list[int]:
     pdf_ids = _prepare_pdf_display_title_generation(session, documents)
     if pdf_ids:
-        background_tasks.add_task(
-            _generate_pdf_display_titles_in_background,
-            session.get_bind(),
-            pdf_ids,
+        if get_settings().is_test:
+            background_tasks.add_task(
+                _generate_pdf_display_titles_in_background,
+                session.get_bind(),
+                pdf_ids,
+            )
+            return pdf_ids
+        from backend.core.jobs.local_runtime import submit_local_job
+
+        submit_local_job(
+            job_type="pdf.display-title-generation",
+            payload={"pdf_ids": pdf_ids},
         )
     return pdf_ids
 
@@ -1468,7 +1628,15 @@ def _copy_pdf_to_hosted_storage(source_path: Path, current_user: User) -> tuple[
         raise HTTPException(status_code=404, detail="PDF 文件不存在")
     if not source_path.is_file():
         raise HTTPException(status_code=400, detail="PDF 来源不是文件")
-    if not _looks_like_pdf(os.fspath(source_path)):
+    # Chunked uploads are intentionally stored as `.part` until completion.
+    # Validate the actual file signature instead of requiring the temporary
+    # server-side path to retain the user's `.pdf` suffix.
+    try:
+        with source_path.open("rb") as source:
+            has_pdf_header = b"%PDF-" in source.read(1024)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="无法读取 PDF 文件") from exc
+    if not has_pdf_header:
         raise HTTPException(status_code=400, detail="只能导入 PDF 文件")
 
     resolved_source = source_path.resolve(strict=True)
@@ -2292,6 +2460,8 @@ def create_pdf_library_bookshelf(
         user_id=current_user.id,
         name=name,
         sort_index=max((bookshelf.sort_index for bookshelf in bookshelves), default=-1) + 1,
+        logical_page_target_characters=payload.logical_page_target_characters,
+        article_reading_mode=payload.article_reading_mode,
         created_at=now,
         updated_at=now,
     )
@@ -2302,6 +2472,8 @@ def create_pdf_library_bookshelf(
         id=bookshelf.id,
         name=bookshelf.name,
         sort_index=bookshelf.sort_index,
+        logical_page_target_characters=bookshelf.logical_page_target_characters,
+        article_reading_mode=bookshelf.article_reading_mode,
         book_count=0,
         owner_user_id=current_user.id,
         owner_username=current_user.username,
@@ -2311,7 +2483,7 @@ def create_pdf_library_bookshelf(
 
 
 @router.put("/bookshelves/{bookshelf_id}", response_model=PdfLibraryBookshelfPayload)
-def rename_pdf_library_bookshelf(
+def update_pdf_library_bookshelf(
     bookshelf_id: str,
     payload: PdfLibraryBookshelfUpdateRequest,
     session: Session = Depends(get_session),
@@ -2330,6 +2502,10 @@ def rename_pdf_library_bookshelf(
     if duplicate is not None:
         raise HTTPException(status_code=409, detail="书柜名称已存在")
     bookshelf.name = name
+    if payload.logical_page_target_characters is not None:
+        bookshelf.logical_page_target_characters = payload.logical_page_target_characters
+    if payload.article_reading_mode is not None:
+        bookshelf.article_reading_mode = payload.article_reading_mode
     bookshelf.updated_at = time.time()
     session.add(bookshelf)
     session.commit()
@@ -2346,6 +2522,156 @@ def rename_pdf_library_bookshelf(
         item
         for item in _serialize_library_bookshelves(session, bookshelves, placements, current_user=current_user)
         if item.id == bookshelf.id
+    )
+
+
+@router.get("/bookshelves/{bookshelf_id}/folders", response_model=list[LibraryFolderPayload])
+def list_library_folders(
+    bookshelf_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelf, _access = _get_accessible_pdf_library_bookshelf_or_404(
+        session, current_user, bookshelf_id, required_role="viewer"
+    )
+    folders = session.exec(
+        select(LibraryFolder)
+        .where(LibraryFolder.bookshelf_id == bookshelf.id)
+        .where(LibraryFolder.owner_user_id == bookshelf.user_id)
+        .order_by(LibraryFolder.shelf_index, LibraryFolder.position_index)
+    ).all()
+    return [_serialize_library_folder(session, folder) for folder in folders]
+
+
+@router.post("/bookshelves/{bookshelf_id}/folders", response_model=LibraryFolderPayload)
+def create_library_folder(
+    bookshelf_id: str,
+    payload: LibraryFolderCreateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelf = _get_pdf_library_bookshelf_or_404(session, current_user, bookshelf_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="资料夹名称不能为空")
+    duplicate = session.exec(
+        select(LibraryFolder)
+        .where(LibraryFolder.bookshelf_id == bookshelf.id)
+        .where(LibraryFolder.owner_user_id == current_user.id)
+        .where(LibraryFolder.name == name)
+    ).first()
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="资料夹名称已存在")
+    position_index = len(session.exec(
+        select(LibraryFolder)
+        .where(LibraryFolder.bookshelf_id == bookshelf.id)
+        .where(LibraryFolder.shelf_index == payload.shelf_index)
+    ).all())
+    folder = LibraryFolder(
+        owner_user_id=current_user.id,
+        bookshelf_id=bookshelf.id,
+        name=name,
+        shelf_index=payload.shelf_index,
+        position_index=position_index,
+    )
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return _serialize_library_folder(session, folder)
+
+
+def _get_owned_library_folder_or_404(
+    session: Session,
+    current_user: User,
+    folder_id: str,
+) -> LibraryFolder:
+    folder = session.get(LibraryFolder, folder_id)
+    if folder is None or folder.owner_user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="资料夹不存在")
+    return folder
+
+
+@router.put("/folders/{folder_id}", response_model=LibraryFolderPayload)
+def update_library_folder(
+    folder_id: str,
+    payload: LibraryFolderUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    folder = _get_owned_library_folder_or_404(session, current_user, folder_id)
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="资料夹名称不能为空")
+    duplicate = session.exec(
+        select(LibraryFolder)
+        .where(LibraryFolder.bookshelf_id == folder.bookshelf_id)
+        .where(LibraryFolder.owner_user_id == current_user.id)
+        .where(LibraryFolder.name == name)
+        .where(LibraryFolder.id != folder.id)
+    ).first()
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="资料夹名称已存在")
+    folder.name = name
+    folder.color_override = str(payload.color_override or "").strip() or None
+    folder.min_thickness_mm = payload.min_thickness_mm
+    folder.fixed_thickness_mm = payload.fixed_thickness_mm
+    folder.updated_at = time.time()
+    session.add(folder)
+    session.commit()
+    session.refresh(folder)
+    return _serialize_library_folder(session, folder)
+
+
+@router.delete("/folders/{folder_id}", status_code=204)
+def delete_library_folder(
+    folder_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+) -> None:
+    folder = _get_owned_library_folder_or_404(session, current_user, folder_id)
+    if session.exec(
+        select(PdfBookshelfPlacement).where(PdfBookshelfPlacement.folder_id == folder.id)
+    ).first() is not None:
+        raise HTTPException(status_code=409, detail="只能删除空资料夹")
+    if session.exec(
+        select(LibraryBookPlacement).where(LibraryBookPlacement.folder_id == folder.id)
+    ).first() is not None:
+        raise HTTPException(status_code=409, detail="只能删除空资料夹")
+    session.delete(folder)
+    session.commit()
+
+
+@router.put("/{pdf_id}/folder", response_model=PdfBookshelfPlacementPayload)
+def move_pdf_to_library_folder(
+    pdf_id: int,
+    payload: LibraryFolderMoveItemRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, _access = _get_pdf_document_or_404(
+        session, current_user, pdf_id, required_role="viewer"
+    )
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    placements = _ensure_pdf_library_memberships(session, current_user, [document], bookshelves)
+    placement = placements[_pdf_resource_id(document)]
+    if payload.folder_id:
+        folder = _get_owned_library_folder_or_404(session, current_user, payload.folder_id)
+        placement.bookshelf_id = folder.bookshelf_id
+        placement.folder_id = folder.id
+        placement.shelf_index = folder.shelf_index
+    else:
+        placement.folder_id = None
+        placement.shelf_index = payload.shelf_index
+    placement.updated_at = time.time()
+    session.add(placement)
+    session.commit()
+    session.refresh(placement)
+    return PdfBookshelfPlacementPayload(
+        pdf_id=pdf_id,
+        shelf_index=placement.shelf_index,
+        position_index=placement.position_index,
+        orientation=placement.orientation or "spine_vertical",
+        folder_id=placement.folder_id,
     )
 
 
@@ -2372,12 +2698,22 @@ def delete_pdf_library_bookshelf(
     ).first()
     if dynamic_placement is not None:
         raise HTTPException(status_code=409, detail="只能删除空书柜")
+    if session.exec(
+        select(LibraryFolder).where(LibraryFolder.bookshelf_id == bookshelf.id)
+    ).first() is not None:
+        raise HTTPException(status_code=409, detail="只能删除空书柜")
     for grant in _fetch_resource_grants(
         session,
         bookshelf.id,
         resource_type=LIBRARY_BOOKSHELF_RESOURCE_TYPE,
     ):
         session.delete(grant)
+    for setting in session.exec(
+        select(PdfBookshelfViewSetting).where(
+            PdfBookshelfViewSetting.bookshelf_id == bookshelf.id
+        )
+    ).all():
+        session.delete(setting)
     session.delete(bookshelf)
     session.commit()
 
@@ -2477,6 +2813,7 @@ def move_pdf_to_library_bookshelf(
         .where(PdfBookshelfPlacement.shelf_index == 0)
     ).all()
     placement.bookshelf_id = target_bookshelf.id
+    placement.folder_id = None
     placement.shelf_index = 0
     placement.position_index = max(
         (int(item.position_index or 0) for item in target_placements),
@@ -2490,6 +2827,7 @@ def move_pdf_to_library_bookshelf(
         shelf_index=placement.shelf_index,
         position_index=placement.position_index,
         orientation=placement.orientation or "spine_vertical",
+        folder_id=None,
     )
 
 
@@ -2512,17 +2850,36 @@ def update_pdf_document_metadata(
 
     now = time.time()
     metadata = dict(document.metadata_json or {})
+    imported_filename = str(metadata.get("imported_filename") or document.title or "未命名 PDF")
+    metadata["imported_filename"] = imported_filename
+    source_display_name = str(payload.source_display_name or "").strip()
+    document.title = source_display_name or imported_filename
     metadata["title_naming"] = {
         "schema_version": PDF_TITLE_NAMING_SCHEMA_VERSION,
         "source_fingerprint": _pdf_title_source_fingerprint(document),
         "display_title": display_title,
         "display_author": _sanitize_pdf_display_author(payload.display_author),
+        "display_subtitle": payload.display_subtitle.strip(),
+        "display_translator": payload.display_translator.strip(),
+        "display_edition": payload.display_edition.strip(),
+        "display_volume": payload.display_volume.strip(),
         "status": "ready",
         "source": "manual",
         "model": None,
         "edited_at": now,
         "edited_by_user_id": current_user.id,
     }
+    metadata["library_description"] = payload.description.strip()
+    metadata["start_date"] = payload.start_date
+    metadata["library_tags"] = list(dict.fromkeys(
+        tag.strip() for tag in payload.tags if tag.strip()
+    ))[:30]
+    appearance = {
+        "cover_color_override": (
+            str(payload.cover_color_override or "").strip() or None
+        ),
+    }
+    metadata["library_appearance"] = appearance
     document.metadata_json = metadata
     document.updated_at = now
     document.updated_by_user_id = current_user.id
@@ -2530,6 +2887,212 @@ def update_pdf_document_metadata(
     session.commit()
     session.refresh(document)
     return _serialize_pdf_detail(session, document, current_user=current_user, access=access)
+
+
+@router.delete("/{pdf_id}/my-placement", status_code=204)
+def remove_pdf_document_from_my_library(
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document = _get_pdf_by_numeric_id_or_404(session, pdf_id)
+    placement = session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
+        .where(PdfBookshelfPlacement.user_id == current_user.id)
+    ).first()
+    if placement is None:
+        raise HTTPException(status_code=404, detail="图书不在当前账号的书柜中")
+    session.delete(placement)
+    session.commit()
+
+
+@router.delete("/{pdf_id}", status_code=204)
+def delete_pdf_document(
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document = _get_pdf_by_numeric_id_or_404(session, pdf_id)
+    if document.owner_user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="只能删除自己的图书")
+
+    reference_ids = _pdf_document_ref_candidates(document)
+    hosted_path: Path | None = None
+    delete_hosted_file = False
+    if document.source_entry_id == PDF_HOSTED_ENTRY_ID:
+        hosted_path = _resolve_hosted_pdf_path(document)
+        other_reference = session.exec(
+            select(PdfDocument)
+            .where(PdfDocument.source_absolute_path == document.source_absolute_path)
+            .where(PdfDocument.id != document.id)
+        ).first()
+        delete_hosted_file = other_reference is None
+
+    related_rows = [
+        *session.exec(
+            select(PdfBookshelfPlacement).where(
+                PdfBookshelfPlacement.pdf_document_id.in_(reference_ids)
+            )
+        ).all(),
+        *session.exec(
+            select(PdfUserState).where(PdfUserState.pdf_document_id.in_(reference_ids))
+        ).all(),
+        *session.exec(
+            select(PdfPageNote).where(PdfPageNote.pdf_document_id.in_(reference_ids))
+        ).all(),
+        *session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == PDF_RESOURCE_TYPE)
+            .where(ResourceAccessGrant.resource_id.in_(reference_ids))
+        ).all(),
+    ]
+    for row in related_rows:
+        session.delete(row)
+    session.delete(document)
+    session.commit()
+
+    if delete_hosted_file and hosted_path is not None:
+        try:
+            hosted_path.unlink(missing_ok=True)
+        except OSError:
+            # The library record is already deleted. A stale content-addressed
+            # blob is safer than rolling the deleted record back into view.
+            pass
+
+
+@router.post("/{pdf_id}/copy-to-library", response_model=PdfDocumentDetail)
+def copy_pdf_to_own_library(
+    pdf_id: int,
+    payload: PdfBookCopyRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Create an independent library copy of a readable shared PDF.
+
+    The binary is copied into the recipient's content-addressed hosted store, so
+    revoking the original bookshelf share cannot invalidate the new copy.
+    Notes are copied as a snapshot and remain private to the recipient.
+    """
+    source, source_access = _get_pdf_document_or_404(
+        session, current_user, pdf_id, required_role="viewer"
+    )
+    if not source_access.capabilities.can_copy_to_library:
+        raise HTTPException(status_code=403, detail="无权复制这本书")
+    if source.owner_user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="自己的书无需复制")
+    target_bookshelf = _get_pdf_library_bookshelf_or_404(
+        session, current_user, payload.target_bookshelf_id
+    )
+
+    with _materialize_pdf_for_metadata(session, source) as source_path:
+        hosted_path, size_bytes, content_hash = _copy_pdf_to_hosted_storage(
+            source_path, current_user
+        )
+    copied = session.exec(
+        select(PdfDocument)
+        .where(PdfDocument.owner_user_id == current_user.id)
+        .where(PdfDocument.content_hash == content_hash)
+    ).first()
+    if copied is None:
+        copied = _create_or_update_hosted_pdf_document(
+            session,
+            current_user=current_user,
+            title=source.title,
+            hosted_path=hosted_path,
+            size_bytes=size_bytes,
+            content_hash=content_hash,
+        )
+        metadata = json.loads(json.dumps(dict(source.metadata_json or {}), ensure_ascii=False))
+        metadata["copy_provenance"] = {
+            "source_pdf_id": _require_pdf_numeric_id(source),
+            "source_owner_user_id": source.owner_user_id,
+            "copied_at": time.time(),
+        }
+        copied.metadata_json = metadata
+    copied.updated_by_user_id = current_user.id
+    copied.updated_at = time.time()
+    session.add(copied)
+    session.flush()
+
+    bookshelves = _ensure_pdf_library_bookshelves(session, current_user)
+    placements = _ensure_pdf_library_memberships(session, current_user, [copied], bookshelves)
+    placement = placements[_pdf_resource_id(copied)]
+    existing_target = session.exec(
+        select(PdfBookshelfPlacement)
+        .where(PdfBookshelfPlacement.user_id == current_user.id)
+        .where(PdfBookshelfPlacement.bookshelf_id == target_bookshelf.id)
+        .where(PdfBookshelfPlacement.shelf_index == payload.shelf_index)
+        .where(PdfBookshelfPlacement.folder_id.is_(None))
+    ).all()
+    placement.bookshelf_id = target_bookshelf.id
+    placement.folder_id = None
+    placement.shelf_index = payload.shelf_index
+    placement.position_index = max(
+        (int(item.position_index or 0) for item in existing_target), default=-1
+    ) + 1
+    placement.updated_at = time.time()
+    session.add(placement)
+
+    if payload.include_notes:
+        source_notes = session.exec(
+            select(PdfPageNote)
+            .where(PdfPageNote.pdf_document_id.in_(_pdf_document_ref_candidates(source)))
+            .where(PdfPageNote.user_id == source.owner_user_id)
+        ).all()
+        existing_pages = {
+            note.page_number
+            for note in session.exec(
+                select(PdfPageNote)
+                .where(PdfPageNote.pdf_document_id.in_(_pdf_document_ref_candidates(copied)))
+                .where(PdfPageNote.user_id == current_user.id)
+            ).all()
+        }
+        now = time.time()
+        for source_note in source_notes:
+            if source_note.page_number in existing_pages:
+                continue
+            session.add(
+                PdfPageNote(
+                    pdf_document_id=_pdf_resource_id(copied),
+                    user_id=current_user.id,
+                    page_number=source_note.page_number,
+                    content_html=source_note.content_html,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    if payload.include_reading_progress:
+        source_state = session.exec(
+            select(PdfUserState)
+            .where(PdfUserState.pdf_document_id.in_(_pdf_document_ref_candidates(source)))
+            .where(PdfUserState.user_id == source.owner_user_id)
+        ).first()
+        if source_state is not None:
+            copied_state = session.exec(
+                select(PdfUserState)
+                .where(PdfUserState.pdf_document_id.in_(_pdf_document_ref_candidates(copied)))
+                .where(PdfUserState.user_id == current_user.id)
+            ).first()
+            if copied_state is None:
+                copied_state = PdfUserState(
+                    pdf_document_id=_pdf_resource_id(copied),
+                    user_id=current_user.id,
+                )
+            copied_state.current_page = source_state.current_page
+            copied_state.zoom = source_state.zoom
+            copied_state.sidebar_open = source_state.sidebar_open
+            copied_state.state_json = dict(source_state.state_json or {})
+            copied_state.updated_at = time.time()
+            session.add(copied_state)
+
+    session.commit()
+    session.refresh(copied)
+    copied_access = _resolve_pdf_resource_access(session, copied, current_user)
+    return _serialize_pdf_detail(
+        session, copied, current_user=current_user, access=copied_access
+    )
 
 
 @router.put("/bookshelf-layout", response_model=list[PdfBookshelfPlacementPayload])
@@ -2566,13 +3129,100 @@ def update_pdf_bookshelf_layout(
                 created_at=now,
             )
         placement.pdf_document_id = public_ref
-        placement.shelf_index = item.shelf_index
+        if item.folder_id:
+            folder = _get_owned_library_folder_or_404(
+                session, current_user, item.folder_id
+            )
+            placement.bookshelf_id = folder.bookshelf_id
+            placement.shelf_index = folder.shelf_index
+        else:
+            placement.shelf_index = item.shelf_index
         placement.position_index = item.position_index
         placement.orientation = item.orientation
+        placement.folder_id = item.folder_id
         placement.updated_at = now
         session.add(placement)
     session.commit()
     return payload.placements
+
+
+@router.put("/library-layout", response_model=list[LibraryBookshelfLayoutItemPayload])
+def update_library_bookshelf_layout(
+    payload: LibraryBookshelfLayoutUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    bookshelf = session.get(PdfLibraryBookshelf, payload.bookshelf_id)
+    if bookshelf is None or bookshelf.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Bookshelf not found")
+    resource_keys = [(item.resource_type, item.resource_id) for item in payload.items]
+    if len(resource_keys) != len(set(resource_keys)):
+        raise HTTPException(status_code=400, detail="书柜布局包含重复资源")
+    slots = [(item.shelf_index, item.position_index) for item in payload.items]
+    if len(slots) != len(set(slots)):
+        raise HTTPException(status_code=400, detail="书柜布局包含重复位置")
+
+    now = time.time()
+    for item in payload.items:
+        if item.resource_type == "pdf":
+            try:
+                pdf_id = int(item.resource_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail="Invalid PDF resource id") from exc
+            document, _access = _get_pdf_document_or_404(
+                session, current_user, pdf_id, required_role="viewer"
+            )
+            public_ref = _pdf_resource_id(document)
+            placement = session.exec(
+                select(PdfBookshelfPlacement)
+                .where(PdfBookshelfPlacement.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
+                .where(PdfBookshelfPlacement.user_id == current_user.id)
+            ).first()
+            if placement is None:
+                placement = PdfBookshelfPlacement(
+                    pdf_document_id=public_ref,
+                    user_id=current_user.id,
+                    created_at=now,
+                )
+            placement.pdf_document_id = public_ref
+            placement.bookshelf_id = bookshelf.id
+            placement.folder_id = None
+            placement.shelf_index = item.shelf_index
+            placement.position_index = item.position_index
+            placement.updated_at = now
+            session.add(placement)
+            continue
+        if item.resource_type == "book_asset":
+            asset = session.get(LibraryBookAsset, item.resource_id)
+            if asset is None or asset.owner_user_id != current_user.id:
+                raise HTTPException(status_code=404, detail="Book asset not found")
+            placement = session.exec(
+                select(LibraryBookPlacement)
+                .where(LibraryBookPlacement.book_asset_id == asset.id)
+                .where(LibraryBookPlacement.user_id == current_user.id)
+            ).first()
+            if placement is None:
+                placement = LibraryBookPlacement(
+                    book_asset_id=asset.id,
+                    user_id=current_user.id,
+                    created_at=now,
+                )
+            placement.bookshelf_id = bookshelf.id
+            placement.folder_id = None
+            placement.shelf_index = item.shelf_index
+            placement.position_index = item.position_index
+            placement.updated_at = now
+            session.add(placement)
+            continue
+        folder = _get_owned_library_folder_or_404(session, current_user, item.resource_id)
+        if folder.bookshelf_id != bookshelf.id:
+            raise HTTPException(status_code=404, detail="Library folder not found")
+        folder.shelf_index = item.shelf_index
+        folder.position_index = item.position_index
+        folder.updated_at = now
+        session.add(folder)
+    session.commit()
+    return payload.items
 
 
 @router.get("/{pdf_id}", response_model=PdfDocumentDetail)
@@ -2761,6 +3411,28 @@ def update_pdf_page_note(
         note=note,
         can_edit=access.capabilities.can_update_page_notes,
     )
+
+
+@router.delete("/{pdf_id}/my-page-notes", response_model=PdfPageNotesClearResult)
+def clear_my_pdf_page_notes(
+    pdf_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access = _get_pdf_document_or_404(
+        session, current_user, pdf_id, required_role="viewer"
+    )
+    if not access.capabilities.can_update_page_notes:
+        raise HTTPException(status_code=403, detail="无权清空笔记")
+    notes = session.exec(
+        select(PdfPageNote)
+        .where(PdfPageNote.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
+        .where(PdfPageNote.user_id == current_user.id)
+    ).all()
+    for note in notes:
+        session.delete(note)
+    session.commit()
+    return PdfPageNotesClearResult(deleted_count=len(notes))
 
 
 @router.get("/{pdf_id}/access", response_model=PdfAccessResponse)

@@ -472,15 +472,22 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
     console_host = read_console_host_status(max_age_seconds=max(DEFAULT_CONSOLE_HOST_STALE_SECONDS, float(args.interval) * 2.5))
     health = check_health(args.backend_url, args.frontend_url, args.timeout)
     if console_host.get("running"):
+        status = "console_host_observed" if health["healthy"] else "console_host_unhealthy"
         _log(
             log_path,
-            "Console host is alive; watchdog will not restart or hot-reload dev runner. "
-            f"pid={console_host.get('pid')} health={'ok' if health['healthy'] else 'failed'}",
+            (
+                "Console host is alive and services are healthy; watchdog is observing."
+                if health["healthy"]
+                else "Console host is alive but service health failed; "
+                "the dev supervisor retains component recovery ownership."
+            )
+            + f" pid={console_host.get('pid')}",
         )
         return {
-            "status": "console_host_observed",
+            "status": status,
             "health": health,
             "console_host": console_host,
+            "recovery_owner": "dev_supervisor",
             "started_pid": None,
         }
     if health["healthy"]:

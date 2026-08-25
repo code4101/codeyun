@@ -318,7 +318,6 @@ def test_fanxiu_watch_doctor_terminal_is_codeyun_service_event():
                     "watch-doctor",
                     "--max-iterations",
                     "1",
-                    "--auto-run-due",
                 ],
                 "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
             }

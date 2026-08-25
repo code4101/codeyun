@@ -157,6 +157,32 @@ def test_note_update_checks_base_version_and_broadcasts(client, session, auth_us
     assert len(broadcasts) == 1
 
 
+def test_note_update_rebases_stale_patch_when_changed_fields_do_not_overlap(client, session, auth_user):
+    note = make_note(auth_user, "note-version-field-rebase", "Original title")
+    note.content = "<p>original content</p>"
+    note.version = 1
+    session.add(note)
+    session.commit()
+
+    first = client.put(
+        f"/api/notes/{note.numeric_id}",
+        json={"base_version": 1, "title": "Background title"},
+    )
+    assert first.status_code == 200, first.text
+
+    rebased = client.put(
+        f"/api/notes/{note.numeric_id}",
+        json={
+            "base_version": 1,
+            "content": "<p>user content</p>",
+            "expected_fields": {"content": "<p>original content</p>"},
+        },
+    )
+    assert rebased.status_code == 200, rebased.text
+    assert rebased.json()["title"] == "Background title"
+    assert rebased.json()["content"] == "<p>user content</p>"
+
+
 def test_delete_note_removes_connected_edges(client, session, auth_user):
     source = make_note(auth_user, "note-delete-source", "Delete Source")
     target = make_note(auth_user, "note-delete-target", "Delete Target")

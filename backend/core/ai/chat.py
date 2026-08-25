@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 import requests
 
-from backend.core.services.launcher import run_quiet, run_quiet_tree_safe
+from backend.core.services.launcher import run_quiet, run_quiet_inherited_console_tree_safe
 from backend.core.settings import ROOT_DIR, get_settings
 
 
@@ -38,6 +38,15 @@ CODEX_CLI_IMAGE_EXTENSIONS = {
     "image/webp": ".webp",
     "image/bmp": ".bmp",
 }
+DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
+DEEPSEEK_TIMEOUT_SECONDS = 120.0
+DEEPSEEK_MODELS = (
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-chat",
+    "deepseek-reasoner",
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,16 @@ class AiProviderConfig:
 OLLAMA_MODEL_ALIASES: dict[str, dict[str, Any]] = {
     "qwen3.5:4b-instruct": {
         "runtime_model": "qwen3.5:4b",
+        "think": False,
+    },
+    # qwen3-vl 是 thinking 模型；-instruct 别名强制关闭思考，速度提升 3-5 倍，
+    # 实测在 RTX 4070 Laptop 上精度不受影响（见 tools/dsh-codeyun-vision/README.md）。
+    "qwen3-vl:4b-instruct": {
+        "runtime_model": "qwen3-vl:4b",
+        "think": False,
+    },
+    "qwen3-vl:8b-instruct": {
+        "runtime_model": "qwen3-vl:8b",
         "think": False,
     },
 }
@@ -93,15 +112,15 @@ def _build_provider_map(
             id="deepseek",
             label="DeepSeek",
             kind="openai_compatible",
-            base_url=settings.deepseek_base_url.rstrip("/"),
-            default_model=settings.deepseek_default_model,
-            timeout_seconds=settings.deepseek_timeout_seconds,
-            api_key=settings.deepseek_api_key,
+            base_url=DEEPSEEK_DEFAULT_BASE_URL,
+            default_model=DEEPSEEK_DEFAULT_MODEL,
+            timeout_seconds=DEEPSEEK_TIMEOUT_SECONDS,
+            api_key="",
             supports_stream=True,
             supports_vision=False,
             requires_api_key=True,
-            configured=bool(settings.deepseek_base_url.strip() and settings.deepseek_api_key.strip()),
-            models=settings.deepseek_models,
+            configured=False,
+            models=DEEPSEEK_MODELS,
             is_custom=False,
         ),
         "codex-cli": AiProviderConfig(
@@ -643,7 +662,7 @@ def _chat_with_codex_cli(
         command_args.append("-")
 
         try:
-            completed = run_quiet_tree_safe(
+            completed = run_quiet_inherited_console_tree_safe(
                 command_args,
                 input=prompt,
                 capture_output=True,

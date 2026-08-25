@@ -35,6 +35,18 @@ def _weekly_shengzu_in_window(now: datetime) -> bool:
 class WeeklyShengzuTaskMixin:
     """执行周日 20:00-20:05 的“周常_圣祖”闭环。"""
 
+    def weekly_shengzu_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        payload = dict(payload or {})
+        now = _now()
+        if _weekly_shengzu_in_window(now):
+            return None
+        return self._persist_admission_decision(payload, {
+            "result": "success",
+            "message": "周常_圣祖：当前不在周日 20:00:00-20:05:00 窗口，未执行游戏操作",
+            "next_time": _next_weekly_shengzu_trigger(now).strftime("%Y-%m-%d %H:%M:%S"),
+            "current_scene": None,
+        })
+
     def _open_weekly_shengzu_from_daily(
         self,
         runtime: Any,
@@ -119,13 +131,6 @@ class WeeklyShengzuTaskMixin:
         payload = dict(payload or {})
         now = _now()
         next_time = _next_weekly_shengzu_trigger(now).strftime("%Y-%m-%d %H:%M:%S")
-        if not _weekly_shengzu_in_window(now):
-            return {
-                "result": "success",
-                "message": "周常_圣祖：当前不在周日 20:00:00-20:05:00 窗口，未执行游戏操作",
-                "next_time": next_time,
-                "current_scene": None,
-            }
 
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
@@ -140,13 +145,30 @@ class WeeklyShengzuTaskMixin:
             max_scrolls=max_scrolls,
             transition_timeout=transition_timeout,
         )
-        yield from runtime.wait_click(385, "前往挑战")
+        completed_view = yield from runtime.wait_click_then_view(
+            385,
+            "前往挑战",
+            [338, 34, 339],
+            timeout=challenge_wait_seconds,
+            label="周常_圣祖：等待挑战落点",
+        )
+        completed_scene_id = getattr(completed_view, "id", completed_view)
         yield from runtime.wait_action_settle(challenge_wait_seconds)
+        if completed_scene_id == 338:
+            frame = runtime.cur_frame(update=True)
+            leave_match = runtime.click_ocr_text(
+                338,
+                "离开",
+                frame_data_url=frame,
+            )
+            self._log("action", f"周常_圣祖：运行至少 {challenge_wait_seconds:.0f} 秒后点击共用进行中页面 OCR「{leave_match.text}」")
+            yield from runtime.wait_action_settle(1.0)
         yield from runtime.goto_view(34)
-        self._log("success", "周常_圣祖：已挑战并等待 30 秒，安全返回世界 #34")
+        message = f"周常_圣祖：已参战并运行至少 {challenge_wait_seconds:.0f} 秒，离开后返回世界 #34"
+        runtime.set_next_time(next_time)
+        self._log("success", message)
         return {
             "result": "success",
-            "message": "周常_圣祖完成，已返回世界 #34",
-            "next_time": next_time,
+            "message": message,
             "current_scene": 34,
         }

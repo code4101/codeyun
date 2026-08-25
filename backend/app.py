@@ -3,7 +3,7 @@ import logging
 import os
 
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -23,6 +23,7 @@ from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.access.auth import verify_api_token
 from backend.core.jobs.scheduler import init_background_task_runner, shutdown_background_task_runner
+from backend.core.services.dev_supervisor_control import request_backend_restart
 from backend.core.services.monitor import init_service_monitor, shutdown_service_monitor
 from backend.core.access.service_tokens import ensure_legacy_service_tokens
 from backend.core.runtime.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
@@ -54,24 +55,6 @@ def _env_enabled(value: str | None) -> bool | None:
     if value is None:
         return None
     return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
-
-
-def _fanxiu_capture_runtime_service_enabled() -> bool:
-    configured = _env_enabled(os.getenv("FX_CAPTURE_RUNTIME_SERVICE_ENABLED"))
-    if configured is not None:
-        return configured
-    services_text = os.getenv("FX_RUNTIME_SERVICES")
-    if services_text is None:
-        return True
-    services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
-    return bool(services & {"*", "all", "fanxiu", "fanxiu-capture-runtime", "fanxiu_capture_runtime", "capture_runtime", "capture", "凡修抓包"})
-
-
-def _fanxiu_capture_watchdog_interval_seconds() -> float:
-    try:
-        return float(os.getenv("FX_CAPTURE_RUNTIME_WATCHDOG_INTERVAL_SECONDS") or 60)
-    except (TypeError, ValueError):
-        return 60.0
 
 
 @asynccontextmanager
@@ -173,8 +156,27 @@ def read_root():
 
 
 @app.get("/api/health")
-def read_health():
+async def read_health():
+    # Keep the supervisor probe off AnyIO's worker pool. Runtime pages can
+    # legitimately occupy worker threads with device/ADB status reads; health
+    # must still answer so the dev runner does not restart a healthy process.
     return {"status": "ok", "service": "codeyun-backend"}
+
+
+@app.post(
+    "/api/dev/backend/restart",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(verify_api_token)],
+)
+async def restart_development_backend():
+    if not settings.is_development:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Development endpoint is unavailable")
+    request = request_backend_restart(source="api")
+    return {
+        "status": "accepted",
+        "request_id": request["request_id"],
+        "message": "Backend restart requested",
+    }
 
 
 if __name__ == "__main__":

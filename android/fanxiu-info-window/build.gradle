@@ -1,0 +1,10 @@
+plugins {
+    id "com.android.application" version "8.7.3" apply false
+}
+
+def externalBuildRoot = System.getenv("CODEYUN_FANXIU_INFO_WINDOW_BUILD_DIR")
+if (externalBuildRoot) {
+    subprojects {
+        layout.buildDirectory.set(file("${externalBuildRoot}/${project.name}"))
+    }
+}

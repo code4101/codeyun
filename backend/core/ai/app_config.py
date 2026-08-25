@@ -5,13 +5,17 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.ai.chat import AiProviderConfig, get_default_ai_provider_id
+from backend.core.ai.chat import AiProviderConfig, get_ai_provider, get_default_ai_provider_id
 from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     get_user_ai_chat_provider_runtime_config,
     list_user_ai_chat_custom_provider_configs,
 )
 from backend.core.ai.ollama_access_keys import ensure_ollama_access_key_allowed
+from backend.core.system_ai_resources import (
+    SystemAiResourceError,
+    resolve_system_ai_resource,
+)
 from backend.models import AppSetting, User
 
 
@@ -27,13 +31,17 @@ AI_APP_FANXIU_GAME_MACRO_ANNOTATION = "fanxiu-game-macro-annotation"
 AI_APP_ATTENDANCE_PRECHECK = "attendance-precheck"
 AI_APP_CODECLAW = "codeclaw"
 AI_APP_WECHAT_DAILY_SUMMARY = "wechat-daily-summary"
+AI_APP_WECHAT_CHAT_BOOK = "wechat-chat-book"
 AI_APP_DEVICE_AGENT = "device-agent"
+AI_APP_SKILL_BOOK_TRANSLATION = "skill-book-translation"
 AI_APP_CODEX_CLI_PROVIDER = "codex-cli"
 AI_APP_CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"
+AI_APP_OLLAMA_PROVIDER = "ollama"
+AI_APP_OLLAMA_GIT_COMMIT_MODEL = "qwen3.5:4b-instruct"
 AI_APP_DEEPSEEK_PROVIDER = "deepseek"
 AI_APP_DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
-AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_CODEX_CLI_PROVIDER
-AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_CODEX_SPARK_MODEL
+AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_OLLAMA_PROVIDER
+AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_OLLAMA_GIT_COMMIT_MODEL
 AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_CODEX_CLI_PROVIDER
 AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_CODEX_SPARK_MODEL
 _CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
@@ -50,7 +58,17 @@ _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
     AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
+    AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_DEVICE_AGENT: (AI_APP_CODEX_CLI_PROVIDER, ""),
+    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+}
+SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT: frozenset({
+        AI_APP_DEEPSEEK_PROVIDER,
+    }),
+    AI_APP_SKILL_BOOK_TRANSLATION: frozenset({
+        AI_APP_DEEPSEEK_PROVIDER,
+    }),
 }
 _AI_APP_CODEX_SPARK_DEFAULT_IDS = {
     app_id
@@ -134,6 +152,12 @@ AI_APP_DEFINITIONS: tuple[dict[str, str], ...] = (
         "label": "微信聊天日总结",
         "description": "读取本机微信聊天数据，按联系人或群生成日总结并写入星图笔记。",
     },
+    {
+        "id": AI_APP_WECHAT_CHAT_BOOK,
+        "group": "星图笔记",
+        "label": "微信群聊事件成书",
+        "description": "从指定微信群聊按语义线程归组重点事件，忠实编辑并按月份、日期归档到图书馆。",
+    },
 )
 
 
@@ -177,6 +201,21 @@ def _is_codex_cli_provider(value: Any) -> bool:
 
 
 def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    if app_id == AI_APP_GIT_COMMIT:
+        provider = str(item.get("provider") or "").strip().lower()
+        model = str(item.get("model") or "").strip()
+        if (
+            not provider
+            and not model
+            or provider == AI_APP_OLLAMA_PROVIDER and model in {"", "qwen3-vl:4b"}
+            or _is_codex_cli_provider(provider) and model in {"", AI_APP_CODEX_SPARK_MODEL, "gpt-5.4", "deepseek-v4-flash"}
+            or provider == AI_APP_DEEPSEEK_PROVIDER and model in {"", "deepseek-v4-flash"}
+        ):
+            return {
+                **item,
+                "provider": AI_APP_OLLAMA_PROVIDER,
+                "model": AI_APP_OLLAMA_GIT_COMMIT_MODEL,
+            }
     if app_id in _AI_APP_CODEX_SPARK_DEFAULT_IDS:
         provider = str(item.get("provider") or "").strip().lower()
         model = str(item.get("model") or "").strip()
@@ -323,8 +362,9 @@ def resolve_ai_app_runtime_config(
     model: str | None = None,
 ) -> dict[str, Any]:
     try:
+        normalized_app_id = _normalize_app_id(app_id)
         app_config = (
-            get_user_ai_app_config(session, current_user.id, app_id)
+            get_user_ai_app_config(session, current_user.id, normalized_app_id)
             if current_user is not None
             else {"provider": "", "model": "", "enabled": True}
         )
@@ -355,6 +395,30 @@ def resolve_ai_app_runtime_config(
                 if not resolved_model:
                     resolved_model = str(saved_config.get("preferred_model") or "").strip()
 
+        resource_scope = "user"
+        system_resource_id = None
+        allowed_system_providers = SYSTEM_AI_RESOURCE_FALLBACK_POLICIES.get(
+            normalized_app_id,
+            frozenset(),
+        )
+        if current_user is not None and resolved_provider in allowed_system_providers:
+            current_provider = get_ai_provider(
+                resolved_provider,
+                base_url=resolved_base_url or None,
+                api_key=resolved_api_key or None,
+                extra_providers=extra_providers,
+            )
+            if not current_provider.configured:
+                system_runtime = resolve_system_ai_resource(
+                    session=session,
+                    provider_id=resolved_provider,
+                )
+                resolved_base_url = str(system_runtime.get("base_url") or "").strip()
+                resolved_api_key = str(system_runtime.get("api_key") or "").strip()
+                extra_providers = tuple(system_runtime.get("extra_providers") or ())
+                resource_scope = "system"
+                system_resource_id = system_runtime["system_resource_id"]
+
         if resolved_provider == "ollama":
             ensure_ollama_access_key_allowed(session, resolved_api_key)
 
@@ -365,6 +429,8 @@ def resolve_ai_app_runtime_config(
             "api_key": resolved_api_key or None,
             "model": resolved_model or None,
             "extra_providers": extra_providers,
+            "resource_scope": resource_scope,
+            "system_resource_id": system_resource_id,
         }
-    except AiChatUserConfigError as exc:
+    except (AiChatUserConfigError, SystemAiResourceError) as exc:
         raise AiAppConfigError(str(exc)) from exc

@@ -255,7 +255,7 @@ def test_auto_git_commit_marks_orphaned_queued_run_failed(session):
     assert updated.status == "failed"
     assert updated.stage == "orphaned_queue"
     assert updated.stage_label == "队列任务丢失"
-    assert "队列中没有对应 auto_git_commit 任务" in updated.error_message
+    assert "对应 Local Job 已不存在或中断" in updated.error_message
 
 
 def test_auto_git_commit_due_scheduler_ignores_stale_active_run(session):

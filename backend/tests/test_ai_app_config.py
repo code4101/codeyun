@@ -11,6 +11,7 @@ from backend.core.ai.app_config import (
     AI_APP_GIT_COMMIT,
     AI_APP_GIT_COMMIT_DEFAULT_MODEL,
     AI_APP_GIT_COMMIT_DEFAULT_PROVIDER,
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT,
     AI_APP_NOTE_TAXONOMY,
     build_legacy_ai_git_commit_config_setting_key,
     get_user_ai_app_config,
@@ -33,8 +34,8 @@ def _build_engine():
     return engine
 
 
-def _create_user(session: Session) -> User:
-    user = User(username="alice", nickname="Alice", hashed_password="x", is_active=True)
+def _create_user(session: Session, username: str = "alice") -> User:
+    user = User(username=username, nickname=username, hashed_password="x", is_active=True)
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -65,7 +66,7 @@ def test_ai_git_commit_config_reads_legacy_setting_when_app_config_missing():
         }
 
 
-def test_ai_git_commit_default_uses_codex_spark():
+def test_ai_git_commit_default_uses_ollama_qwen35():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -84,7 +85,7 @@ def test_ai_git_commit_default_uses_codex_spark():
         assert runtime["model"] == AI_APP_GIT_COMMIT_DEFAULT_MODEL
 
 
-def test_ai_git_commit_deepseek_flash_saved_config_is_coerced_to_codex_spark():
+def test_ai_git_commit_codex_spark_saved_config_is_coerced_to_ollama_qwen35():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -92,8 +93,8 @@ def test_ai_git_commit_deepseek_flash_saved_config_is_coerced_to_codex_spark():
             session,
             user.id,
             AI_APP_GIT_COMMIT,
-            provider="deepseek",
-            model="deepseek-v4-flash",
+            provider="codex-cli",
+            model="gpt-5.3-codex-spark",
         )
 
         app_config = get_user_ai_app_config(session, user.id, AI_APP_GIT_COMMIT)
@@ -153,6 +154,122 @@ def test_resolve_ai_app_runtime_config_uses_app_model_and_provider_account_confi
         assert runtime["base_url"] == "https://api.deepseek.com/v1"
         assert runtime["api_key"] == "sk-deepseek-plaintext-value"
         assert runtime["model"] == "deepseek-app-model"
+
+
+def test_excel_import_falls_back_to_system_deepseek_resource_when_user_has_no_key():
+    engine = _build_engine()
+    with Session(engine) as session:
+        system_account = _create_user(session, "code4101")
+        user = _create_user(session, "attendance-editor")
+        save_user_ai_chat_provider_config(
+            session,
+            system_account.id,
+            "deepseek",
+            base_url="https://system.deepseek.example/v1",
+            api_key="sk-system-deepseek",
+        )
+
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+        )
+
+        assert runtime["provider"] == "deepseek"
+        assert runtime["base_url"] == "https://system.deepseek.example/v1"
+        assert runtime["api_key"] == "sk-system-deepseek"
+        assert runtime["resource_scope"] == "system"
+        assert runtime["system_resource_id"] == "ai.provider.deepseek"
+        assert "resource_owner_user_id" not in runtime
+
+
+def test_excel_import_prefers_user_deepseek_resource_over_system_fallback():
+    engine = _build_engine()
+    with Session(engine) as session:
+        system_account = _create_user(session, "code4101")
+        user = _create_user(session, "attendance-editor")
+        save_user_ai_chat_provider_config(
+            session,
+            system_account.id,
+            "deepseek",
+            api_key="sk-system-deepseek",
+        )
+        save_user_ai_chat_provider_config(
+            session,
+            user.id,
+            "deepseek",
+            api_key="sk-user-deepseek",
+        )
+
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+        )
+
+        assert runtime["api_key"] == "sk-user-deepseek"
+        assert runtime["resource_scope"] == "user"
+        assert runtime["system_resource_id"] is None
+
+
+def test_non_whitelisted_app_does_not_fall_back_to_system_deepseek_resource():
+    engine = _build_engine()
+    with Session(engine) as session:
+        system_account = _create_user(session, "code4101")
+        user = _create_user(session, "ordinary-user")
+        save_user_ai_chat_provider_config(
+            session,
+            system_account.id,
+            "deepseek",
+            api_key="sk-system-deepseek",
+        )
+        save_user_ai_app_config(
+            session,
+            user.id,
+            AI_APP_NOTE_TAXONOMY,
+            provider="deepseek",
+            model="deepseek-v4-pro",
+        )
+
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_NOTE_TAXONOMY,
+        )
+
+        assert runtime["api_key"] is None
+        assert runtime["resource_scope"] == "user"
+        assert runtime["system_resource_id"] is None
+
+
+def test_excel_import_whitelist_does_not_grant_other_system_provider_resources():
+    engine = _build_engine()
+    with Session(engine) as session:
+        system_account = _create_user(session, "code4101")
+        user = _create_user(session, "attendance-editor")
+        save_user_ai_chat_provider_config(
+            session,
+            system_account.id,
+            "openrouter",
+            api_key="sk-system-openrouter",
+        )
+        save_user_ai_app_config(
+            session,
+            user.id,
+            AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+            provider="openrouter",
+            model="some-model",
+        )
+
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_NOTE_SHEET_EXCEL_IMPORT,
+        )
+
+        assert runtime["api_key"] is None
+        assert runtime["resource_scope"] == "user"
+        assert runtime["system_resource_id"] is None
 
 
 def test_resolve_ai_app_runtime_config_falls_back_to_provider_preferred_model():

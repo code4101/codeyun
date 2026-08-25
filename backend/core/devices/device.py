@@ -474,7 +474,24 @@ def get_device_token() -> Optional[str]:
     return token or None
 
 
-def get_device_id():
+_DEVICE_ID_CACHE_LOCK = threading.Lock()
+_DEVICE_ID_CACHE_KEY: tuple[str, ...] | None = None
+_DEVICE_ID_CACHE_VALUE: str | None = None
+
+
+def _device_id_cache_key() -> tuple[str, ...]:
+    return (
+        DATA_DIR,
+        MACHINE_IDENTITY_FILE,
+        LEGACY_DEVICE_STATE_FILE,
+        LEGACY_NODE_STATE_FILE,
+        LEGACY_CONFIG_FILE,
+        SYSTEM_ID_FILE,
+        str(DEVICE_IDENTITY_VERSION),
+    )
+
+
+def _resolve_device_id():
     """Get the stable unique ID for this node and migrate legacy state if needed."""
     config = get_local_config()
     current_id = _current_device_id_from_state(config)
@@ -535,6 +552,21 @@ def get_device_id():
             pass
 
     return target_id
+
+
+def get_device_id():
+    """Return the process-stable node ID without repeating identity file I/O."""
+    global _DEVICE_ID_CACHE_KEY, _DEVICE_ID_CACHE_VALUE
+
+    cache_key = _device_id_cache_key()
+    with _DEVICE_ID_CACHE_LOCK:
+        if _DEVICE_ID_CACHE_KEY == cache_key and _DEVICE_ID_CACHE_VALUE:
+            return _DEVICE_ID_CACHE_VALUE
+
+        device_id = _resolve_device_id()
+        _DEVICE_ID_CACHE_KEY = cache_key
+        _DEVICE_ID_CACHE_VALUE = device_id
+        return device_id
 
 def get_system_id():
     return get_device_id()
@@ -1470,7 +1502,7 @@ class LocalDevice(BaseDevice):
             self.name = new_name
         return True
 
-from backend.db import engine, init_db
+from backend.db import engine
 
 from sqlmodel import Session, select
 
@@ -1480,12 +1512,6 @@ class DeviceManager:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DeviceManager, cls).__new__(cls)
-            # Initialize DB
-            try:
-                init_db()
-            except Exception as e:
-                print(f"Failed to init DB: {e}")
-                
             # Initialize devices dictionary FIRST
             cls._instance.devices: Dict[str, BaseDevice] = {}
             # Then load

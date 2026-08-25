@@ -51,13 +51,20 @@ const preloadNoteSheetWorkspace = () => (
 
 const NoteSheetWorkspace = defineAsyncComponent(() => preloadNoteSheetWorkspace())
 
+let attendanceApiPromise: Promise<typeof import('@/api/attendance')> | null = null
+
+async function loadAttendanceApi() {
+  attendanceApiPromise ??= import('@/api/attendance')
+  return attendanceApiPromise
+}
+
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
 const SHEET_TAB_CONTEXT_MENU_HEIGHT = 320
 const RESOURCE_LINK_SUBMENU_WIDTH = 176
 const SHEET_ADVANCED_SUBMENU_WIDTH = 196
 const WORKBOOK_CONTEXT_MENU_WIDTH = 148
-const WORKBOOK_CONTEXT_MENU_HEIGHT = 340
+const WORKBOOK_CONTEXT_MENU_HEIGHT = 300
 
 type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
 
@@ -96,7 +103,6 @@ type WorkbookContextMenuCommand =
   | 'rename'
   | 'access'
   | 'defined_names'
-  | 'save_as'
   | 'export_xlsx'
   | 'template'
   | 'duplicate'
@@ -179,11 +185,32 @@ const inlineLoginForm = reactive({
 const inlineLoginError = ref('')
 let workbookLoadSeq = 0
 
-const isWorkbookMode = computed(() => String(route.name ?? '') === 'PublicWorkbookResource')
+const routeName = computed(() => String(route.name ?? ''))
+const isExplicitIndependentAttendanceResource = computed(() => routeName.value.startsWith('IndependentAttendance'))
+const legacyAttendanceWorkbookMatch = ref(false)
+const isIndependentAttendanceResource = computed(() => (
+  isExplicitIndependentAttendanceResource.value || legacyAttendanceWorkbookMatch.value
+))
+const isWorkbookMode = computed(() => (
+  routeName.value === 'PublicWorkbookResource'
+  || routeName.value === 'IndependentAttendanceWorkbookResource'
+))
 const workbookId = computed(() => normalizePositiveInt(route.params.workbookId))
 const sheetId = computed(() => normalizePositiveInt(route.params.sheetId))
 const querySheetId = computed(() => normalizePositiveInt(route.query.sheet))
 const routeWorkspaceView = computed(() => normalizeWorkspaceViewQuery(route.query.view ?? route.query.mode ?? route.query.sheetView))
+
+function workbookResourcePath(targetWorkbookId: number) {
+  return isIndependentAttendanceResource.value
+    ? `/attendance/workbook/${targetWorkbookId}`
+    : `/workbook/${targetWorkbookId}`
+}
+
+function sheetResourcePath(targetSheetId: number) {
+  return isIndependentAttendanceResource.value
+    ? `/attendance/sheet/${targetSheetId}`
+    : `/sheet/${targetSheetId}`
+}
 const activeSheet = computed(() => (
   workbook.value?.sheets.find((sheet) => sheet.id === activeSheetId.value) ?? null
 ))
@@ -194,19 +221,19 @@ const sheetTabContextMenuSheet = computed(() => (
   workbook.value?.sheets.find((sheet) => sheet.id === sheetTabContextMenu.value.sheetId) ?? null
 ))
 const canEditWorkbookSheets = computed(() => (
-  workbook.value?.access?.capabilities.can_edit_config !== false
+  userStore.isAdmin || workbook.value?.access?.capabilities.can_edit_config !== false
 ))
 const canManageWorkbookSheets = computed(() => (
-  workbook.value?.access?.capabilities.can_manage_access !== false
+  userStore.isAdmin || workbook.value?.access?.capabilities.can_manage_access !== false
 ))
 const canReorderWorkbookSheets = computed(() => (
   canEditWorkbookSheets.value && (workbook.value?.sheets.length ?? 0) > 1
 ))
 const canEditSheetTabContextMenuSheet = computed(() => (
-  sheetTabContextMenuSheet.value?.access?.capabilities.can_edit_config !== false
+  userStore.isAdmin || sheetTabContextMenuSheet.value?.access?.capabilities.can_edit_config !== false
 ))
 const canManageSheetTabContextMenuSheet = computed(() => (
-  sheetTabContextMenuSheet.value?.access?.capabilities.can_manage_access !== false
+  userStore.isAdmin || sheetTabContextMenuSheet.value?.access?.capabilities.can_manage_access !== false
 ))
 const canRemoveSheetTabContextMenuSheet = computed(() => (
   !!sheetTabContextMenuSheet.value
@@ -227,7 +254,7 @@ const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
       label: '复制工作表',
       enabled: !!sheet && canEditWorkbookSheets.value && canEditSheetTabContextMenuSheet.value,
     },
-    { command: 'export_xlsx', label: '另存为 XLSX', enabled: !!sheet },
+    { command: 'export_xlsx', label: '另存为.xlsx', enabled: !!sheet },
     { command: 'configure', label: '设置表格', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
     {
       command: 'advanced',
@@ -267,8 +294,7 @@ const workbookContextMenuItems = computed<WorkbookContextMenuItem[]>(() => {
     { command: 'rename', label: '重命名', enabled: canManageWorkbookSheets.value },
     { command: 'access', label: '设置权限', enabled: canManageWorkbookSheets.value },
     { command: 'defined_names', label: '名称管理器', enabled: canEditWorkbookSheets.value },
-    { command: 'save_as', label: '另存为', saveAsSubmenu: true, enabled: true },
-    { command: 'export_xlsx', label: '另存为 XLSX', enabled: true },
+    { command: 'export_xlsx', label: '另存为.xlsx', saveAsSubmenu: true, enabled: true },
     { command: 'delete', label: '删除工作簿', danger: true, divided: true, enabled: canManageWorkbookSheets.value },
   ]
   return items
@@ -457,7 +483,7 @@ function syncActiveSheetFromWorkbookRoute() {
   }
   if (nextSheetId != null && nextSheetId !== querySheetId.value) {
     void router.replace({
-      path: `/workbook/${workbook.value.id}`,
+      path: workbookResourcePath(workbook.value.id),
       query: getCleanWorkbookRouteQuery(nextSheetId),
     })
   }
@@ -465,6 +491,9 @@ function syncActiveSheetFromWorkbookRoute() {
 }
 
 async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
+  if (isIndependentAttendanceResource.value) {
+    return false
+  }
   const staleWorkbookId = workbookId.value
   const targetSheetId = querySheetId.value
   if (targetSheetId == null) {
@@ -491,7 +520,7 @@ async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
   }
 
   void router.replace({
-    path: `/workbook/${targetWorkbookId}`,
+    path: workbookResourcePath(targetWorkbookId),
     query: getCleanWorkbookRouteQuery(targetSheetId),
   })
   return true
@@ -522,18 +551,51 @@ async function loadWorkbookResource() {
   prefetchedSheetDetail.value = null
   try {
     void preloadNoteSheetWorkspace()
+    let legacyAttendancePrefetchedDetail: NoteSheetDetail | null = null
+    if (!isExplicitIndependentAttendanceResource.value && targetSheetId != null) {
+      const { fetchIndependentAttendanceSheetDocumentById } = await loadAttendanceApi()
+      legacyAttendancePrefetchedDetail = await fetchIndependentAttendanceSheetDocumentById(
+        targetSheetId,
+        { workbookId: targetWorkbookId },
+      )
+      if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
+        return
+      }
+      legacyAttendanceWorkbookMatch.value = legacyAttendancePrefetchedDetail != null
+    } else {
+      legacyAttendanceWorkbookMatch.value = false
+    }
     const workbookRequest = markBootPerfAsync(
       'resource-view.fetchWorkbook',
-      () => fetchWorkbook(targetWorkbookId),
+      async () => {
+        if (isIndependentAttendanceResource.value) {
+          const { fetchIndependentAttendanceWorkbookById } = await loadAttendanceApi()
+          return fetchIndependentAttendanceWorkbookById(targetWorkbookId)
+        }
+        const detail = await fetchWorkbook(targetWorkbookId)
+        if (detail) {
+          return detail
+        }
+        const { fetchIndependentAttendanceWorkbookById } = await loadAttendanceApi()
+        return fetchIndependentAttendanceWorkbookById(targetWorkbookId)
+      },
     )
     const requestedSheetRequest = targetSheetId == null
       ? null
+      : legacyAttendancePrefetchedDetail != null
+        ? Promise.resolve(legacyAttendancePrefetchedDetail)
       : markBootPerfAsync(
           'resource-view.prefetchSheet',
-          () => fetchNoteSheet(targetSheetId, {
-            workbookId: targetWorkbookId,
-            includeWorkbookContext: false,
-          }),
+          async () => {
+            if (isIndependentAttendanceResource.value) {
+              const { fetchIndependentAttendanceSheetDocumentById } = await loadAttendanceApi()
+              return fetchIndependentAttendanceSheetDocumentById(targetSheetId, { workbookId: targetWorkbookId })
+            }
+            return fetchNoteSheet(targetSheetId, {
+              workbookId: targetWorkbookId,
+              includeWorkbookContext: false,
+            })
+          },
         ).catch((error) => {
           if (shouldLogResourceLoadWarning(error)) {
             console.warn('Failed to prefetch workbook sheet:', error)
@@ -555,10 +617,16 @@ async function loadWorkbookResource() {
     if (prefetchedDetail == null && detail && resolvedSheetId != null) {
       prefetchedDetail = await markBootPerfAsync(
         'resource-view.prefetchSheet',
-        () => fetchNoteSheet(resolvedSheetId!, {
-          workbookId: targetWorkbookId,
-          includeWorkbookContext: false,
-        }),
+        async () => {
+          if (isIndependentAttendanceResource.value) {
+            const { fetchIndependentAttendanceSheetDocumentById } = await loadAttendanceApi()
+            return fetchIndependentAttendanceSheetDocumentById(resolvedSheetId!, { workbookId: targetWorkbookId })
+          }
+          return fetchNoteSheet(resolvedSheetId!, {
+            workbookId: targetWorkbookId,
+            includeWorkbookContext: false,
+          })
+        },
       ).catch((error) => {
         if (shouldLogResourceLoadWarning(error)) {
           console.warn('Failed to prefetch workbook sheet:', error)
@@ -597,7 +665,7 @@ async function loadWorkbookResource() {
     })
     if (activeSheetId.value != null && activeSheetId.value !== querySheetId.value) {
       void router.replace({
-        path: `/workbook/${detail.id}`,
+        path: workbookResourcePath(detail.id),
         query: getCleanWorkbookRouteQuery(activeSheetId.value),
       })
     }
@@ -645,7 +713,7 @@ function selectSheet(nextSheetId: number) {
     prefetchedSheetDetail.value = null
   }
   void router.push({
-    path: `/workbook/${workbook.value.id}`,
+    path: workbookResourcePath(workbook.value.id),
     query: getCleanWorkbookRouteQuery(nextSheetId),
   })
 }
@@ -735,7 +803,7 @@ async function refreshWorkbookAfterSheetMutation(preferredSheetId?: number | nul
   ].find((id) => id != null && validIds.has(id)) ?? null
   activeSheetId.value = nextSheetId
   void router.replace({
-    path: `/workbook/${detail.id}`,
+    path: workbookResourcePath(detail.id),
     query: getCleanWorkbookRouteQuery(nextSheetId),
   })
 }
@@ -835,14 +903,14 @@ async function runSheetAdvancedActionFromTabContextMenu(command: 'hide_empty_col
 
 function resolveSheetResourceHref(targetSheetId: number) {
   return router.resolve({
-    path: `/sheet/${targetSheetId}`,
+    path: sheetResourcePath(targetSheetId),
     query: routeWorkspaceView.value ? { view: routeWorkspaceView.value } : undefined,
   }).href
 }
 
 function resolveWorkbookResourceHref(targetWorkbookId: number, targetSheetId?: number | null) {
   return router.resolve({
-    path: `/workbook/${targetWorkbookId}`,
+    path: workbookResourcePath(targetWorkbookId),
     query: getCleanWorkbookRouteQuery(targetSheetId),
   }).href
 }
@@ -966,7 +1034,7 @@ function handleWorkbookAccessSaved(access: NoteSheetResourceAccess) {
 
 function resolveWorkbookHref(targetWorkbookId: number, targetSheetId?: number | null) {
   return router.resolve({
-    path: `/workbook/${targetWorkbookId}`,
+    path: workbookResourcePath(targetWorkbookId),
     query: targetSheetId != null ? { sheet: String(targetSheetId) } : undefined,
   }).href
 }
@@ -1000,9 +1068,6 @@ function handleWorkbookContextMenuCommand(command: WorkbookContextMenuCommand) {
       break
     case 'defined_names':
       void openDefinedNamesFromWorkbookContextMenu()
-      break
-    case 'save_as':
-      void saveAsWorkbookFromContextMenu('duplicate')
       break
     case 'export_xlsx':
       void exportWorkbookFromContextMenu()
@@ -1247,7 +1312,7 @@ async function renameSheetFromTabContextMenu() {
     await refreshWorkbookAfterSheetMutation(sheet.id)
   } catch (error) {
     if (getNoteSheetApiErrorStatus(error) === 409) {
-      ElMessage.warning('工作表已被其他人更新，请刷新后重试')
+      ElMessage.warning('工作表数据已有新版本，请刷新后重试')
     }
     return
   }
@@ -1720,6 +1785,7 @@ onBeforeUnmount(() => {
         class="resource-sheet-workspace"
         :key="`workbook:${workbookId}:${sheetWorkspaceReloadKey}`"
         :workbook-id="workbookId"
+        :independent-attendance="isIndependentAttendanceResource"
         :workbook-title="workbook?.title ?? ''"
         :sheet-id="activeSheetId"
         :initial-detail="activeSheetPrefetchedDetail"
@@ -1727,7 +1793,7 @@ onBeforeUnmount(() => {
         default-height-mode="fill"
         runtime-height-mode="fill"
         :access-capabilities="activeSheet?.access?.capabilities ?? null"
-        :show-title-input="false"
+        :show-sheet-menu="false"
         empty-text="请选择工作表"
         @missing="handleSheetMissing"
         @load-error="handleSheetLoadError"
@@ -1742,10 +1808,11 @@ onBeforeUnmount(() => {
         class="resource-sheet-workspace"
         :key="`sheet:${sheetWorkspaceReloadKey}`"
         :sheet-id="sheetId"
+        :independent-attendance="isIndependentAttendanceResource"
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         runtime-height-mode="fill"
-        :show-title-input="false"
+        show-sheet-menu
         :show-back-button="standaloneWorkbookBackTo !== ''"
         show-user-identity
         :back-to="standaloneWorkbookBackTo || '/notes/sheets'"

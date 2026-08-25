@@ -6,7 +6,7 @@
 * ``find_labeled_percentage`` 负责从实时 OCR 文本解析某一滑杆的当前值；
 * ``BalancedPointState`` 负责两个增量属性的累计均衡选择。
 
-截图、OCR 缓存、点击、拖拽和动作后复核属于 ``FanxiuRuntime``。仙窍试炼
+截图、OCR 缓存、点击、拖拽和动作后复核属于 ``BehaviorTreeRuntime``。仙窍试炼
 “当前难度 + 1”等业务含义属于 ``trial_difficulty``，不要反向塞进控件层。
 """
 

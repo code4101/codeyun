@@ -2003,11 +2003,13 @@ def _date8_ms(value: str) -> int | None:
 
 def _activity_runtime_rows_for_card(card: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     try:
-        from backend.core.fanxiu.packet.activity_sync import get_fanxiu_activity_packet_schedule
+        from backend.core.fanxiu.activity.runtime_schedule import (
+            read_fanxiu_activity_runtime_schedule,
+        )
     except Exception:
         return [], {}
     try:
-        schedule = get_fanxiu_activity_packet_schedule()
+        schedule = read_fanxiu_activity_runtime_schedule()
     except Exception:
         return [], {}
     activity_id = str(card.get("id") or "").strip()
@@ -2123,49 +2125,13 @@ def _filter_activity_detail_for_runtime(card: dict[str, Any]) -> dict[str, Any]:
 
 
 def _activity_rank_runtime_sources() -> list[dict[str, Any]]:
-    try:
-        from backend.core.fanxiu.packet.tcp_flow import _iter_fanxiu_tcp_decoded_sources, _load_json_file
-    except Exception:
-        return []
-    rows: list[dict[str, Any]] = []
-    for source in _iter_fanxiu_tcp_decoded_sources(None):
-        decoded_path = Path(str(source.get("decoded_path") or ""))
-        if not decoded_path.is_file():
-            continue
-        data = _load_json_file(decoded_path) or {}
-        rows.append(
-            {
-                "source": source,
-                "path": decoded_path,
-                "data": data,
-                "mtime": decoded_path.stat().st_mtime,
-            }
-        )
-    rows.sort(key=lambda item: float(item.get("mtime") or 0))
-    return rows
+    """Raw decoded-file discovery was retired with packet capture."""
+
+    return []
 
 
 def _activity_rank_runtime_signature() -> tuple[tuple[str, int, int], ...]:
-    signature_rows: list[tuple[str, int, int]] = []
-    try:
-        from backend.core.fanxiu.packet.activity_sync import _rank_records_path
-        rank_path = _rank_records_path(None)
-        if rank_path.is_file():
-            stat = rank_path.stat()
-            signature_rows.append((str(rank_path), stat.st_mtime_ns, stat.st_size))
-    except Exception:
-        pass
-    try:
-        from backend.core.fanxiu.packet.tcp_flow import _iter_fanxiu_tcp_decoded_sources
-    except Exception:
-        return tuple(sorted(signature_rows))
-    for source in _iter_fanxiu_tcp_decoded_sources(None):
-        decoded_path = Path(str(source.get("decoded_path") or ""))
-        if not decoded_path.is_file():
-            continue
-        stat = decoded_path.stat()
-        signature_rows.append((str(decoded_path), stat.st_mtime_ns, stat.st_size))
-    return tuple(sorted(signature_rows))
+    return ()
 
 
 def _activity_rank_server_names_from_frame(parsed: dict[str, Any]) -> dict[int, str]:
@@ -2342,23 +2308,28 @@ def _normalize_activity_rank_record_item(
 
 
 def _load_activity_rank_record_indexes() -> tuple[dict[str, dict[int, dict[str, Any]]], dict[str, dict[str, Any]]]:
-    try:
-        from backend.core.fanxiu.packet.activity_sync import get_fanxiu_activity_rank_records
-    except Exception:
-        return {}
-    payload = get_fanxiu_activity_rank_records()
+    from sqlmodel import Session, select
+
+    from backend.db import engine
+    from backend.models import FanxiuPacketBusinessRecord
+
+    with Session(engine) as session:
+        records = session.exec(
+            select(FanxiuPacketBusinessRecord).where(
+                FanxiuPacketBusinessRecord.domain == "activity_rank"
+            )
+        ).all()
     result: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     self_result: dict[str, dict[str, Any]] = {}
-    for record in payload.get("records") or []:
-        if not isinstance(record, dict):
-            continue
-        snapshot = record.get("snapshot")
+    for record in records:
+        payload = dict(record.payload or {})
+        snapshot = payload.get("snapshot")
         if not isinstance(snapshot, dict):
-            continue
+            snapshot = payload
         activity_id = str(snapshot.get("activity_id") or "").strip()
         if not activity_id:
             continue
-        captured_at = str(record.get("last_seen_at") or "")
+        captured_at = str(record.captured_at or "")
         for item in snapshot.get("items") or []:
             if not isinstance(item, dict):
                 continue

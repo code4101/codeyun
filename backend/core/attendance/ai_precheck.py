@@ -285,58 +285,33 @@ def _collect_order_refunds(merchant_order_id: str, warnings: list[str]) -> tuple
     if not merchant_order_id:
         return None, []
 
-    _ensure_xlproject_env_loaded(warnings)
     try:
-        from kq5034.db import get_kqdb
-        from kq5034.order_ops import find_order_in_db
+        from sqlmodel import Session
+
+        from backend.core.attendance.master_data import (
+            lookup_payment_order,
+            payment_refund_rows,
+        )
+        from backend.db import engine
     except Exception as exc:
-        warnings.append(f"加载订单数据库工具失败：{exc}")
+        warnings.append(f"加载 CodeYun 订单主数据工具失败：{exc}")
         return None, []
 
     try:
-        kqdb = get_kqdb()
-        order_record = _json_safe(find_order_in_db(merchant_order_id, kqdb=kqdb))
-    except Exception as exc:
-        warnings.append(f"查询订单汇总失败：{exc}")
-        order_record = None
-        kqdb = None
-
-    if kqdb is None:
-        return order_record, []
-
-    wechat_order_id = _strip_legacy_order_prefix((order_record or {}).get("微信支付订单号"))
-    rows: list[dict[str, Any]] = []
-    try:
-        if wechat_order_id:
-            rows = list(
-                kqdb.exec2dict(
-                    """
-                    SELECT datetime, business_order, flow_order, money, balance, submitter, fee, voucher_id
-                    FROM weipay_table
-                    WHERE flow_order=%s AND money < 0
-                    ORDER BY datetime
-                    """,
-                    [wechat_order_id],
-                ).fetchall()
-            )
-        if not rows:
-            rows = list(
-                kqdb.exec2dict(
-                    """
-                    SELECT datetime, business_order, flow_order, money, balance, submitter, fee, voucher_id
-                    FROM weipay_table
-                    WHERE voucher_id LIKE %s AND money < 0
-                    ORDER BY datetime
-                    """,
-                    [f"{merchant_order_id}%"],
-                ).fetchall()
+        with Session(engine) as session:
+            order_record = _json_safe(lookup_payment_order(merchant_order_id, session=session))
+            wechat_order_id = _strip_legacy_order_prefix((order_record or {}).get("微信支付订单号"))
+            raw_refunds = payment_refund_rows(
+                session,
+                merchant_order_id=merchant_order_id,
+                wechat_order_id=wechat_order_id,
             )
     except Exception as exc:
-        warnings.append(f"查询订单返款明细失败：{exc}")
-        return order_record, []
+        warnings.append(f"查询 CodeYun 订单主数据失败：{exc}")
+        return None, []
 
     refunds = []
-    for row in rows:
+    for row in raw_refunds:
         item = _json_safe(dict(row))
         amount = abs(_number(item.get("money")) or 0)
         refunds.append(

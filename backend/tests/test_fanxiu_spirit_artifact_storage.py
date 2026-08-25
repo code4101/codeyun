@@ -15,6 +15,7 @@ def test_spirit_artifact_hall_defaults_to_fixed_artifacts(tmp_path, monkeypatch)
         "青暝岁月灯",
         "苍烟神火炉",
         "御海镇神图",
+        "六界轮回盘",
     ]
     assert [row["part_name"] for row in hall["artifacts"][0]["rows"]] == ["柄", "刃", "穗", "鞘", "珠", "纹"]
     assert hall["artifacts"][0]["rows"][0]["stat_raw_values"] == {

@@ -99,38 +99,3 @@ def test_ollama_overrides(monkeypatch):
     assert settings.ollama_base_url == "http://localhost:22334"
     assert settings.ollama_default_model == "llama3.2:latest"
     assert settings.ollama_timeout_seconds == 45.0
-
-
-def test_deepseek_defaults(monkeypatch):
-    monkeypatch.delenv("CODEYUN_DEEPSEEK_BASE_URL", raising=False)
-    monkeypatch.delenv("CODEYUN_DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("CODEYUN_DEEPSEEK_DEFAULT_MODEL", raising=False)
-    monkeypatch.delenv("CODEYUN_DEEPSEEK_TIMEOUT_SECONDS", raising=False)
-    monkeypatch.delenv("CODEYUN_DEEPSEEK_MODELS", raising=False)
-    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
-
-    settings = settings_module.load_settings()
-
-    assert settings.deepseek_base_url == "https://api.deepseek.com/v1"
-    assert settings.deepseek_api_key == ""
-    assert settings.deepseek_default_model == "deepseek-v4-flash"
-    assert settings.deepseek_timeout_seconds == 120.0
-    assert settings.deepseek_models == ("deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner")
-
-
-def test_deepseek_overrides(monkeypatch):
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_BASE_URL", "https://example.com/v1/")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_DEFAULT_MODEL", "deepseek-reasoner")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_TIMEOUT_SECONDS", "90")
-    monkeypatch.setenv("CODEYUN_DEEPSEEK_MODELS", "deepseek-chat, deepseek-reasoner, custom-model")
-    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
-
-    settings = settings_module.load_settings()
-
-    assert settings.deepseek_base_url == "https://example.com/v1"
-    assert settings.deepseek_api_key == "test-key"
-    assert settings.deepseek_default_model == "deepseek-reasoner"
-    assert settings.deepseek_timeout_seconds == 90.0
-    assert settings.deepseek_models == ("deepseek-chat", "deepseek-reasoner", "custom-model")

@@ -64,6 +64,19 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
+    path: '/attendance/workbook/:workbookId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'IndependentAttendanceWorkbookResource',
+        component: () => markBootPerfAsync('route.attendance-workbook-resource.import', () => import('@/standard/notes/resource-view/page.vue')),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
     path: '/sheet/:sheetId',
     component: StandaloneLayout,
     meta: { requiresAuth: false, skipFeatureAccess: true },
@@ -72,6 +85,19 @@ const routes: Array<RouteRecordRaw> = [
         path: '',
         name: 'PublicSheetResource',
         component: () => markBootPerfAsync('route.public-sheet-resource.import', () => import('@/standard/notes/resource-view/page.vue')),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
+    path: '/attendance/sheet/:sheetId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'IndependentAttendanceSheetResource',
+        component: () => markBootPerfAsync('route.attendance-sheet-resource.import', () => import('@/standard/notes/resource-view/page.vue')),
         meta: { requiresAuth: false, skipFeatureAccess: true },
       },
     ],

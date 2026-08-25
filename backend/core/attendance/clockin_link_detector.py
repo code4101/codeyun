@@ -552,6 +552,29 @@ def _collect_xiaoe_punch_home_activities(tab: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
+def _dismiss_xiaoe_clockin_onboarding(tab: Any) -> bool:
+    """Dismiss Xiaoe's first-visit clockin guide when it covers the activity list."""
+
+    script = """
+    const candidates = Array.from(document.querySelectorAll('button,[role=button],span,a,div'))
+      .filter(el => (el.innerText || el.textContent || '').trim() === '跳过')
+      .filter(el => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0
+          && style.display !== 'none' && style.visibility !== 'hidden';
+      })
+      .sort((a, b) => {
+        const rank = el => el.tagName === 'BUTTON' ? 0 : el.tagName === 'A' ? 1 : 2;
+        return rank(a) - rank(b);
+      });
+    if (!candidates.length) return false;
+    candidates[0].click();
+    return true;
+    """
+    return bool(tab.run_js(script))
+
+
 def detect_xiaoe_attendance_clockin_activities_browser(
     *,
     target_keywords: list[str],
@@ -577,12 +600,27 @@ def detect_xiaoe_attendance_clockin_activities_browser(
     try:
         tab = kqtools.xe2.switch_shop(shop_name)
         tab.get(home_url)
+        _dismiss_xiaoe_clockin_onboarding(tab)
         _wait_until(
             tab,
-            lambda: "打卡名称" in _body_text(tab) and "操作" in _body_text(tab),
+            lambda: (
+                _dismiss_xiaoe_clockin_onboarding(tab)
+                or ("打卡名称" in _body_text(tab) and "操作" in _body_text(tab))
+            ),
             timeout=45,
         )
-        activities = _collect_xiaoe_punch_home_activities(tab)
+        activities: list[dict[str, Any]] = []
+
+        def collect_loaded_activities() -> bool:
+            nonlocal activities
+            _dismiss_xiaoe_clockin_onboarding(tab)
+            activities = _collect_xiaoe_punch_home_activities(tab)
+            return bool(activities)
+
+        if not _wait_until(tab, collect_loaded_activities, timeout=30):
+            raise ClockinLinkDetectionError(
+                "小鹅通打卡首页已打开，但没有读取到任何活动；请检查登录状态、首次引导弹窗或页面结构。"
+            )
         selection = choose_attendance_clockin_activities(
             activities,
             target_keywords=target_keywords,

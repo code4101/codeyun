@@ -30,6 +30,7 @@ from backend.core.jobs.scheduler import (
     set_background_task_enabled,
 )
 from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
 from backend.core.devices.device import get_device_id
 from backend.core.resources.attachments import index_attachment_file_resource
 from backend.core.notes.metadata_feedback import (
@@ -172,6 +173,16 @@ def scheduled_analysis_job():
     )
     return result
 
+
+def enqueue_storage_analysis_job() -> str:
+    active = find_active_local_job_run("maintenance.storage-analysis")
+    if active is not None:
+        return active.id
+    return submit_local_job(
+        job_type="maintenance.storage-analysis",
+        payload={},
+    ).id
+
 def init_storage_scheduler():
     config = load_config()
     if config.get("schedule_enabled"):
@@ -180,7 +191,7 @@ def init_storage_scheduler():
             if not storage_scheduler.running:
                 storage_scheduler.start()
             storage_scheduler.add_job(
-                lambda: background_task_queue.enqueue("storage_analysis", scheduled_analysis_job),
+                enqueue_storage_analysis_job,
                 CronTrigger.from_crontab(cron),
                 id="storage_analysis",
                 replace_existing=True
@@ -866,16 +877,13 @@ def trigger_background_task(
 ):
     normalized_key = task_key.strip()
     if normalized_key == "storage_analysis":
-        queue_task_id = background_task_queue.enqueue("storage_analysis", scheduled_analysis_job)
+        queue_task_id = enqueue_storage_analysis_job()
         return BackgroundTaskTriggerResponse(task_key=normalized_key, queue_task_id=queue_task_id)
 
     if normalized_key == "attendance_summary_monthly_templates":
-        from backend.api.note_sheets import run_attendance_summary_template_job
+        from backend.core.jobs.scheduler import _enqueue_attendance_summary
 
-        queue_task_id = background_task_queue.enqueue(
-            "attendance_summary_monthly_templates",
-            run_attendance_summary_template_job,
-        )
+        queue_task_id = _enqueue_attendance_summary()
         return BackgroundTaskTriggerResponse(task_key=normalized_key, queue_task_id=queue_task_id)
 
     if normalized_key == "note_metadata_feedback_optimization":
@@ -1310,7 +1318,7 @@ def set_schedule_config(config: ScheduleConfig, session: Session = Depends(get_s
             if not storage_scheduler.running:
                 storage_scheduler.start()
             storage_scheduler.add_job(
-                lambda: background_task_queue.enqueue("storage_analysis", scheduled_analysis_job),
+                enqueue_storage_analysis_job,
                 CronTrigger.from_crontab(config.cron_expression),
                 id="storage_analysis",
                 replace_existing=True

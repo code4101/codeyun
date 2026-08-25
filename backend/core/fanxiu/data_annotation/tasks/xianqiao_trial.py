@@ -23,17 +23,21 @@ class XianqiaoTrialTaskMixin:
         )
 
     def xianqiao_trial_flow(self, runtime: Any):
-        """从 #34 进入玩法，完成当天资源消费，再稳定回到 #34。"""
+        """从 #34 进入玩法，消耗当天免费次数，再稳定回到 #34。"""
 
         payload = runtime.payload
+        purchase_target = payload.get("target_daily_purchases")
         entry = yield from runtime.enter_xianqiao_trial(
             max_daily_scrolls=int(payload.get("max_daily_scrolls") or 30),
             settle_seconds=float(payload.get("settle_seconds") or 0.8),
         )
         daily = yield from runtime.run_xianqiao_trial_daily(
-            target_daily_purchases=int(payload.get("target_daily_purchases") or 3),
+            target_daily_purchases=(
+                int(purchase_target) if purchase_target is not None else 0
+            ),
             max_challenges=int(payload.get("max_challenges") or 10),
             settle_seconds=float(payload.get("settle_seconds") or 0.8),
             battle_timeout=float(payload.get("battle_timeout") or 360.0),
         )
+        runtime.set_next_time(self._next_daily_boss_reset_time_text())
         return {**daily, "entry": entry}

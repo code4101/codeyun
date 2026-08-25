@@ -79,8 +79,9 @@ class _FakeTab:
         return _FakeClickable()
 
 
-def test_attendance_order_bridge_reexports_shared_symbols():
-    assert attendance_order.lookup_order is order_ops.lookup_order
+def test_attendance_order_bridge_keeps_browser_actions_without_pg_lookup_exports():
+    assert not hasattr(attendance_order, "lookup_order")
+    assert not hasattr(attendance_order, "find_order_in_db")
     assert attendance_order.OrderAutomationError is order_ops.OrderAutomationError
     assert attendance_order._execute_order_action is order_ops.execute_order_action
 
@@ -434,7 +435,9 @@ def test_execute_order_action_refund_uses_remaining_amount():
 
     row = result["rows"][0]
     assert result["summary"]["refunded_count"] == 1
-    assert fake_weipay.refund_requests == [("MA2026", 178.0, "视觉课退款")]
+    assert fake_weipay.refund_requests == [
+        ("420000000000000000000001", 178.0, "视觉课退款")
+    ]
     assert row["退款额度"] == 178.0
     assert row["已返款"] == 620.0
     assert "已退款" in row["执行退款"]

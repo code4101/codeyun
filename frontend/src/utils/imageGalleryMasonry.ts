@@ -1,7 +1,7 @@
 import {
   isPdfGalleryItem,
   type GalleryImage,
-} from './imageGallery';
+} from './imageGallery.ts';
 
 export const isMasonryRenderable = (image: GalleryImage) =>
   isPdfGalleryItem(image)
@@ -59,3 +59,23 @@ export const createEmptyMasonryColumnIds = (columnCount: number) =>
 
 export const createEmptyMasonryColumnHeights = (columnCount: number) =>
   Array.from({ length: Math.max(1, columnCount) }, () => 0);
+
+export const getUnresolvedMasonryImages = (
+  columnIds: string[][],
+  images: GalleryImage[],
+) => {
+  const imageById = new Map(images.map((image) => [image.id, image]));
+  const unresolvedImages: GalleryImage[] = [];
+  const seenIds = new Set<string>();
+
+  for (const imageId of columnIds.flat()) {
+    if (seenIds.has(imageId)) continue;
+    seenIds.add(imageId);
+    const image = imageById.get(imageId);
+    if (image && !isMasonryRenderable(image)) {
+      unresolvedImages.push(image);
+    }
+  }
+
+  return unresolvedImages;
+};

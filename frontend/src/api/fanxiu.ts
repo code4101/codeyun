@@ -1,12 +1,23 @@
 import api from '@/api';
 import type { NoteNode } from './notes';
 
+export interface FanxiuChoiceOption {
+  text: string;
+  aliases?: string[];
+  position?: number | null;
+  status: -1 | 0 | 1;
+  source?: string;
+  updated_at?: number;
+}
+
 export interface FanxiuLingquanQuestion {
   id: string;
   group_name: string;
   question: string;
   answer: string;
-  enabled: boolean;
+  options: FanxiuChoiceOption[];
+  options_complete: boolean;
+  interaction_mode: 'text_input' | 'choice_click';
   order_index: number;
   source: string;
   created_at: number;
@@ -19,7 +30,7 @@ export interface FanxiuLingquanQuestionListResponse {
   total: number;
 }
 
-export type FanxiuLingquanQuestionInput = Pick<FanxiuLingquanQuestion, 'group_name' | 'question' | 'answer' | 'enabled' | 'order_index'>;
+export type FanxiuLingquanQuestionInput = Pick<FanxiuLingquanQuestion, 'group_name' | 'question' | 'answer' | 'order_index'>;
 
 export function getFanxiuLingquanQuestions(params?: { query?: string; group_name?: string }) {
   return api.get<FanxiuLingquanQuestionListResponse>('/fanxiu/lingquan-questions', { params }).then(res => res.data);
@@ -48,59 +59,6 @@ export interface FanxiuProcessItem {
 
 export interface FanxiuProcessListResponse {
   items: FanxiuProcessItem[];
-}
-
-export interface FanxiuTcpBusinessEntry {
-  id: string;
-  decoded_at: string;
-  record_id: string;
-  pcap_name: string;
-  source_kind: string;
-  direction: 'c2s' | 's2c' | string;
-  name: string;
-  category: string;
-  meaning: string;
-  protocol_meaning: string;
-  pro_id: number;
-  sn: number;
-  frame_index: number;
-  display_text: string;
-  display_segments: Array<{ text: string; kind?: string; key?: string }>;
-  content: Record<string, unknown>;
-}
-
-export interface FanxiuTcpBusinessCategorySummary {
-  category: string;
-  meaning: string;
-  count: number;
-  protocols: string[];
-}
-
-export interface FanxiuTcpBusinessProtocolSample {
-  id: string;
-  decoded_at: string;
-  direction: 'c2s' | 's2c' | string;
-  display_text: string;
-  display_segments: Array<{ text: string; kind?: string; key?: string }>;
-  content: Record<string, unknown>;
-  field_labels?: Record<string, Record<string, string>>;
-}
-
-export interface FanxiuTcpBusinessProtocolSummary {
-  name: string;
-  category: string;
-  meaning: string;
-  count: number;
-  samples: FanxiuTcpBusinessProtocolSample[];
-}
-
-export interface FanxiuTcpBusinessEntryListResponse {
-  page: number;
-  page_size: number;
-  total: number;
-  category_summary: FanxiuTcpBusinessCategorySummary[];
-  protocol_summary: FanxiuTcpBusinessProtocolSummary[];
-  items: FanxiuTcpBusinessEntry[];
 }
 
 export interface FanxiuProtocolSemanticFeature {
@@ -189,39 +147,6 @@ export interface FanxiuProcessTerminateResponse {
   terminated: FanxiuProcessItem[];
   remaining: FanxiuProcessItem[];
   errors: Array<{ pid: number; error: string }>;
-}
-
-export interface FanxiuBehaviorTreeServiceStatus {
-  key: string;
-  title: string;
-  running: boolean;
-  state: string;
-  state_label: string;
-  pid: number | null;
-  process_count: number;
-  child_process_count: number;
-  total_process_count: number;
-  processes: FanxiuProcessItem[];
-  registry: Record<string, unknown>;
-  registry_pid_alive: boolean;
-  heartbeat_age_seconds: number | null;
-  started_at: string | null;
-  heartbeat_at: string | null;
-  last_error: string;
-  root: string;
-  registry_path: string;
-  status_path: string;
-  behavior_tree_log_path: string;
-  service_log_path: string;
-  script_path: string;
-  python_path: string;
-}
-
-export interface FanxiuBehaviorTreeServiceResponse {
-  status: string;
-  service: FanxiuBehaviorTreeServiceStatus;
-  pid?: number | null;
-  stop_result?: FanxiuProcessTerminateResponse | Record<string, unknown>;
 }
 
 export interface FanxiuGameWindow2StreamToken {
@@ -471,7 +396,7 @@ export interface FanxiuGameWindow2MatchResponse {
   match_debug?: FanxiuGameWindow2MatchDebug;
 }
 
-export interface FanxiuDataAnnotationRuntimeLogEntry {
+export interface FanxiuBehaviorTreeRuntimeLogEntry {
   id: string;
   time: string;
   kind: string;
@@ -486,27 +411,27 @@ export interface FanxiuDataAnnotationRuntimeLogEntry {
   ts?: string;
 }
 
-export interface FanxiuDataAnnotationRuntimeLogResponse {
-  entries: FanxiuDataAnnotationRuntimeLogEntry[];
+export interface FanxiuBehaviorTreeRuntimeLogResponse {
+  entries: FanxiuBehaviorTreeRuntimeLogEntry[];
   path: string;
 }
 
-export interface FanxiuDataAnnotationRuntimeCellLog {
+export interface FanxiuBehaviorTreeRuntimeCellLog {
   id: string;
   title: string;
   source_kind: string;
   source: string;
   started_at: string;
   ended_at: string;
-  entries: FanxiuDataAnnotationRuntimeLogEntry[];
+  entries: FanxiuBehaviorTreeRuntimeLogEntry[];
 }
 
-export interface FanxiuDataAnnotationRuntimeCellLogResponse {
-  cells: FanxiuDataAnnotationRuntimeCellLog[];
+export interface FanxiuBehaviorTreeRuntimeCellLogResponse {
+  cells: FanxiuBehaviorTreeRuntimeCellLog[];
   path: string;
 }
 
-export interface FanxiuDataAnnotationRuntimeGuardItem {
+export interface FanxiuBehaviorTreeRuntimeGuardItem {
   id: string;
   label: string;
   message?: string;
@@ -586,7 +511,7 @@ export interface FanxiuDataAnnotationDoctorWatchEnsureResponse {
   command?: string[];
 }
 
-export interface FanxiuDataAnnotationRuntimeStatus {
+export interface FanxiuBehaviorTreeRuntimeStatus {
   ok: boolean;
   behavior_tree_enabled?: boolean;
   running: boolean;
@@ -596,7 +521,7 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   guard_running?: boolean;
   guard_entry_id?: string;
   guard_interval_seconds?: number;
-  guard_items?: Record<string, FanxiuDataAnnotationRuntimeGuardItem>;
+  guard_items?: Record<string, FanxiuBehaviorTreeRuntimeGuardItem>;
   last_guard_event?: Record<string, unknown>;
   status: 'idle' | 'running' | 'stopping' | 'stopped' | 'success' | 'error' | string;
   entry_id: string;
@@ -617,7 +542,56 @@ export interface FanxiuDataAnnotationRuntimeStatus {
   finished_at: number;
   error: string;
   logs: Array<{ time: string; kind: string; message: string }>;
-  cell_logs?: FanxiuDataAnnotationRuntimeCellLog[];
+  cell_logs?: FanxiuBehaviorTreeRuntimeCellLog[];
+}
+
+export interface FanxiuGameWindow2FrameStatus {
+  ok: boolean;
+  entry_id: string;
+  sequence: number;
+  captured_at: number;
+  age_seconds: number | null;
+  consecutive_failures: number;
+  last_error: string;
+  ready: boolean;
+}
+
+export interface FanxiuInfoWindowSettings {
+  enabled: boolean;
+  active_recognition: boolean;
+  show_scene_id: boolean;
+  show_scene_score: boolean;
+  show_scene_identity_shapes: boolean;
+  show_all_shapes: boolean;
+}
+
+export interface FanxiuInfoWindowControlStatus {
+  ok: boolean;
+  settings: FanxiuInfoWindowSettings;
+  renderer: {
+    running?: boolean;
+    available?: boolean;
+    visible?: boolean;
+    pid?: number;
+    updated_at?: number;
+  };
+  scene: {
+    scene_id?: number | null;
+    score?: number;
+    asset_directory?: string;
+    boxes?: Array<Record<string, number>>;
+    all_shape_boxes?: Array<Record<string, number>>;
+    observed_at?: number;
+  };
+}
+
+export interface FanxiuBehaviorTreeRuntimeDeviceRestartResponse {
+  ok: boolean;
+  recovered: boolean;
+  status: string;
+  message: string;
+  device: Record<string, unknown>;
+  runtime: FanxiuBehaviorTreeRuntimeStatus;
 }
 
 export interface FanxiuDataAnnotationSchedulerTaskItem {
@@ -628,22 +602,19 @@ export interface FanxiuDataAnnotationSchedulerTaskItem {
   template_id?: string;
   template_label?: string;
   template_source?: string;
-  trigger_kind?: string;
+  trigger_description: string;
   source: string;
-  schedule_kind: string;
   legacy_name: string;
-  enabled: boolean;
   interruptible: boolean;
   dispatch_level: number;
   dispatch_order: number;
-  retry_policy: 'standard' | 'immediate';
   next_time?: string | null;
-  schedule_times: string[];
-  weekdays?: number[];
-  window?: string[] | null;
+  original_next_time?: string | null;
+  schedule_bias_minutes?: number;
   last_run_at?: string | null;
-  retry_after?: string | null;
-  cooldown_seconds: number;
+  last_result?: string;
+  last_message?: string;
+  error_retry_delay_seconds: number;
   payload: Record<string, unknown>;
   checkpoint?: Record<string, unknown> | null;
 }
@@ -655,6 +626,44 @@ export interface FanxiuDataAnnotationSchedulerTasksResponse {
   path: string;
 }
 
+export interface FanxiuGameStateInspectionStatus {
+  ok: boolean;
+  name: string;
+  description: string;
+  enabled: boolean;
+  status: 'running' | 'paused' | 'starting' | 'error' | string;
+  interval_seconds: number;
+  probe_count: number;
+  probes: Array<{ id: string; label: string; source: string }>;
+  sources: string[];
+  service_pid?: number | null;
+  last_checked_at?: string | null;
+  next_check_at?: string | null;
+  last_result: string;
+  last_message: string;
+  last_duration_ms?: number | null;
+}
+
+export interface FanxiuDataAnnotationSchedulerTimeSequenceItem {
+  task_id: string;
+  task_label: string;
+  original_next_time?: string | null;
+  effective_next_time?: string | null;
+  bias_minutes: number;
+}
+
+export interface FanxiuDataAnnotationSchedulerTimeSequenceGroup {
+  key: string;
+  original_time: string;
+  task_ids: string[];
+  items: FanxiuDataAnnotationSchedulerTimeSequenceItem[];
+}
+
+export interface FanxiuDataAnnotationSchedulerTimeSequenceResponse {
+  ok: boolean;
+  groups: FanxiuDataAnnotationSchedulerTimeSequenceGroup[];
+}
+
 export interface FanxiuDataAnnotationSchedulerPlanItem {
   id: string;
   task_type: string;
@@ -663,13 +672,11 @@ export interface FanxiuDataAnnotationSchedulerPlanItem {
   template_id?: string;
   template_label?: string;
   template_source?: string;
-  trigger_kind?: string;
-  enabled: boolean;
+  trigger_description?: string;
   due: boolean;
   runnable: boolean;
   reason: string;
   next_time?: string | null;
-  retry_after?: string | null;
   fact: Record<string, unknown>;
 }
 
@@ -691,6 +698,7 @@ export interface FanxiuDataAnnotationAssetTreeResponse {
   entry_id: string;
   exists: boolean;
   tree: unknown[];
+  revision: string;
   updated_at: number;
 }
 
@@ -709,6 +717,86 @@ export interface FanxiuDataAnnotationRecognitionOpsIssue {
   label: string;
   node_ids: number[];
   edges: FanxiuDataAnnotationRecognitionOpsEdge[];
+  incident?: FanxiuDataAnnotationNavigationIncidentSummary | null;
+}
+
+export interface FanxiuDataAnnotationNavigationIncidentSummary {
+  id: string;
+  status: string;
+  review_status?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  elapsed_seconds?: number | null;
+  target_scene_id?: number | null;
+  current_scene_id?: number | null;
+  fallback_used?: boolean;
+  trigger?: Record<string, unknown>;
+  runtime?: Record<string, unknown>;
+  resolution?: Record<string, unknown> | null;
+  timeline_count?: number;
+}
+
+export interface FanxiuDataAnnotationNavigationIncidentTimelineItem {
+  index: number;
+  time?: string;
+  kind: string;
+  source_scene_id?: number | null;
+  recognized_scene_id?: number | null;
+  recognized_score?: number | null;
+  shape_id?: string;
+  shape_title?: string;
+  point?: [number, number] | null;
+  reason?: string;
+  landing_scene_id?: number | null;
+  landing_score?: number | null;
+  frame_similarity?: number | null;
+  progressed?: boolean;
+  navigation_state_key?: string;
+  attempt?: number | null;
+  before_frame?: string | null;
+  after_frame?: string | null;
+}
+
+export interface FanxiuDataAnnotationNavigationIncident {
+  id: string;
+  status: string;
+  review_status?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  elapsed_seconds?: number | null;
+  target_scene_id?: number | null;
+  current_scene_id?: number | null;
+  fallback_used?: boolean;
+  trigger?: { type?: string; label?: string; threshold?: Record<string, unknown> };
+  policy?: Record<string, unknown>;
+  runtime?: {
+    task?: string | null;
+    task_id?: string | null;
+    task_type?: string | null;
+    phase?: string | null;
+    cell_id?: string | null;
+    kernel_generation?: number | null;
+  };
+  asset_tree?: Record<string, unknown>;
+  diagnostic?: Record<string, unknown> | null;
+  resolution?: Record<string, unknown> | null;
+  timeline: FanxiuDataAnnotationNavigationIncidentTimelineItem[];
+  frames?: Array<{
+    path: string;
+    role: string;
+    timeline_index?: number | null;
+    scene_id?: number | null;
+    shape_id?: string | null;
+    shape_title?: string | null;
+    captured_at?: string;
+  }>;
+  frame_data_urls?: Record<string, string>;
+}
+
+export interface FanxiuDataAnnotationNavigationIncidentResponse {
+  ok: boolean;
+  entry_id: string;
+  incident: FanxiuDataAnnotationNavigationIncident;
 }
 
 export interface FanxiuDataAnnotationRecognitionOpsCategory {
@@ -759,8 +847,13 @@ export interface FanxiuDataAnnotationRecognitionOpsResponse {
 
 export interface FanxiuDataAnnotationSaveFramePayload {
   entry_id: string;
-  current_frame_data_url: string;
+  current_frame_data_url?: string;
   filename?: string;
+  fresh_capture?: boolean;
+  asset_node?: Record<string, unknown>;
+  parent_id?: string;
+  after_node_id?: string;
+  base_revision?: string;
 }
 
 export interface FanxiuDataAnnotationSaveFrameResponse {
@@ -771,6 +864,12 @@ export interface FanxiuDataAnnotationSaveFrameResponse {
   directory: string;
   width: number;
   height: number;
+  fresh_capture: boolean;
+  frame_sequence: number;
+  captured_at: number;
+  tree?: unknown[] | null;
+  revision?: string | null;
+  updated_at?: number | null;
 }
 
 export interface FanxiuDataAnnotationOcrFrameToken {
@@ -987,15 +1086,40 @@ export interface FanxiuInventoryItem {
   note_id?: string | null;
 }
 
-export type FanxiuWardrobeItem = FanxiuInventoryItem;
+export interface FanxiuWardrobeItem extends FanxiuInventoryItem {
+  fashion_id: number;
+  item_id: number;
+  owned: boolean;
+  category: string;
+  type_id: number;
+  max_level: number;
+  show_max_level: number;
+  is_max_level: boolean;
+  is_forever: boolean;
+  dress: boolean;
+  condition: string;
+  knowledge_source: 'item_catalog' | 'runtime_memory';
+  catalog_icon: string;
+  catalog_description: string;
+  catalog_effect_description: string;
+  catalog_quality_name: string;
+  catalog_quality_color: string;
+}
 export type FanxiuInventorySectionSnapshot = Record<string, FanxiuInventoryItem[]>;
 
 export interface FanxiuWardrobeHallSnapshot {
-  shizhuang: FanxiuInventoryItem[];
-  wuqi: FanxiuInventoryItem[];
-  huanshen: FanxiuInventoryItem[];
-  beishi: FanxiuInventoryItem[];
-  yuqi: FanxiuInventoryItem[];
+  shizhuang: FanxiuWardrobeItem[];
+  wuqi: FanxiuWardrobeItem[];
+  huanshen: FanxiuWardrobeItem[];
+  beishi: FanxiuWardrobeItem[];
+  yuqi: FanxiuWardrobeItem[];
+  runtime_source: string;
+  runtime_complete: boolean;
+  runtime_error: string;
+  runtime_updated_at: number;
+  runtime_item_count: number;
+  runtime_owned_count: number;
+  runtime_debug: Record<string, unknown>;
 }
 
 export interface FanxiuSpiritBeastHallSnapshot {
@@ -1003,10 +1127,408 @@ export interface FanxiuSpiritBeastHallSnapshot {
   shengshou: FanxiuInventoryItem[];
 }
 
+export interface FanxiuMagicTreasureGradient {
+  pin: number;
+  level: number;
+  pin_label: string;
+  unlock_label: string;
+  skill_name: string;
+  summary_description: string;
+  summary_segments: FanxiuGameRichTextSegment[];
+  effect_description: string;
+  effect_segments: FanxiuGameRichTextSegment[];
+  schedule_description: string;
+  schedule_segments: FanxiuGameRichTextSegment[];
+  active: boolean;
+  current: boolean;
+}
+
+export interface FanxiuGameRichTextSegment {
+  text: string;
+  color: string;
+  role: '' | 'skill' | 'value' | 'quality' | 'attribute' | 'accent';
+}
+
+export interface FanxiuMagicTreasureUpgradeEffect {
+  stage: number;
+  description: string;
+  segments: FanxiuGameRichTextSegment[];
+  unlocked: boolean;
+  current: boolean;
+}
+
+export interface FanxiuMagicTreasureItem extends FanxiuInventoryItem {
+  talisman_id: number;
+  owned: boolean;
+  category: FanxiuMagicTreasureCategory;
+  wujing_level: number;
+  mix_level: number;
+  bind_id: number;
+  num: number;
+  knowledge_source: 'item_catalog' | 'runtime_memory';
+  catalog_item_id?: number | null;
+  catalog_name: string;
+  catalog_icon: string;
+  catalog_description: string;
+  catalog_effect_description: string;
+  catalog_quality?: number | null;
+  catalog_quality_name: string;
+  catalog_quality_color: string;
+  catalog_refine_item_id?: number | null;
+  catalog_refine_name: string;
+  original_effect: string;
+  upgrade_effects: FanxiuMagicTreasureUpgradeEffect[];
+  shenlian_effect: string;
+  shenlian_effect_segments: FanxiuGameRichTextSegment[];
+  shenlian_schedule: string;
+  shenlian_schedule_segments: FanxiuGameRichTextSegment[];
+  shenlian_pin: number;
+  shenlian_pin_label: string;
+  shenlian_progress_nodes: number;
+  shenlian_remaining_nodes: number;
+  shenlian_next_pin: number;
+  shenlian_next_level: number;
+  shenlian_next_label: string;
+  shenlian_next_skill_name: string;
+  shenlian_max_pin: number;
+  shenlian_gradients: FanxiuMagicTreasureGradient[];
+}
+
 export interface FanxiuMagicTreasureHallSnapshot {
-  fabao: FanxiuInventoryItem[];
-  xiantiangubao: FanxiuInventoryItem[];
-  houtiangubao: FanxiuInventoryItem[];
+  fabao: FanxiuMagicTreasureItem[];
+  xiantiangubao: FanxiuMagicTreasureItem[];
+  houtiangubao: FanxiuMagicTreasureItem[];
+  runtime_source: string;
+  runtime_complete: boolean;
+  runtime_error: string;
+  runtime_updated_at: number;
+  runtime_item_count: number;
+  runtime_debug: Record<string, unknown>;
+}
+
+export interface FanxiuXianyuanReward {
+  level: number;
+  reward_key: number;
+  item_id: number;
+  name: string;
+  count: number;
+  kind: string;
+  state: number;
+  state_name: string;
+  description: string;
+  target_support_kind?: string;
+  target_support_mode?: string;
+  optional_items?: Array<{
+    item_id: number;
+    name: string;
+    kind: string;
+  }>;
+  optional_item_count?: number;
+  contains_wujing?: boolean;
+}
+
+export interface FanxiuXianyuanGiftOption {
+  item_id: number;
+  name: string;
+  description: string;
+  hobby_id: number;
+  hobby_name: string;
+  favorability: number;
+  gift_type: number;
+  activity_gift: boolean;
+  career_conditional: boolean;
+}
+
+export interface FanxiuXianyuanHobbyGroup {
+  hobby_id: number;
+  name: string;
+  description: string;
+  item_count: number;
+  activity_gift: boolean;
+}
+
+export interface FanxiuXianyuanPerson {
+  npc_id: number;
+  name: string;
+  name_lang_id?: number | null;
+  open_state: number;
+  relation_type: '可送礼' | '敌对' | '已结识';
+  hostile: boolean;
+  giftable: boolean;
+  can_send_config: boolean;
+  no_gift_description: string;
+  career_desc: number;
+  cant_send_flower: boolean;
+  gift_restriction: string;
+  hobby_groups: FanxiuXianyuanHobbyGroup[];
+  gift_options: FanxiuXianyuanGiftOption[];
+  gift_option_count: number;
+  activity_flower_gift_count: number;
+  favor_level: number;
+  favor: number;
+  reset_favor_level: number;
+  reset_favor: number;
+  space_type: number;
+  reward_count: number;
+  book_reward_count: number;
+  reward_kinds: string[];
+  claimable_count: number;
+  claimed_count: number;
+  rewards: FanxiuXianyuanReward[];
+  selectable_rewards: FanxiuXianyuanReward[];
+  selectable_reward_count: number;
+  wujing_selectable_reward_count: number;
+  reset_steps: Array<{
+    step: number;
+    start_level: number;
+    end_level: number;
+    favor_cost: number;
+  }>;
+  target_rewards: FanxiuXianyuanReward[];
+  target_reward_count: number;
+  target_support_kinds: string[];
+  target_next_level?: number | null;
+  target_level_distance?: number | null;
+  target_current_favor?: number | null;
+  target_required_favor?: number | null;
+  target_favor_gap?: number | null;
+  target_cycle_end_level?: number | null;
+  target_cycle_start_level?: number | null;
+  target_cycle_favor_cost?: number | null;
+  target_cycle_reward_count?: number;
+  target_best_reset_step?: number | null;
+  target_average_wujing_cost?: number | null;
+  target_reset_options?: Array<{
+    step: number;
+    start_level: number;
+    end_level: number;
+    favor_cost: number;
+    reward_count: number;
+    average_wujing_cost: number;
+    reward_levels: number[];
+  }>;
+  target_recommendation_rank?: number | null;
+}
+
+export interface FanxiuXianyuanTargetGongfa {
+  book_id: number;
+  name: string;
+  quality_grade_name: string;
+  filter_category: string;
+  jie: number;
+  max_jie: number;
+  wujing: number;
+  max_wujing: number;
+  tongxuan: number;
+  max_tongxuan: number;
+  upgrade_index: number;
+}
+
+export interface FanxiuXianyuanRecommendation {
+  npc_id: number;
+  name: string;
+  next_level: number;
+  level_distance: number;
+  favor_gap: number;
+  cycle_favor_cost: number;
+  average_wujing_cost: number;
+  reward_count: number;
+  support_kinds: string[];
+}
+
+export interface FanxiuXianyuanAtlasSnapshot {
+  people: FanxiuXianyuanPerson[];
+  runtime_complete: boolean;
+  runtime_error: string;
+  runtime_updated_at: number;
+  runtime_item_count: number;
+  summary: Record<string, number>;
+  runtime_debug: Record<string, unknown>;
+  target_gongfa?: FanxiuXianyuanTargetGongfa | null;
+  recommendation?: FanxiuXianyuanRecommendation | null;
+}
+
+export interface FanxiuGuideVideoItem {
+  item_id: string;
+  platform: 'bilibili' | 'douyin';
+  source_id: string;
+  source_role: 'official' | 'original' | 'guide' | 'clip';
+  identity_key: string;
+  video_id: string;
+  bvid: string;
+  url: string;
+  title: string;
+  description: string;
+  cover_url: string;
+  duration_text: string;
+  play_text: string;
+  published_at: number;
+  dynamic_id: string;
+  uploader_mid: number;
+  uploader_id: string;
+  uploader_name: string;
+  is_pinned?: boolean;
+  research?: FanxiuGuideVideoResearch | null;
+  download?: FanxiuGuideVideoDownload | null;
+}
+
+export interface FanxiuGuideVideoDownload {
+  item_id: string;
+  status: 'running' | 'done' | 'error';
+  attempts: number;
+  local_video_path?: string;
+  error?: string;
+}
+
+export interface FanxiuGuideVideoResearchTimelineItem {
+  time: number;
+  label: string;
+  description: string;
+}
+
+export interface FanxiuGuideVideoResearch {
+  item_id: string;
+  status: 'queued' | 'downloading' | 'transcribing' | 'analyzing' | 'done' | 'error';
+  analyzed_at: number;
+  duration: number;
+  summary: string;
+  conclusions: string[];
+  topics: string[];
+  timeline: FanxiuGuideVideoResearchTimelineItem[];
+  version_note: string;
+  local_video_path: string;
+  document_path: string;
+  transcript_path: string;
+  media_url: string;
+  document_url: string;
+  transcript_url: string;
+}
+
+export interface FanxiuGuideVideoCollection {
+  collection_id: string;
+  title: string;
+  url: string;
+  episode_count: number;
+  play_text: string;
+}
+
+export interface FanxiuGuideVideoSource {
+  source_id: string;
+  platform: 'bilibili' | 'douyin';
+  role: 'official' | 'original' | 'guide' | 'clip';
+  identity_key: string;
+  uploader_id: string;
+  uploader_name: string;
+  profile_url: string;
+  target_count: number;
+  done_count: number;
+  status: 'idle' | 'running' | 'done' | 'error';
+  error: string;
+  collections: FanxiuGuideVideoCollection[];
+}
+
+export interface FanxiuGuideVideoCatalogResponse {
+  schema_version: number;
+  status: 'idle' | 'running' | 'done' | 'error';
+  sources: FanxiuGuideVideoSource[];
+  target_count: number;
+  done_count: number;
+  updated_at: number;
+  error: string;
+  query: string;
+  source_id: string;
+  platform: string;
+  role: string;
+  page: number;
+  page_size: number;
+  total: number;
+  research_count: number;
+  download_status: 'idle' | 'running' | 'waiting' | 'done' | 'stopped' | 'stopped_after_limit' | 'paused_low_disk';
+  download_target_count: number;
+  download_done_count: number;
+  download_failed_count: number;
+  download_current_item_id: string;
+  items: FanxiuGuideVideoItem[];
+}
+
+export interface FanxiuGongfaAtlasBook {
+  book_id: number;
+  name: string;
+  skill_type?: number | null;
+  skill_type_name: string;
+  filter_category: string;
+  quality_type_name: string;
+  quality_grade_name: string;
+  quality_grade_order: number;
+  quality_grade_color: string;
+  quality_family_name: string;
+  upgrade_index: number;
+  upgrade_priority?: number | null;
+  upgrade_priority_pool: 'equipped_dependency' | 'fallback_learned';
+  upgrade_first_usage?: Record<string, unknown> | null;
+  sub_type_names: string[];
+  grade: number;
+  max_grade: number;
+  jie: number;
+  star: number;
+  pin: number;
+  wujing: number;
+  tongxuan: number;
+  quality: number;
+  total_exp: number;
+  max_star: number;
+  max_jie: number;
+  max_wujing: number;
+  max_tongxuan: number;
+  full: boolean;
+  remaining_star?: number | null;
+  remaining_fusion?: number | null;
+  catalog_href: string;
+}
+
+export interface FanxiuGongfaAtlasSnapshot {
+  books: FanxiuGongfaAtlasBook[];
+  priority_book_ids: number[];
+  runtime_complete: boolean;
+  runtime_error: string;
+  runtime_updated_at: number;
+  runtime_item_count: number;
+  summary: Record<string, number>;
+  runtime_debug: Record<string, unknown>;
+}
+
+export interface FanxiuGongfaAtlasUsage {
+  category: string;
+  category_name: string;
+  slot: number;
+  equipped_name: string;
+  location_name: string;
+  role: 'main' | 'xian' | 'side' | 'grid' | string;
+  role_name: string;
+  grid?: number;
+  source_skill_id?: number;
+  effect_id?: number;
+  effect_ids?: number[];
+  effect_text: string;
+  effect_rich_text: string;
+}
+
+export interface FanxiuGongfaAcquisitionChannel {
+  kind: '融合' | '悟境' | '通玄' | string;
+  source: string;
+  title: string;
+  detail: string;
+  mode: string;
+  item_id: number;
+  npc_id?: number | null;
+  level?: number | null;
+}
+
+export interface FanxiuGongfaAtlasBookDetail {
+  book_id: number;
+  usages: FanxiuGongfaAtlasUsage[];
+  acquisition_channels: FanxiuGongfaAcquisitionChannel[];
+  xianyuan_snapshot_available: boolean;
 }
 
 export interface FanxiuSpiritArtifactPartRow {
@@ -1025,6 +1547,31 @@ export interface FanxiuSpiritArtifactPartRow {
   spirit_power: string;
   health: string;
   defense: string;
+  runtime_base_id: number;
+  runtime_item_id: string;
+  runtime_ware_id: number;
+  runtime_part: number;
+  runtime_refine_num: number;
+  runtime_is_break: boolean;
+  runtime_effects: FanxiuSpiritArtifactRuntimeEffect[];
+}
+
+export interface FanxiuSpiritArtifactRuntimeEffect {
+  cleanse_id: number;
+  value: number;
+  base_value: number;
+  add_value: number;
+  quality: number;
+  locked: boolean;
+  name: string;
+  official_name: string;
+  code: string;
+  type: number;
+  attribute_id: string;
+  attribute_name: string;
+  projection: string;
+  projection_base_value: number;
+  percent: string;
 }
 
 export interface FanxiuSpiritArtifactItem {
@@ -1059,6 +1606,13 @@ export interface FanxiuSpiritArtifactHallSnapshot {
   market_currency_count: number;
   market_items: FanxiuSpiritArtifactMarketItem[];
   storage_bag_items: FanxiuSpiritArtifactStorageBagItem[];
+  runtime_source: string;
+  runtime_complete: boolean;
+  runtime_error: string;
+  runtime_updated_at: number;
+  runtime_item_count: number;
+  runtime_equipped_count: number;
+  runtime_debug: Record<string, unknown>;
 }
 
 export interface FanxiuMagicTreasureOcrImportResponse {
@@ -1149,93 +1703,456 @@ export interface FanxiuActivityListSnapshot {
   items: FanxiuActivityItem[];
 }
 
-export interface FanxiuModaoInvasionExchangeItem {
-  id: string;
-  name: string;
-  magic_crystal_cost: number;
-  purchase_limit: number;
-  checked: boolean;
-}
-
-export interface FanxiuModaoInvasionPersonalRankingItem {
-  id: string;
+export interface FanxiuResourceRankingRow {
   rank: number;
-  name: string;
-  plane: string;
-  merit: number;
-}
-
-export interface FanxiuShouyuanExplorationIncomeSpeedItem {
-  id: string;
-  captured_date: string;
-  search_count: number;
-  beast_crystal: number;
   score: number;
-  merit: number;
-  remark: string;
+  role_key: string;
+  name: string;
+  server_id?: number | null;
+  server_name: string;
+  club_name: string;
+  is_self: boolean;
+  is_reward_guard: boolean;
+  reward_rank_start?: number | null;
+  reward_rank_end?: number | null;
+  talent_pill_count?: number | null;
+  score_per_talent_pill?: number | null;
+  has_player: boolean;
+  is_last_player: boolean;
 }
 
-export interface FanxiuShouyuanExplorationConsumptionEvaluationItem {
-  id: string;
-  label: string;
-  current: number;
+export interface FanxiuLingzhuangHuadaoRankingSnapshot {
+  ok: boolean;
+  available: boolean;
+  complete: boolean;
+  source: string;
+  activity: {
+    key: 'lingzhuang-huadao';
+    name: string;
+    resource_name: string;
+    rank_activity_id: number;
+  };
+  captured_at: string;
+  reason?: string;
+  rank_list_size: number;
+  loaded_rank_count: number;
+  declared_rank_count?: number | null;
+  reward_guard_ranks?: number[];
+  self_ranking?: FanxiuResourceRankingRow | null;
+  rankings: FanxiuResourceRankingRow[];
+  plane_rank_activity_id: number;
+  plane_rank_list_size: number;
+  plane_loaded_rank_count: number;
+  plane_declared_rank_count?: number | null;
+  plane_self_ranking?: FanxiuResourceRankingRow | null;
+  plane_rankings: FanxiuResourceRankingRow[];
+}
+
+export interface FanxiuLingzhuangStrengtheningSide {
+  material_id: number;
+  material_name: string;
+  material_count?: number | null;
+  equipment_level?: number | null;
+  equipment_raw_level?: number | null;
+  equipped?: boolean | null;
+}
+
+export interface FanxiuLingzhuangStrengtheningRow {
+  part: string;
+  initial: FanxiuLingzhuangStrengtheningSide;
+  dongxuan: FanxiuLingzhuangStrengtheningSide;
+}
+
+export interface FanxiuLingzhuangTaskProgress {
+  task_id: number;
+  order: number;
+  name: string;
+  progress: number;
   target: number;
-  speed: number;
+  finished: boolean;
+  talent_pill_count: number;
 }
 
-export interface FanxiuModaoInvasionRecord {
+export interface FanxiuYaochiFlowerTaskMilestone {
+  task_id: number;
+  order: number;
+  name: string;
+  target: number;
+  talent_pill_count: number;
+  must_get: boolean;
+}
+
+export interface FanxiuLingchongJingwuResourceItem {
+  item_id: number;
+  name: string;
+  quality: number;
+  count: number;
+  aptitude_gain_by_pet_type: Record<number, number>;
+  minimum_aptitude_gain: number;
+  maximum_aptitude_gain: number;
+}
+
+export interface FanxiuLingchongJingwuResourceSnapshot {
+  activity_id: string;
+  captured_at: string;
+  source_kind: string;
+  complete: boolean;
+  items: FanxiuLingchongJingwuResourceItem[];
+  total_count: number;
+  reason: string;
+  evidence: Record<string, unknown>;
+}
+
+export interface FanxiuLingchongJingwuTaskMilestone {
+  task_id: number;
+  order: number;
+  name: string;
+  target: number;
+  progress: number;
+  status: number;
+  finished: boolean;
+  talent_pill_count: number;
+  rewards: string[];
+}
+
+export interface FanxiuLingchongJingwuTaskSnapshot {
+  captured_at: string;
+  source_kind: string;
+  complete: boolean;
+  declared_task_count: number;
+  observed_task_count: number;
+  reason: string;
+  declared_task_ids: number[];
+  observed_task_ids: number[];
+  items: FanxiuLingchongJingwuTaskMilestone[];
+  evidence: Record<string, unknown>;
+}
+
+export interface FanxiuExchangeActivityTaskMilestone {
+  task_id: number;
+  order: number;
+  name: string;
+  target: number;
+  progress: number;
+  status: number;
+  finished: boolean;
+  must_get: boolean;
+  rewards: string[];
+}
+
+export interface FanxiuExchangeActivityTaskSnapshot {
+  captured_at: string;
+  source_kind: string;
+  complete: boolean;
+  declared_task_count: number;
+  observed_task_count: number;
+  reason: string;
+  declared_task_ids: number[];
+  observed_task_ids: number[];
+  items: FanxiuExchangeActivityTaskMilestone[];
+  evidence: Record<string, unknown>;
+}
+
+export interface FanxiuYaochiFlowerResourceItem {
+  item_id: number;
+  item_ids: number[];
+  name: string;
+  icon: string;
+  small_icon: string;
+  description: string;
+  quality?: number | null;
+  quality_color?: string;
+  friendship: number;
+  count?: number | null;
+  total_friendship?: number | null;
+}
+
+export interface FanxiuYaochiFlowerResourceSnapshot {
+  activity_id: string;
+  captured_at: string;
+  source_kind: string;
+  complete: boolean;
+  items: FanxiuYaochiFlowerResourceItem[];
+  total_count?: number | null;
+  total_friendship?: number | null;
+  evidence: Record<string, unknown>;
+}
+
+export interface FanxiuLingzhuangScoreRound {
+  round: number;
+  target: number;
+}
+
+export interface FanxiuLingzhuangStrengtheningSnapshot {
+  activity_id: string;
+  game_task_activity_id?: number | null;
+  captured_at: string;
+  materials_captured_at: string;
+  equipment_captured_at: string;
+  task_progress_captured_at: string;
+  source_kind: string;
+  complete: boolean;
+  warnings: string[];
+  rows: FanxiuLingzhuangStrengtheningRow[];
+  equipment_tasks: FanxiuLingzhuangTaskProgress[];
+  equipment_current?: number | null;
+  score_round?: number | null;
+  score_total_rounds: number;
+  score_current?: number | null;
+  score_rounds: FanxiuLingzhuangScoreRound[];
+  score_tasks: FanxiuLingzhuangTaskProgress[];
+}
+
+export interface RelationshipSample {
+  id: string;
+  captured_at: string;
+  x: number;
+  values: Record<string, number>;
+}
+
+export interface RelationshipDataset {
+  namespace: string;
+  entity_id: string;
+  samples: RelationshipSample[];
+}
+
+export interface FanxiuYunmengTrialActivitySummary {
+  id: string;
+  label: string;
+  cross_count: number;
+  start_date: string;
+  end_date: string;
+  start_at: string;
+  end_at: string;
+  captured_at: string;
+  is_active: boolean;
+}
+
+export interface FanxiuYunmengTrialShopItem {
+  id: string;
+  goods_id: number;
+  item_id: number;
+  source_order: number;
+  priority_order?: number | null;
+  locked: boolean;
+  name: string;
+  goods_num: number;
+  token_cost: number;
+  purchase_limit: number;
+  purchased_count: number;
+  row_total_tokens?: number | null;
+  cumulative_tokens?: number | null;
+  remaining_challenges?: number | null;
+  discount?: number | null;
+  original_price?: number | null;
+}
+
+export interface FanxiuYunmengTrialActivityDetail extends FanxiuYunmengTrialActivitySummary {
+  game_rank_activity_id?: number | null;
+  game_shop_base_id?: number | null;
+  currency_type?: number | null;
+  current_currency: number;
+  cumulative_currency: number;
+  resource_strategy: Record<string, unknown>;
+  source_kind: string;
+  yield_rate?: {
+    sample_challenges: number;
+    average_score_per_100: number;
+    average_exchange_currency_per_100: number;
+    captured_at: string;
+  } | null;
+  shop_items: FanxiuYunmengTrialShopItem[];
+}
+
+export interface FanxiuYunmengTrialSnapshot {
+  activities: FanxiuYunmengTrialActivitySummary[];
+  selected_activity?: FanxiuYunmengTrialActivityDetail | null;
+}
+
+export interface FanxiuYunmengTrialRankingItem {
+  id: string;
+  ranking_scope: string;
+  rank: number;
+  score: number;
+  name: string;
+  server_id?: number | null;
+  server_name: string;
+  club_name: string;
+  is_self: boolean;
+  is_reward_guard: boolean;
+  reward_rank_start?: number | null;
+  reward_rank_end?: number | null;
+  talent_pill_count?: number | null;
+  score_per_talent_pill?: number | null;
+  has_player: boolean;
+  is_last_player: boolean;
+  captured_at: string;
+  subject?: {
+    kind: string;
+    id?: string | null;
+    name: string;
+    server_id?: number | null;
+    server_name: string;
+    members?: Array<Record<string, unknown>> | null;
+  } | null;
+}
+
+export interface FanxiuRankingScopeMetadata {
+  scope?: string;
+  key?: string;
+  label: string;
+  role: string;
+  subject?: string;
+  subject_kind?: string;
+}
+
+export interface FanxiuYunmengTrialRankingPage {
+  page: number;
+  page_size: number;
+  total: number;
+  items: FanxiuYunmengTrialRankingItem[];
+  last_captured_at: string;
+  entries?: FanxiuYunmengTrialRankingItem[];
+  reward_tiers?: FanxiuYunmengTrialRankingItem[];
+  entry_total?: number;
+  declared_rank_count?: number;
+  loaded_entry_count?: number;
+  complete?: boolean;
+  view_mode?: string;
+  self_entry?: FanxiuYunmengTrialRankingItem | null;
+  last_entry?: FanxiuYunmengTrialRankingItem | null;
+  scope?: FanxiuRankingScopeMetadata;
+  ranking_scope?: string;
+  scope_label?: string;
+  scope_role?: string;
+  scope_subject?: string;
+}
+
+export interface FanxiuYunmengTrialMeasurement {
+  id: string;
+  captured_at: string;
+  score: number;
+  exchange_currency: number;
+  rank?: number | null;
+  challenge_count_delta?: number | null;
+  note: string;
+  source_kind: string;
+}
+
+export interface FanxiuYunmengTrialMeasurementPage {
+  items: FanxiuYunmengTrialMeasurement[];
+}
+
+export interface FanxiuYunmengTrialMeasurementCollectResult {
+  measurement: FanxiuYunmengTrialMeasurement;
+  previous_measurement?: FanxiuYunmengTrialMeasurement | null;
+  score_delta?: number | null;
+  exchange_currency_delta?: number | null;
+  average_score_per_challenge?: number | null;
+  average_exchange_currency_per_challenge?: number | null;
+}
+
+export interface FanxiuExchangeActivitySummary {
+  id: string;
+  label: string;
+  activity_type: string;
+  cross_count: number;
+  start_date: string;
+  end_date: string;
+  captured_at: string;
+  is_active: boolean;
+  close_panel_date: string;
+  close_panel_at: string;
+  lifecycle_phase: 'scheduled' | 'active' | 'settlement' | 'closed';
+  is_collectible: boolean;
+}
+
+export type FanxiuExchangeShopItem = FanxiuYunmengTrialShopItem;
+
+export interface FanxiuExchangeActivityDetail extends FanxiuExchangeActivitySummary {
+  game_rank_activity_id?: number | null;
+  game_shop_base_id?: number | null;
+  currency_type?: number | null;
+  currency_name: string;
+  current_currency: number;
+  cumulative_currency: number;
+  resource_strategy: Record<string, unknown>;
+  source_kind: string;
+  yield_rate?: null;
+  currency_fact_fresh: boolean;
+  shop_fact_fresh: boolean;
+  budget_ready: boolean;
+  budget_block_reason: string;
+  currency_captured_at: string;
+  shop_snapshot_captured_at: string;
+  shop_refresh_status: string;
+  shop_refresh_reason: string;
+  rankings_refresh_status: string;
+  rankings_refresh_reason: string;
+  exchange_plan: {
+    current_prayer_cycle?: string;
+    current_prayer_resource?: string;
+    next_prayer_resource?: string | null;
+    card_mail_resource?: string | null;
+    locked_reserved_tokens?: number;
+    stage8_budget?: FanxiuExchangeBudget;
+    stage9_budget?: FanxiuExchangeBudget;
+    card_mail_close_action?: 'leave_for_mail' | 'redeem_during_grace_period';
+    [key: string]: unknown;
+  };
+  shop_items: FanxiuExchangeShopItem[];
+}
+
+export interface FanxiuExchangeBudget {
+  target_total_tokens: number;
+  target_remaining_tokens: number;
+  current_currency: number;
+  cumulative_currency: number;
+  balance_gap: number;
+  cumulative_gap: number;
+  required_new_currency: number;
+}
+
+export interface FanxiuExchangeActivitySnapshot {
+  activities: FanxiuExchangeActivitySummary[];
+  selected_activity?: FanxiuExchangeActivityDetail | null;
+}
+
+export interface FanxiuExchangeActivityObservation {
   id: string;
   activity_id: string;
-  label: string;
-  personal_rankings: FanxiuModaoInvasionPersonalRankingItem[];
-  items: FanxiuModaoInvasionExchangeItem[];
+  captured_at: string;
+  lifecycle_phase: string;
+  snapshot_kind: string;
+  current_currency: number;
+  cumulative_currency: number;
+  shop_status: string;
+  rankings_status: string;
+  payload: Record<string, unknown>;
 }
 
-export interface FanxiuModaoInvasionSnapshot {
-  records: FanxiuModaoInvasionRecord[];
+export interface FanxiuExchangeActivityObservationPage {
+  items: FanxiuExchangeActivityObservation[];
+  total: number;
 }
 
-export type FanxiuShouyuanExplorationExchangeItem = FanxiuModaoInvasionExchangeItem;
-export type FanxiuShouyuanExplorationPersonalRankingItem = FanxiuModaoInvasionPersonalRankingItem;
-
-export interface FanxiuShouyuanExplorationRecord {
-  id: string;
-  activity_id: string;
-  label: string;
-  personal_rankings: FanxiuShouyuanExplorationPersonalRankingItem[];
-  income_speeds: FanxiuShouyuanExplorationIncomeSpeedItem[];
-  consumption_evaluations: FanxiuShouyuanExplorationConsumptionEvaluationItem[];
-  items: FanxiuShouyuanExplorationExchangeItem[];
+export interface FanxiuLatestExchangeActivitySnapshot {
+  activity_type?: string | null;
+  snapshot?: FanxiuExchangeActivitySnapshot | null;
 }
 
-export interface FanxiuShouyuanExplorationSnapshot {
-  records: FanxiuShouyuanExplorationRecord[];
+export interface FanxiuYuandingSanshengTaskMilestone {
+  task_id: number;
+  order: number;
+  name: string;
+  target: number;
+  talent_pill_count: number;
+  must_get: boolean;
+  rewards: string[];
 }
 
-export interface FanxiuModaoInvasionOcrImportResponse {
-  lines: string[];
-  items: FanxiuModaoInvasionExchangeItem[];
-}
-
-export interface FanxiuModaoInvasionPersonalRankingOcrImportResponse {
-  lines: string[];
-  items: FanxiuModaoInvasionPersonalRankingItem[];
-}
-
-export interface FanxiuShouyuanExplorationOcrImportResponse {
-  lines: string[];
-  items: FanxiuShouyuanExplorationExchangeItem[];
-}
-
-export interface FanxiuShouyuanExplorationPersonalRankingOcrImportResponse {
-  lines: string[];
-  items: FanxiuShouyuanExplorationPersonalRankingItem[];
-}
-
-export interface FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse {
-  lines: string[];
-  item: FanxiuShouyuanExplorationIncomeSpeedItem;
-}
+export type FanxiuExchangeRankingItem = FanxiuYunmengTrialRankingItem;
+export type FanxiuExchangeRankingPage = FanxiuYunmengTrialRankingPage;
 
 export interface FanxiuWikiCatalog {
   export_root: string;
@@ -3095,60 +4012,44 @@ export interface FanxiuWorldlineActivityItem {
 export interface FanxiuWorldlineActivityScheduleResponse {
   available: boolean;
   source_kind: string;
-  source_path: string;
   created_at: string;
-  pcap: string;
-  stream: number;
-  server_host: string;
-  protocol: string;
-  pro_id: number;
+  runtime_current?: boolean;
+  complete?: boolean;
   openServerTime?: string | number;
   openServerTimeText?: string;
   count: number;
-  decode_warnings?: string[];
   items: FanxiuWorldlineActivityItem[];
-  sync?: {
-    cursor?: Record<string, unknown>;
-    record_count?: number;
-  };
 }
 
-export interface FanxiuActivityPacketSyncResponse {
-  ok: boolean;
-  state_path: string;
-  records_path: string;
-  rank_records_path?: string;
-  cursor: Record<string, unknown>;
-  rank_cursor?: Record<string, unknown>;
-  scanned_packets: number;
-  matched_packets: number;
-  matched_rank_packets?: number;
-  inserted: number;
-  updated: number;
-  rank_inserted?: number;
-  rank_updated?: number;
-  skipped_duplicates: number;
-  rank_skipped_duplicates?: number;
-  record_count: number;
-  rank_record_count?: number;
-}
-
-export interface FanxiuPacketRuntimeInsightResponse {
-  ok: boolean;
-  changed: boolean;
-  stale?: boolean;
-  state_schema_version?: number;
-  schema_version?: number;
-  state_path: string;
-  snapshot_path: string;
-  source_signature?: Record<string, unknown>;
-  snapshot: Record<string, any>;
+export interface FanxiuPlayerProfileRecord {
+  id: string;
+  observation_id: string;
+  observed_at: string;
+  observed_date: string;
+  source_kind: string;
+  role_id?: string | number;
+  role_id_text: string;
+  name: string;
+  battle_score?: number | null;
+  battle_score_text?: string;
+  attack_value?: number | null;
+  attack_text?: string;
+  xianlv_team_fight_score_max?: number | null;
+  xianlv_team_fight_score_text?: string;
+  xianlv_team_observed_at?: string;
+  [key: string]: unknown;
 }
 
 export interface FanxiuPlayerProfileRecordListResponse {
   ok: boolean;
   count: number;
-  records: Record<string, any>[];
+  records: FanxiuPlayerProfileRecord[];
+  daily_count: number;
+  daily_records: FanxiuPlayerProfileRecord[];
+  xianlv_team_count: number;
+  xianlv_team_records: FanxiuPlayerProfileRecord[];
+  xianlv_team_daily_count: number;
+  xianlv_team_daily_records: FanxiuPlayerProfileRecord[];
 }
 
 export interface FanxiuServerRelationServer {
@@ -3189,13 +4090,19 @@ export interface FanxiuMailRecord {
   create_time_ms?: number | null;
   source?: string;
   status?: string;
+  runtime_status?: 'unclaimed' | 'claimed' | 'claimed_absent' | 'no_attachment' | string;
+  desired_status?: '锁定' | '留存' | '可领' | string;
+  present_in_runtime?: boolean;
+  reward_getted?: boolean | null;
+  has_attachment?: boolean;
+  attachment_count?: number;
+  last_runtime_sync_at?: string;
   locked?: boolean;
   action_policy?: string;
   last_action_error?: string;
   seen_count?: number;
   first_seen_at?: number;
   last_seen_at?: number;
-  last_seen_capture_at?: string;
   payload?: Record<string, any>;
   evidence?: Record<string, any>;
   created_at?: number;
@@ -3216,55 +4123,41 @@ export interface FanxiuMailRecordUpdateResponse {
   record: FanxiuMailRecord;
 }
 
-export interface FanxiuPacketWorkerStatus {
-  ok?: boolean;
-  updated_at?: string;
-  realtime_running?: boolean;
-  maintenance_running?: boolean;
-  realtime_interval_seconds?: number;
-  maintenance_interval_seconds?: number;
-  realtime?: Record<string, any>;
-  maintenance?: Record<string, any>;
-  error?: string;
-  [key: string]: any;
-}
-
-export interface FanxiuCaptureRuntimeStatus {
-  state?: string;
-  running?: boolean;
-  game_running?: boolean;
-  adb_connected?: boolean;
-  root_ready?: boolean;
-  tcpdump_ready?: boolean;
-  active_reasons?: string[];
-  current_pcap_path?: string;
-  current_pcap_size?: number;
-  current_remote_pcap_path?: string;
-  started_at?: string;
-  last_error?: string;
-  tcpdump_started_at?: string;
-  device_id?: string;
-  package_name?: string;
-  watchdog_running?: boolean;
-  watchdog_started_at?: string;
-  watchdog_interval_seconds?: number;
-  watchdog_last_check_at?: string;
-  watchdog_last_action?: string;
-  watchdog_last_error?: string;
-  [key: string]: any;
-}
-
-export interface FanxiuPacketStorageBagResponse {
+export interface FanxiuMailRuntimeSyncResponse {
   ok: boolean;
-  changed: boolean;
-  stale?: boolean;
-  state_schema_version?: number;
-  schema_version?: number;
-  state_path: string;
-  snapshot_path: string;
-  source_signature?: Record<string, unknown>;
+  complete: boolean;
+  source: 'runtime_memory' | string;
+  inserted: number;
+  updated: number;
+  absent: number;
+  record_count: number;
+  captured_at?: string;
+}
+
+export interface FanxiuStorageBagResponse {
+  ok: boolean;
+  state?: 'complete' | 'cached' | 'runtime_unavailable' | string;
+  reason?: string | null;
   bag?: Record<string, any> | null;
-  worship?: Record<string, any> | null;
+}
+
+export interface FanxiuStorageBagDeleteResponse {
+  ok: boolean;
+  deleted: boolean;
+  base_id: number;
+  atlas_count: number;
+}
+
+export interface FanxiuStorageBagAutoClaimUpdateResponse {
+  ok: boolean;
+  base_id: number;
+  auto_claim: boolean;
+}
+
+export interface FanxiuStorageBagNoteUpdateResponse {
+  ok: boolean;
+  base_id: number;
+  note: string;
 }
 
 export interface FanxiuActivityCardResponse {
@@ -4563,12 +5456,6 @@ export const getFanxiuProcesses = () => {
   return api.get<FanxiuProcessListResponse>('/fanxiu/processes').then(res => res.data);
 };
 
-export const listFanxiuTcpBusinessEntries = (params: { page?: number; page_size?: number; category?: string; protocol?: string; hidden_protocols?: string } = {}) => {
-  return api
-    .get<FanxiuTcpBusinessEntryListResponse>('/fanxiu/packet-capture/tcp/business-entries', { params })
-    .then(res => res.data);
-};
-
 export const getFanxiuWikiCatalog = () => {
   return api.get<FanxiuWikiCatalog>('/fanxiu/resources/wiki/catalog').then(res => res.data);
 };
@@ -4843,25 +5730,13 @@ export const searchFanxiuActivityCards = (params: {
 
 export const getFanxiuLatestWorldlineActivitySchedule = () => {
   return api
-    .get<FanxiuWorldlineActivityScheduleResponse>('/fanxiu/packet-capture/tcp/worldline-activity/latest')
-    .then(res => res.data);
-};
-
-export const syncFanxiuActivityPackets = (payload: { force?: boolean } = {}) => {
-  return api
-    .post<FanxiuActivityPacketSyncResponse>('/fanxiu/activity-packet-sync', payload, { timeout: 120000 })
-    .then(res => res.data);
-};
-
-export const getFanxiuPacketRuntimeInsights = (params: { auto_sync?: boolean } = {}) => {
-  return api
-    .get<FanxiuPacketRuntimeInsightResponse>('/fanxiu/packet-capture/tcp/insights', { params, timeout: 120000 })
+    .get<FanxiuWorldlineActivityScheduleResponse>('/fanxiu/activity-runtime-schedule/latest')
     .then(res => res.data);
 };
 
 export const getFanxiuPlayerProfiles = (params: { limit?: number } = {}) => {
   return api
-    .get<FanxiuPlayerProfileRecordListResponse>('/fanxiu/packet-capture/tcp/player-profiles', { params, timeout: 120000 })
+    .get<FanxiuPlayerProfileRecordListResponse>('/fanxiu/business-data/player-profiles', { params, timeout: 120000 })
     .then(res => res.data);
 };
 
@@ -4878,7 +5753,7 @@ export const updateFanxiuServerRelations = (payload: FanxiuServerRelationTreeUpd
 };
 
 export const getFanxiuMailRecords = (
-  params: { limit?: number; offset?: number; status?: string; action_policy?: string; source?: 'all' | 'packet' | 'packet_evidence' | 'packet_orphan' | 'packet+orphan' } = {},
+  params: { limit?: number; offset?: number; status?: string; action_policy?: string; source?: 'all' | 'runtime_memory'; include_absent?: boolean } = {},
 ) => {
   return api
     .get<FanxiuMailRecordListResponse>('/fanxiu/mail-records', { params, timeout: 120000 })
@@ -4891,21 +5766,9 @@ export const updateFanxiuMailRecordStatus = (mailKey: string, status: '锁定' |
     .then(res => res.data);
 };
 
-export const getFanxiuPacketWorkerStatus = () => {
+export const getFanxiuBusinessStorageBag = () => {
   return api
-    .get<FanxiuPacketWorkerStatus>('/fanxiu/packet-capture/tcp/worker/status', { timeout: 30000 })
-    .then(res => res.data);
-};
-
-export const getFanxiuCaptureRuntimeStatus = () => {
-  return api
-    .get<FanxiuCaptureRuntimeStatus>('/fanxiu/capture-runtime/status', { timeout: 30000 })
-    .then(res => res.data);
-};
-
-export const getFanxiuPacketStorageBag = () => {
-  return api
-    .get<FanxiuPacketStorageBagResponse>('/fanxiu/packet-capture/tcp/storage-bag', { timeout: 120000 })
+    .get<FanxiuStorageBagResponse>('/fanxiu/business-data/storage-bag', { timeout: 120000 })
     .then(res => res.data);
 };
 
@@ -5017,28 +5880,39 @@ export const getFanxiuDoupoTDRewardConfig = (sourceTable: string, configId: stri
     .then(res => res.data);
 };
 
-export const getFanxiuBehaviorTreeService = () => {
-  // Legacy external-service status endpoint. Prefer runtime item actions for new work.
-  return api.get<FanxiuBehaviorTreeServiceStatus>('/fanxiu/behavior-tree-service').then(res => res.data);
-};
-
-export const startFanxiuBehaviorTreeService = () => {
-  // Legacy external-service start endpoint. Prefer runtime item actions for new work.
-  return api.post<FanxiuBehaviorTreeServiceResponse>('/fanxiu/behavior-tree-service/start').then(res => res.data);
-};
-
-export const stopFanxiuBehaviorTreeService = () => {
-  // Legacy external-service stop endpoint. Prefer runtime item actions for new work.
-  return api.post<FanxiuBehaviorTreeServiceResponse>('/fanxiu/behavior-tree-service/stop').then(res => res.data);
-};
-
 export const getLocalScriptProcesses = () => {
   return api.get<LocalScriptProcessListResponse>('/fanxiu/scripts').then(res => res.data);
 };
 
 export const terminateFanxiuProcesses = () => {
-  // Legacy hard-stop helper for the external service path. Prefer runtime restart/wake actions for resident behavior tree ops.
+  // Hard-stop helper for legacy Fanxiu script leftovers. Prefer runtime restart/wake actions for resident Kernel ops.
   return api.post<FanxiuProcessTerminateResponse>('/fanxiu/processes/terminate').then(res => res.data);
+};
+
+export const deleteFanxiuStorageBagAtlasItem = (baseId: string | number) => {
+  return api
+    .delete<FanxiuStorageBagDeleteResponse>(`/fanxiu/business-data/storage-bag/atlas/${encodeURIComponent(String(baseId))}`, { timeout: 30000 })
+    .then(res => res.data);
+};
+
+export const setFanxiuStorageBagAutoClaim = (baseId: string | number, autoClaim: boolean) => {
+  return api
+    .put<FanxiuStorageBagAutoClaimUpdateResponse>(
+      `/fanxiu/business-data/storage-bag/atlas/${encodeURIComponent(String(baseId))}/auto-claim`,
+      { auto_claim: autoClaim },
+      { timeout: 30000 },
+    )
+    .then(res => res.data);
+};
+
+export const setFanxiuStorageBagNote = (baseId: string | number, note: string) => {
+  return api
+    .put<FanxiuStorageBagNoteUpdateResponse>(
+      `/fanxiu/business-data/storage-bag/atlas/${encodeURIComponent(String(baseId))}/note`,
+      { note },
+      { timeout: 30000 },
+    )
+    .then(res => res.data);
 };
 
 export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
@@ -5049,6 +5923,12 @@ export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
 
 export const getFanxiuGameWindow2ServiceStatus = () => {
   return api.get<FanxiuGameWindow2ServiceStatus>('/fanxiu/game-window2/service-status').then(res => res.data);
+};
+
+export const getFanxiuGameWindow2FrameStatus = (entryId: string) => {
+  return api
+    .get<FanxiuGameWindow2FrameStatus>('/fanxiu/game-window2/frame-status', { params: { entry_id: entryId } })
+    .then(res => res.data);
 };
 
 export const startFanxiuGameWindow2Service = () => {
@@ -5160,7 +6040,7 @@ export const matchFanxiuGameWindow2Screenshot = (
   }).then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationRuntimeStatus = (
+export const getFanxiuBehaviorTreeRuntimeStatus = (
   entryId = '',
   options: {
     includeCellLogs?: boolean;
@@ -5172,7 +6052,28 @@ export const getFanxiuDataAnnotationRuntimeStatus = (
   if (options.includeCellLogs !== undefined) params.include_cell_logs = options.includeCellLogs;
   if (options.includeLogs !== undefined) params.include_logs = options.includeLogs;
   return api
-    .get<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params })
+    .get<FanxiuBehaviorTreeRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params })
+    .then(res => res.data);
+};
+
+export const getFanxiuInfoWindowStatus = (entryId = '') => {
+  return api
+    .get<FanxiuInfoWindowControlStatus>('/fanxiu/data-annotation/runtime/info-window', {
+      params: entryId ? { entry_id: entryId } : {},
+    })
+    .then(res => res.data);
+};
+
+export const setFanxiuInfoWindowSettings = (
+  entryId: string,
+  settings: FanxiuInfoWindowSettings,
+) => {
+  return api
+    .post<FanxiuInfoWindowControlStatus>(
+      '/fanxiu/data-annotation/runtime/info-window/settings',
+      { entry_id: entryId, ...settings },
+      { timeout: 10000 },
+    )
     .then(res => res.data);
 };
 
@@ -5185,7 +6086,7 @@ export const submitFanxiuDataAnnotationTaskCell = (
   options: { timeoutSeconds?: number } = {},
 ) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/cells/task',
       { entry_id: entryId, task_type: taskType, payload, timeout_seconds: options.timeoutSeconds ?? null },
       { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, ((options.timeoutSeconds ?? 30) * 1000) + 5000) },
@@ -5200,7 +6101,7 @@ export const submitFanxiuDataAnnotationCodeCell = (
 ) => {
   const timeoutSeconds = options.timeoutSeconds ?? 120;
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/cells/code',
       {
         entry_id: entryId,
@@ -5213,15 +6114,15 @@ export const submitFanxiuDataAnnotationCodeCell = (
     .then(res => res.data);
 };
 
-export const stopFanxiuDataAnnotationRuntimeCurrentTask = (entryId?: string) => {
+export const stopFanxiuBehaviorTreeRuntimeCurrentTask = (entryId?: string) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
+    .post<FanxiuBehaviorTreeRuntimeStatus>('/fanxiu/data-annotation/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const setFanxiuDataAnnotationRuntimeBehaviorTree = (entryId: string, enabled: boolean) => {
+export const setFanxiuBehaviorTreeRuntimeBehaviorTree = (entryId: string, enabled: boolean) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/behavior-tree/set',
       { entry_id: entryId, enabled },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
@@ -5229,9 +6130,9 @@ export const setFanxiuDataAnnotationRuntimeBehaviorTree = (entryId: string, enab
     .then(res => res.data);
 };
 
-export const restartFanxiuDataAnnotationRuntimeKernel = (entryId: string, timeoutSeconds = 5) => {
+export const restartFanxiuBehaviorTreeRuntimeKernel = (entryId: string, timeoutSeconds = 5) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/kernel/restart',
       { entry_id: entryId, timeout_seconds: timeoutSeconds },
       { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, (timeoutSeconds * 1000) + 10000) },
@@ -5239,9 +6140,25 @@ export const restartFanxiuDataAnnotationRuntimeKernel = (entryId: string, timeou
     .then(res => res.data);
 };
 
-export const setFanxiuDataAnnotationRuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'close_popups') => {
+export const syncFanxiuMailRuntime = () => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
+    .post<FanxiuMailRuntimeSyncResponse>('/fanxiu/mail-records/sync-runtime', undefined, { timeout: 180000 })
+    .then(res => res.data);
+};
+
+export const restartFanxiuBehaviorTreeRuntimeDevice = (entryId: string) => {
+  return api
+    .post<FanxiuBehaviorTreeRuntimeDeviceRestartResponse>(
+      '/fanxiu/data-annotation/runtime/device/restart',
+      { entry_id: entryId },
+      { timeout: 240000 },
+    )
+    .then(res => res.data);
+};
+
+export const setFanxiuBehaviorTreeRuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'device_health') => {
+  return api
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/guard/set',
       { entry_id: entryId, guard_id: guardId, enabled, interval_seconds: intervalSeconds },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
@@ -5249,9 +6166,9 @@ export const setFanxiuDataAnnotationRuntimeGuard = (entryId: string, enabled: bo
     .then(res => res.data);
 };
 
-export const setFanxiuDataAnnotationRuntimeGuardGroup = (entryId: string, enabled: boolean) => {
+export const setFanxiuBehaviorTreeRuntimeGuardGroup = (entryId: string, enabled: boolean) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
       '/fanxiu/data-annotation/runtime/guard/group/set',
       { entry_id: entryId, enabled },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
@@ -5259,15 +6176,15 @@ export const setFanxiuDataAnnotationRuntimeGuardGroup = (entryId: string, enable
     .then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationRuntimeLogs = (limit = 80, scope = '', itemId = '') => {
+export const getFanxiuBehaviorTreeRuntimeLogs = (limit = 80, scope = '', itemId = '') => {
   return api
-    .get<FanxiuDataAnnotationRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs', { params: { limit, scope, item_id: itemId } })
+    .get<FanxiuBehaviorTreeRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs', { params: { limit, scope, item_id: itemId } })
     .then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationRuntimeCellLogs = (limit = 20, logLimit = 1000) => {
+export const getFanxiuBehaviorTreeRuntimeCellLogs = (limit = 20, logLimit = 1000) => {
   return api
-    .get<FanxiuDataAnnotationRuntimeCellLogResponse>('/fanxiu/data-annotation/runtime/cell-logs', { params: { limit, log_limit: logLimit } })
+    .get<FanxiuBehaviorTreeRuntimeCellLogResponse>('/fanxiu/data-annotation/runtime/cell-logs', { params: { limit, log_limit: logLimit } })
     .then(res => res.data);
 };
 
@@ -5289,19 +6206,47 @@ export const ensureFanxiuDataAnnotationDoctorWatch = () => {
     .then(res => res.data);
 };
 
-export const clearFanxiuDataAnnotationRuntimeLogs = () => {
-  return api.delete<FanxiuDataAnnotationRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs').then(res => res.data);
+export const clearFanxiuBehaviorTreeRuntimeLogs = () => {
+  return api.delete<FanxiuBehaviorTreeRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs').then(res => res.data);
 };
 
 export const getFanxiuDataAnnotationSchedulerTasks = () => {
   return api.get<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks').then(res => res.data);
 };
 
+export const getFanxiuGameStateInspectionStatus = () => {
+  return api
+    .get<FanxiuGameStateInspectionStatus>('/fanxiu/data-annotation/scheduler/state-inspection')
+    .then(res => res.data);
+};
+
 export const getFanxiuDataAnnotationSchedulerPlan = () => {
   return api.get<FanxiuDataAnnotationSchedulerPlanResponse>('/fanxiu/data-annotation/scheduler/plan').then(res => res.data);
 };
 
-export const saveFanxiuDataAnnotationSchedulerTasks = (tasks: FanxiuDataAnnotationSchedulerTaskItem[]) => {
+export const getFanxiuDataAnnotationSchedulerTimeSequence = () => {
+  return api
+    .get<FanxiuDataAnnotationSchedulerTimeSequenceResponse>('/fanxiu/data-annotation/scheduler/time-sequence')
+    .then(res => res.data);
+};
+
+export const saveFanxiuDataAnnotationSchedulerTimeSequence = (
+  groups: Array<{ key: string; task_ids: string[] }>,
+) => {
+  return api
+    .put<FanxiuDataAnnotationSchedulerTimeSequenceResponse>(
+      '/fanxiu/data-annotation/scheduler/time-sequence',
+      { groups },
+    )
+    .then(res => res.data);
+};
+
+export const saveFanxiuDataAnnotationSchedulerTasks = (
+  tasks: Array<Pick<FanxiuDataAnnotationSchedulerTaskItem, 'id'> & Partial<Pick<
+    FanxiuDataAnnotationSchedulerTaskItem,
+    'dispatch_level' | 'dispatch_order' | 'trigger_description' | 'error_retry_delay_seconds'
+  >>>,
+) => {
   return api.put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks', tasks).then(res => res.data);
 };
 
@@ -5311,21 +6256,25 @@ export const setFanxiuDataAnnotationSchedulerSettings = (jobGroupEnabled: boolea
     .then(res => res.data);
 };
 
-export const runNowFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string, payload: Record<string, unknown> = {}, interruptSameGroup = true) => {
-  return api
-    .post<FanxiuDataAnnotationRuntimeStatus>(
-      '/fanxiu/data-annotation/scheduler/task/run-now',
-      { entry_id: entryId, task_id: taskId, payload, interrupt_same_group: interruptSameGroup },
-      { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
-    )
-    .then(res => res.data);
-};
+export type FanxiuSchedulerBusinessTimeMode = 'planned' | 'current';
 
-export const advanceNextFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string) => {
+export const runNowFanxiuDataAnnotationSchedulerTask = (
+  entryId: string,
+  taskId: string,
+  payload: Record<string, unknown> = {},
+  interruptSameGroup = true,
+  businessTimeMode: FanxiuSchedulerBusinessTimeMode = 'planned',
+) => {
   return api
-    .post<FanxiuDataAnnotationSchedulerTasksResponse>(
-      '/fanxiu/data-annotation/scheduler/task/advance-next',
-      { entry_id: entryId, task_id: taskId },
+    .post<FanxiuBehaviorTreeRuntimeStatus>(
+      '/fanxiu/data-annotation/scheduler/task/run-now',
+      {
+        entry_id: entryId,
+        task_id: taskId,
+        payload,
+        interrupt_same_group: interruptSameGroup,
+        business_time_mode: businessTimeMode,
+      },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
     )
     .then(res => res.data);
@@ -5333,7 +6282,7 @@ export const advanceNextFanxiuDataAnnotationSchedulerTask = (entryId: string, ta
 
 export const runDueFanxiuDataAnnotationSchedulerTasks = (entryId: string) => {
   return api
-    .post<FanxiuDataAnnotationRuntimeStatus>('/fanxiu/data-annotation/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
+    .post<FanxiuBehaviorTreeRuntimeStatus>('/fanxiu/data-annotation/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
@@ -5352,9 +6301,40 @@ export const getFanxiuDataAnnotationRecognitionOps = (entryId: string, recompute
     .then(res => res.data);
 };
 
-export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[], baseUpdatedAt?: number) => {
+export const getFanxiuDataAnnotationNavigationIncident = (entryId: string, incidentId: string) => {
   return api
-    .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree, base_updated_at: baseUpdatedAt || undefined })
+    .get<FanxiuDataAnnotationNavigationIncidentResponse>(
+      `/fanxiu/data-annotation/recognition-ops/incidents/${encodeURIComponent(incidentId)}`,
+      { params: { entry_id: entryId }, timeout: 120000 },
+    )
+    .then(res => res.data);
+};
+
+export const triggerOnceFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string) => {
+  return api
+    .post<{ ok: boolean; task_id: string; next_time: string }>(
+      '/fanxiu/data-annotation/scheduler/task/trigger-once',
+      { entry_id: entryId, task_id: taskId },
+    )
+    .then(res => res.data);
+};
+
+export const setFanxiuDataAnnotationSchedulerTaskNextTime = (
+  entryId: string,
+  taskId: string,
+  nextTime: string | null,
+) => {
+  return api
+    .put<{ ok: boolean; task_id: string; next_time: string | null }>(
+      '/fanxiu/data-annotation/scheduler/task/next-time',
+      { entry_id: entryId, task_id: taskId, next_time: nextTime },
+    )
+    .then(res => res.data);
+};
+
+export const saveFanxiuDataAnnotationAssetTree = (entryId: string, tree: unknown[], baseRevision?: string) => {
+  return api
+    .put<FanxiuDataAnnotationAssetTreeResponse>('/fanxiu/data-annotation/asset-tree', { entry_id: entryId, tree, base_revision: baseRevision ?? '' })
     .then(res => res.data);
 };
 
@@ -5364,10 +6344,10 @@ export const saveFanxiuDataAnnotationFrame = (payload: FanxiuDataAnnotationSaveF
     .then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationImage = (entryId: string, filename: string) => {
+export const getFanxiuDataAnnotationImage = (entryId: string, filename: string, cacheBust?: number) => {
   return api
     .get<Blob>('/fanxiu/data-annotation/image', {
-      params: { entry_id: entryId, filename },
+      params: { entry_id: entryId, filename, ...(cacheBust ? { _: cacheBust } : {}) },
       responseType: 'blob',
     })
     .then(res => res.data);
@@ -5535,6 +6515,61 @@ export const getFanxiuSpiritArtifactHall = () => {
   return api.get<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-hall').then(res => res.data);
 };
 
+export const collectFanxiuWardrobeHall = () => {
+  return api
+    .post<FanxiuWardrobeHallSnapshot>('/fanxiu/inventory/wardrobe-hall/collect', null, {
+      timeout: 125000,
+    })
+    .then(res => res.data);
+};
+
+export const collectFanxiuMagicTreasureHall = () => {
+  return api
+    .post<FanxiuMagicTreasureHallSnapshot>('/fanxiu/inventory/magic-treasure-hall/collect', null, {
+      timeout: 125000,
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuXianyuanAtlas = () => (
+  api.get<FanxiuXianyuanAtlasSnapshot>('/fanxiu/inventory/xianyuan-atlas').then(res => res.data)
+);
+
+export const collectFanxiuXianyuanAtlas = () => (
+  api.post<FanxiuXianyuanAtlasSnapshot>('/fanxiu/inventory/xianyuan-atlas/collect', null, {
+    timeout: 190_000,
+  }).then(res => res.data)
+);
+
+export const getFanxiuGuideVideos = (params: {
+  query?: string;
+  source_id?: string;
+  platform?: string;
+  role?: string;
+  page?: number;
+  page_size?: number;
+} = {}) => (
+  api.get<FanxiuGuideVideoCatalogResponse>('/fanxiu/wiki/guide-videos', { params }).then(res => res.data)
+);
+
+export const syncFanxiuGuideVideos = () => (
+  api.post<FanxiuGuideVideoCatalogResponse>('/fanxiu/wiki/guide-videos/sync').then(res => res.data)
+);
+
+export const getFanxiuGongfaAtlas = () => (
+  api.get<FanxiuGongfaAtlasSnapshot>('/fanxiu/inventory/gongfa-atlas').then(res => res.data)
+);
+
+export const getFanxiuGongfaAtlasBookDetail = (bookId: number) => (
+  api.get<FanxiuGongfaAtlasBookDetail>(`/fanxiu/inventory/gongfa-atlas/books/${bookId}`).then(res => res.data)
+);
+
+export const collectFanxiuGongfaAtlas = () => (
+  api.post<FanxiuGongfaAtlasSnapshot>('/fanxiu/inventory/gongfa-atlas/collect', null, {
+    timeout: 130_000,
+  }).then(res => res.data)
+);
+
 export const saveFanxiuSpiritArtifactHall = (payload: FanxiuSpiritArtifactHallSnapshot) => {
   return api.put<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-hall', payload).then(res => res.data);
 };
@@ -5626,85 +6661,225 @@ export const saveFanxiuActivityList = (payload: FanxiuActivityListSnapshot) => {
   return api.put<FanxiuActivityListSnapshot>('/fanxiu/activity-list', payload).then(res => res.data);
 };
 
-export const getFanxiuModaoInvasionExchangeList = () => {
-  return api.get<FanxiuModaoInvasionSnapshot>('/fanxiu/activity-list/modao-invasion').then(res => res.data);
+export const getFanxiuYunmengTrialSnapshot = (activityId?: string) => {
+  return api.get<FanxiuYunmengTrialSnapshot>('/fanxiu/activity-list/yunmeng-trial', {
+    params: activityId ? { activity_id: activityId } : undefined,
+  }).then(res => res.data);
 };
 
-export const saveFanxiuModaoInvasionExchangeList = (payload: FanxiuModaoInvasionSnapshot) => {
-  return api.put<FanxiuModaoInvasionSnapshot>('/fanxiu/activity-list/modao-invasion', payload).then(res => res.data);
+export const getFanxiuLingzhuangHuadaoRankingSnapshot = () => {
+  return api.get<FanxiuLingzhuangHuadaoRankingSnapshot>(
+    '/fanxiu/dynamic-instrumentation/activity-ranks/lingzhuang-huadao',
+    { timeout: 60_000 },
+  ).then(res => res.data);
 };
 
-export const importFanxiuModaoInvasionExchangeListFromOcr = (image: File) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  return api
-    .post<FanxiuModaoInvasionOcrImportResponse>('/fanxiu/activity-list/modao-invasion/import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
+export const getFanxiuLingzhuangStrengtheningSnapshot = () => {
+  return api.get<FanxiuLingzhuangStrengtheningSnapshot>(
+    '/fanxiu/activity-list/lingzhuang-huadao/strengthening',
+  ).then(res => res.data);
 };
 
-export const importFanxiuModaoInvasionPersonalRankingsFromOcr = (image: File) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  return api
-    .post<FanxiuModaoInvasionPersonalRankingOcrImportResponse>('/fanxiu/activity-list/modao-invasion/personal-rankings/import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
+export const collectFanxiuLingzhuangStrengtheningSnapshot = (activityId: string) => {
+  return api.post<FanxiuLingzhuangStrengtheningSnapshot>(
+    `/fanxiu/activity-list/lingzhuang-huadao/${encodeURIComponent(activityId)}/strengthening/collect`,
+    {},
+    { timeout: 120000 },
+  ).then(res => res.data);
 };
 
-export const getFanxiuShouyuanExplorationExchangeList = () => {
-  return api.get<FanxiuShouyuanExplorationSnapshot>('/fanxiu/activity-list/shouyuan-exploration').then(res => res.data);
+export const getFanxiuLingzhuangRelationshipSamples = (activityId: string) => {
+  return api.get<RelationshipDataset>(
+    `/fanxiu/activity-list/lingzhuang-huadao/${encodeURIComponent(activityId)}/relationship-samples`,
+  ).then(res => res.data);
 };
 
-export const saveFanxiuShouyuanExplorationExchangeList = (payload: FanxiuShouyuanExplorationSnapshot) => {
-  return api.put<FanxiuShouyuanExplorationSnapshot>('/fanxiu/activity-list/shouyuan-exploration', payload).then(res => res.data);
+export const recordFanxiuLingzhuangRelationshipSample = (activityId: string) => {
+  return api.post<RelationshipDataset>(
+    `/fanxiu/activity-list/lingzhuang-huadao/${encodeURIComponent(activityId)}/relationship-samples/record`,
+  ).then(res => res.data);
 };
 
-export const importFanxiuShouyuanExplorationExchangeListFromOcr = (image: File) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  return api
-    .post<FanxiuShouyuanExplorationOcrImportResponse>('/fanxiu/activity-list/shouyuan-exploration/import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
+export const getFanxiuExchangeActivitySnapshot = (activityType: string, activityId?: string) => {
+  return api.get<FanxiuExchangeActivitySnapshot>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}`,
+    { params: activityId ? { activity_id: activityId } : undefined },
+  ).then(res => res.data);
 };
 
-export const importFanxiuShouyuanExplorationPersonalRankingsFromOcr = (image: File) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  return api
-    .post<FanxiuShouyuanExplorationPersonalRankingOcrImportResponse>('/fanxiu/activity-list/shouyuan-exploration/personal-rankings/import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
+export const getFanxiuExchangeActivityObservations = (
+  activityType: string,
+  activityId: string,
+) => {
+  return api.get<FanxiuExchangeActivityObservationPage>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/observations`,
+  ).then(res => res.data);
 };
 
-export const importFanxiuShouyuanExplorationIncomeSpeedFromOcr = (image: File) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  return api
-    .post<FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse>('/fanxiu/activity-list/shouyuan-exploration/income-speeds/import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
+export const getLatestFanxiuExchangeActivitySnapshot = (activityTypes: string[]) => {
+  return api.get<FanxiuLatestExchangeActivitySnapshot>(
+    '/fanxiu/activity-list/latest-exchange-event',
+    { params: { activity_types: activityTypes.join(',') } },
+  ).then(res => res.data);
+};
+
+export const saveFanxiuExchangeActivityPriorities = (
+  activityType: string,
+  activityId: string,
+  orderedGoodsIds: number[],
+) => {
+  return api.put<FanxiuExchangeActivityDetail>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/priorities`,
+    { ordered_goods_ids: orderedGoodsIds },
+  ).then(res => res.data);
+};
+
+export const planFanxiuExchangeActivityShop = (
+  activityType: string,
+  activityId: string,
+) => {
+  return api.post<FanxiuExchangeActivityDetail>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/plan`,
+  ).then(res => res.data);
+};
+
+export const saveFanxiuExchangeActivityShopItemLock = (
+  activityType: string,
+  activityId: string,
+  goodsId: number,
+  locked: boolean,
+) => {
+  return api.put<FanxiuExchangeActivityDetail>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/shop-items/${goodsId}/lock`,
+    { locked },
+  ).then(res => res.data);
+};
+
+export const getFanxiuExchangeActivityRankings = (
+  activityType: string,
+  activityId: string,
+  page = 1,
+  pageSize = 20,
+  rankingScope: string = 'personal',
+) => {
+  return api.get<FanxiuExchangeRankingPage>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/rankings`,
+    { params: { page, page_size: pageSize, ranking_scope: rankingScope } },
+  ).then(res => res.data);
+};
+
+export const getFanxiuExchangeActivityTasks = (
+  activityType: string,
+  activityId: string,
+) => {
+  return api.get<FanxiuExchangeActivityTaskSnapshot>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/tasks`,
+  ).then(res => res.data);
+};
+
+export const getFanxiuYaochiFlowerFestivalTasks = (activityId: string) => {
+  return api.get<{ items: FanxiuYaochiFlowerTaskMilestone[] }>(
+    `/fanxiu/activity-list/yaochi-flower-festival/${encodeURIComponent(activityId)}/tasks`,
+  ).then(res => res.data);
+};
+
+export const getFanxiuYuandingSanshengTasks = (activityId: string) => {
+  return api.get<{ items: FanxiuYuandingSanshengTaskMilestone[] }>(
+    `/fanxiu/activity-list/yuanding-sansheng/${encodeURIComponent(activityId)}/tasks`,
+  ).then(res => res.data);
+};
+
+export const getFanxiuLingchongJingwuTasks = (activityId: string) => {
+  return api.get<FanxiuLingchongJingwuTaskSnapshot>(
+    `/fanxiu/activity-list/lingchong-jingwu/${encodeURIComponent(activityId)}/tasks`,
+  ).then(res => res.data);
+};
+
+export const getFanxiuLingchongJingwuResources = (activityId: string) => {
+  return api.get<FanxiuLingchongJingwuResourceSnapshot>(
+    `/fanxiu/activity-list/lingchong-jingwu/${encodeURIComponent(activityId)}/resources`,
+  ).then(res => res.data);
+};
+
+export const collectFanxiuLingchongJingwuResources = (activityId: string) => {
+  return api.post<FanxiuLingchongJingwuResourceSnapshot>(
+    `/fanxiu/activity-list/lingchong-jingwu/${encodeURIComponent(activityId)}/resources/collect`,
+    {},
+    { timeout: 120000 },
+  ).then(res => res.data);
+};
+
+export const getFanxiuYaochiFlowerResources = () => {
+  return api.get<FanxiuYaochiFlowerResourceSnapshot>(
+    '/fanxiu/activity-list/yaochi-flower-festival/resources',
+  ).then(res => res.data);
+};
+
+export const collectFanxiuYaochiFlowerResources = (activityId: string) => {
+  return api.post<FanxiuYaochiFlowerResourceSnapshot>(
+    `/fanxiu/activity-list/yaochi-flower-festival/${encodeURIComponent(activityId)}/resources/collect`,
+    {},
+    { timeout: 120000 },
+  ).then(res => res.data);
+};
+
+export const collectFanxiuExchangeActivity = (
+  activityType: string,
+  activityId: string,
+) => {
+  return api.post<FanxiuExchangeActivityDetail>(
+    `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/collect`,
+    {},
+    { timeout: 120000 },
+  ).then(res => res.data);
+};
+
+export const saveFanxiuYunmengTrialPriorities = (activityId: string, orderedGoodsIds: number[]) => {
+  return api.put<FanxiuYunmengTrialActivityDetail>(
+    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/priorities`,
+    { ordered_goods_ids: orderedGoodsIds },
+  ).then(res => res.data);
+};
+
+export const saveFanxiuYunmengTrialShopItemLock = (
+  activityId: string,
+  goodsId: number,
+  locked: boolean,
+) => {
+  return api.put<FanxiuYunmengTrialActivityDetail>(
+    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/shop-items/${goodsId}/lock`,
+    { locked },
+  ).then(res => res.data);
+};
+
+export const getFanxiuYunmengTrialRankings = (
+  activityId: string,
+  page = 1,
+  pageSize = 20,
+  rankingScope: string = 'personal',
+) => {
+  return api.get<FanxiuYunmengTrialRankingPage>(
+    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/rankings`,
+    { params: { page, page_size: pageSize, ranking_scope: rankingScope } },
+  ).then(res => res.data);
+};
+
+export const getFanxiuYunmengTrialMeasurements = (activityId: string) => {
+  return api.get<FanxiuYunmengTrialMeasurementPage>(
+    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/measurements`,
+  ).then(res => res.data);
+};
+
+export const collectFanxiuYunmengTrialMeasurement = (
+  activityId: string,
+  challengeCountDelta?: number,
+  note = '',
+) => {
+  return api.post<FanxiuYunmengTrialMeasurementCollectResult>(
+    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/measurements/collect`,
+    { challenge_count_delta: challengeCountDelta, note },
+    { timeout: 15000 },
+  ).then(res => res.data);
 };
 
 export const getFanxiuActivityNote = (itemId: string) => {
@@ -5722,3 +6897,103 @@ export const saveFanxiuActivityNote = (itemId: string, data: Partial<NoteNode>) 
       .then(res => normalizeFanxiuNote(res.data))
   ));
 };
+
+export interface FanxiuXianqiaoGradeCheckpoint {
+  grade: number;
+  level: number;
+  cumulative_exp: number;
+}
+
+export interface FanxiuXianqiaoPart {
+  id: number;
+  name: string;
+  unlock_text: string;
+  max_level: number;
+  total_exp: number;
+  grade_checkpoints: FanxiuXianqiaoGradeCheckpoint[];
+  core_attributes: Record<string, number>;
+  ware_main_attribute: {
+    key: string;
+    name: string;
+    initial_text: string;
+    max_text: string;
+  };
+}
+
+export interface FanxiuXianqiaoElement {
+  id: number;
+  name: string;
+  summary: string;
+  purpose: string;
+  levels: Array<{
+    level: number;
+    required_count: number;
+    effect: string;
+  }>;
+}
+
+export interface FanxiuXianqiaoSystem {
+  id: number;
+  name: string;
+  unlock_condition: string;
+  unlock_text: string;
+  parts: FanxiuXianqiaoPart[];
+  elements: FanxiuXianqiaoElement[];
+}
+
+export interface FanxiuXianqiaoMechanics {
+  systems: FanxiuXianqiaoSystem[];
+  qualities: Array<{
+    quality: number;
+    name: string;
+    max_level: number;
+    element_slots: number;
+    initial_element_slots: number;
+    element_unlock_levels: number[];
+    initial_side_attributes: number;
+    side_attribute_unlock_levels: number[];
+    base_feed_exp: number;
+    invested_exp_return_rate: number;
+    total_upgrade_exp: number;
+  }>;
+  trial: {
+    daily_reward_times: number;
+    extra_time_cost: number;
+    extra_time_item_id: number;
+    weekly_level_points: number[];
+    default_weekly_points: number;
+    modes: Array<{
+      id: number;
+      system_id: number;
+      group: string;
+      enemy: string;
+      unlock_text: string;
+      difficulty_min: number | null;
+      difficulty_max: number | null;
+      reward_tier_count: number;
+    }>;
+    buffs: Array<{
+      id: number;
+      kind: string;
+      selection: string;
+      description: string;
+      max_level: number;
+      max_point: number;
+    }>;
+  };
+  rules: {
+    part_count_per_system: number;
+    core_max_level: number;
+    core_grade_interval: number;
+    element_level_thresholds: number[];
+    feed_exp_return_rate: number;
+    attribute_display_multiplier: number;
+    bag_limit: number;
+  };
+}
+
+export const getFanxiuXianqiaoMechanics = () => (
+  api
+    .get<FanxiuXianqiaoMechanics>('/fanxiu/resources/xianqiao/mechanics')
+    .then(res => res.data)
+);

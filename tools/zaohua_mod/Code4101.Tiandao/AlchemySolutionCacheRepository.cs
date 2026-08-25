@@ -10,7 +10,7 @@ namespace Code4101.Zaohua.Tiandao
 {
     internal static class AlchemySolutionCacheRepository
     {
-        private const int SchemaVersion = 4;
+        private const int SchemaVersion = 5;
 
         [Serializable]
         private sealed class CacheDocument

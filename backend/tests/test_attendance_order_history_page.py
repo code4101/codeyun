@@ -114,6 +114,25 @@ def test_sync_payment_refund_state_to_local_history_is_idempotent():
     assert page.items[0].result_text == "支付侧已退款（同步）"
 
 
+def test_load_submitted_refund_amounts_requires_submit_marker(tmp_path, monkeypatch):
+    refund_dir = tmp_path / "data" / "m2112kq5034" / "返款表" / "2099年01月"
+    refund_dir.mkdir(parents=True)
+    unsubmitted = refund_dir / "unsubmitted.csv"
+    submitted = refund_dir / "submitted.csv"
+    unsubmitted.write_text("TH-A,100,reason,biz-a\n", encoding="utf-8")
+    submitted.write_text("TH-B,90,reason,biz-b\n", encoding="utf-8")
+    submitted.with_name(f"{submitted.stem}.submitted.json").write_text(
+        '{"file_name":"submitted.csv","stage":"submit_success_popup"}',
+        encoding="utf-8",
+    )
+    document = type("Doc", (), {"document_json": {"date": "2099-01-01"}})()
+    monkeypatch.setattr(attendance_api.Path, "home", classmethod(lambda cls: tmp_path))
+
+    amounts = attendance_api._load_submitted_refund_amounts_from_csv(document)
+
+    assert amounts == {"TH-B": 90.0}
+
+
 def test_refund_confirmation_failure_returns_business_conflict(monkeypatch):
     entry = UserDevice(
         entry_id="device-1",

@@ -1,0 +1,97 @@
+.library-reader-theme-dialog {
+  --reader-surface: #fff;
+  --reader-content: #fff;
+  --reader-panel: #f7f9fb;
+  --reader-text: #273447;
+  --reader-heading: #172033;
+  --reader-muted: #657286;
+  --reader-border: #e4e9ef;
+  --reader-hover: #edf2f7;
+  --reader-active: #e4eefc;
+  --reader-active-text: #1f5fbe;
+  --reader-code: #f1f4f7;
+  --reader-code-text: #9a3412;
+  --reader-link: #2368d1;
+  --reader-mark: #ffe58f;
+  --preview-surface: #fff;
+  --preview-stage: #eef1f4;
+  --preview-text: #172033;
+  --preview-muted: #657286;
+  --preview-border: #e5e9ef;
+  --preview-page-filter: none;
+
+  background: var(--reader-surface);
+  color: var(--reader-text);
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.library-reader-single-line-title {
+  box-sizing: border-box;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-reader-theme-dialog.is-reader-theme-eye-care {
+  --reader-surface: #e3efe2;
+  --reader-content: #eaf4e8;
+  --reader-panel: #d8e7d7;
+  --reader-text: #243329;
+  --reader-heading: #16241b;
+  --reader-muted: #4e6255;
+  --reader-border: #bdd0bf;
+  --reader-hover: #cfe2d0;
+  --reader-active: #bddbbf;
+  --reader-active-text: #174f2d;
+  --reader-code: #dbe9da;
+  --reader-code-text: #654129;
+  --reader-link: #205e69;
+  --reader-mark: #d8d58a;
+  --preview-surface: #e3efe2;
+  --preview-stage: #cbdccb;
+  --preview-text: #1d2c22;
+  --preview-muted: #4e6255;
+  --preview-border: #bdd0bf;
+  --preview-page-filter: sepia(0.12) hue-rotate(72deg) saturate(0.62) brightness(0.98) contrast(0.98);
+  --el-bg-color: #e3efe2;
+  --el-bg-color-overlay: #e3efe2;
+  --el-fill-color-blank: #f0f7ee;
+  --el-text-color-primary: #1d2c22;
+  --el-text-color-regular: #3d5144;
+  --el-border-color: #b5c9b7;
+  --el-border-color-light: #bdd0bf;
+}
+
+.library-reader-theme-dialog.is-reader-theme-dark {
+  --reader-surface: #20242b;
+  --reader-content: #1b1f25;
+  --reader-panel: #252a32;
+  --reader-text: #d6dbe3;
+  --reader-heading: #f0f2f5;
+  --reader-muted: #aeb6c2;
+  --reader-border: #3a414c;
+  --reader-hover: #303640;
+  --reader-active: #253c58;
+  --reader-active-text: #9cc7ff;
+  --reader-code: #292f38;
+  --reader-code-text: #f1b38f;
+  --reader-link: #86b7f4;
+  --reader-mark: #766421;
+  --preview-surface: #20242b;
+  --preview-stage: #15181d;
+  --preview-text: #e7eaf0;
+  --preview-muted: #aeb6c2;
+  --preview-border: #363c46;
+  --preview-page-filter: invert(0.88) hue-rotate(180deg) brightness(0.86) contrast(0.92);
+  --el-bg-color: #20242b;
+  --el-bg-color-overlay: #272c34;
+  --el-fill-color-blank: #272c34;
+  --el-fill-color-light: #333a45;
+  --el-text-color-primary: #e7eaf0;
+  --el-text-color-regular: #c5cbd4;
+  --el-border-color: #454c58;
+  --el-border-color-light: #363c46;
+}

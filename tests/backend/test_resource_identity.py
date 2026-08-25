@@ -262,6 +262,56 @@ def test_note_doc_update_rejects_stale_base_version(client, session: Session, au
     assert note.version == 2
 
 
+def test_note_doc_update_rebases_stale_change_when_edited_field_is_unchanged(
+    client,
+    session: Session,
+    auth_user: User,
+):
+    note = NoteNode(
+        id="note-doc-field-rebase",
+        numeric_id=14,
+        user_id=auth_user.id,
+        title="Original title",
+        content="<p>original content</p>",
+        note_form="document",
+        version=1,
+    )
+    session.add(note)
+    session.commit()
+
+    system_update = client.put(
+        "/api/note-docs/14",
+        json={"base_version": 1, "title": "System title"},
+    )
+    assert system_update.status_code == 200, system_update.text
+
+    rebased = client.put(
+        "/api/note-docs/14",
+        json={
+            "base_version": 1,
+            "content": "<p>user content</p>",
+            "expected_fields": {"content": "<p>original content</p>"},
+            "mutation_id": "mutation-doc-rebase",
+            "client_instance_id": "page-doc-rebase",
+        },
+    )
+    assert rebased.status_code == 200, rebased.text
+    assert rebased.json()["title"] == "System title"
+    assert rebased.json()["content"] == "<p>user content</p>"
+    assert rebased.json()["version"] == 3
+
+    same_field_conflict = client.put(
+        "/api/note-docs/14",
+        json={
+            "base_version": 1,
+            "content": "<p>stale overwrite</p>",
+            "expected_fields": {"content": "<p>original content</p>"},
+        },
+    )
+    assert same_field_conflict.status_code == 409
+    assert same_field_conflict.json()["detail"]["conflicting_fields"] == ["content"]
+
+
 def test_note_doc_resource_websocket_receives_update_event(client, session: Session, auth_user: User):
     session.add(
         NoteNode(

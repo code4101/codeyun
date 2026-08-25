@@ -11,6 +11,7 @@ from backend.api.note_sheets import (
     _extract_document_rows,
     _normalize_document_columns,
     _normalize_document_data_start_row,
+    _order_attendance_rows_by_dynamic_expiration,
     _replace_document_data_rows,
 )
 from backend.core.attendance.progress_style import (
@@ -135,7 +136,9 @@ def _apply_nianzhu_attendance_step3_to_sheet(
     if document is None:
         raise RuntimeError(f"考勤表不存在：sheet_id={sheet_id}")
 
-    current_document = dict(document.document_json or {})
+    current_document, tracking_repaired_rows = _order_attendance_rows_by_dynamic_expiration(
+        dict(document.document_json or {})
+    )
     columns = [sheet_text(column) for column in _normalize_document_columns(current_document)]
     if not columns:
         raise RuntimeError("考勤表缺少 columns")
@@ -243,6 +246,7 @@ def _apply_nianzhu_attendance_step3_to_sheet(
         "video_refund_total": _format_numeric_cell(total_video_refund),
         "score_total": total_score,
         "rows_by_rule": rows_by_rule,
+        "tracking_lifecycle_repaired_rows": tracking_repaired_rows,
     }
 
 

@@ -17,6 +17,7 @@ from backend.api.notes import (
 from backend.core.access.auth import get_current_active_user, get_optional_current_user_from_token
 from backend.core.notes.refs import load_notes_by_refs, note_public_id, note_ref_aliases
 from backend.core.notes.progress import is_note_system_custom_field_key
+from backend.core.optimistic_mutation import changed_fields_from_request, stale_field_conflicts
 from backend.db import get_session
 from backend.models import NoteEdge, NoteNode, ResourceAccessGrant, User
 from backend.schemas import NoteRead
@@ -37,7 +38,14 @@ def _note_resource_update_room(note_ref: str) -> str:
     return f"resource:note:{note_ref}"
 
 
-def _broadcast_note_resource_update(note: NoteNode) -> None:
+def _broadcast_note_resource_update(
+    note: NoteNode,
+    *,
+    updated_by_user_id: int | None = None,
+    mutation_id: str | None = None,
+    client_instance_id: str | None = None,
+    source_kind: str = "system",
+) -> None:
     public_ref = _public_note_ref(note)
     message = {
         "type": "resource-updated",
@@ -45,7 +53,10 @@ def _broadcast_note_resource_update(note: NoteNode) -> None:
         "resource_id": public_ref,
         "version": int(note.version or 1),
         "updated_at": float(note.updated_at or time.time()),
-        "updated_by_user_id": None,
+        "updated_by_user_id": updated_by_user_id,
+        "mutation_id": mutation_id,
+        "client_instance_id": client_instance_id,
+        "source_kind": source_kind,
     }
     try:
         anyio.from_thread.run(ws_manager.broadcast, _note_resource_update_room(public_ref), message)
@@ -70,6 +81,9 @@ class NoteDocDetail(NoteRead):
 
 class NoteDocUpdateRequest(BaseModel):
     base_version: Optional[int] = Field(default=None, ge=1)
+    expected_fields: Optional[dict[str, Any]] = None
+    mutation_id: Optional[str] = Field(default=None, max_length=128)
+    client_instance_id: Optional[str] = Field(default=None, max_length=128)
     title: Optional[str] = None
     content: Optional[str] = None
     weight: Optional[int] = None
@@ -503,10 +517,21 @@ def update_note_doc(
     note = _get_note_by_ref_or_404(session, note_ref)
     access = _resolve_doc_resource_access(session, note, current_user)
     _require_resource_access(access, "editor")
+    raw_request = note_in.model_dump(exclude_unset=True)
+    requested_updates = changed_fields_from_request(raw_request)
     if note_in.base_version is not None and int(note.version or 1) != int(note_in.base_version):
-        raise HTTPException(status_code=409, detail="文档版本已变化，请重新读取后再写入")
+        conflicts = stale_field_conflicts(note, requested_updates, note_in.expected_fields)
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "文档中本次编辑的字段已发生变化，请合并后重试",
+                    "conflicting_fields": conflicts,
+                    "current_version": int(note.version or 1),
+                },
+            )
 
-    note_data = _prepare_note_update_data(note, note_in.model_dump(exclude_unset=True, exclude={"base_version"}))
+    note_data = _prepare_note_update_data(note, requested_updates)
     _append_note_history(note, note_data, int(time.time()))
     _record_note_metadata_feedback_safely(
         session,
@@ -522,7 +547,13 @@ def update_note_doc(
     session.add(note)
     session.commit()
     session.refresh(note)
-    _broadcast_note_resource_update(note)
+    _broadcast_note_resource_update(
+        note,
+        updated_by_user_id=current_user.id,
+        mutation_id=note_in.mutation_id,
+        client_instance_id=note_in.client_instance_id,
+        source_kind="user",
+    )
 
     next_access = _resolve_doc_resource_access(session, note, current_user)
     return _serialize_doc_note_detail(session, note, current_user=current_user, access=next_access)

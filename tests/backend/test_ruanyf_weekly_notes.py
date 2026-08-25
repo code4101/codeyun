@@ -298,7 +298,7 @@ def test_enqueue_weekly_note_job_skips_completed_current_window(monkeypatch):
     def fail_enqueue(*args, **kwargs):
         raise AssertionError("completed weekly window should not enqueue a task")
 
-    monkeypatch.setattr(weekly.background_task_queue, "enqueue", fail_enqueue)
+    monkeypatch.setattr(weekly, "submit_local_job_once", fail_enqueue)
 
     queue_task_id = weekly.enqueue_ruanyf_weekly_note_job(
         now=datetime(2026, 5, 15, 22, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE),

@@ -1,6 +1,6 @@
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from backend.core.fanxiu.packet.decoded_store import (
+from backend.core.fanxiu.history_museum.packet_capture.decoded_store import (
     decoded_record_rows_from_decode_result,
     list_fanxiu_packet_decoded_records,
     prune_fanxiu_packet_decoded_records,
@@ -41,6 +41,31 @@ def test_decoded_record_rows_from_decode_result_keeps_plaintext_payload() -> Non
     assert rows[0]["captured_at"] == "2026-06-04 22:30:00"
 
 
+def test_decoded_record_uses_pcap_event_time_not_late_decode_time() -> None:
+    rows = decoded_record_rows_from_decode_result(
+        {
+            "record_id": "historical-record",
+            "created_at": "2026-07-21 22:20:00",
+            "pcap_modified_at": "2026-07-10 19:00:03",
+            "pcap_name": "fanxiu_runtime_20260710_190000.pcap",
+            "stream": 0,
+            "frames": [
+                {
+                    "direction": "s2c",
+                    "offset": 1,
+                    "sn": 1,
+                    "pro_id": 89202,
+                    "name": "SM_LingArenaPlayInfo",
+                    "parsed": {"joinerVO": {"rank": 1}},
+                }
+            ],
+        }
+    )
+
+    assert rows[0]["captured_at"] == "2026-07-10 19:00:03"
+    assert rows[0]["evidence"]["decoded_at"] == "2026-07-21 22:20:00"
+
+
 def test_upsert_fanxiu_packet_decoded_records_is_idempotent() -> None:
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     SQLModel.metadata.create_all(engine)
@@ -66,6 +91,32 @@ def test_upsert_fanxiu_packet_decoded_records_is_idempotent() -> None:
     assert second == {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 1}
     assert len(records) == 1
     assert records[0].payload["parsed"] == {"name": "玩家"}
+
+
+def test_upsert_ignores_decode_timestamp_only_retry() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    base = {
+        "record_id": "record-1",
+        "pcap_modified_at": "2026-06-04 22:29:59",
+        "pcap_name": "capture.pcap",
+        "capture_sha256": "abc",
+        "stream": 2,
+        "frames": [
+            {"direction": "s2c", "offset": 12, "sn": 7, "pro_id": 30008, "name": "SM_ShowOther", "parsed": {"name": "玩家"}},
+        ],
+    }
+    first_rows = decoded_record_rows_from_decode_result({**base, "created_at": "2026-06-04 22:30:00"})
+    retry_rows = decoded_record_rows_from_decode_result({**base, "created_at": "2026-06-04 22:35:00"})
+
+    with Session(engine) as session:
+        first = upsert_fanxiu_packet_decoded_records(session, first_rows)
+        retry = upsert_fanxiu_packet_decoded_records(session, retry_rows)
+        record = session.exec(select(FanxiuPacketDecodedRecord)).one()
+
+    assert first["created"] == 1
+    assert retry == {"created": 0, "updated": 0, "skipped_invalid": 0, "skipped_duplicate": 1}
+    assert record.evidence["decoded_at"] == "2026-06-04 22:30:00"
 
 
 def test_list_fanxiu_packet_decoded_records_filters_latest_by_protocol() -> None:

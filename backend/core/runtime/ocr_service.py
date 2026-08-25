@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 import psutil
 import requests
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from pyxllib.prog import process_runtime
 
@@ -68,6 +69,17 @@ def get_ocr_service_log_path() -> Path:
     if configured:
         return Path(configured).expanduser().resolve(strict=False)
     return (get_settings().data_dir / "logs" / "ocr-service.log").resolve(strict=False)
+
+
+def get_ocr_service_start_lock_path() -> Path:
+    """Return the machine-local lock that serializes OCR process replacement.
+
+    OCR requests can arrive from the Scheduler, popup guard and diagnostics at
+    the same time.  Without a cross-process lock, each caller can observe the
+    service as unavailable and start a competing daemon on the same port.
+    """
+
+    return (get_settings().data_dir / "runtime" / "ocr-service.start.lock").resolve(strict=False)
 
 
 def _endpoint(path: str) -> str:
@@ -247,12 +259,60 @@ def start_ocr_service(
     wait_seconds: float = 20.0,
     env_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    if replace_existing:
-        stop_ocr_service()
-    else:
+    # Capture what this caller observed before waiting.  If another process
+    # replaces the daemon while we wait for the lock, the changed PID set lets
+    # us reuse that winner instead of immediately replacing it again.
+    initial_status = get_ocr_service_status()
+    initial_pids = frozenset(int(pid) for pid in initial_status.get("pids") or [] if pid is not None)
+    desired_device = str(
+        (env_overrides or {}).get("CODEYUN_OCR_DEVICE")
+        or os.getenv("CODEYUN_OCR_DEVICE")
+        or get_settings().ocr_device
+        or "gpu"
+    ).strip().lower()
+
+    def device_matches(status: dict[str, Any]) -> bool:
+        current = str(status.get("device") or "").strip().lower()
+        if not desired_device:
+            return True
+        if current == desired_device:
+            return True
+        if desired_device.startswith("gpu") and current.startswith("gpu"):
+            return True
+        return False
+
+    lock_path = get_ocr_service_start_lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(lock_path), timeout=max(5.0, float(wait_seconds) + 5.0)):
+            status = get_ocr_service_status()
+            current_pids = frozenset(int(pid) for pid in status.get("pids") or [] if pid is not None)
+            replacement_completed_while_waiting = bool(
+                status.get("running")
+                and current_pids != initial_pids
+                and device_matches(status)
+            )
+            if replacement_completed_while_waiting or (
+                not replace_existing and status.get("running") and device_matches(status)
+            ):
+                return {"status": "started", "service": status}
+            if replace_existing or status.get("running"):
+                stop_ocr_service()
+
+            return _start_ocr_service_unlocked(wait_seconds=wait_seconds, env_overrides=env_overrides)
+    except FileLockTimeout as exc:
         status = get_ocr_service_status()
-        if status.get("running"):
+        if status.get("running") and device_matches(status):
             return {"status": "started", "service": status}
+        raise OcrPreviewError(f"等待 OCR 服务启动锁超时：{lock_path}") from exc
+
+
+def _start_ocr_service_unlocked(
+    *,
+    wait_seconds: float,
+    env_overrides: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Start one OCR daemon; caller must hold the cross-process start lock."""
 
     host = get_ocr_service_host()
     port = get_ocr_service_port()
@@ -310,7 +370,14 @@ def start_ocr_service(
 
 def ensure_ocr_service_running() -> dict[str, Any]:
     status = get_ocr_service_status()
-    if status.get("running"):
+    desired_device = str(get_settings().ocr_device or "gpu").strip().lower()
+    current_device = str(status.get("device") or "").strip().lower()
+    device_ok = (
+        not desired_device
+        or current_device == desired_device
+        or (desired_device.startswith("gpu") and current_device.startswith("gpu"))
+    )
+    if status.get("running") and device_ok:
         return status
     return start_ocr_service(replace_existing=False)["service"]
 
@@ -348,7 +415,7 @@ def _infer_ocr_request_caller() -> str:
         os.fspath((root / "backend" / "core" / "runtime" / "ocr_service.py").resolve(strict=False)).lower(),
         os.fspath((root / "backend" / "core" / "ocr" / "preview.py").resolve(strict=False)).lower(),
         os.fspath((root / "backend" / "core" / "fanxiu" / "game" / "macro_annotation.py").resolve(strict=False)).lower(),
-        os.fspath((root / "backend" / "core" / "fanxiu" / "data_annotation" / "runtime_runner.py").resolve(strict=False)).lower(),
+        os.fspath((root / "backend" / "core" / "fanxiu" / "data_annotation" / "behavior_tree_runtime.py").resolve(strict=False)).lower(),
     }
     for frame in inspect.stack(context=0)[1:]:
         filename = os.fspath(Path(frame.filename).resolve(strict=False))

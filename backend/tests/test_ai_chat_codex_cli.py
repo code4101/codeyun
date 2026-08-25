@@ -109,7 +109,7 @@ def test_codex_cli_command_resolution_uses_node_script_for_cmd(monkeypatch, tmp_
     assert command == [str(node), str(script), "-p", "myprofile", "--version"]
 
 
-def test_codex_cli_command_resolution_prefers_node_wrapper_over_native_exe(monkeypatch, tmp_path):
+def test_codex_cli_command_resolution_prefers_native_exe(monkeypatch, tmp_path):
     shim = tmp_path / "node-bin" / "codex.cmd"
     script = shim.parent / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
     node = shim.parent / "node.exe"
@@ -138,7 +138,7 @@ def test_codex_cli_command_resolution_prefers_node_wrapper_over_native_exe(monke
 
     command = _resolve_command_path(["codex", "--version"])
 
-    assert command == [str(node), str(script), "--version"]
+    assert command == [str(native), "--version"]
 
 
 def test_summarize_process_output_skips_trailing_node_version():
@@ -169,7 +169,7 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
             stderr="",
         )
 
-    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.run_quiet_inherited_console_tree_safe", fake_run)
 
     response = chat_with_provider(
         provider_id="custom-codex",
@@ -228,7 +228,7 @@ def test_codex_cli_chat_resumes_explicit_session(monkeypatch, tmp_path):
             stderr="",
         )
 
-    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.run_quiet_inherited_console_tree_safe", fake_run)
 
     response = chat_with_provider(
         provider_id="custom-codex",
@@ -265,7 +265,7 @@ def test_codex_cli_chat_attaches_images(monkeypatch, tmp_path):
         output_path.write_text("image reply", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
-    monkeypatch.setattr("backend.core.ai.chat.subprocess.run", fake_run)
+    monkeypatch.setattr("backend.core.ai.chat.run_quiet_inherited_console_tree_safe", fake_run)
     monkeypatch.setattr(
         "backend.core.ai.chat._build_codex_workspace_dir",
         lambda workspace_dir=None: tmp_path / CODEX_CLI_WORKSPACE_DIRNAME,

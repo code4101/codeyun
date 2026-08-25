@@ -4,13 +4,16 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   fetchEastmoneyAkshareHistory,
   fetchEastmoneyCalculatorWorkspace,
+  fetchEastmoneyTradeRecords,
   fetchLatestEastmoneyMarketQuotes,
   syncEastmoneyCalculatorMarketQuotes,
   saveEastmoneyCalculatorWorkspace,
   type EastmoneyCalculatorItem,
   type EastmoneyCalculatorTarget,
   type EastmoneyCalculatorTrade,
+  type EastmoneyTradeRecord,
 } from '@/api/eastmoney'
+import { formatCompactSignificant } from '@/utils/numberFormat'
 
 interface ParsedPrice {
   decimals: number
@@ -24,6 +27,8 @@ const calculators = ref<EastmoneyCalculatorItem[]>([])
 const targets = ref<EastmoneyCalculatorTarget[]>([])
 const historyByTarget = ref<Record<string, EastmoneyCalculatorTrade[]>>({})
 const currentPrices = ref<Record<string, { price: number; updateTime: string; fetchedAt: number }>>({})
+const historicalRoundTripRates = ref<Record<string, number>>({})
+const historicalTradesByTarget = ref<Record<string, EastmoneyTradeRecord[]>>({})
 const loading = ref(true)
 const ready = ref(false)
 const saveError = ref(false)
@@ -140,12 +145,84 @@ async function loadWorkspace(): Promise<void> {
       }
     }
     ready.value = true
+    void loadHistoricalRoundTripRates()
     void loadCurrentPrices().finally(startQuoteRefresh)
   } catch (error) {
     console.error('Failed to load calculator workspace:', error)
     ElMessage.error('加载计算器数据失败')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadHistoricalRoundTripRates(): Promise<void> {
+  try {
+    const rows: EastmoneyTradeRecord[] = []
+    let offset = 0
+    let total = Number.POSITIVE_INFINITY
+    while (offset < total) {
+      const result = await fetchEastmoneyTradeRecords({ limit: 1000, offset })
+      rows.push(...result.items)
+      total = result.total
+      if (!result.items.length) break
+      offset += result.items.length
+    }
+
+    const groups = new Map<string, {
+      fee: number
+      turnoverInCny: number
+      missingSettlementRate: boolean
+    }>()
+    const tradesByTarget = new Map<string, EastmoneyTradeRecord[]>()
+    for (const row of rows) {
+      if (!row.security_code) continue
+      const key = `${row.market}.${row.security_code}`
+      const targetTrades = tradesByTarget.get(key) ?? []
+      targetTrades.push(row)
+      tradesByTarget.set(key, targetTrades)
+      const group = groups.get(key) ?? {
+        fee: 0,
+        turnoverInCny: 0,
+        missingSettlementRate: false,
+      }
+      const amount = row.amount_value
+      if (amount != null && Number.isFinite(amount) && amount > 0) {
+        let amountInCny = amount
+        if (row.market === 'HK') {
+          const settlementRate = Number(row.raw_json?.['结算汇率'])
+          if (!Number.isFinite(settlementRate) || settlementRate <= 0) {
+            group.missingSettlementRate = true
+            amountInCny = 0
+          } else {
+            amountInCny *= settlementRate
+          }
+        }
+        group.turnoverInCny += amountInCny
+      }
+      if (row.fee_value != null && Number.isFinite(row.fee_value)) {
+        group.fee += row.fee_value
+      }
+      groups.set(key, group)
+    }
+
+    historicalTradesByTarget.value = Object.fromEntries(
+      [...tradesByTarget].map(([key, trades]) => [
+        key,
+        trades.sort((left, right) => {
+          const leftTime = `${left.trade_date} ${left.trade_time}`
+          const rightTime = `${right.trade_date} ${right.trade_time}`
+          return rightTime.localeCompare(leftTime)
+        }),
+      ]),
+    )
+    historicalRoundTripRates.value = Object.fromEntries(
+      [...groups].flatMap(([key, group]) => {
+        if (group.missingSettlementRate || group.turnoverInCny <= 0) return []
+        return [[key, (group.fee / group.turnoverInCny) * 2]]
+      }),
+    )
+  } catch (error) {
+    console.warn('Failed to load historical round-trip fee rates:', error)
   }
 }
 
@@ -314,18 +391,38 @@ function formatScaledPrice(basePrice: string, multiplier: number): string {
   return `${integerPart}.${decimalPart}`
 }
 
+function priceTick(calculator: EastmoneyCalculatorItem): { decimals: number; value: number } {
+  const isExchangeFund = (
+    (calculator.market === 'SZ' && /^(15|16)/.test(calculator.symbol))
+    || (calculator.market === 'SH' && /^(50|51|52|56|58)/.test(calculator.symbol))
+  )
+  const decimals = isExchangeFund ? 3 : 2
+  return { decimals, value: 10 ** -decimals }
+}
+
 function currentPriceMarker(calculator: EastmoneyCalculatorItem) {
   const current = currentPrices.value[targetKey(calculator)]
   const base = Number(calculator.base_price)
   if (!current || !Number.isFinite(base) || base <= 0) return null
   const ratio = current.price / base
   const position = Math.min(1, Math.max(0, (ratio - 0.8) / 0.4))
-  const decimals = parsePrice(calculator.base_price)?.decimals ?? 2
+  const tick = priceTick(calculator)
+  const roundTripRate = historicalRoundTripRates.value[targetKey(calculator)]
+  const rawFeeGap = roundTripRate ? current.price * roundTripRate : 0
+  const roundedFeeGap = rawFeeGap > 0
+    ? Math.ceil(rawFeeGap / tick.value - 1e-12) * tick.value
+    : 0
   return {
     left: `${5.5 + position * 89}%`,
-    price: current.price.toFixed(decimals),
-    title: `行情时间：${current.updateTime || '未知'}`,
+    price: current.price.toFixed(tick.decimals),
+    title: [
+      `行情时间：${current.updateTime || '未知'}`,
+      roundTripRate
+        ? `来回手续费价差：${current.price} × ${formatCompactSignificant(roundTripRate * 100, 4)}%`
+        : '',
+    ].filter(Boolean).join('；'),
     boundary: ratio < 0.8 ? '<80%' : ratio > 1.2 ? '>120%' : '',
+    feeGap: roundedFeeGap > 0 ? roundedFeeGap.toFixed(tick.decimals) : '',
   }
 }
 
@@ -348,49 +445,18 @@ function addCalculator(): void {
   newDialogVisible.value = false
 }
 
-function formatLocalDateTime(date: Date): string {
-  const pad = (value: number) => value.toString().padStart(2, '0')
-  return [
-    date.getFullYear(),
-    '-',
-    pad(date.getMonth() + 1),
-    '-',
-    pad(date.getDate()),
-    'T',
-    pad(date.getHours()),
-    ':',
-    pad(date.getMinutes()),
-    ':',
-    pad(date.getSeconds()),
-  ].join('')
+function historicalTrades(calculator: EastmoneyCalculatorItem): EastmoneyTradeRecord[] {
+  return (historicalTradesByTarget.value[targetKey(calculator)] ?? []).slice(0, 10)
 }
 
-function addTrade(calculator: EastmoneyCalculatorItem): void {
-  calculator.trades.unshift({
-    id: createId(),
-    time: formatLocalDateTime(new Date()),
-    price: '',
-    quantity: '',
-    source_record_id: '',
-  })
+function historicalTradeTime(trade: EastmoneyTradeRecord): string {
+  return [trade.trade_date, trade.trade_time].filter(Boolean).join(' ') || '—'
 }
 
-function sortedTrades(calculator: EastmoneyCalculatorItem): EastmoneyCalculatorTrade[] {
-  return [...calculator.trades].sort((left, right) => right.time.localeCompare(left.time))
-}
-
-async function removeTrade(calculator: EastmoneyCalculatorItem, trade: EastmoneyCalculatorTrade): Promise<void> {
-  try {
-    await ElMessageBox.confirm('确定删除这条交易记录吗？', '删除交易记录', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-  } catch {
-    return
-  }
-
-  calculator.trades = calculator.trades.filter((record) => record.id !== trade.id)
+function historicalTradeQuantity(trade: EastmoneyTradeRecord): string {
+  const quantity = trade.quantity.trim().replace(/^[+-]/, '')
+  if (!quantity) return '—'
+  return trade.direction.includes('卖') ? `-${quantity}` : quantity
 }
 
 async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<void> {
@@ -468,14 +534,18 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
             <div
               v-if="currentPriceMarker(calculator)"
               class="current-price-marker"
+              :class="{
+                'is-left-boundary': currentPriceMarker(calculator)!.boundary === '<80%',
+                'is-right-boundary': currentPriceMarker(calculator)!.boundary === '>120%',
+              }"
               :style="{ left: currentPriceMarker(calculator)!.left }"
               :title="currentPriceMarker(calculator)!.title"
             >
               <span class="current-price-pointer" />
               <span class="current-price-label">
-                现价 {{ currentPriceMarker(calculator)!.price }}
-                <small v-if="currentPriceMarker(calculator)!.boundary">
-                  {{ currentPriceMarker(calculator)!.boundary }}
+                现价{{ currentPriceMarker(calculator)!.price }}
+                <small v-if="currentPriceMarker(calculator)!.feeGap" class="fee-gap">
+                  手续费{{ currentPriceMarker(calculator)!.feeGap }}
                 </small>
               </span>
             </div>
@@ -485,7 +555,6 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
         <div class="trade-history">
           <div class="trade-history-head">
             <span>最近交易</span>
-            <button type="button" @click="addTrade(calculator)">+ 交易</button>
           </div>
           <div class="trade-table-scroll">
             <table class="trade-table">
@@ -494,52 +563,23 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
                   <th>时间</th>
                   <th>价格</th>
                   <th title="正数为买入，负数为卖出">交易数量（+买入 / −卖出）</th>
-                  <th aria-label="操作" />
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="!calculator.trades.length">
-                  <td class="empty-trades" colspan="4">暂无交易记录</td>
+                <tr v-if="!historicalTrades(calculator).length">
+                  <td class="empty-trades" colspan="3">暂无历史成交</td>
                 </tr>
-                <tr v-for="trade in sortedTrades(calculator)" v-else :key="trade.id">
-                  <td>
-                    <input
-                      v-model="trade.time"
-                      :aria-label="`${calculator.name}交易时间`"
-                      step="1"
-                      type="datetime-local"
-                    >
-                  </td>
-                  <td>
-                    <input
-                      v-model="trade.price"
-                      :aria-label="`${calculator.name}交易价格`"
-                      inputmode="decimal"
-                      placeholder="价格"
-                    >
-                  </td>
-                  <td>
-                    <input
-                      v-model="trade.quantity"
-                      :aria-label="`${calculator.name}交易数量`"
-                      :class="{
-                        'is-buy': Number(trade.quantity) > 0,
-                        'is-sell': Number(trade.quantity) < 0,
-                      }"
-                      inputmode="decimal"
-                      placeholder="买入为正，卖出为负"
-                    >
-                  </td>
-                  <td>
-                    <button
-                      class="trade-remove-button"
-                      type="button"
-                      aria-label="删除交易记录"
-                      title="删除交易记录"
-                      @click="removeTrade(calculator, trade)"
-                    >
-                      −
-                    </button>
+                <tr v-for="trade in historicalTrades(calculator)" v-else :key="trade.id">
+                  <td class="trade-time">{{ historicalTradeTime(trade) }}</td>
+                  <td class="trade-price">{{ trade.price || '—' }}</td>
+                  <td
+                    class="trade-quantity"
+                    :class="{
+                      'is-buy': trade.direction.includes('买'),
+                      'is-sell': trade.direction.includes('卖'),
+                    }"
+                  >
+                    {{ historicalTradeQuantity(trade) }}
                   </td>
                 </tr>
               </tbody>
@@ -678,15 +718,6 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
   font-weight: 600;
 }
 
-.trade-history-head button {
-  background: transparent;
-  border: 0;
-  color: #409eff;
-  cursor: pointer;
-  font-size: 13px;
-  padding: 4px 6px;
-}
-
 .trade-table-scroll {
   max-width: 100%;
   overflow-x: auto;
@@ -707,55 +738,38 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
   font-weight: 500;
   height: 30px;
   padding: 0 8px;
+  position: sticky;
   text-align: left;
+  top: 0;
   white-space: nowrap;
+  z-index: 1;
 }
 
 .trade-table td {
   border-bottom: 1px solid #edf0f5;
-  padding: 3px 4px;
-}
-
-.trade-table input {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  box-sizing: border-box;
-  color: #344054;
-  font: inherit;
   font-variant-numeric: tabular-nums;
   height: 30px;
-  outline: none;
-  padding: 0 6px;
+  padding: 0 8px;
+  white-space: nowrap;
 }
 
-.trade-table input:hover {
-  border-color: #d0d5dd;
+.trade-time {
+  min-width: 174px;
 }
 
-.trade-table input:focus {
-  background: #fff;
-  border-color: #409eff;
-  box-shadow: 0 0 0 2px rgb(64 158 255 / 10%);
+.trade-price {
+  min-width: 72px;
 }
 
-.trade-table input[type='datetime-local'] {
-  width: 188px;
+.trade-quantity {
+  min-width: 184px;
 }
 
-.trade-table td:nth-child(2) input {
-  width: 112px;
-}
-
-.trade-table td:nth-child(3) input {
-  width: 174px;
-}
-
-.trade-table input.is-buy {
+.trade-quantity.is-buy {
   color: #b42318;
 }
 
-.trade-table input.is-sell {
+.trade-quantity.is-sell {
   color: #067647;
 }
 
@@ -763,21 +777,6 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
   color: #98a2b3;
   height: 34px;
   padding-left: 8px !important;
-}
-
-.trade-remove-button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  color: #d92d20;
-  cursor: pointer;
-  display: flex;
-  font-size: 18px;
-  height: 26px;
-  justify-content: center;
-  padding: 0;
-  width: 26px;
 }
 
 .trade-remove-button:hover {
@@ -893,6 +892,16 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
   z-index: 2;
 }
 
+.current-price-marker.is-left-boundary {
+  align-items: flex-start;
+  transform: translateX(-5px);
+}
+
+.current-price-marker.is-right-boundary {
+  align-items: flex-end;
+  transform: translateX(calc(-100% + 5px));
+}
+
 .current-price-pointer {
   border-bottom: 7px solid #d97706;
   border-left: 5px solid transparent;
@@ -917,6 +926,11 @@ async function removeCalculator(calculator: EastmoneyCalculatorItem): Promise<vo
 .current-price-label small {
   font-size: 10px;
   margin-left: 2px;
+}
+
+.current-price-label .fee-gap {
+  font-size: inherit;
+  margin-left: 6px;
 }
 
 .input-error {

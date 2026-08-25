@@ -11241,210 +11241,6 @@ def build_fanxiu_gongfa_special_faze_payload_summary_probe(
     return result
 
 
-_SPECIAL_FAZE_RUNTIME_FILE_HINTS = (
-    "capture",
-    "fixture",
-    "runtime",
-    "observation",
-    "sample",
-    "socket",
-    "packet",
-    "flow",
-)
-_SPECIAL_FAZE_AUDIT_FILE_HINTS = (
-    "faze",
-    "socket",
-    "packet",
-    "capture",
-    "fixture",
-    "runtime",
-    "observation",
-    "sample",
-    "typed_pool",
-)
-_SPECIAL_FAZE_SAMPLE_FIELD_RE = re.compile(
-    r"""["']?\b(fazeId|effectType|num|reason)\b["']?\s*[:=]\s*["']?(-?\d+)""",
-    re.IGNORECASE,
-)
-
-
-def _special_faze_runtime_audit_files(output_dir: Path) -> list[Path]:
-    suffixes = {".tsv", ".json", ".md", ".txt", ".log", ".csv"}
-    files: list[Path] = []
-    if not output_dir.is_dir():
-        return files
-    for path in sorted(output_dir.rglob("*"), key=lambda item: item.as_posix().lower()):
-        if not path.is_file() or path.suffix.lower() not in suffixes:
-            continue
-        name = path.name.lower()
-        if any(hint in name for hint in _SPECIAL_FAZE_AUDIT_FILE_HINTS):
-            files.append(path)
-    return files
-
-
-def _special_faze_runtime_line_classification(path: Path, line: str) -> tuple[str, dict[str, str]]:
-    canonical = {"fazeid": "fazeId", "effecttype": "effectType", "num": "num", "reason": "reason"}
-    fields = {
-        canonical.get(match.group(1).lower(), match.group(1)): match.group(2)
-        for match in _SPECIAL_FAZE_SAMPLE_FIELD_RE.finditer(line)
-    }
-    name = path.name.lower()
-    has_runtime_hint = any(hint in name for hint in _SPECIAL_FAZE_RUNTIME_FILE_HINTS)
-    has_packet_name = "SM_FazeEffect" in line
-    has_concrete_packet_fields = has_packet_name and "effectType" in fields and bool({"fazeId", "num", "reason"} & set(fields))
-    if has_runtime_hint and has_concrete_packet_fields:
-        return "runtime_sample_candidate", fields
-    if has_concrete_packet_fields:
-        return "static_or_report_value", fields
-    return "schema_or_reference", fields
-
-
-def build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe(
-    *,
-    export_root: str | os.PathLike[str] | None = None,
-    focus_effect_type: str | int = "804",
-) -> dict[str, Any]:
-    """Audit existing exports for concrete SM_FazeEffect runtime samples."""
-    export_base = resolve_fanxiu_export_root(export_root)
-    output_dir = export_base / "apk_static_index"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    focus_text = str(focus_effect_type).strip()
-
-    rows: list[dict[str, object]] = []
-    scanned_files = 0
-    for path in _special_faze_runtime_audit_files(output_dir):
-        scanned_files += 1
-        relative = path.relative_to(export_base).as_posix() if path.is_relative_to(export_base) else path.name
-        try:
-            with path.open("r", encoding="utf-8", errors="ignore") as f:
-                for line_no, line in enumerate(f, start=1):
-                    if "SM_FazeEffect" not in line and "FazeEffect" not in line:
-                        continue
-                    classification, fields = _special_faze_runtime_line_classification(path, line)
-                    rows.append(
-                        {
-                            "classification": classification,
-                            "source_file": relative,
-                            "line": line_no,
-                            "packet": "SM_FazeEffect" if "SM_FazeEffect" in line else "FazeEffect",
-                            "field_values": _unique_join((f"{key}={value}" for key, value in fields.items()), limit=8),
-                            "focus_effect_type_match": str(fields.get("effectType", "")) == focus_text,
-                            "excerpt": line.strip()[:500],
-                        }
-                    )
-        except OSError as exc:
-            rows.append(
-                {
-                    "classification": "read_error",
-                    "source_file": relative,
-                    "line": "",
-                    "packet": "",
-                    "field_values": "",
-                    "focus_effect_type_match": False,
-                    "excerpt": str(exc),
-                }
-            )
-
-    rows.sort(
-        key=lambda row: (
-            0 if row.get("classification") == "runtime_sample_candidate" else 1,
-            str(row.get("source_file", "")),
-            int(row.get("line") or 0),
-        )
-    )
-    runtime_rows = [row for row in rows if row.get("classification") == "runtime_sample_candidate"]
-    focus_rows = [row for row in runtime_rows if str(row.get("focus_effect_type_match", "")).lower() == "true"]
-    class_counts = Counter(str(row.get("classification", "")) for row in rows)
-
-    row_count = _write_tsv(
-        output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit.tsv",
-        [
-            "classification",
-            "source_file",
-            "line",
-            "packet",
-            "field_values",
-            "focus_effect_type_match",
-            "excerpt",
-        ],
-        rows,
-    )
-
-    lines = [
-        "# Special-GongfaJie/Faze Runtime Sample Audit",
-        "",
-        f"- Export root: `{export_base}`",
-        f"- Scanned files: {scanned_files}",
-        f"- Evidence rows: {row_count}",
-        f"- Runtime sample candidates: {len(runtime_rows)}",
-        f"- Focus effect type `{focus_text}` runtime candidates: {len(focus_rows)}",
-        f"- Class counts: {', '.join(f'{name}:{count}' for name, count in class_counts.most_common()) or 'none'}",
-        "",
-        "## Meaning",
-        "",
-        "- A runtime sample candidate must mention `SM_FazeEffect` and carry concrete numeric `effectType` plus at least one of `fazeId/num/reason` in a capture/fixture/runtime/socket-style file.",
-        "- Schema/report references are useful for packet shape, but they do not prove a specific live trigger instance.",
-        "- If this report has zero runtime candidates for `804`, the exact live frequency/condition for `玄魔大法` still needs a privacy-filtered runtime sample rather than another broad static scan.",
-        "",
-        "## Candidate Rows",
-        "",
-        "| class | source | line | fields | focus | excerpt |",
-        "| --- | --- | ---: | --- | --- | --- |",
-    ]
-    for row in rows[:80]:
-        lines.append(
-            "| "
-            f"{_markdown_table_cell(row.get('classification', ''), limit=120)} | "
-            f"{_markdown_table_cell(row.get('source_file', ''), limit=180)} | "
-            f"{_markdown_table_cell(row.get('line', ''), limit=40)} | "
-            f"{_markdown_table_cell(row.get('field_values', ''), limit=160)} | "
-            f"{_markdown_table_cell(row.get('focus_effect_type_match', ''), limit=40)} | "
-            f"{_markdown_table_cell(row.get('excerpt', ''), limit=220)} |"
-        )
-    if not rows:
-        lines.append("| none |  |  |  |  |  |")
-
-    lines.extend(
-        [
-            "",
-            "## Conclusion",
-            "",
-            "- Existing exports are enough to describe `SM_FazeEffect(fazeId/effectType/num/reason)` as a server-to-client rule notification.",
-            "- Concrete runtime samples are treated separately from static schema evidence, so this report can be used as a gate before claiming exact live behavior.",
-        ]
-    )
-    markdown_path = output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.md"
-    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    result = {
-        "output_dir": str(output_dir),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "counts": {
-            "scanned_files": scanned_files,
-            "evidence_rows": row_count,
-            "runtime_sample_candidates": len(runtime_rows),
-            "focus_runtime_candidates": len(focus_rows),
-            "classifications": dict(class_counts),
-        },
-        "verdict": {
-            "runtime_samples_found": bool(runtime_rows),
-            "focus_effect_type_runtime_samples_found": bool(focus_rows),
-            "static_shape_known": any("SM_FazeEffect" in str(row.get("excerpt", "")) for row in rows),
-            "next_step_if_missing": "collect_or_import_privacy_filtered_SM_FazeEffect_sample_before_claiming_live_trigger_frequency",
-        },
-        "outputs": {
-            "rows": str(output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit.tsv"),
-            "markdown": str(markdown_path),
-            "json": str(output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.json"),
-        },
-    }
-    (output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return result
-
-
 def _blue_operation_from_packet(packet: str) -> str:
     for prefix in ("CM_BlueStarSea", "SM_BlueStarSea"):
         if packet.startswith(prefix):
@@ -19659,7 +19455,7 @@ def _find_gongfa_homemake_vo_like_files(export_base: Path, *, limit: int = 50) -
         for path in export_base.rglob(pattern):
             if not path.is_file() or path in seen:
                 continue
-            # Static report JSON names are useful evidence but not captured VO payloads.
+            # Static report JSON names are useful evidence but not Runtime VO payloads.
             if path.name.endswith("_report.json") or path.name.endswith("_probe.json"):
                 continue
             seen.add(path)
@@ -19753,7 +19549,7 @@ def _build_gongfa_renderer_source_selection_rows(export_base: Path) -> tuple[lis
             "next_action": "Keep as smoke-test fixture and visual QA input for rich-text detail rendering.",
         },
         {
-            "candidate_id": "captured_or_shared_gongfa_homemake_vo",
+            "candidate_id": "runtime_or_shared_gongfa_homemake_vo",
             "source_type": "runtime_or_share_payload",
             "status": "ready" if runtime_vo_ready else "not_available_yet",
             "priority": 3 if runtime_vo_ready else 60,
@@ -19761,7 +19557,7 @@ def _build_gongfa_renderer_source_selection_rows(export_base: Path) -> tuple[lis
             "coverage": f"vo_like_files={len(vo_like_files)}",
             "evidence_files": "; ".join(_relative_export_path(export_base, path) for path in vo_like_files[:10]),
             "limitation": "This is the ideal source for true self-created details, but current static exports do not include real account/share VO payloads.",
-            "next_action": "Defer until a read-only runtime/share capture exists; do not require user intervention for static wiki progress.",
+            "next_action": "Defer until a read-only Runtime/share snapshot exists; do not require user intervention for static wiki progress.",
         },
         {
             "candidate_id": "protocol_lifecycle_schema",
@@ -19772,14 +19568,14 @@ def _build_gongfa_renderer_source_selection_rows(export_base: Path) -> tuple[lis
             "coverage": f"packet_rows={lifecycle_counts.get('packet_rows', 0)}; edge_rows={lifecycle_counts.get('edge_rows', 0)}",
             "evidence_files": _relative_export_path(export_base, lifecycle_report_path) if lifecycle_report_path.is_file() else "",
             "limitation": "Explains VO identity and cache lifecycle, but does not itself provide displayable detail rows.",
-            "next_action": "Use as schema guardrail when later ingesting captured `GongFaHomeMakeVO` payloads.",
+            "next_action": "Use as schema guardrail when later ingesting Runtime `GongFaHomeMakeVO` snapshots.",
         },
     ]
     recommended = "static_gongfa_catalog" if static_ready else ("vo_shaped_renderer_sample" if sample_ready else "")
     meta = {
         "static_catalog_ready": static_ready,
         "sample_renderer_ready": sample_ready,
-        "runtime_vo_capture_available": runtime_vo_ready,
+        "runtime_vo_available": runtime_vo_ready,
         "lifecycle_schema_ready": lifecycle_ready,
         "recommended_first_source": recommended,
         "needs_user_intervention_now": False,
@@ -19801,7 +19597,7 @@ def _write_gongfa_homemake_renderer_source_selection_markdown(
         "",
         f"- 导出目录：`{export_base}`",
         f"- 推荐首选源：`{meta.get('recommended_first_source', '')}`",
-        f"- 当前是否有真实运行时 VO：`{meta.get('runtime_vo_capture_available', False)}`",
+        f"- 当前是否有真实运行时 VO：`{meta.get('runtime_vo_available', False)}`",
         f"- 当前是否需要人工介入：`{meta.get('needs_user_intervention_now', False)}`",
         "- 结论：CodeYun wiki 现在可以先接静态配置图鉴源和 VO-shaped 样例，不需要等真实账号运行时 VO；真实 `GongFaHomeMakeVO` 后续作为更高保真来源补充。",
         "",
@@ -19824,7 +19620,7 @@ def _write_gongfa_homemake_renderer_source_selection_markdown(
             "",
             "## Practical next step",
             "",
-            "Wire the wiki renderer against `static_gongfa_catalog` first: it is deterministic, account-free, and already backed by parsed config tables plus localization templates. Keep `captured_or_shared_gongfa_homemake_vo` as a later read-only ingestion path when a real share/runtime payload becomes available.",
+            "Wire the wiki renderer against `static_gongfa_catalog` first: it is deterministic, account-free, and already backed by parsed config tables plus localization templates. Keep `runtime_or_shared_gongfa_homemake_vo` as a later read-only ingestion path when a real share/runtime payload becomes available.",
         ]
     )
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -19869,9 +19665,9 @@ def build_fanxiu_gongfa_homemake_renderer_source_selection_probe(
         "selection": meta,
         "verdict": {
             "can_start_static_wiki_renderer": bool(meta.get("static_catalog_ready") and meta.get("sample_renderer_ready")),
-            "runtime_vo_capture_available": bool(meta.get("runtime_vo_capture_available")),
+            "runtime_vo_available": bool(meta.get("runtime_vo_available")),
             "needs_user_intervention_now": bool(meta.get("needs_user_intervention_now")),
-            "next_static_step": "wire CodeYun wiki renderer to static_gongfa_catalog first, with captured VO ingestion left as a later optional source",
+            "next_static_step": "wire CodeYun wiki renderer to static_gongfa_catalog first, with Runtime VO ingestion left as a later optional source",
         },
         "outputs": {
             "summary": str(output_dir / "hot_update_gongfa_homemake_renderer_source_selection_report.json"),
@@ -20451,7 +20247,7 @@ def build_fanxiu_gongfa_homemake_static_renderer_coverage_probe(
             "partial_count": status_counts.get("partial", 0),
             "zero_row_count": status_counts.get("zero_rows", 0),
             "ui_default_include_inactive": False,
-            "needs_runtime_capture": False,
+            "needs_runtime_observation": False,
         },
         "outputs": {
             "coverage": str(output_dir / "hot_update_gongfa_homemake_static_renderer_coverage.tsv"),
@@ -20632,7 +20428,7 @@ def build_fanxiu_gongfa_homemake_xianshu_static_gap_probe(
             "## 下一步",
             "",
             "- UI 层可以先展示 `GongfaSkill.describe` 和词缀名，避免空白。",
-            "- 若要把专属词缀解释成完整自然语言，需要继续解 `SideFeatureJie.feature -> skill/buff/feature` 的战斗语义，或做只读运行时 UI 抓取对照。",
+            "- 若要把专属词缀解释成完整自然语言，需要继续解 `SideFeatureJie.feature -> skill/buff/feature` 的战斗语义，或读取 Runtime 状态与 UI 对照。",
         ]
     )
     markdown_path = output_dir / "hot_update_gongfa_homemake_xianshu_static_gap_report.md"
@@ -20939,7 +20735,7 @@ def build_fanxiu_gongfa_homemake_side_feature_semantics_probe(
             "faze_level_name_candidates_available": any(
                 row.get("best_static_semantics_source") == "faze_level_name_match" for row in rows
             ),
-            "needs_runtime_capture_now": False,
+            "needs_runtime_observation_now": False,
             "next_static_step": "decode BuffResource/Skill parameter semantics before treating candidates as final natural-language tooltip text",
         },
         "outputs": {
@@ -21936,7 +21732,7 @@ def build_fanxiu_gongfa_homemake_buff_field_semantics_probe(
         "verdict": {
             "buff_fields_decode_display_lifecycle": row_count > 0 and evidence_count > 0,
             "damage_formula_fully_static": False,
-            "needs_runtime_capture_now": False,
+            "needs_runtime_observation_now": False,
             "next_static_step": "trace buff effects into server-facing BuffVO/Skill hit result fields or IL2CPP combat effect symbols if needed",
         },
         "outputs": {
@@ -22102,7 +21898,7 @@ def build_fanxiu_gongfa_homemake_buff_combat_result_probe(
         "verdict": {
             "buff_result_values_are_server_packet_fields": True,
             "lua_computes_buff_damage_formula": False,
-            "needs_runtime_capture_now": False,
+            "needs_runtime_observation_now": False,
             "next_static_step": "trace BuffResultVO ids and fightEffect bitmasks against candidate buff ids or inspect IL2CPP combat effect symbols",
         },
         "outputs": {
@@ -22368,7 +22164,7 @@ def build_fanxiu_gongfa_homemake_buff_result_correlation_probe(
             "buff_result_id_staticly_links_to_buff_resource": False,
             "fight_effect_is_display_bitmask": enum_count > 0,
             "can_static_correlate_result_to_candidate_buff": False,
-            "needs_runtime_capture_now": False,
+            "needs_runtime_observation_now": False,
             "next_static_step": "inspect IL2CPP combat symbols for BuffResultVO/modelId producers before requiring runtime packet samples",
         },
         "outputs": {
@@ -22585,7 +22381,7 @@ def build_fanxiu_gongfa_homemake_cpp2il_buff_result_symbol_probe(
             "cpp2il_modelid_hits_are_generic_visual_model": bool(model_hits.get("total_hits")) and business_hit_total == 0,
             "cpp2il_exposes_buff_formula_layer": False,
             "needs_new_cli_tool_now": False,
-            "next_static_step": "return to Lua hot-update Skill/BuffResource parameter semantics or capture runtime packet samples if exact result ownership is required",
+            "next_static_step": "return to Lua hot-update Skill/BuffResource parameter semantics or read the relevant state through Runtime if exact result ownership is required",
         },
         "outputs": {
             "terms": str(output_dir / "hot_update_gongfa_homemake_cpp2il_buff_result_symbol_terms.tsv"),
@@ -23207,7 +23003,7 @@ def build_fanxiu_gongfa_homemake_buff_parameter_semantics_probe(
                 str(row.get("field") or "") == "buffContinued" and str(row.get("target_table") or "") != "unresolved"
                 for row in link_rows
             ),
-            "needs_runtime_capture_for_exact_hit_ownership": True,
+            "needs_runtime_observation_for_exact_hit_ownership": True,
             "next_static_step": "classify tooltip text patterns and expose grouped BuffResource semantics in the wiki search UI",
         },
         "outputs": {
@@ -23807,7 +23603,7 @@ def build_fanxiu_gongfa_homemake_mechanism_ownership_probe(
             "damage_values_from_server_result_packet": True,
             "cpp2il_funnel_presentation_symbols_found": bool(cpp2il_hits),
             "cpp2il_business_symbols_found": bool(cpp2il_business_hits),
-            "needs_runtime_capture_for_formula": True,
+            "needs_runtime_observation_for_formula": True,
             "next_static_step": "trace SM_FightResult/FightCast producer semantics or collect privacy-filtered runtime packet samples only if formula ownership is required",
         },
         "outputs": {
@@ -24134,7 +23930,7 @@ def build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe(
             ),
             "static_result_to_buffresource_correlation_closed": False,
             "damage_values_from_server_result_packet": True,
-            "needs_runtime_capture_for_exact_result_attribution": True,
+            "needs_runtime_observation_for_exact_result_attribution": True,
             "next_static_step": "compare another non-FUNNEL buff family or collect privacy-filtered SM_BuffChangeHpAndMp samples if exact attribution is required",
         },
         "outputs": {
@@ -24152,388 +23948,6 @@ def build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe(
     return result
 
 
-def _collect_gongfa_homemake_result_packet_source_files(export_base: Path) -> dict[str, Path | None]:
-    by_source = export_base / "by_source" / "lscripts"
-    return {
-        "sm_fight_result_funnel": _find_one_file(
-            by_source, "gamesystem/game/message_*/text_assets/SM_FightResultFunnel.lua"
-        ),
-        "sm_fight_result": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/SM_FightResult.lua"),
-        "fight_result_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/FightResultVO.lua"),
-        "sm_fight_cast_funnel": _find_one_file(
-            by_source, "gamesystem/game/message_*/text_assets/SM_FightCastFunnel.lua"
-        ),
-        "sm_fight_cast": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/SM_FightCast.lua"),
-        "fight_cast_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/FightCastVO.lua"),
-        "fight_net_logic": _find_one_file(by_source, "gamesystem/game/fight_*/text_assets/FightNetLogic.lua"),
-        "funnel_actor": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/FunnelSkillActor.lua"),
-        "skill_base": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/SkillBase.lua"),
-        "hurt_data": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/HurtData.lua"),
-    }
-
-
-def _gongfa_homemake_result_packet_fields(files: dict[str, Path | None]) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = [
-        {
-            "packet": "SM_FightResultFunnel",
-            "field": "buffId",
-            "read_method": "readLong",
-            "role": "funnel/buff instance id",
-            "source_file": str(files["sm_fight_result_funnel"] or ""),
-            "line": 14,
-            "inherited_from": "",
-            "authority_note": "server_result_packet_field",
-        },
-        {
-            "packet": "SM_FightResultFunnel",
-            "field": "SM_FightResult.*",
-            "read_method": "_super_.reading",
-            "role": "inherits common skill result payload",
-            "source_file": str(files["sm_fight_result_funnel"] or ""),
-            "line": 15,
-            "inherited_from": "SM_FightResult",
-            "authority_note": "server_result_packet_field",
-        },
-        {
-            "packet": "SM_FightResult",
-            "field": "casterId",
-            "read_method": "readLong",
-            "role": "server-side caster entity id",
-            "source_file": str(files["sm_fight_result"] or ""),
-            "line": 19,
-            "inherited_from": "",
-            "authority_note": "server_result_packet_field",
-        },
-        {
-            "packet": "SM_FightResult",
-            "field": "lockId",
-            "read_method": "readLong",
-            "role": "locked/selected target context id",
-            "source_file": str(files["sm_fight_result"] or ""),
-            "line": 20,
-            "inherited_from": "",
-            "authority_note": "server_result_packet_field",
-        },
-        {
-            "packet": "SM_FightResult",
-            "field": "skillId",
-            "read_method": "readInt",
-            "role": "runtime skill id used by SkillActor:GetSkill",
-            "source_file": str(files["sm_fight_result"] or ""),
-            "line": 21,
-            "inherited_from": "",
-            "authority_note": "server_result_packet_field",
-        },
-        {
-            "packet": "SM_FightResult",
-            "field": "results",
-            "read_method": "readMessageList2List",
-            "role": "list of FightResultVO values",
-            "source_file": str(files["sm_fight_result"] or ""),
-            "line": 22,
-            "inherited_from": "",
-            "authority_note": "server_result_packet_field",
-        },
-        {
-            "packet": "SM_FightResult",
-            "field": "delayTime",
-            "read_method": "readShort",
-            "role": "display/dispatch delay",
-            "source_file": str(files["sm_fight_result"] or ""),
-            "line": 23,
-            "inherited_from": "",
-            "authority_note": "server_result_packet_field",
-        },
-    ]
-    vo_fields = [
-        ("targetId", "readLong", "target entity id", 23),
-        ("fightEffect", "readLong", "display/result bit flags", 24),
-        ("damage", "readDouble", "server numeric damage used for accumulated totals", 25),
-        ("damageView", "readDouble", "server display damage, split by timeline percent", 26),
-        ("mpAddDamage", "readDouble", "server numeric special/mp damage total", 27),
-        ("mpAddDamageView", "readDouble", "server display special/mp damage", 28),
-        ("damageTimes", "readByte", "multi-hit count", 29),
-        ("recoverHp", "readDouble", "server heal value", 30),
-        ("damageReflect", "readDouble", "server reflect damage value", 31),
-        ("mpDamageAbsorb", "readDouble", "server special/mp absorb value", 32),
-    ]
-    for field, read_method, role, line in vo_fields:
-        rows.append(
-            {
-                "packet": "FightResultVO",
-                "field": field,
-                "read_method": read_method,
-                "role": role,
-                "source_file": str(files["fight_result_vo"] or ""),
-                "line": line,
-                "inherited_from": "",
-                "authority_note": "server_result_packet_field",
-            }
-        )
-    cast_fields = [
-        ("SM_FightCastFunnel", "buffId", "readLong", "funnel/buff instance id for cast display", 14, ""),
-        ("SM_FightCastFunnel", "SM_FightCast.*", "_super_.reading", "inherits common cast payload", 15, "SM_FightCast"),
-        ("SM_FightCast", "id", "readLong", "cast instance id", 33, ""),
-        ("SM_FightCast", "casterId", "readLong", "caster entity id", 34, ""),
-        ("SM_FightCast", "skillId", "readInt", "skill id", 35, ""),
-        ("SM_FightCast", "jie", "readShort", "skill stage/jie", 36, ""),
-        ("SM_FightCast", "star", "readShort", "skill star", 37, ""),
-        ("SM_FightCast", "cdTime", "readInt", "cooldown time", 38, ""),
-        ("SM_FightCast", "attackPerSecond", "readInt", "attack speed context", 39, ""),
-        ("SM_FightCast", "fightCastVO", "readBean(SkillEffectVO)", "selection/cast context", 41, ""),
-        ("SM_FightCast", "currPos", "readBean(Grid3DVO)", "current position", 43, ""),
-        ("SM_FightCast", "castingSpeed", "readInt", "casting speed", 44, ""),
-        ("FightCastVO", "selectTargetId", "readLong", "selected target", 28, ""),
-        ("FightCastVO", "selectPos", "readBean(Grid3DVO)", "selected position", 30, ""),
-        ("FightCastVO", "selectDir", "readBean(Grid3DVO)", "selected direction", 32, ""),
-        ("FightCastVO", "castType", "readByte", "cast type", 33, ""),
-    ]
-    source_by_packet = {
-        "SM_FightCastFunnel": files["sm_fight_cast_funnel"],
-        "SM_FightCast": files["sm_fight_cast"],
-        "FightCastVO": files["fight_cast_vo"],
-    }
-    for packet, field, read_method, role, line, inherited_from in cast_fields:
-        rows.append(
-            {
-                "packet": packet,
-                "field": field,
-                "read_method": read_method,
-                "role": role,
-                "source_file": str(source_by_packet[packet] or ""),
-                "line": line,
-                "inherited_from": inherited_from,
-                "authority_note": "server_cast_packet_field",
-            }
-        )
-    return rows
-
-
-def _fallback_gongfa_homemake_result_hurtdata_rows() -> list[dict[str, object]]:
-    mappings = [
-        (1, "casterId", "entityId", "", "self.entityView.Entity.V_ID", "caster entity id"),
-        (2, "targetId", "resultVo.targetId", "FightResultVO.targetId", "resultVo.targetId", "target entity id"),
-        (3, "fightEffect", "resultVo.fightEffect:ToNum()", "FightResultVO.fightEffect", "resultVo.fightEffect:ToNum()", "result flags"),
-        (4, "damage_num", "damage_view", "FightResultVO.damageView", "Mathf.Floor(resultVo.damageView)*tmpPercent*0.01", "display damage"),
-        (5, "reflect_damage", "damage_reflect", "FightResultVO.damageReflect", "Mathf.Floor(resultVo.damageReflect)*percent*0.01", "reflect damage"),
-        (6, "mp_damage", "mpDamage_view", "FightResultVO.mpAddDamageView", "Mathf.Floor(resultVo.mpAddDamageView)*percent*0.01", "special/mp display damage"),
-        (7, "recoverHp_num", "recover_num", "FightResultVO.recoverHp", "Mathf.Floor(resultVo.recoverHp)*percent*0.01", "hp recover"),
-        (8, "recoverMp_num", "0", "", "0", "mp recover fixed zero in this path"),
-        (9, "reducedMp_num", "0", "", "0", "mp reduce fixed zero in this path"),
-        (10, "total_damage", "self.temp_cur_damage[key]", "FightResultVO.damage、FightResultVO.mpAddDamage", "accumulated by targetId", "accumulated numeric damage"),
-        (11, "total_recover", "self.temp_cur_recover[key]", "FightResultVO.recoverHp", "accumulated by targetId", "accumulated hp recover"),
-        (12, "mpDamageAbsorb_num", "mpDamageAbsorb_num", "FightResultVO.mpDamageAbsorb", "Mathf.Floor(resultVo.mpDamageAbsorb)*percent*0.01", "special/mp absorb"),
-        (13, "shieldAbsorb_num", "shieldAbsorb_num", "", "0", "shield absorb fixed zero in this path"),
-        (14, "raise_event", "raise_event", "", "false", "hp change event flag"),
-        (15, "entityType", "self.entityView.Entity.V_EntityType", "", "self.entityView.Entity.V_EntityType", "caster entity type"),
-        (16, "skillId", "self.skillId", "", "self.skillId", "current skill id"),
-    ]
-    return [
-        {
-            "param_index": index,
-            "hurt_data_param": param,
-            "arg_expr": arg_expr,
-            "fight_result_fields": fight_result_fields,
-            "resolved_expr": resolved_expr,
-            "semantics": semantics,
-            "transform_note": "Known SkillBase:SetSM_FightResult mapping.",
-            "source": "fallback_static_mapping",
-        }
-        for index, param, arg_expr, fight_result_fields, resolved_expr, semantics in mappings
-    ]
-
-
-def _load_gongfa_homemake_result_hurtdata_rows(export_base: Path) -> list[dict[str, object]]:
-    path = export_base / "parsed_configs" / "lingjie_feature_catalog" / "lingjie_runtime_fight_result_to_hurt_data.tsv"
-    source_rows = _read_tsv_rows(path)
-    rows: list[dict[str, object]] = []
-    for row in source_rows:
-        if row.get("call_kind") != "skillbase_fight_result_to_hurt_data":
-            continue
-        rows.append(
-            {
-                "param_index": row.get("param_index", ""),
-                "hurt_data_param": row.get("hurt_data_param", ""),
-                "arg_expr": row.get("arg_expr", ""),
-                "fight_result_fields": row.get("fight_result_fields", ""),
-                "resolved_expr": row.get("resolved_expr", ""),
-                "semantics": row.get("semantics", ""),
-                "transform_note": row.get("transform_note", ""),
-                "source": str(path),
-            }
-        )
-    return rows or _fallback_gongfa_homemake_result_hurtdata_rows()
-
-
-def build_fanxiu_gongfa_homemake_mechanism_result_packet_probe(
-    *,
-    buff_id: str | int = "386001010",
-    export_root: str | os.PathLike[str] | None = None,
-) -> dict[str, Any]:
-    """Explain inherited SM_FightResult/FightCast fields for a FUNNEL mechanism."""
-    export_base = resolve_fanxiu_export_root(export_root)
-    output_dir = export_base / "apk_static_index"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_gongfa_homemake_mechanism_drilldown_inputs(export_base)
-
-    files = _collect_gongfa_homemake_result_packet_source_files(export_base)
-    buff_id_text = str(buff_id or "").strip() or "386001010"
-    packet_field_rows = _gongfa_homemake_result_packet_fields(files)
-    hurtdata_rows = _load_gongfa_homemake_result_hurtdata_rows(export_base)
-    flow_rows = [
-        {
-            "stage": "result_packet_extension",
-            "source_file": str(files["sm_fight_result_funnel"] or ""),
-            "lines": "1-18",
-            "fields": "buffId + SM_FightResult.*",
-            "meaning": "`SM_FightResultFunnel` 先读 `buffId`，再读取通用 `SM_FightResult` 顶层字段和 `FightResultVO` 列表。",
-            "formula_boundary": "packet_schema_only",
-            "code_excerpt": _source_excerpt(files["sm_fight_result_funnel"], 1, 18),
-        },
-        {
-            "stage": "result_value_schema",
-            "source_file": str(files["fight_result_vo"] or ""),
-            "lines": "23-32",
-            "fields": "targetId,fightEffect,damage,damageView,mpAddDamage,mpAddDamageView,damageTimes,recoverHp,damageReflect,mpDamageAbsorb",
-            "meaning": "`FightResultVO` 的数值字段全部从服务端字节流读取；没有 configId/buffId 字段。",
-            "formula_boundary": "server_numeric_fields",
-            "code_excerpt": _source_excerpt(files["fight_result_vo"], 23, 32),
-        },
-        {
-            "stage": "funnel_result_dispatch",
-            "source_file": str(files["fight_net_logic"] or ""),
-            "lines": "246-252",
-            "fields": "GetFunnelView(msg.buffId), SetSM_FightResult4RunTimeSkill(msg)",
-            "meaning": "网络层用 `buffId` 定位 funnelView，再把整包交给漏斗 SkillActor。",
-            "formula_boundary": "ownership_dispatch",
-            "code_excerpt": _source_excerpt(files["fight_net_logic"], 246, 252),
-        },
-        {
-            "stage": "skillbase_result_consume",
-            "source_file": str(files["skill_base"] or ""),
-            "lines": "399-445",
-            "fields": "msg.results -> FightResultVO -> HurtData:SetData",
-            "meaning": "`SkillBase:SetSM_FightResult` 遍历结果列表，把服务端数值按 timeline hurt percent 分摊为 HurtData。",
-            "formula_boundary": "display_projection_not_formula",
-            "code_excerpt": _source_excerpt(files["skill_base"], 399, 445),
-        },
-        {
-            "stage": "hurtdata_projection",
-            "source_file": str(files["hurt_data"] or ""),
-            "lines": "79-104",
-            "fields": "SetData(casterId,targetId,fightEffect,damage_num,...)",
-            "meaning": "`HurtData` 保存并执行飘字/表现字段；它消费结果，不生产公式。",
-            "formula_boundary": "display_projection_not_formula",
-            "code_excerpt": _source_excerpt(files["hurt_data"], 79, 104),
-        },
-        {
-            "stage": "cast_packet_context",
-            "source_file": str(files["sm_fight_cast_funnel"] or ""),
-            "lines": "1-18",
-            "fields": "buffId + SM_FightCast.*",
-            "meaning": "释放广播也带 `buffId`，用于同一个 funnelView 的技能表现上下文。",
-            "formula_boundary": "cast_display_context",
-            "code_excerpt": _source_excerpt(files["sm_fight_cast_funnel"], 1, 18),
-        },
-    ]
-    packet_field_count = _write_tsv(
-        output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_fields.tsv",
-        ["packet", "field", "read_method", "role", "source_file", "line", "inherited_from", "authority_note"],
-        packet_field_rows,
-    )
-    hurtdata_count = _write_tsv(
-        output_dir / "hot_update_gongfa_homemake_mechanism_result_hurtdata_mapping.tsv",
-        ["param_index", "hurt_data_param", "arg_expr", "fight_result_fields", "resolved_expr", "semantics", "transform_note", "source"],
-        hurtdata_rows,
-    )
-    flow_count = _write_tsv(
-        output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_flow.tsv",
-        ["stage", "source_file", "lines", "fields", "meaning", "formula_boundary", "code_excerpt"],
-        flow_rows,
-    )
-
-    result_value_fields = [
-        row["field"]
-        for row in packet_field_rows
-        if row.get("packet") == "FightResultVO" and row.get("authority_note") == "server_result_packet_field"
-    ]
-    lines = [
-        "# GongFaHomeMake FUNNEL 结果包字段钻取",
-        "",
-        f"- 导出目录：`{export_base}`",
-        f"- 目标 buff：`{buff_id_text}`",
-        "- 口径：解释 `SM_FightResultFunnel` 继承了哪些字段，以及这些字段怎样被投射到 `HurtData`。",
-        "",
-        "## 结论",
-        "",
-        "- `SM_FightResultFunnel` 自身只新增 `buffId`；真正的结果结构来自普通 `SM_FightResult`。",
-        "- 通用结果包字段为 `casterId / lockId / skillId / results / delayTime`，其中 `results` 是 `FightResultVO` 列表。",
-        "- `FightResultVO` 读入 `targetId / fightEffect / damage / damageView / mpAddDamage / mpAddDamageView / damageTimes / recoverHp / damageReflect / mpDamageAbsorb`。",
-        "- `SkillBase:SetSM_FightResult` 把 `damageView/recoverHp/mpAddDamageView/...` 按 timeline hurt percent 分摊到 `HurtData:SetData`，这是表现投射，不是公式计算。",
-        "- 本轮仍未发现客户端从 `BuffResource` 或 `FightResultVO` 反推伤害公式；数值来源仍应按服务端结果包理解。",
-        "",
-        "## 结果字段",
-        "",
-        "| Packet | Field | Read | Role |",
-        "| --- | --- | --- | --- |",
-    ]
-    for row in packet_field_rows:
-        if row.get("packet") not in {"SM_FightResultFunnel", "SM_FightResult", "FightResultVO"}:
-            continue
-        lines.append(
-            "| "
-            f"{_markdown_table_cell(row.get('packet', ''), limit=80)} | "
-            f"{_markdown_table_cell(row.get('field', ''), limit=100)} | "
-            f"{_markdown_table_cell(row.get('read_method', ''), limit=100)} | "
-            f"{_markdown_table_cell(row.get('role', ''), limit=180)} |"
-        )
-    lines.extend(["", "## HurtData 映射", "", "| Param | HurtData | FightResultVO Source | Meaning |", "| --- | --- | --- | --- |"])
-    for row in hurtdata_rows:
-        lines.append(
-            "| "
-            f"{_markdown_table_cell(row.get('param_index', ''), limit=40)} | "
-            f"{_markdown_table_cell(row.get('hurt_data_param', ''), limit=100)} | "
-            f"{_markdown_table_cell(row.get('fight_result_fields', ''), limit=160)} | "
-            f"{_markdown_table_cell(row.get('semantics', ''), limit=200)} |"
-        )
-    markdown_path = output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_report.md"
-    markdown_path.write_text("\n".join(lines), encoding="utf-8")
-
-    result = {
-        "export_root": str(export_base),
-        "output_dir": str(output_dir),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "params": {"buff_id": buff_id_text},
-        "counts": {
-            "packet_fields": packet_field_count,
-            "flow_rows": flow_count,
-            "hurtdata_mapping_rows": hurtdata_count,
-            "fight_result_value_fields": len(result_value_fields),
-        },
-        "verdict": {
-            "funnel_result_extends_common_result": any(
-                row.get("packet") == "SM_FightResultFunnel" and row.get("inherited_from") == "SM_FightResult"
-                for row in packet_field_rows
-            ),
-            "result_values_are_server_packet_fields": True,
-            "fight_result_vo_has_buff_config_id": False,
-            "skillbase_projects_result_to_hurtdata": bool(hurtdata_rows),
-            "client_formula_found": False,
-            "result_value_fields": result_value_fields,
-        },
-        "outputs": {
-            "packet_fields": str(output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_fields.tsv"),
-            "flow": str(output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_flow.tsv"),
-            "hurtdata_mapping": str(output_dir / "hot_update_gongfa_homemake_mechanism_result_hurtdata_mapping.tsv"),
-            "markdown": str(markdown_path),
-            "json": str(output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_report.json"),
-        },
-    }
-    (output_dir / "hot_update_gongfa_homemake_mechanism_result_packet_report.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return result
 
 
 def _scan_gongfa_homemake_result_producer_surface(export_base: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -25416,7 +24830,7 @@ def _buff_change_result_decoder_privacy_rows() -> list[dict[str, object]]:
         },
         {
             "field": "SM_BuffChangeHpAndMp payload",
-            "sample_action": "store decoded JSON shape only after field allowlist filtering",
+            "sample_action": "expose only allowlisted structured Runtime fields",
             "reason": "keeps future samples useful while avoiding broad packet dumps",
         },
     ]
@@ -25520,7 +24934,7 @@ def build_fanxiu_buff_change_result_decoder_probe(
         f"- Schema rows: {schema_count}",
         f"- Flow rows: {flow_count}",
         f"- Privacy rows: {privacy_count}",
-        "- Scope: maps `SM_BuffChangeHpAndMp` and nested `BuffResultVO` for future privacy-filtered runtime samples. This report does not capture traffic, hook the client, patch APKs, or replay packets.",
+        "- Scope: maps `SM_BuffChangeHpAndMp` and nested `BuffResultVO` for future privacy-filtered runtime samples. This report uses static exports only; missing live truth belongs to the read-only Runtime layer.",
         "",
         "## Packet",
         "",
@@ -25967,7 +25381,7 @@ def build_fanxiu_buff_state_decoder_probe(
         f"- Packet rows: {packet_count}",
         f"- Schema rows: {schema_count}",
         f"- Flow rows: {flow_count}",
-        "- Scope: maps active buff state packets and `BuffVO` fields for future privacy-filtered runtime correlation. This report does not capture traffic, hook the client, patch APKs, or replay packets.",
+        "- Scope: maps active buff state packets and `BuffVO` fields for future privacy-filtered runtime correlation. This report uses static exports only; missing live truth belongs to the read-only Runtime layer.",
         "",
         "## Packet Family",
         "",
@@ -26341,37 +25755,37 @@ def _typed_pool_runtime_fallback_schema_rows() -> list[dict[str, str]]:
     return rows
 
 
-def _typed_pool_runtime_capture_rows() -> list[dict[str, object]]:
+def _typed_pool_runtime_observation_rows() -> list[dict[str, object]]:
     return [
         {
-            "capture_point": "CsCallLuaMgr.ReceiveSocketMessage",
+            "observation_point": "CsCallLuaMgr.ReceiveSocketMessage",
             "layer": "IL2CPP/C# -> Lua bridge",
             "target_proids": "60005,60041,60054,60055",
-            "what_to_capture": "intList/stringList/floatList/poolTypeDataLength/uintList/snList/doubleList length slices, not raw account/session data",
+            "fields_to_observe": "intList/stringList/floatList/poolTypeDataLength/uintList/snList/doubleList length slices, not raw account/session data",
             "why": "This is the narrowest typed-pool boundary before Lua generated packet classes consume fields.",
             "boundary": "static plan only; no runtime hook or APK modification is performed by this probe",
         },
         {
-            "capture_point": "SocketManager.ReceiveSocketMessage",
+            "observation_point": "SocketManager.ReceiveSocketMessage",
             "layer": "Lua pool setup",
             "target_proids": "60005,60041,60054,60055",
-            "what_to_capture": "per-message pool segment lengths, first int proId, optional sn, and read cursor positions",
+            "fields_to_observe": "per-message pool segment lengths, first int proId, optional sn, and read cursor positions",
             "why": "Lua calls SocketPoolData.SetCurPoolDataLength, then reads proId and msg:read in generated packet order.",
             "boundary": "safe to model from source; runtime observation would need an explicit logging/hook tool later",
         },
         {
-            "capture_point": "BaseMessage primitive reads",
+            "observation_point": "BaseMessage primitive reads",
             "layer": "Lua generated packet decoder",
             "target_proids": "60005,60041,60054,60055 plus nested 60004/FightResultVO",
-            "what_to_capture": "primitive consumer order only: readInt/readLong/readDouble/readMessageList2List",
+            "fields_to_observe": "primitive consumer order only: readInt/readLong/readDouble/readMessageList2List",
             "why": "Replaying the same consumers over typed pools reconstructs packet fields without solving raw TCP compression first.",
             "boundary": "derived from static source; do not persist unrelated packets by default",
         },
         {
-            "capture_point": "SkillBase.SetSM_FightResult",
+            "observation_point": "SkillBase.SetSM_FightResult",
             "layer": "Lua display consumer",
             "target_proids": "post-decode message objects",
-            "what_to_capture": "skillId, result list count, damageView/recoverHp/fightEffect display projection",
+            "fields_to_observe": "skillId, result list count, damageView/recoverHp/fightEffect display projection",
             "why": "This validates that decoded packet fields match the visible HurtData path.",
             "boundary": "observer-only validation; avoid changing fields or game state",
         },
@@ -26506,7 +25920,7 @@ def _typed_pool_runtime_privacy_rows() -> list[dict[str, object]]:
         {
             "field_or_scope": "server ip, session keys, complete raw socket streams",
             "action": "omit by default",
-            "reason": "The current task only needs selected typed-pool message segments, not full traffic capture.",
+            "reason": "The current task only needs selected typed-pool message segments, not raw traffic.",
         },
         {
             "field_or_scope": "runtime actor ids: casterId, lockId, targetId",
@@ -26549,15 +25963,15 @@ def build_fanxiu_typed_pool_runtime_observation_probe(
     if not primitive_rows:
         primitive_rows = [{key: str(value) for key, value in row.items()} for row in _socket_primitive_rule_rows()]
 
-    capture_rows = _typed_pool_runtime_capture_rows()
+    observation_rows = _typed_pool_runtime_observation_rows()
     reconstruction_rows = _typed_pool_runtime_reconstruction_rows(schema_rows)
     sample_rows = _typed_pool_runtime_sample_rows()
     privacy_rows = _typed_pool_runtime_privacy_rows()
 
-    capture_count = _write_tsv(
-        output_dir / "hot_update_typed_pool_runtime_observation_capture_points.tsv",
-        ["capture_point", "layer", "target_proids", "what_to_capture", "why", "boundary"],
-        capture_rows,
+    observation_count = _write_tsv(
+        output_dir / "hot_update_typed_pool_runtime_observation_points.tsv",
+        ["observation_point", "layer", "target_proids", "fields_to_observe", "why", "boundary"],
+        observation_rows,
     )
     reconstruction_count = _write_tsv(
         output_dir / "hot_update_typed_pool_runtime_observation_reconstruction.tsv",
@@ -26578,7 +25992,7 @@ def build_fanxiu_typed_pool_runtime_observation_probe(
     primitive_names = {str(row.get("consumer", "")) for row in primitive_rows}
     schema_fields = {f"{row.get('packet', '')}.{row.get('field', '')}" for row in schema_rows}
     verdict = {
-        "receive_socket_message_capture_point_documented": any("ReceiveSocketMessage" in str(row.get("capture_point", "")) for row in capture_rows),
+        "receive_socket_message_observation_point_documented": any("ReceiveSocketMessage" in str(row.get("observation_point", "")) for row in observation_rows),
         "fight_result_schema_available": {"SM_FightResult.results", "FightResultVO.damageView"}.issubset(schema_fields),
         "primitive_pool_rules_available": {"BaseMessage.readInt", "BaseMessage.readLong", "BaseMessage.readDouble"}.issubset(primitive_names),
         "pool_type_segment_reconstruction_documented": any("poolTypeDataLength" in str(row.get("input_pool", "")) for row in reconstruction_rows),
@@ -26592,24 +26006,24 @@ def build_fanxiu_typed_pool_runtime_observation_probe(
         "# Typed Pool Runtime Observation Probe",
         "",
         f"- Export root: `{export_base}`",
-        f"- Capture-point rows: {capture_count}",
+        f"- Observation-point rows: {observation_count}",
         f"- Reconstruction rows: {reconstruction_count}",
         f"- Sample-shape rows: {sample_count}",
         f"- Privacy rows: {privacy_count}",
         "- Scope: non-invasive plan for observing and reconstructing selected `SM_FightResult` typed-pool messages.",
         "- Boundary: this probe only writes a static plan/report; it does not hook, inject, patch, or modify the game/APK.",
         "",
-        "## Capture Points",
+        "## Runtime Observation Points",
         "",
-        "| Point | Layer | What To Capture | Why |",
+        "| Point | Layer | Fields To Observe | Why |",
         "| --- | --- | --- | --- |",
     ]
-    for row in capture_rows:
+    for row in observation_rows:
         lines.append(
             "| "
-            f"{_markdown_table_cell(row.get('capture_point', ''), limit=100)} | "
+            f"{_markdown_table_cell(row.get('observation_point', ''), limit=100)} | "
             f"{_markdown_table_cell(row.get('layer', ''), limit=100)} | "
-            f"{_markdown_table_cell(row.get('what_to_capture', ''), limit=260)} | "
+            f"{_markdown_table_cell(row.get('fields_to_observe', ''), limit=260)} | "
             f"{_markdown_table_cell(row.get('why', ''), limit=260)} |"
         )
     lines.extend(
@@ -26670,7 +26084,7 @@ def build_fanxiu_typed_pool_runtime_observation_probe(
         "output_dir": str(output_dir),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "counts": {
-            "capture_rows": capture_count,
+            "observation_rows": observation_count,
             "reconstruction_rows": reconstruction_count,
             "sample_rows": sample_count,
             "privacy_rows": privacy_count,
@@ -26679,7 +26093,7 @@ def build_fanxiu_typed_pool_runtime_observation_probe(
         },
         "verdict": verdict,
         "outputs": {
-            "capture_points": str(output_dir / "hot_update_typed_pool_runtime_observation_capture_points.tsv"),
+            "observation_points": str(output_dir / "hot_update_typed_pool_runtime_observation_points.tsv"),
             "reconstruction": str(output_dir / "hot_update_typed_pool_runtime_observation_reconstruction.tsv"),
             "sample_shape": str(output_dir / "hot_update_typed_pool_runtime_observation_sample_shape.tsv"),
             "privacy": str(output_dir / "hot_update_typed_pool_runtime_observation_privacy.tsv"),
@@ -26796,7 +26210,7 @@ def _socket_raw_decoder_primitive_rows(files: dict[str, Path | None]) -> list[di
             "primitive": "LusuoStreamQuick.ReadLong/ReadLusuoLong",
             "source_file": str(files["lusuo_streamquick_isil"] or ""),
             "rule": "Fixed-width long exists; Lua packet long fields in this game are later exposed as two uint pool values and LusuoLong(low, high).",
-            "open_gap": "For raw pcap decoding, prefer PoolMessageManage typed-pool conversion unless exact long compression branches are needed.",
+            "open_gap": "Raw traffic decoding is retired; expose the needed PoolMessageManage typed-pool fields through Runtime.",
         },
     ]
 
@@ -26889,7 +26303,7 @@ def build_fanxiu_socket_raw_decoder_probe(
         f"- Primitive rows: {primitive_count}",
         f"- Evidence rows: {evidence_count}",
         "- Scope: byte-level frame/primitive decoder outline below the typed-pool bridge.",
-        "- Boundary: this is static Cpp2IL/ISIL analysis. It does not capture live traffic or attach to the running game.",
+        "- Boundary: this is static Cpp2IL/ISIL analysis; live truth belongs to the read-only Runtime layer.",
         "",
         "## Current Outline",
         "",
@@ -26897,7 +26311,7 @@ def build_fanxiu_socket_raw_decoder_probe(
         "- Receive path reads a 4-byte outer header, builds `LusuoStreamQuick` over the packet buffer, then reads inner header ints before dispatching by `proId`.",
         "- `ReadInt` can be fixed-width or compressed depending on `isCompress` and `isIntForceNotCompress`; the first inner header int is forced non-compressed.",
         "- `ReadBigString` and `ReadBigStringByte` are length-prefixed using `ReadInt(false)`.",
-        "- A final raw pcap decoder should still be calibrated with a short packet fixture because Cpp2IL leaves parts of `ByteUtil.ReadIntCompress` as invalid ARM instructions.",
+        "- Any required typed-pool Runtime decoder must be verified against read-only memory state because Cpp2IL leaves parts of `ByteUtil.ReadIntCompress` as invalid ARM instructions.",
         "",
         "## Frame Rules",
         "",
@@ -27203,596 +26617,6 @@ def build_fanxiu_socket_compressed_int_codec_probe(
     return result
 
 
-def _find_latest_socket_capture_decoded_json(export_base: Path) -> Path | None:
-    capture_dir = export_base / "tcp_captures"
-    if not capture_dir.is_dir():
-        return None
-    candidates = list(capture_dir.glob("*.codeyun_decoded.json")) or list(capture_dir.glob("*.decoded.json"))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
-    return candidates[0]
-
-
-def _find_socket_capture_decoded_jsons(export_base: Path) -> list[Path]:
-    capture_dir = export_base / "tcp_captures"
-    if not capture_dir.is_dir():
-        return []
-    codeyun_candidates = sorted(capture_dir.glob("*.codeyun_decoded.json"), key=lambda path: path.name.lower())
-    if codeyun_candidates:
-        return codeyun_candidates
-    return sorted(
-        (path for path in capture_dir.glob("*.decoded.json") if not path.name.endswith(".codeyun_decoded.json")),
-        key=lambda path: path.name.lower(),
-    )
-
-
-def _walk_json_keys(value: object) -> Iterable[str]:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            yield str(key)
-            yield from _walk_json_keys(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _walk_json_keys(item)
-
-
-def _socket_capture_sensitive_key_rows(frames: list[dict[str, object]]) -> list[dict[str, object]]:
-    sensitive_markers = ["account", "token", "sign", "password", "session", "pid", "uid", "gid", "device", "devid"]
-    counts: dict[str, int] = {}
-    for frame in frames:
-        parsed = frame.get("parsed")
-        for key in _walk_json_keys(parsed):
-            lower = key.lower()
-            if any(marker in lower for marker in sensitive_markers):
-                counts[key] = counts.get(key, 0) + 1
-    rows = [
-        {
-            "key": key,
-            "count": count,
-            "action": "do_not_export_values",
-            "reason": "Only key names/counts are kept; parsed payload values are intentionally omitted from calibration TSVs.",
-        }
-        for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))
-    ]
-    if not rows:
-        rows.append(
-            {
-                "key": "",
-                "count": 0,
-                "action": "no_sensitive_key_hits_in_decoded_frames",
-                "reason": "The selected decoded fixture did not expose common credential/session key names.",
-            }
-        )
-    return rows
-
-
-def _socket_capture_fixture_rows(frames: list[dict[str, object]]) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for index, frame in enumerate(frames):
-        sn = frame.get("sn")
-        pro_id = frame.get("pro_id")
-        frame_len = int(frame.get("frame_len") or 0)
-        payload_len = int(frame.get("payload_len") or 0)
-        if isinstance(sn, int) and isinstance(pro_id, int):
-            sn_len = len(_fanxiu_socket_encode_int_compress_candidate(sn))
-            pro_id_len = len(_fanxiu_socket_encode_int_compress_candidate(pro_id))
-            expected_body_len = sn_len + pro_id_len + payload_len
-        else:
-            sn_len = 0
-            pro_id_len = 0
-            expected_body_len = payload_len
-        rows.append(
-            {
-                "index": index,
-                "direction": frame.get("direction", ""),
-                "offset": frame.get("offset", ""),
-                "frame_len": frame_len,
-                "sn_len": sn_len,
-                "pro_id": pro_id if isinstance(pro_id, int) else "",
-                "pro_id_len": pro_id_len,
-                "name": frame.get("name", ""),
-                "payload_len": payload_len,
-                "expected_body_len": expected_body_len,
-                "delta": frame_len - expected_body_len,
-                "zlib": frame.get("zlib", ""),
-                "parsed": bool(frame.get("parsed")),
-                "remain": frame.get("remain", ""),
-            }
-        )
-    return rows
-
-
-def _socket_capture_protocol_count_rows(frames: list[dict[str, object]]) -> list[dict[str, object]]:
-    counts: dict[tuple[str, int, str], int] = {}
-    for frame in frames:
-        pro_id = frame.get("pro_id")
-        if not isinstance(pro_id, int):
-            continue
-        key = (str(frame.get("direction", "")), pro_id, str(frame.get("name", "")))
-        counts[key] = counts.get(key, 0) + 1
-    return [
-        {
-            "direction": direction,
-            "pro_id": pro_id,
-            "name": name,
-            "count": count,
-        }
-        for (direction, pro_id, name), count in sorted(counts.items(), key=lambda item: (-item[1], item[0][0], item[0][1]))
-    ]
-
-
-def build_fanxiu_socket_capture_fixture_codec_calibration_probe(
-    *,
-    export_root: str | os.PathLike[str] | None = None,
-    decoded_json: str | os.PathLike[str] | None = None,
-) -> dict[str, Any]:
-    """Calibrate the compressed-int body-length model against an existing decoded TCP fixture."""
-    export_base = resolve_fanxiu_export_root(export_root)
-    output_dir = export_base / "apk_static_index"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    decoded_path = Path(decoded_json) if decoded_json else _find_latest_socket_capture_decoded_json(export_base)
-    frames: list[dict[str, object]] = []
-    fixture_error = ""
-    if decoded_path and decoded_path.is_file():
-        try:
-            data = json.loads(decoded_path.read_text(encoding="utf-8", errors="ignore"))
-            raw_frames = data.get("frames", []) if isinstance(data, dict) else []
-            frames = [frame for frame in raw_frames if isinstance(frame, dict)]
-        except (OSError, json.JSONDecodeError) as exc:
-            fixture_error = f"{type(exc).__name__}: {exc}"
-    elif decoded_path:
-        fixture_error = f"decoded json not found: {decoded_path}"
-    else:
-        fixture_error = "no decoded tcp fixture found"
-
-    frame_rows = _socket_capture_fixture_rows(frames)
-    protocol_rows = _socket_capture_protocol_count_rows(frames)
-    sensitive_rows = _socket_capture_sensitive_key_rows(frames)
-    matched = sum(1 for row in frame_rows if row.get("delta") == 0)
-    mismatched = len(frame_rows) - matched
-    fight_family = {60005, 60041, 60054, 60055}
-    fight_family_rows = [row for row in frame_rows if row.get("pro_id") in fight_family]
-
-    frame_count = _write_tsv(
-        output_dir / "hot_update_socket_capture_fixture_codec_calibration_frames.tsv",
-        [
-            "index",
-            "direction",
-            "offset",
-            "frame_len",
-            "sn_len",
-            "pro_id",
-            "pro_id_len",
-            "name",
-            "payload_len",
-            "expected_body_len",
-            "delta",
-            "zlib",
-            "parsed",
-            "remain",
-        ],
-        frame_rows,
-    )
-    protocol_count = _write_tsv(
-        output_dir / "hot_update_socket_capture_fixture_codec_calibration_protocol_counts.tsv",
-        ["direction", "pro_id", "name", "count"],
-        protocol_rows,
-    )
-    sensitive_count = _write_tsv(
-        output_dir / "hot_update_socket_capture_fixture_codec_calibration_sensitive_keys.tsv",
-        ["key", "count", "action", "reason"],
-        sensitive_rows,
-    )
-
-    verdict = {
-        "decoded_fixture_found": bool(frames),
-        "candidate_codec_matches_all_frame_body_lengths": bool(frame_rows) and mismatched == 0,
-        "protocol_counts_available": bool(protocol_rows),
-        "parsed_payload_values_not_exported": True,
-        "fight_result_family_absent_from_selected_fixture": len(fight_family_rows) == 0,
-    }
-    verdict["supports_capture_fixture_codec_calibration"] = all(
-        verdict[key]
-        for key in [
-            "decoded_fixture_found",
-            "candidate_codec_matches_all_frame_body_lengths",
-            "protocol_counts_available",
-            "parsed_payload_values_not_exported",
-        ]
-    )
-
-    lines = [
-        "# Socket Capture Fixture Codec Calibration Probe",
-        "",
-        f"- Export root: `{export_base}`",
-        f"- Decoded fixture: `{decoded_path or ''}`",
-        f"- Frame rows: {frame_count}",
-        f"- Protocol count rows: {protocol_count}",
-        f"- Sensitive-key rows: {sensitive_count}",
-        f"- Matched frame body lengths: {matched}/{len(frame_rows)}",
-        f"- Mismatched frame body lengths: {mismatched}",
-        "- Scope: checks the candidate compressed-int codec against an existing decoded TCP fixture without exporting parsed payload values.",
-    ]
-    if fixture_error:
-        lines.append(f"- Fixture error: `{_markdown_table_cell(fixture_error, limit=220)}`")
-    lines.extend(
-        [
-            "",
-            "## Calibration Rule",
-            "",
-            "`frame_len == len(encode_int_compress(sn)) + len(encode_int_compress(pro_id)) + payload_len`",
-            "",
-            "## Protocol Counts",
-            "",
-            "| Direction | ProId | Name | Count |",
-            "| --- | ---: | --- | ---: |",
-        ]
-    )
-    for row in protocol_rows[:40]:
-        lines.append(
-            "| "
-            f"{_markdown_table_cell(row.get('direction', ''), limit=20)} | "
-            f"{_markdown_table_cell(row.get('pro_id', ''), limit=20)} | "
-            f"{_markdown_table_cell(row.get('name', ''), limit=120)} | "
-            f"{_markdown_table_cell(row.get('count', ''), limit=20)} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## Privacy",
-            "",
-            "- Calibration TSVs include frame metadata, protocol ids, protocol names, and lengths only.",
-            "- Parsed payload values are intentionally not exported by this probe.",
-            "- If `SM_FightResult` samples are needed later, use the typed-pool observation allowlist and redaction plan.",
-        ]
-    )
-    markdown_path = output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.md"
-    markdown_path.write_text("\n".join(lines), encoding="utf-8")
-
-    result = {
-        "export_root": str(export_base),
-        "output_dir": str(output_dir),
-        "decoded_fixture": str(decoded_path or ""),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "counts": {
-            "frame_rows": frame_count,
-            "protocol_count_rows": protocol_count,
-            "sensitive_key_rows": sensitive_count,
-            "matched_frame_body_lengths": matched,
-            "mismatched_frame_body_lengths": mismatched,
-            "fight_result_family_frames": len(fight_family_rows),
-            "parsed_frames": sum(1 for row in frame_rows if row.get("parsed")),
-        },
-        "verdict": verdict,
-        "outputs": {
-            "frames": str(output_dir / "hot_update_socket_capture_fixture_codec_calibration_frames.tsv"),
-            "protocol_counts": str(output_dir / "hot_update_socket_capture_fixture_codec_calibration_protocol_counts.tsv"),
-            "sensitive_keys": str(output_dir / "hot_update_socket_capture_fixture_codec_calibration_sensitive_keys.tsv"),
-            "markdown": str(markdown_path),
-            "json": str(output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.json"),
-        },
-    }
-    (output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return result
-
-
-def _socket_result_sample_target_specs() -> list[dict[str, object]]:
-    return [
-        {
-            "pro_id": 60034,
-            "packet": "SM_BuffChangeHpAndMp",
-            "family": "ordinary_buff_result",
-            "expected_direction": "s2c",
-            "sample_use": "ordinary buff damage/recovery result attribution",
-        },
-        {
-            "pro_id": 60005,
-            "packet": "SM_FightResult",
-            "family": "fight_result_family",
-            "expected_direction": "s2c",
-            "sample_use": "normal skill FightResult attribution",
-        },
-        {
-            "pro_id": 60041,
-            "packet": "SM_FightResultTalisman",
-            "family": "fight_result_family",
-            "expected_direction": "s2c",
-            "sample_use": "talisman FightResult attribution",
-        },
-        {
-            "pro_id": 60054,
-            "packet": "SM_FightResultFunnel",
-            "family": "fight_result_family",
-            "expected_direction": "s2c",
-            "sample_use": "FUNNEL/buff-instance FightResult attribution",
-        },
-        {
-            "pro_id": 60055,
-            "packet": "SM_FightResultPet",
-            "family": "fight_result_family",
-            "expected_direction": "s2c",
-            "sample_use": "pet/part FightResult attribution",
-        },
-    ]
-
-
-def _load_socket_capture_frames(path: Path) -> tuple[list[dict[str, object]], str]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return [], f"{type(exc).__name__}: {exc}"
-    raw_frames = data.get("frames", []) if isinstance(data, dict) else []
-    if not isinstance(raw_frames, list):
-        return [], "frames field is not a list"
-    return [frame for frame in raw_frames if isinstance(frame, dict)], ""
-
-
-def build_fanxiu_socket_result_sample_coverage_probe(
-    *,
-    export_root: str | os.PathLike[str] | None = None,
-) -> dict[str, Any]:
-    """Report whether existing decoded TCP fixtures contain combat-result packet samples."""
-    export_base = resolve_fanxiu_export_root(export_root)
-    output_dir = export_base / "apk_static_index"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    decoded_paths = _find_socket_capture_decoded_jsons(export_base)
-    targets = _socket_result_sample_target_specs()
-    target_ids = {int(row["pro_id"]) for row in targets}
-    target_by_id = {int(row["pro_id"]): row for row in targets}
-
-    all_frames: list[dict[str, object]] = []
-    fixture_rows: list[dict[str, object]] = []
-    hit_rows: list[dict[str, object]] = []
-    errors: list[str] = []
-    for decoded_path in decoded_paths:
-        frames, error = _load_socket_capture_frames(decoded_path)
-        if error:
-            errors.append(f"{decoded_path.name}: {error}")
-        target_frames = [frame for frame in frames if isinstance(frame.get("pro_id"), int) and frame.get("pro_id") in target_ids]
-        all_frames.extend({**frame, "_fixture": decoded_path.name} for frame in frames)
-        fixture_rows.append(
-            {
-                "fixture": decoded_path.name,
-                "path": str(decoded_path),
-                "frame_count": len(frames),
-                "c2s_frames": sum(1 for frame in frames if frame.get("direction") == "c2s"),
-                "s2c_frames": sum(1 for frame in frames if frame.get("direction") == "s2c"),
-                "parsed_frames": sum(1 for frame in frames if frame.get("parsed")),
-                "target_result_frames": len(target_frames),
-                "target_ids_present": _unique_join(
-                    str(frame.get("pro_id", "")) for frame in target_frames if isinstance(frame.get("pro_id"), int)
-                ),
-                "error": error,
-            }
-        )
-        for index, frame in enumerate(frames):
-            pro_id = frame.get("pro_id")
-            if not isinstance(pro_id, int) or pro_id not in target_ids:
-                continue
-            spec = target_by_id[pro_id]
-            hit_rows.append(
-                {
-                    "fixture": decoded_path.name,
-                    "index": index,
-                    "direction": frame.get("direction", ""),
-                    "offset": frame.get("offset", ""),
-                    "pro_id": pro_id,
-                    "packet": spec["packet"],
-                    "family": spec["family"],
-                    "name": frame.get("name", ""),
-                    "frame_len": frame.get("frame_len", ""),
-                    "payload_len": frame.get("payload_len", ""),
-                    "zlib": frame.get("zlib", ""),
-                    "parsed": bool(frame.get("parsed")),
-                    "remain": frame.get("remain", ""),
-                    "privacy_note": "metadata_only_no_payload_values",
-                }
-            )
-
-    aggregate_counts: Counter[int] = Counter()
-    aggregate_parsed_counts: Counter[int] = Counter()
-    aggregate_files: dict[int, set[str]] = {int(row["pro_id"]): set() for row in targets}
-    aggregate_offsets: dict[int, list[str]] = {int(row["pro_id"]): [] for row in targets}
-    protocol_counts: Counter[tuple[str, int, str]] = Counter()
-    for frame in all_frames:
-        pro_id = frame.get("pro_id")
-        if not isinstance(pro_id, int):
-            continue
-        direction = str(frame.get("direction", ""))
-        name = str(frame.get("name", ""))
-        protocol_counts[(direction, pro_id, name)] += 1
-        if pro_id in target_ids:
-            aggregate_counts[pro_id] += 1
-            if frame.get("parsed"):
-                aggregate_parsed_counts[pro_id] += 1
-            aggregate_files.setdefault(pro_id, set()).add(str(frame.get("_fixture", "")))
-            if len(aggregate_offsets.setdefault(pro_id, [])) < 8:
-                aggregate_offsets[pro_id].append(str(frame.get("offset", "")))
-
-    target_rows: list[dict[str, object]] = []
-    for spec in targets:
-        pro_id = int(spec["pro_id"])
-        count = aggregate_counts.get(pro_id, 0)
-        target_rows.append(
-            {
-                "pro_id": pro_id,
-                "packet": spec["packet"],
-                "family": spec["family"],
-                "expected_direction": spec["expected_direction"],
-                "sample_use": spec["sample_use"],
-                "frame_count": count,
-                "parsed_count": aggregate_parsed_counts.get(pro_id, 0),
-                "fixtures": _unique_join(sorted(aggregate_files.get(pro_id, set()))),
-                "first_offsets": _unique_join(aggregate_offsets.get(pro_id, [])),
-                "coverage_status": "present" if count else "absent",
-                "interpretation": "usable existing sample candidate" if count else "no existing decoded sample for this packet id",
-            }
-        )
-    protocol_rows = [
-        {
-            "direction": direction,
-            "pro_id": pro_id,
-            "name": name,
-            "count": count,
-            "is_target_result_packet": pro_id in target_ids,
-        }
-        for (direction, pro_id, name), count in sorted(
-            protocol_counts.items(), key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2])
-        )
-    ]
-
-    target_count = _write_tsv(
-        output_dir / "hot_update_socket_result_sample_coverage_targets.tsv",
-        [
-            "pro_id",
-            "packet",
-            "family",
-            "expected_direction",
-            "sample_use",
-            "frame_count",
-            "parsed_count",
-            "fixtures",
-            "first_offsets",
-            "coverage_status",
-            "interpretation",
-        ],
-        target_rows,
-    )
-    fixture_count = _write_tsv(
-        output_dir / "hot_update_socket_result_sample_coverage_fixtures.tsv",
-        [
-            "fixture",
-            "path",
-            "frame_count",
-            "c2s_frames",
-            "s2c_frames",
-            "parsed_frames",
-            "target_result_frames",
-            "target_ids_present",
-            "error",
-        ],
-        fixture_rows,
-    )
-    protocol_count = _write_tsv(
-        output_dir / "hot_update_socket_result_sample_coverage_protocol_counts.tsv",
-        ["direction", "pro_id", "name", "count", "is_target_result_packet"],
-        protocol_rows,
-    )
-    hit_count = _write_tsv(
-        output_dir / "hot_update_socket_result_sample_coverage_hits.tsv",
-        [
-            "fixture",
-            "index",
-            "direction",
-            "offset",
-            "pro_id",
-            "packet",
-            "family",
-            "name",
-            "frame_len",
-            "payload_len",
-            "zlib",
-            "parsed",
-            "remain",
-            "privacy_note",
-        ],
-        hit_rows,
-    )
-
-    ordinary_buff_count = aggregate_counts.get(60034, 0)
-    fight_family_count = sum(aggregate_counts.get(pro_id, 0) for pro_id in [60005, 60041, 60054, 60055])
-    verdict = {
-        "decoded_fixtures_found": bool(decoded_paths),
-        "target_coverage_written": target_count == len(targets),
-        "ordinary_buff_result_sample_present": ordinary_buff_count > 0,
-        "fight_result_family_sample_present": fight_family_count > 0,
-        "existing_captures_cover_result_attribution": ordinary_buff_count > 0 or fight_family_count > 0,
-        "safe_to_skip_existing_fixtures_for_result_attribution": ordinary_buff_count == 0 and fight_family_count == 0,
-        "metadata_only_no_payload_values_exported": True,
-    }
-    verdict["supports_result_sample_coverage_report"] = (
-        verdict["decoded_fixtures_found"] and verdict["target_coverage_written"] and verdict["metadata_only_no_payload_values_exported"]
-    )
-
-    lines = [
-        "# Socket Result Sample Coverage Probe",
-        "",
-        f"- Export root: `{export_base}`",
-        f"- Decoded fixtures scanned: {len(decoded_paths)}",
-        f"- Target rows: {target_count}",
-        f"- Fixture rows: {fixture_count}",
-        f"- Protocol count rows: {protocol_count}",
-        f"- Target hit rows: {hit_count}",
-        "- Scope: scans existing decoded TCP fixture metadata for combat-result packet ids. It does not read live traffic, hook the client, or export parsed payload values.",
-    ]
-    if errors:
-        lines.extend(["", "## Fixture Errors", ""])
-        lines.extend(f"- `{_markdown_table_cell(error, limit=240)}`" for error in errors[:12])
-    lines.extend(
-        [
-            "",
-            "## Target Coverage",
-            "",
-            "| ProId | Packet | Family | Frames | Parsed | Status |",
-            "| ---: | --- | --- | ---: | ---: | --- |",
-        ]
-    )
-    for row in target_rows:
-        lines.append(
-            "| "
-            f"{_markdown_table_cell(row.get('pro_id', ''), limit=20)} | "
-            f"{_markdown_table_cell(row.get('packet', ''), limit=120)} | "
-            f"{_markdown_table_cell(row.get('family', ''), limit=80)} | "
-            f"{_markdown_table_cell(row.get('frame_count', ''), limit=20)} | "
-            f"{_markdown_table_cell(row.get('parsed_count', ''), limit=20)} | "
-            f"{_markdown_table_cell(row.get('coverage_status', ''), limit=40)} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## Interpretation",
-            "",
-            f"- Ordinary buff result samples (`60034`) present: `{ordinary_buff_count}`.",
-            f"- FightResult-family samples (`60005/60041/60054/60055`) present: `{fight_family_count}`.",
-            "- If both are zero, existing decoded captures are useful for socket framing/codec validation only, not for combat-result attribution.",
-        ]
-    )
-    markdown_path = output_dir / "hot_update_socket_result_sample_coverage_report.md"
-    markdown_path.write_text("\n".join(lines), encoding="utf-8")
-
-    result = {
-        "export_root": str(export_base),
-        "output_dir": str(output_dir),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "counts": {
-            "decoded_fixtures": len(decoded_paths),
-            "total_frames": len(all_frames),
-            "target_rows": target_count,
-            "fixture_rows": fixture_count,
-            "protocol_count_rows": protocol_count,
-            "target_hit_rows": hit_count,
-            "ordinary_buff_result_frames": ordinary_buff_count,
-            "fight_result_family_frames": fight_family_count,
-        },
-        "verdict": verdict,
-        "outputs": {
-            "targets": str(output_dir / "hot_update_socket_result_sample_coverage_targets.tsv"),
-            "fixtures": str(output_dir / "hot_update_socket_result_sample_coverage_fixtures.tsv"),
-            "protocol_counts": str(output_dir / "hot_update_socket_result_sample_coverage_protocol_counts.tsv"),
-            "hits": str(output_dir / "hot_update_socket_result_sample_coverage_hits.tsv"),
-            "markdown": str(markdown_path),
-            "json": str(output_dir / "hot_update_socket_result_sample_coverage_report.json"),
-        },
-    }
-    (output_dir / "hot_update_socket_result_sample_coverage_report.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    return result
 
 
 def _read_text_or_empty(path: Path) -> str:
@@ -27839,9 +26663,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
     timeline_formula_rows = _read_tsv_rows(output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_formula_terms.tsv")
     timeline_report = _read_text_or_empty(output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_report.md")
 
-    capture_json = _read_json_dict_or_empty(output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.json")
-    capture_counts = capture_json.get("counts", {}) if isinstance(capture_json.get("counts"), dict) else {}
-
     blld_local_formula_found = bool(blld_formula_rows) or "BLLDFightComponent:AddDamageResult" in blld_report
     gongfa_result_producer_absent = (
         result_check_by_name.get("client_pool_create_sm_fight_result", {}).get("status") == "not_found"
@@ -27853,9 +26674,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
         and "not numeric formula authority" in timeline_report
         or "not_formula_authority" in timeline_report
     )
-    socket_fixture_calibrated = bool(capture_counts) and int(capture_counts.get("mismatched_frame_body_lengths", -1)) == 0
-    socket_fixture_lacks_fight_result = int(capture_counts.get("fight_result_family_frames", 0) or 0) == 0
-
     contrast_rows = [
         {
             "flow": "BLLD local mini-game combat",
@@ -27884,17 +26702,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
             "boundary_note": "Timeline supplies hit time/percent/track; it splits already-computed FightResultVO values, not the source formula.",
             "confidence": "high" if timeline_projection_only else "needs_review",
         },
-        {
-            "flow": "Existing TCP decoded fixture",
-            "formula_or_result_layer": "socket framing calibration",
-            "evidence": (
-                f"{capture_counts.get('matched_frame_body_lengths', 0)}/{capture_counts.get('frame_rows', 0)} "
-                "frames match candidate compressed-int body-length model"
-            ),
-            "wire_authority": "metadata_only_no_payload_export",
-            "boundary_note": "Fixture calibrates framing/codec; it has no FightResult-family frames, so it cannot prove combat result semantics.",
-            "confidence": "high" if socket_fixture_calibrated else "missing_input",
-        },
     ]
     evidence_rows = [
         {
@@ -27921,12 +26728,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
             "value": len(timeline_formula_rows),
             "interpretation": "Timeline hit metadata is a projection layer when no formula-authority terms are present.",
         },
-        {
-            "source": "hot_update_socket_capture_fixture_codec_calibration_report.json",
-            "signal": "fight_result_family_frames",
-            "value": capture_counts.get("fight_result_family_frames", ""),
-            "interpretation": "The current decoded capture fixture cannot calibrate FightResult semantics if this is zero.",
-        },
     ]
 
     contrast_count = _write_tsv(
@@ -27944,8 +26745,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
         "blld_local_formula_found": blld_local_formula_found,
         "gongfa_result_client_producer_absent": gongfa_result_producer_absent,
         "timeline_hurt_is_projection_not_formula_authority": timeline_projection_only,
-        "socket_fixture_codec_calibrated": socket_fixture_calibrated,
-        "socket_fixture_lacks_fight_result_family": socket_fixture_lacks_fight_result,
     }
     verdict["supports_combat_formula_authority_contrast"] = all(
         verdict[key]
@@ -27953,7 +26752,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
             "blld_local_formula_found",
             "gongfa_result_client_producer_absent",
             "timeline_hurt_is_projection_not_formula_authority",
-            "socket_fixture_codec_calibrated",
         ]
     )
 
@@ -27988,7 +26786,7 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
             "- `BLLD` is a real local formula surface for a local mini-game/combat-like mode.",
             "- GongFaHomeMake/main fight evidence still points to server-produced `SM_FightResult*` values and client-side projection.",
             "- Timeline hit files can affect timing, tracks and percent split; they do not currently expose the numeric source formula.",
-            "- The current decoded TCP fixture validates the socket codec but lacks FightResult-family samples.",
+            "- Exact live result attribution remains a read-only Runtime capability gap; no raw packet fixture is consulted.",
         ]
     )
     markdown_path = output_dir / "hot_update_combat_formula_authority_contrast_report.md"
@@ -28003,7 +26801,6 @@ def build_fanxiu_combat_formula_authority_contrast_probe(
             "evidence_rows": evidence_count,
             "blld_formula_rows": len(blld_formula_rows),
             "timeline_formula_authority_rows": len(timeline_formula_rows),
-            "fight_result_family_frames": int(capture_counts.get("fight_result_family_frames", 0) or 0),
         },
         "verdict": verdict,
         "outputs": {
@@ -32442,7 +31239,7 @@ def _write_blld_finish_flow_markdown(
         f"- 导出目录：`{export_base}`",
         f"- BLLD Lua：`{blld_dir}`",
         f"- 证据行：{len(evidence_rows)}；分组：{', '.join(f'{name}:{count}' for name, count in by_category.most_common())}",
-        "- 说明：本报告只描述客户端 Lua 的结算链路。服务端是否接受、校验或重算这些值，需要继续看服务端或实际抓包回包。",
+        "- 说明：本报告只描述客户端 Lua 的结算链路。服务端是否接受、校验或重算这些值，需要由服务端证据或只读 Runtime 状态验证。",
         "",
         "## 结算链路",
         "",

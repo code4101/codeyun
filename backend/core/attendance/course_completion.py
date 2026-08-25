@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
-from backend.core.jobs.executor import background_task_queue
+from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
 from backend.models import SheetDocument
 
 
@@ -569,8 +569,11 @@ def _run_attendance_course_completion_job_in_session() -> dict[str, Any]:
 
 
 def enqueue_attendance_course_completion_job() -> str:
-    task_id, _queued = background_task_queue.enqueue_once(
-        COURSE_COMPLETION_TASK_KEY,
-        _run_attendance_course_completion_job_in_session,
+    active = find_active_local_job_run("attendance.course-completion")
+    if active is not None:
+        return active.id
+    submitted = submit_local_job(
+        job_type="attendance.course-completion",
+        payload={},
     )
-    return task_id
+    return submitted.id

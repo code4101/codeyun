@@ -374,6 +374,52 @@ def test_freebill_import_and_dashboard(tmp_path: Path) -> None:
     assert status["raw_file_count"] == 2
 
 
+def test_freebill_category_limits_collapse_the_complete_smallest_tail(tmp_path: Path) -> None:
+    import_bill_records(
+        [
+            {
+                "source": "微信",
+                "trade_no": f"WX-CATEGORY-TAIL-{index}",
+                "create_time": f"2026-01-{index:02d} 08:00:00",
+                "type": "消费",
+                "counterparty": f"商家{index}",
+                "product_name": "商品",
+                "amount": amount,
+                "direction": "支出",
+                "status": "支付成功",
+            }
+            for index, amount in enumerate([70, 60, 50, 40, 30, 20, 10], start=1)
+        ],
+        filename="wechat-category-tail.xlsx",
+        work_dir=tmp_path,
+    )
+
+    dashboard = get_freebill_dashboard(
+        category_child_limit=3,
+        work_dir=tmp_path,
+    )
+    type_branch = dashboard["category_tree"][0]["children"][0]["children"][0]
+    children = type_branch["children"]
+
+    assert [item["name"] for item in children] == ["商家1", "商家2", "商家3", "..."]
+    assert [item["value"] for item in children[:3]] == [70, 60, 50]
+    remainder = children[-1]
+    assert {key: remainder[key] for key in ("name", "value", "count", "group_count", "is_remainder")} == {
+        "name": "...",
+        "value": 100,
+        "count": 4,
+        "group_count": 4,
+        "is_remainder": True,
+    }
+    assert [item["name"] for item in remainder["remainder_items"]] == ["商家4", "商家5", "商家6", "商家7"]
+    assert all(item["dimension"] == "counterparty" for item in remainder["remainder_items"])
+    assert all(item["path"][-1]["value"] == item["name"] for item in remainder["remainder_items"])
+    assert sum(item["value"] for item in children) == type_branch["value"] == 280
+    legacy_remainder = dashboard["expense_categories"][0]["children"][-1]
+    assert legacy_remainder["value"] == remainder["value"]
+    assert [item["name"] for item in legacy_remainder["remainder_items"]] == ["商家4", "商家5", "商家6", "商家7"]
+
+
 def test_freebill_imports_ccb_excel(tmp_path: Path) -> None:
     result = import_ccb_excel_bytes("建设银行流水_2026.xlsx", _build_ccb_excel_bytes(), work_dir=tmp_path)
     assert result["format"] == "ccb-excel"
@@ -1148,6 +1194,17 @@ def test_freebill_category_tree_can_use_signed_net_values(tmp_path: Path) -> Non
                 "direction": "收入",
                 "status": "已入账",
             },
+            {
+                "source": "支付宝",
+                "trade_no": "ALI-NEUTRAL",
+                "create_time": "2026-01-03 08:00:00",
+                "type": "即时到账交易",
+                "counterparty": "未支付商家",
+                "product_name": "未完成订单",
+                "amount": 1000,
+                "direction": "不计收支",
+                "status": "交易关闭",
+            },
         ],
         filename="wechat-transfer.xlsx",
         work_dir=tmp_path,
@@ -1158,7 +1215,7 @@ def test_freebill_category_tree_can_use_signed_net_values(tmp_path: Path) -> Non
         work_dir=tmp_path,
     )
     assert gross_dashboard["category_tree"][0]["name"] == "常规"
-    assert gross_dashboard["category_tree"][0]["value"] == 160
+    assert gross_dashboard["category_tree"][0]["value"] == 1160
 
     save_freebill_interpret_rules([], settings={"signed_category_values": True}, work_dir=tmp_path)
     net_dashboard = get_freebill_dashboard(
@@ -1168,6 +1225,19 @@ def test_freebill_category_tree_can_use_signed_net_values(tmp_path: Path) -> Non
     assert net_dashboard["category_tree"][0]["name"] == "常规"
     assert net_dashboard["category_tree"][0]["value"] == -40
     assert net_dashboard["category_tree"][0]["children"][0]["value"] == -40
+
+    direction_dashboard = get_freebill_dashboard(
+        category_dimensions=["standard_nature", "standard_direction", "type"],
+        work_dir=tmp_path,
+    )
+    neutral_direction = next(
+        item
+        for item in direction_dashboard["category_tree"][0]["children"]
+        if item["name"] == "收支"
+    )
+    assert neutral_direction["value"] == 1000
+    assert neutral_direction["children"][0]["name"] == "即时到账交易"
+    assert neutral_direction["children"][0]["value"] == 1000
 
 
 def test_freebill_yuebao_income_is_finance(tmp_path: Path) -> None:
@@ -1588,7 +1658,7 @@ def test_freebill_alipay_jiebei_disbursement_to_bank_is_loan_income(tmp_path: Pa
     assert record["standard_nature"] == "借贷"
 
 
-def test_freebill_closed_regular_food_order_is_regular_expense(tmp_path: Path) -> None:
+def test_freebill_closed_regular_food_order_is_neutral(tmp_path: Path) -> None:
     import_bill_records(
         [
             {
@@ -1608,8 +1678,57 @@ def test_freebill_closed_regular_food_order_is_regular_expense(tmp_path: Path) -
     )
 
     record = list_freebill_records(work_dir=tmp_path, limit=1)["items"][0]
+    assert record["standard_direction"] == "收支"
+    assert record["standard_nature"] == "常规"
+
+
+def test_freebill_closed_order_keeps_explicit_raw_expense(tmp_path: Path) -> None:
+    import_bill_records(
+        [
+            {
+                "source": "支付宝",
+                "trade_no": "ALI-CLOSED-PAID",
+                "create_time": "2024-09-07 18:03:29",
+                "pay_time": "2024-09-07 18:04:00",
+                "type": "餐饮美食",
+                "counterparty": "活海鲜大排档",
+                "product_name": "活海鲜大排档",
+                "amount": 115,
+                "direction": "支出",
+                "status": "交易关闭",
+                "fund_status": "已支出",
+            },
+        ],
+        filename="alipay-closed-paid.csv",
+        work_dir=tmp_path,
+    )
+
+    record = list_freebill_records(work_dir=tmp_path, limit=1)["items"][0]
     assert record["standard_direction"] == "支出"
     assert record["standard_nature"] == "常规"
+
+
+def test_freebill_failed_transfer_without_fund_flow_is_neutral(tmp_path: Path) -> None:
+    import_bill_records(
+        [
+            {
+                "source": "支付宝",
+                "trade_no": "ALI-TRANSFER-FAILED",
+                "create_time": "2024-09-07 18:03:29",
+                "type": "转账",
+                "counterparty": "测试账户",
+                "product_name": "转账",
+                "amount": 115,
+                "direction": "不计收支",
+                "status": "转账失败",
+            },
+        ],
+        filename="alipay-transfer-failed.csv",
+        work_dir=tmp_path,
+    )
+
+    record = list_freebill_records(work_dir=tmp_path, limit=1)["items"][0]
+    assert record["standard_direction"] == "收支"
 
 
 def test_freebill_person_transfer_is_not_auto_loan_without_manual_override(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
 from sqlmodel import Session, select
 
 import backend.core.attendance.fanbei_course_sheets as fanbei_course_sheets
@@ -151,12 +152,8 @@ def test_fanbei_lesson_bindings_use_ordered_config_for_attendance_headers() -> N
     assert document["grid_rows"][0][2]["link"]["url"] == "https://example.com/lesson-02"
 
 
-def test_materialize_fanbei_course_sheets_creates_storage_sheets(session: Session, monkeypatch) -> None:
+def test_materialize_fanbei_course_sheets_creates_storage_sheets(session: Session) -> None:
     _create_fanbei_workbook(session)
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], "skip lesson"))
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_lesson_data_rows", lambda lesson_ids: ([], "skip data"))
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_clockin_rows", lambda course_name: ([], "skip clockin"))
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_clockin_data_rows", lambda clockin_ids: ([], "skip clockin data"))
 
     summary = materialize_fanbei_course_sheets(session, replace=False)
     session.commit()
@@ -172,6 +169,7 @@ def test_materialize_fanbei_course_sheets_creates_storage_sheets(session: Sessio
     assert _find_sheet(session, VIDEO_DATA_SHEET_KEY).document_json["columns"] == VIDEO_DATA_COLUMNS
 
 
+@pytest.mark.skip(reason="旧PG课程数据导入已从当前CodeYun课程创建链路退役")
 def test_materialize_fanbei_course_sheets_serializes_legacy_datetimes(session: Session, monkeypatch) -> None:
     _create_fanbei_workbook(session)
     monkeypatch.setattr(
@@ -212,12 +210,8 @@ def test_materialize_fanbei_course_sheets_serializes_legacy_datetimes(session: S
     assert video_data.document_json["rows"][0][VIDEO_DATA_COLUMNS.index("update_time")] == "2026-05-09 20:30:00"
 
 
-def test_rebuild_fanbei_attendance_uses_sheet_storage_and_compacts_video_rows(session: Session, monkeypatch) -> None:
+def test_rebuild_fanbei_attendance_uses_sheet_storage_and_compacts_video_rows(session: Session) -> None:
     _create_fanbei_workbook(session)
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], "skip lesson"))
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_lesson_data_rows", lambda lesson_ids: ([], "skip data"))
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_clockin_rows", lambda course_name: ([], "skip clockin"))
-    monkeypatch.setattr(fanbei_course_sheets, "_query_legacy_clockin_data_rows", lambda clockin_ids: ([], "skip clockin data"))
     materialize_fanbei_course_sheets(session, replace=False)
     session.commit()
 

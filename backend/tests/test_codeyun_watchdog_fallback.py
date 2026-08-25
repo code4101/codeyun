@@ -51,7 +51,7 @@ def test_unhealthy_service_restarts_without_source_precheck(tmp_path, monkeypatc
     assert result["started_pid"] == 22
 
 
-def test_console_host_suppresses_watchdog_restart(tmp_path, monkeypatch):
+def test_console_host_reports_unhealthy_while_dev_supervisor_owns_recovery(tmp_path, monkeypatch):
     args = _args(tmp_path)
 
     monkeypatch.setattr(
@@ -81,7 +81,8 @@ def test_console_host_suppresses_watchdog_restart(tmp_path, monkeypatch):
 
     result = codeyun_watchdog.run_once(args)
 
-    assert result["status"] == "console_host_observed"
+    assert result["status"] == "console_host_unhealthy"
+    assert result["recovery_owner"] == "dev_supervisor"
     assert result["started_pid"] is None
     assert result["console_host"]["pid"] == 123
 

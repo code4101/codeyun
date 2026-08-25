@@ -1,12 +1,32 @@
 import datetime as dt
 from pathlib import Path
+from types import SimpleNamespace
 
-from backend.core.attendance.course_completion import default_kqmain_path, run_attendance_course_completion_job
+from backend.core.attendance.course_completion import (
+    default_kqmain_path,
+    enqueue_attendance_course_completion_job,
+    run_attendance_course_completion_job,
+)
 from backend.models import SheetDocument
 
 
 def _cell_text(value):
     return str(value.get("value") if isinstance(value, dict) else value)
+
+
+def test_attendance_course_completion_submits_local_job_once(monkeypatch) -> None:
+    submitted = []
+    monkeypatch.setattr(
+        "backend.core.attendance.course_completion.find_active_local_job_run",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "backend.core.attendance.course_completion.submit_local_job",
+        lambda **kwargs: submitted.append(kwargs) or SimpleNamespace(id="attendance-local-1"),
+    )
+
+    assert enqueue_attendance_course_completion_job() == "attendance-local-1"
+    assert submitted == [{"job_type": "attendance.course-completion", "payload": {}}]
 
 
 def test_default_kqmain_path_prefers_attendance_service_project_root(monkeypatch):

@@ -10,6 +10,7 @@ export interface PdfAccessCapabilities {
   can_read: boolean;
   can_update_state: boolean;
   can_update_page_notes: boolean;
+  can_copy_to_library: boolean;
   can_manage_access: boolean;
 }
 
@@ -41,13 +42,24 @@ export interface PdfBookshelfPlacement {
   shelf_index: number;
   position_index: number;
   orientation: PdfBookshelfOrientation;
+  folder_id?: string | null;
+}
+
+export interface LibraryBookshelfLayoutItem {
+  resource_type: 'pdf' | 'book_asset' | 'folder';
+  resource_id: string;
+  shelf_index: number;
+  position_index: number;
 }
 
 export interface PdfLibraryBookshelf {
   id: string;
   name: string;
   sort_index: number;
+  logical_page_target_characters: number;
+  article_reading_mode: 'scroll' | 'paginated';
   book_count: number;
+  folder_count: number;
   owner_user_id: number;
   owner_username: string;
   is_owned: boolean;
@@ -61,6 +73,15 @@ export interface PdfDocumentDetail {
   title: string;
   display_title: string;
   display_author: string;
+  start_date: string;
+  display_subtitle: string;
+  display_translator: string;
+  display_edition: string;
+  display_volume: string;
+  imported_filename: string;
+  description: string;
+  tags: string[];
+  appearance: PdfBookAppearance;
   display_title_status: 'pending' | 'ready';
   owner_user_id?: number | null;
   source_device_id: string;
@@ -95,6 +116,46 @@ interface PdfUploadSession {
 export interface PdfMetadataUpdateRequest {
   display_title: string;
   display_author: string;
+  start_date: string;
+  display_subtitle: string;
+  display_translator: string;
+  display_edition: string;
+  display_volume: string;
+  source_display_name?: string | null;
+  description: string;
+  tags: string[];
+  cover_color_override?: string | null;
+}
+
+export interface PdfBookAppearance {
+  cover_color_override?: string | null;
+}
+
+export interface LibraryFolder {
+  id: string;
+  bookshelf_id: string;
+  name: string;
+  color_override?: string | null;
+  min_thickness_mm?: number | null;
+  fixed_thickness_mm?: number | null;
+  shelf_index: number;
+  position_index: number;
+  orientation: PdfBookshelfOrientation;
+  member_count: number;
+}
+
+export interface LibraryFolderUpdateRequest {
+  name: string;
+  color_override?: string | null;
+  min_thickness_mm?: number | null;
+  fixed_thickness_mm?: number | null;
+}
+
+export interface PdfBookCopyRequest {
+  target_bookshelf_id: string;
+  shelf_index: number;
+  include_notes: boolean;
+  include_reading_progress: boolean;
 }
 
 export interface PdfContentUrlResponse {
@@ -171,6 +232,21 @@ export async function renamePdfBookshelf(bookshelfId: string, name: string) {
   return response.data;
 }
 
+export async function updatePdfBookshelf(
+  bookshelfId: string,
+  payload: {
+    name: string;
+    logical_page_target_characters: number;
+    article_reading_mode: 'scroll' | 'paginated';
+  },
+) {
+  const response = await api.put<PdfLibraryBookshelf>(
+    `/pdf-documents/bookshelves/${bookshelfId}`,
+    payload,
+  );
+  return response.data;
+}
+
 export async function deletePdfBookshelf(bookshelfId: string) {
   await api.delete(`/pdf-documents/bookshelves/${bookshelfId}`);
 }
@@ -206,8 +282,62 @@ export async function updatePdfBookshelfLayout(placements: PdfBookshelfPlacement
   return response.data;
 }
 
+export async function updateLibraryBookshelfLayout(
+  bookshelfId: string,
+  items: LibraryBookshelfLayoutItem[],
+) {
+  const response = await api.put<LibraryBookshelfLayoutItem[]>('/pdf-documents/library-layout', {
+    bookshelf_id: bookshelfId,
+    items,
+  });
+  return response.data;
+}
+
 export async function updatePdfDocumentMetadata(pdfId: number, payload: PdfMetadataUpdateRequest) {
   const response = await api.put<PdfDocumentDetail>(`/pdf-documents/${pdfId}/metadata`, payload);
+  return response.data;
+}
+
+export async function deletePdfDocument(pdfId: number) {
+  await api.delete(`/pdf-documents/${pdfId}`);
+}
+
+export async function removePdfDocumentFromMyLibrary(pdfId: number) {
+  await api.delete(`/pdf-documents/${pdfId}/my-placement`);
+}
+
+export async function fetchLibraryFolders(bookshelfId: string) {
+  const response = await api.get<LibraryFolder[]>(`/pdf-documents/bookshelves/${bookshelfId}/folders`);
+  return response.data;
+}
+
+export async function createLibraryFolder(bookshelfId: string, name: string, shelfIndex: number) {
+  const response = await api.post<LibraryFolder>(`/pdf-documents/bookshelves/${bookshelfId}/folders`, {
+    name,
+    shelf_index: shelfIndex,
+  });
+  return response.data;
+}
+
+export async function updateLibraryFolder(folderId: string, payload: LibraryFolderUpdateRequest) {
+  const response = await api.put<LibraryFolder>(`/pdf-documents/folders/${folderId}`, payload);
+  return response.data;
+}
+
+export async function deleteLibraryFolder(folderId: string) {
+  await api.delete(`/pdf-documents/folders/${folderId}`);
+}
+
+export async function movePdfToLibraryFolder(pdfId: number, folderId: string | null, shelfIndex = 0) {
+  const response = await api.put<PdfBookshelfPlacement>(`/pdf-documents/${pdfId}/folder`, {
+    folder_id: folderId,
+    shelf_index: shelfIndex,
+  });
+  return response.data;
+}
+
+export async function copyPdfToOwnLibrary(pdfId: number, payload: PdfBookCopyRequest) {
+  const response = await api.post<PdfDocumentDetail>(`/pdf-documents/${pdfId}/copy-to-library`, payload);
   return response.data;
 }
 
@@ -298,6 +428,11 @@ export async function fetchPdfPageNote(pdfId: number, pageNumber: number) {
 
 export async function updatePdfPageNote(pdfId: number, pageNumber: number, payload: PdfPageNoteUpdateRequest) {
   const response = await api.put<PdfPageNote>(`/pdf-documents/${pdfId}/page-notes/${pageNumber}`, payload);
+  return response.data;
+}
+
+export async function clearMyPdfPageNotes(pdfId: number) {
+  const response = await api.delete<{ deleted_count: number }>(`/pdf-documents/${pdfId}/my-page-notes`);
   return response.data;
 }
 

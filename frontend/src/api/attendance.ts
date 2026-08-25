@@ -1,6 +1,7 @@
 import axios from 'axios'
 
 import api from '@/api'
+import type { NoteSheetDetail, WorkbookDetail } from '@/api/noteSheets'
 
 export type AttendanceOrderLookupMode = 'hybrid' | 'db_only' | 'browser_only'
 const ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS = 620000
@@ -446,38 +447,6 @@ export interface AttendanceSheetDocumentUpsertRequest {
   document_json: Record<string, unknown>
 }
 
-export interface AttendanceHeaderToolGroup {
-  label: string
-  kind: 'clockin' | 'week'
-  start_column: number
-  colspan: number
-  background_color: string
-  child_background_color: string
-  week_index?: number | null
-}
-
-export interface AttendanceHeaderToolCell {
-  label: string
-  url: string
-  kind: 'clockin' | 'lesson'
-  column_index: number
-  group_label: string
-  background_color: string
-  source_id?: number | null
-  lesson_id2: string
-  week_index?: number | null
-}
-
-export interface AttendanceHeaderToolResponse {
-  course_name: string
-  course_type: string
-  groups: AttendanceHeaderToolGroup[]
-  cells: AttendanceHeaderToolCell[]
-  rows: string[][]
-  plain_text: string
-  document_json: Record<string, unknown>
-}
-
 export async function fetchAttendanceConfig() {
   const response = await api.get<AttendanceConfigResponse>('/attendance/config')
   return response.data
@@ -485,13 +454,6 @@ export async function fetchAttendanceConfig() {
 
 export async function fetchAttendanceCourseDataFlowConfig() {
   const response = await api.get<AttendanceCourseDataFlowConfigResponse>('/attendance/course-data-flow/config')
-  return response.data
-}
-
-export async function generateAttendanceHeaderTool(courseName: string) {
-  const response = await api.post<AttendanceHeaderToolResponse>('/attendance/header-tool/generate', {
-    course_name: courseName,
-  })
   return response.data
 }
 
@@ -522,6 +484,120 @@ export async function fetchAttendanceSheetDocumentById(sheetId: number) {
   try {
     const response = await api.get<AttendanceSheetDocument>(`/attendance/sheets/${sheetId}`)
     return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+const independentAttendanceReadOnlyAccess = {
+  role: 'viewer' as const,
+  capabilities: {
+    can_read: true,
+    can_use_local_view: true,
+    can_edit_data: false,
+    can_edit_config: false,
+    can_run_sheet_actions: false,
+    can_manage_access: false,
+  },
+}
+
+export async function fetchIndependentAttendanceWorkbookById(workbookId: number) {
+  try {
+    const response = await api.get<{
+      id: number
+      title: string
+      owner_user_id?: number | null
+      created_by_user_id?: number | null
+      updated_by_user_id?: number | null
+      created_at: number
+      updated_at: number
+      deleted_at?: number | null
+      deleted_by_user_id?: number | null
+      sheet_count: number
+      sheets: Array<{
+        id: number
+        title: string
+        engine: string
+        scope: string
+        version: number
+        owner_user_id?: number | null
+        created_by_user_id?: number | null
+        updated_by_user_id?: number | null
+        created_at: number
+        updated_at: number
+        deleted_at?: number | null
+        deleted_by_user_id?: number | null
+      }>
+      defined_names?: WorkbookDetail['defined_names']
+    }>(`/attendance/independent/workbooks/${workbookId}`)
+    const item = response.data
+    const workbookRef = { id: item.id, title: item.title }
+    return {
+      ...item,
+      access: independentAttendanceReadOnlyAccess,
+      sheets: item.sheets.map(sheet => ({
+        ...sheet,
+        parent_workbook_id: item.id,
+        workbook_items: [workbookRef],
+        access: independentAttendanceReadOnlyAccess,
+      })),
+    } satisfies WorkbookDetail
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+export async function fetchIndependentAttendanceSheetDocumentById(
+  sheetId: number,
+  options?: { workbookId?: number | null },
+) {
+  try {
+    const response = await api.get<{
+      id: number
+      title: string
+      engine: string
+      version: number
+      updated_at: number
+      document_json: Record<string, unknown>
+      workbook_id?: number | null
+      workbook_title?: string
+      defined_names_context?: NoteSheetDetail['defined_names_context']
+    }>(options?.workbookId != null
+      ? `/attendance/independent/workbooks/${options.workbookId}/sheets/${sheetId}`
+      : `/attendance/independent/sheets/${sheetId}`)
+    const item = response.data
+    const workbookId = Number(item.workbook_id)
+    const workbookItems = Number.isInteger(workbookId) && workbookId > 0
+      ? [{ id: workbookId, title: item.workbook_title || '' }]
+      : []
+    return {
+      id: item.id,
+      title: item.title,
+      engine: item.engine,
+      scope: 'attendance',
+      version: item.version,
+      owner_type: 'attendance_course',
+      owner_key: '',
+      sheet_key: '',
+      owner_user_id: null,
+      created_by_user_id: null,
+      updated_by_user_id: null,
+      created_at: item.updated_at,
+      updated_at: item.updated_at,
+      deleted_at: null,
+      deleted_by_user_id: null,
+      parent_workbook_id: workbookItems[0]?.id ?? null,
+      workbook_items: workbookItems,
+      access: independentAttendanceReadOnlyAccess,
+      document_json: item.document_json,
+      defined_names_context: item.defined_names_context ?? null,
+    } satisfies NoteSheetDetail
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null

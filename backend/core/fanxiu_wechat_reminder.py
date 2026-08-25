@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-import datetime as dt
 import os
 import socket
-import subprocess
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.services.launcher import run_quiet
+from backend.core.messaging.wechat_ilink import WechatIlinkError, list_accounts, send_text_message
 from backend.core.settings import get_settings
 from backend.models import AppSetting
 
@@ -21,20 +18,18 @@ FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY = "fanxiu_wechat_shengzu_reminder"
 FANXIU_WECHAT_BOSS_REMINDER_RUN_TIME = "17:57"
 FANXIU_WECHAT_SHENGZU_REMINDER_RUN_TIME = "19:57"
 FANXIU_WECHAT_SHENGZU_REMINDER_WEEKDAYS = (7,)
-FANXIU_WECHAT_REMINDER_RESULT_TEXT_LIMIT = 20000
-DEFAULT_XLPROJECT_ROOT = Path(r"C:\home\chenkunze\slns\xlproject")
 
 
 _REMINDERS: dict[str, dict[str, str]] = {
     FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY: {
-        "function": "提醒boss",
         "label": "@所有人 准备打魔狱封阵",
-        "target": "xlsln.ckz2025.fx.tools.prompt:提醒boss",
+        "target": "wechat_ilink:send_text_message",
+        "env_prefix": "CODEYUN_FANXIU_WECHAT_BOSS_REMINDER",
     },
     FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY: {
-        "function": "提醒圣祖",
         "label": "打圣祖",
-        "target": "xlsln.ckz2025.fx.tools.prompt:提醒圣祖",
+        "target": "wechat_ilink:send_text_message",
+        "env_prefix": "CODEYUN_FANXIU_WECHAT_SHENGZU_REMINDER",
     },
 }
 
@@ -54,26 +49,6 @@ FANXIU_WECHAT_REMINDER_TIMEOUT_SECONDS = max(
 
 def _now_ts() -> float:
     return time.time()
-
-
-def _format_ts(value: float | None) -> str:
-    if not value:
-        return ""
-    return dt.datetime.fromtimestamp(value).replace(microsecond=0).isoformat(sep=" ")
-
-
-def _safe_path_text(path: Path) -> str:
-    return os.fspath(path.resolve(strict=False))
-
-
-def _truncate_text(text: Any, limit: int = FANXIU_WECHAT_REMINDER_RESULT_TEXT_LIMIT) -> str:
-    if isinstance(text, bytes):
-        normalized = text.decode("utf-8", errors="replace").strip()
-    else:
-        normalized = str(text or "").strip()
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: limit - 3].rstrip() + "..."
 
 
 def _setting_key(task_key: str) -> str:
@@ -128,49 +103,44 @@ def is_fanxiu_wechat_reminder_allowed_host() -> bool:
     return bool(candidates & allowed)
 
 
-def _resolve_xlproject_root(xlproject_root: Path | str | None = None) -> Path:
-    if xlproject_root is not None:
-        return Path(xlproject_root).resolve(strict=False)
-    configured = os.getenv("CODEYUN_FANXIU_WECHAT_REMINDER_XLPROJECT_ROOT")
-    return Path(configured or DEFAULT_XLPROJECT_ROOT).resolve(strict=False)
+def _env_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return ""
 
 
-def _resolve_python_executable(
-    xlproject_root: Path,
-    python_executable: Path | str | None = None,
-) -> Path:
-    if python_executable is not None:
-        return Path(python_executable).resolve(strict=False)
-    configured = os.getenv("CODEYUN_FANXIU_WECHAT_REMINDER_PYTHON")
+def _resolve_account_id(account_id: str | None = None) -> str:
+    configured = (account_id or "").strip() or _env_value("CODEYUN_FANXIU_WECHAT_ILINK_ACCOUNT_ID")
     if configured:
-        return Path(configured).resolve(strict=False)
-    return (xlproject_root / ".venv" / "Scripts" / "python.exe").resolve(strict=False)
+        return configured
+    accounts = list_accounts()
+    if len(accounts) == 1:
+        return str(accounts[0].get("account_id") or "").strip()
+    raise ValueError("未配置凡修微信群提醒的微信 iLink 账号：CODEYUN_FANXIU_WECHAT_ILINK_ACCOUNT_ID")
 
 
-def _build_subprocess_env(xlproject_root: Path) -> dict[str, str]:
-    env = os.environ.copy()
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    pythonpath_entries = [
-        os.fspath(xlproject_root / "src"),
-        os.fspath(xlproject_root),
-        r"C:\home\chenkunze",
-    ]
-    existing_pythonpath = env.get("PYTHONPATH")
-    if existing_pythonpath:
-        pythonpath_entries.append(existing_pythonpath)
-    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
-    return env
-
-
-def _build_reminder_script(task_key: str) -> str:
+def _resolve_to_user_id(task_key: str, to_user_id: str | None = None) -> str:
     spec = _REMINDERS[task_key]
-    function_name = spec["function"]
-    return "\n".join(
-        [
-            f"from xlsln.ckz2025.fx.tools.prompt import {function_name}",
-            f"{function_name}()",
-        ]
+    prefix = spec["env_prefix"]
+    value = (to_user_id or "").strip() or _env_value(
+        f"{prefix}_TO_USER_ID",
+        "CODEYUN_FANXIU_WECHAT_REMINDER_TO_USER_ID",
+    )
+    if not value:
+        raise ValueError(
+            f"未配置凡修微信群提醒接收方：{prefix}_TO_USER_ID 或 CODEYUN_FANXIU_WECHAT_REMINDER_TO_USER_ID"
+        )
+    return value
+
+
+def _resolve_context_token(task_key: str, context_token: str | None = None) -> str:
+    spec = _REMINDERS[task_key]
+    prefix = spec["env_prefix"]
+    return (context_token or "").strip() or _env_value(
+        f"{prefix}_CONTEXT_TOKEN",
+        "CODEYUN_FANXIU_WECHAT_REMINDER_CONTEXT_TOKEN",
     )
 
 
@@ -178,16 +148,15 @@ def run_fanxiu_wechat_reminder_worker(
     task_key: str,
     *,
     db_bind: Any | None = None,
-    xlproject_root: Path | str | None = None,
-    python_executable: Path | str | None = None,
+    account_id: str | None = None,
+    to_user_id: str | None = None,
+    context_token: str | None = None,
     timeout_seconds: int | None = None,
     require_allowed_host: bool = True,
 ) -> dict[str, Any]:
     if task_key not in _REMINDERS:
         raise ValueError(f"未知凡修微信群提醒任务：{task_key}")
 
-    root = _resolve_xlproject_root(xlproject_root)
-    python_path = _resolve_python_executable(root, python_executable)
     reminder = _REMINDERS[task_key]
     now_ts = _now_ts()
     run = {
@@ -199,8 +168,6 @@ def run_fanxiu_wechat_reminder_worker(
         "started_at": now_ts,
         "updated_at": now_ts,
         "finished_at": None,
-        "xlproject_root": _safe_path_text(root),
-        "python_executable": _safe_path_text(python_path),
         "target": reminder["target"],
         "message": reminder["label"],
     }
@@ -219,81 +186,67 @@ def run_fanxiu_wechat_reminder_worker(
         )
         return run
 
-    missing_paths = [path for path in (root, python_path) if not path.exists()]
-    if missing_paths:
-        missing_text = "; ".join(_safe_path_text(path) for path in missing_paths)
-        _update_run(
-            task_key,
-            run,
-            db_bind,
-            status="failed",
-            stage="missing_paths",
-            stage_label="xlproject 或 Python 解释器不存在",
-            finished_at=_now_ts(),
-            error_message=missing_text,
-        )
-        raise FileNotFoundError(f"凡修微信群提醒运行路径不存在：{missing_text}")
-
-    command = [os.fspath(python_path), "-c", _build_reminder_script(task_key)]
     timeout = int(timeout_seconds or FANXIU_WECHAT_REMINDER_TIMEOUT_SECONDS)
-    _update_run(task_key, run, db_bind, stage="running_reminder", stage_label=f"发送凡修提醒：{reminder['label']}")
-
     try:
-        completed = run_quiet(
-            command,
-            cwd=root,
-            env=_build_subprocess_env(root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        _update_run(
-            task_key,
-            run,
-            db_bind,
-            status="failed",
-            stage="timeout",
-            stage_label="发送提醒超时",
-            finished_at=_now_ts(),
-            error_message=f"超过 {timeout} 秒未结束",
-            stdout=_truncate_text(exc.stdout),
-            stderr=_truncate_text(exc.stderr),
-        )
-        raise TimeoutError(f"凡修微信群提醒超过 {timeout} 秒未结束") from exc
+        resolved_account_id = _resolve_account_id(account_id)
+        resolved_to_user_id = _resolve_to_user_id(task_key, to_user_id)
+        resolved_context_token = _resolve_context_token(task_key, context_token)
     except Exception as exc:
         _update_run(
             task_key,
             run,
             db_bind,
             status="failed",
-            stage="subprocess_failed",
-            stage_label="启动提醒进程失败",
+            stage="missing_config",
+            stage_label="凡修微信群提醒配置不完整",
             finished_at=_now_ts(),
             error_message=str(exc),
         )
         raise
 
-    stdout = _truncate_text(completed.stdout)
-    stderr = _truncate_text(completed.stderr)
-    if completed.returncode != 0:
+    _update_run(
+        task_key,
+        run,
+        db_bind,
+        stage="sending",
+        stage_label=f"通过微信 iLink 发送凡修提醒：{reminder['label']}",
+        account_id=resolved_account_id,
+        to_user_id=resolved_to_user_id,
+        used_context_token=bool(resolved_context_token),
+    )
+
+    try:
+        sent = send_text_message(
+            resolved_account_id,
+            to_user_id=resolved_to_user_id,
+            text=reminder["label"],
+            context_token=resolved_context_token or None,
+            timeout_seconds=timeout,
+        )
+    except WechatIlinkError as exc:
         _update_run(
             task_key,
             run,
             db_bind,
             status="failed",
-            stage="reminder_failed",
-            stage_label="提醒进程返回失败",
+            stage="send_failed",
+            stage_label="微信 iLink 发送提醒失败",
             finished_at=_now_ts(),
-            returncode=completed.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            error_message=f"提醒进程退出码 {completed.returncode}",
+            error_message=str(exc),
         )
-        raise RuntimeError(f"凡修微信群提醒进程退出码 {completed.returncode}")
+        raise
+    except Exception as exc:
+        _update_run(
+            task_key,
+            run,
+            db_bind,
+            status="failed",
+            stage="send_failed",
+            stage_label="微信 iLink 发送提醒失败",
+            finished_at=_now_ts(),
+            error_message=str(exc),
+        )
+        raise
 
     _update_run(
         task_key,
@@ -303,10 +256,8 @@ def run_fanxiu_wechat_reminder_worker(
         stage="completed",
         stage_label="提醒已发送",
         finished_at=_now_ts(),
-        returncode=completed.returncode,
-        stdout=stdout,
-        stderr=stderr,
-        result_text=stdout or stderr or f"已发送：{reminder['label']}",
+        sent=sent,
+        result_text=f"已通过微信 iLink 发送：{reminder['label']}",
     )
     return run
 

@@ -4,7 +4,7 @@ import contextlib
 import copy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import fnmatch
 import json
 from pathlib import Path
@@ -23,6 +23,7 @@ from backend.api.note_sheets import (
     _is_formula_expression,
     _normalize_document_columns,
     _normalize_document_data_start_row,
+    _order_attendance_rows_by_dynamic_expiration,
     _replace_document_data_rows,
     NOTE_SHEET_REGISTRATION_OVERSEAS_COLUMN,
 )
@@ -132,6 +133,12 @@ ZEN_STAGE_FIXED_HEADER_GROUPS = (
         {"background_color": "#F4B183", "text_color": "#000000"},
     ),
 )
+ATTENDANCE_IDENTITY_HEADER_EXTENSION_COLUMNS = {
+    "用户ID",
+    "商户订单号",
+    "禅客",
+    "优秀学员评分",
+}
 
 VIDEO_CONFIG_COLUMNS = [
     "lesson_id",
@@ -280,6 +287,19 @@ class VideoConfigItem:
     start_date: datetime | None = None
     course_name: str = ""
     lesson_url: str = ""
+
+
+@dataclass(frozen=True)
+class ZenStageClockinRefundSpec:
+    column_index: int
+    field_name: str
+    rules: tuple[ThresholdRefundRule, ...]
+    per_count_amount: float | None = None
+    count_limit: int | None = None
+
+    @property
+    def refund_limit(self) -> float:
+        return max((rule.refund_amount for rule in self.rules), default=0.0)
 
 
 @dataclass(frozen=True)
@@ -434,6 +454,18 @@ def _video_refund_progress_percent(value: Any) -> float | None:
     return parse_progress_percent(value)
 
 
+def _round_progress_percent(value: Any) -> int:
+    return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _normalize_zen_stage_progress_text(value: Any) -> str:
+    text = _normalize_text(value)
+    match = re.fullmatch(r"进度\s*(\d+(?:\.\d+)?)\s*%", text)
+    if not match:
+        return text
+    return f"进度{_round_progress_percent(match.group(1))}%"
+
+
 def _video_completed_count(value: Any) -> int:
     play_count = _extract_play_count(value)
     if play_count > 0:
@@ -475,7 +507,8 @@ def _highlight_video_refund_for_item(
             return 0, ZERO_REFUND_COMPLETED_BACKGROUND
         if text == "准时完成":
             return float(zen_stage_refund_amount), REFUND_PROGRESS_FULL_COLOR
-        return 0, highlight_presence_progress(text)
+        # B 类修道班没有“局部返款”：未完整看完时只展示进度，不着色。
+        return 0, None
 
     text_rules = _rules_for_version(item.text_rules_by_version, rule_version, fallback_version=CURRENT_RULE)
     if text_rules:
@@ -705,120 +738,6 @@ def _course_item_parts(value: Any) -> tuple[str, str, str, int, str]:
     return "", "视频", "", 9000, ""
 
 
-def _query_legacy_lesson_rows(course_name: str) -> tuple[list[dict[str, Any]], str | None]:
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    terms = [course_name]
-    terms = [term for index, term in enumerate(terms) if term and term not in terms[:index]]
-    where = " OR ".join("lesson_name LIKE %s" for _ in terms)
-    params = [f"%{term}%" for term in terms]
-    sql = (
-        "SELECT lesson_id, start_date, end_date, next_update, lesson_id2, shop_id, "
-        "lesson_name, video_duration "
-        f"FROM lesson_table WHERE {where} ORDER BY lesson_id"
-    )
-    try:
-        xldb = get_kqdb()
-        try:
-            records = xldb.exec2dict(sql, params)
-        except TypeError:
-            fallback_sql = sql
-            for param in params:
-                quoted = "'" + param.replace("'", "''") + "'"
-                fallback_sql = fallback_sql.replace("%s", quoted, 1)
-            records = xldb.exec2dict(fallback_sql)
-    except Exception as exc:
-        return [], f"查询 lesson_table 失败: {exc}"
-
-    return [dict(record) for record in _legacy_records(records)], None
-
-
-def _legacy_records(value: Any) -> list[dict[str, Any]]:
-    if value is None:
-        return []
-    if hasattr(value, "fetchall"):
-        value = value.fetchall()
-    return [dict(record) for record in (value or []) if isinstance(record, dict)]
-
-
-def _query_legacy_lesson_data_rows(legacy_lesson_ids: list[int]) -> tuple[list[dict[str, Any]], str | None]:
-    if not legacy_lesson_ids:
-        return [], None
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    id_list = ",".join(str(int(item)) for item in legacy_lesson_ids)
-    sql = (
-        "SELECT lesson_data_id, user_id2, remark_nm, state, stay_seconds, cum_seconds, "
-        "studio_seconds, playback_seconds, num_of_comments, studio_amount, study_state, "
-        "progress, last_play_time, shop_id, update_time, lesson_id, finish_time, "
-        "comment_times, money, lesson_name "
-        f"FROM lesson_data_table WHERE lesson_id IN ({id_list}) "
-        "ORDER BY lesson_id, lesson_data_id"
-    )
-    try:
-        records = get_kqdb().exec2dict(sql)
-    except Exception as exc:
-        return [], f"查询 lesson_data_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
-def _query_legacy_clockin_rows(course_name: str) -> tuple[list[dict[str, Any]], str | None]:
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    terms = [course_name]
-    terms = [term for index, term in enumerate(terms) if term and term not in terms[:index]]
-    where = " OR ".join("name LIKE %s" for _ in terms)
-    params = [f"%{term}%" for term in terms]
-    sql = (
-        "SELECT clockin_id, name, url, start_date, end_date, days, clockin_user_num, total_user_num "
-        f"FROM clockin_table WHERE {where} ORDER BY clockin_id"
-    )
-    try:
-        xldb = get_kqdb()
-        try:
-            records = xldb.exec2dict(sql, params)
-        except TypeError:
-            fallback_sql = sql
-            for param in params:
-                fallback_sql = fallback_sql.replace("%s", "'" + param.replace("'", "''") + "'", 1)
-            records = xldb.exec2dict(fallback_sql)
-    except Exception as exc:
-        return [], f"查询 clockin_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
-def _query_legacy_clockin_data_rows(legacy_clockin_ids: list[int]) -> tuple[list[dict[str, Any]], str | None]:
-    if not legacy_clockin_ids:
-        return [], None
-    try:
-        from kq5034.attendance_api import get_kqdb  # type: ignore
-    except Exception as exc:
-        return [], f"无法导入 kq5034.attendance_api.get_kqdb: {exc}"
-
-    id_list = ",".join(str(int(item)) for item in legacy_clockin_ids)
-    sql = (
-        "SELECT clockin_data_id, user_id2, nickname, groupname, publish_time, update_content, "
-        "update_title, update_type, tags, read_num, like_num, comment_num, is_essence, "
-        "share_num, update_url, clockin_name, is_repair, task_date, extra, clockin_id "
-        f"FROM clockin_data_table WHERE clockin_id IN ({id_list}) "
-        "ORDER BY clockin_id, clockin_data_id"
-    )
-    try:
-        records = get_kqdb().exec2dict(sql)
-    except Exception as exc:
-        return [], f"查询 clockin_data_table 失败: {exc}"
-    return _legacy_records(records), None
-
-
 def _progress_column_range(columns: list[str]) -> range:
     start = _find_column_index(columns, "打卡数")
     if start is None:
@@ -912,6 +831,10 @@ def _move_nianzhu_document_column(
     next_document = dict(document)
     next_document["columns"] = move_item(columns)
     next_document["rows"] = [move_row(row) for row in _extract_document_rows(document)]
+
+    column_ids = document.get("column_ids")
+    if isinstance(column_ids, list) and len(column_ids) == len(columns):
+        next_document["column_ids"] = move_item(column_ids)
 
     grid_rows = document.get("grid_rows")
     if isinstance(grid_rows, list):
@@ -1187,14 +1110,67 @@ def _ensure_nianzhu_attendance_schema(
 
 
 def _lesson_header_from_video_item(item: VideoConfigItem) -> str:
+    """Return the stable, unique attendance column identity for a lesson.
+
+    B-class lesson titles often end with an instructor name.  The historical
+    implementation kept only the text after the final hyphen, which collapsed
+    several different lessons into one column (for example every lesson taught
+    by ``贤世法师``).  The complete configured title is the column identity;
+    presentation cleanup belongs in ``_lesson_display_header_from_video_item``.
+    """
     text = _normalize_text(item.lesson_name)
     if "=" in text:
         text = text.rsplit("=", 1)[1].strip()
-    if "-" in text:
-        local_text = text.rsplit("-", 1)[1].strip()
-        if _course_item_key(local_text):
-            text = local_text
     return text
+
+
+def _lesson_display_header_from_video_item(item: VideoConfigItem) -> str:
+    """Return a readable label while preserving the stable internal header."""
+    text = _lesson_header_from_video_item(item)
+    text = re.sub(r"^20\d{6}(?:am|pm)?\d{4,6}-", "", text, count=1, flags=re.IGNORECASE)
+    return " · ".join(part.strip() for part in text.split("-") if part.strip())
+
+
+def _legacy_collapsed_lesson_header_from_video_item(item: VideoConfigItem) -> str:
+    """Reproduce the pre-fix instructor-only header for data migration."""
+    text = _lesson_header_from_video_item(item)
+    if "-" in text:
+        return text.rsplit("-", 1)[1].strip()
+    return text
+
+
+def _remove_legacy_collapsed_video_progress_columns(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem],
+) -> tuple[dict[str, Any], list[str]]:
+    """Remove derived B-class columns whose identities were collapsed.
+
+    These columns are fully reproducible from video data.  Removing them before
+    inserting the complete titles also removes their stale week merges, colors,
+    links and row values through the normal document-column deletion primitive.
+    """
+    expected_headers = {
+        _normalize_text(_lesson_header_from_video_item(item))
+        for item in video_config
+        if item.participates_refund and item.rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE
+    }
+    legacy_headers = {
+        _normalize_text(_legacy_collapsed_lesson_header_from_video_item(item))
+        for item in video_config
+        if item.participates_refund and item.rule_system == VIDEO_RULE_SYSTEM_ZEN_STAGE
+    }
+    removable_headers = legacy_headers - expected_headers
+    next_document = document
+    removed_headers: list[str] = []
+    for column_index in range(len(_normalize_document_columns(next_document)) - 1, -1, -1):
+        columns = _normalize_document_columns(next_document)
+        header = _normalize_text(columns[column_index])
+        if header not in removable_headers:
+            continue
+        next_document = _delete_document_column(next_document, delete_index=column_index)
+        removed_headers.append(header)
+    removed_headers.reverse()
+    return next_document, removed_headers
 
 
 def _lesson_week_from_video_item(item: VideoConfigItem) -> int | None:
@@ -1255,6 +1231,53 @@ def _ensure_video_progress_columns(
     return next_document, inserted_headers
 
 
+def _ensure_video_progress_column_order(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem],
+) -> tuple[dict[str, Any], list[str]]:
+    """Keep attendance video columns in the same order as video configuration.
+
+    Newly discovered lessons may belong to an already configured week. Merely
+    appending their columns makes a week's columns non-contiguous and causes the
+    merged week header to span intervening weeks.
+    """
+    desired_items = [item for item in video_config if item.participates_refund]
+    if len(desired_items) < 2:
+        return document, []
+
+    def find_item_column(columns: list[str], item: VideoConfigItem) -> int | None:
+        item_key = item.course_key or _course_item_key(_lesson_header_from_video_item(item))
+        if not item_key:
+            return None
+        for column_index, column_name in enumerate(columns):
+            if _course_item_key(column_name) == item_key:
+                return column_index
+        return None
+
+    columns = _normalize_document_columns(document)
+    current_indexes = [find_item_column(columns, item) for item in desired_items]
+    present_indexes = [index for index in current_indexes if index is not None]
+    if len(present_indexes) != len(desired_items):
+        return document, []
+
+    target_start = min(present_indexes)
+    next_document = document
+    moved_headers: list[str] = []
+    for offset, item in enumerate(desired_items):
+        columns = _normalize_document_columns(next_document)
+        current_index = find_item_column(columns, item)
+        target_index = target_start + offset
+        if current_index is None or current_index == target_index:
+            continue
+        next_document = _move_nianzhu_document_column(
+            next_document,
+            from_index=current_index,
+            to_index=target_index,
+        )
+        moved_headers.append(_lesson_header_from_video_item(item))
+    return next_document, moved_headers
+
+
 def _set_cell_style(cell_meta: dict[str, Any], row_index: int, column_index: int, style: dict[str, Any]) -> bool:
     target_key = f"{row_index}:{column_index}"
     previous_meta = cell_meta.get(target_key)
@@ -1308,11 +1331,19 @@ def _sync_zen_stage_fixed_header_layout(document: dict[str, Any]) -> tuple[dict[
         normalized_indexes = [int(index) for index in indexes if index is not None]
         if normalized_indexes != list(range(normalized_indexes[0], normalized_indexes[-1] + 1)):
             continue
+        if default_label == "用户信息":
+            next_index = normalized_indexes[-1] + 1
+            while (
+                next_index < len(columns)
+                and columns[next_index] in ATTENDANCE_IDENTITY_HEADER_EXTENSION_COLUMNS
+            ):
+                normalized_indexes.append(next_index)
+                next_index += 1
         groups.append((normalized_indexes, default_label, group_style, field_style))
 
     clockin_indexes = [
         index for index, header in enumerate(columns)
-        if header == "共学打卡" or header.startswith("共修打卡-")
+        if header == "共学打卡" or header == "共修打卡" or header.startswith("共修打卡-")
     ]
     if clockin_indexes and clockin_indexes == list(range(clockin_indexes[0], clockin_indexes[-1] + 1)):
         groups.append((
@@ -1413,6 +1444,70 @@ def _video_column_indexes_from_columns(
     }
 
 
+def ensure_attendance_course_columns_visible(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Keep course progress columns visible while preserving internal hidden fields.
+
+    Attendance workbooks may inherit a template whose future course columns were
+    hidden temporarily.  Course columns are part of the stable workbook schema,
+    so neither cloning nor rebuilding should carry that transient view state into
+    the next course.
+    """
+    columns = _normalize_document_columns(document)
+    if not columns:
+        return document, []
+
+    visible_headers: set[str] = set()
+    if video_config:
+        video_column_indexes = _video_column_indexes_from_columns(video_config, columns)
+        visible_headers.update(
+            columns[column_index]
+            for column_index in video_column_indexes.values()
+            if column_index is not None
+        )
+
+    column_configs = (
+        dict(document.get("column_configs"))
+        if isinstance(document.get("column_configs"), dict)
+        else {}
+    )
+    for header in columns:
+        if re.search(r"第\s*0*\d+\s*课", _normalize_text(header)):
+            visible_headers.add(header)
+            continue
+        config = column_configs.get(header)
+        if isinstance(config, dict) and "不做考勤" in _normalize_text(config.get("note")):
+            visible_headers.add(header)
+
+    changed_headers: list[str] = []
+    next_configs = dict(column_configs)
+    for header in columns:
+        if header not in visible_headers:
+            continue
+        config = next_configs.get(header)
+        if not isinstance(config, dict) or not (config.get("hidden") or "restore_index" in config):
+            continue
+        next_config = dict(config)
+        next_config.pop("hidden", None)
+        next_config.pop("restore_index", None)
+        if next_config:
+            next_configs[header] = next_config
+        else:
+            next_configs.pop(header, None)
+        changed_headers.append(header)
+
+    if not changed_headers:
+        return document, []
+    next_document = dict(document)
+    if next_configs:
+        next_document["column_configs"] = next_configs
+    else:
+        next_document.pop("column_configs", None)
+    return next_document, changed_headers
+
+
 def _sync_zen_stage_video_header_layout(
     document: dict[str, Any],
     video_config: list[VideoConfigItem],
@@ -1427,7 +1522,7 @@ def _sync_zen_stage_video_header_layout(
         and video_column_indexes.get(item.lesson_id) is not None
     ]
     if not zen_items:
-        return document, 0
+        return document, fixed_header_changed
 
     columns = _normalize_document_columns(document)
     if not columns:
@@ -1461,7 +1556,7 @@ def _sync_zen_stage_video_header_layout(
     max_video_column = max(video_columns)
 
     for column_index, item in item_by_column:
-        header = _lesson_header_from_video_item(item)
+        header = _lesson_display_header_from_video_item(item)
         current_header = grid_rows[field_row_index][column_index]
         next_header: Any = header
         if item.lesson_url:
@@ -1626,6 +1721,30 @@ def _parse_attendance_video_refund_rules(value: Any) -> dict[str, int]:
     return _parse_timed_text_rules(value)
 
 
+def _legacy_incentive_rules(document: dict[str, Any]) -> dict[str, Any]:
+    """Return archived incentive rules kept outside the visible attendance grid."""
+
+    source_meta = dict(document.get("source_meta") or {})
+    rules = source_meta.get("legacy_incentive_rules")
+    return dict(rules) if isinstance(rules, dict) else {}
+
+
+def _legacy_incentive_rule_text(
+    document: dict[str, Any],
+    *,
+    section: str,
+    field_name: str = "",
+) -> str:
+    rules = _legacy_incentive_rules(document)
+    if section == "video":
+        return _normalize_text(rules.get("video"))
+    if section == "clockin":
+        clockin_rules = rules.get("clockin")
+        if isinstance(clockin_rules, dict):
+            return _normalize_text(clockin_rules.get(field_name))
+    return ""
+
+
 def _attendance_video_refund_rules_override(document: dict[str, Any], columns: list[str]) -> dict[str, int]:
     refund_index = _find_column_index(columns, "视频应返款")
     if refund_index is None:
@@ -1636,7 +1755,12 @@ def _attendance_video_refund_rules_override(document: dict[str, Any], columns: l
         refund_index,
         resolve_merged_anchor=True,
     )
-    return _parse_attendance_video_refund_rules(note_value)
+    return (
+        _parse_attendance_video_refund_rules(note_value)
+        or _parse_attendance_video_refund_rules(
+            _legacy_incentive_rule_text(document, section="video")
+        )
+    )
 
 
 def _attendance_video_refund_source_meta(
@@ -1662,6 +1786,7 @@ def _attendance_zen_video_refund_rule(
     columns: list[str],
     *,
     expected_refund_count: int,
+    expected_total_count: int | None = None,
 ) -> tuple[int, float, float]:
     """Parse and validate the B-class refund rule declared in the row-3 note."""
     refund_index = _find_column_index(columns, "视频应返款")
@@ -1673,6 +1798,8 @@ def _attendance_zen_video_refund_rule(
         refund_index,
     )
     note_text = _normalize_text(note_value)
+    if not re.search(r"\d+\s*(?:课|节|个)?\s*[×xX*]", note_text):
+        note_text = _legacy_incentive_rule_text(document, section="video")
     match = re.search(
         r"(\d+)\s*(?:课|节|个)?\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*元\s*=\s*(\d+(?:\.\d+)?)\s*元?",
         note_text,
@@ -1691,7 +1818,13 @@ def _attendance_zen_video_refund_rule(
         raise ValueError(
             f"B类课程第3行返款规则不自洽：{refund_count}×{refund_amount} != {refund_limit}"
         )
-    if refund_count != expected_refund_count:
+    if expected_total_count is not None:
+        if refund_count != expected_total_count or expected_refund_count > expected_total_count:
+            raise ValueError(
+                "B类课程第3行计费课数与渐进发布配置不一致："
+                f"备注={refund_count}，全期={expected_total_count}，当前已发布={expected_refund_count}"
+            )
+    elif refund_count != expected_refund_count:
         raise ValueError(
             "B类课程第3行计费课数与视频配置不一致："
             f"备注={refund_count}，实际参与返款课次={expected_refund_count}"
@@ -1704,11 +1837,45 @@ def _attendance_zen_clockin_refund_formula(
     columns: list[str],
     *,
     row_number: int,
+    colearn_period_reference: str | None = None,
 ) -> tuple[str, float]:
     """Build the B-class clock-in refund formula from row-3 column notes."""
-    config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
     parts: list[str] = []
     limits: list[float] = []
+    specs = _attendance_zen_clockin_refund_specs(document, columns)
+
+    for spec in specs:
+        cell_ref = _formula_cell_ref(spec.column_index, row_number)
+        if spec.per_count_amount is not None and spec.count_limit is not None:
+            count_limits = [spec.count_limit]
+            if spec.field_name == "共学打卡" and _normalize_text(colearn_period_reference):
+                count_limits.append(_normalize_text(colearn_period_reference))
+            limits_text = ",".join(str(value) for value in count_limits)
+            parts.append(
+                f"MIN(IFERROR(VALUE({cell_ref}),0),{limits_text})*"
+                f"{_format_numeric_cell(spec.per_count_amount)}"
+            )
+            limits.append(spec.refund_limit)
+            continue
+
+        expression = "0"
+        for rule in spec.rules:
+            expression = (
+                f"IF(IFERROR(VALUE({cell_ref}),0)>={_format_numeric_cell(rule.threshold)},"
+                f"{_format_numeric_cell(rule.refund_amount)},{expression})"
+            )
+        parts.append(expression)
+        limits.append(spec.refund_limit)
+
+    return "=" + "+".join(parts), sum(limits)
+
+
+def _attendance_zen_clockin_refund_specs(
+    document: dict[str, Any],
+    columns: list[str],
+) -> list[ZenStageClockinRefundSpec]:
+    """Parse B-class row-3 notes into formula and static-color refund tiers."""
+    config_row_index = max(_normalize_document_data_start_row(document) - 1, 0)
     clockin_columns = [
         (index, name)
         for index, name in enumerate(columns)
@@ -1717,9 +1884,15 @@ def _attendance_zen_clockin_refund_formula(
     if not clockin_columns:
         raise ValueError("B类课程缺少共学/共修打卡列，已阻断打卡返款计算")
 
+    specs: list[ZenStageClockinRefundSpec] = []
     for column_index, field_name in clockin_columns:
         note_text = _normalize_text(_grid_cell_value(document, config_row_index, column_index))
-        cell_ref = _formula_cell_ref(column_index, row_number)
+        if not re.search(r"\d+\s*(?:次|周)", note_text):
+            note_text = _legacy_incentive_rule_text(
+                document,
+                section="clockin",
+                field_name=field_name,
+            )
         per_count = re.search(
             r"(\d+)\s*(?:次|周)\s*[×xX*]\s*(?:每(?:次|周))?\s*(\d+(?:\.\d+)?)\s*元\s*=\s*(\d+(?:\.\d+)?)\s*元?",
             note_text,
@@ -1730,8 +1903,16 @@ def _attendance_zen_clockin_refund_formula(
             limit = _to_float(per_count.group(3))
             if count <= 0 or amount <= 0 or abs(count * amount - limit) > 0.001:
                 raise ValueError(f"B类课程第3行“{field_name}”规则不自洽：{note_text}")
-            parts.append(f"MIN(IFERROR(VALUE({cell_ref}),0),{count})*{_format_numeric_cell(amount)}")
-            limits.append(limit)
+            specs.append(ZenStageClockinRefundSpec(
+                column_index=column_index,
+                field_name=field_name,
+                rules=tuple(
+                    ThresholdRefundRule(float(threshold), threshold * amount)
+                    for threshold in range(1, count + 1)
+                ),
+                per_count_amount=amount,
+                count_limit=count,
+            ))
             continue
 
         pairs = [
@@ -1742,19 +1923,27 @@ def _attendance_zen_clockin_refund_formula(
             raise ValueError(
                 f"B类课程第3行“{field_name}”备注无法解析：{note_text or '空'}"
             )
-        pairs.sort(key=lambda item: item[0], reverse=True)
-        expression = "0"
-        for count, amount in reversed(pairs):
+        rules = []
+        for count, amount in sorted(pairs):
             if count <= 0 or amount < 0:
                 raise ValueError(f"B类课程第3行“{field_name}”规则必须为非负有效值：{note_text}")
-            expression = (
-                f"IF(IFERROR(VALUE({cell_ref}),0)>={count},"
-                f"{_format_numeric_cell(amount)},{expression})"
-            )
-        parts.append(expression)
-        limits.append(max(amount for _, amount in pairs))
+            rules.append(ThresholdRefundRule(float(count), amount))
+        specs.append(ZenStageClockinRefundSpec(
+            column_index=column_index,
+            field_name=field_name,
+            rules=tuple(rules),
+        ))
+    return specs
 
-    return "=" + "+".join(parts), sum(limits)
+
+def _attendance_refund_period_count_expression(document: dict[str, Any], columns: list[str]) -> str:
+    """Convert the visible config value (for example ``第1周``) to its numeric period."""
+    refunded_index = _find_column_index(columns, "已返款")
+    if refunded_index is None:
+        raise ValueError("B类课程缺少‘已返款’周期配置列")
+    config_row_number = max(_normalize_document_data_start_row(document), 1)
+    period_cell_ref = f"${_excel_column_label(refunded_index)}${config_row_number}"
+    return f"IFERROR(VALUE(MID({period_cell_ref},2,LEN({period_cell_ref})-2)),0)"
 
 
 def _parse_clockin_rule_from_formula(value: Any) -> str:
@@ -1933,40 +2122,7 @@ def _build_video_config_document(
         attendance_document,
         columns,
     )
-    progress_by_key: dict[str, tuple[int, str]] = {}
-    for column_index in _progress_column_range(columns):
-        field_name = columns[column_index]
-        key = _course_item_key(field_name)
-        if key:
-            progress_by_key.setdefault(key, (column_index, field_name))
-
-    legacy_rows, legacy_error = _query_legacy_lesson_rows(course_name)
     rows: list[list[Any]] = []
-    used_progress_keys: set[str] = set()
-    legacy_lesson_id_map: dict[str, int] = {}
-
-    for legacy_index, legacy_row in enumerate(legacy_rows, start=1):
-        legacy_lesson_id = _normalize_text(legacy_row.get("lesson_id"))
-        if legacy_lesson_id:
-            legacy_lesson_id_map[legacy_lesson_id] = legacy_index
-        legacy_lesson_name = _normalize_text(legacy_row.get("lesson_name"))
-        lesson_name = _strip_course_name_prefix(legacy_lesson_name, course_name)
-        key, _item_type, _lesson_number_text, _order_index, _local_id = _course_item_parts(lesson_name)
-        progress = progress_by_key.get(key) if key else None
-        if progress is not None:
-            used_progress_keys.add(key)
-        config_row = {
-            "lesson_id": legacy_index,
-            "start_date": _format_legacy_value(legacy_row.get("start_date")),
-            "end_date": _format_legacy_value(legacy_row.get("end_date")),
-            "next_update": _format_legacy_value(legacy_row.get("next_update")),
-            "lesson_id2": _format_legacy_value(legacy_row.get("lesson_id2")),
-            "shop_id": _format_legacy_value(legacy_row.get("shop_id")),
-            "lesson_name": lesson_name,
-            "video_duration": _format_legacy_value(legacy_row.get("video_duration")),
-        }
-        config_row = _normalize_initial_zen_stage_next_update(config_row, course_name=course_name)
-        rows.append([config_row.get(column, "") for column in VIDEO_CONFIG_COLUMNS])
 
     field_row_index = max(int(attendance_document.get("field_row_index") or 0), 0)
     source_grid_rows = attendance_document.get("grid_rows")
@@ -1975,19 +2131,12 @@ def _build_video_config_document(
         for row in source_grid_rows
     ] if isinstance(source_grid_rows, list) else []
 
-    for fallback_index, column_index in enumerate(_progress_column_range(columns), start=1):
+    for column_index in _progress_column_range(columns):
         field_name = columns[column_index]
-        key, _item_type, _lesson_number_text, _order_index, _local_id = _course_item_parts(field_name)
-        if key and key in used_progress_keys:
-            continue
         header_link = ""
         if 0 <= field_row_index < len(grid_rows):
             header_link = note_sheet_inline_links.inline_cell_link_url(grid_rows[field_row_index][column_index])
         lesson_id2 = _lesson_id2_from_video_url(header_link)
-        if legacy_rows or not lesson_id2:
-            lesson_id2 = ""
-        if not legacy_rows and not lesson_id2:
-            continue
         rows.append([
             len(rows) + 1,
             "",
@@ -2007,9 +2156,7 @@ def _build_video_config_document(
     document["source_meta"] = {
         "course_name": course_name,
         **inherited_refund_meta,
-        "legacy_lesson_rows": len(legacy_rows),
-        "legacy_lesson_error": legacy_error,
-        "legacy_lesson_id_map": legacy_lesson_id_map,
+        "source": "attendance_template",
     }
     return document
 
@@ -2023,54 +2170,6 @@ def _build_video_data_document(attendance_document: dict[str, Any], video_config
         if _course_item_key(row.get("lesson_name")) and _normalize_text(row.get("lesson_id"))
     }
     source_meta = dict(video_config_document.get("source_meta") or {})
-    legacy_lesson_id_map = {
-        _normalize_text(key): int(value)
-        for key, value in dict(source_meta.get("legacy_lesson_id_map") or {}).items()
-        if _normalize_text(key) and _to_float(value) > 0
-    }
-    legacy_rows, legacy_error = _query_legacy_lesson_data_rows([int(item) for item in legacy_lesson_id_map])
-    if legacy_rows:
-        result: list[dict[str, Any]] = []
-        for local_index, legacy_row in enumerate(legacy_rows, start=1):
-            local_lesson_id = legacy_lesson_id_map.get(_normalize_text(legacy_row.get("lesson_id")))
-            if local_lesson_id is None:
-                continue
-            row = {
-                column: _format_legacy_value(legacy_row.get(column))
-                for column in VIDEO_DATA_COLUMNS
-            }
-            row["lesson_data_id"] = local_index
-            row["lesson_id"] = local_lesson_id
-            row["lesson_name"] = _strip_course_name_prefix(
-                _format_legacy_value(legacy_row.get("lesson_name")),
-                _normalize_text(source_meta.get("course_name")),
-            )
-            result.append(row)
-        document = _make_table_document_from_dicts(
-            columns=VIDEO_DATA_COLUMNS,
-            rows=result,
-            numeric_columns={
-                "lesson_data_id",
-                "stay_seconds",
-                "cum_seconds",
-                "studio_seconds",
-                "playback_seconds",
-                "num_of_comments",
-                "studio_amount",
-                "progress",
-                "shop_id",
-                "lesson_id",
-                "comment_times",
-                "money",
-            },
-            page_size=200,
-        )
-        document["source_meta"] = {
-            **source_meta,
-            "legacy_lesson_data_rows": len(legacy_rows),
-            "legacy_lesson_data_error": legacy_error,
-        }
-        return document
 
     source_time = datetime.now().isoformat(sep=" ", timespec="seconds")
     student_id_index = _find_column_index(columns, "学号")
@@ -2117,35 +2216,18 @@ def _build_clockin_config_document(
 ) -> dict[str, Any]:
     columns = _normalize_document_columns(attendance_document)
     clockin_index = _find_column_index(columns, "打卡数")
-    legacy_rows, legacy_error = _query_legacy_clockin_rows(course_name)
-    legacy_clockin_id_map: dict[str, int] = {}
     rows: list[list[Any]] = []
-    for local_index, legacy_row in enumerate(legacy_rows, start=1):
-        legacy_clockin_id = _normalize_text(legacy_row.get("clockin_id"))
-        if legacy_clockin_id:
-            legacy_clockin_id_map[legacy_clockin_id] = local_index
-        rows.append([
-            local_index,
-            _strip_course_name_prefix(_format_legacy_value(legacy_row.get("name")), course_name),
-            _format_legacy_value(legacy_row.get("url")),
-            _format_legacy_value(legacy_row.get("start_date")),
-            _format_legacy_value(legacy_row.get("end_date")),
-            _format_legacy_value(legacy_row.get("days")),
-            _format_legacy_value(legacy_row.get("clockin_user_num")),
-            _format_legacy_value(legacy_row.get("total_user_num")),
-        ])
-    if not rows:
-        clockin_url = ""
-        if clockin_index is not None:
-            field_row_index = max(int(attendance_document.get("field_row_index") or 0), 0)
-            source_grid_rows = attendance_document.get("grid_rows")
-            grid_rows = [
-                note_sheet_inline_links.normalize_row(row, len(columns))
-                for row in source_grid_rows
-            ] if isinstance(source_grid_rows, list) else []
-            if 0 <= field_row_index < len(grid_rows):
-                clockin_url = note_sheet_inline_links.inline_cell_link_url(grid_rows[field_row_index][clockin_index])
-        rows.append([1, "打卡数" if clockin_index is not None else "", clockin_url, "", "", "", "", ""])
+    clockin_url = ""
+    if clockin_index is not None:
+        field_row_index = max(int(attendance_document.get("field_row_index") or 0), 0)
+        source_grid_rows = attendance_document.get("grid_rows")
+        grid_rows = [
+            note_sheet_inline_links.normalize_row(row, len(columns))
+            for row in source_grid_rows
+        ] if isinstance(source_grid_rows, list) else []
+        if 0 <= field_row_index < len(grid_rows):
+            clockin_url = note_sheet_inline_links.inline_cell_link_url(grid_rows[field_row_index][clockin_index])
+    rows.append([1, "打卡数" if clockin_index is not None else "", clockin_url, "", "", "", "", ""])
     document = _create_simple_document(
         columns=CLOCKIN_CONFIG_COLUMNS,
         rows=rows,
@@ -2154,9 +2236,7 @@ def _build_clockin_config_document(
     )
     document["source_meta"] = {
         "course_name": course_name,
-        "legacy_clockin_rows": len(legacy_rows),
-        "legacy_clockin_error": legacy_error,
-        "legacy_clockin_id_map": legacy_clockin_id_map,
+        "source": "attendance_template",
     }
     return document
 
@@ -2169,64 +2249,6 @@ def _build_clockin_data_document(
     rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(attendance_document)]
     user_id_index = _find_column_index(columns, "用户ID")
     clockin_index = _find_column_index(columns, "打卡数")
-    source_meta = dict(clockin_config_document.get("source_meta") or {})
-    legacy_clockin_id_map = {
-        _normalize_text(key): int(value)
-        for key, value in dict(source_meta.get("legacy_clockin_id_map") or {}).items()
-        if _normalize_text(key) and _to_float(value) > 0
-    }
-    legacy_rows, legacy_error = _query_legacy_clockin_data_rows([int(item) for item in legacy_clockin_id_map])
-    result_dicts: list[dict[str, Any]] = []
-    if legacy_rows:
-        for local_index, legacy_row in enumerate(legacy_rows, start=1):
-            local_clockin_id = legacy_clockin_id_map.get(_normalize_text(legacy_row.get("clockin_id")))
-            if local_clockin_id is None:
-                continue
-            result_dicts.append({
-                "clockin_data_id": local_index,
-                "user_id2": legacy_row.get("user_id2"),
-                "nickname": legacy_row.get("nickname"),
-                "groupname": legacy_row.get("groupname"),
-                "publish_time": legacy_row.get("publish_time"),
-                "update_content": legacy_row.get("update_content"),
-                "update_title": legacy_row.get("update_title"),
-                "update_type": legacy_row.get("update_type"),
-                "tags": legacy_row.get("tags"),
-                "read_num": legacy_row.get("read_num"),
-                "like_num": legacy_row.get("like_num"),
-                "comment_num": legacy_row.get("comment_num"),
-                "is_essence": legacy_row.get("is_essence") if legacy_row.get("is_essence") is not None else "",
-                "share_num": legacy_row.get("share_num"),
-                "update_url": legacy_row.get("update_url"),
-                "clockin_name": _strip_course_name_prefix(
-                    legacy_row.get("clockin_name"),
-                    _normalize_text(source_meta.get("course_name")),
-                ),
-                "is_repair": legacy_row.get("is_repair") if legacy_row.get("is_repair") is not None else "",
-                "task_date": legacy_row.get("task_date"),
-                "extra": legacy_row.get("extra"),
-                "clockin_id": local_clockin_id,
-            })
-        clockin_data_columns = _clockin_data_columns_for_rows(result_dicts)
-        document = _create_simple_document(
-            columns=clockin_data_columns,
-            rows=[_clockin_data_dict_to_row(row, clockin_data_columns) for row in result_dicts],
-            numeric_columns={
-                "clockin_data_id",
-                "read_num",
-                "like_num",
-                "comment_num",
-                "share_num",
-                "clockin_id",
-            },
-            page_size=200,
-        )
-        document["source_meta"] = {
-            "legacy_clockin_data_rows": len(legacy_rows),
-            "legacy_clockin_data_error": legacy_error,
-        }
-        return document
-
     result: list[list[Any]] = []
     if clockin_index is not None:
         local_index = 0
@@ -2699,6 +2721,293 @@ def _update_course_sheet_document(sheet: SheetDocument, document: dict[str, Any]
     sheet.document_json = document
     sheet.version = max(int(sheet.version or 1), 1) + 1
     sheet.updated_at = time.time()
+
+
+def _zen_catalog_resource_id(value: Any) -> str:
+    match = re.search(r"(?:[?&#]|^)resource_id=([^&#]+)", _normalize_text(value))
+    return match.group(1).strip() if match else ""
+
+
+def _zen_catalog_course_id(value: Any) -> str:
+    match = re.search(r"(?:[?&#]|^)course_id=([^&#]+)", _normalize_text(value))
+    return match.group(1).strip() if match else ""
+
+
+def _zen_catalog_week_number(value: Any) -> int | None:
+    match = re.search(r"第\s*(\d+)\s*周", _normalize_text(value))
+    return int(match.group(1)) if match else None
+
+
+def _merge_progressive_zen_catalog_rows(
+    existing_rows: list[dict[str, Any]],
+    catalog_weeks: dict[str, list[dict[str, Any]]],
+    *,
+    course_name: str,
+    expected_lesson_count: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Align video configuration to the authoritative current Xiaoe catalog."""
+    if expected_lesson_count <= 0:
+        raise ValueError("B类渐进目录缺少全期预计课数")
+    if not catalog_weeks:
+        raise ValueError("B类渐进目录为空，已阻断配置同步")
+
+    existing_by_resource: dict[str, dict[str, Any]] = {}
+    existing_resource_week: dict[str, int] = {}
+    existing_by_week: dict[int, list[dict[str, Any]]] = {}
+    for row in existing_rows:
+        resource_id = _zen_catalog_resource_id(row.get("lesson_id2"))
+        if not resource_id:
+            raise ValueError(f"已有视频配置缺少 resource_id：{row.get('lesson_name') or row.get('lesson_id')}")
+        if resource_id in existing_by_resource:
+            raise ValueError(f"已有视频配置出现重复 resource_id：{resource_id}")
+        existing_by_resource[resource_id] = dict(row)
+        week = _zen_catalog_week_number(row.get("lesson_name"))
+        if week is None:
+            raise ValueError(f"已有视频配置无法识别周次：{row.get('lesson_name')}")
+        existing_resource_week[resource_id] = week
+        existing_by_week.setdefault(week, []).append(dict(row))
+
+    anchor_candidates: list[datetime] = []
+    for resource_id, row in existing_by_resource.items():
+        start_date = _parse_datetime_cell(row.get("start_date"))
+        if start_date is not None:
+            anchor_candidates.append(start_date - timedelta(weeks=existing_resource_week[resource_id] - 1))
+    if not anchor_candidates:
+        raise ValueError("已有视频配置缺少可用 start_date，无法推导新增周次时间")
+    anchor = min(anchor_candidates)
+
+    end_dates = [
+        _parse_datetime_cell(row.get("end_date"))
+        for row in existing_rows
+        if _parse_datetime_cell(row.get("end_date")) is not None
+    ]
+    common_end_date = max(end_dates) if end_dates else None
+    shop_ids = [int(_to_float(row.get("shop_id"))) for row in existing_rows if _to_float(row.get("shop_id")) > 0]
+    default_shop_id = shop_ids[0] if shop_ids else 1
+    next_lesson_id = max([int(_to_float(row.get("lesson_id"))) for row in existing_rows] or [0]) + 1
+
+    merged_rows: list[dict[str, Any]] = []
+    seen_resources: set[str] = set()
+    catalog_resource_ids = {
+        _zen_catalog_resource_id(raw_lesson.get("url"))
+        for raw_lessons in catalog_weeks.values()
+        for raw_lesson in raw_lessons
+    }
+    added_lessons: list[dict[str, Any]] = []
+    replaced_lessons: list[dict[str, Any]] = []
+    published_through_week = 0
+    for week_label, raw_lessons in catalog_weeks.items():
+        week = _zen_catalog_week_number(week_label)
+        if week is None or week <= 0:
+            raise ValueError(f"B类目录出现无法识别的周标题：{week_label}")
+        published_through_week = max(published_through_week, week)
+        for week_index, raw_lesson in enumerate(raw_lessons):
+            lesson_name = _normalize_text(raw_lesson.get("name"))
+            lesson_url = _normalize_text(raw_lesson.get("url"))
+            resource_id = _zen_catalog_resource_id(lesson_url)
+            if not lesson_name or not resource_id:
+                raise ValueError(f"B类目录课次缺少标题或 resource_id：{week_label} / {lesson_name or lesson_url}")
+            if resource_id in seen_resources:
+                raise ValueError(f"B类目录出现重复 resource_id：{resource_id}")
+            seen_resources.add(resource_id)
+
+            existing = existing_by_resource.get(resource_id)
+            if existing is not None:
+                existing_week = existing_resource_week[resource_id]
+                if existing_week != week:
+                    raise ValueError(
+                        f"B类目录已配置课次周次发生变化：{existing.get('lesson_name')}，"
+                        f"原第{existing_week}周，现第{week}周"
+                    )
+                merged_rows.append(existing)
+                continue
+
+            # The live catalog is authoritative.  An inherited candidate at
+            # the same week/position is a replacement, not evidence that the
+            # new directory is incomplete.  Reuse the stable local lesson id
+            # and schedule, but clear its old learning data in the caller.
+            week_candidates = existing_by_week.get(week, [])
+            replacement = week_candidates[week_index] if week_index < len(week_candidates) else None
+            replacement_resource_id = _zen_catalog_resource_id(replacement.get("lesson_id2")) if replacement else ""
+            if replacement is not None and replacement_resource_id not in catalog_resource_ids:
+                row = dict(replacement)
+                row["lesson_id2"] = lesson_url
+                row["lesson_name"] = f"{_normalize_text(course_name)}-第{week}周={lesson_name}"
+                merged_rows.append(row)
+                replaced_lessons.append({
+                    "week": week,
+                    "lesson_id": int(_to_float(row.get("lesson_id"))),
+                    "old_resource_id": replacement_resource_id,
+                    "new_resource_id": resource_id,
+                    "name": lesson_name,
+                })
+                continue
+
+            start_date = anchor + timedelta(weeks=week - 1)
+            row = {
+                "lesson_id": next_lesson_id,
+                "start_date": _format_datetime_for_sheet(start_date),
+                "end_date": _format_datetime_for_sheet(common_end_date),
+                "next_update": _format_datetime_for_sheet(start_date + timedelta(days=7)),
+                "lesson_id2": lesson_url,
+                "shop_id": default_shop_id,
+                "lesson_name": f"{_normalize_text(course_name)}-第{week}周={lesson_name}",
+                "video_duration": "",
+            }
+            next_lesson_id += 1
+            merged_rows.append(row)
+            added_lessons.append({
+                "week": week,
+                "name": lesson_name,
+                "resource_id": resource_id,
+                "lesson_id": row["lesson_id"],
+            })
+
+    merged_resource_ids = {_zen_catalog_resource_id(row.get("lesson_id2")) for row in merged_rows}
+    removed_lessons = [
+        {
+            "week": existing_resource_week[resource_id],
+            "lesson_id": int(_to_float(row.get("lesson_id"))),
+            "resource_id": resource_id,
+            "name": _normalize_text(row.get("lesson_name")),
+        }
+        for resource_id, row in existing_by_resource.items()
+        if resource_id not in seen_resources and resource_id not in {
+            item["old_resource_id"] for item in replaced_lessons
+        } and resource_id not in merged_resource_ids
+    ]
+    if len(merged_rows) > expected_lesson_count:
+        raise ValueError(
+            f"B类已发布课次 {len(merged_rows)} 超过全期预计 {expected_lesson_count}，已阻断自动同步"
+        )
+
+    return merged_rows, {
+        "existing_lesson_count": len(existing_rows),
+        "published_lesson_count": len(merged_rows),
+        "published_through_week": published_through_week,
+        "added_lesson_count": len(added_lessons),
+        "added_lessons": added_lessons,
+        "replaced_lesson_count": len(replaced_lessons),
+        "replaced_lessons": replaced_lessons,
+        "removed_lesson_count": len(removed_lessons),
+        "removed_lessons": removed_lessons,
+    }
+
+
+def _remove_video_data_for_lesson_ids(
+    document: dict[str, Any],
+    lesson_ids: set[int],
+) -> tuple[dict[str, Any], int]:
+    if not lesson_ids:
+        return document, 0
+    rows = _document_dict_rows(document)
+    kept_rows = [row for row in rows if int(_to_float(row.get("lesson_id"))) not in lesson_ids]
+    removed_count = len(rows) - len(kept_rows)
+    if not removed_count:
+        return document, 0
+    _renumber_rows(kept_rows, "lesson_data_id")
+    return _make_table_document_from_dicts(
+        columns=_normalize_document_columns(document) or VIDEO_DATA_COLUMNS,
+        rows=kept_rows,
+        numeric_columns={
+            "lesson_data_id", "stay_seconds", "cum_seconds", "studio_seconds",
+            "playback_seconds", "num_of_comments", "studio_amount", "progress",
+            "shop_id", "lesson_id", "comment_times", "money",
+        },
+        page_size=200,
+        source_meta=dict(document.get("source_meta") or {}),
+    ), removed_count
+
+
+def sync_progressive_zen_catalog(
+    session: Session,
+    *,
+    attendance_sheet_id: int,
+    course_name: str,
+    catalog_url: str,
+    catalog_weeks: dict[str, list[dict[str, Any]]],
+    expected_lesson_count: int | None = None,
+) -> dict[str, Any]:
+    """Step 0 mf half: persist the browser catalog and refresh the template."""
+    attendance = _get_sheet(session, attendance_sheet_id)
+    bundle = _load_course_sheet_bundle(session, attendance=attendance)
+    video_config_sheet = bundle[VIDEO_CONFIG_SHEET_KEY]
+    video_data_sheet = bundle[VIDEO_DATA_SHEET_KEY]
+    current_document = dict(video_config_sheet.document_json or {})
+    source_meta = dict(current_document.get("source_meta") or {})
+    if not source_meta.get("progressive_release"):
+        raise ValueError("当前课程未声明 progressive_release，禁止自动扩展目录")
+
+    configured_expected_count = int(_to_float(source_meta.get("expected_lesson_count")))
+    effective_expected_count = int(expected_lesson_count or configured_expected_count)
+    if configured_expected_count > 0 and effective_expected_count != configured_expected_count:
+        raise ValueError(
+            f"Step 0 全期课数与现有配置不一致：现有={configured_expected_count}，请求={effective_expected_count}"
+        )
+
+    existing_rows = _document_dict_rows(current_document)
+    storage_course_name = _normalize_text(source_meta.get("course_name")) or _normalize_text(course_name)
+    merged_rows, merge_summary = _merge_progressive_zen_catalog_rows(
+        existing_rows,
+        catalog_weeks,
+        course_name=storage_course_name,
+        expected_lesson_count=effective_expected_count,
+    )
+    source_meta.update({
+        "progressive_release": True,
+        "expected_lesson_count": effective_expected_count,
+        "published_lesson_count": merge_summary["published_lesson_count"],
+        "published_through_week": merge_summary["published_through_week"],
+        "catalog_verified_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "catalog_url": _normalize_text(catalog_url),
+    })
+    course_id = _zen_catalog_course_id(catalog_url)
+    if course_id:
+        source_meta["config_source"] = f"xiaoe_catalog:{course_id}"
+
+    next_document = _make_table_document_from_dicts(
+        columns=_normalize_document_columns(current_document) or VIDEO_CONFIG_COLUMNS,
+        rows=merged_rows,
+        numeric_columns={"lesson_id", "shop_id", "video_duration"},
+        page_size=100,
+        source_meta=source_meta,
+    )
+    config_changed = next_document != current_document
+    if config_changed:
+        _update_course_sheet_document(video_config_sheet, next_document)
+        session.add(video_config_sheet)
+        session.flush()
+
+    invalid_lesson_ids = {
+        int(item["lesson_id"])
+        for item in [*merge_summary["replaced_lessons"], *merge_summary["removed_lessons"]]
+        if int(item.get("lesson_id") or 0) > 0
+    }
+    video_data_document = dict(video_data_sheet.document_json or {})
+    next_video_data_document, removed_video_data_rows = _remove_video_data_for_lesson_ids(
+        video_data_document,
+        invalid_lesson_ids,
+    )
+    if removed_video_data_rows:
+        _update_course_sheet_document(video_data_sheet, next_video_data_document)
+        session.add(video_data_sheet)
+        session.flush()
+
+    rebuild_summary = rebuild_nianzhu_attendance_from_course_sheets(
+        session,
+        attendance_sheet_id=attendance_sheet_id,
+        active_only=True,
+        course_name=course_name,
+    )
+    return {
+        "attendance_sheet_id": attendance_sheet_id,
+        "course_name": course_name,
+        "catalog_url": _normalize_text(catalog_url),
+        "config_changed": config_changed,
+        "removed_video_data_rows": removed_video_data_rows,
+        **merge_summary,
+        "template": rebuild_summary,
+    }
 
 
 def _ensure_course_source_meta(document: dict[str, Any], *, course_name: str) -> bool:
@@ -3550,7 +3859,7 @@ def _load_video_config(
     items: list[VideoConfigItem] = []
     source_meta = dict(document.get("source_meta") or {})
     course_name = _normalize_text(source_meta.get("course_name"))
-    for row in _sheet_rows_as_dicts(document):
+    for sequence, row in enumerate(_sheet_rows_as_dicts(document), start=1):
         lesson_id = _normalize_text(row.get("lesson_id"))
         lesson_name = _normalize_text(row.get("lesson_name"))
         course_key = _course_item_key(lesson_name)
@@ -3599,12 +3908,8 @@ def _load_video_config(
                 text_rules_by_version[version] = dict(custom_text_rules or rules)
             else:
                 text_rules_by_version[version] = {}
-        try:
-            order_index = int(_to_float(lesson_id))
-        except ValueError:
-            order_index = len(items) + 1
         items.append(VideoConfigItem(
-            order_index=order_index,
+            order_index=sequence,
             lesson_id=lesson_id,
             course_key=course_key,
             lesson_name=lesson_name,
@@ -3620,7 +3925,7 @@ def _load_video_config(
             course_name=course_name,
             lesson_url=_video_config_url(row),
         ))
-    return sorted(items, key=lambda item: item.order_index)
+    return items
 
 
 LEGACY_VIDEO_UPDATE_COLUMNS = [
@@ -3682,6 +3987,7 @@ def _legacy_video_items_frame(indexed_rows: list[tuple[int, dict[str, Any]]]):
         ]:
             record[column] = _format_numeric_cell(_to_float(record.get(column)))
         record["update_time"] = _parse_datetime_cell(record.get("update_time"))
+        record["finish_time"] = _parse_datetime_cell(record.get("finish_time"))
         record["study_state"] = _normalize_text(record.get("study_state"))
         records.append(record)
         indexes.append(sequence)
@@ -3789,6 +4095,8 @@ def _legacy_video_study_result_b(
     items = _legacy_video_items_frame(indexed_rows)
     items.sort_values("update_time", inplace=True)
     _custom_fillna_like_kq5034(items, 0, numeric_fill_value=0)
+    # 空完成时间不能被通用 fillna 变成 Unix epoch（1970-01-01）。
+    items["finish_time"] = items["finish_time"].apply(_parse_datetime_cell)
 
     def update_single_progress(item):
         if pd.isna(item["cum_seconds"]):
@@ -3796,20 +4104,41 @@ def _legacy_video_study_result_b(
         if pd.isna(item["progress"]):
             item["progress"] = 0
 
-        if item["progress"] < 100 and (item["cum_seconds"] >= 1800 or "已完成" in str(item["study_state"])):
+        # 修道班只有平台明确完成或实际进度达到 100% 才算完整看完。
+        # 累计观看时长只能用于展示，不能替代完成状态、也不能触发返款。
+        if item["progress"] < 100 and "已完成" in str(item["study_state"]):
             item["progress"] = 100
 
         return item
 
     items = items.apply(update_single_progress, axis=1)
-    x = items.loc[items["progress"].idxmax()]
+    completed_items = items[items["progress"] >= 100]
+    x = completed_items.iloc[0] if not completed_items.empty else items.loc[items["progress"].idxmax()]
+    updated_fields: dict[str, Any] = {}
 
     if x["progress"] >= 100:
         start_date = pd.to_datetime(lesson.start_date)
-        update_time = pd.to_datetime(x["update_time"])
+        finish_time = pd.to_datetime(x["finish_time"])
+        if pd.isna(finish_time):
+            completed_position = items.index.get_loc(x.name)
+            if completed_position == 0:
+                # 首次采集就已完成，只能确定完成发生在开课至本次采集之间。
+                # 按乐观原则取区间下界，即课程开始时间。
+                finish_time = start_date
+            else:
+                # 上次采集未完成、本次采集已完成，完成时间位于两次采集之间。
+                # 按乐观原则取上次采集时间，而不是本次下载时间。
+                finish_time = pd.to_datetime(items.iloc[completed_position - 1]["update_time"])
+                if pd.isna(finish_time):
+                    finish_time = start_date
+                elif not pd.isna(start_date):
+                    finish_time = max(finish_time, start_date)
+            if not pd.isna(finish_time):
+                updated_fields["finish_time"] = _format_legacy_value(finish_time.to_pydatetime())
+
         target_complete_date = start_date + pd.Timedelta(days=0.5 + 7)
-        diff = update_time - target_complete_date
-        if diff.days < 1:
+        diff = finish_time - target_complete_date
+        if pd.isna(diff) or diff.days < 1:
             text = "准时完成"
         else:
             delay_days = diff.days - 0.5
@@ -3818,13 +4147,13 @@ def _legacy_video_study_result_b(
     else:
         progress, cum_seconds = x["progress"], x["cum_seconds"]
         if progress:
-            text = f"进度{progress}%"
+            text = f"进度{_round_progress_percent(progress)}%"
         elif cum_seconds:
             text = f"观看{cum_seconds // 60}分钟"
         else:
             text = ""
 
-    return LegacyVideoStudyResult(text=text, keep_sequence=int(x.name), updated_fields={})
+    return LegacyVideoStudyResult(text=text, keep_sequence=int(x.name), updated_fields=updated_fields)
 
 
 def _legacy_video_study_result_c(
@@ -3898,10 +4227,15 @@ def _compute_legacy_video_study_results(
         lesson = video_config_by_lesson_id[group_key[1]]
         result = _legacy_video_study_result(lesson, indexed_rows)
         if result.updated_fields and not _has_legacy_video_rows_to_remove(indexed_rows, result.keep_sequence):
+            persistent_fields = {
+                key: value
+                for key, value in result.updated_fields.items()
+                if key == "finish_time"
+            }
             result = LegacyVideoStudyResult(
                 text=result.text,
                 keep_sequence=result.keep_sequence,
-                updated_fields={},
+                updated_fields=persistent_fields,
             )
         results[group_key] = result
     return results, preserved_unusable_rows
@@ -4095,9 +4429,23 @@ def _clockin_title_allowlist_for_course(course_name: str) -> set[str] | None:
         titles = {f"念住学修日志-{index:02}" for index in range(1, 22)}
         if edition:
             titles.update(f"第{edition}届念住学修日志-{index:02}" for index in range(1, 22))
+        titles.update(f"第{index:02}天" for index in range(1, 25))
+        titles.update(f"第{index}天" for index in range(1, 25))
         return titles
 
     return None
+
+
+def _is_allowed_clockin_title(title: str, allowed_titles: set[str] | None) -> bool:
+    if allowed_titles is None:
+        return True
+    if title in allowed_titles:
+        return True
+    match = re.match(r"^第0?(\d{1,2})天[：:]", title)
+    if not match:
+        return False
+    day = int(match.group(1))
+    return f"第{day:02}天" in allowed_titles or f"第{day}天" in allowed_titles
 
 
 def _resolve_course_name_from_documents(
@@ -4130,7 +4478,7 @@ def _collect_clockin_data(
             title = _normalize_text(row.get("update_title"))
             if title.startswith("测试-"):
                 continue
-            if allowed_titles is not None and title not in allowed_titles:
+            if not _is_allowed_clockin_title(title, allowed_titles):
                 continue
             task_date = _normalize_text(row.get("task_date"))
             publish_time = _parse_datetime_cell(row.get("publish_time"))
@@ -4176,6 +4524,8 @@ def _clockin_count_for_identity_keys(
 def _clockin_output_fields(
     clockin_config_document: dict[str, Any],
     columns: list[str],
+    *,
+    course_name: str = "",
 ) -> list[tuple[str, str, int]]:
     config_names = [
         _normalize_text(row.get("name"))
@@ -4186,8 +4536,25 @@ def _clockin_output_fields(
     result: list[tuple[str, str, int]] = []
     seen: set[tuple[str, int]] = set()
     for field_name in config_names:
-        output_name = field_name
+        output_name = _strip_course_name_prefix(field_name, course_name)
         column_index = _find_column_index(columns, output_name)
+        if column_index is None:
+            # B-class configuration titles commonly keep the Xiaoe course title
+            # (for example ``d260712禅宗13期一阶``), while the workbook uses the
+            # operational title (for example ``修道班13期1阶``).  The business
+            # field suffix is stable and must be matched independently of that
+            # presentation-name difference.
+            normalized_field_name = _normalize_text(field_name)
+            for marker in ("共学打卡", "共修打卡"):
+                marker_index = normalized_field_name.find(marker)
+                if marker_index < 0:
+                    continue
+                candidate = normalized_field_name[marker_index:]
+                candidate_index = _find_column_index(columns, candidate)
+                if candidate_index is not None:
+                    output_name = candidate
+                    column_index = candidate_index
+                    break
         if column_index is None and field_name in {"打卡", "每日打卡"}:
             output_name = "打卡数"
             column_index = _find_column_index(columns, output_name)
@@ -4370,8 +4737,23 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         video_config_document,
         timed_video_rules_override=_attendance_video_refund_rules_override(current_document, columns),
     )
+    current_document, removed_legacy_video_columns = _remove_legacy_collapsed_video_progress_columns(
+        current_document,
+        video_config,
+    )
+    if removed_legacy_video_columns:
+        schema_summary["schema_removed_legacy_video_columns"] = removed_legacy_video_columns
     current_document, inserted_video_columns = _ensure_video_progress_columns(current_document, video_config)
-    if inserted_video_columns:
+    current_document, reordered_video_columns = _ensure_video_progress_column_order(current_document, video_config)
+    current_document, visible_course_columns = ensure_attendance_course_columns_visible(
+        current_document,
+        video_config,
+    )
+    if visible_course_columns:
+        schema_summary["schema_unhidden_course_columns"] = visible_course_columns
+    if reordered_video_columns:
+        schema_summary["schema_reordered_video_columns"] = reordered_video_columns
+    if removed_legacy_video_columns or inserted_video_columns or reordered_video_columns:
         schema_summary["schema_inserted_video_columns"] = inserted_video_columns
         columns = _normalize_document_columns(current_document)
         rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
@@ -4388,29 +4770,50 @@ def rebuild_nianzhu_attendance_from_course_sheets(
             "当前应返款": _find_column_index(columns, "当前应返款"),
         }
         rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
+    current_document, lifecycle_repaired_rows = _order_attendance_rows_by_dynamic_expiration(current_document)
+    if lifecycle_repaired_rows:
+        schema_summary["tracking_lifecycle_repaired_rows"] = lifecycle_repaired_rows
+        rows = [_normalize_row(row, len(columns)) for row in _extract_document_rows(current_document)]
     zen_refund_items = [
         item for item in video_config if item.participates_refund and _is_zen_stage_video_item(item)
     ]
+    progressive_expected_count: int | None = None
+    video_config_source_meta = dict(video_config_document.get("source_meta") or {})
+    if video_config_source_meta.get("progressive_release"):
+        configured_total = _to_float(video_config_source_meta.get("expected_lesson_count"))
+        if configured_total > 0:
+            progressive_expected_count = int(configured_total)
     legacy_zen_video_refund_amount = 0.0
+    zen_clockin_specs_by_column: dict[int, ZenStageClockinRefundSpec] = {}
     if zen_refund_items:
         _, legacy_zen_video_refund_amount, _ = _attendance_zen_video_refund_rule(
             current_document,
             columns,
             expected_refund_count=len(zen_refund_items),
+            expected_total_count=progressive_expected_count,
         )
         # Validate the row-3 B-class clock-in declarations before touching rows.
         _attendance_zen_clockin_refund_formula(
             current_document,
             columns,
             row_number=_normalize_document_data_start_row(current_document) + 1,
+            colearn_period_reference=_attendance_refund_period_count_expression(current_document, columns),
         )
+        zen_clockin_specs_by_column = {
+            spec.column_index: spec
+            for spec in _attendance_zen_clockin_refund_specs(current_document, columns)
+        }
     video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
     video_source_meta = dict(video_config_document.get("source_meta") or {})
     international_shift_user_ids = _international_video_shift_user_ids(video_source_meta)
     international_shift_user_ids.update(_registration_overseas_student_user_ids(session, attendance=attendance))
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
     clockin_rules = _load_clockin_rules(clockin_config_document)
-    clockin_output_fields = _clockin_output_fields(clockin_config_document, columns)
+    clockin_output_fields = _clockin_output_fields(
+        clockin_config_document,
+        columns,
+        course_name=effective_course_name,
+    )
     clockin_data_document = dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {})
     clockin_title_allowlist = _clockin_title_allowlist_for_course(
         _resolve_course_name_from_documents(
@@ -4528,6 +4931,8 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                     override_value = _video_revision_value_for_item(item, rule_version, override_label)
                     if override_value is not None:
                         value = override_value
+            if _is_zen_stage_video_item(item):
+                value = _normalize_zen_stage_progress_text(value)
             if next_row[column_index] != value:
                 next_row[column_index] = value
                 updated_cells += 1
@@ -4596,8 +5001,15 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                 clockin_refund_rules,
                 clockin_count,
             )
+            zen_clockin_spec = zen_clockin_specs_by_column.get(column_index)
+            if zen_clockin_spec is not None:
+                _, clockin_color = highlight_threshold_refund_progress(
+                    list(zen_clockin_spec.rules),
+                    clockin_count,
+                )
             if output_name == "打卡数":
                 clockin_refund += field_refund
+            if output_name == "打卡数" or zen_clockin_spec is not None:
                 if _set_attendance_cell_background(
                     current_document,
                     cell_meta,
@@ -4619,6 +5031,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
                 current_document,
                 columns,
                 row_number=row_number,
+                colearn_period_reference=_attendance_refund_period_count_expression(current_document, columns),
             )[0]
             if zen_refund_items
             else _build_clockin_refund_formula(
@@ -5407,7 +5820,11 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
 
     clockin_config_document = dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {})
     clockin_rules = _load_clockin_rules(clockin_config_document)
-    clockin_output_fields = _clockin_output_fields(clockin_config_document, columns)
+    clockin_output_fields = _clockin_output_fields(
+        clockin_config_document,
+        columns,
+        course_name=effective_course_name,
+    )
     clockin_data_document = dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {})
     clockin_title_allowlist = _clockin_title_allowlist_for_course(
         _resolve_course_name_from_documents(

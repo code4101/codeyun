@@ -226,6 +226,7 @@ const isGraphUpdating = ref(false);
 let graphFilterQueued = false;
 let graphRelayoutQueued = false;
 let inactiveGraphRefreshPending = false;
+let initialGraphMountPending = true;
 let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
 let deferredInitialRelayoutTimer: ReturnType<typeof setTimeout> | null = null;
 const isGlobalGraph = computed(() => !props.graphMode || props.graphMode === 'global');
@@ -1327,6 +1328,7 @@ watch(sourceNotesVersion, async () => {
         inactiveGraphRefreshPending = true;
         return;
     }
+    if (initialGraphMountPending) return;
     if (!isRefreshing.value) {
         await applyGraphFilters(true, false);
     }
@@ -1370,9 +1372,11 @@ onMounted(async () => {
         if (!isCachedGlobalGraphFresh()) {
           void nextTick(() => refreshGraph(getAppliedDataProgram(), false, { background: true }));
         }
+        initialGraphMountPending = false;
         return;
     }
     await refreshGraph();
+    initialGraphMountPending = false;
 });
 
 watch(isActive, async (active) => {

@@ -165,12 +165,9 @@ from backend.core.ai.git_tools import (
     create_git_commit,
     inspect_git_repository,
 )
-from backend.core.runtime.long_tasks import (
-    LongTaskContext,
-    LongTaskManager,
-    LongTaskNotFoundError,
-    make_long_task_progress_heartbeat,
-)
+from backend.core.jobs.local_runtime import get_local_job_run, serialize_local_job_run, submit_local_job
+from backend.core.jobs.resource_keys import device_media_list_resource_key
+from backend.core.jobs.result_store import read_local_job_result_snapshot, write_local_job_result_snapshot
 from backend.core.ai.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
@@ -216,7 +213,6 @@ MEDIA_STREAM_TOKEN_EXPIRE_HOURS = 12
 REMOTE_MEDIA_LIST_TIMEOUT_SECONDS = 15 * 60
 _GIT_REDUCTION_RUN_STATE: Dict[str, Dict[str, Any]] = {}
 _GIT_REDUCTION_RUN_STATE_LOCK = threading.Lock()
-_DEVICE_MEDIA_LIST_TASK_MANAGER = LongTaskManager("device-media-list", max_workers=2, max_records=64)
 
 
 class CodexDailySummaryMultiRunRequest(BaseModel):
@@ -422,6 +418,8 @@ def _filesystem_payload(
         payload.pop("recursive", None)
     if not payload.get("sort_program", {}).get("rules"):
         payload.pop("sort_program", None)
+    if not payload.get("excluded_directory_names"):
+        payload.pop("excluded_directory_names", None)
     if payload.get("recursive_stats_source") == "indexed":
         payload.pop("recursive_stats_source", None)
     if payload.get("sort_mode") == "path":
@@ -723,11 +721,19 @@ def _index_device_media_payload(
         upsert_device_file_metadata_batch(session, entry.device_id, snapshots)
 
 
-def _media_task_progress_callback(context: LongTaskContext):
-    return make_long_task_progress_heartbeat(context)
+def _media_task_progress_callback(context):
+    def heartbeat(progress: dict[str, Any]) -> None:
+        context.heartbeat(
+            stage=str(progress.get("stage") or "running"),
+            message=str(progress.get("message") or "运行中"),
+            progress_current=progress.get("progress_current"),
+            progress_total=progress.get("progress_total"),
+        )
+
+    return heartbeat
 
 
-def _run_local_media_list_task(entry_id: str, req: MediaListRequest, context: LongTaskContext) -> dict:
+def _run_local_media_list_task(entry_id: str, req: MediaListRequest, context) -> dict:
     with Session(engine) as task_session:
         entry = task_session.get(UserDevice, entry_id)
         if entry is None:
@@ -794,7 +800,7 @@ def _run_remote_media_list_task(
     remote_base_url: str,
     headers: dict[str, str],
     req_payload: dict[str, Any],
-    context: LongTaskContext,
+    context,
 ) -> dict:
     start_payload, start_error = _request_remote_json_direct(
         remote_base_url,
@@ -869,7 +875,7 @@ def _run_remote_media_list_sync_task(
     remote_base_url: str,
     headers: dict[str, str],
     req_payload: dict[str, Any],
-    context: LongTaskContext,
+    context,
 ) -> dict:
     context.heartbeat(stage="remote-sync", message="远程设备暂不支持任务心跳，正在等待媒体列表返回")
     payload, error_response = _request_remote_json_direct(
@@ -887,6 +893,61 @@ def _run_remote_media_list_sync_task(
         if entry is not None:
             _index_device_media_payload(task_session, entry, root, payload, response_key="media")
     return payload
+
+
+def run_device_media_list_local_job(context, payload: dict[str, Any]) -> dict[str, Any]:
+    entry_id = str(payload.get("entry_id") or "").strip()
+    user_id = int(payload.get("user_id") or 0)
+    request_payload = payload.get("request")
+    if not entry_id or user_id <= 0 or not isinstance(request_payload, dict):
+        raise ValueError("设备媒体扫描参数不完整。")
+    req = MediaListRequest.model_validate(request_payload)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        entry = _get_entry_or_404(session, user, entry_id)
+        entry_mode = entry.mode
+        if entry_mode != "local":
+            remote_base_url = _remote_base_url(entry)
+            headers = _proxy_headers(entry)
+    if entry_mode == "local":
+        result = _run_local_media_list_task(entry_id, req, context)
+    else:
+        result = _run_remote_media_list_task(
+            entry_id,
+            req.root,
+            remote_base_url,
+            headers,
+            _filesystem_payload(req),
+            context,
+        )
+    write_local_job_result_snapshot(context.run_id, result)
+    return {
+        "result_snapshot_id": context.run_id,
+        "media_count": len(result.get("media") or []),
+        "snapshot_id": result.get("snapshot_id"),
+    }
+
+
+def _serialize_device_media_list_local_run(run) -> dict[str, Any]:
+    payload = serialize_local_job_run(run)
+    status_map = {"succeeded": "completed", "interrupted": "failed"}
+    result = {
+        **payload,
+        "task_id": run.id,
+        "kind": "device-media-list",
+        "status": status_map.get(run.status, run.status),
+        "running": run.status in {"queued", "running"},
+        "created_at": run.queued_at,
+        "metadata": dict((run.input_json or {}).get("metadata") or {}),
+        "elapsed_ms": int(round(((run.finished_at or time.time()) - run.queued_at) * 1000)),
+    }
+    if run.status == "succeeded":
+        large_result = read_local_job_result_snapshot(run.id)
+        if large_result is not None:
+            result["result"] = large_result
+    return result
 
 
 def _mirror_scanned_device_files_to_cache(
@@ -1858,7 +1919,6 @@ def _run_git_reduction_worker(
             state["updated_at"] = time.time()
             publish_state()
             sync_row()
-
         try:
             reduction_input = _load_git_reduction_input(entry, str(state["cwd"]))
             state["repo_root"] = str(reduction_input.get("repo_root") or "")
@@ -1931,6 +1991,67 @@ def _run_git_reduction_worker(
             state["updated_at"] = state["finished_at"]
             publish_state()
             sync_row()
+
+
+def _git_reduction_entry_snapshot(entry: UserDevice) -> dict[str, Any]:
+    return {
+        "entry_id": entry.entry_id,
+        "user_id": entry.user_id,
+        "device_id": entry.device_id,
+        "name": entry.name,
+        "mode": entry.mode,
+        "server_url": entry.server_url,
+        "token": entry.token,
+        "is_active": entry.is_active,
+        "order_index": entry.order_index,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+    }
+
+
+def run_git_reduction_local_job_payload(*, run_id: str, user_id: int) -> dict[str, Any]:
+    """Resolve credentials inside the Worker so LocalJobRun never stores secrets."""
+
+    with Session(engine) as session:
+        run = session.get(GitReductionRun, run_id)
+        user = session.get(User, user_id)
+        if run is None or user is None or run.user_id != user_id:
+            raise RuntimeError(f"Git reduction business run not found: {run_id}")
+        entry = session.get(UserDevice, run.entry_id)
+        if entry is None or entry.user_id != user_id or not entry.is_active:
+            raise RuntimeError("Git reduction device entry is unavailable")
+        provider_id, base_url, api_key, resolved_model, extra_providers = resolve_ai_git_commit_runtime_config(
+            session=session,
+            current_user=user,
+            provider=run.provider,
+            model=run.model,
+        )
+        initial_run_payload = _serialize_git_reduction_run(run).model_dump(mode="json")
+        entry_snapshot = _git_reduction_entry_snapshot(entry)
+
+    _run_git_reduction_worker(
+        user_id=user_id,
+        run_id=run_id,
+        entry_snapshot=entry_snapshot,
+        initial_run_payload=initial_run_payload,
+        provider_id=provider_id,
+        base_url=base_url,
+        api_key=api_key,
+        model=resolved_model,
+        extra_providers=extra_providers,
+    )
+    with Session(engine) as session:
+        completed = session.get(GitReductionRun, run_id)
+        if completed is None:
+            raise RuntimeError(f"Git reduction business run disappeared: {run_id}")
+        if completed.status == "failed":
+            raise RuntimeError(completed.error_message or "Git reduction failed")
+        return {
+            "run_id": completed.id,
+            "status": completed.status,
+            "source_unit_count": int(completed.source_unit_count or 0),
+            "completed_chunk_count": int(completed.completed_chunk_count or 0),
+        }
 
 
 @router.post("/{entry_id}/git/inspect", response_model=GitToolInspectResponse)
@@ -2053,35 +2174,43 @@ def start_git_reduction_run_for_entry(
     serialized_run = _serialize_git_reduction_run(run)
     _store_git_reduction_run_state(current_user.id, serialized_run.model_dump(mode="json"))
 
-    entry_snapshot = {
-        "entry_id": entry.entry_id,
-        "user_id": entry.user_id,
-        "device_id": entry.device_id,
-        "name": entry.name,
-        "mode": entry.mode,
-        "server_url": entry.server_url,
-        "token": entry.token,
-        "is_active": entry.is_active,
-        "order_index": entry.order_index,
-        "created_at": entry.created_at,
-        "updated_at": entry.updated_at,
-    }
-    worker = threading.Thread(
-        target=_run_git_reduction_worker,
-        kwargs={
-            "user_id": current_user.id,
-            "run_id": run.id,
-            "entry_snapshot": entry_snapshot,
-            "initial_run_payload": serialized_run.model_dump(mode="json"),
-            "provider_id": provider_id,
-            "base_url": base_url,
-            "api_key": api_key,
-            "model": resolved_model,
-            "extra_providers": extra_providers,
-        },
-        daemon=True,
-    )
-    worker.start()
+    from backend.core.settings import get_settings
+
+    # Explicit connection/key overrides are transient credentials and must not be
+    # persisted in LocalJobRun. Keep that compatibility path process-local.
+    use_process_local_worker = get_settings().is_test or bool(req.api_key or req.base_url)
+    if use_process_local_worker:
+        worker = threading.Thread(
+            target=_run_git_reduction_worker,
+            kwargs={
+                "user_id": current_user.id,
+                "run_id": run.id,
+                "entry_snapshot": _git_reduction_entry_snapshot(entry),
+                "initial_run_payload": serialized_run.model_dump(mode="json"),
+                "provider_id": provider_id,
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": resolved_model,
+                "extra_providers": extra_providers,
+            },
+            daemon=True,
+        )
+        worker.start()
+    else:
+        try:
+            submit_local_job(
+                job_type="git.reduction",
+                user_id=current_user.id,
+                payload={"run_id": run.id, "user_id": current_user.id},
+            )
+        except Exception as exc:
+            run.status = "failed"
+            run.error_message = f"无法启动本地 Worker：{exc}"
+            run.finished_at = time.time()
+            run.updated_at = run.finished_at
+            session.add(run)
+            session.commit()
+            raise HTTPException(status_code=503, detail="无法启动 Git 归纳本地任务") from exc
     return serialized_run
 
 
@@ -2093,9 +2222,12 @@ def get_git_reduction_run_for_entry(
     current_user: User = Depends(get_current_user_from_token),
 ):
     _get_entry_or_404(session, current_user, entry_id)
-    cached = _load_git_reduction_run_state(current_user.id, entry_id, run_id)
-    if cached is not None:
-        return cached
+    from backend.core.settings import get_settings
+
+    if get_settings().is_test:
+        cached = _load_git_reduction_run_state(current_user.id, entry_id, run_id)
+        if cached is not None:
+            return cached
     run = _get_git_reduction_run_or_404(session, current_user, entry_id, run_id)
     return _serialize_git_reduction_run(run)
 
@@ -3831,7 +3963,6 @@ def start_media_list_for_entry_task(
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
-    task_req = req.model_copy(deep=True)
     metadata = {
         "entry_id": entry.entry_id,
         "device_id": entry.device_id,
@@ -3843,30 +3974,19 @@ def start_media_list_for_entry_task(
         "scan_limit": req.scan_limit,
     }
 
-    if entry.mode == "local":
-        return _DEVICE_MEDIA_LIST_TASK_MANAGER.start(
-            lambda context: _run_local_media_list_task(entry.entry_id, task_req, context),
-            stage="queued",
-            message="媒体列表任务已排队",
-            metadata=metadata,
-        )
-
-    remote_base_url = _remote_base_url(entry)
-    headers = _proxy_headers(entry)
-    req_payload = _filesystem_payload(req)
-    return _DEVICE_MEDIA_LIST_TASK_MANAGER.start(
-        lambda context: _run_remote_media_list_task(
-            entry.entry_id,
-            req.root,
-            remote_base_url,
-            headers,
-            req_payload,
-            context,
-        ),
-        stage="queued",
-        message="远程媒体列表任务已排队",
-        metadata=metadata,
+    job_payload = {
+        "entry_id": entry.entry_id,
+        "user_id": current_user.id,
+        "request": req.model_dump(mode="json"),
+        "metadata": metadata,
+    }
+    local_run = submit_local_job(
+        job_type="device.media-list",
+        user_id=current_user.id,
+        resource_key=device_media_list_resource_key(job_payload),
+        payload=job_payload,
     )
+    return _serialize_device_media_list_local_run(local_run)
 
 
 @router.get("/{entry_id}/files/media/list/tasks/{task_id}")
@@ -3877,15 +3997,16 @@ def get_media_list_for_entry_task(
     current_user: User = Depends(get_current_user_from_token),
 ):
     _get_entry_or_404(session, current_user, entry_id)
-    try:
-        record = _DEVICE_MEDIA_LIST_TASK_MANAGER.get(task_id)
-    except LongTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Media list task not found") from exc
-
-    metadata = record.metadata or {}
-    if metadata.get("entry_id") != entry_id or metadata.get("user_id") != current_user.id:
+    run = get_local_job_run(task_id)
+    inputs = run.input_json if run is not None else {}
+    if (
+        run is None
+        or run.job_type != "device.media-list"
+        or run.user_id != current_user.id
+        or inputs.get("entry_id") != entry_id
+    ):
         raise HTTPException(status_code=404, detail="Media list task not found")
-    return _DEVICE_MEDIA_LIST_TASK_MANAGER.serialize(record)
+    return _serialize_device_media_list_local_run(run)
 
 
 @router.post("/{entry_id}/files/duplicates")
@@ -4366,7 +4487,14 @@ def get_file_thumbnail_for_entry(
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     file_identity = _resolve_device_file_identity(entry, root, path, absolute_path)
-    cached_response = _get_cached_cover_response(session, entry.device_id, file_identity)
+    # The persistent cover is the small gallery thumbnail. Larger requests are
+    # used for browser-incompatible originals such as HEIC and must be rendered
+    # from the source instead of returning the cached 360 px cover.
+    cached_response = (
+        _get_cached_cover_response(session, entry.device_id, file_identity)
+        if max_edge <= 360
+        else None
+    )
     if cached_response:
         return cached_response
 
@@ -4392,16 +4520,18 @@ def get_file_thumbnail_for_entry(
         cover_bytes = remote_response.content
         media_type = remote_response.headers.get("content-type", "image/jpeg")
 
-    try:
-        record = save_device_cover(
-            session,
-            entry.device_id,
-            file_identity,
-            cover_bytes,
-            source="auto",
-        )
-    except (OSError, ValueError):
-        record = None
+    record = None
+    if max_edge <= 360:
+        try:
+            record = save_device_cover(
+                session,
+                entry.device_id,
+                file_identity,
+                cover_bytes,
+                source="auto",
+            )
+        except (OSError, ValueError):
+            record = None
 
     if record:
         cover_path = resolve_device_cover_path(record.cover_path)

@@ -87,6 +87,7 @@ def test_update_pdf_metadata_marks_user_values_as_manual(monkeypatch):
         pdf_documents.PdfMetadataUpdateRequest(
             display_title="  用户 自定义书名  ",
             display_author="作者甲",
+            start_date="2008-01",
         ),
         session=FakeSession(),
         current_user=SimpleNamespace(id=7),
@@ -96,4 +97,8 @@ def test_update_pdf_metadata_marks_user_values_as_manual(monkeypatch):
     assert naming["source"] == "manual"
     assert naming["display_title"] == "用户 自定义书名"
     assert naming["display_author"] == "作者甲"
+    assert document.metadata_json["start_date"] == "2008-01"
+    assert document.metadata_json["library_appearance"] == {
+        "cover_color_override": None,
+    }
     assert result == {"display_title": "用户 自定义书名"}

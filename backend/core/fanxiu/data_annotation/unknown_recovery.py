@@ -150,6 +150,12 @@ def _reference_frame_similarity(runner: Any, image: dict[str, Any], frame_data_u
     return _image_bytes_similarity_percent(reference, current)
 
 
+def reference_frame_similarity(runner: Any, image: dict[str, Any], frame_data_url: str) -> float | None:
+    """Public read-only reference comparison used by diagnostics/admission."""
+
+    return _reference_frame_similarity(runner, image, frame_data_url)
+
+
 def _shape_score_detail(runner: Any, ctx: dict[str, Any], image: dict[str, Any], shape: dict[str, Any], frame: str) -> UnknownShapeScore:
     try:
         score = _safe_float(runner._scene_identity_shape_score(ctx, image, shape, frame))
@@ -212,10 +218,16 @@ def _build_candidates(
     expected_scene_ids: list[int],
     *,
     max_candidates: int,
+    candidate_scene_ids: list[int] | None = None,
 ) -> list[UnknownSceneCandidate]:
     images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
     candidates: list[UnknownSceneCandidate] = []
-    for scene_id in _candidate_scene_ids(runner, ctx, expected_scene_ids):
+    scene_ids = (
+        list(dict.fromkeys(int(item) for item in candidate_scene_ids))
+        if candidate_scene_ids is not None
+        else _candidate_scene_ids(runner, ctx, expected_scene_ids)
+    )
+    for scene_id in scene_ids:
         image = images.get(scene_id)
         if not isinstance(image, dict):
             continue
@@ -327,13 +339,21 @@ def build_unknown_evidence(
     last_score: float,
     max_candidates: int = 24,
     previous_frame_data_url: str | None = None,
+    candidate_scene_ids: list[int] | None = None,
 ) -> UnknownEvidence:
     expected = [int(item) for item in expected_scene_ids if item is not None]
     frame_path, report_path = _save_frame_if_possible(runner, frame_data_url, label=label)
     frame_stability_score = _image_similarity_percent(runner, previous_frame_data_url, frame_data_url)
-    candidates = _build_candidates(runner, ctx, frame_data_url, expected, max_candidates=max_candidates)
+    candidates = _build_candidates(
+        runner,
+        ctx,
+        frame_data_url,
+        expected,
+        max_candidates=max_candidates,
+        candidate_scene_ids=candidate_scene_ids,
+    )
     try:
-        ocr_fragments = runner._cached_ocr_fragments(ctx, frame_data_url)
+        ocr_fragments = runner._recognized_scene_ocr_fragments(ctx, frame_data_url)
     except Exception:
         ocr_fragments = []
     ocr_texts = [str(line.get("text") or "") for line in ocr_fragments if isinstance(line, dict) and str(line.get("text") or "").strip()][:80]

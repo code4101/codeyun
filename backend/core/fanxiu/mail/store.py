@@ -64,6 +64,8 @@ def build_fanxiu_mail_key(
 
 def _mail_source_rank(value: Any) -> int:
     source = str(value or "").strip().lower()
+    if source == "runtime_memory":
+        return 4
     if source == "packet":
         return 3
     if source == "packet_orphan_action":
@@ -222,9 +224,27 @@ def ensure_fanxiu_mail_table() -> None:
         SQLModel.metadata.create_all(engine, tables=[FanxiuMailRecord.__table__])
         with Session(engine) as session:
             columns = {str(row[1]) for row in session.exec(text("PRAGMA table_info(fanxiumailrecord)")).all()}
-            if "locked" not in columns:
-                session.exec(text("ALTER TABLE fanxiumailrecord ADD COLUMN locked BOOLEAN NOT NULL DEFAULT 0"))
-                session.exec(text("CREATE INDEX IF NOT EXISTS ix_fanxiumailrecord_locked ON fanxiumailrecord (locked)"))
+            migrations = {
+                "locked": ("BOOLEAN NOT NULL DEFAULT 0", True),
+                "runtime_status": ("VARCHAR NOT NULL DEFAULT ''", True),
+                "desired_status": ("VARCHAR NOT NULL DEFAULT ''", True),
+                "present_in_runtime": ("BOOLEAN NOT NULL DEFAULT 0", True),
+                "reward_getted": ("BOOLEAN", True),
+                "has_attachment": ("BOOLEAN NOT NULL DEFAULT 0", True),
+                "attachment_count": ("INTEGER NOT NULL DEFAULT 0", False),
+                "runtime_index": ("INTEGER", True),
+                "runtime_sequence_fingerprint": ("VARCHAR NOT NULL DEFAULT ''", True),
+                "last_runtime_sync_at": ("VARCHAR NOT NULL DEFAULT ''", True),
+            }
+            changed = False
+            for column, (ddl, indexed) in migrations.items():
+                if column in columns:
+                    continue
+                session.exec(text(f"ALTER TABLE fanxiumailrecord ADD COLUMN {column} {ddl}"))
+                if indexed:
+                    session.exec(text(f"CREATE INDEX IF NOT EXISTS ix_fanxiumailrecord_{column} ON fanxiumailrecord ({column})"))
+                changed = True
+            if changed:
                 session.commit()
         _TABLE_READY = True
 
@@ -347,8 +367,7 @@ def update_fanxiu_mail_desired_status(
     record = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_key == mail_key)).first()
     if not record:
         return None
-    record.status = status_text
-    record.locked = status_text == "锁定"
+    record.desired_status = status_text
     record.action_policy = "claim" if status_text == "可领" else ""
     record.last_action_error = ""
     record.updated_at = time.time()

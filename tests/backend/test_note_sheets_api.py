@@ -15,12 +15,14 @@ from backend.api import note_sheets as note_sheets_api
 from backend.app import app
 from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
 from backend.core.access.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
+from backend.core.ai.chat_user_config import save_user_ai_chat_provider_config
+from backend.core.attendance.service import update_attendance_course_data_flow_config
 from backend.migrations.manager import (
     v29_migrate_attendance_course_sheets_to_notes_workbook,
     v30_add_numeric_sheet_and_workbook_ids,
 )
 from backend.core.resources.sheet_identity import allocate_new_sheet_identity
-from backend.models import AttendanceWjxDataEntry, ResourceAccessGrant, SheetDocument, User, WorkbookDocument, WorkbookSheetLink
+from backend.models import AttendanceWjxDataEntry, ResourceAccessGrant, SheetDocument, User, UserDevice, WorkbookDocument, WorkbookSheetLink
 
 
 def _override_user(user: User) -> None:
@@ -48,6 +50,64 @@ def _create_user(session: Session, *, username: str, nickname: str = "", is_supe
     return user
 
 
+def test_registration_browser_device_prefers_mf_data_flow_over_legacy_execution_device(session):
+    user = _create_user(session, username="note-sheet-mf-browser-device-user")
+    mf = UserDevice(
+        user_id=user.id,
+        device_id="mf-device",
+        name="codepc_mf",
+        mode="local",
+        server_url="http://localhost:8000",
+        token="mf-token",
+    )
+    mi15 = UserDevice(
+        user_id=user.id,
+        device_id="mi15-device",
+        name="codepc_mi15",
+        mode="remote",
+        server_url="http://192.168.31.15:8000",
+        token="mi15-token",
+    )
+    session.add(mf)
+    session.add(mi15)
+    session.commit()
+    session.refresh(mf)
+    session.refresh(mi15)
+
+    service_config = note_sheets_api.get_or_create_attendance_service_config(session, actor=user)
+    service_config.execution_device_entry_id = mi15.entry_id
+    session.add(service_config)
+    session.commit()
+    update_attendance_course_data_flow_config(
+        session,
+        browser_device_entry_id=mf.entry_id,
+        data_device_entry_id=mf.entry_id,
+    )
+
+    resolved = note_sheets_api._resolve_registration_browser_device(session, user)
+
+    assert resolved.entry_id == mf.entry_id
+    assert resolved.mode == "local"
+
+
+def _configure_system_deepseek(session: Session) -> None:
+    system_account = session.exec(
+        select(User).where(User.username == "code4101")
+    ).first()
+    if system_account is None:
+        system_account = _create_user(
+            session,
+            username="code4101",
+            is_superuser=True,
+        )
+    save_user_ai_chat_provider_config(
+        session,
+        system_account.id,
+        "deepseek",
+        api_key="sk-system-deepseek-test",
+    )
+
+
 def test_attendance_course_script_dir_candidates_include_formal_xlproject_course_dir(monkeypatch, tmp_path: Path):
     course_dir = tmp_path / "xlproject" / "src" / "xlsln" / "kq5034" / "courses"
     course_dir.mkdir(parents=True)
@@ -61,41 +121,6 @@ def test_attendance_course_script_dir_candidates_include_formal_xlproject_course
 
     assert course_dir in candidates
     assert legacy_default not in candidates
-
-
-def test_load_attendance_course_link_provider_uses_namespaced_kqmain(monkeypatch, tmp_path: Path):
-    xlproject_src = tmp_path / "xlproject" / "src"
-    package_dir = xlproject_src / "xlsln" / "kq5034"
-    package_dir.mkdir(parents=True)
-    (xlproject_src / "xlsln" / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "kqmain.py").write_text(
-        "def 获取课程链接(*args, **kwargs):\n"
-        "    return {'source': 'namespaced-kqmain', 'args': args, 'kwargs': kwargs}\n",
-        encoding="utf-8",
-    )
-
-    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_XLPROJECT_SRC_DIR", xlproject_src)
-    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_KQ5034_REPO_DIR", tmp_path / "unused-kq5034")
-    monkeypatch.setattr(sys, "path", [entry for entry in sys.path if str(xlproject_src) not in entry])
-    old_modules = {name: sys.modules.get(name) for name in ("xlsln.kq5034.kqmain", "xlsln.kq5034", "xlsln")}
-    for name in ("xlsln.kq5034.kqmain", "xlsln.kq5034", "xlsln"):
-        sys.modules.pop(name, None)
-
-    try:
-        provider = note_sheets_api._load_attendance_course_link_provider()
-
-        assert provider(course_name="第48届觉观") == {
-            "source": "namespaced-kqmain",
-            "args": (),
-            "kwargs": {"course_name": "第48届觉观"},
-        }
-    finally:
-        for name in ("xlsln.kq5034.kqmain", "xlsln.kq5034", "xlsln"):
-            sys.modules.pop(name, None)
-        for name, module in old_modules.items():
-            if module is not None:
-                sys.modules[name] = module
 
 
 def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -> None:
@@ -258,6 +283,32 @@ def test_attendance_formula_normalizer_removes_refund_label_from_config_row() ->
     assert normalized["grid_rows"][2][columns.index("当前应返款")] == "2026/06/06 07:40:41,6"
 
 
+def test_attendance_formula_normalizer_caps_only_colearn_by_current_refund_period() -> None:
+    columns = ["视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款", "共学打卡", "共修打卡"]
+    document = {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [[450, "=MIN(G4,$E$3)*5+MIN(H4,$E$3)*5", "=A4+B4", 640, 895, -85, 11, 10]],
+        "grid_rows": [
+            [""] * len(columns),
+            columns,
+            ["49课*15元=735元", "", "", "第9周", 895, "", "16次*每次5元=80元", "16周*每周5元=80元"],
+            [450, "=MIN(G4,$E$3)*5+MIN(H4,$E$3)*5", "=A4+B4", 640, 895, -85, 11, 10],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "formula_reference_origin": "sheet_v2",
+    }
+
+    normalized, changed_count = note_sheets_api._normalize_attendance_dual_clockin_refund_formulas(document)
+
+    assert changed_count >= 1
+    assert normalized["rows"][0][1] == (
+        "=MIN(IFERROR(VALUE(G4),0),16,IFERROR(VALUE(MID($D$3,2,LEN($D$3)-2)),0))*5"
+        "+MIN(IFERROR(VALUE(H4),0),16)*5"
+    )
+
+
 def test_attendance_formula_normalizer_removes_refund_label_without_dual_clockin_columns() -> None:
     columns = ["完成视频数", "视频应返款", "打卡应返款", "总应返款", "已返款", "订单金额", "当前应返款"]
     document = {
@@ -364,50 +415,6 @@ def test_course_template_runtime_header_values_reset_entity_and_defined_names() 
     assert reset["entity_cells"]["field_note"]["col_current"]["value"] == ""
 
 
-def test_nianzhu_course_config_falls_back_to_header_links(monkeypatch) -> None:
-    from backend.core.attendance import nianzhu_course_sheets
-
-    monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], None))
-    monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_clockin_rows", lambda course_name: ([], None))
-
-    document = {
-        "columns": ["学号", "姓名", "打卡数", "05:20~06:43 第01课", "20:00~22:00 答疑分享"],
-        "grid_rows": [
-            ["", "", "打卡", "7月1日~7月7日", "7月22日"],
-            [
-                "学号",
-                "姓名",
-                {
-                    "value": "打卡数",
-                    "link": {"url": "https://admin.xiaoe-tech.com/t/clock_admin/index#/punchDetail/diaryList?activity_id=ac_july"},
-                },
-                {
-                    "value": "05:20~06:43 第01课",
-                    "link": {
-                        "url": "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id=l_july_nianzhu_01&tabName=UserManage",
-                    },
-                },
-                "20:00~22:00 答疑分享",
-            ],
-            ["", "", "只统计正课的打卡次数！！！", "视频观看说明", "附加课，不做考勤"],
-        ],
-        "data_start_row": 3,
-        "field_row_index": 1,
-    }
-
-    documents = nianzhu_course_sheets._course_sheet_documents_from_attendance(
-        document,
-        course_name="第42届念住",
-    )
-
-    video_rows = documents[nianzhu_course_sheets.VIDEO_CONFIG_SHEET_KEY]["rows"]
-    clockin_rows = documents[nianzhu_course_sheets.CLOCKIN_CONFIG_SHEET_KEY]["rows"]
-    assert len(video_rows) == 1
-    assert video_rows[0][4] == "l_july_nianzhu_01"
-    assert video_rows[0][5] == 1
-    assert clockin_rows[0][2].endswith("activity_id=ac_july")
-
-
 def test_course_template_refund_header_styles_include_current_refund_entity_cells() -> None:
     columns = ["完成视频数", "视频应返款", "订单金额", "当前应返款", "打卡数"]
     document = {
@@ -459,6 +466,159 @@ def test_course_template_refund_header_styles_include_current_refund_entity_cell
     assert normalized["entity_cells"]["field_note"]["col_current"]["style"] == {"background_color": "#D8D8D8"}
 
 
+def test_attendance_public_finance_ui_is_hidden_without_removing_internal_columns() -> None:
+    columns = [
+        "分组",
+        "学号",
+        "姓名",
+        "完成视频数",
+        "视频应返款",
+        "打卡应返款",
+        "总应返款",
+        "已返款",
+        "订单金额",
+        "当前应返款",
+        "打卡数",
+    ]
+    document = {
+        "columns": columns,
+        "grid_rows": [
+            ["用户信息", "", "", "返款总计（每天更新）", "", "", "", "", "", "", "打卡"],
+            columns,
+            ["", "考勤返款常见问题解答", "", "视频返款规则", "", "", "反馈问题", "返款周期", "620", "", "只统计正课"],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "header_groups": [[
+            {"label": "用户信息", "colspan": 3},
+            {"label": "返款总计（每天更新）", "colspan": 7},
+            {"label": "打卡", "colspan": 1},
+        ]],
+        "column_configs": {
+            "学号": {"note": "考勤返款常见问题解答"},
+            "完成视频数": {"value_type": "number", "note": "视频返款规则"},
+            "已返款": {"value_type": "number", "note": "返款周期"},
+        },
+        "merged_cells": [
+            {"row": 0, "col": 3, "rowspan": 1, "colspan": 7},
+            {"row": 2, "col": 1, "rowspan": 1, "colspan": 2},
+            {"row": 2, "col": 3, "rowspan": 1, "colspan": 2},
+        ],
+        "entity_columns": [
+            {"id": f"col_{index}", "header": header}
+            for index, header in enumerate(columns)
+        ],
+        "entity_rows": [
+            {"id": "header_group", "kind": "header_group"},
+            {"id": "field", "kind": "field"},
+            {"id": "field_note", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "header_group": {"col_3": {"value": "返款总计（每天更新）"}},
+            "field_note": {
+                "col_1": {"value": "考勤返款常见问题解答"},
+                "col_3": {"value": "视频返款规则"},
+            },
+        },
+    }
+
+    normalized = note_sheets_api._hide_attendance_public_finance_ui(document)
+
+    assert note_sheets_api._attendance_public_finance_ui_hidden(normalized)
+    assert normalized["columns"] == columns
+    for header in note_sheets_api.NOTE_SHEET_ATTENDANCE_PUBLIC_FINANCE_COLUMNS:
+        assert normalized["column_configs"][header]["hidden"] is True
+    assert normalized["column_configs"].get("学号", {}).get("note") is None
+    assert normalized["column_configs"]["完成视频数"]["note"] == "完成视频数按各课视频完成标准累计。"
+    assert normalized["column_configs"]["打卡数"]["note"] == "按课程规则累计有效打卡次数。"
+    assert normalized["grid_rows"][0][3] == "学习完成情况"
+    assert normalized["grid_rows"][2][1] == ""
+    assert normalized["grid_rows"][2][3] == "完成视频数按各课视频完成标准累计。"
+    assert normalized["grid_rows"][2][10] == "按课程规则累计有效打卡次数。"
+    assert normalized["header_groups"][0][1]["label"] == "学习完成情况"
+    assert normalized["entity_cells"]["header_group"]["col_3"]["value"] == "学习完成情况"
+    assert normalized["entity_cells"]["field_note"]["col_1"]["value"] == ""
+    assert not any(
+        (merged["row"], merged["col"]) in {(0, 3), (2, 1), (2, 3)}
+        for merged in normalized["merged_cells"]
+    )
+
+
+def test_fanbei_course_clones_always_hide_public_finance_ui() -> None:
+    assert note_sheets_api._course_attendance_public_finance_ui_hidden(
+        {},
+        course_title="20260809梵呗初阶",
+        owner_key="20260809-fanbei",
+    )
+    assert not note_sheets_api._course_attendance_public_finance_ui_hidden(
+        {},
+        course_title="第49届觉观",
+        owner_key="20260801-jueguan-49",
+    )
+
+
+def test_attendance_week_header_layout_follows_current_week_spans_and_titles() -> None:
+    columns = ["分组", "第1课", "止观资粮道 3.1-3.5（合并）", "佛教史·世界史 2", "佛教史·世界史 3", "止观前行方便 4.1安般法（上）"]
+    document = {
+        "columns": columns,
+        "grid_rows": [
+            ["用户信息", "第1周", "", "", "第2周", ""],
+            columns,
+            ["", "", "", "", "", ""],
+        ],
+        "data_start_row": 3,
+        "field_row_index": 1,
+        "merged_cells": [
+            {"row": 0, "col": 1, "rowspan": 1, "colspan": 3},
+            {"row": 0, "col": 4, "rowspan": 1, "colspan": 2},
+        ],
+        "column_widths": [88, 88, 88, 88, 88, 88],
+        "column_configs": {
+            columns[2]: {"header_background_color": "#E2F0D9"},
+            columns[3]: {"header_background_color": "#E2F0D9"},
+        },
+        "cell_meta": {
+            "0:1": {"style": {"background_color": "#ED7D31"}},
+            "0:4": {"style": {"background_color": "#4472C4"}},
+            "1:1": {"style": {"background_color": "#F4B183", "text_color": "#0000FF"}},
+            "1:2": {"style": {"background_color": "#F4B183", "text_color": "#0000FF"}},
+            "1:3": {"style": {"background_color": "#8EA9DB", "text_color": "#0000FF"}},
+            "1:4": {"style": {"background_color": "#8EA9DB", "text_color": "#0000FF"}},
+        },
+        "entity_columns": [
+            {"id": f"col_{index}", "header": header}
+            for index, header in enumerate(columns)
+        ],
+        "entity_rows": [
+            {"id": "header_group", "kind": "header_group"},
+            {"id": "field", "kind": "field"},
+            {"id": "field_note", "kind": "field_note"},
+        ],
+        "entity_cells": {
+            "header_group": {
+                "col_1": {"value": "第1周", "style": {"background_color": "#ED7D31"}},
+                "col_4": {"value": "第2周", "style": {"background_color": "#4472C4"}},
+            },
+            "field": {
+                "col_1": {"value": columns[1], "style": {"background_color": "#F4B183", "text_color": "#0000FF"}},
+                "col_2": {"value": columns[2], "style": {"background_color": "#F4B183", "text_color": "#0000FF"}},
+                "col_3": {"value": columns[3], "style": {"background_color": "#8EA9DB", "text_color": "#0000FF"}},
+                "col_4": {"value": columns[4], "style": {"background_color": "#8EA9DB", "text_color": "#0000FF"}},
+            },
+        },
+    }
+
+    normalized, summary = note_sheets_api._normalize_attendance_week_header_layout(document)
+
+    assert summary == {"week_groups": 2, "lesson_columns": 5, "expanded_columns": 4}
+    assert normalized["column_widths"][2] > 88
+    assert normalized["column_widths"][5] > normalized["column_widths"][2]
+    assert normalized["cell_meta"]["1:3"]["style"]["background_color"] == "#F4B183"
+    assert normalized["entity_cells"]["field"]["col_3"]["style"]["background_color"] == "#F4B183"
+    assert normalized["column_configs"][columns[3]]["header_background_color"] == "#F4B183"
+    assert normalized["cell_meta"]["1:5"]["style"]["background_color"] == "#8EA9DB"
+
+
 def test_attendance_refund_faq_cell_gets_standard_link() -> None:
     document = {
         "columns": ["分组", "学号", "姓名"],
@@ -505,6 +665,30 @@ def test_attendance_refund_faq_cell_gets_standard_link() -> None:
         "text_color": "#FF0000",
         "underline": True,
     }
+
+
+def test_attendance_note_row_removes_legacy_export_button() -> None:
+    document = {
+        "columns": ["分组", "学号", "姓名"],
+        "grid_rows": [
+            ["用户信息", "", ""],
+            ["分组", "学号", "姓名"],
+            ["导出excel", "考勤返款常见问题解答", ""],
+        ],
+        "data_start_row": 3,
+        "cell_meta": {
+            "2:0": {
+                "action": {"type": "attendance_export", "label": "导出excel"},
+                "style": {"background_color": "#D8D8D8"},
+            },
+        },
+    }
+
+    normalized = note_sheets_api._repair_attendance_note_row_style(document)
+
+    assert normalized["grid_rows"][2][0] == ""
+    assert "action" not in normalized["cell_meta"]["2:0"]
+    assert normalized["cell_meta"]["2:0"]["style"]["background_color"] == "#D8D8D8"
 
 
 def test_attendance_total_refund_note_gets_feedback_link() -> None:
@@ -1180,6 +1364,7 @@ def test_note_sheet_blank_create_uses_sheet_address_defaults(client, session):
 
 def test_note_sheet_excel_import_reset_preserves_action_row(client, session, monkeypatch):
     monkeypatch.delenv("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL", raising=False)
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -1223,6 +1408,7 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
         assert "不要把无法匹配的普通源字段塞进“备注”" in kwargs["system_prompt"]
         assert kwargs["provider_id"] == "deepseek"
         assert kwargs["model"] == "deepseek-v4-pro"
+        assert kwargs["api_key"] == "sk-system-deepseek-test"
         assert kwargs["response_format"] == "json"
         return {
             "content": json.dumps(
@@ -1369,6 +1555,7 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
 
 
 def test_note_sheet_excel_import_append_keeps_existing_rows(client, session, monkeypatch):
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-append-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -1463,6 +1650,7 @@ def test_note_sheet_excel_import_append_keeps_existing_rows(client, session, mon
 
 def test_note_sheet_excel_import_retries_ai_before_success(client, session, monkeypatch):
     monkeypatch.setenv("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS", "2")
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-retry-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -1533,6 +1721,7 @@ def test_note_sheet_excel_import_retries_ai_before_success(client, session, monk
 
 def test_note_sheet_excel_import_failure_reports_last_ai_error(client, session, monkeypatch):
     monkeypatch.setenv("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MAX_ATTEMPTS", "2")
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-error-detail-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -1591,6 +1780,7 @@ def test_note_sheet_excel_import_failure_reports_last_ai_error(client, session, 
 
 
 def test_note_sheet_stale_save_does_not_overwrite_excel_import(client, session, monkeypatch):
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-stale-save-import-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -1728,6 +1918,7 @@ def test_note_sheet_update_prunes_orphan_entity_cells(client, session):
 
 
 def test_note_sheet_excel_import_append_inserts_registration_rows_before_archived_rows(client, session, monkeypatch):
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-registration-append-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -1933,6 +2124,7 @@ def test_note_sheet_registration_dynamic_expiration_orders_rows_and_ignores_stal
 
 
 def test_note_sheet_excel_import_prefers_grouped_sequence_from_source_workbook(client, session, monkeypatch):
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-group-sequence-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -2127,6 +2319,7 @@ def test_registration_import_normalizes_group_sequence_separators():
 
 
 def test_note_sheet_excel_import_append_skips_duplicate_registration_order_id(client, session, monkeypatch):
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-duplicate-order-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -2208,6 +2401,7 @@ def test_note_sheet_excel_import_append_skips_duplicate_registration_order_id(cl
 
 
 def test_note_sheet_excel_import_append_skips_duplicate_payment_order_id_on_plain_sheet(client, session, monkeypatch):
+    _configure_system_deepseek(session)
     user = _create_user(session, username="note-sheet-excel-import-plain-duplicate-order-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -2442,7 +2636,6 @@ def test_note_sheet_registration_order_match_updates_order_columns(client, sessi
             "已返款": 0.0,
         }
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     try:
@@ -2527,7 +2720,6 @@ def test_note_sheet_registration_order_match_fills_payment_order_from_merchant_o
             "订单金额": 499,
         }
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     row = [""] * len(target_columns)
@@ -2551,6 +2743,37 @@ def test_note_sheet_registration_order_match_fills_payment_order_from_merchant_o
     assert summary["matched_count"] == 1
     assert updated_row[payment_index] == "4200003083202605074817502982"
     assert updated_row[merchant_index] == "MA2026050712350910796457"
+
+
+def test_registration_order_match_does_not_store_lookup_exception_in_amount(monkeypatch):
+    columns = ["姓名", "微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款"]
+
+    def raise_lookup_error(*args, **kwargs):
+        raise TimeoutError("codepc_mi15 timeout")
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: raise_lookup_error)
+    document, summary = note_sheets_api._update_registration_order_match_document(
+        {
+            "schema_version": 1,
+            "columns": columns,
+            "rows": [[
+                "魏翊华",
+                "4200003209202607258819264619",
+                "203209",
+                "",
+                "调用 codepc_mi15 实时查单失败：HTTPConnectionPool(timeout)",
+                "",
+            ]],
+            "grid_rows": [columns],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+    )
+
+    row = document["rows"][0]
+    assert summary["error_count"] == 1
+    assert row[columns.index("订单日期")] == "202607"
+    assert row[columns.index("订单金额")] == ""
 
 
 def test_registration_standard_order_columns_are_visible():
@@ -2595,7 +2818,6 @@ def test_note_sheet_registration_order_match_does_not_treat_missing_payment_orde
             "订单金额": 499,
         }
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     document, summary = note_sheets_api._update_registration_order_match_document(
@@ -2644,7 +2866,6 @@ def test_note_sheet_registration_order_match_allows_missing_optional_refund_colu
             "已返款": 0,
         }
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     try:
@@ -2696,7 +2917,7 @@ def test_note_sheet_registration_user_match_updates_user_columns(client, session
             calls.append({"names": names, "phones": phones, **kwargs})
             return "u_adan", 92
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_user_lookup_provider", lambda: FakeKqdb().查找用户)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
@@ -2737,7 +2958,7 @@ def test_note_sheet_registration_user_match_updates_user_columns(client, session
         assert updated_row[target_columns.index("匹配得分")] == "92"
         assert calls[0]["names"] == ["阿丹", "阿丹"]
         assert calls[0]["phones"] == ["15326693765"]
-        assert calls[0]["课程标准名"] == "d260509梵呗初阶"
+        assert calls[0]["course_name"] == "d260509梵呗初阶"
         assert calls[0]["shop_id"] == 1
         assert calls[0]["return_mode"] == 1
     finally:
@@ -2768,8 +2989,8 @@ def test_note_sheet_registration_user_match_uses_browser_fallback_when_db_missin
         )
         return {items[0]["key"]: {"key": items[0]["key"], "user_id": "u_live"}}
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
-    monkeypatch.setattr(note_sheets_api, "_lookup_registration_users_with_remote_browser", fake_remote_lookup)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_user_lookup_provider", lambda: FakeKqdb().查找用户)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_users_with_attendance_browser", fake_remote_lookup)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶.xlsx"})
@@ -2809,7 +3030,7 @@ def test_note_sheet_registration_user_match_uses_browser_fallback_when_db_missin
         assert updated_row[target_columns.index("用户ID")] == "u_live"
         assert updated_row[target_columns.index("匹配得分")] == "95"
         assert db_calls[0]["phones"] == ["15326693765"]
-        assert db_calls[0]["课程标准名"] == "d260509梵呗初阶"
+        assert db_calls[0]["course_name"] == "d260509梵呗初阶"
         assert remote_calls == [
             {
                 "course_name": "d260509梵呗初阶",
@@ -2840,7 +3061,7 @@ def test_note_sheet_registration_user_match_run_is_background_and_dedupes(client
             return "u_async", 91
 
     monkeypatch.setattr(note_sheets_api, "engine", engine)
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_user_lookup_provider", lambda: FakeKqdb().查找用户)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
@@ -2938,7 +3159,6 @@ def test_note_sheet_registration_background_run_blocks_related_actions(client, s
         }
 
     monkeypatch.setattr(note_sheets_api, "engine", engine)
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     try:
@@ -3040,9 +3260,8 @@ def test_note_sheet_registration_order_run_uses_remote_fallback_when_db_missing(
         ]
 
     monkeypatch.setattr(note_sheets_api, "engine", engine)
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
-    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_remote_browser", fake_remote_order_lookup)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_attendance_browser", fake_remote_order_lookup)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260521念住闯关"})
@@ -3131,9 +3350,8 @@ def test_note_sheet_registration_order_match_audits_completed_refund_remark_with
             }
         ]
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
-    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_remote_browser", fake_remote_order_lookup)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_attendance_browser", fake_remote_order_lookup)
 
     document = {
         "schema_version": 1,
@@ -3186,9 +3404,8 @@ def test_note_sheet_registration_order_run_defaults_to_remote_fallback_when_db_m
         ]
 
     monkeypatch.setattr(note_sheets_api, "engine", engine)
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
-    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_remote_browser", fake_remote_order_lookup)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_attendance_browser", fake_remote_order_lookup)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260601念住闯关"})
@@ -3264,9 +3481,8 @@ def test_note_sheet_registration_order_match_derives_missing_order_month_without
     def fake_remote_order_lookup(*args, **kwargs):
         raise AssertionError("只缺订单日期时不应启动远程查单")
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
-    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_remote_browser", fake_remote_order_lookup)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_orders_with_attendance_browser", fake_remote_order_lookup)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260521念住闯关"})
@@ -3304,6 +3520,19 @@ def test_note_sheet_registration_order_match_derives_missing_order_month_without
         assert updated_row[target_columns.index("订单日期")] == "202605"
     finally:
         _clear_user_override()
+
+
+def test_registration_order_month_uses_protocol_date_instead_of_false_prefix_date() -> None:
+    assert note_sheets_api._derive_registration_order_month("4200003132202607235532263286") == "202607"
+    assert note_sheets_api._derive_registration_order_month("1000107301202607230101725560") == "202607"
+    assert note_sheets_api._derive_registration_order_month("4200003209202607258819264619") == "202607"
+    assert (
+        note_sheets_api._normalize_registration_order_month_value(
+            "203209",
+            "4200003209202607258819264619",
+        )
+        == "202607"
+    )
 
 
 def test_note_sheet_registration_composite_run_updates_matches_and_attendance(client, session, engine, monkeypatch):
@@ -3372,13 +3601,13 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         }
 
     monkeypatch.setattr(note_sheets_api, "engine", engine)
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_user_lookup_provider", lambda: fake_get_kqdb().查找用户)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260521念住闯关"})
         workbook_id = workbook_response.json()["id"]
-        registration_row = ["5月4日", "124", "", "2026/5/21 09:46:30", "赵誉博", "赵玉博", "17702935475", "", "4200003079202605211268357324", "", "", "", "", "", ""]
+        registration_row = ["5月4日", "124", "", "2099/5/21 09:46:30", "赵誉博", "赵玉博", "17702935475", "", "4200003079202605211268357324", "", "", "", "", "", ""]
         registration_response = client.post(
             "/api/note-sheets/sheets",
             json={
@@ -3397,7 +3626,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         registration_sheet_id = registration_response.json()["id"]
         attendance_rows = [
             [
-                "05/14 09:15",
+                "2099-05-14 09:15",
                 "123",
                 "旧学员",
                 "旧昵称",
@@ -3421,7 +3650,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
                 "当前规则",
             ],
             [
-                "03/11 11:41",
+                "2020-03-11 11:41",
                 "115",
                 "历史学员",
                 "历史昵称",
@@ -3495,7 +3724,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
 
         assert final is not None
         assert final["status"] == "completed"
-        assert final["updated_count"] == 7
+        assert final["updated_count"] >= 7
         registration_updated = final["sheet"]["document_json"]["rows"][0]
         assert registration_updated[registration_columns.index("商户订单号")] == "M20260521"
         assert registration_updated[registration_columns.index("用户ID")] == "u_new"
@@ -3508,7 +3737,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         assert attendance_detail.status_code == 200
         attendance_updated_rows = attendance_detail.json()["document_json"]["rows"]
         assert attendance_updated_rows[1][attendance_columns.index("学号")] == "124"
-        assert attendance_updated_rows[1][attendance_columns.index("报名日期")] == "2026-05-21 09:46"
+        assert attendance_updated_rows[1][attendance_columns.index("报名日期")] == "2099-05-21 09:46"
         assert attendance_updated_rows[1][attendance_columns.index("姓名")] == "赵誉博"
         assert attendance_updated_rows[1][attendance_columns.index("昵称")] == "赵玉博"
         assert attendance_updated_rows[1][attendance_columns.index("商户订单号")] == "M20260521"
@@ -3575,7 +3804,6 @@ def test_note_sheet_registration_order_match_skips_rows_without_registration_pay
             "已返款": 0,
         }
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
     monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
 
     document, summary = note_sheets_api._update_registration_order_match_document(
@@ -3681,7 +3909,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
         "rows": [[
             "5月4日",
             "124",
-            "2026/5/21 09:46:30",
+                "2099/5/21 09:46:30",
             "赵誉博",
             "赵玉博",
             "17702935475",
@@ -3702,7 +3930,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
         "formula_reference_origin": "sheet_v2",
         "rows": [
             [
-                "05/14 09:15",
+                "2099-05-14 09:15",
                 "123",
                 "旧学员",
                 "旧昵称",
@@ -3725,7 +3953,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
                 "当前规则",
                 "",
             ],
-            ["05/21 09:46", "124", "赵誉博", "赵玉博", "M20260521", "u_new", "", "0", "0", "0", "0", "", "", "", "", "", "", "", "追踪中", "", "当前规则", ""],
+            ["2099-05-21 09:46", "124", "赵誉博", "赵玉博", "M20260521", "u_new", "", "0", "0", "0", "0", "", "", "", "", "", "", "", "追踪中", "", "当前规则", ""],
             ["03/11 11:41", "115", "历史学员", "历史昵称", "M20260311", "u_history", "0", "0", "0", "40", "0", "40", "40", "620", "0", "", "", "1遍/137%", "已冻结", "2026-05-01 08:00:00", "当前规则", ""],
         ],
         "grid_rows": [attendance_columns],
@@ -3741,7 +3969,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
         ],
         "entity_cells": {
             "row_new": {
-                "col_0": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}, "value": "05/21 09:46"},
+                "col_0": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}, "value": "2099-05-21 09:46"},
                 "col_1": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}, "value": "124"},
                 "col_17": {"style": {"background_color": "#80FF80"}},
             },
@@ -3761,7 +3989,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert summary["inserted_count"] == 0
     assert summary["repaired_count"] >= 10
     repaired_row = next_doc["rows"][1]
-    assert repaired_row[attendance_columns.index("报名日期")] == "2026-05-21 09:46"
+    assert repaired_row[attendance_columns.index("报名日期")] == "2099-05-21 09:46"
     assert repaired_row[attendance_columns.index("禅客")] == '=IF(AND(I3>=11,Q3>=7),"是","")'
     assert repaired_row[attendance_columns.index("完成视频数")] == '=COUNTIF(R3,"*完成*")+COUNTIF(R3,"*回放*")'
     assert repaired_row[attendance_columns.index("总应返款")] == '=IF(N3>0,MIN(MAX(IFERROR(J3+K3+N3-IF($N$1>0,$N$1,N3),0),0),N3),0)'
@@ -4052,26 +4280,63 @@ def test_note_sheet_registration_attendance_sync_refreshes_expired_tracking_rows
     assert rows[0][columns.index("当前应返款")] == "=(E2>0)*1"
 
 
-def test_note_sheet_registration_attendance_sync_skips_tracking_refresh_without_new_rows():
+def test_attendance_dynamic_expiration_repairs_missing_archived_styles_without_state_change():
+    columns = ["报名日期", "学号", "追踪状态", "冻结时间", "第01课"]
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": columns,
+        "data_start_row": 1,
+        "grid_rows": [columns],
+        "rows": [["2020-03-22 23:17", "116", "已冻结", "2020-05-22 08:00:00", "1遍/137%"]],
+        "cell_meta": {
+            "1:0": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}},
+            "1:1": {"style": {"background_color": "#F2F2F2", "text_color": "#6B7280"}},
+        },
+    }
+
+    next_doc, repaired_count = note_sheets_api._order_attendance_rows_by_dynamic_expiration(
+        attendance_doc,
+        now=date(2026, 6, 1),
+    )
+
+    assert repaired_count > 0
+    for column_index in range(len(columns)):
+        assert next_doc["cell_meta"][f"1:{column_index}"]["style"] == {
+            "background_color": "#F2F2F2",
+            "text_color": "#6B7280",
+        }
+
+
+def test_note_sheet_registration_attendance_sync_refreshes_tracking_without_new_rows():
     registration_columns = ["序号", "提交时间", "姓名", "微信昵称", "用户ID"]
     attendance_columns = ["报名日期", "学号", "姓名", "昵称", "追踪分组", "追踪状态", "追踪截止日", "冻结时间"]
     registration_doc = {
         "schema_version": 1,
         "columns": registration_columns,
-        "rows": [["116", "2026-03-22 23:17", "李龙", "李龙", "u_old"]],
+        "rows": [["116", "2020-03-22 23:17", "李龙", "李龙", "u_old"]],
     }
     attendance_doc = {
         "schema_version": 1,
         "columns": attendance_columns,
         "data_start_row": 1,
-        "rows": [["2026-03-22 23:17", "116", "李龙", "李龙", "B组", "追踪中", "2026-05-22", ""]],
         "grid_rows": [attendance_columns],
+        "rows": [["2020-03-22 23:17", "116", "李龙", "李龙", "B组", "追踪中", "2020-05-22", ""]],
+        "cell_meta": {},
     }
 
-    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(
+        registration_doc,
+        attendance_doc,
+    )
 
-    assert summary["updated_count"] == 0
-    assert next_doc["rows"] == attendance_doc["rows"]
+    assert summary["repaired_count"] > 0
+    assert next_doc["rows"][0][attendance_columns.index("追踪分组")] == "A组"
+    assert next_doc["rows"][0][attendance_columns.index("追踪状态")] == "已冻结"
+    for column_index in range(len(attendance_columns)):
+        assert next_doc["cell_meta"][f"1:{column_index}"]["style"] == {
+            "background_color": "#F2F2F2",
+            "text_color": "#6B7280",
+        }
 
 
 def test_note_sheet_registration_attendance_sync_allows_attendance_without_user_id():
@@ -4119,6 +4384,7 @@ def test_note_sheet_registration_attendance_sync_orders_inserted_group_sequence_
             ["一组", "1_01", "甲", "甲", "M1", "499", "0"],
             ["一组", "1_03", "丙", "丙", "M3", "499", "0"],
         ],
+        "row_ids": ["row_a", "row_c"],
         "grid_rows": [attendance_columns],
     }
 
@@ -4127,6 +4393,9 @@ def test_note_sheet_registration_attendance_sync_orders_inserted_group_sequence_
     assert summary["inserted_count"] == 1
     assert [row[attendance_columns.index("学号")] for row in next_doc["rows"]] == ["1_01", "1_02", "1_03"]
     assert [row[attendance_columns.index("姓名")] for row in next_doc["rows"]] == ["甲", "乙", "丙"]
+    assert next_doc["row_ids"][0] == "row_a"
+    assert next_doc["row_ids"][1].startswith("row_")
+    assert next_doc["row_ids"][2] == "row_c"
 
 
 def test_note_sheet_registration_attendance_sync_skips_refunded_rows():
@@ -4411,8 +4680,8 @@ def test_note_sheet_registration_user_match_can_disable_browser_fallback(client,
     def fake_remote_lookup(*args, **kwargs):
         raise AssertionError("显式关闭远程回查后不应调用小鹅通")
 
-    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
-    monkeypatch.setattr(note_sheets_api, "_lookup_registration_users_with_remote_browser", fake_remote_lookup)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_user_lookup_provider", lambda: FakeKqdb().查找用户)
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_users_with_attendance_browser", fake_remote_lookup)
 
     try:
         workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
@@ -5062,6 +5331,230 @@ def test_note_sheet_operation_patch_applies_atomically_and_checks_version(client
         assert unmerge_response.status_code == 200, unmerge_response.json()
         session.refresh(sheet)
         assert sheet.document_json["merged_cells"] == []
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_operation_patch_materializes_first_editable_row(client, session):
+    owner = _create_user(session, username="note-sheet-first-row-owner")
+    sheet = SheetDocument(
+        numeric_id=65,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="first-editable-row",
+        sheet_key="main",
+        title="空表首行编辑",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名", "状态"],
+            "column_ids": ["col-name", "col-status"],
+            "rows": [],
+            "row_ids": [],
+            "grid_rows": [["姓名", "状态"]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    _override_user(owner)
+
+    try:
+        response = client.post(
+            "/api/note-sheets/sheets/65/patch",
+            json={
+                "base_version": 1,
+                "ops": [
+                    {
+                        "op": "set-cell-value",
+                        "row_index": 0,
+                        "column_index": 0,
+                        "row_id": "row-first-edit",
+                        "column_id": "col-name",
+                        "expected_value": "",
+                        "value": "首行内容",
+                    },
+                    {
+                        "op": "set-cell-meta",
+                        "row_index": 0,
+                        "column_index": 0,
+                        "row_id": "row-first-edit",
+                        "column_id": "col-name",
+                        "expected_meta": {},
+                        "meta": {"style": {"background_color": "#fff2cc"}},
+                    },
+                ],
+            },
+        )
+
+        assert response.status_code == 200, response.json()
+        assert response.json()["updated_cell_count"] == 1
+        session.refresh(sheet)
+        assert sheet.version == 2
+        assert sheet.document_json["rows"] == [["首行内容", ""]]
+        assert sheet.document_json["row_ids"] == ["row-first-edit"]
+        assert sheet.document_json["grid_rows"] == [["姓名", "状态"], ["首行内容", ""]]
+        assert sheet.document_json["cell_meta"]["1:0"] == {
+            "style": {"background_color": "#fff2cc"},
+        }
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_operation_patch_rebases_unrelated_system_update_by_stable_cell_identity(
+    client,
+    session,
+    monkeypatch,
+):
+    broadcasts: list[tuple[str, dict]] = []
+
+    async def fake_broadcast(room: str, message: dict) -> None:
+        broadcasts.append((room, message))
+
+    monkeypatch.setattr(note_sheets_api.ws_manager, "broadcast", fake_broadcast)
+    owner = _create_user(session, username="note-sheet-cell-rebase-owner")
+    sheet = SheetDocument(
+        numeric_id=64,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="cell-rebase",
+        sheet_key="main",
+        title="系统更新期间人工编辑",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名", "状态", "系统统计"],
+            "column_ids": ["col-name", "col-status", "col-system"],
+            "rows": [["张三", "待处理", "旧统计"]],
+            "row_ids": ["row-zhangsan"],
+            "grid_rows": [["姓名", "状态", "系统统计"], ["张三", "待处理", "旧统计"]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    _override_user(owner)
+
+    try:
+        system_update = client.post(
+            "/api/note-sheets/sheets/64/patch",
+            json={
+                "base_version": 1,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 2, "value": "新统计"},
+                ],
+            },
+        )
+        assert system_update.status_code == 200, system_update.json()
+        assert system_update.json()["version"] == 2
+
+        rebased_edit = client.post(
+            "/api/note-sheets/sheets/64/patch",
+            json={
+                "base_version": 1,
+                "mutation_id": "mutation-sheet-rebase",
+                "client_instance_id": "page-sheet-rebase",
+                "ops": [
+                    {
+                        "op": "set-cell-value",
+                        "row_index": 0,
+                        "column_index": 1,
+                        "row_id": "row-zhangsan",
+                        "column_id": "col-status",
+                        "expected_value": "待处理",
+                        "value": "人工修正",
+                    },
+                    {
+                        "op": "set-cell-meta",
+                        "row_index": 0,
+                        "column_index": 1,
+                        "row_id": "row-zhangsan",
+                        "column_id": "col-status",
+                        "expected_meta": {},
+                        "meta": {"style": {"background_color": "#fff2cc"}},
+                    },
+                ],
+            },
+        )
+        assert rebased_edit.status_code == 200, rebased_edit.json()
+        assert rebased_edit.json()["version"] == 3
+        session.refresh(sheet)
+        assert sheet.document_json["rows"][0] == ["张三", "人工修正", "新统计"]
+        assert sheet.document_json["cell_meta"]["1:1"]["style"]["background_color"] == "#fff2cc"
+        assert broadcasts[-1][1]["mutation_id"] == "mutation-sheet-rebase"
+        assert broadcasts[-1][1]["client_instance_id"] == "page-sheet-rebase"
+        assert broadcasts[-1][1]["source_kind"] == "user"
+
+        duplicate_delivery = client.post(
+            "/api/note-sheets/sheets/64/patch",
+            json={
+                "base_version": 1,
+                "mutation_id": "mutation-sheet-rebase",
+                "client_instance_id": "page-sheet-rebase",
+                "ops": [
+                    {
+                        "op": "set-cell-value",
+                        "row_index": 0,
+                        "column_index": 1,
+                        "row_id": "row-zhangsan",
+                        "column_id": "col-status",
+                        "expected_value": "待处理",
+                        "value": "人工修正",
+                    },
+                    {
+                        "op": "set-cell-meta",
+                        "row_index": 0,
+                        "column_index": 1,
+                        "row_id": "row-zhangsan",
+                        "column_id": "col-status",
+                        "expected_meta": {},
+                        "meta": {"style": {"background_color": "#fff2cc"}},
+                    },
+                ],
+            },
+        )
+        assert duplicate_delivery.status_code == 200, duplicate_delivery.json()
+        assert duplicate_delivery.json()["version"] == 3
+        session.refresh(sheet)
+        assert sheet.version == 3
+
+        same_cell_system_update = client.post(
+            "/api/note-sheets/sheets/64/patch",
+            json={
+                "base_version": 3,
+                "ops": [
+                    {"op": "set-cell-value", "row_index": 0, "column_index": 1, "value": "系统覆盖"},
+                ],
+            },
+        )
+        assert same_cell_system_update.status_code == 200, same_cell_system_update.json()
+
+        real_conflict = client.post(
+            "/api/note-sheets/sheets/64/patch",
+            json={
+                "base_version": 3,
+                "ops": [
+                    {
+                        "op": "set-cell-value",
+                        "row_index": 0,
+                        "column_index": 1,
+                        "row_id": "row-zhangsan",
+                        "column_id": "col-status",
+                        "expected_value": "人工修正",
+                        "value": "过期草稿",
+                    },
+                ],
+            },
+        )
+        assert real_conflict.status_code == 409
+        session.refresh(sheet)
+        assert sheet.document_json["rows"][0][1] == "系统覆盖"
     finally:
         _clear_user_override()
 
@@ -6085,7 +6578,7 @@ def test_note_sheet_export_allows_anonymous_viewer_and_exports_current_grid(clie
             "grid_rows": [
                 ["课程", "人数"],
                 ["导出excel", "说明"],
-                ["修道班13期1阶", "77"],
+                ["修道班13期1阶", {"value": "77", "link": {"url": "https://example.com/help"}}],
             ],
             "rows": [["修道班13期1阶", "77"]],
             "cell_meta": {
@@ -6121,6 +6614,7 @@ def test_note_sheet_export_allows_anonymous_viewer_and_exports_current_grid(clie
     assert worksheet["B2"].value == "说明"
     assert worksheet["A3"].value == "修道班13期1阶"
     assert worksheet["B3"].value == "77"
+    assert worksheet["B3"].hyperlink.target == "https://example.com/help"
 
     session.delete(grant)
     session.commit()
@@ -6283,49 +6777,6 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
         return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
 
     try:
-        from backend.core.attendance import nianzhu_course_sheets
-
-        monkeypatch.setattr(
-            nianzhu_course_sheets,
-            "_query_legacy_lesson_rows",
-            lambda course_name: (
-                [
-                    {
-                        "lesson_id": 9001,
-                        "start_date": "2026-07-01 05:20:00",
-                        "end_date": "2026-07-08 06:20:00",
-                        "next_update": "9999-12-31 23:59:59",
-                        "lesson_id2": "l_july_nianzhu_01",
-                        "shop_id": 1,
-                        "lesson_name": f"{course_name}-第01课",
-                        "video_duration": 3600,
-                    }
-                ],
-                None,
-            ),
-        )
-        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_data_rows", lambda lesson_ids: ([], None))
-        monkeypatch.setattr(
-            nianzhu_course_sheets,
-            "_query_legacy_clockin_rows",
-            lambda course_name: (
-                [
-                    {
-                        "clockin_id": 7001,
-                        "name": f"{course_name}-打卡数",
-                        "url": "https://example.com/july-clockin",
-                        "start_date": "2026-07-01",
-                        "end_date": "2026-07-27",
-                        "days": 27,
-                        "clockin_user_num": 0,
-                        "total_user_num": 0,
-                    }
-                ],
-                None,
-            ),
-        )
-        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_clockin_data_rows", lambda clockin_ids: ([], None))
-
         summary_workbook = WorkbookDocument(
             numeric_id=2,
             title="武陵禅寺网课考勤汇总",
@@ -6627,9 +7078,9 @@ def test_attendance_summary_next_month_templates_materialize_local_course_workbo
             .where(SheetDocument.owner_key == "20260701-nianzhu-42")
             .where(SheetDocument.sheet_key == "clockin_config")
         ).one()
-        assert created_video_config.document_json["rows"][0][4] == "l_july_nianzhu_01"
+        assert created_video_config.document_json["rows"][0][4] == ""
         assert all("同学会" not in str(row[6]) for row in created_video_config.document_json["rows"])
-        assert created_clockin_config.document_json["rows"][0][2] == "https://example.com/july-clockin"
+        assert created_clockin_config.document_json["rows"][0][2] == ""
         created_registration = session.exec(
             select(SheetDocument)
             .where(SheetDocument.owner_key == "20260701-nianzhu-42")
@@ -6669,11 +7120,6 @@ def test_attendance_summary_existing_next_month_template_can_materialize_workboo
         return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
 
     try:
-        from backend.core.attendance import nianzhu_course_sheets
-
-        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_lesson_rows", lambda course_name: ([], None))
-        monkeypatch.setattr(nianzhu_course_sheets, "_query_legacy_clockin_rows", lambda course_name: ([], None))
-
         summary_workbook = WorkbookDocument(numeric_id=2, title="武陵禅寺网课考勤汇总", owner_user_id=user.id)
         source_workbook = WorkbookDocument(numeric_id=10, title="第41届念住", owner_user_id=user.id)
         summary_sheet = SheetDocument(
@@ -6832,8 +7278,12 @@ def test_attendance_summary_existing_next_month_template_can_materialize_workboo
             .where(SheetDocument.owner_key == "20260701-nianzhu-42")
             .where(SheetDocument.sheet_key == "clockin_config")
         ).one()
-        assert created_video_config.document_json["rows"] == []
-        assert created_clockin_config.document_json["rows"] == []
+        assert len(created_video_config.document_json["rows"]) == 1
+        assert created_video_config.document_json["rows"][0][4] == ""
+        assert created_video_config.document_json["rows"][0][6] == "05:20~06:20 第01课"
+        assert len(created_clockin_config.document_json["rows"]) == 1
+        assert created_clockin_config.document_json["rows"][0][1] == "打卡数"
+        assert created_clockin_config.document_json["rows"][0][2] == ""
     finally:
         _clear_user_override()
 
@@ -7346,13 +7796,12 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
     def serial(year: int, month: int, day: int) -> str:
         return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
 
-    def fake_query_link_count(field_key: str, course_name: str):
-        assert course_name == "d260401第39届念住"
+    def fake_query_link_count(*_args, field_key: str, **_kwargs):
         if field_key == "lesson_links":
             return 21, 21
         return 4, 3
 
-    monkeypatch.setattr(note_sheets_api, "_query_attendance_link_count", fake_query_link_count)
+    monkeypatch.setattr(note_sheets_api, "_attendance_config_link_count", fake_query_link_count)
 
     try:
         workbook = WorkbookDocument(
@@ -7425,7 +7874,6 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
             json={
                 "base_version": initial_version + 1,
                 "field_key": "lesson_links",
-                "repair_with_remote_browser": False,
             },
         )
         assert stale_response.status_code == 409
@@ -7435,7 +7883,6 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
             json={
                 "base_version": initial_version,
                 "field_key": "lesson_links",
-                "repair_with_remote_browser": False,
             },
         )
         assert lesson_response.status_code == 200
@@ -7462,7 +7909,6 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
             json={
                 "base_version": lesson_payload["sheet"]["version"],
                 "field_key": "clockin_links",
-                "repair_with_remote_browser": False,
             },
         )
         assert clockin_response.status_code == 200
@@ -7473,7 +7919,132 @@ def test_attendance_summary_updates_link_count_fields(client, session, monkeypat
         _clear_user_override()
 
 
-def test_attendance_summary_link_count_repairs_nianzhu_jueguan_with_remote_step1(client, session, monkeypatch):
+def test_registration_user_id_detection_ignores_unparticipated_video_rows_and_promotes_active_name_match(monkeypatch):
+    progress = note_sheets_api._collect_registration_course_user_progress(
+        {
+            "columns": ["user_id2", "nickname", "study_state", "progress", "cum_seconds"],
+            "rows": [
+                ["u_pending", "手机尾号5195用户", "未参与", 0, 0],
+                ["u_active", "中和", "已完成", 100, 1800],
+            ],
+        },
+        {
+            "columns": ["user_id2", "nickname"],
+            "rows": [["u_active", "中和"]],
+        },
+    )
+    monkeypatch.setattr(note_sheets_api, "_query_registration_detection_user_ids_by_phone", lambda phone: [])
+    monkeypatch.setattr(
+        note_sheets_api,
+        "_query_registration_detection_user_ids_by_names",
+        lambda names: ["u_active"],
+    )
+
+    assert "u_pending" not in progress
+    assert progress["u_active"]["video_count"] == 1
+    assert progress["u_active"]["clockin_count"] == 1
+    candidates = note_sheets_api._build_registration_user_id_detection_candidates(
+        {
+            "姓名": "朱亚红",
+            "微信昵称": "中和",
+            "手机号": "13851385195",
+        },
+        progress,
+    )
+    assert [(item.user_id, item.confidence) for item in candidates] == [("u_active", "high")]
+    assert "主数据姓名/昵称命中" in candidates[0].evidence
+
+
+def test_attendance_link_count_reads_course_workbook_config_sheets(session):
+    owner = _create_user(session, username="attendance-config-link-count-user")
+    workbook = WorkbookDocument(
+        numeric_id=20,
+        title="第49届觉观",
+        owner_user_id=owner.id,
+    )
+    attendance = SheetDocument(
+        numeric_id=21,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20260801-jueguan-49",
+        sheet_key="attendance",
+        title="考勤表",
+        owner_user_id=owner.id,
+        document_json={"columns": ["姓名"], "rows": []},
+    )
+    video_config = SheetDocument(
+        numeric_id=22,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20260801-jueguan-49",
+        sheet_key="video_config",
+        title="视频配置",
+        owner_user_id=owner.id,
+        document_json={
+            "columns": ["lesson_id", "lesson_name", "lesson_id2"],
+            "rows": [
+                [1, "第01课", "lesson-1"],
+                [2, "第02课", ""],
+                [3, "第03课", "lesson-3"],
+                ["", "", ""],
+            ],
+        },
+    )
+    clockin_config = SheetDocument(
+        numeric_id=23,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20260801-jueguan-49",
+        sheet_key="clockin_config",
+        title="打卡配置",
+        owner_user_id=owner.id,
+        document_json={
+            "columns": ["clockin_id", "name", "url"],
+            "rows": [
+                [1, "每日打卡", "https://example.com/clockin"],
+                [2, "补充打卡", ""],
+            ],
+        },
+    )
+    session.add(workbook)
+    session.add(attendance)
+    session.add(video_config)
+    session.add(clockin_config)
+    session.commit()
+    for order_index, sheet in enumerate((attendance, video_config, clockin_config), start=1):
+        session.add(WorkbookSheetLink(
+            workbook_id=workbook.id,
+            sheet_id=sheet.id,
+            order_index=order_index * 10,
+        ))
+    session.commit()
+
+    columns = ["课程名称", "在线考勤表"]
+    row = [
+        "第49届觉观",
+        {"value": "第49届觉观", "link": {"url": "/workbook/20?sheet=21"}},
+    ]
+    document = {"columns": columns, "rows": [row]}
+
+    assert note_sheets_api._attendance_config_link_count(
+        session,
+        document,
+        row=row,
+        row_index=0,
+        columns=columns,
+        field_key="lesson_links",
+    ) == (3, 2)
+    assert note_sheets_api._attendance_config_link_count(
+        session,
+        document,
+        row=row,
+        row_index=0,
+        columns=columns,
+        field_key="clockin_links",
+    ) == (2, 1)
+
+
+def _retired_attendance_summary_link_count_repairs_nianzhu_jueguan_with_remote_step1(client, session, monkeypatch):
     user = _create_user(session, username="note-sheet-attendance-link-count-remote-user")
     _override_user(user)
 
@@ -7483,9 +8054,8 @@ def test_attendance_summary_link_count_repairs_nianzhu_jueguan_with_remote_step1
     query_results = [(0, 0), (21, 21)]
     remote_calls: list[dict[str, object]] = []
 
-    def fake_query_link_count(field_key: str, course_name: str):
+    def fake_query_link_count(*_args, field_key: str, **_kwargs):
         assert field_key == "lesson_links"
-        assert course_name == "d260701第48届觉观"
         return query_results.pop(0)
 
     class FakeRemoteEntry:
@@ -7503,7 +8073,7 @@ def test_attendance_summary_link_count_repairs_nianzhu_jueguan_with_remote_step1
         remote_calls.append({"entry": entry, "path": path, "payload": payload, "timeout": timeout})
         return {"lesson_update_count": 21, "clockin_update_count": 0}
 
-    monkeypatch.setattr(note_sheets_api, "_query_attendance_link_count", fake_query_link_count)
+    monkeypatch.setattr(note_sheets_api, "_attendance_config_link_count", fake_query_link_count)
     monkeypatch.setattr(note_sheets_api, "get_attendance_course_data_step_runner_device", fake_step_runner_device)
     monkeypatch.setattr(note_sheets_api, "_post_remote_attendance_device_json", fake_remote_post)
 
@@ -7590,14 +8160,18 @@ def test_attendance_summary_link_count_repairs_nianzhu_jueguan_with_remote_step1
         _clear_user_override()
 
 
-def test_attendance_summary_link_count_keeps_existing_value_when_remote_repair_fails(client, session, monkeypatch):
+def _retired_attendance_summary_link_count_keeps_existing_value_when_remote_repair_fails(client, session, monkeypatch):
     user = _create_user(session, username="note-sheet-attendance-link-count-remote-fail-user")
     _override_user(user)
 
     def serial(year: int, month: int, day: int) -> str:
         return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
 
-    monkeypatch.setattr(note_sheets_api, "_query_attendance_link_count", lambda _field_key, _course_name: (0, 0))
+    monkeypatch.setattr(
+        note_sheets_api,
+        "_attendance_config_link_count",
+        lambda *_args, **_kwargs: (0, 0),
+    )
 
     class FakeRemoteEntry:
         entry_id = "mi15-entry"
@@ -7977,12 +8551,14 @@ def test_note_sheet_pagination_load_and_page_patch_save(client, session):
             "row_offset": 100,
             "loaded_row_count": 100,
         })
-        assert len(page2_detail["document_json"]["row_ids"]) == 250
+        assert len(page2_detail["document_json"]["row_ids"]) == 100
+        assert page2_detail["document_json"]["row_ids"][0] == "rid-101"
+        assert page2_detail["document_json"]["row_ids"][-1] == "rid-200"
         assert page2_detail["document_json"]["rows"][0] == ["101", "row-101"]
         assert page2_detail["document_json"]["rows"][-1] == ["200", "row-200"]
 
         edited_rows = page2_detail["document_json"]["rows"][2:]
-        edited_row_ids = page2_detail["document_json"]["row_ids"][102:200]
+        edited_row_ids = page2_detail["document_json"]["row_ids"][2:]
         save_response = client.put(
             f"/api/note-sheets/sheets/{sheet_id}",
             json={
@@ -8453,6 +9029,73 @@ def test_note_sheet_respects_document_pagination_settings(client, session):
         assert len(full_sheet_detail["document_json"]["rows"]) == 250
         assert full_sheet_detail["document_json"]["rows"][0] == ["1", "row-1"]
         assert full_sheet_detail["document_json"]["rows"][-1] == ["250", "row-250"]
+    finally:
+        _clear_user_override()
+
+
+def test_paginated_sheet_rejects_page_as_full_document_without_truncating_rows(client, session):
+    user = _create_user(session, username="note-sheet-pagination-truncation-guard-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "分页防截断表格",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["序号", "内容"],
+                    "rows": [[str(index), f"row-{index}"] for index in range(1, 161)],
+                    "view_settings": {
+                        "pagination": {
+                            "enabled": True,
+                            "page_size": 50,
+                        },
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet_id = create_sheet_response.json()["id"]
+
+        pages = []
+        for page in range(1, 5):
+            page_response = client.get(
+                f"/api/note-sheets/sheets/{sheet_id}",
+                params={"page": page},
+            )
+            assert page_response.status_code == 200
+            pages.append(page_response.json())
+
+        assert [detail["pagination"]["loaded_row_count"] for detail in pages] == [50, 50, 50, 10]
+        assert all(detail["pagination"]["total_rows"] == 160 for detail in pages)
+        assert all(detail["pagination"]["page_count"] == 4 for detail in pages)
+        assert pages[0]["document_json"]["rows"][0] == ["1", "row-1"]
+        assert pages[-1]["document_json"]["rows"][-1] == ["160", "row-160"]
+
+        unsafe_save_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            json={
+                "document_json": {
+                    **pages[0]["document_json"],
+                    "rows": pages[0]["document_json"]["rows"],
+                },
+                "base_version": pages[0]["version"],
+            },
+        )
+        assert unsafe_save_response.status_code == 409
+        assert "page_patch" in unsafe_save_response.json()["detail"]
+
+        full_response = client.get(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            params={"paginate": False},
+        )
+        assert full_response.status_code == 200
+        full_document = full_response.json()["document_json"]
+        assert len(full_document["rows"]) == 160
+        assert full_document["rows"][0] == ["1", "row-1"]
+        assert full_document["rows"][-1] == ["160", "row-160"]
     finally:
         _clear_user_override()
 

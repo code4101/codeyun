@@ -39,6 +39,50 @@ def test_ocr_frame_reuses_result_for_identical_image_and_options(monkeypatch):
     assert first is not second
 
 
+def test_ocr_frame_defaults_to_chinese_english_model(monkeypatch):
+    captured_options = None
+
+    def fake_preview(*_args, **kwargs):
+        nonlocal captured_options
+        captured_options = kwargs.get("options")
+        return {"document": {}}
+
+    monkeypatch.setattr(macro_annotation, "run_paddle_ocr_preview", fake_preview)
+    image_data_url = "data:image/png;base64," + base64.b64encode(b"fanxiu-image").decode("ascii")
+
+    macro_annotation._recognize_data_annotation_ocr_frame(image_data_url)
+
+    assert captured_options == {"lang": "ch", "ocr_version": "PP-OCRv4"}
+
+
+def test_ocr_frame_filters_non_chinese_english_scripts(monkeypatch):
+    def fake_preview(*_args, **_kwargs):
+        return {
+            "document": {
+                "flags": {
+                    "paddleocr_payload": {
+                        "rec_texts": ["鉴宝순괜A1%", "순괜"],
+                        "rec_scores": [0.99, 0.98],
+                        "rec_boxes": [[10, 20, 110, 50], [120, 20, 180, 50]],
+                        "text_word": [["鉴", "宝", "순", "괜", "A", "1", "%"], ["순", "괜"]],
+                        "text_word_boxes": [
+                            [[10, 20, 20, 50], [20, 20, 30, 50], [30, 20, 40, 50], [40, 20, 50, 50], [50, 20, 60, 50], [60, 20, 70, 50], [70, 20, 80, 50]],
+                            [[120, 20, 140, 50], [140, 20, 160, 50]],
+                        ],
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(macro_annotation, "run_paddle_ocr_preview", fake_preview)
+    image_data_url = "data:image/png;base64," + base64.b64encode(b"fanxiu-filter").decode("ascii")
+
+    response = macro_annotation._recognize_data_annotation_ocr_frame(image_data_url)
+
+    assert [line.text for line in response.lines] == ["鉴宝A1%"]
+    assert [token.text for token in response.tokens] == ["鉴", "宝", "A", "1", "%"]
+
+
 def test_ocr_frame_cache_separates_different_options(monkeypatch):
     calls = 0
 

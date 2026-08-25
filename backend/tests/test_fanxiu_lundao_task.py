@@ -57,6 +57,75 @@ def _patch_catalog(monkeypatch) -> None:
     )
 
 
+def test_lundao_runtime_profile_uses_self_seat_owner(monkeypatch) -> None:
+    _patch_catalog(monkeypatch)
+
+    result = lundao.lundao_player_profile_from_runtime(
+        {
+            "self_profile": {
+                "available": True,
+                "role_id": 42,
+                "battle_score": 1000,
+                "faze": 10010,
+            }
+        }
+    )
+
+    assert result["available"] is True
+    assert result["quality"] == 1
+    assert result["cross"] == 1
+    assert result["source"] == "runtime_memory"
+
+
+def test_lundao_runtime_probe_selects_without_packet_or_gui(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _patch_catalog(monkeypatch)
+
+    result = lundao.read_and_select_lundao_runtime_target(
+        snapshot={
+            "daluo_roster": _facts(
+                _seat(
+                    7,
+                    name="低跨目标",
+                    server_id=22001,
+                    faze=0,
+                    battle_score=999_999,
+                )
+            ),
+            "self_profile": {
+                "available": True,
+                "role_id": 42,
+                "battle_score": 1000,
+                "faze": 10010,
+            },
+        },
+        data_dir=tmp_path,
+        now_ms=100,
+    )
+
+    assert result["ok"] is True
+    assert result["target"]["name"] == "低跨目标"
+    assert result["source"] == "runtime_memory"
+
+
+def test_lundao_refresh_returns_runtime_decision_without_packet(monkeypatch) -> None:
+    expected = {
+        "ok": True,
+        "status": "selected",
+        "target": {"seat_id": 7},
+        "source": "runtime_memory",
+    }
+    monkeypatch.setattr(
+        lundao,
+        "read_and_select_lundao_runtime_target",
+        lambda **_kwargs: expected,
+    )
+
+    assert lundao.refresh_and_select_lundao_kick_target() is expected
+
+
 def test_lundao_selector_prefers_lowest_law_then_lowest_power(monkeypatch, tmp_path) -> None:
     _patch_catalog(monkeypatch)
     facts = _facts(
@@ -75,6 +144,8 @@ def test_lundao_selector_prefers_lowest_law_then_lowest_power(monkeypatch, tmp_p
     assert result["status"] == "selected"
     assert result["target"]["name"] == "零跨低战"
     assert result["target"]["faze_cross"] == 0
+    assert result["eligible_no_law_count"] == 2
+    assert result["eligible_with_law_count"] == 1
 
 
 def test_lundao_selector_applies_ninety_percent_only_to_same_law(monkeypatch, tmp_path) -> None:
@@ -93,9 +164,80 @@ def test_lundao_selector_applies_ninety_percent_only_to_same_law(monkeypatch, tm
         now_ms=100,
     )
 
-    assert [result["target"]["name"], result["eligible_count"]] == ["低跨再高也压制", 2]
+    assert [result["target"]["name"], result["eligible_count"]] == ["低跨再高也压制", 1]
+    assert result["eligible_with_law_count"] == 1
     assert result["rejected"]["unsafe_same_law_power"] == 1
     assert result["rejected"]["stronger_law"] == 1
+
+
+def test_lundao_selector_does_not_attack_law_target_when_no_law_target_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _patch_catalog(monkeypatch)
+    facts = _facts(
+        _seat(1, name="同跨低战", server_id=22001, faze=10010, battle_score=100.0),
+    )
+
+    result = lundao.select_lundao_kick_target(
+        facts,
+        player_profile=_profile(quality=1, battle_score=1000.0),
+        data_dir=tmp_path,
+        now_ms=100,
+    )
+
+    assert result["status"] == "no_target"
+    assert result["target"] is None
+    assert result["eligible_count"] == 0
+    assert result["eligible_no_law_count"] == 0
+    assert result["eligible_with_law_count"] == 1
+
+
+def test_lundao_selector_treats_explicit_empty_faze_as_no_law(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _patch_catalog(monkeypatch)
+    seat = _seat(1, name="空法则字段", server_id=22001, faze=0, battle_score=100.0)
+    seat["owner"]["faze"] = None
+
+    result = lundao.select_lundao_kick_target(
+        _facts(seat),
+        player_profile=_profile(quality=1, battle_score=1000.0),
+        data_dir=tmp_path,
+        now_ms=100,
+    )
+
+    assert result["status"] == "selected"
+    assert result["target"]["name"] == "空法则字段"
+    assert result["target"]["faze_id"] == 0
+
+
+def test_lundao_selector_no_law_target_does_not_require_self_law_quality(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _patch_catalog(monkeypatch)
+    facts = _facts(
+        _seat(1, name="有法则低战", server_id=22001, faze=10010, battle_score=10.0),
+        _seat(2, name="无法则低战", server_id=22002, faze=0, battle_score=20.0),
+    )
+
+    result = lundao.select_lundao_kick_target(
+        facts,
+        player_profile={
+            "available": True,
+            "role_id": 42,
+            "battle_score": 1000.0,
+        },
+        data_dir=tmp_path,
+        now_ms=100,
+    )
+
+    assert result["status"] == "selected"
+    assert result["target"]["name"] == "无法则低战"
+    assert result["eligible_no_law_count"] == 1
+    assert result["eligible_with_law_count"] == 0
 
 
 def test_lundao_selector_never_falls_back_to_friendly_or_protected(monkeypatch, tmp_path) -> None:
@@ -141,8 +283,8 @@ def test_lundao_selector_rejects_non_daluo_roster(monkeypatch, tmp_path) -> None
 
 def test_lundao_safety_threshold_boundaries() -> None:
     values = {
-        (15, 54): None,
-        (15, 55): 6,
+        (15, 29): None,
+        (15, 30): 6,
         (16, 29): 6,
         (16, 30): 5,
         (17, 0): 4,
@@ -153,6 +295,40 @@ def test_lundao_safety_threshold_boundaries() -> None:
     }
     for (hour, minute), expected in values.items():
         assert lundao.lundao_safety_threshold(datetime(2026, 7, 20, hour, minute)) == expected
+
+
+def test_lundao_daily_trigger_keeps_today_before_opening() -> None:
+    assert lundao.next_lundao_daily_trigger(
+        datetime(2026, 8, 15, 10, 23, 41),
+    ) == datetime(2026, 8, 15, 15, 30)
+    assert lundao.next_lundao_daily_trigger(
+        datetime(2026, 8, 15, 15, 30),
+    ) == datetime(2026, 8, 16, 15, 30)
+    assert lundao.next_lundao_daily_trigger(
+        datetime(2026, 8, 15, 22, 0),
+    ) == datetime(2026, 8, 16, 15, 30)
+
+
+def test_lundao_recheck_uses_calm_half_hour_cadence() -> None:
+    assert lundao.next_lundao_recheck(
+        datetime(2026, 7, 20, 20, 55),
+    ) == datetime(2026, 7, 20, 21, 25)
+    assert lundao.next_lundao_recheck(
+        datetime(2026, 7, 20, 19, 30),
+    ) == datetime(2026, 7, 20, 20, 0)
+    assert lundao.next_lundao_recheck(
+        datetime(2026, 7, 20, 21, 10),
+        protect_end_time_ms=int(datetime(2026, 7, 20, 21, 10, 20).timestamp() * 1000),
+    ) == datetime(2026, 7, 20, 21, 40)
+
+
+def test_lundao_unseated_retry_uses_ten_minute_cadence_until_first_seat() -> None:
+    assert lundao.next_lundao_unseated_retry(
+        datetime(2026, 7, 20, 15, 30, 5),
+    ) == datetime(2026, 7, 20, 15, 40, 5)
+    assert lundao.next_lundao_unseated_retry(
+        datetime(2026, 7, 20, 16, 38, 5),
+    ) == datetime(2026, 7, 20, 16, 48, 5)
 
 
 def test_lundao_opportunity_counts_empty_friendly_and_protected_but_only_attacks_legal_target(monkeypatch, tmp_path) -> None:
@@ -241,7 +417,7 @@ def test_lundao_plan_stays_sanqing_with_zero_strength_and_only_completes_from_re
     assert wait["next_time"] == datetime(2026, 7, 20, 20, 0)
     assert zero_strength["action"] == "stay_sanqing"
     assert done["action"] == "done"
-    assert done["next_time"] == datetime(2026, 7, 21, 15, 55)
+    assert done["next_time"] == datetime(2026, 7, 21, 15, 30)
 
 
 def test_lundao_plan_with_zero_strength_still_requests_an_actionable_daluo_seat() -> None:
@@ -266,7 +442,7 @@ def test_lundao_plan_with_zero_strength_keeps_an_existing_daluo_seat_without_pur
     )
 
     assert decision["action"] == "stay_daluo"
-    assert decision["next_time"] == datetime(2026, 7, 20, 20, 0)
+    assert decision["next_time"] == datetime(2026, 7, 21, 15, 30)
 
 
 def test_lundao_live_remaining_reward_time_subtracts_current_seat_elapsed_time() -> None:

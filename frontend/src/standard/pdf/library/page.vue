@@ -1,23 +1,32 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Grid, List, Plus, Search } from '@element-plus/icons-vue'
 
 import {
   createPdfBookshelf,
+  createLibraryFolder,
+  copyPdfToOwnLibrary,
+  deletePdfDocument,
   deletePdfBookshelf,
+  deleteLibraryFolder,
+  fetchLibraryFolders,
   fetchPdfBookshelfAccess,
   fetchPdfBookshelves,
   fetchPdfDocuments,
   fetchPdfPagePreview,
   leaveSharedPdfBookshelf,
   movePdfToBookshelf,
-  renamePdfBookshelf,
+  movePdfToLibraryFolder,
+  removePdfDocumentFromMyLibrary,
+  updatePdfBookshelf,
   uploadPdfDocument,
   updatePdfBookshelfLayout,
+  updateLibraryBookshelfLayout,
   updatePdfBookshelfAccess,
   updatePdfDocumentMetadata,
+  updateLibraryFolder,
   updatePdfUserState,
   type PdfBookshelfOrientation,
   type PdfAccessGrantItem,
@@ -25,12 +34,15 @@ import {
   type PdfBookshelfPlacement,
   type PdfDocumentSummary,
   type PdfLibraryBookshelf,
+  type LibraryFolder,
+  type LibraryBookshelfLayoutItem,
   type PdfResourceRole,
 } from '@/api/pdfDocuments'
 import { useUserStore } from '@/store/userStore'
 import type { AccountUserOption } from '@/api/accountUsers'
 import AccountUserSelect from '@/components/AccountUserSelect.vue'
 import {
+  deleteLocalSkillBook,
   fetchLocalSkillBookCatalog,
   fetchLocalSkillBookReadingState,
   updateLocalSkillBookMetadata,
@@ -40,8 +52,28 @@ import {
 } from '@/api/skillBooks'
 import { getCachedPreviewPageUrl, loadPreviewPageBlock } from './previewPageCache'
 import SkillBookReaderDialog from './SkillBookReaderDialog.vue'
+import LinuxDoBookReaderDialog from './LinuxDoBookReaderDialog.vue'
+import ReaderThemeControl from './ReaderThemeControl.vue'
+import { libraryReaderThemeClass } from './readerTheme'
+import {
+  deleteLinuxDoBook,
+  fetchLinuxDoBooks,
+  uploadElectronicBook,
+  updateLinuxDoBookMetadata,
+  updateLinuxDoBookPlacement,
+  type LinuxDoBookReadingState,
+  type LinuxDoBookSummary,
+} from '@/api/linuxDoBooks'
+import {
+  loadCommonSiteLogoBlob,
+  loadCommonSites,
+  saveCommonSites,
+  type CommonSite,
+} from './commonSites'
 
 type PdfViewMode = 'bookshelf' | 'list'
+type ArticleReadingMode = 'scroll' | 'paginated'
+type ArticleReadingModeOverride = ArticleReadingMode | 'inherit'
 
 interface BookContextMenuState {
   pdfId: number
@@ -55,15 +87,39 @@ interface BookshelfContextMenuState {
   y: number
 }
 
+interface ShelfContextMenuState {
+  shelfIndex: number
+  x: number
+  y: number
+  xRatio: number
+  yRatio: number
+}
+
 interface SkillBookContextMenuState {
+  x: number
+  y: number
+}
+
+interface LinuxDoBookContextMenuState {
+  bookId: string
   x: number
   y: number
 }
 
 interface BookshelfBookGroup {
   key: string
-  kind: 'single' | 'horizontal-stack' | 'skill-book'
+  kind: 'single' | 'horizontal-stack' | 'skill-book' | 'linux-do-book' | 'folder'
   documents: PdfDocumentSummary[]
+  folder?: LibraryFolder
+  linuxDoBook?: LinuxDoBookSummary
+}
+
+interface BookshelfPlacementItem extends LibraryBookshelfLayoutItem {
+  key: string
+  document?: PdfDocumentSummary
+  linuxDoBook?: LinuxDoBookSummary
+  folder?: LibraryFolder
+  skillBook?: SkillBookCatalog
 }
 
 interface BookTitleSegment {
@@ -76,22 +132,51 @@ interface ExternalPdfDropTarget {
   beforePdfId: number | null
 }
 
+interface WallSitePosition {
+  shelfIndex: number
+  xRatio: number
+  yRatio: number
+}
+
+interface LegacyWallSitePosition {
+  x: number
+  y: number
+}
+
+interface WallSiteMarquee {
+  shelfIndex: number
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+  active: boolean
+}
+
 const PDF_LIBRARY_VIEW_MODE_KEY = 'codeyun.pdf-library.view-mode'
 const PDF_LIBRARY_BOOKSHELF_KEY_PREFIX = 'codeyun.pdf-library.bookshelf'
 const BOOK_PAGE_SCALE = 0.32
 const MIN_BOOK_HEIGHT = 190
 const MAX_BOOK_HEIGHT = 286
-const MIN_SPINE_WIDTH = 24
-const MAX_SPINE_WIDTH = 84
-const BOOK_THICKNESS_SCALE = 2
+const SYSTEM_MIN_SPINE_WIDTH = 16
+const SYSTEM_REFERENCE_SPINE_WIDTH = SYSTEM_MIN_SPINE_WIDTH * 4
+const MIN_BOOK_INTERACTION_WIDTH = 12
+const MIN_SPINE_WIDTH_FOR_TITLE = 22
+const MIN_SPINE_WIDTH_FOR_COMPACT_TITLE = 8
+const MIN_COMPACT_SPINE_FONT_SIZE = 6
+const MIN_SPINE_WIDTH_FOR_BOOKMARK = 14
 const MIN_SPINE_FONT_SIZE = 12
 const MAX_SPINE_FONT_SIZE = 36
 const SPINE_VERTICAL_TEXT_HEIGHT_INSET = 20
 const MAX_COMBINED_VERTICAL_TOKEN_LENGTH = 4
 const COMPACT_VERTICAL_TOKEN_CELL_RATIO = 0.78
 const MIN_TITLE_LENGTH_FOR_SEPARATE_QUALIFIER = 11
-const DEFAULT_BOOKSHELF_ROW_COUNT = 12
-const TRAILING_EMPTY_BOOKSHELF_ROW_COUNT = 4
+const DEFAULT_BOOKSHELF_ROW_COUNT = 1
+const TRAILING_EMPTY_BOOKSHELF_ROW_COUNT = 1
+const BOOKSHELF_ROW_GROWTH_COUNT = 3
+const BOOKSHELF_HORIZONTAL_GROWTH_MIN = 480
+const BOOKSHELF_EDGE_THRESHOLD = 72
+const BOOKSHELF_DRAG_SCROLL_STEP = 24
+const BOOKSHELF_EXPANSION_COOLDOWN_MS = 1200
 const BOOK_ORIENTATION_CYCLE: PdfBookshelfOrientation[] = [
   'spine_vertical',
   'spine_horizontal',
@@ -101,31 +186,93 @@ const BOOK_ORIENTATION_CYCLE: PdfBookshelfOrientation[] = [
 const router = useRouter()
 const userStore = useUserStore()
 
-const loading = ref(false)
+const loading = ref(true)
 const bookshelves = ref<PdfLibraryBookshelf[]>([])
 const ownedBookshelves = computed(() => bookshelves.value.filter((bookshelf) => bookshelf.is_owned))
 const sharedBookshelves = computed(() => bookshelves.value.filter((bookshelf) => !bookshelf.is_owned))
 const selectedBookshelfId = ref('')
+const bookshelfScrollRef = ref<HTMLElement | null>(null)
+const bookshelfCanvasMinWidth = ref(0)
+const bookshelfCanvasMinRowCount = ref(DEFAULT_BOOKSHELF_ROW_COUNT)
 const documents = ref<PdfDocumentSummary[]>([])
 const searchText = ref('')
 const viewMode = ref<PdfViewMode>('bookshelf')
 const draggingPdfId = ref<number | null>(null)
 const draggingSkillBook = ref(false)
+const draggingLinuxDoBookId = ref<string | null>(null)
 const dragOverPdfId = ref<number | null>(null)
 const dragOverShelfIndex = ref<number | null>(null)
+const dragOverPlacementKey = ref<string | null>(null)
 const bookDragOffsetX = ref(0)
 const bookDragOffsetY = ref(0)
 const externalFileDragActive = ref(false)
 const externalPdfDropTarget = ref<ExternalPdfDropTarget | null>(null)
+const commonSites = ref<CommonSite[]>([])
+const commonSiteIconUrls = ref<Record<string, string>>({})
+const wallSitePositions = ref<Record<string, WallSitePosition>>({})
+const legacyWallSitePositions = ref<Record<string, LegacyWallSitePosition>>({})
+const draggingWallSiteId = ref<string | null>(null)
+const selectedWallSiteIds = ref<string[]>([])
+const wallSiteMarquee = ref<WallSiteMarquee | null>(null)
+const wallSiteEditorVisible = ref(false)
+const wallSiteEditorId = ref<string | null>(null)
+const wallSiteEditorTitle = ref('')
+const wallSiteEditorUrl = ref('')
+const wallSiteEditorDescription = ref('')
+const wallSiteEditorLogoSize = ref(46)
+const wallSiteEditorPlacement = ref<WallSitePosition | null>(null)
+const wallSiteLogoRefreshing = ref(false)
+const wallSiteEditorLogoPreviewUrl = ref('')
+let wallSiteEditorLogoPreviewOwned = false
+let wallSiteEditorRefreshedLogoBlob: Blob | null = null
 const importingDroppedPdfs = ref(false)
+let wallSitePressTimer: ReturnType<typeof setTimeout> | null = null
+let pendingWallSiteId: string | null = null
+let wallSitePointerStartX = 0
+let wallSitePointerStartY = 0
+let suppressWallSiteClickId: string | null = null
+let bookshelfHorizontalExpansionPending = false
+let bookshelfHorizontalExpansionAllowedAt = 0
+let bookshelfVerticalExpansionAllowedAt = 0
 const bookContextMenu = ref<BookContextMenuState | null>(null)
 const skillBookContextMenu = ref<SkillBookContextMenuState | null>(null)
+const linuxDoBookContextMenu = ref<LinuxDoBookContextMenuState | null>(null)
 const bookshelfContextMenu = ref<BookshelfContextMenuState | null>(null)
+const shelfContextMenu = ref<ShelfContextMenuState | null>(null)
 const metadataEditorVisible = ref(false)
 const metadataEditorSaving = ref(false)
 const metadataEditorPdfId = ref<number | null>(null)
 const metadataEditorTitle = ref('')
 const metadataEditorAuthor = ref('')
+const metadataEditorStartDate = ref('')
+const metadataEditorSubtitle = ref('')
+const metadataEditorTranslator = ref('')
+const metadataEditorEdition = ref('')
+const metadataEditorVolume = ref('')
+const metadataEditorSourceName = ref('')
+const metadataEditorImportedFilename = ref('')
+const metadataEditorDescription = ref('')
+const metadataEditorTags = ref('')
+const metadataEditorCoverColor = ref('')
+const deleteBookDialogVisible = ref(false)
+const deleteBookDialogDocument = ref<PdfDocumentSummary | null>(null)
+const deleteBookDialogBookshelfName = ref('')
+const deleteBookDialogSaving = ref(false)
+const libraryFolders = ref<LibraryFolder[]>([])
+const folderEditorVisible = ref(false)
+const folderEditorSaving = ref(false)
+const editingFolder = ref<LibraryFolder | null>(null)
+const folderEditorName = ref('')
+const folderEditorColor = ref('')
+const folderEditorMinThickness = ref<number | undefined>()
+const folderEditorFixedThickness = ref<number | undefined>()
+const folderContentsVisible = ref(false)
+const openedFolder = ref<LibraryFolder | null>(null)
+const copyBookVisible = ref(false)
+const copyBookSaving = ref(false)
+const copyBookPdfId = ref<number | null>(null)
+const copyTargetBookshelfId = ref('')
+const copyIncludeNotes = ref(true)
 const previewVisible = ref(false)
 const previewDocument = ref<PdfDocumentSummary | null>(null)
 const previewPage = ref(1)
@@ -138,17 +285,40 @@ const skillBookReaderVisible = ref(false)
 const skillBookMetadataVisible = ref(false)
 const skillBookMetadataSaving = ref(false)
 const skillBookPageFormat = ref('A4')
+const skillBookStartDate = ref('')
+const linuxDoBooks = ref<LinuxDoBookSummary[]>([])
+const linuxDoBookReaderVisible = ref(false)
+const selectedLinuxDoBookId = ref('')
+const linuxDoBookMetadataVisible = ref(false)
+const linuxDoBookMetadataSaving = ref(false)
+const linuxDoBookMetadataId = ref('')
+const linuxDoBookMetadataTitle = ref('')
+const linuxDoBookMetadataAuthor = ref('')
+const linuxDoBookMetadataStartDate = ref('')
+const linuxDoBookMetadataCoverColor = ref('')
 const bookshelfShareVisible = ref(false)
 const bookshelfShareLoading = ref(false)
 const bookshelfShareBookshelf = ref<PdfLibraryBookshelf | null>(null)
 const bookshelfShareGrants = ref<PdfAccessGrantItem[]>([])
 const bookshelfShareUsername = ref('')
 const bookshelfShareSelectedUser = ref<AccountUserOption | null>(null)
+const bookshelfSettingsVisible = ref(false)
+const bookshelfSettingsSaving = ref(false)
+const bookshelfSettingsId = ref('')
+const bookshelfSettingsName = ref('')
+const bookshelfSettingsPageTarget = ref(1600)
+const bookshelfSettingsReadingMode = ref<ArticleReadingMode>('scroll')
+const bookReadingSettingsVisible = ref(false)
+const bookReadingSettingsSaving = ref(false)
+const bookReadingSettingsBookId = ref('')
+const bookReadingSettingsTitle = ref('')
+const bookReadingSettingsMode = ref<ArticleReadingModeOverride>('inherit')
 const bookCoverImageUrls = ref(new Map<number, string>())
 let titleRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let layoutSaveQueue = Promise.resolve()
 let pointerDragPdfId: number | null = null
 let pointerDragSkillBook = false
+let pointerDragLinuxDoBookId: string | null = null
 let pointerStartX = 0
 let pointerStartY = 0
 let pointerMoved = false
@@ -202,32 +372,58 @@ const showLocalSkillBook = computed(() => {
     ]),
   ].some((value) => value.toLowerCase().includes(query))
 })
-const hasVisibleLibraryItems = computed(() => showLocalSkillBook.value || filteredDocuments.value.length > 0)
+const filteredLinuxDoBooks = computed(() => {
+  const query = normalizedSearchText.value
+  return linuxDoBooks.value.filter((book) => !query
+    || `${book.title}\n${book.author}`.toLowerCase().includes(query))
+})
+const hasVisibleLibraryItems = computed(() => (
+  showLocalSkillBook.value || filteredDocuments.value.length > 0 || filteredLinuxDoBooks.value.length > 0
+))
+const selectedReaderBook = computed(() => linuxDoBooks.value.find(
+  book => book.id === selectedLinuxDoBookId.value,
+))
+const selectedReaderMode = computed<ArticleReadingMode>(() => (
+  selectedReaderBook.value?.bookshelf_placement.article_reading_mode
+  ?? selectedBookshelf.value?.article_reading_mode
+  ?? 'scroll'
+))
 const skillBookSpineStyle = computed(() => {
-  const pages = skillBookCatalog.value?.estimated_page_count ?? 1
+  const catalog = skillBookCatalog.value
+  const pages = catalog?.estimated_page_count ?? 1
   const currentPage = Math.min(pages, Math.max(1, skillBookReadingState.value?.current_page ?? 1))
   const readingProgress = pages > 1 ? (currentPage - 1) / (pages - 1) : 0
-  const spineWidth = Math.min(104, Math.max(64, Math.round(52 + Math.sqrt(pages) * 2.4)))
-  const pageHeight = skillBookCatalog.value?.page_height_mm ?? 297
-  const bookHeight = Math.round(pageHeight * 286 / 297)
-  return {
-    '--spine-width': `${spineWidth}px`,
-    '--spine-height': `${bookHeight}px`,
-    '--book-item-width': `${spineWidth}px`,
-    '--spine-font-size': '23px',
-    '--book-title-display': 'block',
-    '--book-author-display': spineWidth >= 76 ? 'block' : 'none',
-    '--book-author-font-size': '10px',
-    '--book-cover-color': skillBookCatalog.value?.cover_color ?? '#315f53',
-    '--book-cover-ink': '#ffffff',
-    '--book-lean': '0deg',
-    '--book-drag-x': draggingSkillBook.value ? `${bookDragOffsetX.value}px` : '0px',
-    '--book-drag-y': draggingSkillBook.value ? `${bookDragOffsetY.value}px` : '0px',
-    '--book-reading-progress': `${(readingProgress * 100).toFixed(2)}%`,
-  }
+  return dynamicBookSpineStyle({
+    title: '本地Skill手册',
+    author: bookAuthorWithYear(catalog?.author, catalog?.start_date),
+    startDate: catalog?.start_date ?? '',
+    pageCount: pages,
+    pageWidthMm: catalog?.page_width_mm ?? 210,
+    pageHeightMm: catalog?.page_height_mm ?? 297,
+    orientation: catalog?.bookshelf_placement.orientation ?? 'spine_vertical',
+    coverColor: catalog?.cover_color ?? '#315f53',
+    dragX: draggingSkillBook.value ? bookDragOffsetX.value : 0,
+    dragY: draggingSkillBook.value ? bookDragOffsetY.value : 0,
+    readingProgress,
+  })
 })
 
-const filteredDocumentIds = computed(() => new Set(filteredDocuments.value.map((document) => document.id)))
+const filteredDocumentIds = computed(() => new Set(filteredDocuments.value
+  .filter((document) => !document.bookshelf_placement?.folder_id)
+  .map((document) => document.id)))
+const foldersByShelf = computed(() => {
+  const result = new Map<number, LibraryFolder[]>()
+  for (const folder of libraryFolders.value) {
+    const row = result.get(folder.shelf_index) ?? []
+    row.push(folder)
+    result.set(folder.shelf_index, row)
+  }
+  for (const row of result.values()) row.sort((left, right) => left.position_index - right.position_index)
+  return result
+})
+const openedFolderDocuments = computed(() => openedFolder.value
+  ? filteredDocuments.value.filter((document) => document.bookshelf_placement?.folder_id === openedFolder.value?.id)
+  : [])
 const previewPageCount = computed(() => Math.max(1, previewDocument.value?.metadata.page_count ?? 1))
 const previewStandaloneHref = computed(() => previewDocument.value
   ? resolvePdfHref(previewDocument.value.id)
@@ -248,16 +444,63 @@ const previewDialogStyle = computed(() => {
 const bookshelfRows = computed(() => {
   return buildBookshelfRows().map((row) => row.filter((document) => filteredDocumentIds.value.has(document.id)))
 })
+const bookshelfContentRowCount = computed(() => contentDrivenBookshelfRowCount())
+const bookshelfGridStyle = computed(() => ({
+  '--bookshelf-canvas-min-width': `${bookshelfCanvasMinWidth.value}px`,
+}))
+
+watch(bookshelfContentRowCount, (rowCount) => {
+  bookshelfCanvasMinRowCount.value = Math.min(bookshelfCanvasMinRowCount.value, rowCount)
+})
+
+function bookshelfGroupPosition(group: BookshelfBookGroup) {
+  if (group.kind === 'folder') return group.folder?.position_index ?? Number.MAX_SAFE_INTEGER
+  if (group.kind === 'linux-do-book') {
+    return group.linuxDoBook?.bookshelf_placement.position_index ?? Number.MAX_SAFE_INTEGER
+  }
+  if (group.kind === 'skill-book') {
+    return skillBookCatalog.value?.bookshelf_placement.position_index ?? Number.MAX_SAFE_INTEGER
+  }
+  return group.documents[0]?.bookshelf_placement?.position_index ?? Number.MAX_SAFE_INTEGER
+}
+
+function bookshelfGroupContainsPlacementKey(group: BookshelfBookGroup, placementKey: string | null) {
+  if (!placementKey) {
+    return false
+  }
+  return group.key === placementKey
+    || group.documents.some((document) => `book-${document.id}` === placementKey)
+}
+
 const bookshelfDisplayRows = computed(() => bookshelfRows.value.map((row, shelfIndex) => {
   const groups = buildBookshelfBookGroups(row)
+  for (const folder of foldersByShelf.value.get(shelfIndex) ?? []) {
+    const folderInsertionIndex = groups.findIndex((group) => bookshelfGroupPosition(group) >= folder.position_index)
+    groups.splice(folderInsertionIndex < 0 ? groups.length : folderInsertionIndex, 0, {
+      key: `folder-${folder.id}`,
+      kind: 'folder',
+      documents: [],
+      folder,
+    })
+  }
+  for (const book of filteredLinuxDoBooks.value.filter((item) => (
+    !item.bookshelf_placement.folder_id && item.bookshelf_placement.shelf_index === shelfIndex
+  ))) {
+    const bookInsertionIndex = groups.findIndex(
+      (group) => bookshelfGroupPosition(group) >= book.bookshelf_placement.position_index,
+    )
+    groups.splice(bookInsertionIndex < 0 ? groups.length : bookInsertionIndex, 0, {
+      key: `linux-do-book-${book.id}`,
+      kind: 'linux-do-book',
+      documents: [],
+      linuxDoBook: book,
+    })
+  }
   const placement = skillBookCatalog.value?.bookshelf_placement
-  if (!showLocalSkillBook.value || !placement || placement.shelf_index !== shelfIndex) {
+  if (!showLocalSkillBook.value || !placement || placement.folder_id || placement.shelf_index !== shelfIndex) {
     return groups
   }
-  const insertionIndex = groups.findIndex((group) => (
-    (group.documents[0]?.bookshelf_placement?.position_index ?? Number.MAX_SAFE_INTEGER)
-      >= placement.position_index
-  ))
+  const insertionIndex = groups.findIndex((group) => bookshelfGroupPosition(group) >= placement.position_index)
   groups.splice(insertionIndex < 0 ? groups.length : insertionIndex, 0, {
     key: `skill-book-${skillBookCatalog.value?.id ?? 'local'}`,
     kind: 'skill-book',
@@ -265,9 +508,781 @@ const bookshelfDisplayRows = computed(() => bookshelfRows.value.map((row, shelfI
   })
   return groups
 }))
+
+function placementItemsForGroup(group: BookshelfBookGroup): BookshelfPlacementItem[] {
+  if (group.kind === 'linux-do-book' && group.linuxDoBook) {
+    return [{
+      key: group.key,
+      resource_type: 'book_asset',
+      resource_id: group.linuxDoBook.id,
+      shelf_index: group.linuxDoBook.bookshelf_placement.shelf_index,
+      position_index: group.linuxDoBook.bookshelf_placement.position_index,
+      linuxDoBook: group.linuxDoBook,
+    }]
+  }
+  if (group.kind === 'skill-book' && skillBookCatalog.value) {
+    return [{
+      key: group.key,
+      resource_type: 'book_asset',
+      resource_id: skillBookCatalog.value.asset_id,
+      shelf_index: skillBookCatalog.value.bookshelf_placement.shelf_index,
+      position_index: skillBookCatalog.value.bookshelf_placement.position_index,
+      skillBook: skillBookCatalog.value,
+    }]
+  }
+  if (group.kind === 'folder' && group.folder) {
+    return [{
+      key: group.key,
+      resource_type: 'folder',
+      resource_id: group.folder.id,
+      shelf_index: group.folder.shelf_index,
+      position_index: group.folder.position_index,
+      folder: group.folder,
+    }]
+  }
+  return group.documents.map((document) => ({
+    key: `book-${document.id}`,
+    resource_type: 'pdf' as const,
+    resource_id: `${document.id}`,
+    shelf_index: document.bookshelf_placement?.shelf_index ?? 0,
+    position_index: document.bookshelf_placement?.position_index ?? 0,
+    document,
+  }))
+}
+
+function buildUnifiedLibraryLayoutRows() {
+  return bookshelfDisplayRows.value.map((groups) => groups.flatMap(placementItemsForGroup))
+}
+
+function applyUnifiedLibraryLayoutRows(rows: BookshelfPlacementItem[][]) {
+  const items: LibraryBookshelfLayoutItem[] = []
+  for (const [shelfIndex, row] of rows.entries()) {
+    for (const [positionIndex, item] of row.entries()) {
+      item.shelf_index = shelfIndex
+      item.position_index = positionIndex
+      items.push({
+        resource_type: item.resource_type,
+        resource_id: item.resource_id,
+        shelf_index: shelfIndex,
+        position_index: positionIndex,
+      })
+      if (item.document?.bookshelf_placement) {
+        item.document.bookshelf_placement = {
+          ...item.document.bookshelf_placement,
+          shelf_index: shelfIndex,
+          position_index: positionIndex,
+          folder_id: null,
+        }
+      } else if (item.linuxDoBook) {
+        item.linuxDoBook.bookshelf_placement = {
+          ...item.linuxDoBook.bookshelf_placement,
+          shelf_index: shelfIndex,
+          position_index: positionIndex,
+          folder_id: null,
+        }
+      } else if (item.skillBook) {
+        item.skillBook.bookshelf_placement = {
+          ...item.skillBook.bookshelf_placement,
+          shelf_index: shelfIndex,
+          position_index: positionIndex,
+          folder_id: null,
+        }
+      } else if (item.folder) {
+        item.folder.shelf_index = shelfIndex
+        item.folder.position_index = positionIndex
+      }
+    }
+  }
+  documents.value = [...documents.value]
+  linuxDoBooks.value = [...linuxDoBooks.value]
+  if (skillBookCatalog.value) skillBookCatalog.value = { ...skillBookCatalog.value }
+  libraryFolders.value = [...libraryFolders.value]
+  queueUnifiedLibraryLayoutSave(items)
+}
 const externalDropShelfLabel = computed(() => externalPdfDropTarget.value == null
   ? `书柜“${selectedBookshelf.value?.name ?? ''}”`
   : `书柜“${selectedBookshelf.value?.name ?? ''}”第 ${externalPdfDropTarget.value.shelfIndex + 1} 栏`)
+
+function loadBookshelfWallSites() {
+  commonSites.value = loadCommonSites()
+  syncRuanyfWeeklyCommonSiteUrl()
+  void loadCommonSiteIcons()
+}
+
+function syncRuanyfWeeklyCommonSiteUrl(books: LinuxDoBookSummary[] = linuxDoBooks.value) {
+  const weeklyBook = books.find((book) => book.id.startsWith('ruanyf-weekly:'))
+  const latestIssue = Number(weeklyBook?.latest_issue)
+  if (!Number.isInteger(latestIssue) || latestIssue < 1) return
+  const latestUrl = `https://github.com/ruanyf/weekly/blob/master/docs/issue-${latestIssue}.md`
+  let site = commonSites.value.find((item) => item.id === 'ruanyf-weekly-latest')
+  let siteChanged = false
+  if (!site) {
+    site = {
+      id: 'ruanyf-weekly-latest',
+      title: 'Weekly',
+      url: latestUrl,
+      description: '科技爱好者周刊最新一期',
+      logo_size: 46,
+    }
+    commonSites.value = [...commonSites.value, site]
+    siteChanged = true
+  } else if (site.url !== latestUrl) {
+    site.url = latestUrl
+    commonSites.value = [...commonSites.value]
+    siteChanged = true
+  }
+  if (siteChanged) {
+    saveCommonSites(commonSites.value)
+    void loadCommonSiteIcon(site).catch((error) => {
+      console.warn(`Failed to load weekly logo for ${site.url}:`, error)
+    })
+  }
+  const existingPosition = wallSitePositions.value[site.id]
+  const autoPlacementKey = weeklyCommonSiteAutoPlacementStorageKey()
+  if (
+    selectedBookshelfIsOwned.value
+    && (!existingPosition || localStorage.getItem(autoPlacementKey) !== '1')
+  ) {
+    wallSitePositions.value = {
+      ...wallSitePositions.value,
+      [site.id]: {
+        shelfIndex: Math.max(0, weeklyBook.bookshelf_placement.shelf_index),
+        xRatio: existingPosition?.xRatio ?? 0.5,
+        yRatio: existingPosition?.yRatio ?? 0.28,
+      },
+    }
+    saveWallSitePositions()
+    localStorage.setItem(autoPlacementKey, '1')
+  }
+}
+
+function setCommonSiteIconBlob(siteId: string, blob: Blob) {
+  const previousUrl = commonSiteIconUrls.value[siteId]
+  const nextUrl = URL.createObjectURL(blob)
+  commonSiteIconUrls.value = { ...commonSiteIconUrls.value, [siteId]: nextUrl }
+  if (previousUrl) URL.revokeObjectURL(previousUrl)
+}
+
+function removeCommonSiteIcon(siteId: string) {
+  const previousUrl = commonSiteIconUrls.value[siteId]
+  if (previousUrl) URL.revokeObjectURL(previousUrl)
+  const nextUrls = { ...commonSiteIconUrls.value }
+  delete nextUrls[siteId]
+  commonSiteIconUrls.value = nextUrls
+}
+
+async function loadCommonSiteIcon(site: CommonSite, refresh = false) {
+  const requestedUrl = site.url
+  const blob = await loadCommonSiteLogoBlob(requestedUrl, { refresh })
+  const currentSite = commonSites.value.find((item) => item.id === site.id)
+  if (!currentSite || currentSite.url !== requestedUrl) return
+  setCommonSiteIconBlob(site.id, blob)
+}
+
+async function loadCommonSiteIcons() {
+  await Promise.all(commonSites.value.map(async (site) => {
+    try {
+      await loadCommonSiteIcon(site)
+    } catch (error) {
+      console.warn(`Failed to load cached logo for ${site.url}:`, error)
+    }
+  }))
+}
+
+function releaseCommonSiteIconUrls() {
+  Object.values(commonSiteIconUrls.value).forEach((url) => URL.revokeObjectURL(url))
+  commonSiteIconUrls.value = {}
+}
+
+function wallSitePositionStorageKey() {
+  return `codeyun.pdf-library.wall-sites.${currentUserId.value ?? 'anonymous'}.${selectedBookshelfId.value || 'none'}`
+}
+
+function weeklyCommonSiteAutoPlacementStorageKey() {
+  return `${wallSitePositionStorageKey()}.ruanyf-weekly-auto-placement.v1`
+}
+
+function bookshelfCanvasExtentStorageKey() {
+  return `${PDF_LIBRARY_BOOKSHELF_KEY_PREFIX}.canvas.v2.${currentUserId.value ?? 'anonymous'}.${selectedBookshelfId.value || 'none'}`
+}
+
+function loadBookshelfCanvasExtent() {
+  bookshelfHorizontalExpansionAllowedAt = 0
+  bookshelfVerticalExpansionAllowedAt = 0
+  bookshelfCanvasMinWidth.value = 0
+  bookshelfCanvasMinRowCount.value = DEFAULT_BOOKSHELF_ROW_COUNT
+  try {
+    const parsed = JSON.parse(localStorage.getItem(bookshelfCanvasExtentStorageKey()) ?? '{}') as Record<string, unknown>
+    const minWidth = Number(parsed.minWidth)
+    if (Number.isFinite(minWidth) && minWidth > 0) {
+      bookshelfCanvasMinWidth.value = Math.floor(minWidth)
+    }
+  } catch {
+    // Invalid UI extent preferences can safely fall back to the content-driven canvas.
+  }
+}
+
+function saveBookshelfCanvasExtent() {
+  localStorage.setItem(bookshelfCanvasExtentStorageKey(), JSON.stringify({
+    minWidth: bookshelfCanvasMinWidth.value,
+  }))
+}
+
+function extendBookshelfDownward() {
+  const now = Date.now()
+  if (now < bookshelfVerticalExpansionAllowedAt) return
+  bookshelfVerticalExpansionAllowedAt = now + BOOKSHELF_EXPANSION_COOLDOWN_MS
+  bookshelfCanvasMinRowCount.value = Math.max(
+    bookshelfCanvasMinRowCount.value + BOOKSHELF_ROW_GROWTH_COUNT,
+    bookshelfDisplayRows.value.length + BOOKSHELF_ROW_GROWTH_COUNT,
+  )
+}
+
+function extendBookshelfRightward(scroller: HTMLElement) {
+  const now = Date.now()
+  if (bookshelfHorizontalExpansionPending || now < bookshelfHorizontalExpansionAllowedAt) return
+  bookshelfHorizontalExpansionAllowedAt = now + BOOKSHELF_EXPANSION_COOLDOWN_MS
+  bookshelfHorizontalExpansionPending = true
+  const previousLayerWidth = document.querySelector<HTMLElement>('.bookshelf-wall-sites')?.offsetWidth ?? 0
+  const growth = Math.max(BOOKSHELF_HORIZONTAL_GROWTH_MIN, Math.round(scroller.clientWidth * 0.75))
+  bookshelfCanvasMinWidth.value = Math.max(bookshelfCanvasMinWidth.value, scroller.scrollWidth) + growth
+  saveBookshelfCanvasExtent()
+  void nextTick(() => {
+    const nextLayerWidth = document.querySelector<HTMLElement>('.bookshelf-wall-sites')?.offsetWidth ?? 0
+    if (previousLayerWidth > 0 && nextLayerWidth > previousLayerWidth) {
+      const ratio = previousLayerWidth / nextLayerWidth
+      const positions = { ...wallSitePositions.value }
+      Object.entries(positions).forEach(([id, position]) => {
+        positions[id] = { ...position, xRatio: position.xRatio * ratio }
+      })
+      wallSitePositions.value = positions
+      saveWallSitePositions()
+    }
+    bookshelfHorizontalExpansionPending = false
+  })
+}
+
+function handleBookshelfScroll(event: Event) {
+  closeBookContextMenu()
+  const scroller = event.currentTarget
+  if (!(scroller instanceof HTMLElement)) return
+  const remainingBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+  if (scroller.scrollHeight > scroller.clientHeight && remainingBottom <= BOOKSHELF_EDGE_THRESHOLD) {
+    extendBookshelfDownward()
+  } else if (
+    scroller.scrollTop <= BOOKSHELF_EDGE_THRESHOLD
+    && draggingPdfId.value == null
+    && draggingLinuxDoBookId.value == null
+    && !draggingSkillBook.value
+    && !externalFileDragActive.value
+  ) {
+    bookshelfCanvasMinRowCount.value = bookshelfContentRowCount.value
+  }
+  const remainingRight = scroller.scrollWidth - scroller.scrollLeft - scroller.clientWidth
+  if (scroller.scrollWidth > scroller.clientWidth && remainingRight <= BOOKSHELF_EDGE_THRESHOLD) {
+    extendBookshelfRightward(scroller)
+  }
+}
+
+function growBookshelfNearPointer(event: Pick<PointerEvent | DragEvent, 'clientX' | 'clientY'>) {
+  const scroller = bookshelfScrollRef.value
+  if (!scroller) return
+  const bounds = scroller.getBoundingClientRect()
+  const nearRight = event.clientX >= bounds.right - BOOKSHELF_EDGE_THRESHOLD
+  const nearBottom = event.clientY >= bounds.bottom - BOOKSHELF_EDGE_THRESHOLD
+  if (nearRight) {
+    const remainingRight = scroller.scrollWidth - scroller.scrollLeft - scroller.clientWidth
+    if (remainingRight <= BOOKSHELF_EDGE_THRESHOLD) extendBookshelfRightward(scroller)
+    scroller.scrollLeft += BOOKSHELF_DRAG_SCROLL_STEP
+  }
+  if (nearBottom) {
+    const remainingBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+    if (remainingBottom <= BOOKSHELF_EDGE_THRESHOLD) extendBookshelfDownward()
+    scroller.scrollTop += BOOKSHELF_DRAG_SCROLL_STEP
+  }
+  if (event.clientX <= bounds.left + BOOKSHELF_EDGE_THRESHOLD) {
+    scroller.scrollLeft -= BOOKSHELF_DRAG_SCROLL_STEP
+  }
+  if (event.clientY <= bounds.top + BOOKSHELF_EDGE_THRESHOLD) {
+    scroller.scrollTop -= BOOKSHELF_DRAG_SCROLL_STEP
+  }
+}
+
+function loadWallSitePositions() {
+  const positions: Record<string, WallSitePosition> = {}
+  const legacyPositions: Record<string, LegacyWallSitePosition> = {}
+  try {
+    const parsed = JSON.parse(localStorage.getItem(wallSitePositionStorageKey()) ?? '{}') as Record<string, unknown>
+    if (parsed && typeof parsed === 'object') {
+      Object.entries(parsed).forEach(([id, rawPosition]) => {
+        if (!rawPosition || typeof rawPosition !== 'object') return
+        const position = rawPosition as Record<string, unknown>
+        const shelfIndex = Number(position.shelfIndex)
+        const xRatio = Number(position.xRatio)
+        const yRatio = Number(position.yRatio)
+        if (Number.isFinite(shelfIndex) && Number.isFinite(xRatio) && Number.isFinite(yRatio)) {
+          positions[id] = {
+            shelfIndex: Math.max(0, Math.floor(shelfIndex)),
+            xRatio: Math.min(1, Math.max(0, xRatio)),
+            yRatio: Math.min(1, Math.max(0, yRatio)),
+          }
+          return
+        }
+        const x = Number(position.x)
+        const y = Number(position.y)
+        if (Number.isFinite(x) && Number.isFinite(y)) legacyPositions[id] = { x, y }
+      })
+    }
+  } catch {
+    // Ignore invalid historical layout data and fall back to the default wall arrangement.
+  }
+  wallSitePositions.value = positions
+  legacyWallSitePositions.value = legacyPositions
+  selectedWallSiteIds.value = []
+  void nextTick(migrateLegacyWallSitePositions)
+}
+
+function saveWallSitePositions() {
+  localStorage.setItem(wallSitePositionStorageKey(), JSON.stringify(wallSitePositions.value))
+}
+
+function wallSiteStyle(site: CommonSite) {
+  const logoSize = Math.min(96, Math.max(24, Number(site.logo_size) || 46))
+  const position = wallSitePositions.value[site.id]
+  const style: Record<string, string> = {
+    '--wall-site-logo-size': `${logoSize}px`,
+  }
+  if (!position) return style
+  return {
+    ...style,
+    position: 'absolute',
+    left: `${position.xRatio * 100}%`,
+    top: `${position.yRatio * 100}%`,
+    transform: 'translate(-50%, -50%)',
+  }
+}
+
+function wallSitesForShelf(shelfIndex: number) {
+  return commonSites.value.filter((site) => (wallSitePositions.value[site.id]?.shelfIndex ?? 0) === shelfIndex)
+}
+
+function selectedWallSitesForShelf(shelfIndex: number) {
+  const selectedIds = new Set(selectedWallSiteIds.value)
+  return wallSitesForShelf(shelfIndex).filter((site) => selectedIds.has(site.id))
+}
+
+function openWallSiteEditor(event: MouseEvent, site: CommonSite) {
+  event.preventDefault()
+  event.stopPropagation()
+  selectedWallSiteIds.value = []
+  wallSiteEditorId.value = site.id
+  wallSiteEditorTitle.value = site.title
+  wallSiteEditorUrl.value = site.url
+  wallSiteEditorDescription.value = site.description ?? ''
+  wallSiteEditorLogoSize.value = Math.min(96, Math.max(24, Number(site.logo_size) || 46))
+  wallSiteEditorPlacement.value = null
+  wallSiteEditorLogoPreviewUrl.value = commonSiteIconUrls.value[site.id] ?? ''
+  wallSiteEditorLogoPreviewOwned = false
+  wallSiteEditorRefreshedLogoBlob = null
+  wallSiteEditorVisible.value = true
+}
+
+function openNewWallSiteEditor() {
+  const menu = shelfContextMenu.value
+  if (!menu || !selectedBookshelfIsOwned.value) return
+  wallSiteEditorId.value = null
+  wallSiteEditorTitle.value = ''
+  wallSiteEditorUrl.value = ''
+  wallSiteEditorDescription.value = ''
+  wallSiteEditorLogoSize.value = 46
+  wallSiteEditorPlacement.value = {
+    shelfIndex: menu.shelfIndex,
+    xRatio: menu.xRatio,
+    yRatio: menu.yRatio,
+  }
+  releaseWallSiteEditorLogoPreview()
+  closeContextMenus()
+  wallSiteEditorVisible.value = true
+}
+
+function releaseWallSiteEditorLogoPreview() {
+  if (wallSiteEditorLogoPreviewOwned && wallSiteEditorLogoPreviewUrl.value) {
+    URL.revokeObjectURL(wallSiteEditorLogoPreviewUrl.value)
+  }
+  wallSiteEditorLogoPreviewUrl.value = ''
+  wallSiteEditorLogoPreviewOwned = false
+  wallSiteEditorRefreshedLogoBlob = null
+}
+
+function saveWallSiteEditor() {
+  let url = wallSiteEditorUrl.value.trim()
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`
+  try {
+    new URL(url)
+  } catch {
+    ElMessage.warning('网址格式不正确')
+    return
+  }
+  const existingSite = commonSites.value.find((item) => item.id === wallSiteEditorId.value)
+  const site: CommonSite = existingSite ?? {
+    id: typeof crypto.randomUUID === 'function'
+      ? `site-${crypto.randomUUID()}`
+      : `site-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title: '',
+    url,
+  }
+  const previousUrl = existingSite?.url ?? ''
+  site.title = wallSiteEditorTitle.value.trim()
+  site.url = url
+  site.description = wallSiteEditorDescription.value.trim()
+  site.logo_size = Math.min(96, Math.max(24, Number(wallSiteEditorLogoSize.value) || 46))
+  if (existingSite) {
+    commonSites.value = [...commonSites.value]
+  } else {
+    commonSites.value = [...commonSites.value, site]
+    wallSitePositions.value = {
+      ...wallSitePositions.value,
+      [site.id]: wallSiteEditorPlacement.value ?? {
+        shelfIndex: 0,
+        xRatio: 0.5,
+        yRatio: 0.25,
+      },
+    }
+    saveWallSitePositions()
+  }
+  saveCommonSites(commonSites.value)
+  wallSiteEditorVisible.value = false
+  if (wallSiteEditorRefreshedLogoBlob) {
+    setCommonSiteIconBlob(site.id, wallSiteEditorRefreshedLogoBlob)
+  } else {
+    try {
+      if (new URL(previousUrl).origin !== new URL(site.url).origin) removeCommonSiteIcon(site.id)
+    } catch {
+      removeCommonSiteIcon(site.id)
+    }
+    void loadCommonSiteIcon(site).catch((error) => {
+      console.warn(`Failed to load cached logo for ${site.url}:`, error)
+    })
+  }
+}
+
+async function refreshWallSiteLogo() {
+  let url = wallSiteEditorUrl.value.trim()
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`
+  try {
+    new URL(url)
+  } catch {
+    ElMessage.warning('网址格式不正确')
+    return
+  }
+  wallSiteLogoRefreshing.value = true
+  try {
+    const blob = await loadCommonSiteLogoBlob(url, { refresh: true })
+    if (wallSiteEditorLogoPreviewOwned && wallSiteEditorLogoPreviewUrl.value) {
+      URL.revokeObjectURL(wallSiteEditorLogoPreviewUrl.value)
+    }
+    wallSiteEditorLogoPreviewUrl.value = URL.createObjectURL(blob)
+    wallSiteEditorLogoPreviewOwned = true
+    wallSiteEditorRefreshedLogoBlob = blob
+    wallSiteEditorUrl.value = url
+    ElMessage.success('Logo 已重新获取')
+  } catch (error) {
+    console.warn('Failed to refresh common site logo:', error)
+    ElMessage.error('Logo 获取失败')
+  } finally {
+    wallSiteLogoRefreshing.value = false
+  }
+}
+
+function clampWallSiteRatio(pointerCoordinate: number, layerSize: number, itemSize: number) {
+  if (layerSize <= 0) return 0.5
+  const halfRatio = Math.min(0.5, itemSize / (2 * layerSize))
+  return Math.min(1 - halfRatio, Math.max(halfRatio, pointerCoordinate / layerSize))
+}
+
+function materializeWallSitePositions() {
+  const positions: Record<string, WallSitePosition> = { ...wallSitePositions.value }
+  document.querySelectorAll<HTMLElement>('[data-wall-site-id]').forEach((element) => {
+    const id = element.dataset.wallSiteId
+    if (!id || positions[id]) return
+    const layer = element.closest<HTMLElement>('.bookshelf-wall-sites')
+    if (!layer) return
+    const shelfIndex = Number(layer.dataset.wallShelfIndex)
+    const layerRect = layer.getBoundingClientRect()
+    const rect = element.getBoundingClientRect()
+    positions[id] = {
+      shelfIndex: Number.isFinite(shelfIndex) ? Math.max(0, Math.floor(shelfIndex)) : 0,
+      xRatio: clampWallSiteRatio(rect.left + rect.width / 2 - layerRect.left, layerRect.width, rect.width),
+      yRatio: clampWallSiteRatio(rect.top + rect.height / 2 - layerRect.top, layerRect.height, rect.height),
+    }
+  })
+  wallSitePositions.value = positions
+}
+
+function migrateLegacyWallSitePositions() {
+  if (!Object.keys(legacyWallSitePositions.value).length) return
+  const layer = document.querySelector<HTMLElement>('[data-wall-shelf-index="0"]')
+  if (!layer) return
+  const layerRect = layer.getBoundingClientRect()
+  const positions = { ...wallSitePositions.value }
+  Object.entries(legacyWallSitePositions.value).forEach(([id, legacyPosition]) => {
+    const element = document.querySelector<HTMLElement>(`[data-wall-site-id="${CSS.escape(id)}"]`)
+    if (!element) return
+    positions[id] = {
+      shelfIndex: 0,
+      xRatio: clampWallSiteRatio(legacyPosition.x + element.offsetWidth / 2, layerRect.width, element.offsetWidth),
+      yRatio: clampWallSiteRatio(legacyPosition.y + element.offsetHeight / 2, layerRect.height, element.offsetHeight),
+    }
+    delete legacyWallSitePositions.value[id]
+  })
+  wallSitePositions.value = positions
+  if (!Object.keys(legacyWallSitePositions.value).length) saveWallSitePositions()
+}
+
+function activateWallSiteDrag(siteId: string) {
+  const element = document.querySelector<HTMLElement>(`[data-wall-site-id="${CSS.escape(siteId)}"]`)
+  if (!element) return
+  materializeWallSitePositions()
+  selectedWallSiteIds.value = []
+  draggingWallSiteId.value = siteId
+}
+
+function wallSiteMarqueeStyle(shelfIndex: number) {
+  const marquee = wallSiteMarquee.value
+  if (!marquee?.active || marquee.shelfIndex !== shelfIndex) return undefined
+  const left = Math.min(marquee.startX, marquee.currentX)
+  const top = Math.min(marquee.startY, marquee.currentY)
+  return {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${Math.abs(marquee.currentX - marquee.startX)}px`,
+    height: `${Math.abs(marquee.currentY - marquee.startY)}px`,
+  }
+}
+
+function handleWallSelectionPointerDown(event: PointerEvent, shelfIndex: number) {
+  if (event.button !== 0 || !selectedBookshelfIsOwned.value || !commonSites.value.length) return
+  const target = event.target as Element | null
+  if (target?.closest('.book-group, .bookshelf-wall-site, .wall-site-selection-toolbar')) return
+  const row = event.currentTarget as HTMLElement
+  const layer = row.querySelector<HTMLElement>('.bookshelf-wall-sites')
+  if (!layer) return
+  materializeWallSitePositions()
+  const layerRect = layer.getBoundingClientRect()
+  const x = Math.min(layerRect.width, Math.max(0, event.clientX - layerRect.left))
+  const y = Math.min(layerRect.height, Math.max(0, event.clientY - layerRect.top))
+  wallSiteMarquee.value = { shelfIndex, startX: x, startY: y, currentX: x, currentY: y, active: false }
+  selectedWallSiteIds.value = []
+  event.preventDefault()
+  window.addEventListener('pointermove', handleWallSelectionPointerMove, { passive: false })
+  window.addEventListener('pointerup', finishWallSelection, { once: true })
+  window.addEventListener('pointercancel', finishWallSelection, { once: true })
+}
+
+function handleWallSelectionPointerMove(event: PointerEvent) {
+  const marquee = wallSiteMarquee.value
+  if (!marquee) return
+  const layer = document.querySelector<HTMLElement>(`[data-wall-shelf-index="${marquee.shelfIndex}"]`)
+  if (!layer) return
+  const layerRect = layer.getBoundingClientRect()
+  const currentX = Math.min(layerRect.width, Math.max(0, event.clientX - layerRect.left))
+  const currentY = Math.min(layerRect.height, Math.max(0, event.clientY - layerRect.top))
+  const active = marquee.active || Math.hypot(currentX - marquee.startX, currentY - marquee.startY) > 4
+  wallSiteMarquee.value = { ...marquee, currentX, currentY, active }
+  if (!active) return
+  event.preventDefault()
+  const selectionRect = {
+    left: layerRect.left + Math.min(marquee.startX, currentX),
+    right: layerRect.left + Math.max(marquee.startX, currentX),
+    top: layerRect.top + Math.min(marquee.startY, currentY),
+    bottom: layerRect.top + Math.max(marquee.startY, currentY),
+  }
+  selectedWallSiteIds.value = Array.from(layer.querySelectorAll<HTMLElement>('[data-wall-site-id]'))
+    .filter((element) => {
+      const rect = element.getBoundingClientRect()
+      return rect.right >= selectionRect.left
+        && rect.left <= selectionRect.right
+        && rect.bottom >= selectionRect.top
+        && rect.top <= selectionRect.bottom
+    })
+    .map((element) => element.dataset.wallSiteId)
+    .filter((id): id is string => Boolean(id))
+}
+
+function finishWallSelection() {
+  wallSiteMarquee.value = null
+  window.removeEventListener('pointermove', handleWallSelectionPointerMove)
+  window.removeEventListener('pointerup', finishWallSelection)
+  window.removeEventListener('pointercancel', finishWallSelection)
+}
+
+function wallSiteSelectionToolbarStyle(shelfIndex: number) {
+  const sites = selectedWallSitesForShelf(shelfIndex)
+  if (sites.length < 2) return undefined
+  const positions = sites.map((site) => wallSitePositions.value[site.id]).filter(Boolean)
+  const xRatio = positions.reduce((total, position) => total + position.xRatio, 0) / positions.length
+  const lowestRatio = Math.max(...positions.map((position) => position.yRatio))
+  return {
+    left: `${xRatio * 100}%`,
+    top: `${Math.min(88, lowestRatio * 100 + 24)}%`,
+  }
+}
+
+function standardizeSelectedWallSites(shelfIndex: number) {
+  materializeWallSitePositions()
+  const sites = selectedWallSitesForShelf(shelfIndex)
+  const layer = document.querySelector<HTMLElement>(`[data-wall-shelf-index="${shelfIndex}"]`)
+  if (!layer || sites.length < 2) return
+  const layerRect = layer.getBoundingClientRect()
+  const items = sites.map((site) => {
+    const element = layer.querySelector<HTMLElement>(`[data-wall-site-id="${CSS.escape(site.id)}"]`)
+    const position = wallSitePositions.value[site.id]
+    if (!element || !position) return null
+    return {
+      id: site.id,
+      width: element.offsetWidth,
+      height: element.offsetHeight,
+      x: position.xRatio * layerRect.width,
+      y: position.yRatio * layerRect.height,
+    }
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item))
+  if (items.length < 2) return
+  const xRange = Math.max(...items.map((item) => item.x)) - Math.min(...items.map((item) => item.x))
+  const yRange = Math.max(...items.map((item) => item.y)) - Math.min(...items.map((item) => item.y))
+  const nextPositions = { ...wallSitePositions.value }
+  if (xRange >= yRange) {
+    items.sort((left, right) => left.x - right.x)
+    const gap = 12
+    const totalWidth = items.reduce((total, item) => total + item.width, 0) + gap * (items.length - 1)
+    const currentCenter = items.reduce((total, item) => total + item.x, 0) / items.length
+    let cursor = Math.min(Math.max(0, currentCenter - totalWidth / 2), Math.max(0, layerRect.width - totalWidth))
+    const targetY = items.reduce((total, item) => total + item.y, 0) / items.length
+    items.forEach((item) => {
+      const x = cursor + item.width / 2
+      nextPositions[item.id] = {
+        shelfIndex,
+        xRatio: clampWallSiteRatio(x, layerRect.width, item.width),
+        yRatio: clampWallSiteRatio(targetY, layerRect.height, item.height),
+      }
+      cursor += item.width + gap
+    })
+  } else {
+    items.sort((left, right) => left.y - right.y)
+    const gap = 12
+    const totalHeight = items.reduce((total, item) => total + item.height, 0) + gap * (items.length - 1)
+    const currentCenter = items.reduce((total, item) => total + item.y, 0) / items.length
+    let cursor = Math.min(Math.max(0, currentCenter - totalHeight / 2), Math.max(0, layerRect.height - totalHeight))
+    const targetX = items.reduce((total, item) => total + item.x, 0) / items.length
+    items.forEach((item) => {
+      const y = cursor + item.height / 2
+      nextPositions[item.id] = {
+        shelfIndex,
+        xRatio: clampWallSiteRatio(targetX, layerRect.width, item.width),
+        yRatio: clampWallSiteRatio(y, layerRect.height, item.height),
+      }
+      cursor += item.height + gap
+    })
+  }
+  wallSitePositions.value = nextPositions
+  saveWallSitePositions()
+}
+
+function handleWallSitePointerDown(event: PointerEvent, siteId: string) {
+  if (event.button !== 0) return
+  pendingWallSiteId = siteId
+  wallSitePointerStartX = event.clientX
+  wallSitePointerStartY = event.clientY
+  if (wallSitePressTimer) clearTimeout(wallSitePressTimer)
+  wallSitePressTimer = setTimeout(() => activateWallSiteDrag(siteId), 350)
+  window.addEventListener('pointermove', handleWallSitePointerMove, { passive: false })
+  window.addEventListener('pointerup', handleWallSitePointerUp, { once: true })
+  window.addEventListener('pointercancel', handleWallSitePointerCancel, { once: true })
+}
+
+function handleWallSitePointerMove(event: PointerEvent) {
+  if (!pendingWallSiteId) return
+  const deltaX = event.clientX - wallSitePointerStartX
+  const deltaY = event.clientY - wallSitePointerStartY
+  if (!draggingWallSiteId.value) {
+    if (Math.hypot(deltaX, deltaY) <= 8) return
+    if (wallSitePressTimer) clearTimeout(wallSitePressTimer)
+    wallSitePressTimer = null
+    activateWallSiteDrag(pendingWallSiteId)
+    if (!draggingWallSiteId.value) return
+  }
+  event.preventDefault()
+  growBookshelfNearPointer(event)
+  const element = document.querySelector<HTMLElement>(
+    `[data-wall-site-id="${CSS.escape(draggingWallSiteId.value)}"]`,
+  )
+  if (!element) return
+  const targetRow = document.elementsFromPoint(event.clientX, event.clientY)
+    .map((target) => target.closest<HTMLElement>('.bookshelf-row'))
+    .find((row): row is HTMLElement => Boolean(row))
+  const layer = targetRow?.querySelector<HTMLElement>('.bookshelf-wall-sites')
+  if (!targetRow || !layer) return
+  const shelfIndex = Number(targetRow.dataset.shelfIndex)
+  if (!Number.isFinite(shelfIndex)) return
+  const layerRect = layer.getBoundingClientRect()
+  wallSitePositions.value = {
+    ...wallSitePositions.value,
+    [draggingWallSiteId.value]: {
+      shelfIndex: Math.max(0, Math.floor(shelfIndex)),
+      xRatio: clampWallSiteRatio(event.clientX - layerRect.left, layerRect.width, element.offsetWidth),
+      yRatio: clampWallSiteRatio(event.clientY - layerRect.top, layerRect.height, element.offsetHeight),
+    },
+  }
+}
+
+function finishWallSitePointerInteraction() {
+  if (wallSitePressTimer) clearTimeout(wallSitePressTimer)
+  wallSitePressTimer = null
+  pendingWallSiteId = null
+  draggingWallSiteId.value = null
+  window.removeEventListener('pointermove', handleWallSitePointerMove)
+  window.removeEventListener('pointerup', handleWallSitePointerUp)
+  window.removeEventListener('pointercancel', handleWallSitePointerCancel)
+}
+
+function handleWallSitePointerUp() {
+  const draggedSiteId = draggingWallSiteId.value
+  if (draggedSiteId) {
+    suppressWallSiteClickId = draggedSiteId
+    saveWallSitePositions()
+    setTimeout(() => {
+      if (suppressWallSiteClickId === draggedSiteId) suppressWallSiteClickId = null
+    }, 0)
+  }
+  finishWallSitePointerInteraction()
+}
+
+function handleWallSitePointerCancel() {
+  finishWallSitePointerInteraction()
+}
+
+function handleWallSiteClick(event: MouseEvent, siteId: string) {
+  if (suppressWallSiteClickId !== siteId) return
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function handleCommonSitesStorage(event: StorageEvent) {
+  if (event.key === 'codeyun.notes.commonSites.v1') {
+    loadBookshelfWallSites()
+  }
+}
+
+function commonSiteIconUrl(site: CommonSite) {
+  return commonSiteIconUrls.value[site.id] ?? ''
+}
+
+function handleCommonSiteIconError(site: CommonSite) {
+  removeCommonSiteIcon(site.id)
+}
+
+function commonSiteFallbackLabel(site: CommonSite) {
+  return site.title.trim().slice(0, 2).toUpperCase() || '站'
+}
 
 function accessRoleLabel(role?: PdfResourceRole | null) {
   switch (role) {
@@ -292,9 +1307,10 @@ function skillBookTooltip() {
   return [
     tooltipField('书名', catalog.title),
     tooltipField('作者', catalog.author),
+    ...(catalog.start_date ? [tooltipField('起始时间', catalog.start_date)] : []),
     tooltipField('开本', `${catalog.page_format}（${catalog.page_width_mm} × ${catalog.page_height_mm} mm）`),
     tooltipField('目录', `${catalog.skill_count} 个 Skill / ${catalog.chapter_count} 篇`),
-    tooltipField('页数', `约 ${catalog.estimated_page_count} 页`),
+    tooltipField('页数', `${catalog.estimated_page_count} 页`),
     ...(skillBookReadingState.value?.updated_at
       ? [tooltipField('页码', `${skillBookReadingState.value.current_page}/${catalog.estimated_page_count}`)]
       : []),
@@ -309,18 +1325,192 @@ function openSkillBookReader() {
   skillBookReaderVisible.value = true
 }
 
-function openSkillBookContextMenu(event: MouseEvent) {
-  if (!skillBookCatalog.value?.is_owned) {
+function openLinuxDoBookReader(bookId: string) {
+  selectedLinuxDoBookId.value = bookId
+  linuxDoBookReaderVisible.value = true
+}
+
+function linuxDoBookTooltip(book: LinuxDoBookSummary) {
+  return [
+    tooltipField('书名', book.title),
+    ...(book.author ? [tooltipField('作者', book.author)] : []),
+    ...(book.start_date ? [tooltipField('起始时间', book.start_date)] : []),
+    tooltipField('页数', `${book.estimated_page_count} 页`),
+  ].join('\n')
+}
+
+function bookAuthorWithYear(author: string | null | undefined, startDate: string | null | undefined) {
+  const normalizedAuthor = author?.trim() ?? ''
+  const year = bookStartYear(startDate)
+  if (normalizedAuthor && year) return `${normalizedAuthor} · ${year}`
+  return normalizedAuthor || year
+}
+
+function bookStartYear(startDate: string | null | undefined) {
+  return startDate?.trim().match(/^\d{4}/)?.[0] ?? ''
+}
+
+function handleLinuxDoBookClick(event: MouseEvent, bookId: string) {
+  if (suppressNextBookClick) {
+    event.preventDefault()
     return
   }
+  openLinuxDoBookReader(bookId)
+}
+
+function openLinuxDoBookContextMenu(event: MouseEvent, bookId: string) {
   event.preventDefault()
   event.stopPropagation()
   closeContextMenus()
   const menuWidth = 128
-  const menuHeight = 42
+  const menuHeight = 92
+  linuxDoBookContextMenu.value = {
+    bookId,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+  }
+}
+
+async function deleteContextLinuxDoBook() {
+  const book = linuxDoBooks.value.find((item) => item.id === linuxDoBookContextMenu.value?.bookId)
+  linuxDoBookContextMenu.value = null
+  if (!book) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除《${book.title}》？阅读进度及已导入的图书内容也会删除。`,
+      '删除图书',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    await deleteLinuxDoBook(book.id)
+    await Promise.all([reloadLinuxDoBooks(), reloadFolders()])
+    ElMessage.success('图书已删除')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    console.warn('Failed to delete dynamic book:', error)
+    ElMessage.error('删除图书失败')
+  }
+}
+
+function openLinuxDoBookMetadataEditor() {
+  const book = linuxDoBooks.value.find((item) => item.id === linuxDoBookContextMenu.value?.bookId)
+  linuxDoBookContextMenu.value = null
+  if (!book) return
+  linuxDoBookMetadataId.value = book.id
+  linuxDoBookMetadataTitle.value = book.title
+  linuxDoBookMetadataAuthor.value = book.author
+  linuxDoBookMetadataStartDate.value = book.start_date
+  linuxDoBookMetadataCoverColor.value = book.cover_color
+  linuxDoBookMetadataVisible.value = true
+}
+
+async function saveLinuxDoBookMetadata() {
+  const title = linuxDoBookMetadataTitle.value.trim()
+  if (!title) {
+    ElMessage.warning('书名不能为空')
+    return
+  }
+  linuxDoBookMetadataSaving.value = true
+  try {
+    const updated = await updateLinuxDoBookMetadata(linuxDoBookMetadataId.value, {
+      title,
+      author: linuxDoBookMetadataAuthor.value.trim(),
+      start_date: linuxDoBookMetadataStartDate.value.trim(),
+      cover_color: linuxDoBookMetadataCoverColor.value || '#294f6d',
+    })
+    linuxDoBooks.value = linuxDoBooks.value.map((book) => book.id === updated.id ? updated : book)
+    linuxDoBookMetadataVisible.value = false
+    ElMessage.success('动态书本元数据已保存')
+  } catch (error) {
+    console.warn('Failed to update dynamic book metadata:', error)
+    ElMessage.error('保存动态书本元数据失败')
+  } finally {
+    linuxDoBookMetadataSaving.value = false
+  }
+}
+
+function linuxDoBookSpineStyle(book: LinuxDoBookSummary) {
+  const readingState = book.reading_state
+  const readingProgress = readingState?.updated_at
+    ? (Math.max(1, readingState.current_page) - 1)
+      / Math.max(1, readingState.page_count - 1)
+    : 0
+  return dynamicBookSpineStyle({
+    title: book.title,
+    author: bookAuthorWithYear(book.author, book.start_date),
+    startDate: book.start_date,
+    pageCount: book.estimated_page_count,
+    pageWidthMm: 210,
+    pageHeightMm: 297,
+    orientation: book.bookshelf_placement.orientation,
+    coverColor: book.cover_color,
+    dragX: draggingLinuxDoBookId.value === book.id ? bookDragOffsetX.value : 0,
+    dragY: draggingLinuxDoBookId.value === book.id ? bookDragOffsetY.value : 0,
+    readingProgress,
+  })
+}
+
+function handleLinuxDoBookReadingStateUpdated(state: LinuxDoBookReadingState) {
+  const book = linuxDoBooks.value.find(item => item.id === state.book_id)
+  if (book) book.reading_state = state
+}
+
+async function reloadLinuxDoBooks() {
+  if (!selectedBookshelfId.value) {
+    linuxDoBooks.value = []
+    return
+  }
+  try {
+    const books = await fetchLinuxDoBooks(selectedBookshelfId.value)
+    linuxDoBooks.value = books
+    syncRuanyfWeeklyCommonSiteUrl(books)
+  } catch (error) {
+    console.warn('Failed to load imported LINUX DO books:', error)
+    linuxDoBooks.value = []
+  }
+}
+
+function openSkillBookContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  if (!skillBookCatalog.value?.is_owned) {
+    return
+  }
+  closeContextMenus()
+  const menuWidth = 128
+  const menuHeight = 92
   skillBookContextMenu.value = {
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
     y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+  }
+}
+
+async function deleteContextSkillBook() {
+  const catalog = skillBookCatalog.value
+  skillBookContextMenu.value = null
+  if (!catalog?.is_owned) return
+  try {
+    await ElMessageBox.confirm(
+      `确定从图书馆删除《${catalog.title}》？本地 Skill 文件不会被删除。`,
+      '删除图书',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    await deleteLocalSkillBook()
+    skillBookCatalog.value = null
+    skillBookReadingState.value = null
+    await reloadFolders()
+    ElMessage.success('图书已删除')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    console.warn('Failed to delete local Skill book:', error)
+    ElMessage.error('删除图书失败')
   }
 }
 
@@ -349,16 +1539,13 @@ function handleSkillBookPointerMove(event: PointerEvent) {
   bookDragOffsetX.value = event.clientX - pointerStartX
   bookDragOffsetY.value = event.clientY - pointerStartY
   event.preventDefault()
-  const target = document.elementFromPoint(event.clientX, event.clientY)
-  const targetShelf = target?.closest<HTMLElement>('.bookshelf-row')
-  const shelfIndex = Number(targetShelf?.dataset.shelfIndex)
-  if (!Number.isInteger(shelfIndex) || shelfIndex < 0) {
-    dragOverShelfIndex.value = null
-    dragOverPdfId.value = null
-    return
-  }
-  const targetPdfId = Number(target?.closest<HTMLElement>('[data-pdf-id]')?.dataset.pdfId)
-  dragOverShelfIndex.value = shelfIndex
+  growBookshelfNearPointer(event)
+  const skillBookGroupKey = `skill-book-${skillBookCatalog.value?.id ?? 'local'}`
+  const dropTarget = resolveDynamicBookDropTarget(event, skillBookGroupKey)
+  dragOverShelfIndex.value = dropTarget?.shelfIndex ?? null
+  dragOverPlacementKey.value = dropTarget?.beforePlacementKey ?? null
+  const targetPdfId = Number(document.elementFromPoint(event.clientX, event.clientY)
+    ?.closest<HTMLElement>('[data-pdf-id]')?.dataset.pdfId)
   dragOverPdfId.value = Number.isInteger(targetPdfId) ? targetPdfId : null
 }
 
@@ -367,28 +1554,31 @@ async function handleSkillBookPointerUp(event: PointerEvent) {
   window.removeEventListener('pointerup', handleSkillBookPointerUp)
   window.removeEventListener('pointercancel', handleSkillBookPointerCancel)
   const catalog = skillBookCatalog.value
-  const shelfIndex = dragOverShelfIndex.value
-  if (pointerMoved && catalog && shelfIndex != null) {
+  const skillBookGroupKey = `skill-book-${catalog?.id ?? 'local'}`
+  const dropTarget = pointerDragSkillBook
+    ? resolveDynamicBookDropTarget(event, skillBookGroupKey)
+    : null
+  if (pointerMoved && catalog && dropTarget) {
     event.preventDefault()
     suppressNextBookClick = true
-    const target = documents.value.find((item) => item.id === dragOverPdfId.value)
-    const rowPositions = documents.value
-      .filter((item) => (item.bookshelf_placement?.shelf_index ?? 0) === shelfIndex)
-      .map((item) => item.bookshelf_placement?.position_index ?? 0)
-    const positionIndex = target?.bookshelf_placement?.position_index
-      ?? (Math.max(-1, ...rowPositions) + 1)
-    try {
-      const placement = await updateLocalSkillBookPlacement({
-        bookshelf_id: selectedBookshelfId.value,
-        shelf_index: shelfIndex,
-        position_index: positionIndex,
-        orientation: catalog.bookshelf_placement.orientation,
-      })
-      catalog.bookshelf_placement = placement
-      skillBookCatalog.value = { ...catalog }
-    } catch (error) {
-      console.warn('Failed to move local Skill book:', error)
-      ElMessage.error('保存动态书本位置失败')
+    if (dropTarget.folderId) {
+      try {
+        const placement = await updateLocalSkillBookPlacement({
+          bookshelf_id: selectedBookshelfId.value,
+          shelf_index: dropTarget.shelfIndex,
+          position_index: dropTarget.positionIndex,
+          orientation: catalog.bookshelf_placement.orientation,
+          folder_id: dropTarget.folderId,
+        })
+        catalog.bookshelf_placement = placement
+        skillBookCatalog.value = { ...catalog }
+        await reloadFolders()
+      } catch (error) {
+        console.warn('Failed to move local Skill book:', error)
+        ElMessage.error('保存动态书本位置失败')
+      }
+    } else {
+      movePlacementToShelf(skillBookGroupKey, dropTarget.shelfIndex, dropTarget.beforePlacementKey)
     }
   }
   handleSkillBookPointerCancel()
@@ -405,6 +1595,117 @@ function handleSkillBookPointerCancel() {
   draggingSkillBook.value = false
   dragOverShelfIndex.value = null
   dragOverPdfId.value = null
+  dragOverPlacementKey.value = null
+  bookDragOffsetX.value = 0
+  bookDragOffsetY.value = 0
+}
+
+function resolveDynamicBookDropTarget(event: PointerEvent, ignoredGroupKey: string) {
+  const target = document.elementFromPoint(event.clientX, event.clientY)
+  const targetShelf = target?.closest<HTMLElement>('.bookshelf-row')
+  const shelfIndex = Number(targetShelf?.dataset.shelfIndex)
+  if (!targetShelf || !Number.isInteger(shelfIndex) || shelfIndex < 0) {
+    return null
+  }
+  const groups = Array.from(targetShelf.querySelectorAll<HTMLElement>('.book-group'))
+    .filter((group) => group.dataset.groupKey !== ignoredGroupKey)
+  const nextGroup = groups.find((group) => (
+    event.clientX < group.getBoundingClientRect().left + group.getBoundingClientRect().width / 2
+  ))
+  const positions = groups
+    .map((group) => Number(group.dataset.positionIndex))
+    .filter((position) => Number.isInteger(position) && position >= 0)
+  const nextPosition = Number(nextGroup?.dataset.positionIndex)
+  return {
+    shelfIndex,
+    beforePlacementKey: nextGroup?.dataset.groupKey ?? null,
+    positionIndex: Number.isInteger(nextPosition)
+      ? nextPosition
+      : Math.max(-1, ...positions) + 1,
+    folderId: target?.closest<HTMLElement>('.library-folder')?.dataset.folderId ?? null,
+  }
+}
+
+function handleLinuxDoBookPointerDown(event: PointerEvent, bookId: string) {
+  if (event.button !== 0 || !selectedBookshelfIsOwned.value) {
+    return
+  }
+  pointerDragLinuxDoBookId = bookId
+  pointerStartX = event.clientX
+  pointerStartY = event.clientY
+  pointerMoved = false
+  window.addEventListener('pointermove', handleLinuxDoBookPointerMove, { passive: false })
+  window.addEventListener('pointerup', handleLinuxDoBookPointerUp)
+  window.addEventListener('pointercancel', handleLinuxDoBookPointerCancel, { once: true })
+}
+
+function handleLinuxDoBookPointerMove(event: PointerEvent) {
+  if (!pointerDragLinuxDoBookId) {
+    return
+  }
+  if (!pointerMoved && Math.hypot(event.clientX - pointerStartX, event.clientY - pointerStartY) < 6) {
+    return
+  }
+  pointerMoved = true
+  draggingLinuxDoBookId.value = pointerDragLinuxDoBookId
+  bookDragOffsetX.value = event.clientX - pointerStartX
+  bookDragOffsetY.value = event.clientY - pointerStartY
+  event.preventDefault()
+  growBookshelfNearPointer(event)
+  const dropTarget = resolveDynamicBookDropTarget(event, `linux-do-book-${pointerDragLinuxDoBookId}`)
+  dragOverShelfIndex.value = dropTarget?.shelfIndex ?? null
+  dragOverPlacementKey.value = dropTarget?.beforePlacementKey ?? null
+}
+
+async function handleLinuxDoBookPointerUp(event: PointerEvent) {
+  window.removeEventListener('pointermove', handleLinuxDoBookPointerMove)
+  window.removeEventListener('pointerup', handleLinuxDoBookPointerUp)
+  window.removeEventListener('pointercancel', handleLinuxDoBookPointerCancel)
+  const bookId = pointerDragLinuxDoBookId
+  const book = linuxDoBooks.value.find((item) => item.id === bookId)
+  const dropTarget = pointerDragLinuxDoBookId
+    ? resolveDynamicBookDropTarget(event, `linux-do-book-${pointerDragLinuxDoBookId}`)
+    : null
+  if (pointerMoved && book && dropTarget) {
+    event.preventDefault()
+    suppressNextBookClick = true
+    if (dropTarget.folderId) {
+      try {
+        book.bookshelf_placement = await updateLinuxDoBookPlacement(book.id, {
+          bookshelf_id: selectedBookshelfId.value,
+          shelf_index: dropTarget.shelfIndex,
+          position_index: dropTarget.positionIndex,
+          orientation: book.bookshelf_placement.orientation,
+          folder_id: dropTarget.folderId,
+        })
+        linuxDoBooks.value = [...linuxDoBooks.value]
+        await reloadFolders()
+      } catch (error) {
+        console.warn('Failed to move LINUX DO book:', error)
+        ElMessage.error('保存动态书本位置失败')
+      }
+    } else {
+      movePlacementToShelf(
+        `linux-do-book-${book.id}`,
+        dropTarget.shelfIndex,
+        dropTarget.beforePlacementKey,
+      )
+    }
+  }
+  handleLinuxDoBookPointerCancel()
+  setTimeout(() => {
+    suppressNextBookClick = false
+  }, 0)
+}
+
+function handleLinuxDoBookPointerCancel() {
+  window.removeEventListener('pointermove', handleLinuxDoBookPointerMove)
+  window.removeEventListener('pointerup', handleLinuxDoBookPointerUp)
+  pointerDragLinuxDoBookId = null
+  pointerMoved = false
+  draggingLinuxDoBookId.value = null
+  dragOverShelfIndex.value = null
+  dragOverPlacementKey.value = null
   bookDragOffsetX.value = 0
   bookDragOffsetY.value = 0
 }
@@ -412,6 +1713,7 @@ function handleSkillBookPointerCancel() {
 function openSkillBookMetadataEditor() {
   skillBookContextMenu.value = null
   skillBookPageFormat.value = skillBookCatalog.value?.page_format ?? 'A4'
+  skillBookStartDate.value = skillBookCatalog.value?.start_date ?? ''
   skillBookMetadataVisible.value = true
 }
 
@@ -420,6 +1722,7 @@ async function saveSkillBookMetadata() {
   try {
     skillBookCatalog.value = await updateLocalSkillBookMetadata({
       page_format: skillBookPageFormat.value,
+      start_date: skillBookStartDate.value.trim(),
     })
     skillBookMetadataVisible.value = false
     skillBookReadingState.value = await fetchLocalSkillBookReadingState()
@@ -461,6 +1764,26 @@ async function reloadSkillBookCatalog() {
   } catch (error) {
     console.warn('Failed to load local Skill reading state:', error)
     skillBookReadingState.value = null
+  }
+}
+
+async function fetchSkillBookBundle(bookshelfId: string) {
+  const [catalogResult, stateResult] = await Promise.allSettled([
+    fetchLocalSkillBookCatalog(bookshelfId),
+    fetchLocalSkillBookReadingState(),
+  ])
+  if (catalogResult.status === 'rejected') {
+    if ((catalogResult.reason as { response?: { status?: number } }).response?.status !== 404) {
+      throw catalogResult.reason
+    }
+    return { catalog: null, readingState: null }
+  }
+  if (stateResult.status === 'rejected') {
+    console.warn('Failed to load local Skill reading state:', stateResult.reason)
+  }
+  return {
+    catalog: catalogResult.value,
+    readingState: stateResult.status === 'fulfilled' ? stateResult.value : null,
   }
 }
 
@@ -517,17 +1840,51 @@ function spineTone(document: PdfDocumentSummary) {
   return `tone-${Math.abs(document.id) % 6}`
 }
 
-function coverInkColor(coverColor?: string | null) {
-  const match = /^#([0-9a-f]{6})$/i.exec(coverColor ?? '')
-  if (!match) {
-    return '#ffffff'
+function parseHexColor(color?: string | null): [number, number, number] | null {
+  const match = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(color?.trim() ?? '')
+  if (!match) return null
+  const hex = match[1]
+  const expanded = hex.length <= 4
+    ? Array.from(hex.slice(0, 3), channel => channel + channel).join('')
+    : hex.slice(0, 6)
+  const value = Number.parseInt(expanded, 16)
+  return [
+    (value >> 16) & 255,
+    (value >> 8) & 255,
+    value & 255,
+  ]
+}
+
+function relativeLuminance([red, green, blue]: [number, number, number]) {
+  const linearChannel = (channel: number) => {
+    const srgb = channel / 255
+    return srgb <= 0.04045
+      ? srgb / 12.92
+      : ((srgb + 0.055) / 1.055) ** 2.4
   }
-  const value = Number.parseInt(match[1], 16)
-  const red = (value >> 16) & 255
-  const green = (value >> 8) & 255
-  const blue = value & 255
-  const luminance = (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255
-  return luminance > 0.62 ? '#26313d' : '#ffffff'
+  return linearChannel(red) * 0.2126
+    + linearChannel(green) * 0.7152
+    + linearChannel(blue) * 0.0722
+}
+
+function contrastRatio(left: number, right: number) {
+  const lighter = Math.max(left, right)
+  const darker = Math.min(left, right)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function coverInkColor(coverColor?: string | null) {
+  const background = parseHexColor(coverColor)
+  if (!background) return '#ffffff'
+  const darkInk = '#000000'
+  const lightInk = '#ffffff'
+  const backgroundLuminance = relativeLuminance(background)
+  const darkLuminance = relativeLuminance(parseHexColor(darkInk)!)
+  const lightLuminance = relativeLuminance(parseHexColor(lightInk)!)
+  return contrastRatio(backgroundLuminance, darkLuminance)
+    >= contrastRatio(backgroundLuminance, lightLuminance)
+    ? darkInk
+    : lightInk
 }
 
 function bookOrientation(document: PdfDocumentSummary): PdfBookshelfOrientation {
@@ -573,12 +1930,7 @@ function bookSpineQualifier(document: PdfDocumentSummary) {
   return bookSpineTitleParts(document).qualifier
 }
 
-function bookSpineTitleSegments(document: PdfDocumentSummary) {
-  const title = bookSpineTitle(document)
-  if (bookOrientation(document) !== 'spine_vertical') {
-    return [{ text: title, combined: false }] satisfies BookTitleSegment[]
-  }
-
+function verticalTitleSegments(title: string) {
   const segments: BookTitleSegment[] = []
   const tokenPattern = /[A-Za-z0-9]+(?:[.+_-][A-Za-z0-9]+)*/g
   let cursor = 0
@@ -600,6 +1952,14 @@ function bookSpineTitleSegments(document: PdfDocumentSummary) {
   return segments.length ? segments : [{ text: title, combined: false }]
 }
 
+function bookSpineTitleSegments(document: PdfDocumentSummary) {
+  const title = bookSpineTitle(document)
+  if (bookOrientation(document) !== 'spine_vertical') {
+    return [{ text: title, combined: false }] satisfies BookTitleSegment[]
+  }
+  return verticalTitleSegments(title)
+}
+
 function isCompactVerticalToken(segment: BookTitleSegment) {
   return !segment.combined && /^[A-Za-z0-9]+(?:[.+_-][A-Za-z0-9]+)*$/.test(segment.text)
 }
@@ -613,6 +1973,13 @@ function bookTitleSegmentCellCount(segment: BookTitleSegment) {
     return glyphCount
   }
   return 1 + (glyphCount - 1) * COMPACT_VERTICAL_TOKEN_CELL_RATIO
+}
+
+function verticalTitleCellCount(title: string) {
+  return verticalTitleSegments(title).reduce(
+    (count, segment) => count + bookTitleSegmentCellCount(segment),
+    0,
+  )
 }
 
 function bookTitleCellCount(document: PdfDocumentSummary) {
@@ -673,6 +2040,145 @@ function bookSpineDisplayTitleSegments(document: PdfDocumentSummary) {
   return visibleSegments
 }
 
+function millimetersToPoints(value: number) {
+  return value * 72 / 25.4
+}
+
+function physicalBookHeight(pageHeightPoints: number) {
+  return Math.min(
+    MAX_BOOK_HEIGHT,
+    Math.max(MIN_BOOK_HEIGHT, Math.round(pageHeightPoints * BOOK_PAGE_SCALE)),
+  )
+}
+
+function systemBookSpineGeometry(pageCount: number) {
+  const safePageCount = Math.max(1, pageCount)
+  const spineWidth = Math.round(
+    SYSTEM_MIN_SPINE_WIDTH * (1 + Math.log10(safePageCount)),
+  )
+  const baseSpineWidth = spineWidth
+  return { baseSpineWidth, spineWidth }
+}
+
+function dynamicBookOrientationClass(orientation: PdfBookshelfOrientation | undefined) {
+  return `orientation-${(orientation ?? 'spine_vertical').replace('_', '-')}`
+}
+
+function dynamicBookSpineStyle(options: {
+  title: string
+  author: string
+  startDate?: string
+  pageCount: number
+  pageWidthMm: number
+  pageHeightMm: number
+  orientation: PdfBookshelfOrientation
+  coverColor: string
+  dragX: number
+  dragY: number
+  readingProgress: number
+}) {
+  const pageCount = Math.max(1, options.pageCount)
+  const pageHeightPoints = millimetersToPoints(options.pageHeightMm)
+  const pageWidthPoints = millimetersToPoints(options.pageWidthMm)
+  const bookHeight = physicalBookHeight(pageHeightPoints)
+  const { baseSpineWidth, spineWidth } = systemBookSpineGeometry(pageCount)
+  const screenScale = bookHeight / pageHeightPoints
+  const pageDepth = Math.min(210, Math.max(120, Math.round(pageWidthPoints * screenScale)))
+  const titleGlyphCount = Math.max(4, verticalTitleCellCount(options.title))
+  let titleFontSize = physicalSpineTitleFontSize(
+    baseSpineWidth,
+    spineWidth,
+    bookHeight,
+    titleGlyphCount,
+  )
+  if (options.orientation === 'spine_vertical') {
+    titleFontSize = verticalSpineTitleFontSize(spineWidth, titleFontSize)
+  } else if (options.orientation === 'spine_horizontal') {
+    titleFontSize = Math.min(
+      titleFontSize,
+      Math.max(MIN_SPINE_FONT_SIZE, Math.floor((bookHeight - 30) / titleGlyphCount * 0.95)),
+    )
+  }
+  const itemWidth = options.orientation === 'spine_vertical'
+    ? Math.max(spineWidth, MIN_BOOK_INTERACTION_WIDTH)
+    : options.orientation === 'spine_horizontal'
+      ? bookHeight
+      : pageDepth
+  const showTitle = options.orientation === 'cover_front'
+    || spineWidth >= (options.orientation === 'spine_vertical'
+      ? MIN_SPINE_WIDTH_FOR_COMPACT_TITLE
+      : MIN_SPINE_WIDTH_FOR_TITLE)
+  const compactVerticalTitle = options.orientation === 'spine_vertical'
+    && spineWidth < MIN_SPINE_WIDTH_FOR_TITLE
+  const author = options.author.trim()
+  const authorFontSize = Math.min(15, Math.max(10, Math.round(titleFontSize * 0.48)))
+  const coverFontSize = Math.min(28, Math.max(16, Math.round(Math.min(pageDepth / 6, bookHeight / 8))))
+  const showAuthor = showTitle && Boolean(author) && (
+    options.orientation !== 'spine_vertical'
+    || spineWidth >= titleFontSize + authorFontSize + 8
+  )
+  const readingProgress = Math.max(0, Math.min(1, options.readingProgress))
+  return {
+    '--spine-width': `${spineWidth}px`,
+    '--spine-height': `${bookHeight}px`,
+    '--page-depth': `${pageDepth}px`,
+    '--cover-flat-height': `${bookHeight}px`,
+    '--book-item-width': `${itemWidth}px`,
+    '--spine-font-size': `${titleFontSize}px`,
+    '--cover-font-size': `${coverFontSize}px`,
+    '--book-title-display': showTitle ? 'block' : 'none',
+    '--book-spine-inline-padding': showTitle && !compactVerticalTitle ? '5px' : '0px',
+    '--book-spine-title-line-height': compactVerticalTitle ? '1' : '1.35',
+    '--book-spine-title-scale-x': '1',
+    '--book-spine-justify-content': 'center',
+    '--book-author-display': showAuthor ? 'block' : 'none',
+    '--book-start-year-display': options.startDate && !showAuthor ? 'block' : 'none',
+    '--book-author-font-size': `${authorFontSize}px`,
+    '--book-cover-color': options.coverColor,
+    '--book-cover-ink': coverInkColor(options.coverColor),
+    '--book-physical-border-width': '1px',
+    '--book-lean': '0deg',
+    '--book-drag-x': `${options.dragX}px`,
+    '--book-drag-y': `${options.dragY}px`,
+    '--book-reading-progress': `${((1 - readingProgress) * 100).toFixed(2)}%`,
+    '--book-cover-bookmark-progress': `${(readingProgress * 100).toFixed(2)}%`,
+  }
+}
+
+function physicalSpineTitleFontSize(
+  baseSpineWidth: number,
+  spineWidth: number,
+  bookHeight: number,
+  titleCellCount: number,
+) {
+  const widthRatio = (baseSpineWidth - SYSTEM_MIN_SPINE_WIDTH)
+    / (SYSTEM_REFERENCE_SPINE_WIDTH - SYSTEM_MIN_SPINE_WIDTH)
+  const heightRatio = (bookHeight - MIN_BOOK_HEIGHT) / (MAX_BOOK_HEIGHT - MIN_BOOK_HEIGHT)
+  const sizeRatio = Math.min(1, Math.max(0, widthRatio * 0.75 + heightRatio * 0.25))
+  const glyphCount = Math.max(4, titleCellCount)
+  const widthFontLimit = spineWidth * 0.46
+  const heightFontLimit = (bookHeight - SPINE_VERTICAL_TEXT_HEIGHT_INSET) / glyphCount
+  const geometryFontLimit = MIN_SPINE_FONT_SIZE
+    + (MAX_SPINE_FONT_SIZE - MIN_SPINE_FONT_SIZE) * (0.45 + sizeRatio * 0.55)
+  return Math.floor(Math.min(
+    MAX_SPINE_FONT_SIZE,
+    Math.max(
+      MIN_SPINE_FONT_SIZE,
+      Math.min(widthFontLimit, heightFontLimit, geometryFontLimit),
+    ),
+  ))
+}
+
+function verticalSpineTitleFontSize(spineWidth: number, preferredFontSize: number) {
+  if (spineWidth >= MIN_SPINE_WIDTH_FOR_TITLE) {
+    return preferredFontSize
+  }
+  return Math.min(
+    preferredFontSize,
+    Math.max(MIN_COMPACT_SPINE_FONT_SIZE, Math.floor(spineWidth - 2)),
+  )
+}
+
 function bookPhysicalGeometry(document: PdfDocumentSummary) {
   const metadata = document.metadata
   const pageHeight = metadata?.status === 'ready' && metadata.page_height_points
@@ -684,36 +2190,26 @@ function bookPhysicalGeometry(document: PdfDocumentSummary) {
   const pageCount = metadata?.status === 'ready' && metadata.page_count
     ? metadata.page_count
     : 400
-  const bookHeight = Math.min(MAX_BOOK_HEIGHT, Math.max(MIN_BOOK_HEIGHT, Math.round(pageHeight * BOOK_PAGE_SCALE)))
-  const screenScale = bookHeight / pageHeight
-  const paperBlockMillimeters = 2 + pageCount * 0.05
-  const paperBlockPoints = paperBlockMillimeters * 72 / 25.4
-  const baseSpineWidth = Math.min(
-    MAX_SPINE_WIDTH,
-    Math.max(MIN_SPINE_WIDTH, Math.round(paperBlockPoints * screenScale)),
+  const bookHeight = physicalBookHeight(pageHeight)
+  // Every resource type shares the same system-owned logarithmic page-to-thickness
+  // mapping. Interaction width remains separate from the visual spine width.
+  const { baseSpineWidth, spineWidth } = systemBookSpineGeometry(
+    pageCount,
   )
-  const spineWidth = baseSpineWidth * BOOK_THICKNESS_SCALE
+  const screenScale = bookHeight / pageHeight
   const pageDepth = Math.min(210, Math.max(120, Math.round(pageWidth * screenScale)))
   return { pageCount, bookHeight, baseSpineWidth, spineWidth, pageDepth }
 }
 
 function bookTitleFontSize(document: PdfDocumentSummary) {
   const { bookHeight, baseSpineWidth, spineWidth } = bookPhysicalGeometry(document)
-  const widthRatio = (baseSpineWidth - MIN_SPINE_WIDTH) / (MAX_SPINE_WIDTH - MIN_SPINE_WIDTH)
-  const heightRatio = (bookHeight - MIN_BOOK_HEIGHT) / (MAX_BOOK_HEIGHT - MIN_BOOK_HEIGHT)
-  const sizeRatio = Math.min(1, Math.max(0, widthRatio * 0.75 + heightRatio * 0.25))
   const titleGlyphCount = Math.max(4, bookTitleCellCount(document))
-  const widthFontLimit = spineWidth * 0.46
-  const heightFontLimit = (bookHeight - SPINE_VERTICAL_TEXT_HEIGHT_INSET) / titleGlyphCount
-  const geometryFontLimit = MIN_SPINE_FONT_SIZE
-    + (MAX_SPINE_FONT_SIZE - MIN_SPINE_FONT_SIZE) * (0.45 + sizeRatio * 0.55)
-  let titleFontSize = Math.floor(Math.min(
-    MAX_SPINE_FONT_SIZE,
-    Math.max(
-      MIN_SPINE_FONT_SIZE,
-      Math.min(widthFontLimit, heightFontLimit, geometryFontLimit),
-    ),
-  ))
+  let titleFontSize = physicalSpineTitleFontSize(
+    baseSpineWidth,
+    spineWidth,
+    bookHeight,
+    bookTitleCellCount(document),
+  )
   const orientation = bookOrientation(document)
   if (orientation === 'spine_vertical' && bookSpineQualifier(document)) {
     const availableWidth = Math.max(0, spineWidth - 13)
@@ -742,27 +2238,43 @@ function bookSpineStyle(document: PdfDocumentSummary) {
     pageDepth,
   } = bookPhysicalGeometry(document)
   const metadata = document.metadata
-  const titleFontSize = bookTitleFontSize(document)
   const titleGlyphCount = Math.max(4, bookTitleCellCount(document))
   const orientation = bookOrientation(document)
+  const preferredTitleFontSize = bookTitleFontSize(document)
+  const titleFontSize = orientation === 'spine_vertical'
+    ? verticalSpineTitleFontSize(spineWidth, preferredTitleFontSize)
+    : preferredTitleFontSize
   const itemWidth = orientation === 'spine_vertical'
-    ? spineWidth
+    ? Math.max(spineWidth, MIN_BOOK_INTERACTION_WIDTH)
     : orientation === 'spine_horizontal'
       ? bookHeight
       : pageDepth
-  const showTitle = orientation === 'cover_front' || pageCount > 1
+  const showTitle = orientation === 'cover_front'
+    || spineWidth >= (orientation === 'spine_vertical'
+      ? MIN_SPINE_WIDTH_FOR_COMPACT_TITLE
+      : MIN_SPINE_WIDTH_FOR_TITLE)
+  const compactVerticalTitle = orientation === 'spine_vertical'
+    && spineWidth < MIN_SPINE_WIDTH_FOR_TITLE
+  const physicalBorderWidth = orientation === 'cover_front' || spineWidth >= 2 ? 1 : 0
   const coverFlatHeight = bookHeight
   const coverFontSize = Math.min(28, Math.max(16, Math.round(Math.min(pageDepth / 6, coverFlatHeight / 8))))
-  const author = document.display_author?.trim() ?? ''
+  const author = bookAuthorWithYear(document.display_author, document.start_date)
   const authorGlyphCount = Array.from(author.replace(/\s+/g, '')).length
   const authorFontSize = Math.min(15, Math.max(10, Math.round(titleFontSize * 0.48)))
   const qualifier = bookSpineQualifier(document)
   const qualifierFontSize = Math.min(14, Math.max(10, Math.round(titleFontSize * 0.58)))
   const horizontalAuthorWidth = authorGlyphCount * authorFontSize * 0.9
   const horizontalTwoLineHeight = titleFontSize * 1.35 + authorFontSize * 1.25 + 18
-  const showAuthor = showTitle && !qualifier && authorGlyphCount > 0 && (
+  const verticalColumnCount = qualifier ? 3 : 2
+  const verticalAuthorRequiredWidth = titleFontSize
+    + authorFontSize
+    + (qualifier ? qualifierFontSize : 0)
+    + (verticalColumnCount - 1) * 2
+    + 8
+    + physicalBorderWidth * 2
+  const showAuthor = showTitle && authorGlyphCount > 0 && (
     orientation === 'spine_vertical'
-      ? spineWidth >= titleFontSize * 1.35 + authorFontSize * 1.2 + 14
+      ? spineWidth >= verticalAuthorRequiredWidth
       : orientation === 'spine_horizontal'
         ? spineWidth >= horizontalTwoLineHeight
           && bookHeight - 24 >= horizontalAuthorWidth
@@ -770,8 +2282,6 @@ function bookSpineStyle(document: PdfDocumentSummary) {
           titleGlyphCount * coverFontSize * 0.95 / Math.max(pageDepth - 32, 1),
         ) * coverFontSize * 1.45 + authorFontSize * 1.35 + 12
   )
-  const verticalLeanDegrees = [-0.55, -0.4, -0.25, -0.1, 0][Math.abs(document.id) % 5]
-  const leanDegrees = orientation === 'spine_vertical' ? verticalLeanDegrees : 0
   const currentPage = Math.max(1, Math.min(document.my_state?.current_page ?? 1, pageCount))
   const readingProgress = pageCount <= 1 ? 1 : (currentPage - 1) / (pageCount - 1)
   // When the spine faces the reader, early pages sit by the right cover;
@@ -787,18 +2297,31 @@ function bookSpineStyle(document: PdfDocumentSummary) {
     '--cover-flat-height': `${coverFlatHeight}px`,
     '--book-item-width': `${itemWidth}px`,
     '--book-title-display': showTitle ? 'block' : 'none',
+    '--book-qualifier-display': showTitle && !compactVerticalTitle ? 'block' : 'none',
+    '--book-spine-inline-padding': showAuthor && orientation === 'spine_vertical'
+      ? '4px'
+      : showTitle && !compactVerticalTitle ? '5px' : '0px',
+    '--book-spine-title-line-height': compactVerticalTitle || (showAuthor && orientation === 'spine_vertical')
+      ? '1'
+      : '1.35',
+    '--book-spine-block-padding': showTitle ? '7px' : '0px',
+    '--book-spine-justify-content': 'center',
+    '--book-physical-border-width': `${physicalBorderWidth}px`,
     '--book-drag-x': document.id === draggingPdfId.value ? `${bookDragOffsetX.value}px` : '0px',
     '--book-drag-y': document.id === draggingPdfId.value ? `${bookDragOffsetY.value}px` : '0px',
     '--cover-font-size': `${coverFontSize}px`,
     '--book-author-font-size': `${authorFontSize}px`,
     '--book-author-display': showAuthor ? 'block' : 'none',
+    '--book-author-line-height': showAuthor && orientation === 'spine_vertical' ? '1' : '1.2',
+    '--book-start-year-display': document.start_date && !showAuthor ? 'block' : 'none',
     '--book-qualifier-font-size': `${qualifierFontSize}px`,
-    '--book-lean': `${leanDegrees}deg`,
+    '--book-qualifier-line-height': showAuthor && orientation === 'spine_vertical' ? '1' : '1.2',
+    '--book-lean': '0deg',
     '--book-reading-progress': `${(bookmarkPagePosition * 100).toFixed(2)}%`,
     '--book-cover-bookmark-progress': `${(readingProgress * 100).toFixed(2)}%`,
     '--book-bookmark-tilt': `${bookmarkTilt}deg`,
-    '--book-cover-color': metadata.cover_average_color ?? undefined,
-    '--book-cover-ink': coverInkColor(metadata.cover_average_color),
+    '--book-cover-color': document.appearance.cover_color_override ?? metadata.cover_average_color ?? undefined,
+    '--book-cover-ink': coverInkColor(document.appearance.cover_color_override ?? metadata.cover_average_color),
     '--book-cover-image': coverImageUrl ? `url("${coverImageUrl}")` : undefined,
   }
 }
@@ -866,7 +2389,11 @@ function tooltipField(label: string, value: string, wrapValue = false) {
 }
 
 function hasReadingBookmark(document: PdfDocumentSummary) {
-  return Boolean(document.my_state && document.my_state.current_page >= 1)
+  if (!document.my_state || document.my_state.current_page < 1) {
+    return false
+  }
+  return bookOrientation(document) === 'cover_front'
+    || bookPhysicalGeometry(document).spineWidth >= MIN_SPINE_WIDTH_FOR_BOOKMARK
 }
 
 function bookTooltip(document: PdfDocumentSummary) {
@@ -879,25 +2406,37 @@ function bookTooltip(document: PdfDocumentSummary) {
   const fields = [
     tooltipField('书名', document.display_title),
     ...(document.display_author ? [tooltipField('作者', document.display_author)] : []),
+    ...(document.start_date ? [tooltipField('起始时间', document.start_date)] : []),
     tooltipField('原文件', document.title, true),
     tooltipField('页码', `${currentPageLabel}/${pageCountLabel}`),
   ]
   return fields.join('\n')
 }
 
-function buildBookshelfRows() {
-  const originalOrder = new Map(documents.value.map((document, index) => [document.id, index]))
-  const maxPdfShelfIndex = documents.value.reduce(
-    (maximum, document) => Math.max(maximum, document.bookshelf_placement?.shelf_index ?? 0),
-    0,
-  )
-  const maxShelfIndex = Math.max(
-    maxPdfShelfIndex,
-    showLocalSkillBook.value ? (skillBookCatalog.value?.bookshelf_placement.shelf_index ?? 0) : 0,
-  )
-  const rowCount = Math.max(
+function contentDrivenBookshelfRowCount() {
+  const occupiedShelfIndices = [
+    ...documents.value.map((document) => document.bookshelf_placement?.shelf_index ?? 0),
+    ...libraryFolders.value.map((folder) => folder.shelf_index),
+    ...Object.values(wallSitePositions.value).map((position) => position.shelfIndex),
+    ...linuxDoBooks.value.map((book) => book.bookshelf_placement.shelf_index),
+    ...(showLocalSkillBook.value && skillBookCatalog.value
+      ? [skillBookCatalog.value.bookshelf_placement.shelf_index]
+      : []),
+  ]
+  const maxShelfIndex = occupiedShelfIndices.length
+    ? Math.max(...occupiedShelfIndices)
+    : -1
+  return Math.max(
     DEFAULT_BOOKSHELF_ROW_COUNT,
     maxShelfIndex + 1 + TRAILING_EMPTY_BOOKSHELF_ROW_COUNT,
+  )
+}
+
+function buildBookshelfRows() {
+  const originalOrder = new Map(documents.value.map((document, index) => [document.id, index]))
+  const rowCount = Math.max(
+    bookshelfCanvasMinRowCount.value,
+    contentDrivenBookshelfRowCount(),
   )
   const rows = Array.from({ length: rowCount }, () => [] as PdfDocumentSummary[])
   const orderedDocuments = [...documents.value].sort((left, right) => {
@@ -953,6 +2492,7 @@ function clearBookDragState() {
   draggingPdfId.value = null
   dragOverPdfId.value = null
   dragOverShelfIndex.value = null
+  dragOverPlacementKey.value = null
   bookDragOffsetX.value = 0
   bookDragOffsetY.value = 0
 }
@@ -960,27 +2500,36 @@ function clearBookDragState() {
 function closeBookContextMenu() {
   bookContextMenu.value = null
   skillBookContextMenu.value = null
+  linuxDoBookContextMenu.value = null
 }
 
 function closeBookshelfContextMenu() {
   bookshelfContextMenu.value = null
 }
 
+function closeShelfContextMenu() {
+  shelfContextMenu.value = null
+}
+
 function closeContextMenus() {
   closeBookContextMenu()
   closeBookshelfContextMenu()
+  closeShelfContextMenu()
 }
 
 function openBookContextMenu(event: MouseEvent, pdfId: number) {
-  if (!selectedBookshelfIsOwned.value) {
-    return
-  }
   event.preventDefault()
   event.stopPropagation()
   closeBookshelfContextMenu()
+  closeShelfContextMenu()
   const menuWidth = 176
   const document = documents.value.find((item) => item.id === pdfId)
-  const menuHeight = document && canEditBookMetadata(document) ? 76 : 42
+  const canDelete = document ? canDeleteBook(document) : false
+  const actionCount = (selectedBookshelfIsOwned.value ? 1 : 0)
+    + (document && canEditBookMetadata(document) ? 1 : 0)
+    + (!selectedBookshelfIsOwned.value ? 1 : 0)
+    + (canDelete ? 1 : 0)
+  const menuHeight = 8 + actionCount * 32 + (canDelete ? 9 : 0)
   bookContextMenu.value = {
     pdfId,
     x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
@@ -992,10 +2541,11 @@ function openBookshelfContextMenu(event: MouseEvent, bookshelfId: string) {
   event.preventDefault()
   event.stopPropagation()
   closeBookContextMenu()
+  closeShelfContextMenu()
   const menuWidth = 128
   const bookshelf = bookshelves.value.find((item) => item.id === bookshelfId)
   const menuHeight = bookshelf?.is_owned
-    ? (bookshelf.book_count === 0 ? 116 : 78)
+    ? (bookshelf.book_count === 0 && bookshelf.folder_count === 0 ? 116 : 76)
     : 42
   bookshelfContextMenu.value = {
     bookshelfId,
@@ -1007,6 +2557,8 @@ function openBookshelfContextMenu(event: MouseEvent, bookshelfId: string) {
 function handleContextMenuKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     closeContextMenus()
+    selectedWallSiteIds.value = []
+    finishWallSelection()
   }
 }
 
@@ -1064,8 +2616,144 @@ function rotateContextBook() {
   rotateBook(pdfId)
 }
 
+async function rotateContextSkillBook() {
+  const catalog = skillBookCatalog.value
+  closeBookContextMenu()
+  if (!catalog || !catalog.is_owned) {
+    return
+  }
+  try {
+    catalog.bookshelf_placement = await updateLocalSkillBookPlacement({
+      bookshelf_id: catalog.bookshelf_placement.bookshelf_id,
+      shelf_index: catalog.bookshelf_placement.shelf_index,
+      position_index: catalog.bookshelf_placement.position_index,
+      orientation: nextBookOrientation(catalog.bookshelf_placement.orientation),
+      folder_id: catalog.bookshelf_placement.folder_id ?? null,
+    })
+    skillBookCatalog.value = { ...catalog }
+  } catch (error) {
+    console.warn('Failed to rotate local Skill book:', error)
+    ElMessage.error('保存图书旋转状态失败')
+  }
+}
+
+async function rotateContextLinuxDoBook() {
+  const bookId = linuxDoBookContextMenu.value?.bookId
+  const book = linuxDoBooks.value.find((item) => item.id === bookId)
+  closeBookContextMenu()
+  if (!book || !selectedBookshelfIsOwned.value) {
+    return
+  }
+  try {
+    book.bookshelf_placement = await updateLinuxDoBookPlacement(book.id, {
+      ...book.bookshelf_placement,
+      orientation: nextBookOrientation(book.bookshelf_placement.orientation),
+    })
+    linuxDoBooks.value = [...linuxDoBooks.value]
+  } catch (error) {
+    console.warn('Failed to rotate dynamic book:', error)
+    ElMessage.error('保存图书旋转状态失败')
+  }
+}
+
+function openCopyBookDialog() {
+  copyBookPdfId.value = bookContextMenu.value?.pdfId ?? null
+  closeBookContextMenu()
+  copyTargetBookshelfId.value = ownedBookshelves.value[0]?.id ?? ''
+  copyIncludeNotes.value = true
+  copyBookVisible.value = copyBookPdfId.value != null && Boolean(copyTargetBookshelfId.value)
+}
+
+async function saveCopyBook() {
+  if (copyBookPdfId.value == null || !copyTargetBookshelfId.value) return
+  copyBookSaving.value = true
+  try {
+    await copyPdfToOwnLibrary(copyBookPdfId.value, {
+      target_bookshelf_id: copyTargetBookshelfId.value,
+      shelf_index: 0,
+      include_notes: copyIncludeNotes.value,
+      include_reading_progress: false,
+    })
+    copyBookVisible.value = false
+    await reloadBookshelves()
+    ElMessage.success('已复制到自己的书柜，笔记与原书互不影响')
+  } catch (error) {
+    console.warn('Failed to copy shared PDF:', error)
+    ElMessage.error('复制图书失败')
+  } finally {
+    copyBookSaving.value = false
+  }
+}
+
 function canEditBookMetadata(document: PdfDocumentSummary) {
   return document.access.role === 'editor' || document.access.role === 'manager'
+}
+
+function canDeleteBook(document: PdfDocumentSummary) {
+  return selectedBookshelfIsOwned.value && document.bookshelf_placement != null
+}
+
+const canDeleteBookOriginalFile = computed(() => {
+  const document = deleteBookDialogDocument.value
+  return Boolean(document && (
+    document.owner_user_id === currentUserId.value
+    || userStore.user?.is_superuser
+  ))
+})
+
+function releaseBookCoverImage(pdfId: number) {
+  const imageUrl = bookCoverImageUrls.value.get(pdfId)
+  if (!imageUrl) return
+  URL.revokeObjectURL(imageUrl)
+  const nextUrls = new Map(bookCoverImageUrls.value)
+  nextUrls.delete(pdfId)
+  bookCoverImageUrls.value = nextUrls
+}
+
+function deleteContextBook() {
+  const pdfId = bookContextMenu.value?.pdfId
+  const document = documents.value.find((item) => item.id === pdfId)
+  closeBookContextMenu()
+  if (!document || !canDeleteBook(document)) return
+  deleteBookDialogDocument.value = document
+  deleteBookDialogBookshelfName.value = selectedBookshelf.value?.name || '当前书柜'
+  deleteBookDialogVisible.value = true
+}
+
+async function deleteBookReference() {
+  const document = deleteBookDialogDocument.value
+  if (!document || deleteBookDialogSaving.value) return
+  deleteBookDialogSaving.value = true
+  try {
+    await removePdfDocumentFromMyLibrary(document.id)
+    releaseBookCoverImage(document.id)
+    deleteBookDialogVisible.value = false
+    await Promise.all([reloadBookshelves(), reloadDocuments({ silent: true }), reloadFolders()])
+    ElMessage.success('图书引用已删除')
+  } catch (error) {
+    console.warn('Failed to remove PDF reference:', error)
+    ElMessage.error('删除图书引用失败')
+  } finally {
+    deleteBookDialogSaving.value = false
+  }
+}
+
+async function deleteBookOriginalFile() {
+  const document = deleteBookDialogDocument.value
+  if (!document || !canDeleteBookOriginalFile.value || deleteBookDialogSaving.value) return
+  deleteBookDialogSaving.value = true
+  try {
+    await deletePdfDocument(document.id)
+    releaseBookCoverImage(document.id)
+    deleteBookDialogVisible.value = false
+    await Promise.all([reloadBookshelves(), reloadDocuments({ silent: true }), reloadFolders()])
+    ElMessage.success('图书原文件已删除')
+  } catch (error) {
+    console.warn('Failed to delete PDF source resource:', error)
+    ElMessage.error('删除图书原文件失败')
+  } finally {
+    deleteBookDialogSaving.value = false
+  }
 }
 
 function openMetadataEditorFromContext() {
@@ -1078,6 +2766,16 @@ function openMetadataEditorFromContext() {
   metadataEditorPdfId.value = document.id
   metadataEditorTitle.value = document.display_title
   metadataEditorAuthor.value = document.display_author
+  metadataEditorStartDate.value = document.start_date
+  metadataEditorSubtitle.value = document.display_subtitle
+  metadataEditorTranslator.value = document.display_translator
+  metadataEditorEdition.value = document.display_edition
+  metadataEditorVolume.value = document.display_volume
+  metadataEditorSourceName.value = document.title
+  metadataEditorImportedFilename.value = document.imported_filename
+  metadataEditorDescription.value = document.description
+  metadataEditorTags.value = document.tags.join('，')
+  metadataEditorCoverColor.value = document.appearance.cover_color_override ?? ''
   metadataEditorVisible.value = true
 }
 
@@ -1093,6 +2791,15 @@ async function saveMetadataEditor() {
     const updatedDocument = await updatePdfDocumentMetadata(pdfId, {
       display_title: displayTitle,
       display_author: metadataEditorAuthor.value.trim(),
+      start_date: metadataEditorStartDate.value.trim(),
+      display_subtitle: metadataEditorSubtitle.value.trim(),
+      display_translator: metadataEditorTranslator.value.trim(),
+      display_edition: metadataEditorEdition.value.trim(),
+      display_volume: metadataEditorVolume.value.trim(),
+      source_display_name: metadataEditorSourceName.value.trim() || null,
+      description: metadataEditorDescription.value.trim(),
+      tags: metadataEditorTags.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
+      cover_color_override: metadataEditorCoverColor.value.trim() || null,
     })
     documents.value = documents.value.map((document) => (
       document.id === updatedDocument.id ? updatedDocument : document
@@ -1104,6 +2811,148 @@ async function saveMetadataEditor() {
     ElMessage.error('保存图书元数据失败')
   } finally {
     metadataEditorSaving.value = false
+  }
+}
+
+function folderStyle(folder: LibraryFolder) {
+  const automaticThickness = Math.max(folder.min_thickness_mm ?? 4, 4 + folder.member_count * 0.8)
+  const thickness = folder.fixed_thickness_mm ?? automaticThickness
+  return {
+    '--folder-width': `${Math.max(28, Math.min(100, Math.round(thickness * 3)))}px`,
+    '--folder-color': folder.color_override || '#58718a',
+  }
+}
+
+async function createFolderAtShelf(shelfIndex: number) {
+  if (!selectedBookshelfId.value || !selectedBookshelfIsOwned.value) return
+  try {
+    const { value } = await ElMessageBox.prompt('资料夹用于收纳较薄的一批文件', '新建资料夹', {
+      inputValue: '资料夹',
+      confirmButtonText: '新建',
+      cancelButtonText: '取消',
+      inputValidator: (name) => name.trim() ? true : '请输入资料夹名称',
+    })
+    await createLibraryFolder(selectedBookshelfId.value, value.trim(), shelfIndex)
+    await reloadFolders()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error('新建资料夹失败')
+  }
+}
+
+function handleShelfContextMenu(event: MouseEvent, shelfIndex: number) {
+  event.preventDefault()
+  const clickedOnBookObject = event.composedPath().some((target) => (
+    target instanceof Element
+      && target.matches('.book-item, .book-group, .library-folder, .bookshelf-wall-site, .book-context-menu')
+  ))
+  if (clickedOnBookObject || !selectedBookshelfIsOwned.value) return
+  event.stopPropagation()
+  closeContextMenus()
+  const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  const wall = row?.querySelector<HTMLElement>('.bookshelf-wall-sites')
+  const bounds = wall?.getBoundingClientRect() ?? row?.getBoundingClientRect()
+  const width = bounds?.width ?? 1
+  const height = bounds?.height ?? 1
+  const xRatio = clampWallSiteRatio(event.clientX - (bounds?.left ?? 0), width, 64)
+  const yRatio = clampWallSiteRatio(event.clientY - (bounds?.top ?? 0), height, 72)
+  const menuWidth = 152
+  const menuHeight = 72
+  shelfContextMenu.value = {
+    shelfIndex,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+    xRatio,
+    yRatio,
+  }
+}
+
+function createFolderFromShelfMenu() {
+  const shelfIndex = shelfContextMenu.value?.shelfIndex
+  closeContextMenus()
+  if (shelfIndex == null) return
+  void createFolderAtShelf(shelfIndex)
+}
+
+function openFolder(folder: LibraryFolder) {
+  openedFolder.value = folder
+  folderContentsVisible.value = true
+}
+
+function openFolderEditor(folder: LibraryFolder) {
+  if (!selectedBookshelfIsOwned.value) {
+    openFolder(folder)
+    return
+  }
+  editingFolder.value = folder
+  folderEditorName.value = folder.name
+  folderEditorColor.value = folder.color_override ?? ''
+  folderEditorMinThickness.value = folder.min_thickness_mm ?? undefined
+  folderEditorFixedThickness.value = folder.fixed_thickness_mm ?? undefined
+  folderEditorVisible.value = true
+}
+
+async function saveFolderEditor() {
+  if (!editingFolder.value || !folderEditorName.value.trim()) return
+  folderEditorSaving.value = true
+  try {
+    await updateLibraryFolder(editingFolder.value.id, {
+      name: folderEditorName.value.trim(),
+      color_override: folderEditorColor.value.trim() || null,
+      min_thickness_mm: folderEditorMinThickness.value ?? null,
+      fixed_thickness_mm: folderEditorFixedThickness.value ?? null,
+    })
+    folderEditorVisible.value = false
+    await reloadFolders()
+  } catch (error) {
+    ElMessage.error('保存资料夹失败')
+  } finally {
+    folderEditorSaving.value = false
+  }
+}
+
+async function removeOpenedFolder() {
+  const folder = openedFolder.value
+  if (!folder || folder.member_count > 0) return
+  try {
+    await ElMessageBox.confirm('只允许删除空资料夹。确定删除？', '删除资料夹', { type: 'warning' })
+    await deleteLibraryFolder(folder.id)
+    folderContentsVisible.value = false
+    await reloadFolders()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error('删除资料夹失败')
+  }
+}
+
+async function takeBookOutOfFolder(document: PdfDocumentSummary) {
+  const shelfIndex = openedFolder.value?.shelf_index ?? 0
+  await movePdfToLibraryFolder(document.id, null, shelfIndex)
+  await Promise.all([reloadDocuments({ silent: true }), reloadFolders()])
+}
+
+async function takeSkillBookOutOfFolder() {
+  const catalog = skillBookCatalog.value
+  if (!catalog || !openedFolder.value) return
+  catalog.bookshelf_placement = await updateLocalSkillBookPlacement({
+    bookshelf_id: selectedBookshelfId.value,
+    shelf_index: openedFolder.value.shelf_index,
+    position_index: openedFolder.value.position_index + 1,
+    orientation: catalog.bookshelf_placement.orientation,
+    folder_id: null,
+  })
+  skillBookCatalog.value = { ...catalog }
+  await reloadFolders()
+}
+
+async function reloadFolders() {
+  if (!selectedBookshelfId.value) {
+    libraryFolders.value = []
+    return
+  }
+  try {
+    libraryFolders.value = await fetchLibraryFolders(selectedBookshelfId.value)
+  } catch (error) {
+    console.warn('Failed to load library folders:', error)
+    libraryFolders.value = []
   }
 }
 
@@ -1150,6 +2999,7 @@ function handleBookPointerMove(event: PointerEvent) {
   bookDragOffsetX.value = event.clientX - pointerStartX
   bookDragOffsetY.value = event.clientY - pointerStartY
   event.preventDefault()
+  growBookshelfNearPointer(event)
   const target = document.elementFromPoint(event.clientX, event.clientY)
   const targetBook = target?.closest<HTMLElement>('.book-item')
   const targetShelf = target?.closest<HTMLElement>('.bookshelf-row')
@@ -1162,8 +3012,11 @@ function handleBookPointerMove(event: PointerEvent) {
   const targetPdfId = Number(targetBook?.dataset.pdfId)
   if (Number.isInteger(targetPdfId) && targetPdfId !== pointerDragPdfId) {
     handleBookDragOver(targetPdfId, shelfIndex)
+    dragOverPlacementKey.value = `book-${targetPdfId}`
   } else {
     handleShelfDragOver(shelfIndex)
+    const targetGroupKey = target?.closest<HTMLElement>('.book-group')?.dataset.groupKey ?? null
+    dragOverPlacementKey.value = targetGroupKey === `book-${pointerDragPdfId}` ? null : targetGroupKey
   }
 }
 
@@ -1174,14 +3027,26 @@ function handleBookPointerUp(event: PointerEvent) {
   window.removeEventListener('pointermove', handleBookPointerMove)
   window.removeEventListener('pointerup', handleBookPointerUp)
   window.removeEventListener('pointercancel', handleBookPointerCancel)
+  window.removeEventListener('pointermove', handleLinuxDoBookPointerMove)
+  window.removeEventListener('pointerup', handleLinuxDoBookPointerUp)
+  window.removeEventListener('pointercancel', handleLinuxDoBookPointerCancel)
   window.removeEventListener('contextmenu', handleDragRotateContextMenu, { capture: true })
   if (pointerMoved) {
     event.preventDefault()
     suppressNextBookClick = true
-    if (dragOverShelfIndex.value != null) {
+    const hitFolder = document.elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>('.library-folder')
+    const folderId = hitFolder?.dataset.folderId
+    if (folderId && pointerDragPdfId != null) {
+      const pdfId = pointerDragPdfId
+      clearBookDragState()
+      void movePdfToLibraryFolder(pdfId, folderId).then(async () => {
+        await Promise.all([reloadDocuments({ silent: true }), reloadFolders()])
+      }).catch(() => ElMessage.error('放入资料夹失败'))
+    } else if (dragOverShelfIndex.value != null) {
       const shelfIndex = dragOverShelfIndex.value
-      const beforePdfId = dragOverPdfId.value
-      moveBookToShelf(shelfIndex, beforePdfId)
+      const beforePlacementKey = dragOverPlacementKey.value
+      moveBookToShelf(shelfIndex, beforePlacementKey)
     } else {
       clearBookDragState()
     }
@@ -1306,23 +3171,32 @@ function handleShelfDragOver(shelfIndex: number) {
   }
   dragOverPdfId.value = null
   dragOverShelfIndex.value = shelfIndex
+  dragOverPlacementKey.value = null
 }
 
-function moveBookToShelf(shelfIndex: number, beforePdfId: number | null = null) {
+function moveBookToShelf(shelfIndex: number, beforePlacementKey: string | null = null) {
   const pdfId = draggingPdfId.value
   if (pdfId == null) {
     return
   }
-  const rows = buildBookshelfRows()
-  let movingDocument: PdfDocumentSummary | null = null
+  movePlacementToShelf(`book-${pdfId}`, shelfIndex, beforePlacementKey)
+}
+
+function movePlacementToShelf(
+  movingPlacementKey: string,
+  shelfIndex: number,
+  beforePlacementKey: string | null = null,
+) {
+  const rows = buildUnifiedLibraryLayoutRows()
+  let movingItem: BookshelfPlacementItem | null = null
   for (const row of rows) {
-    const documentIndex = row.findIndex((document) => document.id === pdfId)
-    if (documentIndex >= 0) {
-      movingDocument = row.splice(documentIndex, 1)[0] ?? null
+    const itemIndex = row.findIndex((item) => item.key === movingPlacementKey)
+    if (itemIndex >= 0) {
+      movingItem = row.splice(itemIndex, 1)[0] ?? null
       break
     }
   }
-  if (!movingDocument) {
+  if (!movingItem) {
     clearBookDragState()
     return
   }
@@ -1330,13 +3204,13 @@ function moveBookToShelf(shelfIndex: number, beforePdfId: number | null = null) 
     rows.push([])
   }
   const targetRow = rows[shelfIndex]
-  const targetIndex = beforePdfId == null
+  const targetIndex = beforePlacementKey == null
     ? targetRow.length
-    : Math.max(0, targetRow.findIndex((document) => document.id === beforePdfId))
-  targetRow.splice(targetIndex, 0, movingDocument)
+    : targetRow.findIndex((item) => item.key === beforePlacementKey)
+  targetRow.splice(targetIndex >= 0 ? targetIndex : targetRow.length, 0, movingItem)
 
   clearBookDragState()
-  applyBookshelfRows(rows)
+  applyUnifiedLibraryLayoutRows(rows)
 }
 
 function queueBookshelfLayoutSave(placements: PdfBookshelfPlacement[]) {
@@ -1350,6 +3224,31 @@ function queueBookshelfLayoutSave(placements: PdfBookshelfPlacement[]) {
       console.warn('Failed to save PDF bookshelf layout:', error)
       ElMessage.error('保存书柜位置失败，已恢复服务器布局')
       await reloadDocuments({ silent: true })
+    }
+  })
+}
+
+function queueUnifiedLibraryLayoutSave(items: LibraryBookshelfLayoutItem[]) {
+  if (!selectedBookshelfIsOwned.value || !selectedBookshelfId.value) {
+    return
+  }
+  const bookshelfId = selectedBookshelfId.value
+  layoutSaveQueue = layoutSaveQueue.then(async () => {
+    try {
+      await updateLibraryBookshelfLayout(bookshelfId, items)
+    } catch (error) {
+      console.warn(
+        'Failed to save unified library layout:',
+        error,
+        (error as { response?: { data?: unknown } })?.response?.data,
+      )
+      ElMessage.error('保存书柜位置失败，已恢复服务器布局')
+      await Promise.all([
+        reloadDocuments({ silent: true }),
+        reloadSkillBookCatalog(),
+        reloadLinuxDoBooks(),
+        reloadFolders(),
+      ])
     }
   })
 }
@@ -1429,6 +3328,8 @@ async function reloadBookshelves() {
   if (selectedBookshelfId.value) {
     localStorage.setItem(bookshelfSelectionStorageKey(), selectedBookshelfId.value)
   }
+  loadBookshelfCanvasExtent()
+  loadWallSitePositions()
 }
 
 async function selectBookshelf(bookshelfId: string) {
@@ -1439,10 +3340,52 @@ async function selectBookshelf(bookshelfId: string) {
   releaseBookCoverImages()
   selectedBookshelfId.value = bookshelfId
   localStorage.setItem(bookshelfSelectionStorageKey(), bookshelfId)
-  documents.value = []
-  skillBookCatalog.value = null
-  skillBookReadingState.value = null
-  await Promise.all([reloadDocuments(), reloadSkillBookCatalog()])
+  loadBookshelfCanvasExtent()
+  loadWallSitePositions()
+  void nextTick(() => bookshelfScrollRef.value?.scrollTo({ left: 0, top: 0 }))
+  await reloadSelectedBookshelfContents()
+}
+
+async function reloadSelectedBookshelfContents() {
+  const bookshelfId = selectedBookshelfId.value
+  if (!bookshelfId) {
+    documents.value = []
+    skillBookCatalog.value = null
+    skillBookReadingState.value = null
+    linuxDoBooks.value = []
+    libraryFolders.value = []
+    return
+  }
+  const reloadSequence = ++documentReloadSequence
+  loading.value = true
+  try {
+    const [loadedDocuments, skillBookBundle, loadedLinuxDoBooks, loadedFolders] = await Promise.all([
+      fetchPdfDocuments(bookshelfId),
+      fetchSkillBookBundle(bookshelfId),
+      fetchLinuxDoBooks(bookshelfId),
+      fetchLibraryFolders(bookshelfId),
+    ])
+    if (reloadSequence !== documentReloadSequence || bookshelfId !== selectedBookshelfId.value) {
+      return
+    }
+    documents.value = loadedDocuments
+    skillBookCatalog.value = skillBookBundle.catalog
+    skillBookReadingState.value = skillBookBundle.readingState
+    linuxDoBooks.value = loadedLinuxDoBooks
+    libraryFolders.value = loadedFolders
+    ensureFacingCoverImages(loadedDocuments)
+    scheduleTitleRefresh()
+    syncRuanyfWeeklyCommonSiteUrl(loadedLinuxDoBooks)
+  } catch (error) {
+    if (reloadSequence === documentReloadSequence) {
+      console.warn('Failed to load bookshelf metadata:', error)
+      ElMessage.error('加载馆藏失败')
+    }
+  } finally {
+    if (reloadSequence === documentReloadSequence) {
+      loading.value = false
+    }
+  }
 }
 
 async function handleCreateBookshelf() {
@@ -1465,36 +3408,81 @@ async function handleCreateBookshelf() {
   }
 }
 
-async function handleRenameBookshelf(bookshelf: PdfLibraryBookshelf) {
+function openBookshelfSettings(bookshelf: PdfLibraryBookshelf) {
+  bookshelfSettingsId.value = bookshelf.id
+  bookshelfSettingsName.value = bookshelf.name
+  bookshelfSettingsPageTarget.value = bookshelf.logical_page_target_characters || 1600
+  bookshelfSettingsReadingMode.value = bookshelf.article_reading_mode || 'scroll'
+  bookshelfSettingsVisible.value = true
+}
+
+async function saveBookshelfSettings() {
+  const name = bookshelfSettingsName.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入书柜名称')
+    return
+  }
+  bookshelfSettingsSaving.value = true
   try {
-    const { value } = await ElMessageBox.prompt('修改书柜名称', '重命名书柜', {
-      inputValue: bookshelf.name,
-      confirmButtonText: '保存',
-      cancelButtonText: '取消',
-      inputValidator: (inputValue) => inputValue.trim() ? true : '请输入书柜名称',
+    const updated = await updatePdfBookshelf(bookshelfSettingsId.value, {
+      name,
+      logical_page_target_characters: bookshelfSettingsPageTarget.value,
+      article_reading_mode: bookshelfSettingsReadingMode.value,
     })
-    const updated = await renamePdfBookshelf(bookshelf.id, value.trim())
-    const index = bookshelves.value.findIndex((item) => item.id === bookshelf.id)
+    const index = bookshelves.value.findIndex((item) => item.id === updated.id)
     if (index >= 0) {
       bookshelves.value[index] = updated
       bookshelves.value = [...bookshelves.value]
     }
-    ElMessage.success('书柜已重命名')
+    bookshelfSettingsVisible.value = false
+    ElMessage.success('书柜设置已保存')
   } catch (error) {
-    if (error === 'cancel' || error === 'close') {
-      return
-    }
-    console.warn('Failed to rename PDF bookshelf:', error)
-    ElMessage.error('重命名失败，请检查名称是否重复')
+    console.warn('Failed to update PDF bookshelf:', error)
+    ElMessage.error('保存失败，请检查书柜名称是否重复')
+  } finally {
+    bookshelfSettingsSaving.value = false
   }
 }
 
-function renameContextBookshelf() {
+function openContextBookReadingSettings() {
+  const bookId = linuxDoBookContextMenu.value?.bookId
+  const book = linuxDoBooks.value.find(item => item.id === bookId)
+  closeBookContextMenu()
+  if (!book || !selectedBookshelfIsOwned.value) return
+  bookReadingSettingsBookId.value = book.id
+  bookReadingSettingsTitle.value = book.title
+  bookReadingSettingsMode.value = book.bookshelf_placement.article_reading_mode ?? 'inherit'
+  bookReadingSettingsVisible.value = true
+}
+
+async function saveBookReadingSettings() {
+  const book = linuxDoBooks.value.find(item => item.id === bookReadingSettingsBookId.value)
+  if (!book || !selectedBookshelfIsOwned.value) return
+  bookReadingSettingsSaving.value = true
+  try {
+    book.bookshelf_placement = await updateLinuxDoBookPlacement(book.id, {
+      ...book.bookshelf_placement,
+      article_reading_mode: bookReadingSettingsMode.value === 'inherit'
+        ? null
+        : bookReadingSettingsMode.value,
+    })
+    linuxDoBooks.value = [...linuxDoBooks.value]
+    bookReadingSettingsVisible.value = false
+    ElMessage.success('图书阅读方式已保存')
+  } catch (error) {
+    console.warn('Failed to update book reading mode:', error)
+    ElMessage.error('保存图书阅读方式失败')
+  } finally {
+    bookReadingSettingsSaving.value = false
+  }
+}
+
+function settingsContextBookshelf() {
   const bookshelfId = bookshelfContextMenu.value?.bookshelfId
   closeBookshelfContextMenu()
   const bookshelf = bookshelves.value.find((item) => item.id === bookshelfId)
   if (bookshelf) {
-    void handleRenameBookshelf(bookshelf)
+    openBookshelfSettings(bookshelf)
   }
 }
 
@@ -1606,7 +3594,7 @@ async function leaveContextBookshelf() {
 async function deleteContextBookshelf() {
   const bookshelf = contextBookshelf.value
   closeBookshelfContextMenu()
-  if (!bookshelf || bookshelf.book_count !== 0) {
+  if (!bookshelf || bookshelf.book_count !== 0 || bookshelf.folder_count !== 0) {
     return
   }
   try {
@@ -1677,6 +3665,7 @@ function handleExternalFileDragOver(event: DragEvent) {
     return
   }
   event.preventDefault()
+  growBookshelfNearPointer(event)
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = 'copy'
   }
@@ -1695,23 +3684,21 @@ function handleExternalFileDragLeave() {
   }
 }
 
-async function placeImportedDocuments(
-  importedPdfIds: number[],
+async function placeImportedLibraryItems(
+  importedPlacementKeys: string[],
   target: ExternalPdfDropTarget,
 ) {
-  const importedIdSet = new Set(importedPdfIds)
-  const importedById = new Map<number, PdfDocumentSummary>()
-  const rows = buildBookshelfRows().map((row) => row.filter((document) => {
-    if (!importedIdSet.has(document.id)) {
-      return true
-    }
-    importedById.set(document.id, document)
+  const importedKeySet = new Set(importedPlacementKeys)
+  const importedByKey = new Map<string, BookshelfPlacementItem>()
+  const rows = buildUnifiedLibraryLayoutRows().map((row) => row.filter((item) => {
+    if (!importedKeySet.has(item.key)) return true
+    importedByKey.set(item.key, item)
     return false
   }))
-  const importedDocuments = importedPdfIds
-    .map((pdfId) => importedById.get(pdfId))
-    .filter((document): document is PdfDocumentSummary => Boolean(document))
-  if (!importedDocuments.length) {
+  const importedItems = importedPlacementKeys
+    .map((key) => importedByKey.get(key))
+    .filter((item): item is BookshelfPlacementItem => Boolean(item))
+  if (!importedItems.length) {
     return
   }
 
@@ -1719,16 +3706,27 @@ async function placeImportedDocuments(
     rows.push([])
   }
   const targetRow = rows[target.shelfIndex]
-  const beforeIndex = target.beforePdfId == null
-    ? -1
-    : targetRow.findIndex((document) => document.id === target.beforePdfId)
-  targetRow.splice(beforeIndex >= 0 ? beforeIndex : targetRow.length, 0, ...importedDocuments)
-  const placements = applyBookshelfRows(rows, new Map(), false)
-  await updatePdfBookshelfLayout(placements)
+  const beforeKey = target.beforePdfId == null ? null : `book-${target.beforePdfId}`
+  const beforeIndex = beforeKey == null ? -1 : targetRow.findIndex((item) => item.key === beforeKey)
+  targetRow.splice(beforeIndex >= 0 ? beforeIndex : targetRow.length, 0, ...importedItems)
+  applyUnifiedLibraryLayoutRows(rows)
+  await layoutSaveQueue
 }
 
-async function importPdfFiles(
-  pdfFiles: File[],
+function isPdfImportFile(file: File) {
+  return file.type.toLowerCase() === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
+
+function isElectronicBookImportFile(file: File) {
+  return /\.(?:epub|html?|md|markdown|txt)$/i.test(file.name)
+}
+
+function isLibraryImportFile(file: File) {
+  return isPdfImportFile(file) || isElectronicBookImportFile(file)
+}
+
+async function importBookFiles(
+  bookFiles: File[],
   rejectedCount = 0,
   dropTarget: ExternalPdfDropTarget | null = null,
 ) {
@@ -1741,8 +3739,8 @@ async function importPdfFiles(
     ElMessage.error('请先选择书柜')
     return
   }
-  if (!pdfFiles.length) {
-    ElMessage.warning('请选择 PDF 文件')
+  if (!bookFiles.length) {
+    ElMessage.warning('请选择电子书文件')
     return
   }
 
@@ -1750,38 +3748,44 @@ async function importPdfFiles(
   let uploadedCount = 0
   let placedCount = 0
   let failedCount = rejectedCount
-  const importedPdfIds: number[] = []
+  const importedPlacementKeys: string[] = []
   try {
-    for (const file of pdfFiles) {
+    for (const file of bookFiles) {
       try {
-        const importedDocument = await uploadPdfDocument(file)
-        uploadedCount += 1
-        try {
-          await movePdfToBookshelf(importedDocument.id, bookshelfId)
+        if (isPdfImportFile(file)) {
+          const importedDocument = await uploadPdfDocument(file)
+          try {
+            await movePdfToBookshelf(importedDocument.id, bookshelfId)
+            placedCount += 1
+          } catch (error) {
+            console.warn(`Uploaded PDF but failed to place it: ${file.name}`, error)
+          }
+          const placementKey = `book-${importedDocument.id}`
+          if (!importedPlacementKeys.includes(placementKey)) importedPlacementKeys.push(placementKey)
+        } else {
+          const importedBook = await uploadElectronicBook(file, bookshelfId, dropTarget?.shelfIndex ?? 0)
           placedCount += 1
-        } catch (error) {
-          console.warn(`Uploaded PDF but failed to place it: ${file.name}`, error)
+          const placementKey = `linux-do-book-${importedBook.id}`
+          if (!importedPlacementKeys.includes(placementKey)) importedPlacementKeys.push(placementKey)
         }
-        if (!importedPdfIds.includes(importedDocument.id)) {
-          importedPdfIds.push(importedDocument.id)
-        }
+        uploadedCount += 1
       } catch (error) {
         failedCount += 1
-        console.warn(`Failed to import PDF: ${file.name}`, error)
+        console.warn(`Failed to import electronic book: ${file.name}`, error)
       }
     }
     if (uploadedCount === 0) {
-      ElMessage.error(failedCount > 0 ? 'PDF 均上传失败' : '没有可上传的 PDF')
+      ElMessage.error(failedCount > 0 ? '电子书均导入失败' : '没有可导入的电子书')
       return
     }
     await reloadBookshelves()
-    await reloadDocuments()
-    if (dropTarget && importedPdfIds.length) {
+    await Promise.all([reloadDocuments(), reloadLinuxDoBooks()])
+    if (dropTarget && importedPlacementKeys.length) {
       try {
-        await placeImportedDocuments(importedPdfIds, dropTarget)
+        await placeImportedLibraryItems(importedPlacementKeys, dropTarget)
       } catch (error) {
-        console.warn('Failed to place imported PDFs at drop target:', error)
-        await reloadDocuments({ silent: true })
+        console.warn('Failed to place imported books at drop target:', error)
+        await Promise.all([reloadDocuments({ silent: true }), reloadLinuxDoBooks()])
         ElMessage.error('图书已导入，但保存落点失败')
         return
       }
@@ -1813,14 +3817,12 @@ async function handleExternalFileDrop(event: DragEvent) {
   externalPdfDropTarget.value = null
 
   const droppedFiles = Array.from(event.dataTransfer?.files ?? [])
-  const pdfFiles = droppedFiles.filter((file) => (
-    file.type.toLowerCase() === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-  ))
-  if (!pdfFiles.length) {
-    ElMessage.warning('只能拖入 PDF 文件')
+  const bookFiles = droppedFiles.filter(isLibraryImportFile)
+  if (!bookFiles.length) {
+    ElMessage.warning('支持 PDF、EPUB、HTML、Markdown 和 TXT')
     return
   }
-  await importPdfFiles(pdfFiles, droppedFiles.length - pdfFiles.length, dropTarget)
+  await importBookFiles(bookFiles, droppedFiles.length - bookFiles.length, dropTarget)
 }
 
 async function initializeLibraryPage() {
@@ -1829,18 +3831,19 @@ async function initializeLibraryPage() {
   }
   try {
     await reloadBookshelves()
-    await Promise.all([
-      reloadDocuments(),
-      reloadSkillBookCatalog(),
-    ])
+    await reloadSelectedBookshelfContents()
   } catch (error) {
     console.warn('Failed to initialize PDF library:', error)
     ElMessage.error('加载图书馆失败')
+  } finally {
+    loading.value = false
   }
 }
 
 onMounted(() => {
   restoreViewMode()
+  loadBookshelfWallSites()
+  window.addEventListener('storage', handleCommonSitesStorage)
   window.addEventListener('pointerdown', closeContextMenus)
   window.addEventListener('keydown', handleContextMenuKeydown)
   window.addEventListener('keydown', handlePreviewKeydown, true)
@@ -1858,8 +3861,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', closeContextMenus)
   window.removeEventListener('keydown', handleContextMenuKeydown)
   window.removeEventListener('keydown', handlePreviewKeydown, true)
+  window.removeEventListener('storage', handleCommonSitesStorage)
+  finishWallSitePointerInteraction()
+  finishWallSelection()
   closeBookPreview()
   releaseBookCoverImages()
+  releaseCommonSiteIconUrls()
+  releaseWallSiteEditorLogoPreview()
 })
 </script>
 
@@ -1957,14 +3965,26 @@ onBeforeUnmount(() => {
       @contextmenu.prevent
     >
       <template v-if="contextBookshelf?.is_owned">
-        <button type="button" role="menuitem" @click="renameContextBookshelf">重命名</button>
+        <button type="button" role="menuitem" @click="settingsContextBookshelf">书柜设置</button>
         <button type="button" role="menuitem" @click="shareContextBookshelf">分享</button>
       </template>
-      <button v-else type="button" role="menuitem" @click="leaveContextBookshelf">退出共享</button>
-      <template v-if="contextBookshelf?.is_owned && contextBookshelf.book_count === 0">
+      <button v-if="!contextBookshelf?.is_owned" type="button" role="menuitem" @click="leaveContextBookshelf">退出共享</button>
+      <template v-if="contextBookshelf?.is_owned && contextBookshelf.book_count === 0 && contextBookshelf.folder_count === 0">
         <div class="book-context-menu-separator" role="separator"></div>
         <button class="danger" type="button" role="menuitem" @click="deleteContextBookshelf">删除书柜</button>
       </template>
+    </div>
+
+    <div
+      v-if="shelfContextMenu"
+      class="book-context-menu shelf-context-menu"
+      role="menu"
+      :style="{ left: `${shelfContextMenu.x}px`, top: `${shelfContextMenu.y}px` }"
+      @pointerdown.stop
+      @contextmenu.prevent
+    >
+      <button type="button" role="menuitem" @click="createFolderFromShelfMenu">新建文件夹</button>
+      <button type="button" role="menuitem" @click="openNewWallSiteEditor">新建网站链接</button>
     </div>
 
     <section
@@ -1980,10 +4000,11 @@ onBeforeUnmount(() => {
       </div>
       <div
         v-if="viewMode === 'bookshelf' && selectedBookshelfId"
+        ref="bookshelfScrollRef"
         class="bookshelf-scroll"
-        @scroll="closeBookContextMenu"
+        @scroll="handleBookshelfScroll"
       >
-        <div class="bookshelf-grid">
+        <div class="bookshelf-grid" :style="bookshelfGridStyle">
           <div
             v-for="(row, shelfIndex) in bookshelfDisplayRows"
             :key="shelfIndex"
@@ -1993,23 +4014,46 @@ onBeforeUnmount(() => {
               'drag-target': (dragOverShelfIndex === shelfIndex && dragOverPdfId == null)
                 || (externalFileDragActive && externalPdfDropTarget?.shelfIndex === shelfIndex),
             }"
+            @pointerdown="handleWallSelectionPointerDown($event, shelfIndex)"
+            @contextmenu="handleShelfContextMenu($event, shelfIndex)"
           >
             <div
               v-for="group in row"
               :key="group.key"
               class="book-group"
-              :class="{ 'horizontal-book-stack': group.kind === 'horizontal-stack' }"
+              :class="{
+                'horizontal-book-stack': group.kind === 'horizontal-stack',
+                'insert-before': bookshelfGroupContainsPlacementKey(group, dragOverPlacementKey),
+              }"
+              :data-group-key="group.key"
+              :data-position-index="bookshelfGroupPosition(group)"
             >
+              <button
+                v-if="group.kind === 'folder' && group.folder"
+                type="button"
+                class="library-folder"
+                :data-folder-id="group.folder.id"
+                :style="folderStyle(group.folder)"
+                :title="`${group.folder.name}\n${group.folder.member_count} 个文件`"
+                @click="openFolder(group.folder)"
+                @contextmenu.prevent.stop="openFolderEditor(group.folder)"
+              >
+                <span>{{ group.folder.name }}</span>
+                <small>{{ group.folder.member_count }}</small>
+              </button>
               <button
                 v-if="group.kind === 'skill-book'"
                 type="button"
-                class="book-item orientation-spine-vertical skill-book-item"
-                :class="{ dragging: draggingSkillBook }"
+                class="book-item skill-book-item"
+                :class="[
+                  dynamicBookOrientationClass(skillBookCatalog?.bookshelf_placement.orientation),
+                  { dragging: draggingSkillBook },
+                ]"
                 :style="skillBookSpineStyle"
                 :title="skillBookTooltip()"
                 @pointerdown="handleSkillBookPointerDown"
                 @click="openSkillBookReader"
-                @contextmenu="openSkillBookContextMenu"
+                @contextmenu.prevent.stop="openSkillBookContextMenu"
               >
                 <span
                   v-if="skillBookReadingState?.updated_at"
@@ -2022,18 +4066,63 @@ onBeforeUnmount(() => {
                     <span class="book-spine-title-token is-compact-vertical-token">Skill</span>
                     <span class="book-spine-title-token">手册</span>
                   </span>
-                  <span class="book-spine-author">{{ skillBookCatalog?.author }}</span>
+                  <span class="book-spine-author">
+                    {{ bookAuthorWithYear(skillBookCatalog?.author, skillBookCatalog?.start_date) }}
+                  </span>
+                  <span
+                    v-if="bookStartYear(skillBookCatalog?.start_date)"
+                    class="book-spine-start-year"
+                  >{{ bookStartYear(skillBookCatalog?.start_date) }}</span>
                 </span>
               </button>
               <button
-                v-for="document in group.kind === 'skill-book' ? [] : group.documents"
+                v-if="group.kind === 'linux-do-book' && group.linuxDoBook"
+                type="button"
+                class="book-item skill-book-item linux-do-book-item"
+                :class="[
+                  dynamicBookOrientationClass(group.linuxDoBook.bookshelf_placement.orientation),
+                  { dragging: draggingLinuxDoBookId === group.linuxDoBook.id },
+                ]"
+                :style="linuxDoBookSpineStyle(group.linuxDoBook)"
+                :title="linuxDoBookTooltip(group.linuxDoBook)"
+                @pointerdown="handleLinuxDoBookPointerDown($event, group.linuxDoBook.id)"
+                @click="handleLinuxDoBookClick($event, group.linuxDoBook.id)"
+                @contextmenu.prevent.stop="openLinuxDoBookContextMenu($event, group.linuxDoBook.id)"
+              >
+                <span
+                  v-if="group.linuxDoBook.reading_state?.updated_at"
+                  class="book-progress-bookmark"
+                  aria-hidden="true"
+                ></span>
+                <span class="book-spine">
+                  <span class="book-spine-title">
+                    <span
+                      v-for="(segment, segmentIndex) in verticalTitleSegments(group.linuxDoBook.title.replace(/\s+/g, ''))"
+                      :key="segmentIndex"
+                      class="book-spine-title-token"
+                      :class="{
+                        'is-combined': segment.combined,
+                        'is-compact-vertical-token': isCompactVerticalToken(segment),
+                      }"
+                    >{{ segment.text }}</span>
+                  </span>
+                  <span class="book-spine-author">
+                    {{ bookAuthorWithYear(group.linuxDoBook.author, group.linuxDoBook.start_date) }}
+                  </span>
+                  <span
+                    v-if="bookStartYear(group.linuxDoBook.start_date)"
+                    class="book-spine-start-year"
+                  >{{ bookStartYear(group.linuxDoBook.start_date) }}</span>
+                </span>
+              </button>
+              <button
+                v-for="document in ['skill-book', 'linux-do-book', 'folder'].includes(group.kind) ? [] : group.documents"
                 :key="document.id"
                 class="book-item"
                 :class="[
                   bookOrientationClass(document),
                   {
-                    'insert-before': dragOverPdfId === document.id
-                      || (externalFileDragActive && externalPdfDropTarget?.beforePdfId === document.id),
+                    'insert-before': externalFileDragActive && externalPdfDropTarget?.beforePdfId === document.id,
                     dragging: draggingPdfId === document.id,
                     'has-cover-image': bookCoverImageUrls.has(document.id),
                   },
@@ -2044,7 +4133,7 @@ onBeforeUnmount(() => {
                 :style="bookSpineStyle(document)"
                 :title="bookTooltip(document)"
                 @pointerdown="handleBookPointerDown($event, document.id)"
-                @contextmenu="openBookContextMenu($event, document.id)"
+                @contextmenu.prevent.stop="openBookContextMenu($event, document.id)"
                 @click="handleBookClick($event, document)"
               >
                 <span
@@ -2067,12 +4156,87 @@ onBeforeUnmount(() => {
                   <span v-if="bookSpineQualifier(document)" class="book-spine-qualifier">
                     {{ bookSpineQualifier(document) }}
                   </span>
-                  <span v-if="document.display_author" class="book-spine-author">
-                    {{ document.display_author }}
+                  <span
+                    v-if="bookAuthorWithYear(document.display_author, document.start_date)"
+                    class="book-spine-author"
+                  >
+                    {{ bookAuthorWithYear(document.display_author, document.start_date) }}
                   </span>
+                  <span
+                    v-if="bookStartYear(document.start_date)"
+                    class="book-spine-start-year"
+                  >{{ bookStartYear(document.start_date) }}</span>
                 </span>
               </button>
             </div>
+            <span
+              v-if="dragOverShelfIndex === shelfIndex
+                && dragOverPlacementKey == null
+                && (draggingPdfId != null || draggingLinuxDoBookId != null || draggingSkillBook)"
+              class="book-drop-end-marker"
+              aria-hidden="true"
+            ></span>
+            <nav
+              v-if="selectedBookshelfIsOwned && wallSitesForShelf(shelfIndex).length"
+              class="bookshelf-wall-sites"
+              aria-label="常用网站"
+              :data-wall-shelf-index="shelfIndex"
+              @contextmenu.stop
+            >
+              <span
+                v-if="wallSiteMarqueeStyle(shelfIndex)"
+                class="wall-site-selection-marquee"
+                :style="wallSiteMarqueeStyle(shelfIndex)"
+                aria-hidden="true"
+              ></span>
+              <a
+                v-for="site in wallSitesForShelf(shelfIndex)"
+                :key="site.id"
+                class="bookshelf-wall-site"
+                :class="{
+                  dragging: draggingWallSiteId === site.id,
+                  selected: selectedWallSiteIds.includes(site.id),
+                }"
+                :href="site.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="site.description?.trim() || undefined"
+                :data-wall-site-id="site.id"
+                :style="wallSiteStyle(site)"
+                draggable="false"
+                @dragstart.prevent
+                @pointerdown="handleWallSitePointerDown($event, site.id)"
+                @click="handleWallSiteClick($event, site.id)"
+                @contextmenu="openWallSiteEditor($event, site)"
+              >
+                <span class="bookshelf-wall-site-icon">
+                  <img
+                    v-if="commonSiteIconUrl(site)"
+                    :src="commonSiteIconUrl(site)"
+                    alt=""
+                    draggable="false"
+                    loading="lazy"
+                    @dragstart.prevent
+                    @error="handleCommonSiteIconError(site)"
+                  />
+                  <span v-else>{{ commonSiteFallbackLabel(site) }}</span>
+                </span>
+                <span v-if="site.title.trim()" class="bookshelf-wall-site-title">{{ site.title }}</span>
+              </a>
+              <div
+                v-if="selectedWallSitesForShelf(shelfIndex).length >= 2"
+                class="wall-site-selection-toolbar"
+                :style="wallSiteSelectionToolbarStyle(shelfIndex)"
+                role="toolbar"
+                aria-label="Logo 排版"
+              >
+                <button
+                  type="button"
+                  title="自动对齐并等距排列"
+                  @click.stop="standardizeSelectedWallSites(shelfIndex)"
+                >整理</button>
+              </div>
+            </nav>
           </div>
         </div>
       </div>
@@ -2090,19 +4254,31 @@ onBeforeUnmount(() => {
             </tr>
           </thead>
           <tbody>
+            <tr v-for="book in filteredLinuxDoBooks" :key="book.id" class="pdf-row skill-book-table-row">
+              <td class="pdf-name-cell">
+                <button class="pdf-title-button skill-book-title-button" type="button" @click="openLinuxDoBookReader(book.id)">
+                  <span class="pdf-title">{{ book.title }}</span>
+                </button>
+              </td>
+              <td class="pdf-role">{{ selectedBookshelfIsOwned ? '可管理' : '只读' }}</td>
+              <td class="pdf-current-page">-</td>
+              <td class="pdf-size">-</td>
+              <td class="pdf-updated">{{ formatDateTime(book.updated_at) }}</td>
+              <td class="pdf-spacer-cell" aria-hidden="true"></td>
+            </tr>
             <tr v-if="showLocalSkillBook && skillBookCatalog" class="pdf-row skill-book-table-row">
               <td class="pdf-name-cell">
                 <button class="pdf-title-button skill-book-title-button" type="button" @click="openSkillBookReader">
                   <span class="pdf-title">{{ skillBookCatalog.title }}</span>
                 </button>
               </td>
-              <td class="pdf-role">本机动态</td>
+              <td class="pdf-role">{{ accessRoleLabel(skillBookCatalog.access_role) }}</td>
               <td class="pdf-current-page">
                 {{ skillBookReadingState?.updated_at
-                  ? `第 ${skillBookReadingState.current_page} / ${skillBookCatalog.estimated_page_count} 页`
+                  ? `第 ${skillBookReadingState.current_page} 页`
                   : '-' }}
               </td>
-              <td class="pdf-size">{{ skillBookCatalog.chapter_count }} 篇</td>
+              <td class="pdf-size">-</td>
               <td class="pdf-updated">{{ formatDateTime(skillBookCatalog.updated_at) }}</td>
               <td class="pdf-spacer-cell" aria-hidden="true"></td>
             </tr>
@@ -2119,7 +4295,6 @@ onBeforeUnmount(() => {
                   rel="noopener noreferrer"
                   :title="document.source_absolute_path || document.title"
                 >
-                  <span class="pdf-subtitle">#{{ document.id }}</span>
                   <span class="pdf-title">{{ document.display_title }}</span>
                 </a>
               </td>
@@ -2148,6 +4323,34 @@ onBeforeUnmount(() => {
         @contextmenu.prevent
       >
         <button type="button" role="menuitem" @click="openSkillBookMetadataEditor">编辑元数据</button>
+        <button type="button" role="menuitem" @click="rotateContextSkillBook">旋转</button>
+        <div class="book-context-menu-separator" role="separator"></div>
+        <button class="danger" type="button" role="menuitem" @click="deleteContextSkillBook">删除图书</button>
+      </div>
+
+      <div
+        v-if="linuxDoBookContextMenu"
+        class="book-context-menu"
+        role="menu"
+        :style="{ left: `${linuxDoBookContextMenu.x}px`, top: `${linuxDoBookContextMenu.y}px` }"
+        @pointerdown.stop
+        @contextmenu.prevent
+      >
+        <button type="button" role="menuitem" @click="openLinuxDoBookMetadataEditor">编辑元数据</button>
+        <button
+          v-if="selectedBookshelfIsOwned"
+          type="button"
+          role="menuitem"
+          @click="openContextBookReadingSettings"
+        >阅读方式</button>
+        <button
+          v-if="selectedBookshelfIsOwned"
+          type="button"
+          role="menuitem"
+          @click="rotateContextLinuxDoBook"
+        >旋转</button>
+        <div class="book-context-menu-separator" role="separator"></div>
+        <button class="danger" type="button" role="menuitem" @click="deleteContextLinuxDoBook">删除图书</button>
       </div>
 
       <div
@@ -2159,14 +4362,60 @@ onBeforeUnmount(() => {
         @contextmenu.prevent
       >
         <button
+          v-if="!selectedBookshelfIsOwned"
+          type="button"
+          role="menuitem"
+          @click="openCopyBookDialog"
+        >复制到我的书柜</button>
+        <button
           v-if="documents.find((document) => document.id === bookContextMenu?.pdfId && canEditBookMetadata(document))"
           type="button"
           role="menuitem"
           @click="openMetadataEditorFromContext"
         >编辑元数据</button>
-        <button type="button" role="menuitem" @click="rotateContextBook">旋转</button>
+        <button v-if="selectedBookshelfIsOwned" type="button" role="menuitem" @click="rotateContextBook">旋转</button>
+        <template v-if="documents.find((document) => document.id === bookContextMenu?.pdfId && canDeleteBook(document))">
+          <div class="book-context-menu-separator" role="separator"></div>
+          <button class="danger" type="button" role="menuitem" @click="deleteContextBook">删除图书</button>
+        </template>
       </div>
     </section>
+
+    <el-dialog
+      v-model="deleteBookDialogVisible"
+      title="删除图书"
+      width="min(520px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+      :close-on-click-modal="!deleteBookDialogSaving"
+      :close-on-press-escape="!deleteBookDialogSaving"
+    >
+      <div v-if="deleteBookDialogDocument" class="delete-book-dialog-content">
+        <div class="delete-book-dialog-title">《{{ deleteBookDialogDocument.display_title }}》</div>
+        <div class="delete-book-dialog-option">
+          <strong>删除引用</strong>
+          <span>只从书柜“{{ deleteBookDialogBookshelfName }}”移除这本书；图书原文件、原拥有者的数据和笔记均保留。</span>
+        </div>
+        <div
+          class="delete-book-dialog-option"
+          :class="{ disabled: !canDeleteBookOriginalFile }"
+        >
+          <strong>删除原文件</strong>
+          <span v-if="canDeleteBookOriginalFile">永久删除图书资源，同时删除所有书柜引用、阅读进度、笔记和分享权限。</span>
+          <span v-else>当前账号不是图书资源所有者，无权删除原文件。</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button :disabled="deleteBookDialogSaving" @click="deleteBookDialogVisible = false">取消</el-button>
+        <el-button :loading="deleteBookDialogSaving" @click="deleteBookReference">删除引用</el-button>
+        <el-button
+          type="danger"
+          :loading="deleteBookDialogSaving"
+          :disabled="!canDeleteBookOriginalFile"
+          @click="deleteBookOriginalFile"
+        >删除原文件</el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="bookshelfShareVisible"
@@ -2212,10 +4461,57 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      v-model="wallSiteEditorVisible"
+      :title="wallSiteEditorId ? '编辑网站链接' : '新建网站链接'"
+      width="min(460px, calc(100vw - 32px))"
+      append-to-body
+      @closed="releaseWallSiteEditorLogoPreview"
+    >
+      <el-form label-width="88px" @submit.prevent>
+        <el-form-item label="Logo">
+          <span class="wall-site-editor-logo-preview">
+            <img
+              v-if="wallSiteEditorLogoPreviewUrl"
+              :src="wallSiteEditorLogoPreviewUrl"
+              alt=""
+            />
+            <span v-else>站</span>
+          </span>
+          <el-button text :loading="wallSiteLogoRefreshing" @click="refreshWallSiteLogo">
+            重新获取
+          </el-button>
+        </el-form-item>
+        <el-form-item label="标题">
+          <el-input v-model="wallSiteEditorTitle" placeholder="可留空" />
+        </el-form-item>
+        <el-form-item label="链接">
+          <el-input v-model="wallSiteEditorUrl" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="wallSiteEditorDescription" />
+        </el-form-item>
+        <el-form-item label="Logo 大小">
+          <el-slider
+            v-model="wallSiteEditorLogoSize"
+            :min="24"
+            :max="96"
+            :step="2"
+            show-input
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="wallSiteEditorVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveWallSiteEditor">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="metadataEditorVisible"
       title="编辑图书元数据"
-      width="min(480px, calc(100vw - 32px))"
+      width="min(560px, calc(100vw - 32px))"
       append-to-body
+      align-center
       destroy-on-close
     >
       <form class="metadata-editor-form" @submit.prevent="saveMetadataEditor">
@@ -2237,6 +4533,57 @@ onBeforeUnmount(() => {
             autocomplete="off"
           />
         </div>
+        <div class="metadata-editor-field">
+          <label for="pdf-metadata-start-date">起始时间</label>
+          <el-input
+            id="pdf-metadata-start-date"
+            v-model="metadataEditorStartDate"
+            maxlength="10"
+            placeholder="YYYY / YYYY-MM / YYYY-MM-DD"
+            autocomplete="off"
+          />
+        </div>
+        <div class="metadata-editor-field">
+          <label>副标题</label>
+          <el-input v-model="metadataEditorSubtitle" maxlength="120" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>译者</label>
+          <el-input v-model="metadataEditorTranslator" maxlength="60" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>版本</label>
+          <el-input v-model="metadataEditorEdition" maxlength="60" placeholder="例如：第 3 版" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>卷册</label>
+          <el-input v-model="metadataEditorVolume" maxlength="60" placeholder="例如：上册" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>显示文件名</label>
+          <el-input v-model="metadataEditorSourceName" maxlength="512" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>原始导入名</label>
+          <el-input
+            :model-value="metadataEditorImportedFilename"
+            disabled
+            title="仅用于追溯导入来源"
+          />
+        </div>
+        <div class="metadata-editor-field">
+          <label>标签</label>
+          <el-input v-model="metadataEditorTags" placeholder="使用逗号分隔" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>简介</label>
+          <el-input v-model="metadataEditorDescription" type="textarea" :rows="2" maxlength="4000" />
+        </div>
+        <div class="metadata-editor-field metadata-appearance-field">
+          <label>书脊颜色</label>
+          <el-color-picker v-model="metadataEditorCoverColor" />
+          <el-button text @click="metadataEditorCoverColor = ''">自动取色</el-button>
+        </div>
       </form>
       <template #footer>
         <el-button @click="metadataEditorVisible = false">取消</el-button>
@@ -2246,9 +4593,54 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
+    <el-dialog v-model="copyBookVisible" title="复制到我的书柜" width="min(420px, calc(100vw - 32px))" append-to-body>
+      <div class="metadata-editor-form">
+        <div class="metadata-editor-field">
+          <label>目标书柜</label>
+          <el-select v-model="copyTargetBookshelfId">
+            <el-option v-for="bookshelf in ownedBookshelves" :key="bookshelf.id" :label="bookshelf.name" :value="bookshelf.id" />
+          </el-select>
+        </div>
+        <el-checkbox v-model="copyIncludeNotes">同时复制原书主人的笔记快照</el-checkbox>
+        <small>复制后成为你的独立藏书；原分享撤销不影响阅读，笔记也不会继续同步。</small>
+      </div>
+      <template #footer>
+        <el-button @click="copyBookVisible = false">取消</el-button>
+        <el-button type="primary" :loading="copyBookSaving" @click="saveCopyBook">复制</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="folderContentsVisible" :title="openedFolder?.name ?? '资料夹'" width="min(620px, calc(100vw - 32px))" append-to-body>
+      <div v-if="openedFolderDocuments.length || skillBookCatalog?.bookshelf_placement.folder_id === openedFolder?.id" class="folder-content-list">
+        <div v-if="skillBookCatalog?.bookshelf_placement.folder_id === openedFolder?.id" class="folder-content-item">
+          <button type="button" @click="openSkillBookReader">{{ skillBookCatalog.title }}</button>
+          <el-button v-if="selectedBookshelfIsOwned" text @click="takeSkillBookOutOfFolder">取出到当前书层</el-button>
+        </div>
+        <div v-for="document in openedFolderDocuments" :key="document.id" class="folder-content-item">
+          <button type="button" @click="handleBookClick($event, document)">{{ document.display_title }}</button>
+          <el-button v-if="selectedBookshelfIsOwned" text @click="takeBookOutOfFolder(document)">取出到当前书层</el-button>
+        </div>
+      </div>
+      <el-empty v-else description="空资料夹" />
+      <template #footer>
+        <el-button v-if="selectedBookshelfIsOwned && openedFolder?.member_count === 0" type="danger" plain @click="removeOpenedFolder">删除空资料夹</el-button>
+        <el-button @click="folderContentsVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="folderEditorVisible" title="资料夹设置" width="min(440px, calc(100vw - 32px))" append-to-body>
+      <div class="metadata-editor-form">
+        <div class="metadata-editor-field"><label>名称</label><el-input v-model="folderEditorName" /></div>
+        <div class="metadata-editor-field metadata-appearance-field"><label>颜色</label><el-color-picker v-model="folderEditorColor" /><el-button text @click="folderEditorColor = ''">恢复默认</el-button></div>
+        <div class="metadata-editor-field"><label>最小厚度（毫米）</label><el-input-number v-model="folderEditorMinThickness" :min="0.1" :max="200" :step="0.1" /></div>
+        <div class="metadata-editor-field"><label>固定厚度（毫米）</label><el-input-number v-model="folderEditorFixedThickness" :min="0.1" :max="200" :step="0.1" /><el-button text @click="folderEditorFixedThickness = undefined">按内容自动</el-button></div>
+      </div>
+      <template #footer><el-button @click="folderEditorVisible = false">取消</el-button><el-button type="primary" :loading="folderEditorSaving" @click="saveFolderEditor">保存</el-button></template>
+    </el-dialog>
+
     <el-dialog
       v-model="previewVisible"
-      class="book-preview-dialog"
+      :class="['book-preview-dialog', 'library-reader-theme-dialog', libraryReaderThemeClass]"
       width="min(920px, calc(100vw - 32px))"
       :style="previewDialogStyle"
       append-to-body
@@ -2258,8 +4650,11 @@ onBeforeUnmount(() => {
     >
       <template #header>
         <div class="book-preview-heading">
-          <strong>{{ previewDocument?.display_title }}</strong>
-          <span>快速预览</span>
+          <div class="book-preview-title">
+            <strong>{{ previewDocument?.display_title }}</strong>
+            <span>快速预览</span>
+          </div>
+          <ReaderThemeControl class="book-preview-theme" />
         </div>
       </template>
 
@@ -2310,6 +4705,70 @@ onBeforeUnmount(() => {
     </el-dialog>
 
     <el-dialog
+      v-model="bookshelfSettingsVisible"
+      title="书柜设置"
+      width="min(420px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+    >
+      <form class="metadata-editor-form" @submit.prevent="saveBookshelfSettings">
+        <div class="metadata-editor-field">
+          <label for="bookshelf-settings-name">名称</label>
+          <el-input id="bookshelf-settings-name" v-model="bookshelfSettingsName" maxlength="80" />
+        </div>
+        <div class="metadata-editor-field">
+          <label>默认阅读方式</label>
+          <el-radio-group v-model="bookshelfSettingsReadingMode">
+            <el-radio-button value="scroll">连续滚动</el-radio-button>
+            <el-radio-button value="paginated">翻页</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div v-if="bookshelfSettingsReadingMode === 'paginated'" class="metadata-editor-field">
+          <label for="bookshelf-page-target">每页目标字数</label>
+          <el-input-number
+            id="bookshelf-page-target"
+            v-model="bookshelfSettingsPageTarget"
+            :min="500"
+            :max="5000"
+            :step="100"
+            controls-position="right"
+          />
+        </div>
+      </form>
+      <template #footer>
+        <el-button @click="bookshelfSettingsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bookshelfSettingsSaving" @click="saveBookshelfSettings">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="bookReadingSettingsVisible"
+      :title="`阅读方式 · ${bookReadingSettingsTitle}`"
+      width="min(440px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+    >
+      <form class="metadata-editor-form" @submit.prevent="saveBookReadingSettings">
+        <div class="metadata-editor-field">
+          <label>阅读方式</label>
+          <el-radio-group v-model="bookReadingSettingsMode">
+            <el-radio-button value="inherit">跟随书柜</el-radio-button>
+            <el-radio-button value="scroll">连续滚动</el-radio-button>
+            <el-radio-button value="paginated">翻页</el-radio-button>
+          </el-radio-group>
+        </div>
+      </form>
+      <template #footer>
+        <el-button @click="bookReadingSettingsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bookReadingSettingsSaving" @click="saveBookReadingSettings">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="skillBookMetadataVisible"
       title="编辑动态书本元数据"
       width="min(440px, calc(100vw - 32px))"
@@ -2328,10 +4787,58 @@ onBeforeUnmount(() => {
             />
           </el-select>
         </div>
+        <div class="metadata-editor-field">
+          <label for="skill-book-start-date">起始时间</label>
+          <el-input
+            id="skill-book-start-date"
+            v-model="skillBookStartDate"
+            maxlength="10"
+            placeholder="YYYY / YYYY-MM / YYYY-MM-DD"
+          />
+        </div>
       </form>
       <template #footer>
         <el-button @click="skillBookMetadataVisible = false">取消</el-button>
         <el-button type="primary" :loading="skillBookMetadataSaving" @click="saveSkillBookMetadata">
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="linuxDoBookMetadataVisible"
+      title="编辑动态书本元数据"
+      width="min(440px, calc(100vw - 32px))"
+      append-to-body
+      destroy-on-close
+    >
+      <form class="metadata-editor-form" @submit.prevent="saveLinuxDoBookMetadata">
+        <div class="metadata-editor-field">
+          <label for="dynamic-book-title">书名</label>
+          <el-input id="dynamic-book-title" v-model="linuxDoBookMetadataTitle" maxlength="240" />
+        </div>
+        <div class="metadata-editor-field">
+          <label for="dynamic-book-author">作者</label>
+          <el-input id="dynamic-book-author" v-model="linuxDoBookMetadataAuthor" maxlength="160" />
+        </div>
+        <div class="metadata-editor-field">
+          <label for="dynamic-book-start-date">起始时间</label>
+          <el-input
+            id="dynamic-book-start-date"
+            v-model="linuxDoBookMetadataStartDate"
+            maxlength="10"
+            placeholder="YYYY / YYYY-MM / YYYY-MM-DD"
+          />
+        </div>
+        <div class="metadata-editor-field metadata-appearance-field">
+          <label>书脊颜色</label>
+          <el-color-picker v-model="linuxDoBookMetadataCoverColor" />
+          <el-button text @click="linuxDoBookMetadataCoverColor = '#294f6d'">恢复默认</el-button>
+        </div>
+      </form>
+      <template #footer>
+        <el-button @click="linuxDoBookMetadataVisible = false">取消</el-button>
+        <el-button type="primary" :loading="linuxDoBookMetadataSaving" @click="saveLinuxDoBookMetadata">
           保存
         </el-button>
       </template>
@@ -2343,26 +4850,71 @@ onBeforeUnmount(() => {
       @catalog-updated="handleSkillBookCatalogUpdated"
       @reading-state-updated="handleSkillBookReadingStateUpdated"
     />
+    <LinuxDoBookReaderDialog
+      v-model="linuxDoBookReaderVisible"
+      :book-id="selectedLinuxDoBookId"
+      :logical-page-target-characters="selectedBookshelf?.logical_page_target_characters ?? 1600"
+      :reading-mode="selectedReaderMode"
+      @reading-state-updated="handleLinuxDoBookReadingStateUpdated"
+    />
   </div>
 </template>
 
 <style scoped>
 .metadata-editor-form {
   display: grid;
-  gap: 14px;
+  gap: 10px;
 }
 
 .metadata-editor-field {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .metadata-editor-field label {
   color: #4b5563;
+  line-height: 32px;
   text-align: right;
   white-space: nowrap;
+}
+
+.metadata-editor-field > small {
+  grid-column: 2 / -1;
+  margin-top: -5px;
+  color: #8a94a3;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.metadata-editor-field > :deep(.el-input),
+.metadata-editor-field > :deep(.el-select),
+.metadata-editor-field > :deep(.el-textarea) {
+  min-width: 0;
+  width: 100%;
+}
+
+.metadata-appearance-field {
+  grid-template-columns: 112px max-content minmax(0, 1fr);
+}
+
+.metadata-appearance-field > :deep(.el-button) {
+  justify-self: start;
+  margin-left: 0;
+  padding-right: 4px;
+  padding-left: 4px;
+}
+
+@media (max-width: 520px) {
+  .metadata-editor-field {
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+
+  .metadata-appearance-field {
+    grid-template-columns: 96px max-content minmax(0, 1fr);
+  }
 }
 
 .pdf-library-page {
@@ -2595,7 +5147,7 @@ onBeforeUnmount(() => {
   grid-auto-rows: auto;
   row-gap: 0;
   width: max-content;
-  min-width: 100%;
+  min-width: max(100%, var(--bookshelf-canvas-min-width, 0px));
   min-height: 100%;
   padding: 0 24px 12px;
   background: #e9e4dc;
@@ -2612,6 +5164,191 @@ onBeforeUnmount(() => {
   min-height: 220px;
   padding: 24px 0 12px;
   transition: background-color 120ms ease;
+}
+
+.bookshelf-wall-sites {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  inset: 16px 0 20px;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 4px 18px 0 48px;
+  pointer-events: none;
+}
+
+.bookshelf-wall-site {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  width: max(58px, calc(var(--wall-site-logo-size) + 12px));
+  color: #394353;
+  text-decoration: none;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  pointer-events: auto;
+}
+
+.bookshelf-wall-site.dragging {
+  z-index: 4;
+  cursor: grabbing;
+  pointer-events: none;
+}
+
+.bookshelf-wall-site.selected .bookshelf-wall-site-icon {
+  border-color: #2f6fd6;
+  outline: 2px solid rgb(47 111 214 / 30%);
+  outline-offset: 2px;
+}
+
+.wall-site-selection-marquee {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  border: 1px dashed #2f6fd6;
+  background: rgb(47 111 214 / 8%);
+  pointer-events: none;
+}
+
+.wall-site-selection-toolbar {
+  position: absolute;
+  z-index: 6;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+
+.wall-site-selection-toolbar button {
+  min-width: 44px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #b9c7db;
+  border-radius: 4px;
+  background: #fff;
+  color: #2d405d;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wall-site-selection-toolbar button:hover,
+.wall-site-selection-toolbar button:focus-visible {
+  border-color: #2f6fd6;
+  color: #2368d1;
+}
+
+.bookshelf-wall-site-icon {
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  width: var(--wall-site-logo-size);
+  height: var(--wall-site-logo-size);
+  overflow: hidden;
+  border: 1px solid rgb(74 64 53 / 24%);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 72%);
+  color: #42536a;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.bookshelf-wall-site-icon img {
+  width: 70%;
+  height: 70%;
+  object-fit: contain;
+}
+
+.bookshelf-wall-site-title {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookshelf-wall-site:hover .bookshelf-wall-site-icon,
+.bookshelf-wall-site:focus-visible .bookshelf-wall-site-icon {
+  border-color: #2f6fd6;
+}
+
+.bookshelf-wall-site:focus-visible {
+  border-radius: 5px;
+  outline: 2px solid rgb(47 111 214 / 32%);
+  outline-offset: 3px;
+}
+
+.wall-site-editor-logo-preview {
+  box-sizing: border-box;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-right: 8px;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.wall-site-editor-logo-preview img {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+}
+
+.library-folder {
+  width: var(--folder-width);
+  min-width: 28px;
+  height: 224px;
+  align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 4px;
+  border: 1px solid color-mix(in srgb, var(--folder-color), #000 18%);
+  border-bottom: 5px solid color-mix(in srgb, var(--folder-color), #000 22%);
+  border-radius: 4px 4px 1px 1px;
+  background: var(--folder-color);
+  color: #fff;
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  overflow: hidden;
+}
+
+.library-folder small {
+  opacity: .72;
+  font-size: 10px;
+}
+
+.folder-content-list {
+  display: grid;
+  gap: 8px;
+}
+
+.folder-content-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 40px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.folder-content-item > button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--el-text-color-primary);
+  text-align: left;
+  cursor: pointer;
 }
 
 .bookshelf-row::after {
@@ -2631,10 +5368,34 @@ onBeforeUnmount(() => {
 }
 
 .book-group {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
   align-items: flex-end;
   height: auto;
+}
+
+.book-group.insert-before::before {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 3px;
+  border-radius: 2px;
+  background: #2f6fd6;
+  content: '';
+  pointer-events: none;
+}
+
+.book-drop-end-marker {
+  z-index: 30;
+  align-self: flex-end;
+  width: 3px;
+  height: 88px;
+  border-radius: 2px;
+  background: #2f6fd6;
+  pointer-events: none;
 }
 
 .book-group.horizontal-book-stack {
@@ -2654,6 +5415,7 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   width: var(--book-item-width, var(--spine-width));
   height: var(--spine-height);
   color: inherit;
@@ -2706,10 +5468,12 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  width: 100%;
+  justify-content: var(--book-spine-justify-content, center);
+  gap: var(--book-spine-column-gap, 2px);
+  width: var(--spine-width);
   height: var(--spine-height);
-  padding: 10px 5px 8px;
-  border: 1px solid rgb(26 31 37 / 15%);
+  padding: 10px var(--book-spine-inline-padding, 5px) 8px;
+  border: var(--book-physical-border-width, 1px) solid rgb(26 31 37 / 15%);
   border-radius: 3px 3px 1px 1px;
   background: var(--book-cover-color, var(--book-fallback-color, #3d6383));
   color: var(--book-cover-ink, #fff);
@@ -2787,19 +5551,22 @@ onBeforeUnmount(() => {
   display: var(--book-title-display, block);
   flex: none;
   max-height: 100%;
-  color: color-mix(in srgb, var(--book-cover-ink, #fff) 92%, transparent);
+  color: var(--book-cover-ink, #fff);
   font-size: var(--spine-font-size, 12px);
   font-weight: 700;
-  line-height: 1.35;
+  line-height: var(--book-spine-title-line-height, 1.35);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   writing-mode: vertical-lr;
   text-orientation: upright;
+  transform: scaleX(var(--book-spine-title-scale-x, 1));
+  transform-origin: center;
 }
 
 .book-item.orientation-spine-vertical .book-spine-title {
   text-overflow: clip;
+  transform: translateX(-0.13em) scaleX(var(--book-spine-title-scale-x, 1));
 }
 
 .book-spine-title-token.is-combined {
@@ -2814,12 +5581,13 @@ onBeforeUnmount(() => {
 .book-spine-qualifier {
   position: relative;
   z-index: 3;
+  display: var(--book-qualifier-display, block);
   flex: none;
-  margin-left: 3px;
-  color: color-mix(in srgb, var(--book-cover-ink, #fff) 82%, transparent);
+  margin: 0;
+  color: var(--book-cover-ink, #fff);
   font-size: var(--book-qualifier-font-size, 11px);
   font-weight: 600;
-  line-height: 1.2;
+  line-height: var(--book-qualifier-line-height, 1.2);
   white-space: nowrap;
   writing-mode: vertical-lr;
   text-orientation: upright;
@@ -2830,13 +5598,18 @@ onBeforeUnmount(() => {
   z-index: 3;
   display: var(--book-author-display, none);
   flex: none;
-  margin-left: 2px;
-  color: color-mix(in srgb, var(--book-cover-ink, #fff) 78%, transparent);
+  margin: 0;
+  color: var(--book-cover-ink, #fff);
   font-size: var(--book-author-font-size, 11px);
   font-weight: 500;
-  line-height: 1.2;
+  line-height: var(--book-author-line-height, 1.2);
   writing-mode: vertical-lr;
   text-orientation: upright;
+}
+
+.book-item.orientation-spine-vertical .book-spine-qualifier,
+.book-item.orientation-spine-vertical .book-spine-author {
+  transform: translateX(-0.13em);
 }
 
 .book-item.orientation-spine-horizontal .book-spine {
@@ -2845,7 +5618,7 @@ onBeforeUnmount(() => {
   gap: 3px;
   width: var(--spine-height);
   height: var(--spine-width);
-  padding: 7px 12px;
+  padding: var(--book-spine-block-padding, 7px) 12px;
   border-radius: 3px 2px 2px 3px;
 }
 
@@ -2885,7 +5658,6 @@ onBeforeUnmount(() => {
   background-image: var(--book-cover-image, none);
   background-position: center;
   background-size: cover;
-  clip-path: polygon(3% 0, 97% 0, 100% 100%, 0 100%);
   transform: none;
 }
 
@@ -2898,7 +5670,7 @@ onBeforeUnmount(() => {
 .book-item.orientation-cover-front .book-spine-title {
   width: 100%;
   max-height: 100%;
-  color: color-mix(in srgb, var(--book-cover-ink, #fff) 94%, transparent);
+  color: var(--book-cover-ink, #fff);
   font-size: var(--cover-font-size, 18px);
   line-height: 1.45;
   overflow: hidden;
@@ -2929,6 +5701,10 @@ onBeforeUnmount(() => {
 
 .bookshelf-context-menu {
   width: 128px;
+}
+
+.shelf-context-menu {
+  width: 152px;
 }
 
 .book-context-menu-separator {
@@ -2965,6 +5741,35 @@ onBeforeUnmount(() => {
 .book-context-menu button.danger:focus-visible {
   background: #fff1f0;
   color: #b42318;
+}
+
+.delete-book-dialog-content {
+  display: grid;
+  gap: 14px;
+}
+
+.delete-book-dialog-title {
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.delete-book-dialog-option {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.delete-book-dialog-option strong {
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.delete-book-dialog-option.disabled,
+.delete-book-dialog-option.disabled strong {
+  color: #a8abb2;
 }
 
 .tone-0 { --book-fallback-color: #315c78; }
@@ -3050,14 +5855,6 @@ onBeforeUnmount(() => {
   color: #2368d1;
 }
 
-.pdf-subtitle {
-  flex: 0 0 auto;
-  min-width: 24px;
-  color: #8a96a8;
-  font-size: 12px;
-  line-height: 22px;
-}
-
 .pdf-role,
 .pdf-current-page,
 .pdf-size,
@@ -3085,14 +5882,43 @@ onBeforeUnmount(() => {
 
 :global(.book-preview-dialog) {
   margin: max(16px, 2vh) auto;
+  background: var(--preview-surface);
   border-radius: 10px;
+  color: var(--preview-text);
   overflow: hidden;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.book-spine-start-year {
+  position: absolute;
+  z-index: 4;
+  bottom: 5px;
+  left: 50%;
+  display: var(--book-start-year-display, none);
+  padding: 2px 0;
+  border-radius: 2px;
+  background: var(--book-cover-color, var(--book-fallback-color, #3d6383));
+  color: var(--book-cover-ink, #fff);
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.08em;
+  writing-mode: vertical-lr;
+  text-orientation: upright;
+  transform: translateX(-50%);
+}
+
+.book-item.orientation-spine-horizontal .book-spine-start-year,
+.book-item.orientation-cover-front .book-spine-start-year {
+  padding: 2px 4px;
+  letter-spacing: 0;
+  writing-mode: horizontal-tb;
 }
 
 :global(.book-preview-dialog .el-dialog__header) {
   margin: 0;
   padding: 14px 18px;
-  border-bottom: 1px solid #e5e9ef;
+  border-bottom: 1px solid var(--preview-border);
 }
 
 :global(.book-preview-dialog .el-dialog__body) {
@@ -3101,28 +5927,40 @@ onBeforeUnmount(() => {
 
 :global(.book-preview-dialog .el-dialog__footer) {
   padding: 12px 18px;
-  border-top: 1px solid #e5e9ef;
+  border-top: 1px solid var(--preview-border);
+}
+
+:global(.book-preview-dialog .el-dialog__close) {
+  color: var(--preview-muted);
 }
 
 .book-preview-heading {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   min-width: 0;
   padding-right: 32px;
 }
 
-.book-preview-heading strong {
+.book-preview-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.book-preview-title strong {
   overflow: hidden;
-  color: #172033;
+  color: var(--preview-text);
   font-size: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.book-preview-heading span {
+.book-preview-title span {
   flex: 0 0 auto;
-  color: #8a96a8;
+  color: var(--preview-muted);
   font-size: 12px;
 }
 
@@ -3136,8 +5974,9 @@ onBeforeUnmount(() => {
   max-height: calc(100dvh - 180px);
   aspect-ratio: var(--preview-page-aspect-ratio, 612 / 792);
   padding: 18px;
-  background: #eef1f4;
+  background: var(--preview-stage);
   overflow: hidden;
+  transition: background-color 180ms ease;
 }
 
 .book-preview-image {
@@ -3147,14 +5986,16 @@ onBeforeUnmount(() => {
   max-width: 100%;
   max-height: 100%;
   background: #fff;
+  filter: var(--preview-page-filter);
   object-fit: contain;
+  transition: filter 180ms ease;
 }
 
 .book-preview-status {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: #657286;
+  color: var(--preview-muted);
   font-size: 14px;
 }
 
@@ -3179,7 +6020,7 @@ onBeforeUnmount(() => {
 
 .book-preview-pager span {
   min-width: 96px;
-  color: #526071;
+  color: var(--preview-muted);
   font-size: 13px;
   text-align: center;
 }
@@ -3236,6 +6077,16 @@ onBeforeUnmount(() => {
   .pdf-name-cell,
   .pdf-title-button {
     max-width: 260px;
+  }
+
+  .book-preview-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .book-preview-theme {
+    width: 100%;
   }
 }
 </style>

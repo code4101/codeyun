@@ -3,6 +3,8 @@ from pathlib import Path
 
 from backend.api.notes import (
     _annotate_codex_diary_record_category,
+    _fanxiu_registered_job_identity_terms,
+    _ensure_codex_diary_business_summary_coverage,
     _inherit_codex_diary_thread_domain_categories,
     _is_codex_diary_hidden_ai_category_item,
     _normalize_project_palette_token,
@@ -63,6 +65,24 @@ def test_codex_diary_category_regression_cases():
         assert primary_category == case["expected_category_key"], case["id"]
 
 
+def test_codex_diary_classifies_every_registered_fanxiu_job_identity_as_fanxiu():
+    terms = _fanxiu_registered_job_identity_terms()
+    assert {"activity_quiz", "活动_答题", "activity-quiz", "历练_事件"}.issubset(terms)
+
+    for term in terms:
+        category = _resolve_codex_diary_category(
+            {
+                "thread_title": f"{term} 作业维护",
+                "project_label": "codeyun",
+                "user_request": f"继续修复正式作业 {term} 的运行逻辑。",
+                "assistant_result": "已完成作业实现并验证 Scheduler 清单。",
+            },
+            palette_lookup=_palette_lookup(),
+            title_hints={},
+        )
+        assert category["key"] == "legacy_color_67c23a", term
+
+
 def test_codex_diary_inherits_unique_strong_domain_anchor_within_thread():
     palette_lookup = _palette_lookup()
     records = [
@@ -111,6 +131,120 @@ def test_codex_diary_does_not_inherit_when_thread_has_multiple_strong_domains():
     _inherit_codex_diary_thread_domain_categories(records, palette_lookup=palette_lookup)
 
     assert [record["codex_diary_category_key"] for record in records] == ["造化仙缘", "legacy_color_67c23a"]
+
+
+def test_codex_diary_thread_inheritance_uses_primary_anchor_not_strong_secondary_score():
+    palette_lookup = _palette_lookup()
+    records = [
+        {
+            "thread_id": "attendance-followup",
+            "thread_title": "修道班退款核查",
+            "project_label": "codeyun",
+            "user_request": "把四个修道班返款规则保存到 docs 恢复档案。",
+            "assistant_result": "考勤 source_meta 保留规则，前端隐藏返款文案。",
+        },
+        {
+            "thread_id": "attendance-followup",
+            "thread_title": "修道班退款核查",
+            "project_label": "codeyun",
+            "user_request": "我感觉 mi15 那边没动了，是不是检查完了？",
+            "assistant_result": "核查已经完成，列出未全退订单与四个课程结果。",
+        },
+        {
+            "thread_id": "attendance-followup",
+            "thread_title": "修道班退款核查",
+            "project_label": "codeyun",
+            "user_request": "继续核对四个修道班剩余订单。",
+            "assistant_result": "考勤课程订单已全部核对。",
+        },
+    ]
+    for record in records:
+        _annotate_codex_diary_record_category(record, palette_lookup=palette_lookup, title_hints={})
+
+    _inherit_codex_diary_thread_domain_categories(records, palette_lookup=palette_lookup)
+
+    assert [record["codex_diary_category_key"] for record in records] == [
+        "legacy_color_e6a23c",
+        "legacy_color_e6a23c",
+        "legacy_color_e6a23c",
+    ]
+
+
+def test_codex_diary_splits_knowledge_attendance_and_fanxiu_records_before_aggregation():
+    palette_lookup = _palette_lookup()
+    records = [
+        {
+            "thread_id": "halting",
+            "thread_title": "解释图灵机停机问题",
+            "project_label": "codeyun",
+            "user_request": "图灵机停机问题为什么无法由一个通用程序判定？",
+            "assistant_result": "从可计算性的定义解释反转程序与自指矛盾。",
+        },
+        {
+            "thread_id": "attendance",
+            "thread_title": "四个修道班配置归档",
+            "project_label": "codeyun",
+            "user_request": "核对修道班13期1阶和11期3阶的课程配置。",
+            "assistant_result": "修正考勤 source_meta.course_name，并保留各课程规则。",
+        },
+        {
+            "thread_id": "quantum",
+            "thread_title": "量子计算机原理",
+            "project_label": "codeyun",
+            "user_request": "量子计算机的原理是什么？我不理解。",
+            "assistant_result": "量子计算先确定性地操纵概率振幅，最后再测量。",
+        },
+        {
+            "thread_id": "fanxiu",
+            "thread_title": "玄荒完成判断",
+            "project_label": "codeyun",
+            "user_request": "进入 #418 后先识别次数，0次不能点。",
+            "assistant_result": "修复凡修玄荒 OCR 完成态并验证。",
+        },
+    ]
+
+    for record in records:
+        _annotate_codex_diary_record_category(record, palette_lookup=palette_lookup, title_hints={})
+
+    assert [record["codex_diary_category_key"] for record in records] == [
+        "custom_mmx3qpfhinvh",
+        "legacy_color_e6a23c",
+        "custom_mmx3qpfhinvh",
+        "legacy_color_67c23a",
+    ]
+
+
+def test_codex_diary_classifies_yunmeng_trial_business_as_fanxiu():
+    category = _resolve_codex_diary_category(
+        {
+            "thread_title": "云梦试剑兑币能力沉淀",
+            "project_label": "codeyun",
+            "user_request": "把云梦试剑累计兑币、剩余挑战和目标预测重新算准。",
+            "assistant_result": "接口优先读取 YunmengPK 运行态，挑战记录去重后滚动更新速度与丹均积分。",
+        },
+        palette_lookup=_palette_lookup(),
+        title_hints={},
+    )
+
+    assert category["key"] == "legacy_color_67c23a"
+
+
+def test_codex_diary_fanxiu_summary_keeps_yunmeng_business_theme():
+    block = {
+        "category_label": "凡修",
+        "records": [
+            {
+                "user_request": "修正云梦试剑累计兑币和还需挑战。",
+                "assistant_result": "完成榜单、丹均积分与目标预测复算。",
+            }
+        ],
+        "summary_items": [f"其它凡修主线 {index}" for index in range(1, 7)],
+    }
+
+    _ensure_codex_diary_business_summary_coverage(block)
+
+    assert len(block["summary_items"]) == 6
+    assert "云梦试剑" in block["summary_items"][-1]
 
 
 def test_codex_diary_uses_codeyun_general_instead_of_builtin_general_for_unknown_work():

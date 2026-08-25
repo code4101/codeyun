@@ -17,7 +17,7 @@ from backend.models import Task as TaskModel
 
 logger = logging.getLogger(__name__)
 DEFAULT_SERVICE_CHECK_INTERVAL_SECONDS = 300.0
-CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"sync", "syncthing", "frpc", "nginx"}
+CRITICAL_LOCAL_COMMAND_SERVICE_NAMES = {"frpc", "nginx"}
 
 
 def _find_running_service_by_executable(command: str) -> dict[str, Any] | None:
@@ -95,6 +95,29 @@ def ensure_local_critical_command_services() -> dict[str, Any]:
     }
 
 
+def ensure_local_monitored_services() -> dict[str, Any]:
+    """Recover all CodeYun-owned always-on services through one monitor."""
+
+    results: dict[str, Any] = {
+        "critical-command-services": ensure_local_critical_command_services(),
+    }
+    # Import lazily so the generic service monitor stays independent from the
+    # runtime-management module that also consumes it during application boot.
+    from backend.core.attendance.behavior_tree_service import (
+        ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY,
+        ensure_attendance_behavior_tree_service,
+        is_attendance_behavior_tree_service_enabled,
+    )
+
+    if is_attendance_behavior_tree_service_enabled():
+        try:
+            results[ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY] = ensure_attendance_behavior_tree_service()
+        except Exception as exc:
+            results[ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY] = {"status": "error", "error": str(exc)}
+            logger.exception("Attendance behavior tree monitor check failed")
+    return results
+
+
 class ServiceMonitor:
     """Observe and recover opted-in services without entering the job queue."""
 
@@ -144,7 +167,7 @@ _service_monitor: ServiceMonitor | None = None
 def init_service_monitor() -> None:
     global _service_monitor
     if _service_monitor is None:
-        _service_monitor = ServiceMonitor(ensure_local_critical_command_services)
+        _service_monitor = ServiceMonitor(ensure_local_monitored_services)
     _service_monitor.start()
 
 

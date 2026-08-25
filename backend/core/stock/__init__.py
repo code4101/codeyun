@@ -25,6 +25,7 @@ from .eastmoney_sync import (
     get_latest_asset_snapshot,
     import_pdf_statement,
     import_mobile_trade_detail_record,
+    import_trade_history_rows,
     list_fund_flow_categories,
     list_fund_flow_filter_options,
     list_fund_flow_records,

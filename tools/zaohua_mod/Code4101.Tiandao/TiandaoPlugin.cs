@@ -6,8 +6,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using Newtonsoft.Json;
-using Code4101.Dantian.Common;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -21,11 +19,17 @@ namespace Code4101.Zaohua.Tiandao
         public const string PluginVersion = "0.2.0";
 
         private Harmony _harmony;
+        private static TiandaoPlugin _instance;
+
+        internal static void LogAlchemy(string message)
+        {
+            _instance?.Logger.LogInfo(message);
+        }
 
         private void Awake()
         {
+            _instance = this;
             TiandaoState.Initialize(Config);
-            DantianOptimizationPriorityState.Initialize(Config);
             BagEnhancementState.Initialize(Config);
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll();
@@ -36,6 +40,7 @@ namespace Code4101.Zaohua.Tiandao
         private void OnDestroy()
         {
             _harmony?.UnpatchSelf();
+            if (_instance == this) _instance = null;
         }
 
         private void Update()
@@ -46,76 +51,6 @@ namespace Code4101.Zaohua.Tiandao
         private void OnApplicationQuit()
         {
             EquipmentLoadoutRuntime.Flush();
-        }
-    }
-
-    internal static class DantianOptimizationPriorityState
-    {
-        [Serializable]
-        private sealed class PersistedState
-        {
-            public int version = 1;
-            public List<string> ruleOrder = new List<string>();
-        }
-
-        private static ConfigFile _config;
-        private static ConfigEntry<string> _ruleOrder;
-        private static bool _readOnlyBecauseInvalid;
-
-        internal static void Initialize(ConfigFile config)
-        {
-            _config = config;
-            _readOnlyBecauseInvalid = false;
-            _ruleOrder = config.Bind("天道助缘", "丹田优化规则顺序", string.Empty,
-                "按稳定规则ID保存的丹田排布词典序目标（版本化JSON）");
-        }
-
-        internal static List<string> Order(IEnumerable<string> availableKeys)
-        {
-            return DantianPriorityOrder.ForAvailable(ReadState().ruleOrder, availableKeys);
-        }
-
-        internal static void Save(IEnumerable<string> orderedKeys)
-        {
-            if (_ruleOrder == null || _readOnlyBecauseInvalid) return;
-            var state = new PersistedState();
-            // 当前未出现的旧规则不参与排序，也不打乱仍存在规则；保留到末尾，若再次出现
-            // 会自然作为低优先级旧规则恢复，不会插进当前顺序中间。
-            state.ruleOrder = DantianPriorityOrder.ForSave(ReadState().ruleOrder, orderedKeys);
-            _ruleOrder.Value = JsonConvert.SerializeObject(state);
-            _config?.Save();
-        }
-
-        private static PersistedState ReadState()
-        {
-            var raw = _ruleOrder?.Value ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(raw)) return new PersistedState();
-            if (raw.TrimStart().StartsWith("{"))
-            {
-                try
-                {
-                    var state = JsonConvert.DeserializeObject<PersistedState>(raw);
-                    if (state != null && state.version == 1 && state.ruleOrder != null)
-                    {
-                        state.ruleOrder = state.ruleOrder
-                            .Where(key => !string.IsNullOrEmpty(key)).Distinct().ToList();
-                        return state;
-                    }
-                    _readOnlyBecauseInvalid = true;
-                }
-                catch (JsonException)
-                {
-                    // 配置读取失败时只回退为空视图；不会自动覆盖原始值。
-                    _readOnlyBecauseInvalid = true;
-                }
-                return new PersistedState();
-            }
-            // 兼容已部署过的竖线格式；下一次用户调整时自动写成 version=1 JSON。
-            return new PersistedState
-            {
-                ruleOrder = raw.Split('|').Where(key => !string.IsNullOrEmpty(key))
-                    .Distinct().ToList(),
-            };
         }
     }
 

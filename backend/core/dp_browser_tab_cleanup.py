@@ -235,7 +235,7 @@ def plan_dp_browser_tab_cleanup(
     close_reasons: dict[str, str] = {}
     current_candidate_ids: set[str] = set()
 
-    for group_key, group_records in _group_by_url(eligible_records).items():
+    for domain, group_records in _group_by_domain(eligible_records).items():
         if len(group_records) <= resolved_config.max_tabs_per_url:
             continue
 
@@ -243,9 +243,8 @@ def plan_dp_browser_tab_cleanup(
             item["id"]
             for item in sorted(group_records, key=_tab_recency_key, reverse=True)[: resolved_config.max_tabs_per_url]
         }
-        for domain, keep_id in keep_by_domain.items():
-            if group_records and group_records[0]["domain"] == domain:
-                keep_ids.add(keep_id)
+        if domain in keep_by_domain:
+            keep_ids.add(keep_by_domain[domain])
 
         for record in sorted(group_records, key=_tab_recency_key):
             tab_id = record["id"]
@@ -264,7 +263,7 @@ def plan_dp_browser_tab_cleanup(
             if len(close_ids) >= resolved_config.max_close_per_run:
                 continue
             close_ids.append(tab_id)
-            close_reasons[tab_id] = f"duplicate url retained for {candidate_age:.0f}s: {group_key}"
+            close_reasons[tab_id] = f"duplicate domain retained for {candidate_age:.0f}s: {domain}"
 
     limited = len(current_candidate_ids) > len(close_ids) and len(close_ids) >= resolved_config.max_close_per_run
     for record in records:
@@ -313,9 +312,7 @@ def _normalize_tab(raw_tab: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_tab_state(tab: dict[str, Any], previous: dict[str, Any], now: float) -> dict[str, Any]:
-    previous_url = str(previous.get("url") or "")
-    previous_title = str(previous.get("title") or "")
-    changed = previous_url != tab["url"] or previous_title != tab["title"]
+    changed = not _same_observed_page(tab, previous)
     first_seen_at = _as_float(previous.get("first_seen_at"))
     last_changed_at = _as_float(previous.get("last_changed_at"))
     return {
@@ -356,10 +353,17 @@ def _select_domain_keepers(records: list[dict[str, Any]]) -> dict[str, str]:
     return keepers
 
 
-def _group_by_url(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _same_observed_page(tab: dict[str, Any], previous: dict[str, Any]) -> bool:
+    if not previous:
+        return False
+    fields = ("url", "normalized_url", "title", "type", "attached", "domain")
+    return all(previous.get(field) == tab.get(field) for field in fields)
+
+
+def _group_by_domain(records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for record in records:
-        key = f"{record.get('domain') or ''}\n{record.get('normalized_url') or ''}"
+        key = str(record.get("domain") or "")
         groups.setdefault(key, []).append(record)
     return groups
 

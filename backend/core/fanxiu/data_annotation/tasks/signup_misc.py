@@ -8,6 +8,7 @@ class SignupMiscTaskMixin:
         起点状态 = yield from self._日常报名进入日常页(runtime)
         if 起点状态 == "活动页":
             yield from self._日常报名返回世界(runtime)
+            runtime.set_next_time(self._next_daily_boss_reset_time_text())
             return {"result": "success", "claimed": 1, "activity_opened": True, "evidence": "activity_page"}
         if 起点状态 != "报名页":
             yield from self._日常报名打开活动报名(runtime)
@@ -18,17 +19,20 @@ class SignupMiscTaskMixin:
         yield from self._日常报名返回世界(runtime)
         if 领取数量 <= 0:
             if 报名结果.get("bottom_confirmed") and 报名结果.get("saw_signed_item"):
+                runtime.set_next_time(self._next_daily_boss_reset_time_text())
                 return {
                     "result": "success",
                     "claimed": 0,
                     "signup_page_opened": True,
                     "evidence": "all_items_already_signed",
                 }
+            runtime.set_next_time(self._next_daily_boss_reset_time_text())
             return {
-                "result": "skipped",
+                "result": "success",
                 "claimed": 0,
                 "message": "日常_报名：未领取任何报名项，不能确认最后两条已处理，稍后重试",
             }
+        runtime.set_next_time(self._next_daily_boss_reset_time_text())
         return {"result": "success", "claimed": 领取数量, "signup_page_opened": True, "evidence": "claimed_rewards"}
 
     def _日常报名进入日常页(self, runtime: Any):
@@ -40,7 +44,7 @@ class SignupMiscTaskMixin:
             return "报名页"
         if scene_id == 69:
             return "日常页"
-        if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+        if scene_id == 34:
             yield from runtime.wait_click_then_view(34, "日常", label="日常_报名：从世界进入日常 #69")
             return "日常页"
         yield from runtime.goto_view(69)
@@ -140,7 +144,6 @@ class SignupMiscTaskMixin:
                     "世界": runtime.view_visible(34),
                     "绿瓶": runtime.view_visible(20),
                     "报名文本": runtime.ocr_matches(self._日常报名文本是报名页, label="日常_报名：领取后报名页 OCR"),
-                    "世界文本": runtime.ocr_matches(self._daily_assistant_text_is_world_like, label="日常_报名：领取后世界 OCR"),
                 },
                 label="日常_报名：等待领取后落点",
             )
@@ -149,7 +152,7 @@ class SignupMiscTaskMixin:
     def _日常报名返回日常页(self, runtime: Any):
         scene_id, _score, frame = runtime.current_scene([23, 69, 34], update=True)
         text = runtime.ocr_text(frame)
-        if scene_id in (69, 34) or self._daily_assistant_text_is_world_like(text):
+        if scene_id in (69, 34):
             return
         if scene_id != 23 and not self._日常报名文本是报名页(text):
             return
@@ -162,7 +165,7 @@ class SignupMiscTaskMixin:
     def _日常报名返回世界(self, runtime: Any):
         scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
         text = runtime.ocr_text(frame)
-        if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+        if scene_id == 34:
             return
         if self._日常报名文本是报名后活动页(text):
             for _attempt in range(3):
@@ -174,13 +177,12 @@ class SignupMiscTaskMixin:
                         {
                             "scene": runtime.view_visible(34),
                             "daily": runtime.view_visible(69),
-                            "text": runtime.ocr_matches(self._daily_assistant_text_is_world_like, label="日常_报名：活动页返回世界 OCR"),
                         },
                         label="日常_报名：等待活动页返回",
                     )
                 scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
                 text = runtime.ocr_text(frame)
-                if scene_id == 34 or self._daily_assistant_text_is_world_like(text):
+                if scene_id == 34:
                     return
                 if scene_id == 69 or ("日常" in text and "活跃度" in text):
                     break
@@ -197,7 +199,6 @@ class SignupMiscTaskMixin:
             yield from runtime.wait_any(
                 {
                     "scene": runtime.view_visible(34),
-                    "text": runtime.ocr_matches(self._daily_assistant_text_is_world_like, label="日常_报名：世界 OCR"),
                 },
                 label="日常_报名：等待返回世界 #34",
             )

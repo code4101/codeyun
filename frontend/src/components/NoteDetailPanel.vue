@@ -91,7 +91,8 @@ import NoteTitleActions from './NoteTitleActions.vue';
 import { noteKey, useNoteStore, type NoteDocResourceAccess, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
-import type { EditableNotePatch } from '@/utils/noteAutoSave';
+import type { EditableNoteExpectedFields, EditableNotePatch } from '@/utils/noteAutoSave';
+import { createSaveMutationId, getSaveClientInstanceId } from '@/utils/saveMutationIdentity';
 
 const props = withDefaults(defineProps<{
   noteId: string;
@@ -134,6 +135,9 @@ const resolveDocHref = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
 const toApiPatch = (patch: EditableNotePatch | Partial<NoteNode>) => {
   const outgoing = { ...patch } as Record<string, any>;
   if (typeof outgoing.start_at === 'number' && outgoing.start_at > 10000000000) outgoing.start_at /= 1000;
+  if (typeof outgoing.expected_fields?.start_at === 'number' && outgoing.expected_fields.start_at > 10000000000) {
+    outgoing.expected_fields = { ...outgoing.expected_fields, start_at: outgoing.expected_fields.start_at / 1000 };
+  }
   return outgoing;
 };
 
@@ -255,10 +259,17 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleVisibilityChange);
 });
 
-const handleSave = async (note: NoteNode, patch: EditableNotePatch = {}) => {
+const handleSave = async (
+  note: NoteNode,
+  patch: EditableNotePatch = {},
+  expectedFields: EditableNoteExpectedFields = {},
+) => {
   const payload = {
     ...(Object.keys(patch).length ? patch : note),
     base_version: Number(note.version || currentNote.value?.version || 1),
+    expected_fields: expectedFields,
+    mutation_id: createSaveMutationId(),
+    client_instance_id: getSaveClientInstanceId(),
   };
   const updatedNote = await noteStore.updateNote(note.id, payload);
   if (!updatedNote) throw new Error('保存失败');
@@ -266,10 +277,17 @@ const handleSave = async (note: NoteNode, patch: EditableNotePatch = {}) => {
   return updatedNote;
 };
 
-const handleSaveKeepalive = (note: NoteNode, patch: EditableNotePatch = {}) => {
+const handleSaveKeepalive = (
+  note: NoteNode,
+  patch: EditableNotePatch = {},
+  expectedFields: EditableNoteExpectedFields = {},
+) => {
   const payload = {
     ...(Object.keys(patch).length ? patch : note),
     base_version: Number(note.version || currentNote.value?.version || 1),
+    expected_fields: expectedFields,
+    mutation_id: createSaveMutationId(),
+    client_instance_id: getSaveClientInstanceId(),
   };
   putJsonKeepalive(`/api/notes/${encodeURIComponent(noteKey(note.id))}`, toApiPatch(payload));
 };

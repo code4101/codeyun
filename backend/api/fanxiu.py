@@ -48,14 +48,15 @@ from backend.core.runtime.game_window_service import (
 from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, require_service_scope
 from backend.core.settings import get_settings
 from backend.core.temp_paths import codeyun_temp_root
-from backend.core.fanxiu.runtime.errors import FanxiuRuntimeError
+from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeRuntimeError
 from backend.core.notes.identity import allocate_new_note_identity
 from backend.core.notes.refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import engine, get_session
-from backend.models import FanxiuLingquanQuestion, FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
+from backend.models import FanxiuChoiceKnowledge, FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.fanxiu.runtime.mumu_control import (
     activate_mumu_window,
+    capture_fresh_mumu_adb_stream_frame,
     capture_mumu_window_frame,
     click_mumu_window_processed_point,
     clear_fanxiu_burst_frames,
@@ -64,6 +65,7 @@ from backend.core.fanxiu.runtime.mumu_control import (
     get_fanxiu_burst_frame_path,
     get_fanxiu_match_frame_path,
     get_fanxiu_screenshot_path,
+    get_mumu_adb_stream_frame_status,
     import_fanxiu_burst_frames,
     keyevent_mumu_adb,
     keyevents_mumu_adb,
@@ -71,6 +73,7 @@ from backend.core.fanxiu.runtime.mumu_control import (
     list_fanxiu_screenshots,
     match_fanxiu_screenshot_box_frame,
     read_fanxiu_screenshot_pre_label,
+    recover_mumu_device,
     save_fanxiu_burst_frame,
     save_fanxiu_screenshot_frame,
     screencap_mumu_adb_cached_png,
@@ -117,6 +120,10 @@ from backend.core.fanxiu.catalog.inventory import load_spirit_artifact_hall, sav
 from backend.core.fanxiu.catalog.inventory import load_wardrobe_hall, save_wardrobe_hall
 from backend.core.fanxiu.catalog.inventory import load_spirit_beast_hall, save_spirit_beast_hall
 from backend.core.fanxiu.catalog.inventory import load_activity_list, save_activity_list
+from backend.core.fanxiu.catalog.inventory_snapshot_store import (
+    load_inventory_hall_snapshot,
+    upsert_inventory_hall_snapshot,
+)
 from backend.core.fanxiu.catalog.server_relations import (
     load_fanxiu_server_relations,
     save_fanxiu_server_relations,
@@ -127,98 +134,93 @@ from backend.core.fanxiu.quiz.store import (
     serialize_question,
     update_lingquan_question,
 )
-from backend.core.fanxiu.catalog.inventory import load_modao_invasion_exchange_list, save_modao_invasion_exchange_list
-from backend.core.fanxiu.catalog.inventory import (
-    load_shouyuan_exploration_exchange_list,
-    save_shouyuan_exploration_exchange_list,
+from backend.core.fanxiu.activity.yunmeng_trial import (
+    YunmengTrialActivityDetail,
+    YunmengTrialMeasurementCollectRequest,
+    YunmengTrialMeasurementCollectResult,
+    YunmengTrialMeasurementPage,
+    YunmengTrialPriorityUpdateRequest,
+    YunmengTrialShopItemLockUpdateRequest,
+    YunmengTrialRankingPage,
+    YunmengTrialSnapshotResponse,
+    collect_and_store_yunmeng_trial_measurement,
+    list_yunmeng_trial_measurements,
+    list_yunmeng_trial_rankings,
+    list_yunmeng_trial_snapshot,
+    update_yunmeng_trial_priorities,
+    update_yunmeng_trial_shop_item_lock,
+)
+from backend.core.fanxiu.activity.exchange_event import (
+    ExchangeActivityDetail,
+    ExchangeActivityObservationPage,
+    ExchangeActivitySnapshot,
+    LatestExchangeActivitySnapshot,
+    ExchangePriorityUpdateRequest,
+    ExchangeRankingPage,
+    ExchangeShopItemLockUpdateRequest,
+    apply_exchange_shop_plan,
+    is_exchange_activity_active,
+    latest_exchange_activity_snapshot,
+    list_exchange_activity_snapshot,
+    list_exchange_activity_observations,
+    list_exchange_rankings,
+    update_exchange_priorities,
+    update_exchange_shop_item_lock,
+)
+from backend.core.fanxiu.activity.exchange_activity_registry import (
+    collect_registered_resource_ranking_resources,
+    materialize_registered_exchange_activity,
+    collect_registered_exchange_activity,
+    load_registered_resource_ranking_resources,
+    load_registered_resource_ranking_tasks,
+)
+from backend.core.fanxiu.activity.resource_ranking import (
+    load_yuanding_sansheng_task_milestones,
+    load_yaochi_flower_task_milestones,
+    resolve_yaochi_flower_activity_references,
+)
+from backend.core.fanxiu.activity.lingchong_jingwu import (
+    LingchongJingwuResourceSnapshot,
+    collect_lingchong_jingwu_resource_snapshot,
+    load_lingchong_jingwu_observed_tasks,
+    load_lingchong_jingwu_resource_snapshot,
+    store_lingchong_jingwu_resource_snapshot,
+)
+from backend.core.fanxiu.activity.lingzhuang_strengthening import (
+    LingzhuangStrengtheningSnapshot,
+    collect_and_store_lingzhuang_strengthening_snapshot,
+    load_lingzhuang_strengthening_snapshot,
+)
+from backend.core.fanxiu.activity.yaochi_flower_resources import (
+    YaochiFlowerResourceSnapshot,
+    collect_and_store_yaochi_flower_resource_snapshot,
+    load_yaochi_flower_resource_snapshot,
+)
+from backend.core.fanxiu.activity.lingzhuang_relationship import (
+    RelationshipDataset,
+    list_lingzhuang_relationship_samples,
+    record_lingzhuang_relationship_sample,
 )
 from backend.core.fanxiu.runtime.processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
-from backend.core.fanxiu.packet.capture import build_fanxiu_packet_capture_snapshot
-from backend.core.fanxiu.runtime.android_proxy import fanxiu_android_proxy_service
-from backend.core.fanxiu.packet.activity import fanxiu_packet_activity_service
-from backend.core.fanxiu.packet.proxy import fanxiu_packet_proxy_service
-from backend.core.fanxiu.packet.service_runtime import (
-    get_fanxiu_packet_worker_status as get_fanxiu_packet_daemon_worker_status,
-    get_fanxiu_packet_service_status,
-    request_fanxiu_packet_service_catch_up,
-    request_fanxiu_packet_service_maintenance,
-    start_fanxiu_packet_service,
-    stop_fanxiu_packet_service,
+from backend.core.fanxiu.activity.runtime_schedule import (
+    read_fanxiu_activity_runtime_schedule,
 )
-from backend.core.fanxiu.packet.activity_sync import (
-    get_fanxiu_activity_packet_schedule,
-    sync_fanxiu_activity_packets,
-)
-from backend.core.fanxiu.packet.insights import (
-    get_fanxiu_packet_runtime_insights,
-    get_fanxiu_packet_storage_bag_snapshot,
-    sync_fanxiu_packet_runtime_insights,
-)
-from backend.core.fanxiu.packet.decoded_store import (
-    list_fanxiu_packet_decoded_records,
-    prune_fanxiu_packet_decoded_records,
-)
-from backend.core.fanxiu.packet.current_facts import catch_up_and_list_fanxiu_packet_decoded_records
 from backend.core.fanxiu.catalog.status_models import (
-    FanxiuActivityPacketSyncRequest,
-    FanxiuActivityPacketSyncResponse,
-    FanxiuAndroidProxyStatus,
-    FanxiuBehaviorTreeServiceResponse,
-    FanxiuBehaviorTreeServiceStatus,
-    FanxiuCaptureRuntimeRequest,
-    FanxiuCaptureRuntimeStatus,
-    FanxiuMailPacketSyncRequest,
-    FanxiuMailPacketSyncResponse,
+    FanxiuMailRuntimeSyncResponse,
     FanxiuMailRecordListResponse,
     FanxiuMailRecordUpdateRequest,
     FanxiuMailRecordUpdateResponse,
-    FanxiuPacketActivityFlow,
-    FanxiuPacketActivityHistoryResponse,
-    FanxiuPacketActivityPayloadEvent,
-    FanxiuPacketActivityStartRequest,
-    FanxiuPacketActivityStatus,
-    FanxiuPacketActivityStreamDirection,
-    FanxiuPacketActivityStreamResponse,
-    FanxiuPacketCaptureAddress,
-    FanxiuPacketCaptureConnection,
-    FanxiuPacketCaptureDnsMapping,
-    FanxiuPacketCaptureProcess,
-    FanxiuPacketCaptureSessionStatus,
-    FanxiuPacketCaptureSnapshot,
-    FanxiuPacketCaptureSnapshotRequest,
-    FanxiuPacketInsightResponse,
-    FanxiuPacketInsightSyncRequest,
-    FanxiuPacketPayloadDirection,
-    FanxiuPacketPayloadPreview,
-    FanxiuPacketProxyEvent,
-    FanxiuPacketProxyEventListResponse,
-    FanxiuPacketProxyLogFile,
-    FanxiuPacketProxyLogListResponse,
-    FanxiuPacketProxyLogLoadResponse,
-    FanxiuPacketProxySaveRequest,
-    FanxiuPacketProxySaveResponse,
-    FanxiuPacketProxyStartRequest,
-    FanxiuPacketProxyStatus,
-    FanxiuPacketProxyTimelineResponse,
-    FanxiuPacketStorageBagResponse,
     FanxiuPlayerProfileRecordListResponse,
     FanxiuServerRelationTreeResponse,
     FanxiuServerRelationTreeUpdateRequest,
+    FanxiuStorageBagAutoClaimUpdateRequest,
+    FanxiuStorageBagAutoClaimUpdateResponse,
+    FanxiuStorageBagNoteUpdateRequest,
+    FanxiuStorageBagNoteUpdateResponse,
     FanxiuProcessItem,
     FanxiuProcessListResponse,
     FanxiuProcessTerminateError,
     FanxiuProcessTerminateResponse,
-    FanxiuTcpBusinessCategorySummary,
-    FanxiuTcpBusinessEntry,
-    FanxiuTcpBusinessEntryListResponse,
-    FanxiuTcpBusinessProtocolSample,
-    FanxiuTcpBusinessProtocolSummary,
-    FanxiuTcpCaptureFile,
-    FanxiuTcpCaptureListResponse,
-    FanxiuTcpDecodeRequest,
-    FanxiuTcpDecodeResponse,
-    FanxiuTcpRecordItem,
-    FanxiuTcpRecordListResponse,
     LocalScriptProcessItem,
     LocalScriptProcessListResponse,
 )
@@ -283,21 +285,6 @@ from backend.core.fanxiu.catalog.inventory_models import (
     FanxiuFormationRequirementOcrImportResponse,
     FanxiuMagicTreasureHallSnapshot,
     FanxiuMagicTreasureOcrImportResponse,
-    FanxiuModaoInvasionExchangeItem,
-    FanxiuModaoInvasionOcrImportResponse,
-    FanxiuModaoInvasionPersonalRankingItem,
-    FanxiuModaoInvasionPersonalRankingOcrImportResponse,
-    FanxiuModaoInvasionRecord,
-    FanxiuModaoInvasionSnapshot,
-    FanxiuShouyuanExplorationConsumptionEvaluationItem,
-    FanxiuShouyuanExplorationExchangeItem,
-    FanxiuShouyuanExplorationIncomeSpeedItem,
-    FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse,
-    FanxiuShouyuanExplorationOcrImportResponse,
-    FanxiuShouyuanExplorationPersonalRankingItem,
-    FanxiuShouyuanExplorationPersonalRankingOcrImportResponse,
-    FanxiuShouyuanExplorationRecord,
-    FanxiuShouyuanExplorationSnapshot,
     FanxiuSpiritArtifactAttributeRecognitionResponse,
     FanxiuSpiritArtifactAttributeValue,
     FanxiuSpiritArtifactHallSnapshot,
@@ -334,36 +321,12 @@ from backend.core.fanxiu.catalog.formation_ocr import (
     _normalize_formation_effect_text,
     _normalize_formation_requirement_text,
 )
-from backend.core.fanxiu.catalog.modao_shouyuan_ocr import (
-    _build_modao_invasion_exchange_items_from_ocr_document,
-    _build_modao_invasion_personal_rankings_from_ocr_document,
-    _build_shouyuan_exploration_income_speed_from_ocr_document,
-    _extract_first_int_from_text,
-    _extract_last_int_from_text,
-    _extract_modao_invasion_effective_cost,
-    _extract_shouyuan_exploration_beast_crystal,
-    _extract_shouyuan_exploration_labeled_total,
-    _extract_shouyuan_exploration_search_count,
-    _is_modao_invasion_non_item_line,
-    _join_ocr_line_entries,
-    _looks_like_modao_invasion_personal_ranking_line,
-    _normalize_modao_invasion_item_name,
-    _normalize_modao_invasion_personal_ranking_name,
-    _normalize_modao_invasion_personal_ranking_plane,
-    _parse_modao_invasion_cost_line,
-    _parse_modao_invasion_header_line,
-    _parse_modao_invasion_personal_ranking_header_line,
-    _parse_modao_invasion_personal_ranking_plane_line,
-)
-from backend.core.fanxiu.packet.player_profile_store import (
+from backend.core.fanxiu.player_profiles import (
+    list_daily_fanxiu_player_profile_records,
+    list_daily_fanxiu_player_xianlv_team_records,
     list_fanxiu_player_profile_records,
     list_latest_fanxiu_player_profile_records,
-)
-from backend.core.fanxiu.packet.tcp_flow import (
-    decode_fanxiu_tcp_pcap,
-    list_fanxiu_tcp_business_entries,
-    list_fanxiu_tcp_captures,
-    list_fanxiu_tcp_records,
+    list_latest_fanxiu_player_xianlv_team_records,
 )
 from backend.core.fanxiu.mail.store import (
     ensure_fanxiu_mail_table,
@@ -379,59 +342,89 @@ from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_rewards_from_payload,
     fanxiu_mail_rewards_unresolved,
 )
-from backend.core.fanxiu.mail.packet_sync import (
+from backend.core.fanxiu.mail.normalization import (
     _mail_rewards_summary,
     _normalize_mail_rewards,
-    sync_fanxiu_mail_packets,
-    trace_fanxiu_mail_packet_gap,
 )
+from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
+from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
+from backend.core.fanxiu.instrumentation.storage_bag_catalog import (
+    delete_storage_bag_atlas_item,
+    load_storage_bag_atlas,
+    sync_storage_bag_atlas,
+)
+from backend.core.fanxiu.storage_bag_settings import (
+    apply_storage_bag_item_settings,
+    delete_storage_bag_item_setting,
+    set_storage_bag_auto_claim,
+    set_storage_bag_note,
+)
+from backend.core.fanxiu.storage_bag_usage import (
+    delete_storage_bag_usage_history,
+    ensure_storage_bag_atlas_analysis,
+)
+from backend.core.fanxiu.mail.runtime_sync import sync_fanxiu_mail_from_runtime
 from backend.core.fanxiu.data_annotation.jobs import (
     DataAnnotationTaskCellDefinition as _DataAnnotationTaskCellDefinition,
     _DATA_ANNOTATION_TASK_CELL_REGISTRY,
     get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
     register_fanxiu_data_annotation_task_cell,
 )
-from backend.core.fanxiu.data_annotation import runtime_control as _runtime_control
-from backend.core.fanxiu.data_annotation import runtime_framework as _runtime_framework
+from backend.core.fanxiu.data_annotation import behavior_tree_control as _behavior_tree_control
+from backend.core.fanxiu.data_annotation import behavior_tree_framework as _behavior_tree_framework
 from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationDoctorWatchEnsureResponse,
     FanxiuDataAnnotationDoctorWatchLatestResponse,
-    FanxiuDataAnnotationRuntimeCellLog,
-    FanxiuDataAnnotationRuntimeCellLogResponse,
-    FanxiuDataAnnotationRuntimeCodeCellRequest,
-    FanxiuDataAnnotationRuntimeLogEntry,
-    FanxiuDataAnnotationRuntimeLogResponse,
-    FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
-    FanxiuDataAnnotationRuntimeKernelRestartRequest,
-    FanxiuDataAnnotationRuntimeStatus,
-    FanxiuDataAnnotationRuntimeTaskCellRequest,
-    FanxiuDataAnnotationRuntimeStopRequest,
-    FanxiuDataAnnotationRuntimeGuardGroupRequest,
-    FanxiuDataAnnotationRuntimeGuardRequest,
-    FanxiuDataAnnotationRuntimeIsolationRequest,
+    FanxiuBehaviorTreeRuntimeCellLog,
+    FanxiuBehaviorTreeRuntimeCellLogResponse,
+    FanxiuBehaviorTreeRuntimeCodeCellRequest,
+    FanxiuBehaviorTreeRuntimeLogEntry,
+    FanxiuBehaviorTreeRuntimeLogResponse,
+    FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
+    FanxiuBehaviorTreeRuntimeDeviceRestartRequest,
+    FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
+    FanxiuBehaviorTreeRuntimeKernelRestartRequest,
+    FanxiuBehaviorTreeRuntimeStatus,
+    FanxiuBehaviorTreeRuntimeTaskCellRequest,
+    FanxiuBehaviorTreeRuntimeStopRequest,
+    FanxiuBehaviorTreeRuntimeGuardGroupRequest,
+    FanxiuBehaviorTreeRuntimeGuardRequest,
+    FanxiuBehaviorTreeRuntimeIsolationRequest,
+    FanxiuInfoWindowControlStatus,
+    FanxiuInfoWindowSettingsRequest,
     FanxiuDataAnnotationSchedulerTaskItem,
+    FanxiuDataAnnotationSchedulerTaskUpdate,
     FanxiuDataAnnotationSchedulerTasksResponse,
+    FanxiuGameStateInspectionStatus,
+    FanxiuDataAnnotationSchedulerTimeSequenceResponse,
+    FanxiuDataAnnotationSchedulerTimeSequenceUpdateRequest,
     FanxiuDataAnnotationSchedulerPlanItem,
     FanxiuDataAnnotationSchedulerPlanResponse,
-    FanxiuDataAnnotationSchedulerAdvanceNextRequest,
     FanxiuDataAnnotationSchedulerRunDueRequest,
     FanxiuDataAnnotationSchedulerRunNowRequest,
+    FanxiuDataAnnotationSchedulerNextTimeRequest,
+    FanxiuDataAnnotationSchedulerNextTimeResponse,
+    FanxiuDataAnnotationSchedulerTriggerOnceRequest,
+    FanxiuDataAnnotationSchedulerTriggerOnceResponse,
     FanxiuDataAnnotationSchedulerSettingsRequest,
     FanxiuDataAnnotationWorldFactsResponse,
 )
+from backend.core.fanxiu.data_annotation.game_state_inspection import (
+    read_game_state_inspection_status,
+)
 from backend.core.fanxiu.data_annotation.state import (
-    append_data_annotation_runtime_log_once,
-    append_data_annotation_runtime_status_log,
+    append_behavior_tree_runtime_log_once,
+    append_behavior_tree_runtime_status_log,
     data_annotation_scheduler_task_state as _data_annotation_scheduler_task_state,
     data_annotation_task_due as _data_annotation_task_due,
-    initial_data_annotation_runtime_status,
+    initial_behavior_tree_runtime_status,
     initial_data_annotation_world_facts as _initial_data_annotation_world_facts,
-    is_data_annotation_runtime_live_empty,
-    next_data_annotation_scheduler_time as _core_next_data_annotation_scheduler_time,
-    normalize_data_annotation_runtime_guard_items,
+    is_behavior_tree_runtime_live_empty,
+    normalize_behavior_tree_runtime_guard_items,
     parse_data_annotation_task_time,
-    persist_data_annotation_runtime_status,
-    read_data_annotation_runtime_status,
+    persist_behavior_tree_runtime_status,
+    read_behavior_tree_runtime_status,
     read_data_annotation_json as _read_data_annotation_json,
     read_data_annotation_world_facts,
     record_data_annotation_scheduler_task_fact,
@@ -440,45 +433,50 @@ from backend.core.fanxiu.data_annotation.state import (
 )
 from backend.core.fanxiu.data_annotation.scheduler import (
     build_data_annotation_scheduler_plan,
-    data_annotation_fact_time_text as _data_annotation_fact_time_text,
     data_annotation_scheduler_run_now_task as _core_data_annotation_scheduler_run_now_task,
     data_annotation_scheduler_order_key,
     data_annotation_scheduler_task_plan_reason,
     data_annotation_world_facts_summary,
     merge_data_annotation_scheduler_task_updates,
     repair_data_annotation_scheduler_tasks,
-    sync_data_annotation_scheduler_tasks_from_world_facts,
 )
 from backend.core.fanxiu.data_annotation.scheduler_defaults import (
     default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks,
 )
-from backend.core.fanxiu.data_annotation.runtime import (
-    DataAnnotationRuntimeContainer as _DataAnnotationRuntimeContainer,
-    DataAnnotationRuntimeGroupSpec as _DataAnnotationRuntimeGroupSpec,
-    DataAnnotationRuntimeNodeSpec as _DataAnnotationRuntimeNodeSpec,
+from backend.core.fanxiu.data_annotation.behavior_tree_container import (
+    BehaviorTreeRuntimeContainer as _BehaviorTreeRuntimeContainer,
+    BehaviorTreeRuntimeGroupSpec as _BehaviorTreeRuntimeGroupSpec,
+    BehaviorTreeRuntimeNodeSpec as _BehaviorTreeRuntimeNodeSpec,
 )
-from backend.core.fanxiu.runtime.behavior_tree import (
+from backend.core.fanxiu.behavior_tree.runtime import (
     DEFAULT_FANXIU_ENTRY_ID,
-    create_fanxiu_runtime_runner,
+    create_behavior_tree_runtime_runner,
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir as _core_data_annotation_dir,
     fanxiu_data_annotation_mail_scan_state_path as _core_mail_scan_state_path,
-    fanxiu_data_annotation_runtime_dir as _core_data_annotation_runtime_dir,
-    fanxiu_data_annotation_runtime_logs as _core_data_annotation_runtime_logs,
-    fanxiu_data_annotation_runtime_status as _core_data_annotation_runtime_status,
-    fanxiu_data_annotation_runtime_state_path as _core_runtime_state_path,
+    fanxiu_behavior_tree_runtime_dir as _core_behavior_tree_runtime_dir,
+    fanxiu_behavior_tree_runtime_logs as _core_behavior_tree_runtime_logs,
+    fanxiu_behavior_tree_runtime_status as _core_behavior_tree_runtime_status,
+    fanxiu_behavior_tree_runtime_state_path as _core_runtime_state_path,
     fanxiu_data_annotation_scheduler_settings_path as _core_scheduler_settings_path,
     fanxiu_data_annotation_scheduler_state_path as _core_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path as _core_world_facts_path,
-    clear_fanxiu_data_annotation_runtime_logs as _core_clear_data_annotation_runtime_logs,
-    register_fanxiu_runtime_runner,
+    clear_fanxiu_behavior_tree_runtime_logs as _core_clear_behavior_tree_runtime_logs,
+    register_behavior_tree_runtime_runner,
     resolve_fanxiu_entry,
 )
 from backend.core.fanxiu.data_annotation.recognition_ops import build_recognition_ops_report
+from backend.core.fanxiu.data_annotation.navigation_incidents import (
+    list_navigation_incident_summaries,
+    load_navigation_incident,
+)
 from backend.core.fanxiu.data_annotation.storage import (
+    FanxiuDataAnnotationAssetTreeConflict,
     decode_data_annotation_image_data_url,
+    read_data_annotation_asset_tree_snapshot,
     resolve_data_annotation_image_asset,
-    save_data_annotation_asset_tree_bundle,
+    save_data_annotation_asset_tree_snapshot,
+    save_data_annotation_frame_tree_node,
     save_data_annotation_image_bytes,
 )
 from backend.core.fanxiu.game.macro_annotation import (
@@ -493,11 +491,6 @@ from backend.core.fanxiu.game.macro_annotation import (
     _summarize_game_macro_ocr_document,
 )
 from backend.core.fanxiu.data_annotation.rembg import remove_fanxiu_data_annotation_background
-from backend.core.fanxiu.runtime.behavior_tree_service import (
-    get_behavior_tree_status,
-    start_behavior_tree_service,
-    stop_behavior_tree_service,
-)
 from backend.core.runtime.local_script_processes import list_local_script_processes
 from backend.core.notes.access import note_to_response_dict
 from backend.core.notes.semantics import (
@@ -632,6 +625,7 @@ SPIRIT_ARTIFACT_PARTS = {
     "青暝岁月灯": ("盏", "芯", "穗", "杆", "纹", "荧"),
     "苍烟神火炉": ("饰", "盖", "身", "柄", "光", "座"),
     "御海镇神图": ("卷", "瑚", "海", "轴", "灵", "山"),
+    "六界轮回盘": ("珠", "盘", "焰", "环", "荧", "晶"),
 }
 SPIRIT_ARTIFACT_NAME_ALIASES = {
     "青冥岁月灯": "青暝岁月灯",
@@ -691,6 +685,7 @@ SPIRIT_ARTIFACT_EXCLUSIVE_ATTRIBUTE_BASES = {
         "灵暴附伤": Decimal("8000"),
         "灵暴": Decimal("24000"),
     },
+    "六界轮回盘": {},
 }
 FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
 
@@ -2400,184 +2395,37 @@ def get_fanxiu_processes(
     return FanxiuProcessListResponse(items=list_fanxiu_processes())
 
 
-@status_router.post("/packet-capture/snapshot", response_model=FanxiuPacketCaptureSnapshot)
-def get_fanxiu_packet_capture_snapshot(
-    payload: FanxiuPacketCaptureSnapshotRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketCaptureSnapshot.model_validate(
-        build_fanxiu_packet_capture_snapshot(payload.dns_hosts, resolve_dns=payload.resolve_dns)
-    )
 
 
-@status_router.get("/packet-capture/tcp/captures", response_model=FanxiuTcpCaptureListResponse)
-def list_fanxiu_packet_tcp_captures(
-    limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuTcpCaptureListResponse.model_validate(
-        list_fanxiu_tcp_captures(limit=limit)
-    )
 
 
-@status_router.get("/packet-capture/tcp/records", response_model=FanxiuTcpRecordListResponse)
-def list_fanxiu_packet_tcp_records(
-    limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuTcpRecordListResponse.model_validate(
-        list_fanxiu_tcp_records(limit=limit)
-    )
 
 
-@status_router.get("/packet-capture/tcp/decoded-records")
-def list_fanxiu_packet_decoded_records_api(
-    names: list[str] | None = Query(default=None),
-    pro_ids: list[int] | None = Query(default=None),
-    since_seconds: int | None = Query(default=None, ge=1),
-    limit: int = Query(50, ge=1, le=500),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    return list_fanxiu_packet_decoded_records(
-        session,
-        names=names,
-        pro_ids=pro_ids,
-        since_seconds=since_seconds,
-        limit=limit,
-    )
 
 
-@status_router.post("/packet-capture/tcp/decoded-records/prune")
-def prune_fanxiu_packet_decoded_records_api(
-    max_age_seconds: int = Query(7 * 24 * 60 * 60, ge=1),
-    min_keep: int = Query(200, ge=0),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    return prune_fanxiu_packet_decoded_records(
-        session,
-        max_age_seconds=max_age_seconds,
-        min_keep=min_keep,
-    )
 
 
-@status_router.post("/packet-capture/tcp/decoded-records/catch-up")
-def catch_up_fanxiu_packet_decoded_records_api(
-    names: list[str] | None = Query(default=None),
-    pro_ids: list[int] | None = Query(default=None),
-    since_seconds: int | None = Query(default=None, ge=1),
-    limit: int = Query(50, ge=1, le=500),
-    reason: str = Query("decoded-records-api"),
-    wait_seconds: float = Query(30.0, ge=0.0, le=120.0),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    return catch_up_and_list_fanxiu_packet_decoded_records(
-        session,
-        names=names,
-        pro_ids=pro_ids,
-        since_seconds=since_seconds,
-        limit=limit,
-        reason=reason,
-        wait_seconds=wait_seconds,
-    )
 
 
-@status_router.get("/packet-capture/tcp/business-entries", response_model=FanxiuTcpBusinessEntryListResponse)
-def list_fanxiu_packet_tcp_business_entries(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    category: str = Query("", max_length=80),
-    protocol: str = Query("", max_length=120),
-    hidden_protocols: str = Query("", max_length=8000),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    hidden_protocol_list = [
-        item.strip()
-        for item in hidden_protocols.split(",")
-        if item.strip()
-    ]
-    return FanxiuTcpBusinessEntryListResponse.model_validate(
-        list_fanxiu_tcp_business_entries(
-            category=category,
-            protocol=protocol,
-            hidden_protocols=hidden_protocol_list,
-            page=page,
-            page_size=page_size,
-        )
-    )
 
 
-@status_router.post("/packet-capture/tcp/decode", response_model=FanxiuTcpDecodeResponse)
-def decode_fanxiu_packet_tcp_capture(
-    payload: FanxiuTcpDecodeRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        result = decode_fanxiu_tcp_pcap(
-            payload.pcap,
-            stream=payload.stream,
-            server_host=payload.server_host,
-            persist=payload.persist,
-        )
-        if payload.persist:
-            sync_fanxiu_activity_packets(force=False)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FanxiuTcpDecodeResponse.model_validate(result)
 
 
-@status_router.get("/packet-capture/tcp/worldline-activity/latest")
+@status_router.get("/activity-runtime-schedule/latest")
 def get_fanxiu_latest_worldline_activity_schedule(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
-    return get_fanxiu_activity_packet_schedule()
+    return read_fanxiu_activity_runtime_schedule()
 
 
-@status_router.post("/activity-packet-sync", response_model=FanxiuActivityPacketSyncResponse)
-def sync_fanxiu_activity_packet_history(
-    payload: FanxiuActivityPacketSyncRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuActivityPacketSyncResponse.model_validate(
-        sync_fanxiu_activity_packets(force=payload.force)
-    )
 
 
-@status_router.get("/packet-capture/tcp/insights", response_model=FanxiuPacketInsightResponse)
-def get_fanxiu_packet_insights(
-    auto_sync: bool = Query(False),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketInsightResponse.model_validate(
-        get_fanxiu_packet_runtime_insights(sync=auto_sync)
-    )
 
 
-@status_router.get("/packet-capture/tcp/player-profiles", response_model=FanxiuPlayerProfileRecordListResponse)
-def list_fanxiu_packet_player_profiles(
+@status_router.get("/business-data/player-profiles", response_model=FanxiuPlayerProfileRecordListResponse)
+def list_fanxiu_business_player_profiles(
     limit: int = Query(1000, ge=1, le=5000),
     history: bool = Query(False),
     current_user: User = Depends(get_current_active_user),
@@ -2587,7 +2435,20 @@ def list_fanxiu_packet_player_profiles(
         records = list_fanxiu_player_profile_records(session, limit=limit)
     else:
         records = list_latest_fanxiu_player_profile_records(session, limit=limit)
-    return FanxiuPlayerProfileRecordListResponse(ok=True, count=len(records), records=records)
+    daily_records = list_daily_fanxiu_player_profile_records(session, limit=limit)
+    xianlv_team_records = list_latest_fanxiu_player_xianlv_team_records(session, limit=limit)
+    xianlv_team_daily_records = list_daily_fanxiu_player_xianlv_team_records(session, limit=limit)
+    return FanxiuPlayerProfileRecordListResponse(
+        ok=True,
+        count=len(records),
+        records=records,
+        daily_count=len(daily_records),
+        daily_records=daily_records,
+        xianlv_team_count=len(xianlv_team_records),
+        xianlv_team_records=xianlv_team_records,
+        xianlv_team_daily_count=len(xianlv_team_daily_records),
+        xianlv_team_daily_records=xianlv_team_daily_records,
+    )
 
 
 @status_router.get("/server-relations", response_model=FanxiuServerRelationTreeResponse)
@@ -2630,6 +2491,8 @@ def _fanxiu_mail_record_sort_key(row: FanxiuMailRecord) -> tuple[float, float, f
 
 
 def _fanxiu_mail_record_has_display_payload(row: FanxiuMailRecord) -> bool:
+    if row.source == "runtime_memory":
+        return True
     payload = row.payload or {}
     content = payload.get("mail_content_text")
     if isinstance(content, str) and content.strip():
@@ -2720,7 +2583,6 @@ def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, An
             "orphan_action",
             "visible_orphan_backfill",
             "has_attachment_hint",
-            "pcap_name",
             "orphan_action_reason",
         )
         if key in evidence
@@ -2736,13 +2598,19 @@ def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, An
         "create_time_ms": row.create_time_ms,
         "source": row.source,
         "status": row.status,
+        "runtime_status": row.runtime_status,
+        "desired_status": row.desired_status,
+        "present_in_runtime": row.present_in_runtime,
+        "reward_getted": row.reward_getted,
+        "has_attachment": row.has_attachment,
+        "attachment_count": row.attachment_count,
+        "last_runtime_sync_at": row.last_runtime_sync_at,
         "locked": row.locked,
         "action_policy": row.action_policy,
         "last_action_error": row.last_action_error,
         "seen_count": row.seen_count,
         "first_seen_at": row.first_seen_at,
         "last_seen_at": row.last_seen_at,
-        "last_seen_capture_at": row.last_seen_capture_at,
         "payload": response_payload,
         "evidence": response_evidence,
         "created_at": row.created_at,
@@ -2789,8 +2657,8 @@ def put_lingquan_question(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     ensure_fanxiu_write_permission(current_user, session)
-    item = session.get(FanxiuLingquanQuestion, question_id)
-    if item is None:
+    item = session.get(FanxiuChoiceKnowledge, question_id)
+    if item is None or item.domain != "lingquan":
         raise HTTPException(status_code=404, detail="灵泉题目不存在")
     try:
         return serialize_question(update_lingquan_question(session, item, payload))
@@ -2805,11 +2673,14 @@ def delete_lingquan_question(
     session: Session = Depends(get_session),
 ) -> dict[str, bool]:
     ensure_fanxiu_write_permission(current_user, session)
-    item = session.get(FanxiuLingquanQuestion, question_id)
-    if item is None:
+    item = session.get(FanxiuChoiceKnowledge, question_id)
+    if item is None or item.domain != "lingquan":
         raise HTTPException(status_code=404, detail="灵泉题目不存在")
     session.delete(item)
     session.commit()
+    from backend.core.fanxiu.choice_knowledge.catalog import choice_knowledge_catalog
+
+    choice_knowledge_catalog.remove(question_id)
     return {"ok": True}
 
 
@@ -2819,7 +2690,8 @@ def list_fanxiu_mail_records(
     offset: int = Query(0, ge=0),
     status: str = Query(""),
     action_policy: str = Query(""),
-    source: str = Query("packet_evidence"),
+    source: str = Query("runtime_memory"),
+    include_absent: bool = Query(True),
     include_empty_actions: bool = Query(False),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -2829,7 +2701,7 @@ def list_fanxiu_mail_records(
     stmt = select(FanxiuMailRecord)
     status_text = status.strip() if isinstance(status, str) else ""
     action_policy_text = action_policy.strip() if isinstance(action_policy, str) else ""
-    source_text = source.strip().lower() if isinstance(source, str) else "packet_evidence"
+    source_text = source.strip().lower() if isinstance(source, str) else "runtime_memory"
     if status_text:
         stmt = stmt.where(FanxiuMailRecord.status == status_text)
     if action_policy_text:
@@ -2838,6 +2710,8 @@ def list_fanxiu_mail_records(
         stmt = stmt.where(FanxiuMailRecord.source.in_(("packet", "packet_orphan_action")))
     elif source_text and source_text != "all":
         stmt = stmt.where(FanxiuMailRecord.source == source_text)
+    if include_absent is not True and source_text == "runtime_memory":
+        stmt = stmt.where(FanxiuMailRecord.present_in_runtime == True)  # noqa: E712
     stmt = stmt.order_by(FanxiuMailRecord.last_seen_at.desc(), FanxiuMailRecord.updated_at.desc())
     rows = session.exec(stmt).all()
     if include_empty_actions is not True:
@@ -2886,221 +2760,152 @@ def update_fanxiu_mail_record_status(
     return FanxiuMailRecordUpdateResponse(ok=True, record=_fanxiu_mail_record_dump_for_response(record))
 
 
-@status_router.post("/mail-records/sync-packets", response_model=FanxiuMailPacketSyncResponse)
-def sync_fanxiu_mail_records_from_packets(
-    payload: FanxiuMailPacketSyncRequest,
+@status_router.post("/mail-records/sync-runtime", response_model=FanxiuMailRuntimeSyncResponse)
+def sync_fanxiu_mail_records_from_runtime(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuMailPacketSyncResponse.model_validate(
-        sync_fanxiu_mail_packets(session, clear_existing=payload.clear_existing)
-    )
+    result = sync_fanxiu_mail_from_runtime(session)
+    if not result.get("ok"):
+        raise HTTPException(status_code=503, detail=result.get("reason") or "邮件动态快照不可用")
+    return FanxiuMailRuntimeSyncResponse.model_validate(result)
 
 
-def _fanxiu_capture_runtime_status_from_packet_service() -> dict[str, Any]:
-    service = get_fanxiu_packet_service_status()
-    capture = service.get("capture_runtime") if isinstance(service.get("capture_runtime"), dict) else {}
+
+
+@status_router.get("/business-data/storage-bag")
+def get_fanxiu_business_storage_bag(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        runtime_snapshot = fanxiu_instrumentation_service.backpack_ui_snapshot()
+        cards_by_id = load_fanxiu_item_runtime_index(rebuild_missing=False)["cards_by_id"]
+        bag = sync_storage_bag_atlas(
+            runtime_snapshot,
+            cards_by_id,
+            captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+    except (FanxiuRuntimeMemoryError, KeyError, TypeError, ValueError) as exc:
+        bag = load_storage_bag_atlas(reason=str(exc))
+        if bag is not None:
+            ensure_storage_bag_atlas_analysis(session, bag)
+            session.commit()
+            return {
+                "ok": True,
+                "state": "cached",
+                "reason": str(exc),
+                "bag": apply_storage_bag_item_settings(session, bag),
+            }
+        return {
+            "ok": False,
+            "state": "runtime_unavailable",
+            "reason": str(exc),
+            "bag": None,
+        }
+    ensure_storage_bag_atlas_analysis(session, bag)
+    session.commit()
     return {
-        **capture,
-        "state": capture.get("state") or service.get("state") or "stopped",
-        "running": bool(capture.get("running") or service.get("running")),
+        "ok": True,
+        "state": "complete",
+        "reason": None,
+        "bag": apply_storage_bag_item_settings(session, bag),
     }
 
 
-@status_router.get("/packet-capture/tcp/storage-bag")
-def get_fanxiu_packet_storage_bag(
+@status_router.put(
+    "/business-data/storage-bag/atlas/{base_id}/auto-claim",
+    response_model=FanxiuStorageBagAutoClaimUpdateResponse,
+)
+def update_fanxiu_business_storage_bag_auto_claim(
+    base_id: int,
+    payload: FanxiuStorageBagAutoClaimUpdateRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
-):
+) -> FanxiuStorageBagAutoClaimUpdateResponse:
     ensure_fanxiu_write_permission(current_user, session)
-    return get_fanxiu_packet_storage_bag_snapshot(sync=False)
-
-
-@status_router.post("/packet-capture/tcp/insights/sync", response_model=FanxiuPacketInsightResponse)
-def sync_fanxiu_packet_insights(
-    payload: FanxiuPacketInsightSyncRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketInsightResponse.model_validate(
-        sync_fanxiu_packet_runtime_insights(force=payload.force)
+    atlas = load_storage_bag_atlas()
+    if atlas is None or not any(int(row.get("base_id") or 0) == base_id for row in atlas.get("items") or []):
+        raise HTTPException(status_code=404, detail="储物袋图鉴中不存在该物品")
+    record = set_storage_bag_auto_claim(session, base_id=base_id, auto_claim=payload.auto_claim)
+    session.commit()
+    session.refresh(record)
+    return FanxiuStorageBagAutoClaimUpdateResponse(
+        ok=True,
+        base_id=record.base_id,
+        auto_claim=record.auto_claim,
     )
 
 
-@status_router.get("/packet-capture/tcp/worker/status")
-def get_fanxiu_packet_worker_status(
+@status_router.put(
+    "/business-data/storage-bag/atlas/{base_id}/note",
+    response_model=FanxiuStorageBagNoteUpdateResponse,
+)
+def update_fanxiu_business_storage_bag_note(
+    base_id: int,
+    payload: FanxiuStorageBagNoteUpdateRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
-) -> dict[str, Any]:
+) -> FanxiuStorageBagNoteUpdateResponse:
     ensure_fanxiu_write_permission(current_user, session)
-    return get_fanxiu_packet_daemon_worker_status()
+    atlas = load_storage_bag_atlas()
+    if atlas is None or not any(int(row.get("base_id") or 0) == base_id for row in atlas.get("items") or []):
+        raise HTTPException(status_code=404, detail="储物袋图鉴中不存在该物品")
+    record = set_storage_bag_note(session, base_id=base_id, note=payload.note)
+    session.commit()
+    session.refresh(record)
+    return FanxiuStorageBagNoteUpdateResponse(ok=True, base_id=record.base_id, note=record.note)
 
 
-@status_router.post("/packet-capture/tcp/worker/realtime-scan")
-def run_fanxiu_packet_worker_realtime_scan(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    start_result = start_fanxiu_packet_service()
-    return {
-        "status": "delegated",
-        "action": "ensure-daemon",
-        "start_result": start_result,
-        "worker": get_fanxiu_packet_daemon_worker_status(),
-    }
-
-
-@status_router.post("/packet-capture/tcp/worker/catch-up")
-def run_fanxiu_packet_worker_catch_up(
-    reason: str = Query("api"),
-    wait_seconds: float = Query(30.0, ge=0.0, le=120.0),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    start_result = start_fanxiu_packet_service()
-    command_result = request_fanxiu_packet_service_catch_up(
-        reason=reason,
-        wait_seconds=wait_seconds,
-    )
-    return {
-        "status": command_result.get("status") or "pending",
-        "action": "packet-facts-catch-up",
-        "start_result": start_result,
-        "command": command_result,
-        "worker": get_fanxiu_packet_daemon_worker_status(),
-    }
-
-
-@status_router.post("/packet-capture/tcp/worker/maintenance")
-def run_fanxiu_packet_worker_maintenance(
-    reason: str = Query("api"),
-    wait_seconds: float = Query(30.0, ge=0.0, le=120.0),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
-    ensure_fanxiu_write_permission(current_user, session)
-    start_result = start_fanxiu_packet_service()
-    command_result = request_fanxiu_packet_service_maintenance(
-        reason=reason,
-        wait_seconds=wait_seconds,
-    )
-    return {
-        "status": command_result.get("status") or "pending",
-        "action": "maintenance",
-        "start_result": start_result,
-        "command": command_result,
-        "worker": get_fanxiu_packet_daemon_worker_status(),
-    }
-
-
-@status_router.get("/capture-runtime/status", response_model=FanxiuCaptureRuntimeStatus)
-def get_fanxiu_capture_runtime_status(
+@status_router.delete("/business-data/storage-bag/atlas/{base_id}")
+def delete_fanxiu_business_storage_bag_atlas_item(
+    base_id: int,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
+    try:
+        result = delete_storage_bag_atlas_item(base_id)
+        delete_storage_bag_item_setting(session, base_id=base_id)
+        delete_storage_bag_usage_history(session, base_id=base_id)
+        session.commit()
+        return {"ok": True, **result}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="储物袋图鉴中不存在该物品")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
-@status_router.post("/capture-runtime/ensure", response_model=FanxiuCaptureRuntimeStatus)
-def ensure_fanxiu_capture_runtime(
-    payload: FanxiuCaptureRuntimeRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    del payload
-    start_fanxiu_packet_service()
-    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
-@status_router.post("/capture-runtime/release", response_model=FanxiuCaptureRuntimeStatus)
-def release_fanxiu_capture_runtime(
-    payload: FanxiuCaptureRuntimeRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    del payload
-    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
-@status_router.post("/capture-runtime/stop", response_model=FanxiuCaptureRuntimeStatus)
-def stop_fanxiu_capture_runtime(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    stop_fanxiu_packet_service()
-    return FanxiuCaptureRuntimeStatus.model_validate(_fanxiu_capture_runtime_status_from_packet_service())
 
 
-@status_router.get("/packet-capture/activity/status", response_model=FanxiuPacketActivityStatus)
-def get_fanxiu_packet_activity_status(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.status())
 
 
-@status_router.get("/packet-capture/activity/history", response_model=FanxiuPacketActivityHistoryResponse)
-def get_fanxiu_packet_activity_history(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    key: str = Query(""),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketActivityHistoryResponse.model_validate(
-        fanxiu_packet_activity_service.history(offset=offset, limit=limit, key=key)
-    )
 
 
-@status_router.get("/packet-capture/activity/stream", response_model=FanxiuPacketActivityStreamResponse)
-def get_fanxiu_packet_activity_stream(
-    key: str = Query(""),
-    max_bytes: int = Query(32768, ge=1024, le=65536),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketActivityStreamResponse.model_validate(
-        fanxiu_packet_activity_service.stream(key=key, max_bytes=max_bytes)
-    )
 
 
-@status_router.post("/packet-capture/activity/start", response_model=FanxiuPacketActivityStatus)
-def start_fanxiu_packet_activity(
-    payload: FanxiuPacketActivityStartRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.start(payload.bind_ip))
 
 
-@status_router.post("/packet-capture/activity/stop", response_model=FanxiuPacketActivityStatus)
-def stop_fanxiu_packet_activity(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.stop())
 
 
-@status_router.delete("/packet-capture/activity", response_model=FanxiuPacketActivityStatus)
-def clear_fanxiu_packet_activity(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.clear())
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _recommended_fanxiu_proxy_address(status: dict[str, Any]) -> str:
@@ -3111,302 +2916,34 @@ def _recommended_fanxiu_proxy_address(status: dict[str, Any]) -> str:
     return addresses[0] if addresses else ""
 
 
-def _saved_fanxiu_capture_host_port() -> tuple[str, int]:
-    state = fanxiu_packet_proxy_service.session_state()
-    host = str(state.get("host") or "0.0.0.0").strip()
-    try:
-        port = int(state.get("port") or 8899)
-    except (TypeError, ValueError):
-        port = 8899
-    return host, port
 
 
-def _ensure_fanxiu_capture_session(device_id: str = "") -> Optional[dict[str, Any]]:
-    state = fanxiu_packet_proxy_service.session_state()
-    if not state.get("active"):
-        return None
-
-    host, port = _saved_fanxiu_capture_host_port()
-    selected_device = str(device_id or state.get("device_id") or "").strip()
-    proxy_status = fanxiu_packet_proxy_service.status()
-    needs_start = (
-        not proxy_status.get("running")
-        or str(proxy_status.get("host") or "") != host
-        or int(proxy_status.get("port") or 0) != port
-    )
-    if needs_start:
-        try:
-            proxy_status = fanxiu_packet_proxy_service.start(host, port)
-        except RuntimeError as exc:
-            fanxiu_packet_proxy_service.save_session_state(
-                active=True,
-                host=host,
-                port=port,
-                device_id=selected_device,
-                target_proxy=str(state.get("target_proxy") or ""),
-                last_error=f"恢复 Python 抓包代理失败：{exc}",
-            )
-            return None
-
-    target_proxy = _recommended_fanxiu_proxy_address(proxy_status) or str(state.get("target_proxy") or "")
-    android_status = fanxiu_android_proxy_service.status(
-        device_id=selected_device,
-        target_proxy=target_proxy,
-    )
-    if target_proxy and android_status.get("available") and not android_status.get("matches_target"):
-        try:
-            android_status = fanxiu_android_proxy_service.set_http_proxy(
-                target_proxy,
-                device_id=str(android_status.get("device_id") or selected_device),
-            )
-        except Exception as exc:
-            android_status["last_error"] = f"恢复安卓代理失败：{exc}"
-
-    fanxiu_packet_proxy_service.save_session_state(
-        active=True,
-        host=host,
-        port=port,
-        device_id=str(android_status.get("device_id") or selected_device),
-        target_proxy=target_proxy,
-        last_error=str(android_status.get("last_error") or ""),
-    )
-    return android_status
 
 
-def _fanxiu_packet_capture_session_status(
-    *,
-    android_status: Optional[dict[str, Any]] = None,
-    device_id: str = "",
-) -> dict[str, Any]:
-    if android_status is None:
-        android_status = _ensure_fanxiu_capture_session(device_id=device_id)
-    proxy_status = fanxiu_packet_proxy_service.status()
-    state = fanxiu_packet_proxy_service.session_state()
-    target_proxy = _recommended_fanxiu_proxy_address(proxy_status) or str(state.get("target_proxy") or "")
-    android = android_status or fanxiu_android_proxy_service.status(
-        device_id=device_id,
-        target_proxy=target_proxy,
-    )
-    if target_proxy and not android.get("target_proxy"):
-        android["target_proxy"] = target_proxy
-        android["matches_target"] = android.get("http_proxy") == target_proxy
-    last_error = str(android.get("last_error") or proxy_status.get("last_error") or state.get("last_error") or "")
-    return {
-        "active": bool(proxy_status.get("running") and android.get("matches_target")),
-        "target_proxy": target_proxy,
-        "proxy": proxy_status,
-        "android": android,
-        "last_error": last_error,
-    }
 
 
-@status_router.get("/packet-capture/session/status", response_model=FanxiuPacketCaptureSessionStatus)
-def get_fanxiu_packet_capture_session_status(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketCaptureSessionStatus.model_validate(
-        _fanxiu_packet_capture_session_status()
-    )
 
 
-@status_router.post("/packet-capture/session/start", response_model=FanxiuPacketCaptureSessionStatus)
-def start_fanxiu_packet_capture_session(
-    payload: FanxiuPacketProxyStartRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        proxy_status = fanxiu_packet_proxy_service.start(payload.host, payload.port)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    target_proxy = _recommended_fanxiu_proxy_address(proxy_status)
-    android_status: dict[str, Any]
-    try:
-        android_status = fanxiu_android_proxy_service.set_http_proxy(
-            target_proxy,
-            device_id=payload.device_id,
-        )
-    except Exception as exc:
-        android_status = fanxiu_android_proxy_service.status(
-            device_id=payload.device_id,
-            target_proxy=target_proxy,
-        )
-        android_status["last_error"] = str(exc)
-
-    fanxiu_packet_proxy_service.save_session_state(
-        active=True,
-        host=payload.host,
-        port=payload.port,
-        device_id=str(android_status.get("device_id") or payload.device_id),
-        target_proxy=target_proxy,
-        last_error=str(android_status.get("last_error") or ""),
-    )
-    return FanxiuPacketCaptureSessionStatus.model_validate(
-        _fanxiu_packet_capture_session_status(android_status=android_status, device_id=payload.device_id)
-    )
 
 
-@status_router.post("/packet-capture/session/stop", response_model=FanxiuPacketCaptureSessionStatus)
-def stop_fanxiu_packet_capture_session(
-    payload: FanxiuPacketProxyStartRequest = FanxiuPacketProxyStartRequest(),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    android_status: dict[str, Any]
-    try:
-        android_status = fanxiu_android_proxy_service.clear_http_proxy(device_id=payload.device_id)
-    except Exception as exc:
-        proxy_status = fanxiu_packet_proxy_service.status()
-        target_proxy = _recommended_fanxiu_proxy_address(proxy_status)
-        android_status = fanxiu_android_proxy_service.status(
-            device_id=payload.device_id,
-            target_proxy=target_proxy,
-        )
-        android_status["last_error"] = f"清理安卓代理失败，已保留 Python 代理运行：{exc}"
-        host, port = _saved_fanxiu_capture_host_port()
-        fanxiu_packet_proxy_service.save_session_state(
-            active=True,
-            host=host,
-            port=port,
-            device_id=str(android_status.get("device_id") or payload.device_id),
-            target_proxy=target_proxy,
-            last_error=str(android_status.get("last_error") or ""),
-        )
-        return FanxiuPacketCaptureSessionStatus.model_validate(
-            _fanxiu_packet_capture_session_status(android_status=android_status, device_id=payload.device_id)
-        )
-
-    fanxiu_packet_proxy_service.stop()
-    host, port = _saved_fanxiu_capture_host_port()
-    fanxiu_packet_proxy_service.save_session_state(
-        active=False,
-        host=host,
-        port=port,
-        device_id=str(android_status.get("device_id") or payload.device_id),
-    )
-    return FanxiuPacketCaptureSessionStatus.model_validate(
-        _fanxiu_packet_capture_session_status(android_status=android_status, device_id=payload.device_id)
-    )
 
 
-@status_router.get("/packet-capture/proxy/status", response_model=FanxiuPacketProxyStatus)
-def get_fanxiu_packet_proxy_status(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    _ensure_fanxiu_capture_session()
-    return FanxiuPacketProxyStatus.model_validate(fanxiu_packet_proxy_service.status())
 
 
-@status_router.post("/packet-capture/proxy/start", response_model=FanxiuPacketProxyStatus)
-def start_fanxiu_packet_proxy(
-    payload: FanxiuPacketProxyStartRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return FanxiuPacketProxyStatus.model_validate(
-            fanxiu_packet_proxy_service.start(payload.host, payload.port)
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@status_router.post("/packet-capture/proxy/stop", response_model=FanxiuPacketProxyStatus)
-def stop_fanxiu_packet_proxy(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketProxyStatus.model_validate(fanxiu_packet_proxy_service.stop())
 
 
-@status_router.get("/packet-capture/proxy/events", response_model=FanxiuPacketProxyEventListResponse)
-def get_fanxiu_packet_proxy_events(
-    limit: int = Query(200, ge=1, le=500),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    _ensure_fanxiu_capture_session()
-    return FanxiuPacketProxyEventListResponse.model_validate(
-        fanxiu_packet_proxy_service.list_events(limit)
-    )
 
 
-@status_router.get("/packet-capture/proxy/timeline", response_model=FanxiuPacketProxyTimelineResponse)
-def get_fanxiu_packet_proxy_timeline(
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    event_filter: str = Query("all", pattern="^(candidate|readable|encrypted_or_resource|all)$"),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    _ensure_fanxiu_capture_session()
-    return FanxiuPacketProxyTimelineResponse.model_validate(
-        fanxiu_packet_proxy_service.list_timeline(offset=offset, limit=limit, event_filter=event_filter)
-    )
 
 
-@status_router.delete("/packet-capture/proxy/events", response_model=FanxiuPacketProxyEventListResponse)
-def clear_fanxiu_packet_proxy_events(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketProxyEventListResponse.model_validate(
-        fanxiu_packet_proxy_service.clear_events()
-    )
 
 
-@status_router.post("/packet-capture/proxy/events/save", response_model=FanxiuPacketProxySaveResponse)
-def save_fanxiu_packet_proxy_events(
-    payload: FanxiuPacketProxySaveRequest,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketProxySaveResponse.model_validate(
-        fanxiu_packet_proxy_service.save_events(payload.label)
-    )
 
 
-@status_router.get("/packet-capture/proxy/logs", response_model=FanxiuPacketProxyLogListResponse)
-def list_fanxiu_packet_proxy_logs(
-    limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuPacketProxyLogListResponse.model_validate(
-        fanxiu_packet_proxy_service.list_logs(limit)
-    )
 
 
-@status_router.get("/packet-capture/proxy/logs/load", response_model=FanxiuPacketProxyLogLoadResponse)
-def load_fanxiu_packet_proxy_log(
-    name: str = Query(..., min_length=1),
-    limit: int = Query(500, ge=1, le=2000),
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return FanxiuPacketProxyLogLoadResponse.model_validate(
-            fanxiu_packet_proxy_service.load_log(name, limit)
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse, deprecated=True)
@@ -3415,51 +2952,7 @@ def terminate_fanxiu_scripts(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    result = stop_behavior_tree_service()
-    service = result.get("service") or {}
-    stop_result = result.get("stop_result") or {}
-    if service.get("process_count"):
-        return FanxiuProcessTerminateResponse.model_validate(
-            {
-                **stop_result,
-                "remaining": service.get("processes") or stop_result.get("remaining") or [],
-            }
-        )
-    return FanxiuProcessTerminateResponse.model_validate(stop_result)
-
-
-@status_router.get("/behavior-tree-service", response_model=FanxiuBehaviorTreeServiceStatus, deprecated=True)
-def get_fanxiu_behavior_tree_service(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    # Legacy external-service status endpoint kept for older pages/tools.
-    # Main service operations for new work should prefer runtime management actions.
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuBehaviorTreeServiceStatus.model_validate(get_behavior_tree_status())
-
-
-@status_router.post("/behavior-tree-service/start", response_model=FanxiuBehaviorTreeServiceResponse, deprecated=True)
-def start_fanxiu_behavior_tree(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    # Legacy external-service start endpoint; prefer runtime item actions for new tooling.
-    ensure_fanxiu_write_permission(current_user, session)
-    try:
-        return FanxiuBehaviorTreeServiceResponse.model_validate(start_behavior_tree_service(replace_existing=True))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@status_router.post("/behavior-tree-service/stop", response_model=FanxiuBehaviorTreeServiceResponse, deprecated=True)
-def stop_fanxiu_behavior_tree(
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    # Legacy external-service stop endpoint; prefer runtime item actions for new tooling.
-    ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuBehaviorTreeServiceResponse.model_validate(stop_behavior_tree_service())
+    return FanxiuProcessTerminateResponse.model_validate(terminate_fanxiu_processes())
 
 
 def _stream_fanxiu_game_window(
@@ -3670,7 +3163,6 @@ def _stream_game_window2_service(params: dict[str, Any]) -> StreamingResponse:
         response = open_game_window_service_stream(params)
     except GameWindowServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    start_fanxiu_packet_service()
     return _stream_response_from_requests(
         response,
     )
@@ -4064,27 +3556,27 @@ def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Respon
     )
 
 
-class _FanxiuRuntimeRunnerProxy:
+class _BehaviorTreeRuntimeRunnerProxy:
     def __init__(self) -> None:
         self._runner: Any | None = None
 
     def resolve(self) -> Any:
         if self._runner is None:
-            self._runner = create_fanxiu_runtime_runner()
+            self._runner = create_behavior_tree_runtime_runner()
         return self._runner
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.resolve(), name)
 
 
-_DATA_ANNOTATION_RUNTIME_RUNNER: Any = _FanxiuRuntimeRunnerProxy()
+_BEHAVIOR_TREE_RUNTIME_RUNNER: Any = _BehaviorTreeRuntimeRunnerProxy()
 _RECOGNITION_OPS_RECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fanxiu-recognition-ops")
 _RECOGNITION_OPS_RECOMPUTE_LOCK = threading.Lock()
 _RECOGNITION_OPS_RECOMPUTE_RUNNING: set[str] = set()
 
 
 def _recognition_ops_recompute_state_path(cache_key: str) -> Path:
-    return _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.recompute.json"
+    return _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.recompute.json"
 
 
 def _read_recognition_ops_recompute_state(cache_key: str) -> dict[str, Any] | None:
@@ -4142,7 +3634,7 @@ def _submit_recognition_ops_recompute(
 
     def run() -> None:
         try:
-            matrix = _DATA_ANNOTATION_RUNTIME_RUNNER.match_scene_matrix(ctx, scene_ids=scene_ids, layer=int(layer), use_cache=False)
+            matrix = _BEHAVIOR_TREE_RUNTIME_RUNNER.match_scene_matrix(ctx, scene_ids=scene_ids, layer=int(layer), use_cache=False)
             if isinstance(matrix, dict) and matrix.get("cache_path"):
                 cache_path = Path(str(matrix["cache_path"]))
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4242,18 +3734,18 @@ def _derive_recognition_ops_matrix_subset(
 
 
 def __getattr__(name: str) -> Any:
-    if name == "_DataAnnotationRuntimeRunner":
-        from backend.core.fanxiu.data_annotation.runtime_runner import DataAnnotationRuntimeRunner
+    if name == "_BehaviorTreeRuntimeRunner":
+        from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
 
-        return DataAnnotationRuntimeRunner
+        return BehaviorTreeRuntimeRunner
     raise AttributeError(name)
 
 
-def _sync_data_annotation_runtime_runner_to_core() -> None:
-    register_fanxiu_runtime_runner(_DATA_ANNOTATION_RUNTIME_RUNNER)
+def _sync_behavior_tree_runtime_runner_to_core() -> None:
+    register_behavior_tree_runtime_runner(_BEHAVIOR_TREE_RUNTIME_RUNNER)
 
 
-def _raise_fanxiu_runtime_http_error(exc: FanxiuRuntimeError) -> None:
+def _raise_fanxiu_runtime_http_error(exc: BehaviorTreeRuntimeError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
@@ -4261,11 +3753,11 @@ def _data_annotation_dir() -> Path:
     return _core_data_annotation_dir()
 
 
-def _data_annotation_runtime_dir() -> Path:
-    return _core_data_annotation_runtime_dir()
+def _behavior_tree_runtime_dir() -> Path:
+    return _core_behavior_tree_runtime_dir()
 
 
-def _data_annotation_runtime_state_path() -> Path:
+def _behavior_tree_runtime_state_path() -> Path:
     return _core_runtime_state_path()
 
 
@@ -4286,50 +3778,50 @@ def _data_annotation_mail_scan_state_path() -> Path:
 
 
 def _read_data_annotation_world_facts() -> dict[str, Any]:
-    return _runtime_control.read_world_facts(_data_annotation_world_facts_path())
+    return _behavior_tree_control.read_world_facts(_data_annotation_world_facts_path())
 
 
 def _write_data_annotation_world_facts(facts: dict[str, Any]) -> None:
-    _runtime_control.write_world_facts(facts, _data_annotation_world_facts_path())
+    _behavior_tree_control.write_world_facts(facts, _data_annotation_world_facts_path())
 
 
 def _record_data_annotation_scheduler_task_fact(task: dict[str, Any], result: str) -> None:
-    _runtime_control.record_scheduler_task_fact(task, result, world_facts_path=_data_annotation_world_facts_path())
+    _behavior_tree_control.record_scheduler_task_fact(task, result, world_facts_path=_data_annotation_world_facts_path())
 
 
-def _persist_data_annotation_runtime_status(status: dict[str, Any]) -> None:
-    _runtime_control.persist_runtime_status(
+def _persist_behavior_tree_runtime_status(status: dict[str, Any]) -> None:
+    _behavior_tree_control.persist_behavior_tree_runtime_status(
         status,
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
 
-def _read_data_annotation_runtime_status() -> dict[str, Any]:
-    return _runtime_control.read_runtime_status(_data_annotation_runtime_state_path())
+def _read_behavior_tree_runtime_status() -> dict[str, Any]:
+    return _behavior_tree_control.read_behavior_tree_runtime_status(_behavior_tree_runtime_state_path())
 
 
-def _is_data_annotation_runtime_live_empty(status: dict[str, Any]) -> bool:
-    return is_data_annotation_runtime_live_empty(status)
+def _is_behavior_tree_runtime_live_empty(status: dict[str, Any]) -> bool:
+    return is_behavior_tree_runtime_live_empty(status)
 
 
-def _append_data_annotation_runtime_log_once(status: dict[str, Any], kind: str, message: str) -> None:
-    _runtime_control.append_runtime_log_once(status, kind, message)
+def _append_behavior_tree_runtime_log_once(status: dict[str, Any], kind: str, message: str) -> None:
+    _behavior_tree_control.append_runtime_log_once(status, kind, message)
 
 
-def _normalize_data_annotation_runtime_guard_items(status: dict[str, Any]) -> None:
-    _sync_data_annotation_runtime_runner_to_core()
-    _runtime_control.normalize_runtime_guard_items(status)
+def _normalize_behavior_tree_runtime_guard_items(status: dict[str, Any]) -> None:
+    _sync_behavior_tree_runtime_runner_to_core()
+    _behavior_tree_control.normalize_runtime_guard_items(status)
 
 
-def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _core_data_annotation_runtime_status(
-        runtime_state_path=_data_annotation_runtime_state_path(),
+def _behavior_tree_runtime_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _core_behavior_tree_runtime_status(
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         include_cell_logs=include_cell_logs,
     )
-    settings = _runtime_control.read_scheduler_settings(
+    settings = _behavior_tree_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
     behavior_enabled = bool(settings.get("behavior_tree_enabled", True))
@@ -4346,7 +3838,7 @@ def _data_annotation_runtime_status(*, include_cell_logs: bool = True) -> dict[s
 
 
 def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
-    return _runtime_control.read_scheduler_tasks(
+    return _behavior_tree_control.read_scheduler_tasks(
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         now=datetime.now(),
@@ -4354,46 +3846,39 @@ def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
 
 
 def _write_data_annotation_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
-    _runtime_control.write_scheduler_tasks(tasks, scheduler_state_path=_data_annotation_scheduler_state_path())
-
-
-def _next_data_annotation_scheduler_time(task: dict[str, Any], now: datetime | None = None) -> str | None:
-    return _runtime_control.next_scheduler_time(task, now)
-
-
-def _sync_data_annotation_scheduler_tasks_from_world_facts(tasks: list[dict[str, Any]]) -> bool:
-    return _runtime_control.sync_scheduler_tasks_from_world_facts(
-        tasks,
-        world_facts_path=_data_annotation_world_facts_path(),
-        now=datetime.now(),
-    )
+    _behavior_tree_control.write_scheduler_tasks(tasks, scheduler_state_path=_data_annotation_scheduler_state_path())
 
 
 def _data_annotation_task_supported(task: dict[str, Any]) -> bool:
-    return _runtime_control.task_supported(task)
+    return _behavior_tree_control.task_supported(task)
 
 
-def _data_annotation_scheduler_task_view(task: dict[str, Any]) -> dict[str, Any]:
-    return _runtime_control.scheduler_task_view(task)
+def _data_annotation_scheduler_task_views(
+    tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return _behavior_tree_control.scheduler_task_views(
+        tasks,
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+    )
 
 
 def _data_annotation_scheduler_task_plan_reason(task: dict[str, Any], due: bool) -> str:
-    return _runtime_control.scheduler_task_plan_reason(task, due)
+    return _behavior_tree_control.scheduler_task_plan_reason(task, due)
 
 
 def _data_annotation_world_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
-    return _runtime_control.world_facts_summary(facts)
+    return _behavior_tree_control.world_facts_summary(facts)
 
 
 def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
-    _sync_data_annotation_runtime_runner_to_core()
+    _sync_behavior_tree_runtime_runner_to_core()
     entry_id = DEFAULT_FANXIU_ENTRY_ID
     try:
         entry = resolve_fanxiu_entry(entry_id)
     except Exception:
         entry = None
     _ensure_engineering_scheduler_kernel(entry, entry_id)
-    return _runtime_control.build_scheduler_plan(
+    return _behavior_tree_control.build_scheduler_plan(
         entry=entry,
         entry_id=entry_id,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
@@ -4404,7 +3889,7 @@ def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
 
 
 def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> None:
-    settings = _runtime_control.read_scheduler_settings(
+    settings = _behavior_tree_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
     if not (bool(settings.get("job_group_enabled", True)) and bool(settings.get("behavior_tree_enabled", True))):
@@ -4412,16 +3897,16 @@ def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> No
     if entry is None:
         return
     resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-    _runtime_framework.ensure_kernel(
+    _behavior_tree_framework.ensure_kernel(
         entry=entry,
         entry_id=resolved_entry_id,
         asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
-    return _runtime_control.task_payload_with_meta(task)
+    return _behavior_tree_control.task_payload_with_meta(task)
 
 
 def _data_annotation_scheduler_run_now_task(
@@ -4432,13 +3917,13 @@ def _data_annotation_scheduler_run_now_task(
     return _core_data_annotation_scheduler_run_now_task(tasks, task_id, payload_override)
 
 
-def _prepare_data_annotation_runtime_for_scheduler_task(task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
-    _sync_data_annotation_runtime_runner_to_core()
-    return _runtime_control.prepare_runtime_for_scheduler_task(
+def _prepare_behavior_tree_runtime_for_scheduler_task(task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    _sync_behavior_tree_runtime_runner_to_core()
+    return _behavior_tree_control.prepare_runtime_for_scheduler_task(
         task,
         tasks,
         scheduler_state_path=_data_annotation_scheduler_state_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
@@ -4452,20 +3937,20 @@ def _submit_data_annotation_task_cell(
     timeout_seconds: float | None = None,
     source: str = "",
 ) -> dict[str, Any]:
-    _sync_data_annotation_runtime_runner_to_core()
+    _sync_behavior_tree_runtime_runner_to_core()
     cell_payload = dict(payload or {})
     if timeout_seconds is not None:
         cell_payload.setdefault("timeout_seconds", float(timeout_seconds))
         cell_payload.setdefault("max_runtime_seconds", float(timeout_seconds))
     before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
     try:
-        status = _runtime_framework.submit_task_cell(
+        status = _behavior_tree_framework.submit_task_cell(
             entry=entry,
             entry_id=entry_id,
             task_type=task_type,
             payload=cell_payload,
         )
-    except FanxiuRuntimeError as exc:
+    except BehaviorTreeRuntimeError as exc:
         _raise_fanxiu_runtime_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4483,21 +3968,21 @@ def _submit_data_annotation_task_cell(
 def _submit_data_annotation_code_cell(
     entry: UserDevice,
     entry_id: str,
-    req: FanxiuDataAnnotationRuntimeCodeCellRequest,
+    req: FanxiuBehaviorTreeRuntimeCodeCellRequest,
     *,
     source: str = "",
 ) -> dict[str, Any]:
-    _sync_data_annotation_runtime_runner_to_core()
+    _sync_behavior_tree_runtime_runner_to_core()
     before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
     try:
-        status = _runtime_framework.submit_code_cell(
+        status = _behavior_tree_framework.submit_code_cell(
             entry=entry,
             entry_id=entry_id,
             code=req.code,
             timeout_seconds=req.timeout_seconds,
             max_output_chars=req.max_output_chars,
         )
-    except FanxiuRuntimeError as exc:
+    except BehaviorTreeRuntimeError as exc:
         _raise_fanxiu_runtime_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -4951,6 +4436,17 @@ async def get_fanxiu_game_window2_service_status(
     return status
 
 
+@status_router.get("/game-window2/frame-status")
+def get_fanxiu_game_window2_frame_status(
+    entry_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, entry_id)
+    return {"ok": True, "entry_id": entry_id, **get_mumu_adb_stream_frame_status()}
+
+
 @status_router.post("/game-window2/service-start")
 def start_fanxiu_game_window2_service(
     current_user: User = Depends(get_current_active_user),
@@ -5204,25 +4700,14 @@ def get_fanxiu_data_annotation_asset_tree(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, entry_id)
     path = _data_annotation_asset_tree_path(entry_id)
-    if not path.is_file():
-        return {
-            "ok": True,
-            "entry_id": entry_id,
-            "exists": False,
-            "tree": [],
-            "updated_at": 0,
-        }
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        payload = []
-    tree = payload if isinstance(payload, list) else []
+    snapshot = read_data_annotation_asset_tree_snapshot(path)
     return {
         "ok": True,
         "entry_id": entry_id,
-        "exists": True,
-        "tree": tree,
-        "updated_at": path.stat().st_mtime,
+        "exists": snapshot.exists,
+        "tree": snapshot.tree,
+        "revision": snapshot.revision,
+        "updated_at": snapshot.updated_at,
     }
 
 
@@ -5249,7 +4734,7 @@ def get_fanxiu_data_annotation_recognition_ops(
         allow_derive_subset: bool,
     ) -> dict[str, Any] | None:
         scene_set = {int(scene_id) for scene_id in scene_ids}
-        cache_dir = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir()
+        cache_dir = _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_dir()
         candidates: list[tuple[float, int, dict[str, Any]]] = []
         for candidate_path in cache_dir.glob("*.json"):
             try:
@@ -5302,8 +4787,8 @@ def get_fanxiu_data_annotation_recognition_ops(
         return candidates[0][2]
 
     try:
-        tree = _DATA_ANNOTATION_RUNTIME_RUNNER._load_asset_tree(path)
-        images = _DATA_ANNOTATION_RUNTIME_RUNNER._index_images(tree)
+        tree = _BEHAVIOR_TREE_RUNTIME_RUNNER._load_asset_tree(path)
+        images = _BEHAVIOR_TREE_RUNTIME_RUNNER._index_images(tree)
         ctx = {
             "entry_id": entry_id,
             "asset_tree_path": path,
@@ -5324,8 +4809,8 @@ def get_fanxiu_data_annotation_recognition_ops(
         ]
         computable_scene_id_set = set(computable_scene_ids)
         skipped_scene_ids = [int(scene_id) for scene_id in scene_ids if int(scene_id) not in computable_scene_id_set]
-        cache_key = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_key(ctx, computable_scene_ids, threshold=None)
-        cache_path = _DATA_ANNOTATION_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.json"
+        cache_key = _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_key(ctx, computable_scene_ids, threshold=None)
+        cache_path = _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.json"
         recompute_state: dict[str, Any] | None = None
         if bool(recompute):
             recompute_state = _submit_recognition_ops_recompute(cache_key=cache_key, ctx=ctx, layer=int(layer), scene_ids=computable_scene_ids)
@@ -5363,7 +4848,11 @@ def get_fanxiu_data_annotation_recognition_ops(
             recompute_state = _recognition_ops_recompute_view(cache_key)
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = build_recognition_ops_report(matrix, images)
+    result = build_recognition_ops_report(
+        matrix,
+        images,
+        navigation_incidents=list_navigation_incident_summaries(entry_id),
+    )
     result.update(
         {
             "ok": True,
@@ -5373,6 +4862,24 @@ def get_fanxiu_data_annotation_recognition_ops(
         }
     )
     return result
+
+
+@status_router.get("/data-annotation/recognition-ops/incidents/{incident_id}")
+def get_fanxiu_data_annotation_navigation_incident(
+    incident_id: str,
+    entry_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, entry_id)
+    try:
+        incident = load_navigation_incident(entry_id, incident_id, include_frames=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if incident is None:
+        raise HTTPException(status_code=404, detail="导航停滞事件不存在")
+    return {"ok": True, "entry_id": entry_id, "incident": incident}
 
 
 def _backup_data_annotation_asset_tree_before_save(path: Path) -> None:
@@ -5402,21 +4909,25 @@ def save_fanxiu_data_annotation_asset_tree(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
     path = _data_annotation_asset_tree_path(req.entry_id)
-    if path.is_file() and req.base_updated_at:
-        current_updated_at = path.stat().st_mtime
-        if current_updated_at > float(req.base_updated_at) + 1e-6:
-            raise HTTPException(status_code=409, detail="资产树已被其它页面或 Runtime 更新，请重新加载后再保存，避免覆盖最新标注")
     try:
-        _backup_data_annotation_asset_tree_before_save(path)
-        tree = save_data_annotation_asset_tree_bundle(path, req.tree, entry_id=req.entry_id)
+        snapshot = save_data_annotation_asset_tree_snapshot(
+            path,
+            req.tree,
+            entry_id=req.entry_id,
+            expected_revision=req.base_revision,
+            before_write=lambda: _backup_data_annotation_asset_tree_before_save(path),
+        )
+    except FanxiuDataAnnotationAssetTreeConflict as exc:
+        raise HTTPException(status_code=409, detail="资产树已在其它页面更新；当前编辑仍保留在本页") from exc
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "ok": True,
         "entry_id": req.entry_id,
         "exists": True,
-        "tree": tree,
-        "updated_at": path.stat().st_mtime,
+        "tree": snapshot.tree,
+        "revision": snapshot.revision,
+        "updated_at": snapshot.updated_at,
     }
 
 
@@ -5427,10 +4938,22 @@ def save_fanxiu_data_annotation_frame(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _get_user_device_or_404(session, current_user, req.entry_id)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    frame_status: dict[str, Any] = {}
     try:
-        data = decode_data_annotation_image_data_url(req.current_frame_data_url)
-        asset = save_data_annotation_image_bytes(data, entry_id=req.entry_id, filename=req.filename)
+        if req.fresh_capture:
+            if entry.mode == "local":
+                data, frame_status = capture_fresh_mumu_adb_stream_frame()
+            else:
+                response = _remote_game_window2_screencap(entry)
+                data = bytes(response.body)
+        elif req.current_frame_data_url:
+            data = decode_data_annotation_image_data_url(req.current_frame_data_url)
+        else:
+            raise ValueError("current_frame_data_url 与 fresh_capture 至少需要一个")
+        asset = None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=f"暂时无法取得最新画面：{exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     width = 0
@@ -5442,6 +4965,35 @@ def save_fanxiu_data_annotation_frame(
             width, height = image.size
     except Exception:
         pass
+    tree_snapshot = None
+    try:
+        if req.asset_node is not None:
+            node = dict(req.asset_node)
+            if width:
+                node["width"] = width
+            if height:
+                node["height"] = height
+            saved = save_data_annotation_frame_tree_node(
+                _data_annotation_asset_tree_path(req.entry_id),
+                data,
+                node,
+                entry_id=req.entry_id,
+                parent_id=req.parent_id,
+                after_node_id=req.after_node_id,
+                expected_revision=req.base_revision,
+                before_write=lambda: _backup_data_annotation_asset_tree_before_save(
+                    _data_annotation_asset_tree_path(req.entry_id)
+                ),
+            )
+            asset = saved.asset
+            tree_snapshot = saved.snapshot
+        else:
+            asset = save_data_annotation_image_bytes(data, entry_id=req.entry_id, filename=req.filename)
+    except FanxiuDataAnnotationAssetTreeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    assert asset is not None
     return {
         "ok": True,
         "entry_id": asset.entry_id,
@@ -5450,6 +5002,12 @@ def save_fanxiu_data_annotation_frame(
         "directory": os.fspath(asset.path.parent),
         "width": width,
         "height": height,
+        "fresh_capture": bool(req.fresh_capture),
+        "frame_sequence": int(frame_status.get("sequence") or 0),
+        "captured_at": float(frame_status.get("captured_at") or 0.0),
+        "tree": tree_snapshot.tree if tree_snapshot is not None else None,
+        "revision": tree_snapshot.revision if tree_snapshot is not None else None,
+        "updated_at": tree_snapshot.updated_at if tree_snapshot is not None else None,
     }
 
 
@@ -5467,8 +5025,13 @@ def get_fanxiu_data_annotation_image(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not asset.exists:
-        raise HTTPException(status_code=404, detail="data-annotation 图片不存在")
-    return FileResponse(asset.path)
+        raise HTTPException(
+            status_code=404,
+            detail="data-annotation 图片不存在",
+            headers={"Cache-Control": "no-store"},
+        )
+    # 前端已经按 entry + 节点 + 文件名持有对象 URL；HTTP 层不再缓存同名覆盖帧或瞬时失败。
+    return FileResponse(asset.path, headers={"Cache-Control": "private, no-store"})
 
 
 @status_router.post("/game-window2/save-frame")
@@ -5643,8 +5206,8 @@ def get_fanxiu_game_window2_match_image_service(
     return _match_game_window2_service_image(filename)
 
 
-@status_router.get("/data-annotation/runtime/status", response_model=FanxiuDataAnnotationRuntimeStatus)
-def get_fanxiu_data_annotation_runtime_status(
+@status_router.get("/data-annotation/runtime/status", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def get_fanxiu_behavior_tree_runtime_status(
     entry_id: str = Query("", max_length=128),
     include_cell_logs: bool = Query(True),
     include_logs: bool = Query(True),
@@ -5655,29 +5218,70 @@ def get_fanxiu_data_annotation_runtime_status(
     if entry_id:
         entry = _get_user_device_or_404(session, current_user, entry_id)
         resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        _sync_data_annotation_runtime_runner_to_core()
-        _runtime_framework.ensure_kernel(
+        _sync_behavior_tree_runtime_runner_to_core()
+        _behavior_tree_framework.ensure_kernel(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
             scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
+            runtime_state_path=_behavior_tree_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    payload = dict(_data_annotation_runtime_status(include_cell_logs=include_cell_logs))
+    payload = dict(_behavior_tree_runtime_status(include_cell_logs=include_cell_logs))
     if not include_cell_logs:
         payload.pop("cell_logs", None)
     if not include_logs:
         payload.pop("logs", None)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(payload)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(payload)
+
+
+@status_router.get(
+    "/data-annotation/runtime/info-window",
+    response_model=FanxiuInfoWindowControlStatus,
+)
+def get_fanxiu_data_annotation_info_window(
+    entry_id: str = Query("", max_length=128),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if entry_id:
+        _get_user_device_or_404(session, current_user, entry_id)
+    from backend.core.fanxiu.windows_info_window import read_info_window_control_status
+
+    return FanxiuInfoWindowControlStatus.model_validate(
+        read_info_window_control_status(user_id=int(current_user.id), ensure_renderer=True)
+    )
+
+
+@status_router.post(
+    "/data-annotation/runtime/info-window/settings",
+    response_model=FanxiuInfoWindowControlStatus,
+)
+def set_fanxiu_data_annotation_info_window(
+    req: FanxiuInfoWindowSettingsRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if req.entry_id:
+        _get_user_device_or_404(session, current_user, req.entry_id)
+    from backend.core.fanxiu.windows_info_window import update_info_window_control
+
+    return FanxiuInfoWindowControlStatus.model_validate(
+        update_info_window_control(
+            req.model_dump(exclude={"entry_id"}),
+            user_id=int(current_user.id),
+        )
+    )
 
 
 @status_router.get(
     "/data-annotation/runtime/service/status",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def get_fanxiu_data_annotation_runtime_service_status(
+def get_fanxiu_behavior_tree_runtime_service_status(
     entry_id: str = Query("", max_length=128),
     include_logs: bool = Query(True),
     session: Session = Depends(get_session),
@@ -5685,127 +5289,201 @@ def get_fanxiu_data_annotation_runtime_service_status(
     if entry_id:
         entry = _get_service_user_device_or_404(session, entry_id)
         resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        _sync_data_annotation_runtime_runner_to_core()
-        _runtime_framework.ensure_kernel(
+        _sync_behavior_tree_runtime_runner_to_core()
+        _behavior_tree_framework.ensure_kernel(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
             scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
+            runtime_state_path=_behavior_tree_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    payload = dict(_data_annotation_runtime_status())
+    payload = dict(_behavior_tree_runtime_status())
     # Cell logs have their own endpoint; omitting them here avoids shipping the same
     # large history twice during runtime page bootstrap.
     payload.pop("cell_logs", None)
     if not include_logs:
         payload.pop("logs", None)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(payload)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(payload)
 
 
-def _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(
+def _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(
     entry: Any,
     entry_id: str,
-    req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_kernel_enabled(
+    req: FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _behavior_tree_framework.set_kernel_enabled(
         entry=entry,
         entry_id=entry_id,
         enabled=req.enabled,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
-def _restart_fanxiu_data_annotation_runtime_kernel(
+def _restart_fanxiu_behavior_tree_runtime_kernel(
     entry: Any,
     entry_id: str,
-    req: FanxiuDataAnnotationRuntimeKernelRestartRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.restart_kernel(
+    req: FanxiuBehaviorTreeRuntimeKernelRestartRequest,
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _behavior_tree_framework.restart_kernel(
         entry=entry,
         entry_id=entry_id,
         timeout_seconds=req.timeout_seconds,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
-@status_router.post("/data-annotation/runtime/behavior-tree/set", response_model=FanxiuDataAnnotationRuntimeStatus)
-def set_fanxiu_data_annotation_runtime_behavior_tree(
-    req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
+def _restart_fanxiu_behavior_tree_runtime_device(
+    entry_id: str,
+) -> FanxiuBehaviorTreeRuntimeDeviceRestartResponse:
+    """Interrupt the current Cell and force-restart the shared MuMu device.
+
+    The resident Kernel and Scheduler ownership are deliberately left intact.
+    """
+    _sync_behavior_tree_runtime_runner_to_core()
+    before = dict(_behavior_tree_runtime_status(include_cell_logs=False))
+    if bool(before.get("running")):
+        _behavior_tree_framework.interrupt_current_cell(
+            entry_id,
+            runtime_state_path=_behavior_tree_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+
+    device = dict(
+        recover_mumu_device(
+            vmindex="1",
+            reason="manual_runtime_page_request",
+            force_restart=True,
+        )
+    )
+    device_status = str(device.get("status") or "unknown")
+    recovered = bool(device.get("recovered"))
+    if not recovered or device_status != "healthy":
+        detail = str(device.get("last_error") or device.get("recovery_skipped") or device_status)
+        raise HTTPException(status_code=503, detail=f"模拟器重启失败：{detail}")
+
+    runtime = FanxiuBehaviorTreeRuntimeStatus.model_validate(
+        _behavior_tree_runtime_status(include_cell_logs=False)
+    )
+    return FanxiuBehaviorTreeRuntimeDeviceRestartResponse(
+        ok=True,
+        recovered=True,
+        status=device_status,
+        message="模拟器已重启，游戏画面可用",
+        device=device,
+        runtime=runtime,
+    )
+
+
+@status_router.post("/data-annotation/runtime/behavior-tree/set", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def set_fanxiu_behavior_tree_runtime_behavior_tree(
+    req: FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(entry, entry_id, req)
+    return _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(entry, entry_id, req)
 
 
 @status_router.post(
     "/data-annotation/runtime/service/behavior-tree/set",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def set_fanxiu_data_annotation_runtime_service_behavior_tree(
-    req: FanxiuDataAnnotationRuntimeBehaviorTreeRequest,
+def set_fanxiu_behavior_tree_runtime_service_behavior_tree(
+    req: FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_behavior_tree_enabled(entry, entry_id, req)
+    return _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/kernel/restart", response_model=FanxiuDataAnnotationRuntimeStatus)
-def restart_fanxiu_data_annotation_runtime_kernel(
-    req: FanxiuDataAnnotationRuntimeKernelRestartRequest,
+@status_router.post("/data-annotation/runtime/kernel/restart", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def restart_fanxiu_behavior_tree_runtime_kernel(
+    req: FanxiuBehaviorTreeRuntimeKernelRestartRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _restart_fanxiu_data_annotation_runtime_kernel(entry, entry_id, req)
+    return _restart_fanxiu_behavior_tree_runtime_kernel(entry, entry_id, req)
 
 
 @status_router.post(
     "/data-annotation/runtime/service/kernel/restart",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def restart_fanxiu_data_annotation_runtime_service_kernel(
-    req: FanxiuDataAnnotationRuntimeKernelRestartRequest,
+def restart_fanxiu_behavior_tree_runtime_service_kernel(
+    req: FanxiuBehaviorTreeRuntimeKernelRestartRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _restart_fanxiu_data_annotation_runtime_kernel(entry, entry_id, req)
+    return _restart_fanxiu_behavior_tree_runtime_kernel(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/cells/task", response_model=FanxiuDataAnnotationRuntimeStatus)
-def submit_fanxiu_data_annotation_runtime_task_cell(
-    req: FanxiuDataAnnotationRuntimeTaskCellRequest,
+@status_router.post(
+    "/data-annotation/runtime/device/restart",
+    response_model=FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
+)
+def restart_fanxiu_behavior_tree_runtime_device(
+    req: FanxiuBehaviorTreeRuntimeDeviceRestartRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(
+    return _restart_fanxiu_behavior_tree_runtime_device(entry_id)
+
+
+@status_router.post(
+    "/data-annotation/runtime/service/device/restart",
+    response_model=FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+)
+def restart_fanxiu_behavior_tree_runtime_service_device(
+    req: FanxiuBehaviorTreeRuntimeDeviceRestartRequest,
+    session: Session = Depends(get_session),
+):
+    entry = _get_service_user_device_or_404(session, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    return _restart_fanxiu_behavior_tree_runtime_device(entry_id)
+
+
+@status_router.post("/data-annotation/runtime/cells/task", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def submit_fanxiu_behavior_tree_runtime_task_cell(
+    req: FanxiuBehaviorTreeRuntimeTaskCellRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
+    payload = dict(req.payload)
+    if req.effective_now is not None:
+        payload["effective_now"] = req.effective_now.isoformat(sep=" ")
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(
         _submit_data_annotation_task_cell(
             entry,
             entry_id,
             req.task_type,
-            req.payload,
+            payload,
             timeout_seconds=req.timeout_seconds,
         )
     )
@@ -5813,58 +5491,61 @@ def submit_fanxiu_data_annotation_runtime_task_cell(
 
 @status_router.post(
     "/data-annotation/runtime/service/cells/task",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def submit_fanxiu_data_annotation_runtime_service_task_cell(
-    req: FanxiuDataAnnotationRuntimeTaskCellRequest,
+def submit_fanxiu_behavior_tree_runtime_service_task_cell(
+    req: FanxiuBehaviorTreeRuntimeTaskCellRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(
+    payload = dict(req.payload)
+    if req.effective_now is not None:
+        payload["effective_now"] = req.effective_now.isoformat(sep=" ")
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(
         _submit_data_annotation_task_cell(
             entry,
             entry_id,
             req.task_type,
-            req.payload,
+            payload,
             timeout_seconds=req.timeout_seconds,
             source="service",
         )
     )
 
 
-@status_router.post("/data-annotation/runtime/cells/code", response_model=FanxiuDataAnnotationRuntimeStatus)
-def submit_fanxiu_data_annotation_runtime_code_cell(
-    req: FanxiuDataAnnotationRuntimeCodeCellRequest,
+@status_router.post("/data-annotation/runtime/cells/code", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def submit_fanxiu_behavior_tree_runtime_code_cell(
+    req: FanxiuBehaviorTreeRuntimeCodeCellRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(_submit_data_annotation_code_cell(entry, entry_id, req))
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(_submit_data_annotation_code_cell(entry, entry_id, req))
 
 
 @status_router.post(
     "/data-annotation/runtime/service/cells/code",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def submit_fanxiu_data_annotation_runtime_service_code_cell(
-    req: FanxiuDataAnnotationRuntimeCodeCellRequest,
+def submit_fanxiu_behavior_tree_runtime_service_code_cell(
+    req: FanxiuBehaviorTreeRuntimeCodeCellRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(
         _submit_data_annotation_code_cell(entry, entry_id, req, source="service")
     )
 
 
-@status_router.post("/data-annotation/runtime/task/stop", response_model=FanxiuDataAnnotationRuntimeStatus)
-def stop_fanxiu_data_annotation_runtime_task(
-    req: FanxiuDataAnnotationRuntimeStopRequest,
+@status_router.post("/data-annotation/runtime/task/stop", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def stop_fanxiu_behavior_tree_runtime_task(
+    req: FanxiuBehaviorTreeRuntimeStopRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -5873,122 +5554,122 @@ def stop_fanxiu_data_annotation_runtime_task(
     This endpoint must not be treated as resident behavior-tree service shutdown.
     """
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    return _stop_data_annotation_runtime_task(req)
+    return _stop_behavior_tree_runtime_task(req)
 
 
-def _stop_data_annotation_runtime_task(
-    req: FanxiuDataAnnotationRuntimeStopRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.interrupt_current_cell(
+def _stop_behavior_tree_runtime_task(
+    req: FanxiuBehaviorTreeRuntimeStopRequest,
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _behavior_tree_framework.interrupt_current_cell(
         req.entry_id or "",
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
 @status_router.post(
     "/data-annotation/runtime/service/task/stop",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def stop_fanxiu_data_annotation_runtime_service_task(
-    req: FanxiuDataAnnotationRuntimeStopRequest,
+def stop_fanxiu_behavior_tree_runtime_service_task(
+    req: FanxiuBehaviorTreeRuntimeStopRequest,
 ):
-    return _stop_data_annotation_runtime_task(req)
+    return _stop_behavior_tree_runtime_task(req)
 
 
-def _set_fanxiu_data_annotation_runtime_guard_item(
+def _set_fanxiu_behavior_tree_runtime_guard_item(
     entry: Any,
     entry_id: str,
-    req: FanxiuDataAnnotationRuntimeGuardRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_guard_item_enabled(
+    req: FanxiuBehaviorTreeRuntimeGuardRequest,
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _behavior_tree_framework.set_guard_item_enabled(
         entry=entry,
         entry_id=entry_id,
         guard_id=req.guard_id,
         enabled=req.enabled,
         interval_seconds=req.interval_seconds,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
-def _set_fanxiu_data_annotation_runtime_guard_group(
+def _set_fanxiu_behavior_tree_runtime_guard_group(
     entry: Any,
     entry_id: str,
-    req: FanxiuDataAnnotationRuntimeGuardGroupRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_framework.set_guard_group_enabled(
+    req: FanxiuBehaviorTreeRuntimeGuardGroupRequest,
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _behavior_tree_framework.set_guard_group_enabled(
         entry=entry,
         entry_id=entry_id,
         enabled=req.enabled,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
-@status_router.post("/data-annotation/runtime/guard/set", response_model=FanxiuDataAnnotationRuntimeStatus)
-def set_fanxiu_data_annotation_runtime_guard(
-    req: FanxiuDataAnnotationRuntimeGuardRequest,
+@status_router.post("/data-annotation/runtime/guard/set", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def set_fanxiu_behavior_tree_runtime_guard(
+    req: FanxiuBehaviorTreeRuntimeGuardRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_guard_item(entry, entry_id, req)
+    return _set_fanxiu_behavior_tree_runtime_guard_item(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/guard/group/set", response_model=FanxiuDataAnnotationRuntimeStatus)
-def set_fanxiu_data_annotation_runtime_guard_group(
-    req: FanxiuDataAnnotationRuntimeGuardGroupRequest,
+@status_router.post("/data-annotation/runtime/guard/group/set", response_model=FanxiuBehaviorTreeRuntimeStatus)
+def set_fanxiu_behavior_tree_runtime_guard_group(
+    req: FanxiuBehaviorTreeRuntimeGuardGroupRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
+    return _set_fanxiu_behavior_tree_runtime_guard_group(entry, entry_id, req)
 
 
 @status_router.post(
     "/data-annotation/runtime/service/guard/set",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def set_fanxiu_data_annotation_runtime_service_guard(
-    req: FanxiuDataAnnotationRuntimeGuardRequest,
+def set_fanxiu_behavior_tree_runtime_service_guard(
+    req: FanxiuBehaviorTreeRuntimeGuardRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_guard_item(entry, entry_id, req)
+    return _set_fanxiu_behavior_tree_runtime_guard_item(entry, entry_id, req)
 
 
 @status_router.post(
     "/data-annotation/runtime/service/guard/group/set",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
-def set_fanxiu_data_annotation_runtime_service_guard_group(
-    req: FanxiuDataAnnotationRuntimeGuardGroupRequest,
+def set_fanxiu_behavior_tree_runtime_service_guard_group(
+    req: FanxiuBehaviorTreeRuntimeGuardGroupRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_data_annotation_runtime_guard_group(entry, entry_id, req)
+    return _set_fanxiu_behavior_tree_runtime_guard_group(entry, entry_id, req)
 
 
-@status_router.get("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
-def get_fanxiu_data_annotation_runtime_logs(
+@status_router.get("/data-annotation/runtime/logs", response_model=FanxiuBehaviorTreeRuntimeLogResponse)
+def get_fanxiu_behavior_tree_runtime_logs(
     limit: int = Query(80, ge=1, le=2000),
     scope: str = Query("", max_length=64),
     item_id: str = Query("", max_length=128),
@@ -5996,12 +5677,12 @@ def get_fanxiu_data_annotation_runtime_logs(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_data_annotation_runtime_runner_to_core()
-    log_items = _core_data_annotation_runtime_logs(
+    _sync_behavior_tree_runtime_runner_to_core()
+    log_items = _core_behavior_tree_runtime_logs(
         limit=limit,
         scope=scope,
         item_id=item_id,
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
     seen_ids: dict[str, int] = {}
@@ -6011,7 +5692,7 @@ def get_fanxiu_data_annotation_runtime_logs(
         occurrence = seen_ids.get(base_id, 0)
         seen_ids[base_id] = occurrence + 1
         entries.append(_runtime_log_entry_from_item(item, f"runtime-{base_id}-{occurrence}"))
-    return FanxiuDataAnnotationRuntimeLogResponse(entries=entries, path=str(_data_annotation_runtime_state_path()))
+    return FanxiuBehaviorTreeRuntimeLogResponse(entries=entries, path=str(_behavior_tree_runtime_state_path()))
 
 
 def _runtime_log_entry_base_id(item: dict[str, Any]) -> str:
@@ -6036,8 +5717,8 @@ def _runtime_log_entry_base_id(item: dict[str, Any]) -> str:
     ).hexdigest()[:16]
 
 
-def _runtime_log_entry_from_item(item: dict[str, Any], entry_id: str) -> FanxiuDataAnnotationRuntimeLogEntry:
-    return FanxiuDataAnnotationRuntimeLogEntry(
+def _runtime_log_entry_from_item(item: dict[str, Any], entry_id: str) -> FanxiuBehaviorTreeRuntimeLogEntry:
+    return FanxiuBehaviorTreeRuntimeLogEntry(
         id=entry_id,
         time=str(item.get("time") or ""),
         kind=str(item.get("kind") or ""),
@@ -6058,9 +5739,9 @@ def _runtime_log_item_key(item: dict[str, Any]) -> str:
 
 
 def _runtime_log_items_for_cell(limit: int = 5000) -> list[dict[str, Any]]:
-    return _core_data_annotation_runtime_logs(
+    return _core_behavior_tree_runtime_logs(
         limit=limit,
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
@@ -6126,20 +5807,20 @@ def _record_runtime_cell_log(
         "ended_at": entries[-1].get("time", ""),
         "entries": entries,
     }
-    persisted_status = _read_data_annotation_runtime_status()
+    persisted_status = _read_behavior_tree_runtime_status()
     existing = persisted_status.get("cell_logs") if isinstance(persisted_status.get("cell_logs"), list) else []
     merged_status = {**persisted_status, **status}
     merged_status["cell_logs"] = [cell, *[item for item in existing if isinstance(item, dict) and item.get("id") != cell_id]][:100]
-    _runtime_control.persist_runtime_status(
+    _behavior_tree_control.persist_behavior_tree_runtime_status(
         merged_status,
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
     return merged_status
 
 
-def _runtime_cell_log_source(title: str, entries: list[FanxiuDataAnnotationRuntimeLogEntry]) -> str:
-    first = entries[0] if entries else FanxiuDataAnnotationRuntimeLogEntry()
+def _runtime_cell_log_source(title: str, entries: list[FanxiuBehaviorTreeRuntimeLogEntry]) -> str:
+    first = entries[0] if entries else FanxiuBehaviorTreeRuntimeLogEntry()
     return (
         "# 历史运行日志回放\n"
         "# 这条 cell 来自旧运行日志，当时没有保存提交源码。\n"
@@ -6147,7 +5828,7 @@ def _runtime_cell_log_source(title: str, entries: list[FanxiuDataAnnotationRunti
     )
 
 
-def _runtime_cell_log_title(entry: FanxiuDataAnnotationRuntimeLogEntry) -> str:
+def _runtime_cell_log_title(entry: FanxiuBehaviorTreeRuntimeLogEntry) -> str:
     message = entry.message.strip()
     if "启动" in message and "任务" in message:
         return message
@@ -6158,22 +5839,22 @@ def _runtime_cell_log_title(entry: FanxiuDataAnnotationRuntimeLogEntry) -> str:
     return "运行日志 cell"
 
 
-def _runtime_cell_log_boundary(entry: FanxiuDataAnnotationRuntimeLogEntry) -> bool:
+def _runtime_cell_log_boundary(entry: FanxiuBehaviorTreeRuntimeLogEntry) -> bool:
     message = entry.message
     return ("启动" in message and "任务" in message) or "作业已启动" in message or "task cell 已启动" in message or "Scheduler：启动" in message
 
 
-@status_router.get("/data-annotation/runtime/cell-logs", response_model=FanxiuDataAnnotationRuntimeCellLogResponse)
-def get_fanxiu_data_annotation_runtime_cell_logs(
+@status_router.get("/data-annotation/runtime/cell-logs", response_model=FanxiuBehaviorTreeRuntimeCellLogResponse)
+def get_fanxiu_behavior_tree_runtime_cell_logs(
     limit: int = Query(20, ge=1, le=200),
     log_limit: int = Query(1000, ge=1, le=5000),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _read_data_annotation_runtime_status()
-    response_cells: list[FanxiuDataAnnotationRuntimeCellLog] = []
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _read_behavior_tree_runtime_status()
+    response_cells: list[FanxiuBehaviorTreeRuntimeCellLog] = []
     seen_cell_ids: set[str] = set()
     persisted_cells = status.get("cell_logs") if isinstance(status.get("cell_logs"), list) else []
     for item in persisted_cells:
@@ -6181,7 +5862,7 @@ def get_fanxiu_data_annotation_runtime_cell_logs(
             continue
         item = {**item, "source": _runtime_cell_display_source(str(item.get("source") or ""))}
         try:
-            cell = FanxiuDataAnnotationRuntimeCellLog.model_validate(item)
+            cell = FanxiuBehaviorTreeRuntimeCellLog.model_validate(item)
         except Exception:
             continue
         if cell.id in seen_cell_ids:
@@ -6189,23 +5870,23 @@ def get_fanxiu_data_annotation_runtime_cell_logs(
         seen_cell_ids.add(cell.id)
         response_cells.append(cell)
         if len(response_cells) >= limit:
-            return FanxiuDataAnnotationRuntimeCellLogResponse(cells=response_cells, path=str(_data_annotation_runtime_state_path()))
+            return FanxiuBehaviorTreeRuntimeCellLogResponse(cells=response_cells, path=str(_behavior_tree_runtime_state_path()))
 
-    log_items = _core_data_annotation_runtime_logs(
+    log_items = _core_behavior_tree_runtime_logs(
         limit=log_limit,
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
     seen_ids: dict[str, int] = {}
-    entries: list[FanxiuDataAnnotationRuntimeLogEntry] = []
+    entries: list[FanxiuBehaviorTreeRuntimeLogEntry] = []
     for item in log_items:
         base_id = _runtime_log_entry_base_id(item)
         occurrence = seen_ids.get(base_id, 0)
         seen_ids[base_id] = occurrence + 1
         entries.append(_runtime_log_entry_from_item(item, f"runtime-{base_id}-{occurrence}"))
 
-    cells: list[list[FanxiuDataAnnotationRuntimeLogEntry]] = []
-    current: list[FanxiuDataAnnotationRuntimeLogEntry] = []
+    cells: list[list[FanxiuBehaviorTreeRuntimeLogEntry]] = []
+    current: list[FanxiuBehaviorTreeRuntimeLogEntry] = []
     for entry in entries:
         if current and _runtime_cell_log_boundary(entry):
             cells.append(current)
@@ -6224,7 +5905,7 @@ def get_fanxiu_data_annotation_runtime_cell_logs(
             continue
         seen_cell_ids.add(full_cell_id)
         response_cells.append(
-            FanxiuDataAnnotationRuntimeCellLog(
+            FanxiuBehaviorTreeRuntimeCellLog(
                 id=full_cell_id,
                 title=title,
                 source_kind="command",
@@ -6236,7 +5917,7 @@ def get_fanxiu_data_annotation_runtime_cell_logs(
         )
         if len(response_cells) >= limit:
             break
-    return FanxiuDataAnnotationRuntimeCellLogResponse(cells=response_cells, path=str(_data_annotation_runtime_state_path()))
+    return FanxiuBehaviorTreeRuntimeCellLogResponse(cells=response_cells, path=str(_behavior_tree_runtime_state_path()))
 
 
 @status_router.get("/data-annotation/runtime/world-facts", response_model=FanxiuDataAnnotationWorldFactsResponse)
@@ -6252,7 +5933,7 @@ def get_fanxiu_data_annotation_world_facts(
 
 
 def _doctor_watch_latest_payload_for_frontend() -> dict[str, Any]:
-    payload = _runtime_control.read_doctor_watch_latest()
+    payload = _behavior_tree_control.read_doctor_watch_latest()
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict) or "auto_run_due" not in snapshot:
         return payload
@@ -6281,28 +5962,28 @@ def ensure_fanxiu_data_annotation_doctor_watch(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    return FanxiuDataAnnotationDoctorWatchEnsureResponse.model_validate(_runtime_control.ensure_doctor_watch_background())
+    return FanxiuDataAnnotationDoctorWatchEnsureResponse.model_validate(_behavior_tree_control.ensure_doctor_watch_background())
 
 
-@status_router.delete("/data-annotation/runtime/logs", response_model=FanxiuDataAnnotationRuntimeLogResponse)
-def clear_fanxiu_data_annotation_runtime_logs(
+@status_router.delete("/data-annotation/runtime/logs", response_model=FanxiuBehaviorTreeRuntimeLogResponse)
+def clear_fanxiu_behavior_tree_runtime_logs(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_data_annotation_runtime_runner_to_core()
-    _core_clear_data_annotation_runtime_logs(
-        runtime_state_path=_data_annotation_runtime_state_path(),
+    _sync_behavior_tree_runtime_runner_to_core()
+    _core_clear_behavior_tree_runtime_logs(
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    status = _read_data_annotation_runtime_status()
+    status = _read_behavior_tree_runtime_status()
     status["cell_logs"] = []
-    _runtime_control.persist_runtime_status(
+    _behavior_tree_control.persist_behavior_tree_runtime_status(
         status,
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuDataAnnotationRuntimeLogResponse(entries=[], path=str(_data_annotation_runtime_state_path()))
+    return FanxiuBehaviorTreeRuntimeLogResponse(entries=[], path=str(_behavior_tree_runtime_state_path()))
 
 
 @status_router.get("/data-annotation/scheduler/tasks", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
@@ -6311,17 +5992,30 @@ def get_fanxiu_data_annotation_scheduler_tasks(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    settings = _runtime_control.read_scheduler_settings(
+    settings = _behavior_tree_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
+    tasks = _read_data_annotation_scheduler_tasks()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
-            for item in _read_data_annotation_scheduler_tasks()
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
+            for item in _data_annotation_scheduler_task_views(tasks)
         ],
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
         path=str(_data_annotation_scheduler_state_path()),
     )
+
+
+@status_router.get(
+    "/data-annotation/scheduler/state-inspection",
+    response_model=FanxiuGameStateInspectionStatus,
+)
+def get_fanxiu_game_state_inspection_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return FanxiuGameStateInspectionStatus.model_validate(read_game_state_inspection_status())
 
 
 @status_router.get("/data-annotation/scheduler/plan", response_model=FanxiuDataAnnotationSchedulerPlanResponse)
@@ -6333,26 +6027,68 @@ def get_fanxiu_data_annotation_scheduler_plan(
     return FanxiuDataAnnotationSchedulerPlanResponse.model_validate(_build_data_annotation_scheduler_plan())
 
 
-@status_router.put("/data-annotation/scheduler/tasks", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
-def put_fanxiu_data_annotation_scheduler_tasks(
-    tasks: list[FanxiuDataAnnotationSchedulerTaskItem],
+@status_router.get(
+    "/data-annotation/scheduler/time-sequence",
+    response_model=FanxiuDataAnnotationSchedulerTimeSequenceResponse,
+)
+def get_fanxiu_data_annotation_scheduler_time_sequence(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    payload = _runtime_control.update_scheduler_tasks(
-        [item.model_dump() for item in tasks],
+    tasks = _read_data_annotation_scheduler_tasks()
+    return FanxiuDataAnnotationSchedulerTimeSequenceResponse(
+        groups=_behavior_tree_control.scheduler_time_sequence_groups(
+            tasks,
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        )
+    )
+
+
+@status_router.put(
+    "/data-annotation/scheduler/time-sequence",
+    response_model=FanxiuDataAnnotationSchedulerTimeSequenceResponse,
+)
+def put_fanxiu_data_annotation_scheduler_time_sequence(
+    request: FanxiuDataAnnotationSchedulerTimeSequenceUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _behavior_tree_control.update_scheduler_time_sequence(
+        [group.model_dump() for group in request.groups],
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+    )
+    _sync_behavior_tree_runtime_runner_to_core()
+    tasks = _read_data_annotation_scheduler_tasks()
+    return FanxiuDataAnnotationSchedulerTimeSequenceResponse(
+        groups=_behavior_tree_control.scheduler_time_sequence_groups(
+            tasks,
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        )
+    )
+
+
+@status_router.put("/data-annotation/scheduler/tasks", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
+def put_fanxiu_data_annotation_scheduler_tasks(
+    tasks: list[FanxiuDataAnnotationSchedulerTaskUpdate],
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    payload = _behavior_tree_control.update_scheduler_tasks(
+        [item.model_dump(exclude_none=True) for item in tasks],
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         now=datetime.now(),
     )
-    _sync_data_annotation_runtime_runner_to_core()
+    _sync_behavior_tree_runtime_runner_to_core()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
-            for item in payload
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
+            for item in _data_annotation_scheduler_task_views(payload)
         ],
-        job_group_enabled=bool(_runtime_control.read_scheduler_settings(
+        job_group_enabled=bool(_behavior_tree_control.read_scheduler_settings(
             scheduler_settings_path=_data_annotation_scheduler_settings_path()
         ).get("job_group_enabled", True)),
         path=str(_data_annotation_scheduler_state_path()),
@@ -6365,13 +6101,14 @@ def get_fanxiu_data_annotation_scheduler_settings(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    settings = _runtime_control.read_scheduler_settings(
+    settings = _behavior_tree_control.read_scheduler_settings(
         scheduler_settings_path=_data_annotation_scheduler_settings_path()
     )
+    tasks = _read_data_annotation_scheduler_tasks()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
-            for item in _read_data_annotation_scheduler_tasks()
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
+            for item in _data_annotation_scheduler_task_views(tasks)
         ],
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
         path=str(_data_annotation_scheduler_state_path()),
@@ -6385,27 +6122,44 @@ def put_fanxiu_data_annotation_scheduler_settings(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    settings = _runtime_control.set_scheduler_job_group_enabled(
+    settings = _behavior_tree_control.set_scheduler_job_group_enabled(
         req.job_group_enabled,
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
     )
-    _sync_data_annotation_runtime_runner_to_core()
-    if req.job_group_enabled and req.entry_id:
+    _sync_behavior_tree_runtime_runner_to_core()
+    if req.entry_id:
         entry = _get_user_device_or_404(session, current_user, req.entry_id)
         entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-        _runtime_framework.set_kernel_enabled(
-            entry=entry,
-            entry_id=entry_id,
-            enabled=True,
-            asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
-            world_facts_path=_data_annotation_world_facts_path(),
-        )
+        if req.job_group_enabled:
+            _behavior_tree_framework.set_kernel_enabled(
+                entry=entry,
+                entry_id=entry_id,
+                enabled=True,
+                asset_tree_path=_data_annotation_asset_tree_path(entry_id),
+                scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+                runtime_state_path=_behavior_tree_runtime_state_path(),
+                world_facts_path=_data_annotation_world_facts_path(),
+            )
+        else:
+            runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
+                scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+                runtime_state_path=_behavior_tree_runtime_state_path(),
+                world_facts_path=_data_annotation_world_facts_path(),
+            )
+            # 取得 AI 运行权时只终止正在运行的工程 Scheduler Cell。
+            # 普通 AI/人工 Cell 没有 current_task_id，不能被模式切换误杀。
+            if runtime_status.get("running") and str(runtime_status.get("current_task_id") or ""):
+                _behavior_tree_framework.interrupt_current_cell(
+                    entry_id,
+                    scheduler_state_path=_data_annotation_scheduler_state_path(),
+                    runtime_state_path=_behavior_tree_runtime_state_path(),
+                    world_facts_path=_data_annotation_world_facts_path(),
+                )
+    tasks = _read_data_annotation_scheduler_tasks()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
-            for item in _read_data_annotation_scheduler_tasks()
+            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
+            for item in _data_annotation_scheduler_task_views(tasks)
         ],
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
         path=str(_data_annotation_scheduler_state_path()),
@@ -6416,17 +6170,22 @@ def _run_now_fanxiu_data_annotation_scheduler_task(
     entry: Any,
     entry_id: str,
     req: FanxiuDataAnnotationSchedulerRunNowRequest,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
     try:
-        status = _runtime_control.run_now_scheduler_task(
+        payload = dict(req.payload)
+        if req.effective_now is not None:
+            payload["effective_now"] = req.effective_now.isoformat(sep=" ")
+        status = _behavior_tree_control.run_now_scheduler_task(
             entry=entry,
             entry_id=entry_id,
             task_id=req.task_id,
-            payload_override=req.payload,
+            payload_override=payload,
+            business_time_mode=req.business_time_mode,
             interrupt_same_group=req.interrupt_same_group,
             scheduler_state_path=_data_annotation_scheduler_state_path(),
-            runtime_state_path=_data_annotation_runtime_state_path(),
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+            runtime_state_path=_behavior_tree_runtime_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         )
@@ -6434,64 +6193,75 @@ def _run_now_fanxiu_data_annotation_scheduler_task(
         raise HTTPException(status_code=404, detail="任务不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+
+
+def _trigger_once_fanxiu_data_annotation_scheduler_task(
+    req: FanxiuDataAnnotationSchedulerTriggerOnceRequest,
+) -> FanxiuDataAnnotationSchedulerTriggerOnceResponse:
+    try:
+        next_time = _behavior_tree_control.trigger_scheduler_task_once(
+            req.task_id,
+            scheduler_state_path=_data_annotation_scheduler_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FanxiuDataAnnotationSchedulerTriggerOnceResponse(
+        task_id=req.task_id,
+        next_time=next_time,
+    )
+
+
+def _set_fanxiu_data_annotation_scheduler_task_next_time(
+    req: FanxiuDataAnnotationSchedulerNextTimeRequest,
+) -> FanxiuDataAnnotationSchedulerNextTimeResponse:
+    try:
+        next_time = _behavior_tree_control.set_scheduler_task_next_time(
+            req.task_id,
+            req.next_time,
+            scheduler_state_path=_data_annotation_scheduler_state_path(),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FanxiuDataAnnotationSchedulerNextTimeResponse(
+        task_id=req.task_id,
+        next_time=next_time,
+    )
 
 
 def _run_due_fanxiu_data_annotation_scheduler_tasks(
     entry: Any,
     entry_id: str,
-) -> FanxiuDataAnnotationRuntimeStatus:
-    _sync_data_annotation_runtime_runner_to_core()
-    status = _runtime_control.run_due_scheduler_tasks(
+) -> FanxiuBehaviorTreeRuntimeStatus:
+    _sync_behavior_tree_runtime_runner_to_core()
+    status = _behavior_tree_control.run_due_scheduler_tasks(
         entry=entry,
         entry_id=entry_id,
         scheduler_state_path=_data_annotation_scheduler_state_path(),
         scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_data_annotation_runtime_state_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
-    return FanxiuDataAnnotationRuntimeStatus.model_validate(status)
+    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
-def _advance_data_annotation_scheduler_task_to_next_trigger(task_id: str) -> list[dict[str, Any]]:
-    tasks = _read_data_annotation_scheduler_tasks()
-    now = datetime.now()
-    now_text = now.strftime("%Y-%m-%d %H:%M:%S")
-    changed = False
-    for item in tasks:
-        if str(item.get("id") or "") != task_id:
-            continue
-        next_time = _next_data_annotation_scheduler_time(item, now)
-        if not next_time:
-            raise ValueError("该作业没有可计算的下次触发时间")
-        item["last_run_at"] = now_text
-        item["last_result"] = "success"
-        item["last_message"] = f"已推进至下次触发：{next_time}"
-        item["retry_after"] = None
-        item["next_time"] = next_time
-        scheduler_meta = item.get("scheduler_meta") if isinstance(item.get("scheduler_meta"), dict) else {}
-        scheduler_meta = dict(scheduler_meta)
-        scheduler_meta["manual_advance_next_at"] = now_text
-        item["scheduler_meta"] = scheduler_meta
-        _record_data_annotation_scheduler_task_fact(item, "success")
-        changed = True
-        break
-    if not changed:
-        raise LookupError(task_id)
-    _write_data_annotation_scheduler_tasks(tasks)
-    return _read_data_annotation_scheduler_tasks()
-
-
-@status_router.post("/data-annotation/scheduler/task/run-now", response_model=FanxiuDataAnnotationRuntimeStatus)
+@status_router.post("/data-annotation/scheduler/task/run-now", response_model=FanxiuBehaviorTreeRuntimeStatus)
 def run_now_fanxiu_data_annotation_scheduler_task(
     req: FanxiuDataAnnotationSchedulerRunNowRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
-    """Submit one concrete scheduler task instance for resident-loop execution.
+    """Submit one concrete Job Cell using the requested business clock.
 
-    This is not the primary service-level behavior-tree operation entry.
+    ``planned`` is the global default: a future Job runs now while its business
+    clock is anchored just after the stored ``next_time``. ``current`` runs the
+    same Cell against the real wall clock.
     """
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
@@ -6499,36 +6269,41 @@ def run_now_fanxiu_data_annotation_scheduler_task(
     return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/scheduler/task/advance-next", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
-def advance_next_fanxiu_data_annotation_scheduler_task(
-    req: FanxiuDataAnnotationSchedulerAdvanceNextRequest,
+@status_router.post(
+    "/data-annotation/scheduler/task/trigger-once",
+    response_model=FanxiuDataAnnotationSchedulerTriggerOnceResponse,
+)
+def trigger_once_fanxiu_data_annotation_scheduler_task(
+    req: FanxiuDataAnnotationSchedulerTriggerOnceRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
+    """Set ``next_time=now``; the external Scheduler decides when it runs."""
+
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
-    try:
-        tasks = _advance_data_annotation_scheduler_task_to_next_trigger(req.task_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    settings = _runtime_control.read_scheduler_settings(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path()
-    )
-    return FanxiuDataAnnotationSchedulerTasksResponse(
-        tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(_data_annotation_scheduler_task_view(item))
-            for item in tasks
-        ],
-        job_group_enabled=bool(settings.get("job_group_enabled", True)),
-        path=str(_data_annotation_scheduler_state_path()),
-    )
+    return _trigger_once_fanxiu_data_annotation_scheduler_task(req)
+
+
+@status_router.put(
+    "/data-annotation/scheduler/task/next-time",
+    response_model=FanxiuDataAnnotationSchedulerNextTimeResponse,
+)
+def set_fanxiu_data_annotation_scheduler_task_next_time(
+    req: FanxiuDataAnnotationSchedulerNextTimeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    """Set or clear one Job's explicit ``next_time`` value."""
+
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, req.entry_id)
+    return _set_fanxiu_data_annotation_scheduler_task_next_time(req)
 
 
 @status_router.post(
     "/data-annotation/scheduler/service/task/run-now",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
 def run_now_fanxiu_data_annotation_scheduler_service_task(
@@ -6540,7 +6315,7 @@ def run_now_fanxiu_data_annotation_scheduler_service_task(
     return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/scheduler/run-due", response_model=FanxiuDataAnnotationRuntimeStatus)
+@status_router.post("/data-annotation/scheduler/run-due", response_model=FanxiuBehaviorTreeRuntimeStatus)
 def run_due_fanxiu_data_annotation_scheduler_tasks(
     req: FanxiuDataAnnotationSchedulerRunDueRequest,
     current_user: User = Depends(get_current_active_user),
@@ -6554,7 +6329,7 @@ def run_due_fanxiu_data_annotation_scheduler_tasks(
 
 @status_router.post(
     "/data-annotation/scheduler/service/run-due",
-    response_model=FanxiuDataAnnotationRuntimeStatus,
+    response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
 )
 def run_due_fanxiu_data_annotation_scheduler_service_tasks(
@@ -6942,7 +6717,10 @@ def recognize_fanxiu_spirit_artifact_storage_bag(
 
 
 @inventory_router.get("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)
-def get_fanxiu_wardrobe_hall():
+def get_fanxiu_wardrobe_hall(session: Session = Depends(get_session)):
+    database_payload = load_inventory_hall_snapshot(session, "wardrobe_hall")
+    if database_payload:
+        return FanxiuWardrobeHallSnapshot.model_validate(database_payload)
     try:
         payload = load_wardrobe_hall()
     except ValueError as exc:
@@ -7018,13 +6796,76 @@ def update_fanxiu_wardrobe_hall(
     if touched_existing_note:
         session.commit()
 
+    row = upsert_inventory_hall_snapshot(
+        session,
+        "wardrobe_hall",
+        normalized_payload,
+        source_kind="manual",
+        entity_name="衣装阁",
+    )
+    return FanxiuWardrobeHallSnapshot.model_validate(row.payload)
+
+
+@inventory_router.post(
+    "/inventory/wardrobe-hall/collect",
+    response_model=FanxiuWardrobeHallSnapshot,
+)
+def collect_fanxiu_wardrobe_hall(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    """Run one ordinary read-only Cell and return the persisted wardrobe snapshot."""
+
+    ensure_fanxiu_write_permission(current_user, session)
+    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    if runtime_status.get("running"):
+        current_task = str(runtime_status.get("task_type") or "当前 Cell")
+        message = str(runtime_status.get("message") or "行为树 Runtime 正在执行其它任务")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Runtime 忙碌（{current_task}）：{message}，请稍后再从游戏更新",
+        )
+    entry_id = DEFAULT_FANXIU_ENTRY_ID
     try:
-        saved_payload = save_wardrobe_hall(normalized_payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存凡修道具仓库失败：{exc}") from exc
-    return FanxiuWardrobeHallSnapshot.model_validate(saved_payload)
+        entry = resolve_fanxiu_entry(entry_id)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"行为树 Runtime 入口不可用：{exc}") from exc
+    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+        entry_id=entry_id,
+        code=(
+            "import importlib\n"
+            "import backend.core.fanxiu.instrumentation.wardrobe as wardrobe_runtime\n"
+            "import backend.core.fanxiu.instrumentation.wardrobe_collector as wardrobe_collector\n"
+            "importlib.reload(wardrobe_runtime)\n"
+            "importlib.reload(wardrobe_collector)\n"
+            "snapshot = wardrobe_collector.collect_wardrobe_snapshot_once()\n"
+            "print({'runtime_item_count': snapshot.get('runtime_item_count'), "
+            "'runtime_owned_count': snapshot.get('runtime_owned_count'), "
+            "'runtime_updated_at': snapshot.get('runtime_updated_at')})"
+        ),
+        timeout_seconds=120.0,
+        max_output_chars=2000,
+    )
+    try:
+        _submit_data_annotation_code_cell(
+            entry,
+            entry_id,
+            request,
+            source="wardrobe-hall",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"衣装实时更新未执行：{exc}") from exc
+    session.expire_all()
+    payload = load_inventory_hall_snapshot(session, "wardrobe_hall")
+    if not payload or not payload.get("runtime_complete"):
+        raise HTTPException(status_code=502, detail="衣装动态插桩未生成完整数据库快照")
+    return FanxiuWardrobeHallSnapshot.model_validate(payload)
 
 
 @inventory_router.get("/inventory/spirit-beast-hall", response_model=FanxiuSpiritBeastHallSnapshot)
@@ -7066,12 +6907,175 @@ def update_fanxiu_spirit_beast_hall(
 
 
 @inventory_router.get("/inventory/magic-treasure-hall", response_model=FanxiuMagicTreasureHallSnapshot)
-def get_fanxiu_magic_treasure_hall():
-    try:
-        payload = load_magic_treasure_hall()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+def get_fanxiu_magic_treasure_hall(session: Session = Depends(get_session)):
+    payload = load_inventory_hall_snapshot(session, "magic_treasure_hall") or {}
     return FanxiuMagicTreasureHallSnapshot.model_validate(payload)
+
+
+@inventory_router.get("/inventory/xianyuan-atlas")
+def get_fanxiu_xianyuan_atlas(session: Session = Depends(get_session)):
+    # The loader overlays versioned gift eligibility onto the last runtime
+    # snapshot, so this read never needs to operate the game.
+    from backend.core.fanxiu.instrumentation.xianyuan_atlas import (
+        load_xianyuan_atlas_snapshot,
+    )
+
+    return load_xianyuan_atlas_snapshot(session)
+
+
+@inventory_router.get("/wiki/guide-videos")
+def get_fanxiu_guide_videos(
+    query: str = Query(default="", max_length=200),
+    source_id: str = Query(default="", max_length=300),
+    platform: str = Query(default="", max_length=30),
+    role: str = Query(default="", max_length=30),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=200),
+):
+    from backend.core.fanxiu.catalog.guide_videos import query_guide_videos
+
+    return query_guide_videos(
+        query=query,
+        source_id=source_id,
+        platform=platform,
+        role=role,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@inventory_router.post("/wiki/guide-videos/sync")
+def sync_fanxiu_guide_videos(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    from backend.core.fanxiu.catalog.guide_videos import start_guide_video_sync
+
+    ensure_fanxiu_write_permission(current_user, session)
+    return start_guide_video_sync()
+
+
+@inventory_router.get("/wiki/guide-videos/research-file")
+def get_fanxiu_guide_video_research_file(
+    item_id: str = Query(min_length=1, max_length=200),
+    kind: str = Query(pattern="^(media|document|transcript)$"),
+):
+    from backend.core.fanxiu.catalog.guide_video_research import resolve_research_artifact
+
+    try:
+        path = resolve_research_artifact(item_id, kind)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="攻略研究文件不存在") from exc
+    media_type = {
+        "media": "video/mp4",
+        "document": "text/html; charset=utf-8",
+        "transcript": "text/plain; charset=utf-8",
+    }[kind]
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "private, no-cache"})
+
+
+@inventory_router.post("/inventory/xianyuan-atlas/collect")
+def collect_fanxiu_xianyuan_atlas(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    if runtime_status.get("running"):
+        raise HTTPException(status_code=409, detail="行为树 Runtime 正在执行其它 Cell，请稍后更新仙缘图鉴")
+    entry_id = DEFAULT_FANXIU_ENTRY_ID
+    entry = resolve_fanxiu_entry(entry_id)
+    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+        entry_id=entry_id,
+        code=(
+            "import importlib\n"
+            "import backend.core.fanxiu.instrumentation.xianyuan_atlas as atlas\n"
+            "importlib.reload(atlas)\n"
+            "snapshot = atlas.collect_xianyuan_atlas_snapshot_once()\n"
+            "print({'people': snapshot.get('runtime_item_count'), 'summary': snapshot.get('summary')})"
+        ),
+        timeout_seconds=180.0,
+        max_output_chars=3000,
+    )
+    try:
+        _submit_data_annotation_code_cell(entry, entry_id, request, source="xianyuan-atlas")
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"仙缘图鉴更新未执行：{exc}") from exc
+    session.expire_all()
+    from backend.core.fanxiu.instrumentation.xianyuan_atlas import load_xianyuan_atlas_snapshot
+
+    payload = load_xianyuan_atlas_snapshot(session)
+    if not payload.get("runtime_complete"):
+        raise HTTPException(status_code=502, detail="仙缘动态插桩未生成完整快照")
+    return payload
+
+
+@inventory_router.get("/inventory/gongfa-atlas")
+def get_fanxiu_gongfa_atlas(session: Session = Depends(get_session)):
+    from backend.core.fanxiu.instrumentation.gongfa_atlas import load_gongfa_atlas_snapshot
+
+    return load_gongfa_atlas_snapshot(session)
+
+
+@inventory_router.get("/inventory/gongfa-atlas/books/{book_id}")
+def get_fanxiu_gongfa_atlas_book_detail(
+    book_id: int,
+    session: Session = Depends(get_session),
+):
+    from backend.core.fanxiu.instrumentation.gongfa_atlas import (
+        load_gongfa_atlas_book_detail,
+    )
+
+    try:
+        return load_gongfa_atlas_book_detail(session, book_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@inventory_router.post("/inventory/gongfa-atlas/collect")
+def collect_fanxiu_gongfa_atlas(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    if runtime_status.get("running"):
+        raise HTTPException(status_code=409, detail="行为树 Runtime 正在执行其它 Cell，请稍后更新个人功法")
+    entry_id = DEFAULT_FANXIU_ENTRY_ID
+    entry = resolve_fanxiu_entry(entry_id)
+    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+        entry_id=entry_id,
+        code=(
+            "import importlib\n"
+            "import backend.core.fanxiu.instrumentation.gongfa_equipment as gongfa_equipment\n"
+            "import backend.core.fanxiu.instrumentation.gongfa_atlas as atlas\n"
+            "importlib.reload(gongfa_equipment)\n"
+            "importlib.reload(atlas)\n"
+            "snapshot = atlas.collect_gongfa_atlas_snapshot_once()\n"
+            "print({'books': snapshot.get('runtime_item_count'), 'summary': snapshot.get('summary')})"
+        ),
+        timeout_seconds=120.0,
+        max_output_chars=3000,
+    )
+    try:
+        _submit_data_annotation_code_cell(entry, entry_id, request, source="gongfa-atlas")
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"个人功法更新未执行：{exc}") from exc
+    session.expire_all()
+    from backend.core.fanxiu.instrumentation.gongfa_atlas import load_gongfa_atlas_snapshot
+
+    payload = load_gongfa_atlas_snapshot(session)
+    if not payload.get("runtime_complete"):
+        raise HTTPException(status_code=502, detail="个人功法动态插桩未生成完整快照")
+    return payload
 
 
 @inventory_router.put("/inventory/magic-treasure-hall", response_model=FanxiuMagicTreasureHallSnapshot)
@@ -7093,22 +7097,100 @@ def update_fanxiu_magic_treasure_hall(
 
     if touched_existing_note:
         session.commit()
+    row = upsert_inventory_hall_snapshot(
+        session,
+        "magic_treasure_hall",
+        normalized_payload,
+        source_kind="manual",
+        entity_name="法宝殿",
+    )
+    return FanxiuMagicTreasureHallSnapshot.model_validate(row.payload)
 
+
+@inventory_router.post(
+    "/inventory/magic-treasure-hall/collect",
+    response_model=FanxiuMagicTreasureHallSnapshot,
+)
+def collect_fanxiu_magic_treasure_hall(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    """Run one ordinary read-only Cell and return its persisted DB snapshot."""
+
+    ensure_fanxiu_write_permission(current_user, session)
+    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        runtime_state_path=_behavior_tree_runtime_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    if runtime_status.get("running"):
+        current_task = str(runtime_status.get("task_type") or "当前 Cell")
+        message = str(runtime_status.get("message") or "行为树 Runtime 正在执行其它任务")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Runtime 忙碌（{current_task}）：{message}，请稍后再从游戏更新",
+        )
+    entry_id = DEFAULT_FANXIU_ENTRY_ID
     try:
-        saved_payload = save_magic_treasure_hall(normalized_payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存凡修法宝仓库失败：{exc}") from exc
-    return FanxiuMagicTreasureHallSnapshot.model_validate(saved_payload)
+        entry = resolve_fanxiu_entry(entry_id)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=f"行为树 Runtime 入口不可用：{exc}") from exc
+    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+        entry_id=entry_id,
+        code=(
+            "import importlib\n"
+            "import backend.core.fanxiu.catalog.item as magic_treasure_item_catalog\n"
+            "import backend.core.fanxiu.instrumentation.magic_treasure as magic_treasure_runtime\n"
+            "import backend.core.fanxiu.instrumentation.magic_treasure_collector as magic_treasure_collector\n"
+            "if not hasattr(magic_treasure_item_catalog, 'load_fanxiu_talisman_item_knowledge'):\n"
+            "    importlib.reload(magic_treasure_item_catalog)\n"
+            "importlib.reload(magic_treasure_runtime)\n"
+            "importlib.reload(magic_treasure_collector)\n"
+            "snapshot = magic_treasure_collector.collect_magic_treasure_snapshot_once()\n"
+            "print({'runtime_item_count': snapshot.get('runtime_item_count'), "
+            "'runtime_updated_at': snapshot.get('runtime_updated_at')})"
+        ),
+        timeout_seconds=120.0,
+        max_output_chars=2000,
+    )
+    try:
+        _submit_data_annotation_code_cell(
+            entry,
+            entry_id,
+            request,
+            source="magic-treasure-hall",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"法宝实时更新未执行：{exc}",
+        ) from exc
+    session.expire_all()
+    payload = load_inventory_hall_snapshot(session, "magic_treasure_hall")
+    if not payload or not payload.get("runtime_complete"):
+        raise HTTPException(status_code=502, detail="法宝动态插桩未生成完整数据库快照")
+    return FanxiuMagicTreasureHallSnapshot.model_validate(payload)
 
 
 @inventory_router.get("/inventory/spirit-artifact-hall", response_model=FanxiuSpiritArtifactHallSnapshot)
-def get_fanxiu_spirit_artifact_hall():
+def get_fanxiu_spirit_artifact_hall(session: Session = Depends(get_session)):
     try:
         payload = load_spirit_artifact_hall()
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    from backend.core.fanxiu.instrumentation.spirit_artifact_store import (
+        load_spirit_artifact_runtime_snapshot,
+    )
+
+    runtime_payload = load_spirit_artifact_runtime_snapshot(session)
+    if runtime_payload:
+        payload = {
+            **payload,
+            **runtime_payload,
+            "artifacts": runtime_payload["artifacts"],
+        }
     return FanxiuSpiritArtifactHallSnapshot.model_validate(payload)
 
 
@@ -7265,248 +7347,554 @@ def update_fanxiu_activity_list(
     return FanxiuActivityListSnapshot(items=saved_payload)
 
 
-@inventory_router.get("/activity-list/modao-invasion", response_model=FanxiuModaoInvasionSnapshot)
-def get_fanxiu_modao_invasion_exchange_list():
-    try:
-        payload = load_modao_invasion_exchange_list()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return FanxiuModaoInvasionSnapshot.model_validate(payload)
-
-
-@inventory_router.put("/activity-list/modao-invasion", response_model=FanxiuModaoInvasionSnapshot)
-def update_fanxiu_modao_invasion_exchange_list(
-    payload: FanxiuModaoInvasionSnapshot,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    normalized_snapshot = payload.model_dump(mode="json")
-
-    try:
-        saved_payload = save_modao_invasion_exchange_list(normalized_snapshot)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存魔道入侵兑换表失败：{exc}") from exc
-    return FanxiuModaoInvasionSnapshot.model_validate(saved_payload)
-
-
-@inventory_router.post(
-    "/activity-list/modao-invasion/import/ocr",
-    response_model=FanxiuModaoInvasionOcrImportResponse,
+@inventory_router.get(
+    "/activity-list/yunmeng-trial",
+    response_model=YunmengTrialSnapshotResponse,
 )
-async def import_fanxiu_modao_invasion_exchange_list_from_ocr(
-    image: UploadFile = File(...),
-    current_user: User = Depends(get_current_active_user),
+def get_fanxiu_yunmeng_trial_snapshot(
+    activity_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
-    ensure_fanxiu_write_permission(current_user, session)
+    return list_yunmeng_trial_snapshot(session, activity_id=activity_id)
 
-    image_bytes = await image.read()
-    await image.close()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="截图内容为空")
 
-    suffix = Path(image.filename or "").suffix or ".png"
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = Path(temp_file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
-        items, lines = _build_modao_invasion_exchange_items_from_ocr_document(preview.get("document") or {})
-    except OcrPreviewError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-
-    return FanxiuModaoInvasionOcrImportResponse(
-        lines=lines,
-        items=[FanxiuModaoInvasionExchangeItem.model_validate(item) for item in items],
+@inventory_router.get(
+    "/activity-list/latest-exchange-event",
+    response_model=LatestExchangeActivitySnapshot,
+)
+def get_latest_fanxiu_exchange_activity_snapshot(
+    activity_types: str = Query(..., min_length=1),
+    session: Session = Depends(get_session),
+):
+    return latest_exchange_activity_snapshot(
+        session,
+        activity_types=activity_types.split(","),
     )
 
 
-@inventory_router.post(
-    "/activity-list/modao-invasion/personal-rankings/import/ocr",
-    response_model=FanxiuModaoInvasionPersonalRankingOcrImportResponse,
+@inventory_router.get(
+    "/activity-list/exchange-events/{activity_type}",
+    response_model=ExchangeActivitySnapshot,
 )
-async def import_fanxiu_modao_invasion_personal_rankings_from_ocr(
-    image: UploadFile = File(...),
-    current_user: User = Depends(get_current_active_user),
+def get_fanxiu_exchange_activity_snapshot(
+    activity_type: str,
+    activity_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
-    ensure_fanxiu_write_permission(current_user, session)
-
-    image_bytes = await image.read()
-    await image.close()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="截图内容为空")
-
-    suffix = Path(image.filename or "").suffix or ".png"
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = Path(temp_file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
-        items, lines = _build_modao_invasion_personal_rankings_from_ocr_document(preview.get("document") or {})
-    except OcrPreviewError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
-
-    return FanxiuModaoInvasionPersonalRankingOcrImportResponse(
-        lines=lines,
-        items=[FanxiuModaoInvasionPersonalRankingItem.model_validate(item) for item in items],
+    materialize_registered_exchange_activity(
+        session,
+        activity_type=activity_type,
+    )
+    return list_exchange_activity_snapshot(
+        session, activity_type=activity_type, activity_id=activity_id
     )
 
 
-@inventory_router.get("/activity-list/shouyuan-exploration", response_model=FanxiuShouyuanExplorationSnapshot)
-def get_fanxiu_shouyuan_exploration_exchange_list():
-    try:
-        payload = load_shouyuan_exploration_exchange_list()
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return FanxiuShouyuanExplorationSnapshot.model_validate(payload)
-
-
-@inventory_router.put("/activity-list/shouyuan-exploration", response_model=FanxiuShouyuanExplorationSnapshot)
-def update_fanxiu_shouyuan_exploration_exchange_list(
-    payload: FanxiuShouyuanExplorationSnapshot,
-    current_user: User = Depends(get_current_active_user),
+@inventory_router.get(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/observations",
+    response_model=ExchangeActivityObservationPage,
+)
+def get_fanxiu_exchange_activity_observations(
+    activity_type: str,
+    activity_id: str,
     session: Session = Depends(get_session),
 ):
-    ensure_fanxiu_write_permission(current_user, session)
-    normalized_snapshot = payload.model_dump(mode="json")
-
     try:
-        saved_payload = save_shouyuan_exploration_exchange_list(normalized_snapshot)
+        return list_exchange_activity_observations(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存兽渊探秘兑换表失败：{exc}") from exc
-    return FanxiuShouyuanExplorationSnapshot.model_validate(saved_payload)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/lingzhuang-huadao/strengthening",
+    response_model=LingzhuangStrengtheningSnapshot,
+)
+def get_fanxiu_lingzhuang_strengthening_snapshot(
+    session: Session = Depends(get_session),
+):
+    return load_lingzhuang_strengthening_snapshot(session)
 
 
 @inventory_router.post(
-    "/activity-list/shouyuan-exploration/import/ocr",
-    response_model=FanxiuShouyuanExplorationOcrImportResponse,
+    "/activity-list/lingzhuang-huadao/{activity_id}/strengthening/collect",
+    response_model=LingzhuangStrengtheningSnapshot,
 )
-async def import_fanxiu_shouyuan_exploration_exchange_list_from_ocr(
-    image: UploadFile = File(...),
+def collect_fanxiu_lingzhuang_strengthening_snapshot(
+    activity_id: str,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-
-    image_bytes = await image.read()
-    await image.close()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="截图内容为空")
-
-    suffix = Path(image.filename or "").suffix or ".png"
-    temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = Path(temp_file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
-        items, lines = _build_modao_invasion_exchange_items_from_ocr_document(preview.get("document") or {})
-    except OcrPreviewError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return collect_and_store_lingzhuang_strengthening_snapshot(
+            session,
+            activity_id=activity_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
 
-    return FanxiuShouyuanExplorationOcrImportResponse(
-        lines=lines,
-        items=[FanxiuShouyuanExplorationExchangeItem.model_validate(item) for item in items],
-    )
+
+@inventory_router.get(
+    "/activity-list/lingzhuang-huadao/{activity_id}/relationship-samples",
+    response_model=RelationshipDataset,
+)
+def get_fanxiu_lingzhuang_relationship_samples(
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    return list_lingzhuang_relationship_samples(session, activity_id=activity_id)
 
 
 @inventory_router.post(
-    "/activity-list/shouyuan-exploration/personal-rankings/import/ocr",
-    response_model=FanxiuShouyuanExplorationPersonalRankingOcrImportResponse,
+    "/activity-list/lingzhuang-huadao/{activity_id}/relationship-samples/record",
+    response_model=RelationshipDataset,
 )
-async def import_fanxiu_shouyuan_exploration_personal_rankings_from_ocr(
-    image: UploadFile = File(...),
+def record_fanxiu_lingzhuang_relationship_sample(
+    activity_id: str,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-
-    image_bytes = await image.read()
-    await image.close()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="截图内容为空")
-
-    suffix = Path(image.filename or "").suffix or ".png"
-    temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = Path(temp_file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
-        items, lines = _build_modao_invasion_personal_rankings_from_ocr_document(preview.get("document") or {})
-    except OcrPreviewError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return record_lingzhuang_relationship_sample(session, activity_id=activity_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
 
-    return FanxiuShouyuanExplorationPersonalRankingOcrImportResponse(
-        lines=lines,
-        items=[FanxiuShouyuanExplorationPersonalRankingItem.model_validate(item) for item in items],
-    )
+
+@inventory_router.put(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/priorities",
+    response_model=ExchangeActivityDetail,
+)
+def update_fanxiu_exchange_activity_priorities(
+    activity_type: str,
+    activity_id: str,
+    payload: ExchangePriorityUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return update_exchange_priorities(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+            ordered_goods_ids=payload.ordered_goods_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @inventory_router.post(
-    "/activity-list/shouyuan-exploration/income-speeds/import/ocr",
-    response_model=FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse,
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/plan",
+    response_model=ExchangeActivityDetail,
 )
-async def import_fanxiu_shouyuan_exploration_income_speed_from_ocr(
-    image: UploadFile = File(...),
+def plan_fanxiu_exchange_activity_shop(
+    activity_type: str,
+    activity_id: str,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-
-    image_bytes = await image.read()
-    await image.close()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="截图内容为空")
-
-    suffix = Path(image.filename or "").suffix or ".png"
-    temp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(image_bytes)
-            temp_path = Path(temp_file.name)
-        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
-        item, lines = _build_shouyuan_exploration_income_speed_from_ocr_document(preview.get("document") or {})
-    except OcrPreviewError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return apply_exchange_shop_plan(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        if temp_path and temp_path.exists():
-            temp_path.unlink(missing_ok=True)
 
-    return FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse(
-        lines=lines,
-        item=FanxiuShouyuanExplorationIncomeSpeedItem.model_validate(item),
-    )
+
+@inventory_router.put(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/shop-items/{goods_id}/lock",
+    response_model=ExchangeActivityDetail,
+)
+def update_fanxiu_exchange_activity_shop_item_lock(
+    activity_type: str,
+    activity_id: str,
+    goods_id: int,
+    payload: ExchangeShopItemLockUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return update_exchange_shop_item_lock(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+            goods_id=goods_id,
+            locked=payload.locked,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/rankings",
+    response_model=ExchangeRankingPage,
+)
+def get_fanxiu_exchange_activity_rankings(
+    activity_type: str,
+    activity_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    ranking_scope: str = Query(default="personal"),
+    session: Session = Depends(get_session),
+):
+    try:
+        return list_exchange_rankings(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+            page=page,
+            page_size=page_size,
+            ranking_scope=ranking_scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/yaochi-flower-festival/{activity_id}/tasks",
+)
+def get_fanxiu_yaochi_flower_festival_tasks(
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        snapshot = list_exchange_activity_snapshot(
+            session,
+            activity_type="yaochi-flower-festival",
+            activity_id=activity_id,
+        )
+        activity = snapshot.selected_activity
+        if activity is None or activity.game_rank_activity_id is None:
+            raise ValueError("瑶池花会活动缺少任务配置 ID")
+        references = resolve_yaochi_flower_activity_references(
+            rank_activity_id=activity.game_rank_activity_id,
+            cross_count=activity.cross_count,
+        )
+        return {
+            "references": references,
+            "items": load_yaochi_flower_task_milestones(
+                rank_activity_id=int(
+                    references.get("task_activity_id")
+                    or activity.game_rank_activity_id
+                ),
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/yuanding-sansheng/{activity_id}/tasks",
+)
+def get_fanxiu_yuanding_sansheng_tasks(
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        snapshot = list_exchange_activity_snapshot(
+            session,
+            activity_type="yuanding-sansheng",
+            activity_id=activity_id,
+        )
+        if snapshot.selected_activity is None:
+            raise ValueError("缘定三生活动不存在")
+        return {"items": load_yuanding_sansheng_task_milestones()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/lingchong-jingwu/{activity_id}/tasks",
+)
+def get_fanxiu_lingchong_jingwu_tasks(
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        snapshot = list_exchange_activity_snapshot(
+            session,
+            activity_type="lingchong-jingwu",
+            activity_id=activity_id,
+        )
+        if snapshot.selected_activity is None:
+            raise ValueError("8跨灵宠竞武活动不存在")
+        return load_lingchong_jingwu_observed_tasks(
+            session,
+            start_date=snapshot.selected_activity.start_date,
+            end_date=snapshot.selected_activity.end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/tasks",
+)
+def get_fanxiu_registered_resource_ranking_tasks(
+    activity_type: str,
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        return load_registered_resource_ranking_tasks(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/resources",
+)
+def get_fanxiu_registered_resource_ranking_resources(
+    activity_type: str,
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        return load_registered_resource_ranking_resources(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.post(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/resources/collect",
+)
+def collect_fanxiu_registered_resource_ranking_resources(
+    activity_type: str,
+    activity_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return collect_registered_resource_ranking_resources(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/lingchong-jingwu/{activity_id}/resources",
+    response_model=LingchongJingwuResourceSnapshot,
+)
+def get_fanxiu_lingchong_jingwu_resources(
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        return load_lingchong_jingwu_resource_snapshot(
+            session, activity_id=activity_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.post(
+    "/activity-list/lingchong-jingwu/{activity_id}/resources/collect",
+    response_model=LingchongJingwuResourceSnapshot,
+)
+def collect_fanxiu_lingchong_jingwu_resources(
+    activity_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        snapshot = list_exchange_activity_snapshot(
+            session,
+            activity_type="lingchong-jingwu",
+            activity_id=activity_id,
+        )
+        if snapshot.selected_activity is None:
+            raise ValueError("8跨灵宠竞武活动不存在")
+        if not is_exchange_activity_active(snapshot.selected_activity):
+            raise ValueError("8跨灵宠竞武活动不在有效日期内")
+        collected = collect_lingchong_jingwu_resource_snapshot(
+            activity_id=activity_id
+        )
+        return store_lingchong_jingwu_resource_snapshot(session, collected)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/yaochi-flower-festival/resources",
+    response_model=YaochiFlowerResourceSnapshot,
+)
+def get_fanxiu_yaochi_flower_resources(
+    session: Session = Depends(get_session),
+):
+    try:
+        return load_yaochi_flower_resource_snapshot(session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.post(
+    "/activity-list/yaochi-flower-festival/{activity_id}/resources/collect",
+    response_model=YaochiFlowerResourceSnapshot,
+)
+def collect_fanxiu_yaochi_flower_resources(
+    activity_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return collect_and_store_yaochi_flower_resource_snapshot(
+            session,
+            activity_id=activity_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.post(
+    "/activity-list/exchange-events/{activity_type}/{activity_id}/collect",
+    response_model=ExchangeActivityDetail,
+)
+def collect_fanxiu_exchange_activity(
+    activity_type: str,
+    activity_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return collect_registered_exchange_activity(
+            session,
+            activity_type=activity_type,
+            activity_id=activity_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.put(
+    "/activity-list/yunmeng-trial/{activity_id}/priorities",
+    response_model=YunmengTrialActivityDetail,
+)
+def update_fanxiu_yunmeng_trial_priorities(
+    activity_id: str,
+    payload: YunmengTrialPriorityUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return update_yunmeng_trial_priorities(
+            session,
+            activity_id=activity_id,
+            ordered_goods_ids=payload.ordered_goods_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.put(
+    "/activity-list/yunmeng-trial/{activity_id}/shop-items/{goods_id}/lock",
+    response_model=YunmengTrialActivityDetail,
+)
+def update_fanxiu_yunmeng_trial_shop_item_lock(
+    activity_id: str,
+    goods_id: int,
+    payload: YunmengTrialShopItemLockUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return update_yunmeng_trial_shop_item_lock(
+            session,
+            activity_id=activity_id,
+            goods_id=goods_id,
+            locked=payload.locked,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/yunmeng-trial/{activity_id}/rankings",
+    response_model=YunmengTrialRankingPage,
+)
+def get_fanxiu_yunmeng_trial_rankings(
+    activity_id: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    ranking_scope: str = Query(default="personal"),
+    session: Session = Depends(get_session),
+):
+    try:
+        return list_yunmeng_trial_rankings(
+            session,
+            activity_id=activity_id,
+            page=page,
+            page_size=page_size,
+            ranking_scope=ranking_scope,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@inventory_router.get(
+    "/activity-list/yunmeng-trial/{activity_id}/measurements",
+    response_model=YunmengTrialMeasurementPage,
+)
+def get_fanxiu_yunmeng_trial_measurements(
+    activity_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        return list_yunmeng_trial_measurements(session, activity_id=activity_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@inventory_router.post(
+    "/activity-list/yunmeng-trial/{activity_id}/measurements/collect",
+    response_model=YunmengTrialMeasurementCollectResult,
+)
+def collect_fanxiu_yunmeng_trial_measurement(
+    activity_id: str,
+    payload: YunmengTrialMeasurementCollectRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return collect_and_store_yunmeng_trial_measurement(
+            session,
+            activity_id=activity_id,
+            challenge_count_delta=payload.challenge_count_delta,
+            note=payload.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"活动运行态数据更新失败：{exc}",
+        ) from exc
 
 
 @inventory_router.get("/inventory/wardrobe-notes/{item_id}", response_model=Optional[NoteRead])
@@ -8021,5 +8409,3 @@ def update_char(
 router.include_router(status_router)
 router.include_router(inventory_router)
 router.include_router(chars_router)
-
-

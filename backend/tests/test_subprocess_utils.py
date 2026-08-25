@@ -18,26 +18,18 @@ def test_hidden_subprocess_kwargs_hide_windows_console(monkeypatch):
         "CREATE_NEW_PROCESS_GROUP",
         subprocess_utils.WINDOWS_CREATE_NEW_PROCESS_GROUP,
     )
-    assert kwargs["creationflags"] & getattr(
-        subprocess,
-        "DETACHED_PROCESS",
-        subprocess_utils.WINDOWS_DETACHED_PROCESS,
-    )
+    assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_DETACHED_PROCESS
     assert kwargs["startupinfo"].wShowWindow == subprocess.SW_HIDE
 
 
-def test_background_popen_kwargs_detaches_windows_process(monkeypatch):
+def test_background_popen_kwargs_hides_independent_windows_process(monkeypatch):
     monkeypatch.setattr(subprocess_utils.os, "name", "nt")
 
     kwargs = subprocess_utils.background_popen_kwargs(independent=True)
 
     assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
     assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_BREAKAWAY_FROM_JOB
-    assert kwargs["creationflags"] & getattr(
-        subprocess,
-        "DETACHED_PROCESS",
-        subprocess_utils.WINDOWS_DETACHED_PROCESS,
-    )
+    assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_DETACHED_PROCESS
 
 
 def test_no_window_subprocess_kwargs_do_not_detach(monkeypatch):
@@ -48,6 +40,26 @@ def test_no_window_subprocess_kwargs_do_not_detach(monkeypatch):
     assert kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
     assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_DETACHED_PROCESS
     assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NEW_PROCESS_GROUP
+
+
+def test_hidden_console_subprocess_kwargs_hide_inheritable_console(monkeypatch):
+    monkeypatch.setattr(subprocess_utils.os, "name", "nt")
+
+    kwargs = subprocess_utils.hidden_console_subprocess_kwargs()
+
+    assert kwargs["creationflags"] & getattr(
+        subprocess,
+        "CREATE_NEW_CONSOLE",
+        subprocess_utils.WINDOWS_CREATE_NEW_CONSOLE,
+    )
+    assert kwargs["creationflags"] & getattr(
+        subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        subprocess_utils.WINDOWS_CREATE_NEW_PROCESS_GROUP,
+    )
+    assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_CREATE_NO_WINDOW
+    assert not kwargs["creationflags"] & subprocess_utils.WINDOWS_DETACHED_PROCESS
+    assert kwargs["startupinfo"].wShowWindow == subprocess.SW_HIDE
 
 
 def test_install_no_window_popen_default_merges_creationflags(monkeypatch):

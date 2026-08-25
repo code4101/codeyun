@@ -230,6 +230,15 @@ def test_ocr_service_manager_enforces_concurrency_limit(monkeypatch: pytest.Monk
         manager._acquire(_build_runtime_config())
 
 
+def test_ocr_runtime_config_separates_model_versions() -> None:
+    default = _build_runtime_config({"lang": "ch"})
+    chinese_english = _build_runtime_config({"lang": "ch", "ocr_version": "PP-OCRv4"})
+
+    assert default.ocr_version is None
+    assert chinese_english.ocr_version == "PP-OCRv4"
+    assert default.key != chinese_english.key
+
+
 def test_ocr_service_manager_discards_failed_instance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

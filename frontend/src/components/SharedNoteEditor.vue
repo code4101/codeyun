@@ -124,7 +124,7 @@
               :model-value="completionProgressExpr"
               size="small"
               class="progress-expr-input"
-              placeholder="支持 0.41、41/83、(1+2*2)/(4+7)"
+              placeholder="完成默认 1.00；可填写 0.41、41/83"
               :readonly="effectiveReadonly"
               @focus="beginLocalEditHistory('completion-progress')"
               @update:model-value="handleCompletionProgressExprChange"
@@ -421,6 +421,7 @@ import {
   applyEditableNoteSnapshot,
   areEditableNoteSnapshotsEqual,
   buildEditableNotePatch,
+  buildEditableNoteExpectedFields,
   buildNoteDraftStorageKey,
   cloneEditableNoteSnapshot,
   convertNoteCustomFieldValue,
@@ -431,6 +432,7 @@ import {
   noteSnapshotToNode,
   normalizeNoteCustomFieldType,
   type EditableNotePatch,
+  type EditableNoteExpectedFields,
   type EditableNoteSnapshot,
   type NoteCustomFieldItem,
   type NoteCustomFieldType
@@ -438,6 +440,7 @@ import {
 import {
   evaluateCompletionProgressExpr,
   getCompletionProgressExprFromCustomFields,
+  isDefaultFullCompletionProgressExpr,
   normalizeCompletionProgressExpr,
   resolveCompletionProgressFillRatio,
   stripNoteSystemCustomFields,
@@ -473,8 +476,8 @@ const props = defineProps<{
   editorLayout?: 'fill' | 'flow';
   editorMinHeight?: number;
   draftStorageKey?: string | null;
-  onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
-  onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
+  onSave?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => Promise<NoteNode | void>;
+  onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => void;
 }>();
 
 const effectiveEditorLayout = computed(() => props.editorLayout || 'fill');
@@ -1311,7 +1314,8 @@ const autoSave = useAutoSave<EditableNoteSnapshot>({
     const baseline = autoSave.getBaselineSnapshot();
     const patch = buildEditableNotePatch(snapshot, baseline);
     if (!Object.keys(patch).length) return snapshot;
-    const updatedNote = await props.onSave(noteSnapshotToNode(currentNote.value, snapshot), patch);
+    const expectedFields = buildEditableNoteExpectedFields(patch, baseline);
+    const updatedNote = await props.onSave(noteSnapshotToNode(currentNote.value, snapshot), patch, expectedFields);
     const normalizedSavedNote = updatedNote ? normalizeIncomingNote(updatedNote) : null;
     const canonicalSnapshot = createEditableNoteSnapshot(normalizedSavedNote || noteSnapshotToNode(currentNote.value, snapshot)) ?? snapshot;
     if (currentNote.value?.id === snapshot.id) {
@@ -1335,7 +1339,8 @@ const autoSave = useAutoSave<EditableNoteSnapshot>({
     if (!props.onSaveKeepalive) return;
     const patch = buildEditableNotePatch(snapshot, baselineSnapshot);
     if (!Object.keys(patch).length) return;
-    props.onSaveKeepalive(noteSnapshotToNode(currentNote.value, snapshot), patch);
+    const expectedFields = buildEditableNoteExpectedFields(patch, baselineSnapshot);
+    props.onSaveKeepalive(noteSnapshotToNode(currentNote.value, snapshot), patch, expectedFields);
   }
 });
 
@@ -1598,6 +1603,13 @@ const handleLifecycleStageChange = (value: string) => {
   if (currentNote.value.lifecycle_stage === nextLifecycleStage) return;
   pushLocalUndoSnapshot('lifecycle-stage');
   currentNote.value.lifecycle_stage = nextLifecycleStage;
+  if (
+    nextLifecycleStage === 'done'
+    && isDefaultFullCompletionProgressExpr(currentNote.value.completion_progress_expr)
+  ) {
+    currentNote.value.completion_progress_expr = null;
+    currentNote.value.completion_progress = null;
+  }
   syncLegacyFieldsFromTaxonomy();
   queueMetaAutoSave({ immediate: true });
 };

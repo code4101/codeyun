@@ -53,3 +53,67 @@ def test_recognition_ops_report_does_not_treat_unmatched_nodes_as_issues():
 
     assert report["matrix"]["cache_missing"] is True
     assert report["issues"] == []
+
+
+def test_recognition_ops_fallback_nodes_ignore_assets_without_scene_identity():
+    report = build_recognition_ops_report(
+        {"scene_ids": [], "matches": [], "cache_missing": True},
+        {
+            900: {
+                "title": "场景",
+                "filename": "0900.png",
+                "shapes": [{"id": "identity", "sceneIdentityRole": "required"}],
+            },
+            901: {
+                "title": "动作素材",
+                "filename": "0901.png",
+                "layer": 2,
+                "shapes": [{"id": "return", "title": "返回", "sceneIdentityRole": "off"}],
+            },
+        },
+    )
+
+    assert report["matrix"]["node_count"] == 1
+    assert report["summary"]["node_count"] == 1
+
+
+def test_recognition_ops_includes_persisted_navigation_stalls_when_matrix_is_missing():
+    report = build_recognition_ops_report(
+        {"scene_ids": [], "matches": [], "cache_missing": True},
+        {
+            34: {"title": "世界", "filename": "0034.png"},
+            54: {"title": "退出道场", "filename": "0054.png"},
+        },
+        navigation_incidents=[
+            {
+                "id": "nav-1",
+                "status": "recovered_with_fallback",
+                "review_status": "pending",
+                "created_at": "2026-07-28T12:00:00",
+                "target_scene_id": 34,
+                "current_scene_id": 54,
+                "fallback_used": True,
+                "trigger": {"type": "stable_self_loop", "label": "稳定自环"},
+                "timeline": [
+                    {
+                        "source_scene_id": 54,
+                        "landing_scene_id": 54,
+                        "landing_score": 86,
+                    },
+                    {
+                        "source_scene_id": 54,
+                        "landing_scene_id": 34,
+                        "landing_score": 100,
+                    },
+                ],
+                "resolution": {"scene_id": 34, "score": 100},
+            }
+        ],
+    )
+
+    issue = next(item for item in report["issues"] if item["category"] == "navigation_stall")
+    assert issue["incident"]["id"] == "nav-1"
+    assert issue["incident"]["review_status"] == "pending"
+    assert issue["node_ids"] == [54, 34]
+    assert {(edge["source_id"], edge["target_id"]) for edge in issue["edges"]} == {(54, 54), (54, 34)}
+    assert next(category for category in report["categories"] if category["id"] == "navigation_stall")["count"] == 1
