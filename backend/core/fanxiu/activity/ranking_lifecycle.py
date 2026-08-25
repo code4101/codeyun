@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Pure lifecycle planning for the shared ranking-system Scheduler Job.
+"""Pure lifecycle planning shared by the two ranking Scheduler Jobs.
 
 The module knows activity occurrences and checkpoint rules, but never opens a
 database session, operates the game, or writes Scheduler state.  One caller
@@ -15,11 +15,47 @@ from typing import Any, Iterable, Literal, Mapping
 
 RANKING_LIFECYCLE_TASK_ID = "ranking-lifecycle"
 RANKING_LIFECYCLE_TASK_TYPE = "ranking_lifecycle"
+RESOURCE_RANKING_TASK_ID = "resource-ranking"
+RESOURCE_RANKING_TASK_TYPE = "resource_ranking"
+RETIRED_GAMEPLAY_RANKING_TASK_IDS = frozenset({
+    "magic-invasion-explore",
+    "xutian-palace-rankings",
+    "xutian-palace-native-auto",
+    "yunmeng-trial-auto-challenge",
+    "yunmeng-tail",
+    "legacy-daily-xianmeng",
+})
+RETIRED_GAMEPLAY_RANKING_TASK_TYPES = frozenset({
+    "magic_invasion_explore",
+    "xutian_palace_rankings",
+    "xutian_palace_native_auto",
+    "yunmeng_trial_auto_challenge",
+    "yunmeng_tail",
+    "daily_xianmeng",
+})
+RETIRED_RESOURCE_RANKING_TASK_IDS = frozenset({
+    "resource-rank-daily-free-gift",
+    "dandao-task-rewards",
+    "yuanding-sansheng-daily-gift",
+})
+RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
+    "resource_rank_daily_free_gift",
+    "dandao_task_rewards",
+    "yuanding_sansheng_daily_gift",
+})
 DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
+XIANMENG_ACTIVE_KIND = "xianmeng_active_1000"
+RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
+DANDAO_REWARDS_KIND = "dandao_rewards_1810"
+YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 30)
 MAGIC_ACTIVE_TIME = time(19, 0)
+XIANMENG_ACTIVE_TIME = time(10, 0)
+RESOURCE_FREE_GIFT_TIME = time(5, 10)
+DANDAO_REWARDS_TIME = time(18, 10)
+YUANDING_GIFT_TIME = time(5, 0)
 
 # An exchange-tail checkpoint is side-effectful, so it is enabled only for
 # activity adapters that have a proven, idempotent executor.  The common
@@ -28,6 +64,11 @@ MAGIC_ACTIVE_TIME = time(19, 0)
 EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({"magic-invasion", "yunmeng-trial"})
 
 RankingFamily = Literal["gameplay_rank", "resource_rank"]
+
+RANKING_CAPABILITY_STATUS = {
+    "beast-abyss": "observed_reconcile_only",
+    "tiandi-yiju": "observed_unhandled",
+}
 
 
 @dataclass(frozen=True)
@@ -42,6 +83,7 @@ class RankingOccurrence:
     close_at: datetime
     cross_count: int
     world_level: int = 0
+    base_id: int = 0
 
     @property
     def instance_key(self) -> str:
@@ -81,6 +123,7 @@ class RankingActivityIdentity:
     runtime_activity_types: tuple[int, ...] = ()
     activity_ids: tuple[int, ...] = ()
     base_ids: tuple[int, ...] = ()
+    names: tuple[str, ...] = ()
 
     def match_priority(self, raw: Mapping[str, Any]) -> int:
         """Rank stable normalized facts above compatibility-only class names."""
@@ -89,6 +132,7 @@ class RankingActivityIdentity:
             runtime_type = int(raw.get("activityType") or raw.get("activity_type") or 0)
             activity_id = int(raw.get("activityId") or raw.get("activity_id") or 0)
             base_id = int(raw.get("baseId") or raw.get("base_id") or 0)
+            name = str(raw.get("name") or raw.get("activityName") or "").strip()
         except (TypeError, ValueError):
             return 0
         if (activity_id and activity_id in self.activity_ids) or (
@@ -98,6 +142,8 @@ class RankingActivityIdentity:
         if runtime_type and runtime_type in self.runtime_activity_types:
             return 2
         if vo_type and vo_type in self.vo_types:
+            return 1
+        if name and name in self.names:
             return 1
         return 0
 
@@ -177,6 +223,25 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
                 activity_ids=activity_ids.get(activity_type, ()),
             )
         )
+    identities.extend(
+        (
+            RankingActivityIdentity(
+                activity_type="xianmeng-competition",
+                family="gameplay_rank",
+                vo_types=(),
+                runtime_activity_types=(42, 43),
+                base_ids=(28000, 28100, 28200),
+            ),
+            # Discovery-only: there is deliberately no execution adapter until
+            # the business action has been explicitly authorized and proven.
+            RankingActivityIdentity(
+                activity_type="tiandi-yiju",
+                family="gameplay_rank",
+                vo_types=(),
+                names=("天地弈局",),
+            ),
+        )
+    )
     return tuple(identities)
 
 
@@ -184,6 +249,7 @@ def discover_ranking_occurrences(
     schedule: Mapping[str, Any],
     *,
     identities: Iterable[RankingActivityIdentity] | None = None,
+    family: RankingFamily | None = None,
 ) -> tuple[RankingOccurrence, ...]:
     """Return every complete registered ranking occurrence in one Runtime list."""
 
@@ -205,9 +271,12 @@ def discover_ranking_occurrences(
         if len(matches) != 1:
             continue
         identity = matches[0]
+        if family is not None and identity.family != family:
+            continue
         runtime_id = str(raw.get("id") or "").strip()
         try:
             activity_id = int(raw.get("activityId") or 0)
+            base_id = int(raw.get("baseId") or 0)
             cross_count = max(1, int(raw.get("serverCount") or 1))
             world_level = max(0, int(raw.get("avgWorldLevel") or 0))
         except (TypeError, ValueError):
@@ -230,6 +299,7 @@ def discover_ranking_occurrences(
             family=identity.family,
             runtime_id=runtime_id,
             activity_id=activity_id,
+            base_id=base_id,
             start_at=start_at,
             end_at=end_at,
             prepare_at=prepare_at,
@@ -314,6 +384,45 @@ def checkpoints_for_occurrence(
                 due_at=magic_at,
             )
         )
+    xianmeng_at = _at(business_day, XIANMENG_ACTIVE_TIME, occurrence.start_at.tzinfo)
+    if (
+        occurrence.activity_type == "xianmeng-competition"
+        and business_day in {occurrence.start_at.date(), occurrence.end_at.date()}
+        and occurrence.start_at <= xianmeng_at <= occurrence.end_at
+    ):
+        checkpoints.append(
+            RankingCheckpoint(
+                instance_key=occurrence.instance_key,
+                activity_type=occurrence.activity_type,
+                family=occurrence.family,
+                runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id,
+                checkpoint_kind=XIANMENG_ACTIVE_KIND,
+                business_date=business_day.isoformat(),
+                due_at=xianmeng_at,
+            )
+        )
+    resource_kinds = (
+        (RESOURCE_FREE_GIFT_KIND, RESOURCE_FREE_GIFT_TIME, True),
+        (DANDAO_REWARDS_KIND, DANDAO_REWARDS_TIME, occurrence.activity_type == "dandao-wending"),
+        (YUANDING_GIFT_KIND, YUANDING_GIFT_TIME, occurrence.activity_type == "yuanding-sansheng"),
+    )
+    if occurrence.family == "resource_rank":
+        for checkpoint_kind, checkpoint_time, enabled in resource_kinds:
+            due_at = _at(business_day, checkpoint_time, occurrence.start_at.tzinfo)
+            if enabled and occurrence.start_at <= due_at <= occurrence.end_at:
+                checkpoints.append(
+                    RankingCheckpoint(
+                        instance_key=occurrence.instance_key,
+                        activity_type=occurrence.activity_type,
+                        family=occurrence.family,
+                        runtime_id=occurrence.runtime_id,
+                        activity_id=occurrence.activity_id,
+                        checkpoint_kind=checkpoint_kind,
+                        business_date=business_day.isoformat(),
+                        due_at=due_at,
+                    )
+                )
     return tuple(checkpoints)
 
 
@@ -357,7 +466,14 @@ def due_ranking_checkpoints(
                     occurrence,
                     business_day=local_now.date(),
                 )
-                if checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND
+                if checkpoint.checkpoint_kind
+                in {
+                    MAGIC_ACTIVE_KIND,
+                    XIANMENG_ACTIVE_KIND,
+                    RESOURCE_FREE_GIFT_KIND,
+                    DANDAO_REWARDS_KIND,
+                    YUANDING_GIFT_KIND,
+                }
             )
     return tuple(
         sorted(
@@ -411,9 +527,21 @@ __all__ = [
     "EXCHANGE_TAIL_ACTIVITY_TYPES",
     "EXCHANGE_TAIL_KIND",
     "MAGIC_ACTIVE_KIND",
+    "XIANMENG_ACTIVE_KIND",
+    "RESOURCE_FREE_GIFT_KIND",
+    "DANDAO_REWARDS_KIND",
+    "YUANDING_GIFT_KIND",
+    "RANKING_CAPABILITY_STATUS",
     "RANKING_LIFECYCLE_TASK_ID",
     "RANKING_LIFECYCLE_TASK_TYPE",
+    "RESOURCE_RANKING_TASK_ID",
+    "RESOURCE_RANKING_TASK_TYPE",
+    "RETIRED_GAMEPLAY_RANKING_TASK_IDS",
+    "RETIRED_GAMEPLAY_RANKING_TASK_TYPES",
+    "RETIRED_RESOURCE_RANKING_TASK_IDS",
+    "RETIRED_RESOURCE_RANKING_TASK_TYPES",
     "RankingActivityIdentity",
+    "RankingFamily",
     "RankingCheckpoint",
     "RankingOccurrence",
     "checkpoints_for_occurrence",

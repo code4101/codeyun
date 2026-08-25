@@ -3,6 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from backend.core.fanxiu.activity.ranking_lifecycle import (
+    RANKING_LIFECYCLE_TASK_ID,
+    RANKING_LIFECYCLE_TASK_TYPE,
+    RESOURCE_RANKING_TASK_ID,
+    RESOURCE_RANKING_TASK_TYPE,
+    RETIRED_GAMEPLAY_RANKING_TASK_IDS,
+    RETIRED_GAMEPLAY_RANKING_TASK_TYPES,
+    RETIRED_RESOURCE_RANKING_TASK_IDS,
+    RETIRED_RESOURCE_RANKING_TASK_TYPES,
+)
 from backend.core.fanxiu.data_annotation.arena_schedule import (
     next_daofa_trigger_at,
     next_xianyuan_duel_trigger_at,
@@ -24,11 +34,6 @@ from backend.core.fanxiu.data_annotation.tasks.daozu_challenge import (
 from backend.core.fanxiu.data_annotation.tasks.daily_task_rewards import (
     next_daily_task_reward_time,
 )
-from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import (
-    next_dandao_task_reward_time,
-)
-
-
 _CONSOLIDATED_ARENA_SCHEDULER_IDS = {
     "sunday-daofa": "daily-daofa",
     "sunday-xianyuan-duel": "daily-xianyuan-duel",
@@ -43,15 +48,18 @@ _RETIRED_SCHEDULER_TASK_IDS = {
     "bubble-weekly-restart",
     "bubble-claim-pills",
     "bubble-hide",
-    # 魔道探查已成为统一榜单生命周期的 19:00 adapter。
-    "magic-invasion-explore",
+    # 玩法榜专用子任务只允许通过普通 Runtime Cell 调试；Scheduler
+    # 持久实例统一归属于 ranking-lifecycle。
+    *RETIRED_GAMEPLAY_RANKING_TASK_IDS,
+    *RETIRED_RESOURCE_RANKING_TASK_IDS,
 }
 
 _RETIRED_SCHEDULER_TASK_TYPES = {
     "bubble_weekly_restart",
     "bubble_claim_pills",
     "bubble_hide",
-    "magic_invasion_explore",
+    *RETIRED_GAMEPLAY_RANKING_TASK_TYPES,
+    *RETIRED_RESOURCE_RANKING_TASK_TYPES,
 }
 
 # Every Scheduler-supported task cell currently has one visible standard Job.
@@ -72,71 +80,84 @@ def consolidate_arena_scheduler_instances(
         return raw, False
     items = [dict(item) if isinstance(item, dict) else item for item in raw]
     migration_changed = False
-    ranking_bootstrap_time = _next_initial_time(now or datetime.now(), ("00:30",))
-    legacy_magic = next(
-        (
-            item
-            for item in items
-            if isinstance(item, dict)
-            and str(item.get("id") or "") == "magic-invasion-explore"
-        ),
-        None,
-    )
-    ranking_lifecycle = next(
-        (
-            item
-            for item in items
-            if isinstance(item, dict)
-            and str(item.get("id") or "") == "ranking-lifecycle"
-        ),
-        None,
-    )
-    if legacy_magic is not None and ranking_lifecycle is None:
-        legacy_magic.update(
-            {
-                "id": "ranking-lifecycle",
-                "task_type": "ranking_lifecycle",
-                "label": "日程_榜单系统更新",
-                "template_id": "ranking_lifecycle",
-                "template_label": "日程_榜单系统更新",
-                "trigger_description": "动态",
-            }
+    bootstrap_time = _next_initial_time(now or datetime.now(), ("00:30",))
+
+    def migrate_family(
+        *,
+        canonical_id: str,
+        canonical_type: str,
+        label: str,
+        retired_ids: frozenset[str],
+        retired_types: frozenset[str],
+        clean_payload_keys: frozenset[str] = frozenset(),
+    ) -> bool:
+        canonical = next(
+            (
+                item for item in items
+                if isinstance(item, dict) and str(item.get("id") or "") == canonical_id
+            ),
+            None,
         )
-        payload = dict(legacy_magic.get("payload") or {})
-        payload.pop("target_batches", None)
-        payload.pop("batch_size", None)
-        payload["max_runtime_seconds"] = 10800
-        legacy_magic["payload"] = payload
-        trigger_candidates = [
-            str(value)
-            for value in (legacy_magic.get("next_time"), ranking_bootstrap_time)
-            if str(value or "").strip()
-        ]
-        legacy_magic["next_time"] = min(trigger_candidates) if trigger_candidates else None
-        ranking_lifecycle = legacy_magic
-        migration_changed = True
-    elif legacy_magic is not None and ranking_lifecycle is not None:
-        legacy_payload = dict(legacy_magic.get("payload") or {})
-        ranking_payload = dict(ranking_lifecycle.get("payload") or {})
-        if (
-            "magic_invasion_progress" in legacy_payload
-            and "magic_invasion_progress" not in ranking_payload
-        ):
-            ranking_payload["magic_invasion_progress"] = legacy_payload[
-                "magic_invasion_progress"
-            ]
-            ranking_lifecycle["payload"] = ranking_payload
-        candidates = [
-            str(value)
-            for value in (
-                ranking_lifecycle.get("next_time"),
-                legacy_magic.get("next_time"),
-                ranking_bootstrap_time,
+        retired = [
+            item for item in items
+            if isinstance(item, dict)
+            and (
+                str(item.get("id") or "") in retired_ids
+                or str(item.get("task_type") or "") in retired_types
             )
-            if str(value or "").strip()
         ]
-        ranking_lifecycle["next_time"] = min(candidates) if candidates else None
-        migration_changed = True
+        changed = False
+        if retired:
+            candidates = [item.get("next_time") for item in retired]
+            candidates.append(canonical.get("next_time") if canonical is not None else bootstrap_time)
+            valid: list[str] = []
+            for value in candidates:
+                text = str(value or "").strip()
+                try:
+                    datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue
+                valid.append(text)
+            earliest = min(valid) if valid else None
+            if canonical is None:
+                canonical = {
+                    "id": canonical_id,
+                    "task_type": canonical_type,
+                    "label": label,
+                    "template_id": canonical_type,
+                    "template_label": label,
+                    "trigger_description": "动态",
+                    "next_time": earliest,
+                    "payload": {"max_runtime_seconds": 10800},
+                }
+                items.append(canonical)
+            elif earliest is not None and canonical.get("next_time") != earliest:
+                canonical["next_time"] = earliest
+            changed = True
+        if canonical is not None and clean_payload_keys:
+            payload = canonical.get("payload")
+            if isinstance(payload, dict):
+                cleaned = {key: value for key, value in payload.items() if key not in clean_payload_keys}
+                if cleaned != payload:
+                    canonical["payload"] = cleaned
+                    changed = True
+        return changed
+
+    migration_changed |= migrate_family(
+        canonical_id=RANKING_LIFECYCLE_TASK_ID,
+        canonical_type=RANKING_LIFECYCLE_TASK_TYPE,
+        label="玩法榜",
+        retired_ids=RETIRED_GAMEPLAY_RANKING_TASK_IDS,
+        retired_types=RETIRED_GAMEPLAY_RANKING_TASK_TYPES,
+        clean_payload_keys=frozenset({"magic_invasion_progress"}),
+    )
+    migration_changed |= migrate_family(
+        canonical_id=RESOURCE_RANKING_TASK_ID,
+        canonical_type=RESOURCE_RANKING_TASK_TYPE,
+        label="资源榜",
+        retired_ids=RETIRED_RESOURCE_RANKING_TASK_IDS,
+        retired_types=RETIRED_RESOURCE_RANKING_TASK_TYPES,
+    )
     before_retirement = len(items)
     items = [
         item
@@ -297,7 +318,16 @@ def default_data_annotation_scheduler_tasks(
         job(
             "ranking-lifecycle",
             "ranking_lifecycle",
-            "日程_榜单系统更新",
+            "玩法榜",
+            description="动态",
+            initial_times=("00:30",),
+            error_retry_delay_seconds=600,
+            payload={"max_runtime_seconds": 10800},
+        ),
+        job(
+            "resource-ranking",
+            "resource_ranking",
+            "资源榜",
             description="动态",
             initial_times=("00:30",),
             error_retry_delay_seconds=600,
@@ -478,24 +508,6 @@ def default_data_annotation_scheduler_tasks(
         job("mail-selective-claim", "mail_selective_claim", "邮件_选择性领取", description="每日", initial_times=("00:00",), payload={"max_runtime_seconds": 10800}),
         job("prayer-daily-resource", "prayer_daily_resource", "祈愿_每日资源", description="每日", initial_times=("00:00",), error_retry_delay_seconds=600),
         job(
-            "resource-rank-daily-free-gift",
-            "resource_rank_daily_free_gift",
-            "资源榜_每日免费礼包",
-            description="每日",
-            initial_times=("05:10",),
-            error_retry_delay_seconds=600,
-            payload={"max_runtime_seconds": 600},
-        ),
-        job(
-            "dandao-task-rewards",
-            "dandao_task_rewards",
-            "丹道_任务奖励",
-            description="每日",
-            initial_next_time=next_dandao_task_reward_time(current),
-            error_retry_delay_seconds=600,
-            payload={"max_runtime_seconds": 600, "max_claims": 20},
-        ),
-        job(
             "lingta-challenge",
             "lingta_challenge",
             "灵塔_挑战",
@@ -509,7 +521,6 @@ def default_data_annotation_scheduler_tasks(
                 "max_scrolls": 30,
             },
         ),
-        job("yuanding-sansheng-daily-gift", "yuanding_sansheng_daily_gift", "缘定三生_每日礼包", description="每日", initial_times=("05:00",), error_retry_delay_seconds=600),
         job("daily-boss", "daily_boss", "日常_首领", description="每日", initial_times=("05:00",), payload={"max_runtime_seconds": 1800}),
         job("daily-experience", "daily_experience", "日常_经验", description="手动", payload={"max_runtime_seconds": 1800}),
         job("legacy-daily-youli", "daily_youli", "日常_游历", description="手动"),
@@ -609,18 +620,6 @@ def default_data_annotation_scheduler_tasks(
         ),
         job("daily-weekly-dungeon", "daily_weekly_dungeon", "日常_周本", description="每周", initial_times=("05:00",), initial_weekdays=(0,), payload={"battle_return_world_timeout": 600}),
         job("weekly-activity", "weekly_activity", "周常_活跃度", description="每周", initial_times=("00:00",), initial_weekdays=(3,), payload={"weekly_activity_threshold": 2400}),
-        job(
-            "legacy-daily-xianmeng",
-            "daily_xianmeng",
-            "仙盟_挑战",
-            description="动态",
-            payload={
-                "max_runtime_seconds": 7200,
-                "schedule_tail_from_daily_activity_list": True,
-                "daily_end_time": "22:00",
-                "error_retry_after_daily_end": "none",
-            },
-        ),
         job("legacy-daily-xianyuan", "daily_xianyuan", "日常_挑战仙缘", description="每日", initial_times=("05:00",)),
         job("legacy-daily-activity", "daily_activity", "日常_活跃度", description="每日", initial_times=("07:00",), error_retry_delay_seconds=3600, payload={"fallback_seconds": 3600}),
         job(

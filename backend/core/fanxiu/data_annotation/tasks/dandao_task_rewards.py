@@ -92,6 +92,7 @@ def run_dandao_task_rewards_flow(
     *,
     now: datetime | None = None,
     max_claims: int = 20,
+    manage_schedule: bool = False,
 ) -> dict[str, Any]:
     current = now or job_now()
     zone = ZoneInfo(DEFAULT_TIMEZONE)
@@ -99,10 +100,12 @@ def run_dandao_task_rewards_flow(
     active = _active_dandao_adapter(current)
     next_daily = next_dandao_task_reward_time(current).strftime("%Y-%m-%d %H:%M:%S")
     if active is None:
-        runtime.set_next_time(next_daily)
+        if manage_schedule:
+            runtime.set_next_time(next_daily)
         return {
             "result": "success",
             "claimed_count": 0,
+            "next_time": next_daily,
             "message": f"{DANDAO_TASK_REWARDS_LABEL}：当前没有开放的丹道问鼎；下次 {next_daily}",
         }
 
@@ -117,11 +120,13 @@ def run_dandao_task_rewards_flow(
         else:
             next_time = _next_pending_check_time(current).strftime("%Y-%m-%d %H:%M:%S")
             boundary = "no_claimable_progress"
-        runtime.set_next_time(next_time)
+        if manage_schedule:
+            runtime.set_next_time(next_time)
         return {
             "result": "success",
             "claimed_count": 0,
             "boundary": boundary,
+            "next_time": next_time,
             "message": f"{DANDAO_TASK_REWARDS_LABEL}：当前无可领奖励；下次 {next_time}",
         }
 
@@ -171,7 +176,8 @@ def run_dandao_task_rewards_flow(
         if pending
         else next_daily
     )
-    runtime.set_next_time(next_time)
+    if manage_schedule:
+        runtime.set_next_time(next_time)
     try:
         result = runtime.go_scene(34)
         if hasattr(result, "send"):
@@ -184,6 +190,7 @@ def run_dandao_task_rewards_flow(
             "current_scene": DANDAO_TASK_REWARDS_SCENE_ID,
             "claimed_count": len(claimed_ids),
             "claimed_ids": claimed_ids,
+            "next_time": next_time,
             "message": (
                 f"{DANDAO_TASK_REWARDS_LABEL}：QuestMgr 已确认领取 {len(claimed_ids)} 档；"
                 f"离场告警 {type(exc).__name__}: {exc}；下次 {next_time}"
@@ -194,6 +201,7 @@ def run_dandao_task_rewards_flow(
         "current_scene": 34,
         "claimed_count": len(claimed_ids),
         "claimed_ids": claimed_ids,
+        "next_time": next_time,
         "message": (
             f"{DANDAO_TASK_REWARDS_LABEL}：QuestMgr 已确认领取 {len(claimed_ids)} 档；"
             f"下次 {next_time}"

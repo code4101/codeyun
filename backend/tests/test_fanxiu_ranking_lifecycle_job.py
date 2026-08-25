@@ -187,7 +187,7 @@ def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
     }
 
 
-def test_job_commits_successful_sibling_when_one_occurrence_needs_retry(
+def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     monkeypatch,
 ) -> None:
     def reconcile(_session, occurrence, **_kwargs):
@@ -221,13 +221,50 @@ def test_job_commits_successful_sibling_when_one_occurrence_needs_retry(
             ).all()
         )
     assert [(row.runtime_id, row.status) for row in rows] == [
-        ("resource-lianti", "completed"),
         ("server-magic", "error"),
     ]
-    assert rows[0].completed_at
-    assert rows[1].retry_at == "2026-08-21T00:40:00+08:00"
+    assert result["family"] == "gameplay_rank"
+    assert rows[0].completed_at == ""
+    assert rows[0].retry_at == "2026-08-21T00:40:00+08:00"
     assert result["result"] == "success"
-    assert "成功 1，待重试 1" in result["message"]
+    assert "成功 0，待重试 1" in result["message"]
     assert runner.next_times == [
         ("ranking-lifecycle", datetime(2026, 8, 21, 0, 40, tzinfo=TZ))
+    ]
+
+
+def test_resource_parent_executes_only_resource_family_and_owns_its_next_time(
+    monkeypatch,
+) -> None:
+    engine = _arrange(
+        monkeypatch,
+        reconcile=lambda *_args, **_kwargs: {
+            "status": "completed",
+            "message": "资源榜静态事实已对齐",
+        },
+    )
+    monkeypatch.setattr(
+        lifecycle_job,
+        "discover_ranking_occurrences",
+        lambda _schedule: (_occurrence(), _resource_occurrence()),
+    )
+    runner = _Runner()
+
+    result = _drain(
+        lifecycle_job.execute_resource_ranking_job(
+            runner,
+            {"scheduler_task_id": "resource-ranking"},
+            {},
+            Event(),
+        )
+    )
+
+    with Session(engine) as session:
+        rows = list(session.exec(select(FanxiuRankingLifecycleCheckpoint)).all())
+    assert [(row.family, row.runtime_id, row.status) for row in rows] == [
+        ("resource_rank", "resource-lianti", "completed"),
+    ]
+    assert result["family"] == "resource_rank"
+    assert runner.next_times == [
+        ("resource-ranking", datetime(2026, 8, 22, 0, 30).astimezone())
     ]

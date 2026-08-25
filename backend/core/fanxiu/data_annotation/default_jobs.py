@@ -108,6 +108,7 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "yunmeng_trial_auto_challenge",
     "magic_invasion_explore",
     "ranking_lifecycle",
+    "resource_ranking",
     "yunmeng_tail",
 )
 
@@ -1133,8 +1134,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "daily_xianmeng",
         "仙盟_挑战",
-        scheduler_supported=True,
-        admission=lambda runner, payload: runner.daily_xianmeng_admission(payload),
+        scheduler_supported=False,
         # This manual task starts from the Xianmeng page prepared by the user.
         # It intentionally performs no framework-level navigation.
     )
@@ -1761,7 +1761,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "resource_rank_daily_free_gift",
         "资源榜_每日免费礼包",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_resource_rank_daily_free_gift_task_cell(
         runner: Any,
@@ -1780,7 +1780,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "dandao_task_rewards",
         "丹道_任务奖励",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_dandao_task_rewards_task_cell(
         runner: Any,
@@ -1799,7 +1799,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "yuanding_sansheng_daily_gift",
         "缘定三生_每日礼包",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_yuanding_sansheng_daily_gift_task_cell(
         runner: Any,
@@ -2057,6 +2057,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
                 ctx,
                 payload,
                 stop_event,
+                manage_schedule=False,
             )
         )
 
@@ -2087,6 +2088,29 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
                 stop_event,
             )
         )
+
+    @register_fanxiu_data_annotation_task_cell(
+        "resource_ranking",
+        "资源榜",
+        scheduler_supported=True,
+        standard_job=True,
+        standard_job_id="resource-ranking",
+        standard_job_description="动态",
+        standard_job_payload={"max_runtime_seconds": 10800},
+    )
+    def _run_data_annotation_resource_ranking_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import (
+            execute_resource_ranking_job,
+        )
+
+        return (yield from execute_resource_ranking_job(
+            runner, ctx, payload, stop_event
+        ))
 
     @register_fanxiu_data_annotation_task_cell(
         "yunmeng_tail",

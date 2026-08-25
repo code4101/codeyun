@@ -701,6 +701,83 @@ def test_redpacket_probe_schedules_live_main_ui_queue(monkeypatch):
     assert result["due_task_ids"] == ["daily-redpacket"]
 
 
+def test_redpacket_probe_does_not_reschedule_rewarded_qmch_terminal(monkeypatch):
+    terminal = {
+        "uid": 24082878061488473,
+        "id": 5022,
+        "event_type": 9033,
+        "event_key": "qmch_reward",
+        "channel": 101,
+        "sub_channel_id": 20050134,
+        "detail_loaded": True,
+        "trigger_candidate": True,
+        "exclusion_reasons": ["server_rewarded", "detail_rewarded"],
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
+        lambda: {
+            "ok": True,
+            "pending": True,
+            "trigger_ready": True,
+            "sources": {"chat": {"pending_count": 1, "items": [terminal]}},
+        },
+    )
+
+    result = inspect_redpacket_game_state()
+
+    assert result["due_task_ids"] == []
+
+
+@pytest.mark.parametrize(
+    "extra_item",
+    [
+        {"uid": 9001, "id": 1001, "channel": 6, "sub_channel_id": 0},
+        {
+            "uid": 9002,
+            "id": 5022,
+            "event_type": 9033,
+            "event_key": "qmch_reward",
+            "channel": 101,
+            "sub_channel_id": 20050134,
+            "detail_loaded": False,
+            "exclusion_reasons": [],
+        },
+    ],
+)
+def test_redpacket_probe_rewarded_qmch_does_not_hide_new_candidates(
+    monkeypatch,
+    extra_item,
+):
+    terminal = {
+        "uid": 24082878061488473,
+        "id": 5022,
+        "event_type": 9033,
+        "event_key": "qmch_reward",
+        "channel": 101,
+        "sub_channel_id": 20050134,
+        "detail_loaded": True,
+        "exclusion_reasons": ["server_rewarded"],
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
+        lambda: {
+            "ok": True,
+            "pending": True,
+            "trigger_ready": True,
+            "sources": {
+                "chat": {
+                    "pending_count": 2,
+                    "items": [terminal, extra_item],
+                }
+            },
+        },
+    )
+
+    result = inspect_redpacket_game_state()
+
+    assert result["due_task_ids"] == ["daily-redpacket"]
+
+
 def test_redpacket_probe_does_not_schedule_stale_packet_projection(monkeypatch):
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",

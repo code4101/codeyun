@@ -131,7 +131,7 @@ def test_no_active_resource_rank_is_idempotent_and_schedules_next_day(monkeypatc
     )
 
     assert result["claimed_count"] == 0
-    assert runtime.next_times == ["2026-08-20 05:10:00"]
+    assert runtime.next_times == []
 
 
 def test_exhausted_runtime_short_circuits_before_activity_navigation(monkeypatch) -> None:
@@ -183,7 +183,7 @@ def test_exhausted_runtime_short_circuits_before_activity_navigation(monkeypatch
 
     assert result["boundary"] == "runtime_all_free_claimed"
     assert result["claimed_count"] == 0
-    assert runtime.next_times == ["2026-08-20 05:10:00"]
+    assert runtime.next_times == []
 
 
 def test_active_calendar_entry_absence_is_not_reported_as_success(monkeypatch) -> None:
@@ -260,23 +260,24 @@ def test_resource_rank_uses_occurrence_start_date_not_current_day() -> None:
     assert entry_date.isoformat() == "2026-08-20"
 
 
-def test_standard_registry_and_scheduler_contain_one_daily_job() -> None:
+def test_resource_gift_is_internal_and_resource_parent_is_the_only_job() -> None:
     register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "resource_rank_daily_free_gift"
     )
     assert definition is not None
-    assert definition.scheduler_supported is True
+    assert definition.scheduler_supported is False
 
     jobs = [
         item
         for item in scheduler_defaults.default_data_annotation_scheduler_tasks(
             now=datetime(2026, 8, 19, 12, 0)
         )
-        if item["id"] == RESOURCE_RANK_DAILY_GIFT_TASK_ID
+        if item["id"] in {RESOURCE_RANK_DAILY_GIFT_TASK_ID, "resource-ranking"}
     ]
     assert len(jobs) == 1
-    assert jobs[0]["next_time"] == "2026-08-20 05:10:00"
+    assert jobs[0]["id"] == "resource-ranking"
+    assert jobs[0]["task_type"] == "resource_ranking"
 
 
 def test_gift_list_uses_free_prefix_and_stops_at_first_stone_price() -> None:

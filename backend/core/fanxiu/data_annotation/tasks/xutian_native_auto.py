@@ -15,10 +15,12 @@ restarted.  Device-health monitoring/recovery remains a required follow-up
 before this job is considered production-complete.
 """
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 import re
 import threading
 import time
+import uuid
 from typing import Any, Callable, Iterator, Mapping
 
 from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
@@ -42,6 +44,7 @@ XUTIAN_TUTORIAL_SCENE_ID = 618
 XUTIAN_NATIVE_AUTO_TASK_TYPE = "xutian_palace_native_auto"
 XUTIAN_NATIVE_AUTO_TASK_ID = "xutian-palace-native-auto"
 XUTIAN_NATIVE_AUTO_START_MARK = "xutian_native_auto_started"
+XUTIAN_NATIVE_AUTO_BATCHES_KEY = "xutian_native_auto_batches"
 
 _QUALITY_LABELS = {
     3: "上品怪物",
@@ -560,14 +563,265 @@ def _configure_and_run_batch(
     )
 
 
-def _store_batch_observation(
+def _xutian_activities(session: Any) -> list[Any]:
+    from sqlmodel import select
+
+    from backend.models import FanxiuExchangeActivity
+
+    return list(
+        session.exec(
+            select(FanxiuExchangeActivity).where(
+                FanxiuExchangeActivity.activity_type == "xutian-palace"
+            )
+        ).all()
+    )
+
+
+def _xutian_occurrence_identity(activity: Any) -> dict[str, Any]:
+    """Project immutable code facts that identify one Xutian occurrence."""
+
+    evidence = dict(activity.evidence or {})
+    identity = {
+        "activity_record_id": str(activity.id or ""),
+        "game_activity_id": int(evidence.get("game_activity_id") or 0),
+        "runtime_record_id": str(evidence.get("period_record_id") or ""),
+        "cross_count": int(activity.cross_count or 0),
+        "start_date": str(activity.start_date or ""),
+        "end_date": str(activity.end_date or ""),
+        "period_start_time": int(evidence.get("period_start_time") or 0),
+        "period_end_time": int(evidence.get("period_end_time") or 0),
+        "period_close_panel_time": int(
+            evidence.get("period_close_panel_time") or 0
+        ),
+        "game_rank_activity_id": int(activity.game_rank_activity_id or 0),
+        "game_shop_base_id": int(activity.game_shop_base_id or 0),
+        "currency_type": int(activity.currency_type or 0),
+    }
+    required = {
+        "activity_record_id",
+        "game_activity_id",
+        "runtime_record_id",
+        "cross_count",
+        "start_date",
+        "end_date",
+        "period_start_time",
+        "period_end_time",
+        "game_rank_activity_id",
+        "game_shop_base_id",
+        "currency_type",
+    }
+    if any(identity.get(key) in {None, "", 0} for key in required):
+        raise RuntimeError(
+            "虚天自动挑战活动 occurrence 身份不完整，拒绝不可逆动作："
+            f"{identity!r}"
+        )
+    if identity["period_end_time"] < identity["period_start_time"]:
+        raise RuntimeError("虚天自动挑战活动 occurrence 时间边界无效")
+    return identity
+
+
+def _validate_pending_marker(activity: Any, marker: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(dict(marker))
+    if not str(normalized.get("batch_id") or "").strip():
+        raise RuntimeError("虚天自动挑战未结证据缺少 batch_id")
+    expected = _xutian_occurrence_identity(activity)
+    actual = normalized.get("occurrence")
+    if not isinstance(actual, Mapping) or dict(actual) != expected:
+        raise RuntimeError(
+            "虚天自动挑战未结证据与活动 occurrence 身份不一致，"
+            "保留证据并拒绝重放"
+        )
+    runtime_identity = normalized.get("runtime_batch_identity")
+    if not isinstance(runtime_identity, Mapping):
+        raise RuntimeError("虚天自动挑战未结证据缺少 Runtime 批次身份")
+    if (
+        int(runtime_identity.get("pid") or 0) <= 0
+        or int(runtime_identity.get("process_start_ticks") or 0) <= 0
+        or int(runtime_identity.get("current_heaven") or 0) <= 0
+    ):
+        raise RuntimeError("虚天自动挑战未结证据的 Runtime 批次身份不完整")
+    return normalized
+
+
+def _current_xutian_activity(session: Any, *, today: Any = None) -> Any:
+    from datetime import date
+
+    current_day = (today or date.today()).isoformat()
+    candidates = [
+        activity
+        for activity in _xutian_activities(session)
+        if str(activity.start_date) <= current_day <= str(activity.end_date)
+    ]
+    if len(candidates) > 1:
+        raise RuntimeError("虚天殿当前活动 occurrence 不唯一，拒绝不可逆动作")
+    return candidates[0] if candidates else None
+
+
+def _load_pending_xutian_batch() -> tuple[str, dict[str, Any]] | None:
+    """Find the one global unresolved side-effect marker, including expired rows."""
+
+    from sqlmodel import Session
+
+    from backend.db import engine
+
+    with Session(engine) as session:
+        pending = []
+        for activity in _xutian_activities(session):
+            marker = dict(activity.evidence or {}).get(XUTIAN_NATIVE_AUTO_START_MARK)
+            if isinstance(marker, Mapping):
+                pending.append((activity, marker))
+        if not pending:
+            return None
+        if len(pending) > 1:
+            raise RuntimeError("虚天自动挑战存在多个未结批次，保留现场并拒绝重放")
+        activity, marker = pending[0]
+        return str(activity.id), _validate_pending_marker(activity, marker)
+
+
+def _commit_activity_evidence(
+    session: Any,
+    activity: Any,
+    evidence: Mapping[str, Any],
+) -> None:
+    activity.evidence = deepcopy(dict(evidence))
+    session.add(activity)
+    session.commit()
+
+
+def _readback_pending_marker(session: Any, activity: Any) -> Any:
+    session.refresh(activity)
+    return dict(activity.evidence or {}).get(XUTIAN_NATIVE_AUTO_START_MARK)
+
+
+def _arm_pending_xutian_batch(marker: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Persist and verify one side-effect marker before the native start click."""
+
+    from sqlmodel import Session
+
+    from backend.db import engine
+
+    normalized = deepcopy(dict(marker))
+    batch_id = str(normalized.get("batch_id") or "").strip()
+    if not batch_id:
+        raise ValueError("虚天自动挑战防重复证据缺少 batch_id")
+    with Session(engine) as session:
+        global_pending = [
+            activity
+            for activity in _xutian_activities(session)
+            if isinstance(
+                dict(activity.evidence or {}).get(XUTIAN_NATIVE_AUTO_START_MARK),
+                Mapping,
+            )
+        ]
+        if global_pending:
+            raise RuntimeError("虚天自动挑战仍有未对账批次，拒绝覆盖防重复证据")
+        activity = _current_xutian_activity(session)
+        if activity is None:
+            raise RuntimeError("虚天殿当前活动实例不存在，拒绝开启自动挑战")
+        normalized["occurrence"] = _xutian_occurrence_identity(activity)
+        normalized = _validate_pending_marker(activity, normalized)
+        evidence = dict(activity.evidence or {})
+        evidence[XUTIAN_NATIVE_AUTO_START_MARK] = normalized
+        _commit_activity_evidence(session, activity, evidence)
+        persisted = _readback_pending_marker(session, activity)
+        if persisted != normalized:
+            raise RuntimeError("虚天自动挑战防重复证据未持久化，拒绝点击开启自动")
+        return str(activity.id), deepcopy(normalized)
+
+
+def _clear_pending_xutian_batch(activity_id: str, batch_id: str) -> None:
+    """Clear only the exact reconciled batch; never erase newer evidence."""
+
+    from sqlmodel import Session
+
+    from backend.db import engine
+    from backend.models import FanxiuExchangeActivity
+
+    with Session(engine) as session:
+        activity = session.get(FanxiuExchangeActivity, str(activity_id))
+        if activity is None:
+            raise RuntimeError("虚天自动挑战活动实例丢失，无法清理防重复证据")
+        evidence = dict(activity.evidence or {})
+        marker = evidence.get(XUTIAN_NATIVE_AUTO_START_MARK)
+        if not isinstance(marker, dict):
+            return
+        if str(marker.get("batch_id") or "") != str(batch_id or ""):
+            raise RuntimeError("虚天自动挑战防重复证据已变化，拒绝清理")
+        _validate_pending_marker(activity, marker)
+        evidence.pop(XUTIAN_NATIVE_AUTO_START_MARK, None)
+        _commit_activity_evidence(session, activity, evidence)
+        session.refresh(activity)
+        if XUTIAN_NATIVE_AUTO_START_MARK in dict(activity.evidence or {}):
+            raise RuntimeError("虚天自动挑战防重复证据清理后回读失败")
+
+
+def _validate_pending_batch_terminal(
+    marker: Mapping[str, Any],
+    *,
+    resource_after: Mapping[str, Any],
+    wallet_after: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reconcile facts for an irreversible batch; never continue a GUI cursor."""
+
+    runtime_identity = dict(marker.get("runtime_batch_identity") or {})
+    evidence = dict(resource_after.get("evidence") or {})
+    current_heaven = int(resource_after.get("current_heaven") or 0)
+    if resource_after.get("source") != "runtime_memory":
+        raise RuntimeError("虚天自动挑战对账缺少只读 Runtime 事实")
+    if (
+        int(evidence.get("pid") or 0) <= 0
+        or int(evidence.get("process_start_ticks") or 0) <= 0
+        or current_heaven <= 0
+    ):
+        raise RuntimeError("虚天自动挑战对账 Runtime 身份不完整")
+    if current_heaven != int(runtime_identity.get("current_heaven") or 0):
+        raise RuntimeError(
+            "虚天自动挑战对账地图身份变化，保留防重复证据并拒绝重放"
+        )
+    progress = dict(resource_after.get("auto_progress") or {})
+    if bool(progress.get("running")):
+        raise RuntimeError("虚天自动挑战批次仍在运行，尚不能结算")
+    requested = int(marker.get("requested_challenges") or 0)
+    if int(progress.get("completed_challenges") or 0) != requested:
+        raise RuntimeError(
+            "虚天自动挑战防重复标记存在，但 Runtime 未证明精确批次完成；"
+            "保留标记和现场，禁止再次点击开启自动"
+        )
+    marked_wallet = dict(marker.get("wallet_before") or {})
+    current_delta = int(wallet_after["exchange_currency"]) - int(
+        marked_wallet.get("exchange_currency") or 0
+    )
+    cumulative_delta = int(wallet_after["cumulative_currency"]) - int(
+        marked_wallet.get("cumulative_currency") or 0
+    )
+    if current_delta <= 0 or current_delta != cumulative_delta:
+        raise RuntimeError(
+            "虚天自动挑战 Runtime 已完成，但绝对钱包未形成唯一正向增量；"
+            "保留防重复标记，禁止重跑"
+        )
+    return build_xutian_batch_observation(
+        requested_challenges=requested,
+        before_resource=dict(marker.get("resource_before") or {}),
+        after_resource=resource_after,
+        currency_before=int(marked_wallet["exchange_currency"]),
+        currency_after=int(wallet_after["exchange_currency"]),
+        elapsed_seconds=max(
+            0.001,
+            time.time() - float(marker.get("started_epoch") or time.time()),
+        ),
+    )
+
+
+def _settle_pending_xutian_batch(
+    activity_id: str,
+    batch_id: str,
     *,
     wallet_after: Mapping[str, Any],
     observation: Mapping[str, Any],
 ) -> str:
-    from datetime import date
+    """Atomically append one idempotent scatter point and clear its marker."""
 
-    from sqlmodel import Session, select
+    from sqlmodel import Session
 
     from backend.core.fanxiu.activity.standard_observation import (
         store_runtime_currency_fact,
@@ -575,25 +829,64 @@ def _store_batch_observation(
     from backend.db import engine
     from backend.models import FanxiuExchangeActivity
 
+    activity_id = str(activity_id or "").strip()
+    batch_id = str(batch_id or "").strip()
+    if not activity_id or not batch_id:
+        raise ValueError("虚天自动挑战结算缺少 activity_id/batch_id")
     with Session(engine) as session:
-        store_runtime_currency_fact(session, dict(wallet_after))
-        activity = session.exec(
-            select(FanxiuExchangeActivity).where(
-                FanxiuExchangeActivity.activity_type == "xutian-palace",
-                FanxiuExchangeActivity.start_date <= date.today().isoformat(),
-                FanxiuExchangeActivity.end_date >= date.today().isoformat(),
-            )
-        ).first()
+        activity = session.get(FanxiuExchangeActivity, activity_id)
         if activity is None:
-            raise RuntimeError("虚天殿当前活动实例不存在，无法保存批次散点")
+            raise RuntimeError("虚天自动挑战活动实例丢失，无法结算防重复证据")
+        occurrence = _xutian_occurrence_identity(activity)
         evidence = dict(activity.evidence or {})
-        batches = list(evidence.get("xutian_native_auto_batches") or [])
-        batches.append(dict(observation))
-        evidence["xutian_native_auto_batches"] = batches[-100:]
-        activity.evidence = evidence
-        session.add(activity)
-        session.commit()
-        return str(activity.id)
+        marker = evidence.get(XUTIAN_NATIVE_AUTO_START_MARK)
+        batches = [
+            dict(item)
+            for item in evidence.get(XUTIAN_NATIVE_AUTO_BATCHES_KEY) or []
+            if isinstance(item, Mapping)
+        ]
+        normalized = {
+            **dict(observation),
+            "batch_id": batch_id,
+            "activity_id": activity_id,
+            "occurrence": occurrence,
+        }
+        existing = next(
+            (item for item in batches if str(item.get("batch_id") or "") == batch_id),
+            None,
+        )
+        if existing is not None:
+            if existing != normalized:
+                raise RuntimeError("虚天自动挑战同一 batch_id 的散点内容冲突")
+            if marker is None:
+                return activity_id
+        if not isinstance(marker, Mapping):
+            raise RuntimeError("虚天自动挑战结算时未找到对应防重复证据")
+        validated_marker = _validate_pending_marker(activity, marker)
+        if str(validated_marker.get("batch_id") or "") != batch_id:
+            raise RuntimeError("虚天自动挑战防重复证据已变化，旧批次不得清理新证据")
+
+        # The wallet projection may commit independently.  The business scatter
+        # point and marker removal below remain one activity-evidence transaction.
+        store_runtime_currency_fact(session, dict(wallet_after))
+        if existing is None:
+            batches.append(normalized)
+        evidence[XUTIAN_NATIVE_AUTO_BATCHES_KEY] = batches[-100:]
+        evidence.pop(XUTIAN_NATIVE_AUTO_START_MARK, None)
+        _commit_activity_evidence(session, activity, evidence)
+        session.refresh(activity)
+        persisted_evidence = dict(activity.evidence or {})
+        if XUTIAN_NATIVE_AUTO_START_MARK in persisted_evidence:
+            raise RuntimeError("虚天自动挑战原子结算后 marker 仍存在")
+        persisted = [
+            item
+            for item in persisted_evidence.get(XUTIAN_NATIVE_AUTO_BATCHES_KEY) or []
+            if isinstance(item, Mapping)
+            and str(item.get("batch_id") or "") == batch_id
+        ]
+        if persisted != [normalized]:
+            raise RuntimeError("虚天自动挑战散点原子结算回读失败")
+        return activity_id
 
 
 def execute_xutian_native_auto_job(
@@ -612,7 +905,9 @@ def execute_xutian_native_auto_job(
     )
 
     requested = int(payload.get("requested_challenges") or XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES)
-    existing_mark = payload.get(XUTIAN_NATIVE_AUTO_START_MARK)
+    pending_batch = _load_pending_xutian_batch()
+    pending_activity_id = pending_batch[0] if pending_batch is not None else ""
+    existing_mark = pending_batch[1] if pending_batch is not None else None
     if isinstance(existing_mark, dict):
         # Recovery always owns the exact already-authorized batch.  A later
         # run-now payload must not replace it with a fresh irreversible batch.
@@ -622,9 +917,7 @@ def execute_xutian_native_auto_job(
     wallet_before = read_wallet_currency_snapshot(12, allow_discovery=True)
     resource_before = read_xutian_resource_snapshot()
     runtime = runner._fanxiu_runtime(ctx)
-    task_id = str(ctx.get("scheduler_task_id") or XUTIAN_NATIVE_AUTO_TASK_ID)
     if isinstance(existing_mark, dict):
-        marked_requested = int(existing_mark.get("requested_challenges") or 0)
         progress = dict(resource_before.get("auto_progress") or {})
         if bool(progress.get("running")):
             deadline = time.monotonic() + max(60.0, requested * 2.0)
@@ -638,44 +931,19 @@ def execute_xutian_native_auto_job(
                     resource_before = read_xutian_resource_snapshot()
                     progress = dict(resource_before.get("auto_progress") or {})
                     break
-        if int(progress.get("completed_challenges") or 0) != requested:
-            raise RuntimeError(
-                "虚天自动挑战防重复标记存在，但 Runtime 未证明精确批次完成；"
-                "保留标记和现场，禁止再次点击开启自动"
-            )
-        marked_wallet = dict(existing_mark.get("wallet_before") or {})
-        current_delta = int(wallet_before["exchange_currency"]) - int(
-            marked_wallet.get("exchange_currency") or 0
+        wallet_before = read_wallet_currency_snapshot(12, allow_discovery=False)
+        recovered_observation = _validate_pending_batch_terminal(
+            existing_mark,
+            resource_after=resource_before,
+            wallet_after=wallet_before,
         )
-        cumulative_delta = int(wallet_before["cumulative_currency"]) - int(
-            marked_wallet.get("cumulative_currency") or 0
-        )
-        if current_delta <= 0 or current_delta != cumulative_delta:
-            raise RuntimeError(
-                "虚天自动挑战 Runtime 已完成，但绝对钱包未形成唯一正向增量；"
-                "保留防重复标记，禁止重跑"
-            )
-        before_resource = dict(existing_mark.get("resource_before") or {})
-        recovered_observation = build_xutian_batch_observation(
-            requested_challenges=requested,
-            before_resource=before_resource,
-            after_resource=resource_before,
-            currency_before=int(marked_wallet["exchange_currency"]),
-            currency_after=int(wallet_before["exchange_currency"]),
-            elapsed_seconds=max(
-                0.001,
-                time.time() - float(existing_mark.get("started_epoch") or time.time()),
-            ),
-        )
-        activity_id = _store_batch_observation(
+        yield from runtime.goto_view(34)
+        activity_id = _settle_pending_xutian_batch(
+            pending_activity_id,
+            str(existing_mark.get("batch_id") or ""),
             wallet_after=wallet_before,
             observation=recovered_observation,
         )
-        yield from runtime.goto_view(34)
-        runner._clear_scheduler_task_payload_flag(
-            task_id, XUTIAN_NATIVE_AUTO_START_MARK
-        )
-        runner._persist_scheduler_task_next_time(task_id, None)
         message = (
             f"虚天殿_自动挑战：从防重复标记恢复 {requested} 次批次，"
             f"纳元晶 +{recovered_observation['currency_delta']}，已回到世界"
@@ -690,12 +958,33 @@ def execute_xutian_native_auto_job(
         }
     yield from _enter_xutian_map(runtime)
 
+    armed_activity_id = ""
+    armed_batch_id = ""
+
     def persist_start_mark(final_settings: Mapping[str, Any]) -> None:
+        nonlocal armed_activity_id, armed_batch_id
         marker = {
+            "batch_id": uuid.uuid4().hex,
             "started_at": str(final_settings.get("captured_at") or ""),
             "started_epoch": time.time(),
             "requested_challenges": requested,
             "current_heaven": int(final_settings.get("current_heaven") or 0),
+            "runtime_batch_identity": {
+                "pid": int((final_settings.get("evidence") or {}).get("pid") or 0),
+                "process_start_ticks": int(
+                    (final_settings.get("evidence") or {}).get(
+                        "process_start_ticks"
+                    )
+                    or 0
+                ),
+                "current_heaven": int(final_settings.get("current_heaven") or 0),
+                "completed_challenges_before": int(
+                    (final_settings.get("auto_progress") or {}).get(
+                        "completed_challenges"
+                    )
+                    or 0
+                ),
+            },
             "wallet_before": {
                 "exchange_currency": int(wallet_before["exchange_currency"]),
                 "cumulative_currency": int(wallet_before["cumulative_currency"]),
@@ -706,13 +995,8 @@ def execute_xutian_native_auto_job(
                 "auto_progress": dict(resource_before.get("auto_progress") or {}),
             },
         }
-        if not runner._set_scheduler_task_payload_flag(
-            task_id,
-            XUTIAN_NATIVE_AUTO_START_MARK,
-            marker,
-        ):
-            raise RuntimeError("虚天自动挑战防重复标记未持久化，拒绝点击开启自动")
-        payload[XUTIAN_NATIVE_AUTO_START_MARK] = marker
+        armed_activity_id, persisted_marker = _arm_pending_xutian_batch(marker)
+        armed_batch_id = str(persisted_marker["batch_id"])
 
     terminal = yield from _configure_and_run_batch(
         runtime,
@@ -731,19 +1015,18 @@ def execute_xutian_native_auto_job(
         currency_after=int(wallet_after["exchange_currency"]),
         elapsed_seconds=elapsed,
     )
-    activity_id = _store_batch_observation(
-        wallet_after=wallet_after,
-        observation=observation,
-    )
-    runner._clear_scheduler_task_payload_flag(task_id, XUTIAN_NATIVE_AUTO_START_MARK)
-    payload.pop(XUTIAN_NATIVE_AUTO_START_MARK, None)
     yield from runtime.goto_view(34)
     scene, score, _frame = runtime.current_scene([34], update=True)
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天自动挑战收尾未可靠回到 #34：scene={scene}, score={score}"
         )
-    runner._persist_scheduler_task_next_time(task_id, None)
+    activity_id = _settle_pending_xutian_batch(
+        armed_activity_id,
+        armed_batch_id,
+        wallet_after=wallet_after,
+        observation=observation,
+    )
     message = (
         f"虚天殿_自动挑战：完成 {requested} 次，纳元晶 +{observation['currency_delta']}，"
         f"{observation['seconds_per_challenge']:.3f}秒/次，已回到世界"

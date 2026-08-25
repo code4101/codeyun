@@ -22,27 +22,33 @@ def ensure_ranking_lifecycle_checkpoint_table(bind: Engine) -> None:
 
 def completed_ranking_checkpoint_keys(
     session: Session,
+    *,
+    family: str | None = None,
 ) -> set[tuple[str, str, str]]:
-    rows = session.exec(
-        select(FanxiuRankingLifecycleCheckpoint).where(
-            FanxiuRankingLifecycleCheckpoint.status.in_(
-                TERMINAL_CHECKPOINT_STATUSES
-            )
-        )
-    ).all()
+    statement = select(FanxiuRankingLifecycleCheckpoint).where(
+        FanxiuRankingLifecycleCheckpoint.status.in_(TERMINAL_CHECKPOINT_STATUSES)
+    )
+    if family is not None:
+        statement = statement.where(FanxiuRankingLifecycleCheckpoint.family == family)
+    rows = session.exec(statement).all()
     return {
         (row.instance_key, row.checkpoint_kind, row.business_date)
         for row in rows
     }
 
 
-def ranking_checkpoint_retry_times(session: Session) -> tuple[datetime, ...]:
+def ranking_checkpoint_retry_times(
+    session: Session,
+    *,
+    family: str | None = None,
+) -> tuple[datetime, ...]:
     result: list[datetime] = []
-    rows = session.exec(
-        select(FanxiuRankingLifecycleCheckpoint).where(
-            FanxiuRankingLifecycleCheckpoint.retry_at != ""
-        )
-    ).all()
+    statement = select(FanxiuRankingLifecycleCheckpoint).where(
+        FanxiuRankingLifecycleCheckpoint.retry_at != ""
+    )
+    if family is not None:
+        statement = statement.where(FanxiuRankingLifecycleCheckpoint.family == family)
+    rows = session.exec(statement).all()
     for row in rows:
         try:
             value = datetime.fromisoformat(row.retry_at)
@@ -107,7 +113,59 @@ def record_ranking_checkpoint_result(
     )
     row.message = str(message or "")
     row.result = dict(result or {})
-    row.evidence = dict(evidence or {})
+    if evidence is not None:
+        row.evidence = dict(evidence)
+    row.updated_at = time.time()
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def ranking_checkpoint_evidence(
+    session: Session,
+    checkpoint: RankingCheckpoint,
+) -> dict[str, Any]:
+    row = session.exec(
+        select(FanxiuRankingLifecycleCheckpoint).where(
+            FanxiuRankingLifecycleCheckpoint.instance_key == checkpoint.instance_key,
+            FanxiuRankingLifecycleCheckpoint.checkpoint_kind == checkpoint.checkpoint_kind,
+            FanxiuRankingLifecycleCheckpoint.business_date == checkpoint.business_date,
+        )
+    ).first()
+    return dict(row.evidence or {}) if row is not None else {}
+
+
+def record_ranking_checkpoint_evidence(
+    session: Session,
+    checkpoint: RankingCheckpoint,
+    *,
+    evidence: Mapping[str, Any],
+    message: str = "",
+) -> FanxiuRankingLifecycleCheckpoint:
+    """Persist occurrence evidence without changing attempt or Scheduler state."""
+
+    row = session.exec(
+        select(FanxiuRankingLifecycleCheckpoint).where(
+            FanxiuRankingLifecycleCheckpoint.instance_key == checkpoint.instance_key,
+            FanxiuRankingLifecycleCheckpoint.checkpoint_kind == checkpoint.checkpoint_kind,
+            FanxiuRankingLifecycleCheckpoint.business_date == checkpoint.business_date,
+        )
+    ).first()
+    if row is None:
+        row = FanxiuRankingLifecycleCheckpoint(
+            activity_type=checkpoint.activity_type,
+            family=checkpoint.family,
+            instance_key=checkpoint.instance_key,
+            runtime_id=checkpoint.runtime_id,
+            activity_id=checkpoint.activity_id,
+            checkpoint_kind=checkpoint.checkpoint_kind,
+            business_date=checkpoint.business_date,
+            due_at=checkpoint.due_at.isoformat(timespec="seconds"),
+            status="pending",
+        )
+    row.evidence = dict(evidence)
+    row.message = str(message or row.message or "")
     row.updated_at = time.time()
     session.add(row)
     session.commit()
@@ -135,5 +193,7 @@ __all__ = [
     "ensure_ranking_lifecycle_checkpoint_table",
     "list_ranking_checkpoint_rows",
     "ranking_checkpoint_retry_times",
+    "ranking_checkpoint_evidence",
+    "record_ranking_checkpoint_evidence",
     "record_ranking_checkpoint_result",
 ]

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import backend.core.fanxiu.data_annotation.tasks.daily_activity_list_sync as daily_sync_task
 from backend.core.fanxiu.data_annotation.default_jobs import (
     register_fanxiu_data_annotation_default_runtime_jobs,
 )
@@ -237,24 +238,17 @@ def test_ready_hot_read_dry_runs_then_persists_and_returns_world():
         "reviews": [{"action": "review_unknown_identity"}],
         "job_schedule": {
             "target_date": "2026-08-14",
-            "desired_next_times": {
-                "legacy-daily-xianmeng": None,
-                "yunmeng-tail": None,
-            },
+            "desired_next_times": {},
             "decisions": [],
         },
         "current_scene": 34,
         "message": "活动_每日清单同步完成：新增 1，已存在 2，待复核 1，活动作业 0 项",
     }
-    assert runtime.next_time_writes == [
-        ("legacy-daily-xianmeng", None),
-        ("yunmeng-tail", None),
-        ("self", "2026-08-15 00:20:00"),
-    ]
+    assert runtime.next_time_writes == [("self", "2026-08-15 00:20:00")]
     assert [call[:2] for call in runtime.calls] == [("goto", 34), ("wait", 34)]
 
 
-def test_authorized_xianmeng_qualifying_configures_challenge_for_1000():
+def test_xianmeng_qualifying_does_not_create_child_scheduler_write():
     operation = {
         "action": "propose_create",
         "occurrence": {
@@ -285,15 +279,12 @@ def test_authorized_xianmeng_qualifying_configures_challenge_for_1000():
         )
     )
 
-    assert runtime.next_time_writes == [
-        ("legacy-daily-xianmeng", "2026-08-14 10:00:00"),
-        ("yunmeng-tail", None),
-        ("self", "2026-08-15 00:20:00"),
-    ]
-    assert result["job_schedule"]["decisions"][0]["base_id"] == 28100
+    assert runtime.next_time_writes == [("self", "2026-08-15 00:20:00")]
+    assert result["job_schedule"]["desired_next_times"] == {}
+    assert result["job_schedule"]["decisions"] == []
 
 
-def test_authorized_xianmeng_final_starts_a_fresh_single_day_cycle():
+def test_xianmeng_final_does_not_create_child_scheduler_write():
     operation = {
         "action": "propose_create",
         "occurrence": {
@@ -324,15 +315,12 @@ def test_authorized_xianmeng_final_starts_a_fresh_single_day_cycle():
         )
     )
 
-    assert runtime.next_time_writes == [
-        ("legacy-daily-xianmeng", "2026-08-14 10:00:00"),
-        ("yunmeng-tail", None),
-        ("self", "2026-08-15 00:20:00"),
-    ]
-    assert result["job_schedule"]["decisions"][0]["base_id"] == 28200
+    assert runtime.next_time_writes == [("self", "2026-08-15 00:20:00")]
+    assert result["job_schedule"]["desired_next_times"] == {}
+    assert result["job_schedule"]["decisions"] == []
 
 
-def test_runtime_xianmeng_root_final_day_writes_today_1000_to_challenge_job():
+def test_runtime_xianmeng_root_final_day_remains_parent_owned():
     final_now = datetime(2026, 8, 17, 0, 20, 5, tzinfo=TIMEZONE)
     occurrence = {
         "activity_id": 16420001,
@@ -372,12 +360,37 @@ def test_runtime_xianmeng_root_final_day_writes_today_1000_to_challenge_job():
         )
     )
 
-    assert runtime.next_time_writes == [
-        ("legacy-daily-xianmeng", "2026-08-17 10:00:00"),
-        ("yunmeng-tail", None),
-        ("self", "2026-08-18 00:20:00"),
-    ]
-    assert result["job_schedule"]["decisions"][0]["base_id"] == 28000
+    assert runtime.next_time_writes == [("self", "2026-08-18 00:20:00")]
+    assert result["job_schedule"]["desired_next_times"] == {}
+    assert result["job_schedule"]["decisions"] == []
+
+
+def test_daily_sync_rejects_retired_gameplay_child_next_time_write(monkeypatch):
+    runtime = FakeRuntime()
+    monkeypatch.setattr(
+        daily_sync_task,
+        "build_authorized_daily_activity_job_schedule",
+        lambda *_args, **_kwargs: {
+            "target_date": "2026-08-14",
+            "desired_next_times": {"yunmeng-tail": "2026-08-14 00:25:00"},
+            "decisions": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="不得改写榜单内部子任务"):
+        _drain(
+            run_daily_activity_list_sync_flow(
+                runtime,
+                plan_reader=lambda **_kwargs: _ready_plan(),
+                synchronizer=lambda _plan, *, persist, now: _sync_result(
+                    "updated" if persist else "planned",
+                    persist=persist,
+                ),
+                now=NOW,
+            )
+        )
+
+    assert runtime.next_time_writes == []
 
 
 def test_not_loaded_uses_formal_66_preheat_then_hot_reread():

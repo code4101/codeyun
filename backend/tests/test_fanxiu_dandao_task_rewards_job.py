@@ -137,7 +137,8 @@ def test_already_claimed_retry_is_zero_click_and_schedules_next_day(monkeypatch)
 
     assert result["claimed_count"] == 0
     assert result["boundary"] == "already_claimed"
-    assert runtime.next_time == "2026-08-22 18:10:00"
+    assert result["next_time"] == "2026-08-22 18:10:00"
+    assert runtime.next_time is None
 
 
 def test_pending_retry_schedules_bounded_recheck(monkeypatch) -> None:
@@ -162,7 +163,8 @@ def test_pending_retry_schedules_bounded_recheck(monkeypatch) -> None:
     result = _finish(job.run_dandao_task_rewards_flow(runtime, now=current))
 
     assert result["boundary"] == "no_claimable_progress"
-    assert runtime.next_time == "2026-08-21 18:41:00"
+    assert result["next_time"] == "2026-08-21 18:41:00"
+    assert runtime.next_time is None
 
 
 def test_claim_flow_clicks_only_itemclick_shape_and_requires_exact_readback(monkeypatch) -> None:
@@ -206,4 +208,5 @@ def test_claim_flow_clicks_only_itemclick_shape_and_requires_exact_readback(monk
 
     assert runtime.clicked == [(598, "首条任务领取区", "frame")]
     assert result["claimed_ids"] == [159]
-    assert runtime.next_time == "2026-08-22 18:10:00"
+    assert result["next_time"] == "2026-08-22 18:10:00"
+    assert runtime.next_time is None

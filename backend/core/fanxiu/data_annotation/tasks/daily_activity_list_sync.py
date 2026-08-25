@@ -22,6 +22,10 @@ from backend.core.fanxiu.activity.daily_activity_discovery import (
 from backend.core.fanxiu.activity.daily_activity_job_registry import (
     build_authorized_daily_activity_job_schedule,
 )
+from backend.core.fanxiu.activity.ranking_lifecycle import (
+    RETIRED_GAMEPLAY_RANKING_TASK_IDS,
+    RETIRED_RESOURCE_RANKING_TASK_IDS,
+)
 from backend.core.fanxiu.activity.daily_activity_sync import (
     synchronize_daily_activity_plan,
 )
@@ -276,7 +280,18 @@ def run_daily_activity_list_sync_flow(
     if primary_error is not None:
         raise primary_error
     assert result is not None
-    for task_id, next_time in result["job_schedule"]["desired_next_times"].items():
+    desired_next_times = result["job_schedule"]["desired_next_times"]
+    retired_writes = sorted(
+        set(desired_next_times).intersection(
+            RETIRED_GAMEPLAY_RANKING_TASK_IDS | RETIRED_RESOURCE_RANKING_TASK_IDS
+        )
+    )
+    if retired_writes:
+        raise RuntimeError(
+            "活动_每日清单同步不得改写榜单内部子任务 next_time："
+            + ", ".join(retired_writes)
+        )
+    for task_id, next_time in desired_next_times.items():
         runtime.set_job_next_time(task_id, next_time)
     runtime.set_next_time(
         next_daily_activity_list_sync_time(current).strftime("%Y-%m-%d %H:%M:%S")
