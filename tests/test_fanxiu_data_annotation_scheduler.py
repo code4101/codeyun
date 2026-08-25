@@ -11,12 +11,12 @@ from pathlib import Path
 import pytest
 
 from backend.api import fanxiu
-from backend.core.fanxiu.runtime import behavior_tree as fanxiu_behavior_tree
+from backend.core.fanxiu.behavior_tree import runtime as fanxiu_behavior_tree
 from backend.core.fanxiu.data_annotation import default_jobs as data_annotation_default_jobs
 from backend.core.fanxiu.data_annotation import scheduler as scheduler_core
 from backend.core.fanxiu.data_annotation import state as data_annotation_state
 from backend.core.fanxiu.data_annotation import behavior_tree_control as behavior_tree_control
-from backend.core.fanxiu.data_annotation import runtime_runner as behavior_tree_runtime_core
+from backend.core.fanxiu.data_annotation import behavior_tree_runtime as behavior_tree_runtime_core
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
 from backend.core.fanxiu.data_annotation.tasks import daily_resources as fanxiu_daily_resources
 from backend.core.fanxiu.data_annotation.tasks import daily_foundation as fanxiu_daily_foundation
@@ -39,7 +39,14 @@ def _no_blocking_overlay_generator(*args, **kwargs):
 
 
 def _patch_data_annotation_api_common(monkeypatch, tmp_path):
-    monkeypatch.setattr(fanxiu, "_DATA_ANNOTATION_RUNTIME_RUNNER", create_behavior_tree_runtime_runner())
+    # The API no longer owns an in-process Runtime runner; keep the legacy
+    # fixture attribute local to tests that still exercise adjacent API code.
+    monkeypatch.setattr(
+        fanxiu,
+        "_DATA_ANNOTATION_RUNTIME_RUNNER",
+        create_behavior_tree_runtime_runner(),
+        raising=False,
+    )
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_state_path", lambda: _scheduler_state_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_data_annotation_scheduler_settings_path", lambda: _scheduler_settings_path(tmp_path))
     monkeypatch.setattr(fanxiu, "_behavior_tree_runtime_state_path", lambda: tmp_path / "runtime_state.json")
@@ -2242,10 +2249,13 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert by_id["legacy-daily-xianshi"]["task_type"] == "daily_xianshi"
     assert by_id["xianshi-weekly-resources"]["task_type"] == "xianshi_weekly_resources"
     assert by_id["xianshi-weekly-resources"]["trigger_description"] == "每周"
-    assert by_id["legacy-daily-xianmeng"]["task_type"] == "daily_xianmeng"
-    assert by_id["legacy-daily-xianmeng"]["label"] == "仙盟_挑战"
-    assert by_id["legacy-daily-xianmeng"]["trigger_description"] == "动态"
-    assert by_id["legacy-daily-xianmeng"]["next_time"] is None
+    assert "legacy-daily-xianmeng" not in by_id
+    assert by_id["ranking-lifecycle"]["task_type"] == "ranking_lifecycle"
+    assert by_id["ranking-lifecycle"]["label"] == "玩法榜"
+    assert by_id["ranking-lifecycle"]["trigger_description"] == "动态"
+    assert by_id["resource-ranking"]["task_type"] == "resource_ranking"
+    assert by_id["resource-ranking"]["label"] == "资源榜"
+    assert by_id["resource-ranking"]["trigger_description"] == "动态"
     assert by_id["legacy-daily-vip"]["task_type"] == "daily_vip"
     assert by_id["legacy-daily-vip"]["label"] == "日常_vip"
     assert by_id["legacy-daily-vip"]["trigger_description"] == "每日"

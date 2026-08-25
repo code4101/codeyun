@@ -44,28 +44,10 @@ def test_windowed_job_technical_retry_before_22_stays_today() -> None:
     ) == "2026-08-13 21:58:00"
 
 
-def test_xianmeng_technical_retry_stops_instead_of_rolling_past_22() -> None:
+def test_xianmeng_has_no_retired_child_scheduler_job_after_consolidation() -> None:
     tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 13, 21, 0))
-    task = next(item for item in tasks if item["id"] == "legacy-daily-xianmeng")
-
-    behavior_tree_control.schedule_failed_task_retry(
-        task,
-        datetime(2026, 8, 13, 21, 55, 0),
-    )
-
-    assert task["next_time"] is None
-
-
-def test_xianmeng_technical_retry_before_close_stays_today() -> None:
-    tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 13, 21, 0))
-    task = next(item for item in tasks if item["id"] == "legacy-daily-xianmeng")
-
-    behavior_tree_control.schedule_failed_task_retry(
-        task,
-        datetime(2026, 8, 13, 21, 40, 0),
-    )
-
-    assert task["next_time"] == "2026-08-13 21:50:00"
+    assert not any(item["id"] == "legacy-daily-xianmeng" for item in tasks)
+    assert any(item["id"] == "ranking-lifecycle" for item in tasks)
 
 
 def test_activity_end_boundary_itself_is_already_closed() -> None:

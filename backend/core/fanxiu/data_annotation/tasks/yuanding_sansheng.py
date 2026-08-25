@@ -5,9 +5,6 @@ import threading
 import time
 from typing import Any, Iterable
 
-from backend.core.fanxiu.data_annotation.job_times import next_business_time
-
-
 YUANDING_ACTIVITY_NAME = "缘定三生"
 YUANDING_MAIN_SCENE_ID = 249
 
@@ -106,11 +103,6 @@ class YuandingSanshengTaskMixin:
         outcome: str,
         message: str,
     ) -> dict[str, Any]:
-        scheduler_task_id = str(payload.get("__scheduler_task_id") or "").strip()
-        if scheduler_task_id and bool(payload.get("manage_schedule", False)):
-            next_time = next_business_time(("05:00",))
-            self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
-            message = f"{message}，下次 {next_time}"
         return {
             "result": "success",
             "outcome": outcome,
@@ -151,6 +143,8 @@ class YuandingSanshengTaskMixin:
         payload: dict[str, Any] | None = None,
     ):
         payload = dict(payload or {})
+        payload.pop("__scheduler_task_id", None)
+        payload["manage_schedule"] = False
         runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
         page_timeout = float(payload.get("page_timeout_seconds") or 20.0)
         entry_timeout = float(payload.get("entry_timeout_seconds") or 30.0)

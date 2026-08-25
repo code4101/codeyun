@@ -285,32 +285,91 @@ def _leave_magic_invasion_map(runtime: Any) -> None:
         _wait_scene(runtime, (34,), timeout_seconds=15.0)
 
 
+def _magic_occurrence_checkpoint(
+    occurrence: MagicInvasionOccurrence,
+) -> Any:
+    from backend.core.fanxiu.activity.ranking_lifecycle import (
+        MAGIC_ACTIVE_KIND,
+        RankingCheckpoint,
+    )
+
+    start_at = datetime.fromtimestamp(occurrence.start_time_ms / 1000).astimezone()
+    end_at = datetime.fromtimestamp(occurrence.end_time_ms / 1000).astimezone()
+    business_date = datetime.now().astimezone(start_at.tzinfo).date()
+    return RankingCheckpoint(
+        instance_key=(
+            f"runtime:{occurrence.occurrence_id}:activity:{occurrence.activity_id}:"
+            f"{start_at.isoformat(timespec='seconds')}:"
+            f"{end_at.isoformat(timespec='seconds')}"
+        ),
+        activity_type="magic-invasion",
+        family="gameplay_rank",
+        runtime_id=occurrence.occurrence_id,
+        activity_id=occurrence.activity_id,
+        checkpoint_kind=MAGIC_ACTIVE_KIND,
+        business_date=business_date.isoformat(),
+        due_at=datetime.combine(
+            business_date,
+            datetime.strptime("19:00", "%H:%M").time(),
+            tzinfo=start_at.tzinfo,
+        ),
+    )
+
+
 def _set_progress(
-    runner: Any,
-    task_id: str,
-    payload: dict[str, Any],
+    occurrence: MagicInvasionOccurrence,
     progress: Mapping[str, Any],
 ) -> None:
-    value = dict(progress)
-    if not runner._set_scheduler_task_payload_flag(task_id, MAGIC_INVASION_PROGRESS_KEY, value):
-        raise RuntimeError("魔道入侵防重复进度未持久化，拒绝继续不可逆操作")
-    payload[MAGIC_INVASION_PROGRESS_KEY] = value
+    """Persist irreversible evidence on the occurrence checkpoint, never a Job."""
+
+    from sqlmodel import Session
+
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import (
+        ensure_ranking_lifecycle_checkpoint_table,
+        record_ranking_checkpoint_evidence,
+    )
+    from backend.db import engine
+
+    checkpoint = _magic_occurrence_checkpoint(occurrence)
+    ensure_ranking_lifecycle_checkpoint_table(engine)
+    with Session(engine) as session:
+        record_ranking_checkpoint_evidence(
+            session,
+            checkpoint,
+            evidence={MAGIC_INVASION_PROGRESS_KEY: dict(progress)},
+            message=f"魔道入侵不可逆对账证据：{progress.get('state') or 'unknown'}",
+        )
 
 
-def _progress_for_occurrence(
-    payload: Mapping[str, Any], occurrence: MagicInvasionOccurrence
+def load_magic_invasion_occurrence_progress(
+    occurrence: MagicInvasionOccurrence,
 ) -> dict[str, Any]:
-    existing = payload.get(MAGIC_INVASION_PROGRESS_KEY)
-    if not isinstance(existing, Mapping):
-        existing = {}
+    from sqlmodel import Session
+
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import (
+        ensure_ranking_lifecycle_checkpoint_table,
+        ranking_checkpoint_evidence,
+    )
+    from backend.db import engine
+
+    checkpoint = _magic_occurrence_checkpoint(occurrence)
+    ensure_ranking_lifecycle_checkpoint_table(engine)
+    with Session(engine) as session:
+        evidence = ranking_checkpoint_evidence(session, checkpoint)
+    existing = evidence.get(MAGIC_INVASION_PROGRESS_KEY)
+    existing = dict(existing) if isinstance(existing, Mapping) else {}
     old_id = str(existing.get("occurrence_id") or "")
     old_state = str(existing.get("state") or "")
     if old_id and old_id != occurrence.occurrence_id and old_state not in {"", "complete"}:
         raise RuntimeError(
             "上一魔道入侵实例存在未闭合不可逆批次，拒绝用新实例覆盖防重复证据"
         )
-    if old_id == occurrence.occurrence_id:
+    if old_id == occurrence.occurrence_id and old_state == "complete":
         return dict(existing)
+    if old_id == occurrence.occurrence_id and old_state:
+        raise RuntimeError(
+            "魔道入侵上一 attempt 留有未闭合不可逆证据；禁止从 GUI 中间步骤恢复，需人工对账"
+        )
     return {
         "occurrence_id": occurrence.occurrence_id,
         "activity_id": occurrence.activity_id,
@@ -508,7 +567,7 @@ def execute_magic_invasion_explore_job(
     payload: dict[str, Any],
     stop_event: threading.Event,
     *,
-    manage_schedule: bool = True,
+    manage_schedule: bool = False,
     prepared_runtime: Any | None = None,
     prepared_schedule: Mapping[str, Any] | None = None,
     already_on_main_scene: bool = False,
@@ -535,7 +594,9 @@ def execute_magic_invasion_explore_job(
     if not bool(schedule.get("available") and schedule.get("complete")):
         raise RuntimeError("魔道入侵 Runtime 日程不可用，拒绝只按页面名称点击")
     occurrence = current_magic_invasion_occurrence(schedule, now=now)
-    task_id = str(ctx.get("scheduler_task_id") or MAGIC_INVASION_TASK_ID)
+    # Compatibility-only argument.  The activity executor never owns
+    # Scheduler next_time or Scheduler payload, even when callers pass True.
+    _ = manage_schedule
     expected_occurrence_id = str(payload.get("expected_occurrence_id") or "").strip()
     if expected_occurrence_id:
         if occurrence is None:
@@ -548,25 +609,18 @@ def execute_magic_invasion_explore_job(
                 "魔道入侵当前 Runtime occurrence 与统一榜单 checkpoint 不一致"
             )
     if occurrence is None:
-        next_time = next_magic_invasion_probe_time(now)
-        if manage_schedule:
-            runner._persist_scheduler_task_next_time(task_id, next_time)
         return {
             "result": "success",
-            "message": f"魔道入侵：当前无活动实例，下次探针 {next_time:%Y-%m-%d %H:%M:%S}",
+            "message": "魔道入侵：当前无活动实例",
             "performed_actions": False,
-            **({"next_time": next_time.isoformat()} if manage_schedule else {}),
         }
 
-    progress = _progress_for_occurrence(payload, occurrence)
+    progress = load_magic_invasion_occurrence_progress(occurrence)
     progress["state"] = _legacy_phase(progress.get("state"))
     confirmed = list(progress.get("confirmed_batches") or [])
     if len(confirmed) >= target_batches:
         progress["state"] = "complete"
-        _set_progress(runner, task_id, payload, progress)
-        next_time = next_magic_invasion_probe_time(now)
-        if manage_schedule:
-            runner._persist_scheduler_task_next_time(task_id, next_time)
+        _set_progress(occurrence, progress)
         return {
             "result": "success",
             "message": f"魔道入侵 {occurrence.mode} 实例已幂等完成 1500 次",
@@ -634,7 +688,7 @@ def execute_magic_invasion_explore_job(
                     "batch_index": batch_index,
                     "transaction_evidence": evidence,
                 })
-                _set_progress(runner, task_id, payload, progress)
+                _set_progress(occurrence, progress)
                 verified_topup = _commit_prepared_top_up(runtime)
             else:
                 verified_topup = available_count
@@ -703,14 +757,14 @@ def execute_magic_invasion_explore_job(
                 "batch_index": batch_index,
                 "transaction_evidence": evidence,
             })
-            _set_progress(runner, task_id, payload, progress)
+            _set_progress(occurrence, progress)
             phase = "topup_confirmed"
 
         if phase == "topup_confirmed":
             if verified_topup != MAGIC_INVASION_EXPLORE_BATCH_SIZE:
                 raise RuntimeError("魔道入侵 topup_confirmed 地图已不再是 500，拒绝探查")
             progress["state"] = "explore_armed"
-            _set_progress(runner, task_id, payload, progress)
+            _set_progress(occurrence, progress)
             runtime.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "探查")
             phase = "explore_armed"
 
@@ -768,7 +822,7 @@ def execute_magic_invasion_explore_job(
                 "result_full_text": result_full_text[:1000],
             })
             progress.update({"state": "result_observed", "transaction_evidence": evidence})
-            _set_progress(runner, task_id, payload, progress)
+            _set_progress(occurrence, progress)
             phase = "result_observed"
 
         if phase == "result_observed":
@@ -826,7 +880,7 @@ def execute_magic_invasion_explore_job(
             "batch_index", "transaction_evidence",
         ):
             progress.pop(key, None)
-        _set_progress(runner, task_id, payload, progress)
+        _set_progress(occurrence, progress)
         inventory_before_count = int(
             dict(evidence.get("tianyan_before") or {}).get("count") or 0
         )
@@ -845,10 +899,7 @@ def execute_magic_invasion_explore_job(
 
     progress["state"] = "complete"
     progress["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    _set_progress(runner, task_id, payload, progress)
-    next_time = next_magic_invasion_probe_time(datetime.now().astimezone())
-    if manage_schedule:
-        runner._persist_scheduler_task_next_time(task_id, next_time)
+    _set_progress(occurrence, progress)
 
     # Departure is best effort after the business terminal is durably stored.
     try:
@@ -882,7 +933,6 @@ def execute_magic_invasion_explore_job(
             "batch_indexes": white_dragon_batches,
             "message": white_dragon_message,
         },
-        **({"next_time": next_time.isoformat()} if manage_schedule else {}),
     }
 
 
@@ -893,6 +943,7 @@ __all__ = [
     "MagicInvasionOccurrence",
     "current_magic_invasion_occurrence",
     "execute_magic_invasion_explore_job",
+    "load_magic_invasion_occurrence_progress",
     "magic_invasion_occurrences",
     "next_magic_invasion_probe_time",
     "parse_available_explore_count",

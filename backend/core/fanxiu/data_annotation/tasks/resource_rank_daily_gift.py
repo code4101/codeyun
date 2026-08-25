@@ -431,6 +431,8 @@ def run_resource_rank_daily_gift_flow(
     *,
     now: datetime | None = None,
     manage_schedule: bool = False,
+    expected_activity_type: str | None = None,
+    expected_activity_id: int | None = None,
 ) -> dict[str, Any]:
     """Claim every currently claimable zero-cost gift with Runtime readback."""
 
@@ -439,6 +441,28 @@ def run_resource_rank_daily_gift_flow(
         current = current.replace(tzinfo=ZoneInfo(DEFAULT_TIMEZONE))
     snapshot = load_worldline_activity_schedule_snapshot()
     active = active_resource_rank_gift_adapters(snapshot, now=current)
+    occurrence_scoped = (
+        expected_activity_type is not None or expected_activity_id is not None
+    )
+    if occurrence_scoped:
+        active = [
+            (adapter, activity_id)
+            for adapter, activity_id in active
+            if (
+                expected_activity_type is None
+                or adapter.key == expected_activity_type
+            )
+            and (
+                expected_activity_id is None
+                or int(activity_id) == int(expected_activity_id)
+            )
+        ]
+        if len(active) != 1:
+            raise RuntimeError(
+                f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：父 checkpoint 要求精确 occurrence "
+                f"type={expected_activity_type!r}, id={expected_activity_id!r}，"
+                f"实际匹配 {len(active)} 个，拒绝假完成"
+            )
     next_time = next_resource_rank_daily_gift_time(current).strftime(
         "%Y-%m-%d %H:%M:%S"
     )

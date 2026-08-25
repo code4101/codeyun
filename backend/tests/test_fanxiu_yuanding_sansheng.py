@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from threading import Event
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
     register_fanxiu_data_annotation_default_runtime_jobs,
@@ -49,6 +50,42 @@ def test_yuanding_sansheng_is_internal_under_resource_parent() -> None:
     assert tasks[0]["label"] == "资源榜"
     assert tasks[0]["trigger_description"] == "动态"
     assert tasks[0]["error_retry_delay_seconds"] == 600
+
+
+def test_yuanding_internal_wrapper_strips_forged_scheduler_authority() -> None:
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition(
+        "yuanding_sansheng_daily_gift"
+    )
+    seen = {}
+
+    class Runner:
+        def _execute_yuanding_sansheng_daily_gift_task(
+            self, _ctx, _stop_event, payload
+        ):
+            seen.update(payload)
+            if False:
+                yield None
+            return {"result": "success"}
+
+        def _persist_scheduler_task_next_time(self, *_args):
+            raise AssertionError("缘定三生 internal Cell 不得写 Scheduler")
+
+    operation = definition.handler(
+        Runner(),
+        {},
+        {
+            "__scheduler_task_id": "resource-ranking",
+            "manage_schedule": True,
+        },
+        Event(),
+    )
+    try:
+        while True:
+            next(operation)
+    except StopIteration as exc:
+        assert exc.value == {"result": "success"}
+    assert seen == {"manage_schedule": False}
 
 
 def test_yuanding_entry_and_gift_tab_must_be_unique() -> None:

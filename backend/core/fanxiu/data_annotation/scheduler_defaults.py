@@ -141,6 +141,17 @@ def consolidate_arena_scheduler_instances(
                 if cleaned != payload:
                     canonical["payload"] = cleaned
                     changed = True
+        if canonical is not None:
+            canonical_shape = {
+                "task_type": canonical_type,
+                "label": label,
+                "template_id": canonical_type,
+                "template_label": label,
+            }
+            for key, value in canonical_shape.items():
+                if canonical.get(key) != value:
+                    canonical[key] = value
+                    changed = True
         return changed
 
     migration_changed |= migrate_family(

@@ -1788,11 +1788,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
+        internal_payload = dict(payload)
+        internal_payload.pop("__scheduler_task_id", None)
+        internal_payload["manage_schedule"] = False
         return (
             yield from runner._execute_dandao_task_rewards_task(
                 ctx,
                 stop_event,
-                payload,
+                internal_payload,
             )
         )
 
@@ -1807,7 +1810,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return (yield from runner._execute_yuanding_sansheng_daily_gift_task(ctx, stop_event, payload))
+        internal_payload = dict(payload)
+        internal_payload.pop("__scheduler_task_id", None)
+        internal_payload["manage_schedule"] = False
+        return (yield from runner._execute_yuanding_sansheng_daily_gift_task(
+            ctx, stop_event, internal_payload
+        ))
 
     @register_fanxiu_data_annotation_task_cell("xianfu_visit_partner", "仙府_寻访仙侣", scheduler_supported=True)
     def _run_data_annotation_xianfu_visit_partner_task_cell(

@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from threading import Event
 from zoneinfo import ZoneInfo
 
+from backend.core.fanxiu.behavior_tree.runtime import (
+    create_behavior_tree_runtime_runner,
+)
+from backend.core.fanxiu.data_annotation.default_jobs import (
+    register_fanxiu_data_annotation_default_runtime_jobs,
+)
+from backend.core.fanxiu.data_annotation.jobs import (
+    get_fanxiu_data_annotation_task_cell_definition,
+)
 from backend.core.fanxiu.data_annotation.tasks import dandao_task_rewards as job
 from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
     RESOURCE_RANK_GIFT_ADAPTERS,
@@ -165,6 +175,64 @@ def test_pending_retry_schedules_bounded_recheck(monkeypatch) -> None:
     assert result["boundary"] == "no_claimable_progress"
     assert result["next_time"] == "2026-08-21 18:41:00"
     assert runtime.next_time is None
+
+
+def test_registered_internal_cell_strips_schedule_hint_and_never_writes_scheduler(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition(
+        "dandao_task_rewards"
+    )
+    assert definition is not None
+    assert definition.scheduler_supported is False
+
+    monkeypatch.setattr(job, "_active_dandao_adapter", lambda _now: None)
+    runtime = _Runtime()
+    runtime.attrs = {}
+    runner = create_behavior_tree_runtime_runner()
+    scheduler_writes = []
+    completions = []
+    monkeypatch.setattr(
+        runner,
+        "_fanxiu_runtime",
+        lambda *_args, **_kwargs: runtime,
+    )
+
+    def settle(*_args, **_kwargs):
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_wait_runtime_action_settle", settle)
+    monkeypatch.setattr(
+        runner,
+        "_finish_daily_runtime_task",
+        lambda **kwargs: completions.append(kwargs),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_scheduler_task_next_time",
+        lambda *args: scheduler_writes.append(args),
+    )
+
+    result = _finish(
+        definition.handler(
+            runner,
+            {"asset_tree_path": tmp_path / "asset-tree.json"},
+            {
+                "__scheduler_task_id": "resource-ranking",
+                "manage_schedule": True,
+            },
+            Event(),
+        )
+    )
+
+    assert result == "success"
+    assert scheduler_writes == []
+    assert runtime.next_time is None
+    assert "next_time" not in runtime.attrs
+    assert completions and completions[0]["task_type"] == "dandao_task_rewards"
 
 
 def test_claim_flow_clicks_only_itemclick_shape_and_requires_exact_readback(monkeypatch) -> None:

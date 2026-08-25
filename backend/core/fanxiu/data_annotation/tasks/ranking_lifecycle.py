@@ -91,7 +91,9 @@ def _execute_xianmeng_checkpoint(runner, ctx, payload, stop_event, *, occurrence
     return {"status": "completed", "message": f"仙盟内部执行 {result}"}
 
 
-def _execute_resource_checkpoint(runner, ctx, payload, stop_event, *, checkpoint_kind):
+def _execute_resource_checkpoint(
+    runner, ctx, payload, stop_event, *, checkpoint_kind, occurrence
+):
     options = dict(payload)
     options.pop("__scheduler_task_id", None)
     if checkpoint_kind == RESOURCE_FREE_GIFT_KIND:
@@ -99,7 +101,12 @@ def _execute_resource_checkpoint(runner, ctx, payload, stop_event, *, checkpoint
             run_resource_rank_daily_gift_flow,
         )
         runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-        return (yield from run_resource_rank_daily_gift_flow(runtime, manage_schedule=False))
+        return (yield from run_resource_rank_daily_gift_flow(
+            runtime,
+            manage_schedule=False,
+            expected_activity_type=occurrence.activity_type,
+            expected_activity_id=occurrence.activity_id,
+        ))
     if checkpoint_kind == DANDAO_REWARDS_KIND:
         from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import (
             run_dandao_task_rewards_flow,
@@ -200,7 +207,12 @@ def _execute_family_job(
                 )
             else:
                 result = yield from _execute_resource_checkpoint(
-                    runner, ctx, payload, stop_event, checkpoint_kind=checkpoint.checkpoint_kind
+                    runner,
+                    ctx,
+                    payload,
+                    stop_event,
+                    checkpoint_kind=checkpoint.checkpoint_kind,
+                    occurrence=occurrence,
                 )
             if not isinstance(result, dict):
                 result = {"status": "completed", "message": str(result or "")}
