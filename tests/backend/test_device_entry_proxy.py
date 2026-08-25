@@ -418,6 +418,39 @@ def test_delete_scoped_entry_refuses_filesystem_root(tmp_path):
     assert "root" in exc_info.value.detail.lower()
 
 
+@pytest.mark.parametrize("target_kind", ["metadata", "repository", "repository_parent"])
+def test_delete_scoped_entry_refuses_git_repository_boundaries(tmp_path, target_kind):
+    repository_parent = tmp_path / "projects"
+    repository_root = repository_parent / "sample-repo"
+    git_metadata = repository_root / ".git"
+    git_metadata.mkdir(parents=True)
+    (git_metadata / "config").write_text("[core]\n", encoding="utf-8")
+
+    targets = {
+        "metadata": git_metadata,
+        "repository": repository_root,
+        "repository_parent": repository_parent,
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        delete_scoped_entry(absolute_path=os.fspath(targets[target_kind]), recursive=True)
+
+    assert exc_info.value.status_code == 400
+    assert "git repository metadata" in exc_info.value.detail.lower()
+    assert git_metadata.exists()
+
+
+def test_delete_scoped_entry_still_deletes_ordinary_directory(tmp_path):
+    target = tmp_path / "ordinary"
+    target.mkdir()
+    (target / "file.txt").write_text("delete me", encoding="utf-8")
+
+    result = delete_scoped_entry(absolute_path=os.fspath(target), recursive=True)
+
+    assert result["ok"] is True
+    assert not target.exists()
+
+
 def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(
     duplicate_file_client, duplicate_file_auth_user, duplicate_file_test_device, tmp_path
 ):

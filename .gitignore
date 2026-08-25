@@ -1,0 +1,106 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+/.uv-cache*/
+
+# PyCharm / VS Code
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Project Specific
+backend/data/
+*.log
+.DS_Store
+/.codex/
+/.codex_tmp/
+/.codex-run/
+/.codex-run-logs/
+/.codex-runlogs/
+/.codex-logs/
+/.codex-dev-logs/
+/.codex-runtime-logs/
+/凡修/
+/.trae
+/tools/*
+!/tools/zaohua_mod/
+
+
+# Environment Variables
+.env
+# .env.example - should be committed
+.env.local
+.env.*.local
+/backend/static
+/frontend/.codeyun-state/
+/backend/plugins/modules/*
+!/backend/plugins/modules/__init__.py
+/backend/plugins/modules/*/tests/
+/backend/plugins/modules/*/tests/**
+/frontend/src/plugins/modules/*
+!/frontend/src/plugins/modules/.gitkeep
+/.tmp/
+/.tmp*/
+/.tmp_*
+/.tmp-*
+/.tmp-logs/
+/.tmp-dev-observe
+/.tmp_*/
+/.tmp_git_reduce_debug/
+
+# Auto Git ignored local artifacts
+/tmp/
+/tmp_mask_debug/
+/tmp_*/
+/tmp-*/
+/tmp_*.png
+/tmp_*.jpg
+/tmp_*.jpeg
+/tmp_*.json
+/tmp_*.txt
+/bc_*.db
+/@AutomationLog.txt
+/compact_log.txt
+
+# Accidental root-level probe artifacts created by unexpanded script variables
+/%s
+/$*
+/'*
+.vite/
+.pytest_cache/
+**/bin/
+**/obj/
