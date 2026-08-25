@@ -195,8 +195,8 @@ export default defineConfig(({ command }) => ({
     include: devOptimizedDeps,
   },
   server: {
-    // Bind IPv6 as well so localhost -> ::1 does not stall before falling back to IPv4 on Windows.
-    host: '::',
+    // CodeYun is used from other devices on the LAN; keep the dev entry reachable by IPv4.
+    host: '0.0.0.0',
     port: 5173,
     strictPort: true,
     allowedHosts: ['code4101.com'],

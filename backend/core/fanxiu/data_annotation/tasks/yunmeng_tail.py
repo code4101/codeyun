@@ -527,7 +527,6 @@ def execute_yunmeng_tail_job(
             f"{label}：最终钱包未闭环为 {expected_wallet}："
             f"activity={final_detail.current_currency}, wallet={final_wallet['exchange_currency']}"
         )
-    runtime.set_next_time(None)
     return {
         "result": "success",
         "message": f"{label}完成：最终榜单已刷新，兑换 {len(executed)} 种，保留锁定 {len(retained_locked)} 种",

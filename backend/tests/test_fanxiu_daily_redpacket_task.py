@@ -299,6 +299,238 @@ def test_daily_redpacket_qmch_route_dispatches_dedicated_handler_only(
     assert calls[0][4]["sub_id"] == 20050134
 
 
+def test_daily_redpacket_qmch_rewarded_is_idempotent_zero_gui_actions(
+    tmp_path,
+    monkeypatch,
+):
+    runner = _Runner()
+    path = tmp_path / "asset-tree.json"
+    path.write_text("[]", encoding="utf-8")
+    terminal = _qmch_item(
+        detail_loaded=True,
+        exclusion_reasons=["server_rewarded"],
+    )
+
+    class Runtime:
+        def cur_frame(self, **_kwargs):
+            pytest.fail("rewarded qmch must not perform any GUI action")
+
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: Runtime(), raising=False)
+    monkeypatch.setattr(
+        runner,
+        "_daily_redpacket_runtime_candidates",
+        lambda: _runtime_snapshot([terminal]),
+    )
+
+    result = _consume(runner._execute_daily_redpacket_task(
+        {"asset_tree_path": path},
+        None,
+        {},
+    ))
+
+    assert result["result"] == "success"
+    assert result["opened_count"] == 0
+    assert "幂等零动作" in result["message"]
+
+
+def test_daily_redpacket_qmch_terminal_does_not_starve_deferred_ordinary(
+    monkeypatch,
+):
+    runner = _Runner()
+    terminal = _qmch_item(
+        detail_loaded=True,
+        exclusion_reasons=["server_rewarded"],
+    )
+    ordinary = {
+        "uid": "ordinary-uid",
+        "channel": 103,
+        "sub_channel_id": 7,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_daily_redpacket_runtime_candidates",
+        lambda: _runtime_snapshot([terminal, ordinary]),
+    )
+
+    plan = runner._daily_redpacket_runtime_route_plan()
+
+    assert plan["route"] == "ordinary_chat"
+    assert plan["uids"] == ["ordinary-uid"]
+    assert plan["deferred_ordinary_uids"] == []
+    assert [item["uid"] for item in plan["terminal_qmch_items"]] == ["qmch-uid"]
+
+
+def test_daily_redpacket_qmch_terminal_requires_loaded_same_uid_reward_fact():
+    wrong_uid = _qmch_item(
+        uid="other",
+        detail_loaded=True,
+        exclusion_reasons=["detail_rewarded"],
+    )
+    missing_detail = _qmch_item(
+        detail_loaded=False,
+        exclusion_reasons=["server_rewarded"],
+    )
+
+    assert _Runner._daily_qmch_terminal_items(_runtime_snapshot([wrong_uid])) == [wrong_uid]
+    assert _Runner._daily_qmch_terminal_items(_runtime_snapshot([missing_detail])) == []
+
+
+def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_terminal(
+    monkeypatch,
+):
+    runner = _Runner()
+    actions = []
+
+    class Runtime:
+        def cur_frame(self, **_kwargs):
+            return "frame"
+
+        def click_frame_point(self, view, x, y):
+            actions.append(("point", view, x, y))
+
+        def click_shape_center(self, view, shape, **kwargs):
+            actions.append(("shape_click", view, shape, kwargs))
+
+        def wait_view(self, *views, **_kwargs):
+            yield "wait_view"
+            return SimpleNamespace(id=332 if 332 in views else 30)
+
+        def click_shape_center_then_view(self, view, shape, target, **_kwargs):
+            actions.append(("tab", view, shape, target))
+            yield "tab"
+            return SimpleNamespace(id=target)
+
+        def wait_shape(self, view, shape, **_kwargs):
+            actions.append(("shape", view, shape))
+            yield "shape"
+            return "frame"
+
+        def wait_click(self, view, shape, **_kwargs):
+            actions.append(("click", view, shape))
+            yield "click"
+
+        def wait_click_then_shape(self, view, shape, target_view, target_shape, **_kwargs):
+            actions.append(("send", view, shape, target_view, target_shape))
+            yield "send"
+            return "frame"
+
+        def wait_action_settle(self, _seconds):
+            yield "settle"
+
+        def ocr_text_in_shapes(self, *_args, **_kwargs):
+            # Real accepted OCR includes punctuation and the adjacent send
+            # button text inside the narrow field crop.
+            return "吉签启鸿运，佳奖落发送"
+
+    runtime = Runtime()
+    row = SimpleNamespace(x=100, y=200, w=80, h=40)
+    monkeypatch.setattr(
+        runner,
+        "_daily_qmch_entry_matches",
+        lambda *_args: {
+            "matched": True,
+            "parent_box": {"x": 10, "y": 20, "w": 30, "h": 40},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_daily_qmch_activity_row",
+        lambda *_args, **_kwargs: _yield_return(("frame", row)),
+    )
+    active = _runtime_snapshot([_qmch_item()])
+    terminal = _runtime_snapshot([
+        _qmch_item(detail_loaded=True, exclusion_reasons=["detail_rewarded"])
+    ])
+    snapshots = iter([active, terminal])
+    monkeypatch.setattr(runner, "_daily_redpacket_runtime_candidates", lambda: next(snapshots))
+
+    result = _consume(runner._execute_daily_qmch_reward_route(
+        runtime,
+        {},
+        None,
+        {"transition_timeout_seconds": 3, "poll_seconds": 0.2},
+        {
+            "route": "qmch_reward",
+            "channel": 101,
+            "sub_id": 20050134,
+            "uids": ["qmch-uid"],
+        },
+    ))
+
+    assert result["opened_count"] == 1
+    assert [item for item in actions if item[:3] == ("send", 673, "发送")] == [
+        ("send", 673, "发送", 674, "吉签鸿运佳奖落身")
+    ]
+    assert [item for item in actions if item == ("click", 674, "开")] == [
+        ("click", 674, "开")
+    ]
+    assert actions[-3:] == [
+        ("shape_click", 672, "弹窗外背景", {"x_ratio": 0.1}),
+        ("tab", 30, "返回", 332),
+        ("tab", 332, "返回", 34),
+    ]
+
+
+def test_daily_redpacket_qmch_copy_prefix_failure_never_sends_or_opens(monkeypatch):
+    runner = _Runner()
+    actions = []
+
+    class Runtime:
+        def cur_frame(self, **_kwargs):
+            return "frame"
+
+        def click_frame_point(self, *_args):
+            return None
+
+        def wait_view(self, *views, **_kwargs):
+            yield "wait"
+            return SimpleNamespace(id=332 if 332 in views else 30)
+
+        def click_shape_center_then_view(self, *_args, **_kwargs):
+            yield "tab"
+            return SimpleNamespace(id=332)
+
+        def wait_shape(self, *_args, **_kwargs):
+            yield "shape"
+
+        def wait_click(self, view, shape, **_kwargs):
+            actions.append((view, shape))
+            yield "click"
+
+        def wait_action_settle(self, _seconds):
+            yield "settle"
+
+        def ocr_text_in_shapes(self, *_args, **_kwargs):
+            return "无法识别的内容"
+
+    monkeypatch.setattr(
+        runner,
+        "_daily_qmch_entry_matches",
+        lambda *_args: {"matched": True, "parent_box": {"x": 0, "y": 0, "w": 10, "h": 10}},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_daily_qmch_activity_row",
+        lambda *_args, **_kwargs: _yield_return(("frame", SimpleNamespace(x=0, y=0, w=10, h=10))),
+    )
+
+    with pytest.raises(RuntimeError, match="未命中固定祝贺语前缀"):
+        _consume(runner._execute_daily_qmch_reward_route(
+            Runtime(),
+            {},
+            None,
+            {},
+            {
+                "route": "qmch_reward",
+                "channel": 101,
+                "sub_id": 20050134,
+                "uids": ["qmch-uid"],
+            },
+        ))
+
+    assert actions == [(673, "鸿运福签卡片/复制")]
+
+
 def test_daily_redpacket_has_business_owned_trigger_description():
     tasks = default_data_annotation_scheduler_tasks()
     assert not any(task["id"] == "legacy-daily-zongmen-redpacket" for task in tasks)

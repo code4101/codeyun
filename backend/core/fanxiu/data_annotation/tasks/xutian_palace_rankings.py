@@ -175,7 +175,6 @@ def execute_xutian_palace_rankings_job(
     activity_id, personal_count, plane_count = _store_rankings()
     final_scene, final_score = yield from _return_world(runtime)
 
-    runner._persist_scheduler_task_next_time(XUTIAN_RANKING_TASK_ID, None)
     message = (
         f"虚天殿_榜单数据：个人榜 {personal_count} 条、位面榜 {plane_count} 条已更新"
     )
