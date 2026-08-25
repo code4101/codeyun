@@ -13,6 +13,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 from backend.core.fanxiu.data_annotation.tasks import resource_rank_daily_gift
 from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
     RESOURCE_RANK_DAILY_GIFT_TASK_ID,
+    ResourceRankGiftAdapter,
     active_resource_rank_gift_adapters,
     next_resource_rank_daily_gift_time,
     project_resource_rank_gift_list_actions,
@@ -184,6 +185,135 @@ def test_exhausted_runtime_short_circuits_before_activity_navigation(monkeypatch
     assert result["boundary"] == "runtime_all_free_claimed"
     assert result["claimed_count"] == 0
     assert runtime.next_times == []
+
+
+def test_parent_adapter_scopes_runtime_readback_to_one_occurrence(monkeypatch) -> None:
+    """Two open occurrences must not make one checkpoint scan both families."""
+
+    first = ResourceRankGiftAdapter(
+        key="first-rank",
+        label="甲榜",
+        schedule_pattern="甲榜",
+        activity_ids=(111,),
+        page_scene_ids=(597,),
+    )
+    second = ResourceRankGiftAdapter(
+        key="second-rank",
+        label="乙榜",
+        schedule_pattern="乙榜",
+        activity_ids=(222,),
+        page_scene_ids=(598,),
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "active_resource_rank_gift_adapters",
+        lambda _snapshot, *, now: [(first, 111), (second, 222)],
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "load_worldline_activity_schedule_snapshot",
+        lambda: {"occurrences": []},
+    )
+    readback_ids = []
+
+    def readback(activity_ids):
+        readback_ids.append(list(activity_ids))
+        return {
+            "ok": True,
+            "complete": True,
+            "active_filter_applied": True,
+            "items": [{"id": 1, "is_free": True, "claimable": False}],
+        }
+
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "read_activity_gift_runtime_snapshot",
+        readback,
+    )
+
+    result = _drain(
+        run_resource_rank_daily_gift_flow(
+            object(),
+            now=datetime(2026, 8, 19, 12, 0, tzinfo=ZONE),
+            expected_activity_type="second-rank",
+            expected_activity_id=222,
+        )
+    )
+
+    assert result["boundary"] == "runtime_all_free_claimed"
+    assert readback_ids == [[222]]
+
+
+@pytest.mark.parametrize(
+    ("expected_type", "expected_id"),
+    [
+        ("missing-rank", None),
+        ("missing-rank", 111),
+        ("first-rank", 999),
+    ],
+)
+def test_parent_adapter_fails_closed_when_expected_occurrence_does_not_match(
+    monkeypatch,
+    expected_type,
+    expected_id,
+) -> None:
+    adapter = ResourceRankGiftAdapter(
+        key="first-rank",
+        label="甲榜",
+        schedule_pattern="甲榜",
+        activity_ids=(111,),
+        page_scene_ids=(597,),
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "active_resource_rank_gift_adapters",
+        lambda _snapshot, *, now: [(adapter, 111)],
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "load_worldline_activity_schedule_snapshot",
+        lambda: {"occurrences": []},
+    )
+
+    with pytest.raises(RuntimeError, match="实际匹配 0 个，拒绝假完成"):
+        _drain(
+            run_resource_rank_daily_gift_flow(
+                object(),
+                now=datetime(2026, 8, 19, 12, 0, tzinfo=ZONE),
+                expected_activity_type=expected_type,
+                expected_activity_id=expected_id,
+            )
+        )
+
+
+def test_parent_adapter_fails_closed_on_multiple_exact_occurrences(monkeypatch) -> None:
+    adapter = ResourceRankGiftAdapter(
+        key="first-rank",
+        label="甲榜",
+        schedule_pattern="甲榜",
+        activity_ids=(111,),
+        page_scene_ids=(597,),
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "active_resource_rank_gift_adapters",
+        lambda _snapshot, *, now: [(adapter, 111), (adapter, 111)],
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "load_worldline_activity_schedule_snapshot",
+        lambda: {"occurrences": []},
+    )
+
+    with pytest.raises(RuntimeError, match="实际匹配 2 个，拒绝假完成"):
+        _drain(
+            run_resource_rank_daily_gift_flow(
+                object(),
+                now=datetime(2026, 8, 19, 12, 0, tzinfo=ZONE),
+                expected_activity_type="first-rank",
+                expected_activity_id=111,
+            )
+        )
 
 
 def test_active_calendar_entry_absence_is_not_reported_as_success(monkeypatch) -> None:

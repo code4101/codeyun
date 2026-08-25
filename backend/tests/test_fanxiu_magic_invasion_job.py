@@ -5,8 +5,12 @@ from datetime import datetime
 from threading import Event
 
 import pytest
+from sqlmodel import create_engine
+
+import backend.db as backend_db
 
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
+    MagicInvasionOccurrence,
     current_magic_invasion_occurrence,
     execute_magic_invasion_explore_job,
     magic_invasion_occurrences,
@@ -459,10 +463,15 @@ def _run_single_batch_settlement(
     class _Runner:
         def __init__(self) -> None:
             self.progress_writes = []
+            self.scheduler_writes = []
 
         def _set_scheduler_task_payload_flag(self, _task_id, _key, value):
-            self.progress_writes.append(deepcopy(value))
-            return True
+            self.scheduler_writes.append(("payload", _task_id, _key, deepcopy(value)))
+            raise AssertionError("魔道内部执行不得写 Scheduler payload")
+
+        def _persist_scheduler_task_next_time(self, *args):
+            self.scheduler_writes.append(("next_time", *args))
+            raise AssertionError("魔道内部执行不得写 Scheduler next_time")
 
         def _log(self, *_args, **_kwargs):
             return None
@@ -496,15 +505,32 @@ def _run_single_batch_settlement(
     monkeypatch.setattr(magic, "_compact_task_snapshot", lambda _activity_id: {"state": "ok"})
 
     runner = _Runner()
+    initial_progress = {
+        "occurrence_id": "8070001400004",
+        "activity_id": 8070001,
+        "mode": "cross",
+        "server_count": 8,
+        "state": "complete",
+        "base_explore_count": 1000,
+        "confirmed_batches": [{"batch_index": 1}, {"batch_index": 2}],
+    }
+    # This helper exercises one in-Cell batch settlement.  A real new attempt
+    # may not resume this partial state; the dedicated test below covers that
+    # fail-closed boundary.
+    monkeypatch.setattr(
+        magic,
+        "load_magic_invasion_occurrence_progress",
+        lambda _occurrence: {**deepcopy(initial_progress), "state": "ready"},
+    )
+    monkeypatch.setattr(
+        magic,
+        "_set_progress",
+        lambda _occurrence, value: runner.progress_writes.append(deepcopy(value)),
+    )
     runtime = _Runtime()
     payload = {
         "expected_occurrence_id": "8070001400004",
-        "magic_invasion_progress": {
-            "occurrence_id": "8070001400004",
-            "state": "confirmed",
-            "base_explore_count": 1000,
-            "confirmed_batches": [{"batch_index": 1}, {"batch_index": 2}],
-        },
+        "magic_invasion_progress": {"malicious_scheduler_state": True},
     }
     operation = execute_magic_invasion_explore_job(
         runner,
@@ -533,8 +559,8 @@ def test_batch_result_must_be_exactly_500_before_confirming(monkeypatch) -> None
         "topup_confirmed",
         "explore_armed",
     ]
-    assert len(payload["magic_invasion_progress"]["confirmed_batches"]) == 2
-    assert payload["magic_invasion_progress"]["base_explore_count"] == 1000
+    assert payload["magic_invasion_progress"] == {"malicious_scheduler_state": True}
+    assert runner.scheduler_writes == []
 
 
 def test_batch_is_not_confirmed_until_available_count_is_zero(monkeypatch) -> None:
@@ -552,8 +578,8 @@ def test_batch_is_not_confirmed_until_available_count_is_zero(monkeypatch) -> No
         "explore_armed",
         "result_observed",
     ]
-    assert len(payload["magic_invasion_progress"]["confirmed_batches"]) == 2
-    assert payload["magic_invasion_progress"]["base_explore_count"] == 1000
+    assert payload["magic_invasion_progress"] == {"malicious_scheduler_state": True}
+    assert runner.scheduler_writes == []
 
 
 def test_batch_is_durably_confirmed_after_exact_500_and_zero_available(monkeypatch) -> None:
@@ -576,24 +602,9 @@ def test_batch_is_durably_confirmed_after_exact_500_and_zero_available(monkeypat
     assert confirmed_write["base_explore_count"] == 1500
     assert confirmed_write["confirmed_batches"][-1]["result_explore_count"] == 500
     assert confirmed_write["confirmed_batches"][-1]["available_explore_count_after_result"] == 0
-    assert payload["magic_invasion_progress"]["state"] == "complete"
+    assert payload["magic_invasion_progress"] == {"malicious_scheduler_state": True}
+    assert runner.scheduler_writes == []
     assert result["result"] == "success"
-
-
-class _CrashRecoveryRunner:
-    def __init__(self, *, crash_after_state: str | None = None) -> None:
-        self.crash_after_state = crash_after_state
-        self.progress_writes = []
-
-    def _set_scheduler_task_payload_flag(self, _task_id, _key, value):
-        saved = deepcopy(value)
-        self.progress_writes.append(saved)
-        if saved.get("state") == self.crash_after_state:
-            raise RuntimeError(f"crash-after-{self.crash_after_state}")
-        return True
-
-    def _log(self, *_args, **_kwargs):
-        return None
 
 
 class _CrashRecoveryRuntime:
@@ -619,30 +630,7 @@ class _CrashRecoveryRuntime:
         return ""
 
 
-def _recovery_payload(state: str) -> dict:
-    return {
-        "expected_occurrence_id": "8070001400004",
-        "magic_invasion_progress": {
-            "occurrence_id": "8070001400004",
-            "state": state,
-            "base_explore_count": 1000,
-            "confirmed_batches": [{"batch_index": 1}, {"batch_index": 2}],
-            "batch_index": 3,
-            "transaction_evidence": {
-                "base_explore_before": 1000,
-                "available_explore_count_before": 0,
-                "requested_topup": 500,
-                "tianyan_before": {
-                    "count": 1000,
-                    "evidence": {"pid": 1, "process_start_ticks": 2},
-                },
-                "task_progress_before": {"tasks": []},
-            },
-        },
-    }
-
-
-def _prepare_recovery_test(monkeypatch, *, inventory_count: int, map_count: int = 0) -> None:
+def _prepare_recovery_test(monkeypatch, *, stored_state: str) -> None:
     class _DuringWindowDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -652,117 +640,42 @@ def _prepare_recovery_test(monkeypatch, *, inventory_count: int, map_count: int 
     monkeypatch.setattr(magic, "datetime", _DuringWindowDatetime)
     monkeypatch.setattr(
         magic,
-        "_read_tianyan_inventory",
-        lambda: {
-            "count": inventory_count,
-            "evidence": {"pid": 1, "process_start_ticks": 2},
-        },
-    )
-    monkeypatch.setattr(magic, "_compact_task_snapshot", lambda _activity_id: {"tasks": []})
-
-    def shape_text(_runtime, scene_id, title):
-        if scene_id == magic.MAGIC_INVASION_RESULT_SCENE_ID:
-            assert title == "探索次数结果"
-            return "快速探索500次"
-        assert title == "可用探查次数"
-        return f"{map_count}/120"
-
-    monkeypatch.setattr(magic, "_shape_text", shape_text)
-
-
-def _run_recovery(runner, runtime, payload):
-    return execute_magic_invasion_explore_job(
-        runner,
-        {"scheduler_task_id": "ranking-lifecycle"},
-        payload,
-        Event(),
-        manage_schedule=False,
-        prepared_runtime=runtime,
-        prepared_schedule=_schedule(),
-        already_on_main_scene=True,
+        "load_magic_invasion_occurrence_progress",
+        lambda _occurrence: (_ for _ in ()).throw(
+            RuntimeError(
+                f"魔道入侵上一 attempt 留有未闭合不可逆证据 {stored_state}；"
+                "禁止从 GUI 中间步骤恢复，需人工对账"
+            )
+        ),
     )
 
 
-def test_crash_after_use_armed_before_click_fails_stop_without_replaying_use(
-    monkeypatch,
-) -> None:
-    _prepare_recovery_test(monkeypatch, inventory_count=1000, map_count=0)
-    runtime = _CrashRecoveryRuntime()
-
-    with pytest.raises(RuntimeError, match="禁止重放使用"):
-        _finish(_run_recovery(_CrashRecoveryRunner(), runtime, _recovery_payload("use_armed")))
-
-    assert runtime.clicks == []
-
-
-def test_crash_after_use_click_recovers_from_exact_inventory_and_map_pair_only(
-    monkeypatch,
-) -> None:
-    _prepare_recovery_test(monkeypatch, inventory_count=500, map_count=500)
-    runtime = _CrashRecoveryRuntime(
-        (magic.MAGIC_INVASION_ITEM_SCENE_ID, magic.MAGIC_INVASION_MAP_SCENE_ID)
-    )
-    runner = _CrashRecoveryRunner(crash_after_state="explore_armed")
-
-    with pytest.raises(RuntimeError, match="crash-after-explore_armed"):
-        _finish(_run_recovery(runner, runtime, _recovery_payload("use_armed")))
-
-    assert [item["state"] for item in runner.progress_writes] == [
-        "topup_confirmed",
-        "explore_armed",
-    ]
-    assert (magic.MAGIC_INVASION_USE_SCENE_ID, "使用") not in runtime.clicks
-    assert (magic.MAGIC_INVASION_MAP_SCENE_ID, "探查") not in runtime.clicks
-
-
-@pytest.mark.parametrize("stored_state", ["explore_armed", "armed"])
-def test_crash_after_explore_arming_before_click_never_replays_explore(
+@pytest.mark.parametrize(
+    "stored_state",
+    ["use_armed", "topup_confirmed", "explore_armed", "result_observed"],
+)
+def test_new_attempt_never_resumes_magic_gui_intermediate_state(
     monkeypatch,
     stored_state,
 ) -> None:
-    _prepare_recovery_test(monkeypatch, inventory_count=500, map_count=500)
-    runtime = _CrashRecoveryRuntime((magic.MAGIC_INVASION_MAP_SCENE_ID,))
+    _prepare_recovery_test(monkeypatch, stored_state=stored_state)
+    runtime = _CrashRecoveryRuntime()
 
-    with pytest.raises(RuntimeError, match="禁止重放探查"):
-        _finish(_run_recovery(_CrashRecoveryRunner(), runtime, _recovery_payload(stored_state)))
+    with pytest.raises(RuntimeError, match="禁止从 GUI 中间步骤恢复"):
+        _finish(
+            execute_magic_invasion_explore_job(
+                object(),
+                {"scheduler_task_id": "ranking-lifecycle"},
+                {"magic_invasion_progress": {"state": "complete"}},
+                Event(),
+                manage_schedule=True,
+                prepared_runtime=runtime,
+                prepared_schedule=_schedule(),
+                already_on_main_scene=True,
+            )
+        )
 
-    assert (magic.MAGIC_INVASION_MAP_SCENE_ID, "探查") not in runtime.clicks
-
-
-def test_crash_after_explore_click_observes_result_before_any_settlement_click(
-    monkeypatch,
-) -> None:
-    _prepare_recovery_test(monkeypatch, inventory_count=500, map_count=0)
-    runtime = _CrashRecoveryRuntime((magic.MAGIC_INVASION_RESULT_SCENE_ID,))
-    runner = _CrashRecoveryRunner(crash_after_state="result_observed")
-
-    with pytest.raises(RuntimeError, match="crash-after-result_observed"):
-        _finish(_run_recovery(runner, runtime, _recovery_payload("explore_armed")))
-
-    assert [item["state"] for item in runner.progress_writes] == ["result_observed"]
     assert runtime.clicks == []
-
-
-def test_crash_after_result_observed_commits_without_replaying_explore(
-    monkeypatch,
-) -> None:
-    _prepare_recovery_test(monkeypatch, inventory_count=500, map_count=0)
-    payload = _recovery_payload("result_observed")
-    payload["magic_invasion_progress"]["transaction_evidence"].update({
-        "result_explore_count": 500,
-        "result_source": "result_page",
-        "task_progress_after": {"tasks": []},
-    })
-    runtime = _CrashRecoveryRuntime(
-        (magic.MAGIC_INVASION_RESULT_SCENE_ID, magic.MAGIC_INVASION_MAP_SCENE_ID)
-    )
-
-    result = _finish(_run_recovery(_CrashRecoveryRunner(), runtime, payload))
-
-    assert result["result"] == "success"
-    assert (magic.MAGIC_INVASION_MAP_SCENE_ID, "探查") not in runtime.clicks
-    assert (magic.MAGIC_INVASION_USE_SCENE_ID, "使用") not in runtime.clicks
-    assert runtime.clicks[0] == (magic.MAGIC_INVASION_RESULT_SCENE_ID, "确定")
 
 
 def test_expected_occurrence_cannot_succeed_after_activity_window(monkeypatch) -> None:
@@ -792,7 +705,7 @@ def test_expected_occurrence_cannot_succeed_after_activity_window(monkeypatch) -
         )
 
 
-def test_shared_job_keeps_progress_persistence_when_legacy_schedule_management_is_off(
+def test_magic_never_accepts_scheduler_write_authority_or_returns_next_time(
     monkeypatch,
 ) -> None:
     from backend.core.fanxiu.data_annotation.tasks import magic_invasion as magic
@@ -805,19 +718,39 @@ def test_shared_job_keeps_progress_persistence_when_legacy_schedule_management_i
 
     class _Runner:
         def __init__(self) -> None:
-            self.progress_writes = []
+            self.scheduler_writes = []
 
         def _set_scheduler_task_payload_flag(self, task_id, key, value):
-            self.progress_writes.append((task_id, key, value))
-            return True
+            self.scheduler_writes.append(("payload", task_id, key, value))
+            raise AssertionError("魔道内部执行不得写 Scheduler payload")
 
-        def _persist_scheduler_task_next_time(self, *_args, **_kwargs):
-            raise AssertionError("统一 Job 不得让旧魔道内核改写 next_time")
+        def _persist_scheduler_task_next_time(self, *args):
+            self.scheduler_writes.append(("next_time", *args))
+            raise AssertionError("魔道内部执行不得写 Scheduler next_time")
 
     monkeypatch.setattr(magic, "datetime", _DuringWindowDatetime)
     monkeypatch.setattr(
         "backend.core.fanxiu.activity.runtime_schedule.read_fanxiu_activity_runtime_schedule",
         lambda **_kwargs: _schedule(),
+    )
+    complete = {
+        "occurrence_id": "8070001400004",
+        "state": "complete",
+        "base_explore_count": 1500,
+        "confirmed_batches": [{}, {}, {}],
+    }
+    evidence_writes = []
+    monkeypatch.setattr(
+        magic,
+        "load_magic_invasion_occurrence_progress",
+        lambda _occurrence: deepcopy(complete),
+    )
+    monkeypatch.setattr(
+        magic,
+        "_set_progress",
+        lambda occurrence, value: evidence_writes.append(
+            (occurrence.occurrence_id, deepcopy(value))
+        ),
     )
     runner = _Runner()
     payload = {
@@ -828,6 +761,7 @@ def test_shared_job_keeps_progress_persistence_when_legacy_schedule_management_i
             "base_explore_count": 1500,
             "confirmed_batches": [{}, {}, {}],
         },
+        "manage_schedule": True,
     }
 
     result = _finish(
@@ -836,18 +770,47 @@ def test_shared_job_keeps_progress_persistence_when_legacy_schedule_management_i
             {"scheduler_task_id": "ranking-lifecycle"},
             payload,
             Event(),
-            manage_schedule=False,
+            manage_schedule=True,
         )
     )
 
     assert result["result"] == "success"
     assert result["performed_actions"] is False
-    assert len(runner.progress_writes) == 1
-    task_id, key, progress = runner.progress_writes[0]
-    assert task_id == "ranking-lifecycle"
-    assert key == "magic_invasion_progress"
-    assert progress["state"] == "complete"
-    assert progress["base_explore_count"] == 1500
+    assert "next_time" not in result
+    assert runner.scheduler_writes == []
+    assert payload["magic_invasion_progress"]["state"] == "complete"
+    assert evidence_writes == [("8070001400004", complete)]
+
+
+def test_magic_irreversible_progress_is_occurrence_evidence_and_fails_closed(
+    monkeypatch,
+) -> None:
+    engine = create_engine("sqlite://")
+    monkeypatch.setattr(backend_db, "engine", engine)
+    occurrence = MagicInvasionOccurrence(
+        occurrence_id="8070001400004",
+        runtime_id=8070001400004,
+        activity_id=8070001,
+        start_time_ms=_ms("2026-08-22T10:00:00+08:00"),
+        end_time_ms=_ms("2026-08-22T22:00:00+08:00"),
+        server_count=8,
+        mode="cross_server",
+    )
+    armed = {
+        "occurrence_id": occurrence.occurrence_id,
+        "activity_id": occurrence.activity_id,
+        "state": "use_armed",
+        "confirmed_batches": [],
+        "base_explore_count": 0,
+    }
+
+    magic._set_progress(occurrence, armed)
+    with pytest.raises(RuntimeError, match="禁止从 GUI 中间步骤恢复"):
+        magic.load_magic_invasion_occurrence_progress(occurrence)
+
+    complete = {**armed, "state": "complete"}
+    magic._set_progress(occurrence, complete)
+    assert magic.load_magic_invasion_occurrence_progress(occurrence) == complete
 
 
 def test_magic_invasion_is_owned_by_the_one_visible_ranking_lifecycle_job() -> None:

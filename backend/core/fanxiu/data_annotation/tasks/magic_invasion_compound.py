@@ -12,8 +12,8 @@ from backend.core.fanxiu.activity.magic_invasion_explore import (
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
-    MAGIC_INVASION_PROGRESS_KEY,
     execute_magic_invasion_explore_job,
+    load_magic_invasion_occurrence_progress,
 )
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_supply import (
     TIANYAN_ITEM_ID,
@@ -28,8 +28,22 @@ from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_coun
 def _remaining_tianyan_requirement(
     payload: dict[str, Any], occurrence: RankingOccurrence
 ) -> int:
-    progress = payload.get(MAGIC_INVASION_PROGRESS_KEY)
-    progress = dict(progress) if isinstance(progress, dict) else {}
+    del payload
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
+        MagicInvasionOccurrence,
+    )
+
+    progress = load_magic_invasion_occurrence_progress(
+        MagicInvasionOccurrence(
+            occurrence_id=occurrence.runtime_id,
+            activity_id=occurrence.activity_id,
+            runtime_id=int(occurrence.runtime_id),
+            start_time_ms=int(occurrence.start_at.timestamp() * 1000),
+            end_time_ms=int(occurrence.end_at.timestamp() * 1000),
+            server_count=occurrence.cross_count,
+            mode="cross" if occurrence.cross_count > 1 else "server",
+        )
+    )
     progress_occurrence = str(progress.get("occurrence_id") or "")
     state = str(progress.get("state") or "")
     if (
@@ -38,8 +52,8 @@ def _remaining_tianyan_requirement(
         and state not in {"", "complete"}
     ):
         raise RuntimeError("上一魔道 occurrence 的不可逆进度尚未闭合")
-    if progress_occurrence == occurrence.runtime_id and state == "armed":
-        raise RuntimeError("魔道存在已持久化但未确认的探查点击，禁止继续复合作业")
+    if progress_occurrence == occurrence.runtime_id and state not in {"", "ready", "complete"}:
+        raise RuntimeError("魔道存在未闭合不可逆证据，禁止从 GUI 中间步骤恢复")
     confirmed = (
         list(progress.get("confirmed_batches") or [])
         if progress_occurrence == occurrence.runtime_id
@@ -132,7 +146,11 @@ def execute_magic_invasion_compound_checkpoint(
         already_on_main_scene = False
 
     explore_payload = {
-        **payload,
+        **{
+            key: value
+            for key, value in payload.items()
+            if key != "magic_invasion_progress"
+        },
         "target_batches": MAGIC_INVASION_TARGET_BATCHES,
         "batch_size": MAGIC_INVASION_EXPLORE_BATCH_SIZE,
         "expected_occurrence_id": occurrence.runtime_id,

@@ -121,6 +121,109 @@ def _insert(engine, *activities):
 def _stored_activity(engine, activity_id: str):
     with Session(engine) as session:
         return session.get(FanxiuExchangeActivity, activity_id)
+
+
+def _finish(generator):
+    while True:
+        try:
+            next(generator)
+        except StopIteration as stop:
+            return stop.value
+
+
+class _CoordinatorRuntime:
+    def __init__(self, *, on_start=None):
+        self.on_start = on_start
+        self.start_clicks = 0
+        self.waits = 0
+
+    def click_shape_center(self, _scene_id, shape_name):
+        if shape_name == "开启自动":
+            self.start_clicks += 1
+            if self.on_start is not None:
+                self.on_start()
+
+    def wait_action_settle(self, _seconds):
+        self.waits += 1
+        if False:
+            yield None
+
+    def goto_view(self, _scene_id):
+        if False:
+            yield None
+
+    @staticmethod
+    def current_scene(_scene_ids, *, update=True):
+        return 34, 100.0, "frame"
+
+
+class _CoordinatorRunner:
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.logs = []
+
+    def _fanxiu_runtime(self, _ctx):
+        return self.runtime
+
+    def _log(self, kind, message):
+        self.logs.append((kind, message))
+
+
+def _generator_noop(*_args, **_kwargs):
+    if False:
+        yield None
+
+
+def _coordinator_snapshot(*, completed: int = 10, running: bool = False):
+    snapshot = _snapshot(count=10)
+    snapshot.update({
+        "source": "runtime_memory",
+        "captured_at": "2026-08-26T10:00:00+08:00",
+        "current_heaven": 3,
+        "auto_progress": {
+            "running": running,
+            "completed_challenges": completed,
+        },
+    })
+    snapshot["evidence"].update({"pid": 123, "process_start_ticks": 456})
+    return snapshot
+
+
+def _install_coordinator_facts(
+    monkeypatch,
+    *,
+    resources,
+    wallets,
+    auto_snapshots=(),
+):
+    resource_rows = iter(resources)
+    wallet_rows = iter(wallets)
+    auto_rows = iter(auto_snapshots)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.xutian_runtime.read_xutian_resource_snapshot",
+        lambda: deepcopy(next(resource_rows)),
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.wallet.read_wallet_currency_snapshot",
+        lambda *_args, **_kwargs: deepcopy(next(wallet_rows)),
+    )
+    if auto_snapshots:
+        monkeypatch.setattr(
+            xutian_auto,
+            "_read_auto_snapshot",
+            lambda: deepcopy(next(auto_rows)),
+        )
+
+
+def _insert_pending(engine, activity, marker):
+    marker = deepcopy(marker)
+    marker["occurrence"] = xutian_auto._xutian_occurrence_identity(activity)
+    activity.evidence = {
+        **dict(activity.evidence),
+        xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK: marker,
+    }
+    _insert(engine, activity)
+    return marker
 from backend.core.fanxiu.data_annotation.default_jobs import (
     register_fanxiu_data_annotation_default_runtime_jobs,
 )
@@ -467,3 +570,163 @@ def test_old_batch_cannot_clear_a_newer_marker(xutian_engine):
 
     stored = _stored_activity(xutian_engine, activity_id)
     assert stored.evidence[xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK] == new_marker
+
+
+def test_coordinator_persists_and_reads_back_arm_before_native_start(
+    xutian_engine, monkeypatch
+):
+    activity = _activity()
+    _insert(xutian_engine, activity)
+    events = []
+    original_commit = xutian_auto._commit_activity_evidence
+    original_readback = xutian_auto._readback_pending_marker
+
+    def recording_commit(session, stored_activity, evidence):
+        if xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK in evidence:
+            events.append("arm_commit")
+        return original_commit(session, stored_activity, evidence)
+
+    def recording_readback(session, stored_activity):
+        events.append("arm_readback")
+        return original_readback(session, stored_activity)
+
+    def verify_start_is_armed():
+        stored = _stored_activity(xutian_engine, activity.id)
+        assert xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK in stored.evidence
+        events.append("start")
+
+    runtime = _CoordinatorRuntime(on_start=verify_start_is_armed)
+    runner = _CoordinatorRunner(runtime)
+    before_resource = _resource(completed=0)
+    before_resource["challenge"]["count"] = 100
+    before_resource["explore"]["count"] = 100
+    after_resource = _resource(completed=10)
+    _install_coordinator_facts(
+        monkeypatch,
+        resources=[before_resource, after_resource],
+        wallets=[_wallet(current_delta=0), _wallet()],
+        auto_snapshots=[
+            _coordinator_snapshot(completed=0),
+            _coordinator_snapshot(completed=0),
+            _coordinator_snapshot(completed=10),
+        ],
+    )
+    monkeypatch.setattr(xutian_auto, "_commit_activity_evidence", recording_commit)
+    monkeypatch.setattr(xutian_auto, "_readback_pending_marker", recording_readback)
+    monkeypatch.setattr(xutian_auto, "_enter_xutian_map", _generator_noop)
+    monkeypatch.setattr(xutian_auto, "_wait_scene", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(xutian_auto, "_reconcile_quality_toggle", _generator_noop)
+    monkeypatch.setattr(xutian_auto, "_reconcile_quality_boosts", _generator_noop)
+    monkeypatch.setattr(xutian_auto, "_reconcile_lower_switch", _generator_noop)
+    monkeypatch.setattr(xutian_auto, "_set_count", _generator_noop)
+    monkeypatch.setattr(xutian_auto, "_read_count", lambda *_args, **_kwargs: 10)
+
+    result = _finish(
+        xutian_auto.execute_xutian_native_auto_job(
+            runner, {}, {"requested_challenges": 10}, xutian_auto.threading.Event()
+        )
+    )
+
+    assert events[:3] == ["arm_commit", "arm_readback", "start"]
+    assert runtime.start_clicks == 1
+    assert result["result"] == "success"
+    stored = _stored_activity(xutian_engine, activity.id)
+    assert xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK not in stored.evidence
+    assert len(stored.evidence[xutian_auto.XUTIAN_NATIVE_AUTO_BATCHES_KEY]) == 1
+
+
+def test_coordinator_pending_unstarted_never_starts_and_keeps_marker(
+    xutian_engine, monkeypatch
+):
+    activity = _activity()
+    marker = _insert_pending(xutian_engine, activity, _marker())
+    runtime = _CoordinatorRuntime()
+    runner = _CoordinatorRunner(runtime)
+    _install_coordinator_facts(
+        monkeypatch,
+        resources=[_resource(completed=0)],
+        wallets=[_wallet(), _wallet()],
+    )
+    monkeypatch.setattr(
+        xutian_auto,
+        "_configure_and_run_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pending 不得进入新的自动挑战配置")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="未证明精确批次完成"):
+        _finish(
+            xutian_auto.execute_xutian_native_auto_job(
+                runner, {}, {"requested_challenges": 500}, xutian_auto.threading.Event()
+            )
+        )
+
+    assert runtime.start_clicks == 0
+    stored = _stored_activity(xutian_engine, activity.id)
+    assert stored.evidence[xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK] == marker
+
+
+def test_coordinator_running_pending_only_waits_and_reconciles_without_restart(
+    xutian_engine, monkeypatch
+):
+    activity = _activity()
+    _insert_pending(xutian_engine, activity, _marker())
+    runtime = _CoordinatorRuntime()
+    runner = _CoordinatorRunner(runtime)
+    _install_coordinator_facts(
+        monkeypatch,
+        resources=[_resource(running=True, completed=0), _resource(completed=10)],
+        wallets=[_wallet(current_delta=0), _wallet()],
+        auto_snapshots=[_coordinator_snapshot(completed=10)],
+    )
+    monkeypatch.setattr(
+        xutian_auto,
+        "_configure_and_run_batch",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pending 运行中不得启动新批次")
+        ),
+    )
+
+    result = _finish(
+        xutian_auto.execute_xutian_native_auto_job(
+            runner, {}, {"requested_challenges": 500}, xutian_auto.threading.Event()
+        )
+    )
+
+    assert runtime.start_clicks == 0
+    assert runtime.waits >= 1
+    assert result["recovered"] is True
+    stored = _stored_activity(xutian_engine, activity.id)
+    assert xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK not in stored.evidence
+    assert [
+        item["batch_id"]
+        for item in stored.evidence[xutian_auto.XUTIAN_NATIVE_AUTO_BATCHES_KEY]
+    ] == ["batch-1"]
+
+
+def test_coordinator_pending_with_insufficient_runtime_evidence_fails_closed(
+    xutian_engine, monkeypatch
+):
+    activity = _activity()
+    marker = _insert_pending(xutian_engine, activity, _marker())
+    runtime = _CoordinatorRuntime()
+    runner = _CoordinatorRunner(runtime)
+    incomplete = _resource(completed=10)
+    incomplete["source"] = "packet"
+    _install_coordinator_facts(
+        monkeypatch,
+        resources=[incomplete],
+        wallets=[_wallet(), _wallet()],
+    )
+
+    with pytest.raises(RuntimeError, match="缺少只读 Runtime 事实"):
+        _finish(
+            xutian_auto.execute_xutian_native_auto_job(
+                runner, {}, {"requested_challenges": 10}, xutian_auto.threading.Event()
+            )
+        )
+
+    assert runtime.start_clicks == 0
+    stored = _stored_activity(xutian_engine, activity.id)
+    assert stored.evidence[xutian_auto.XUTIAN_NATIVE_AUTO_START_MARK] == marker

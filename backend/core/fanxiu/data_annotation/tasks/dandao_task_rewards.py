@@ -93,7 +93,15 @@ def run_dandao_task_rewards_flow(
     now: datetime | None = None,
     max_claims: int = 20,
     manage_schedule: bool = False,
+    include_schedule_hint: bool = True,
 ) -> dict[str, Any]:
+    def result_with_optional_schedule_hint(result: dict[str, Any]) -> dict[str, Any]:
+        if include_schedule_hint:
+            return result
+        ordinary_result = dict(result)
+        ordinary_result.pop("next_time", None)
+        return ordinary_result
+
     current = now or job_now()
     zone = ZoneInfo(DEFAULT_TIMEZONE)
     current = current.replace(tzinfo=zone) if current.tzinfo is None else current.astimezone(zone)
@@ -102,12 +110,12 @@ def run_dandao_task_rewards_flow(
     if active is None:
         if manage_schedule:
             runtime.set_next_time(next_daily)
-        return {
+        return result_with_optional_schedule_hint({
             "result": "success",
             "claimed_count": 0,
             "next_time": next_daily,
             "message": f"{DANDAO_TASK_REWARDS_LABEL}：当前没有开放的丹道问鼎；下次 {next_daily}",
-        }
+        })
 
     adapter, activity_id = active
     snapshot = read_dandao_task_reward_snapshot(activity_id)
@@ -122,13 +130,13 @@ def run_dandao_task_rewards_flow(
             boundary = "no_claimable_progress"
         if manage_schedule:
             runtime.set_next_time(next_time)
-        return {
+        return result_with_optional_schedule_hint({
             "result": "success",
             "claimed_count": 0,
             "boundary": boundary,
             "next_time": next_time,
             "message": f"{DANDAO_TASK_REWARDS_LABEL}：当前无可领奖励；下次 {next_time}",
-        }
+        })
 
     scene = yield from open_resource_rank_activity_page(
         runtime,
@@ -185,7 +193,7 @@ def run_dandao_task_rewards_flow(
     except (InterruptedError, GeneratorExit):
         raise
     except Exception as exc:
-        return {
+        return result_with_optional_schedule_hint({
             "result": "success",
             "current_scene": DANDAO_TASK_REWARDS_SCENE_ID,
             "claimed_count": len(claimed_ids),
@@ -195,8 +203,8 @@ def run_dandao_task_rewards_flow(
                 f"{DANDAO_TASK_REWARDS_LABEL}：QuestMgr 已确认领取 {len(claimed_ids)} 档；"
                 f"离场告警 {type(exc).__name__}: {exc}；下次 {next_time}"
             ),
-        }
-    return {
+        })
+    return result_with_optional_schedule_hint({
         "result": "success",
         "current_scene": 34,
         "claimed_count": len(claimed_ids),
@@ -206,7 +214,7 @@ def run_dandao_task_rewards_flow(
             f"{DANDAO_TASK_REWARDS_LABEL}：QuestMgr 已确认领取 {len(claimed_ids)} 档；"
             f"下次 {next_time}"
         ),
-    }
+    })
 
 
 class DandaoTaskRewardsTaskMixin:
@@ -223,6 +231,8 @@ class DandaoTaskRewardsTaskMixin:
                 yield from run_dandao_task_rewards_flow(
                     runtime,
                     max_claims=int(options.get("max_claims") or 20),
+                    manage_schedule=False,
+                    include_schedule_hint=False,
                 )
             )
 

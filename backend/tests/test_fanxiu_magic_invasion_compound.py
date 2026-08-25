@@ -183,7 +183,7 @@ def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
         )
 
 
-def test_compound_resume_supplies_only_unconfirmed_batches(monkeypatch) -> None:
+def test_compound_ignores_legacy_scheduler_progress_payload(monkeypatch) -> None:
     events = []
     runner = _Runner(events)
     monkeypatch.setattr(
@@ -204,20 +204,18 @@ def test_compound_resume_supplies_only_unconfirmed_batches(monkeypatch) -> None:
         return {"status": "already_sufficient", "tianyan_after": 1000}
 
     def explore(_runner, _ctx, explore_payload, _stop, **kwargs):
-        progress = explore_payload["magic_invasion_progress"]
         events.append(
             (
                 "explore",
                 kwargs["manage_schedule"],
-                progress["base_explore_count"],
-                len(progress["confirmed_batches"]),
+                "magic_invasion_progress" in explore_payload,
             )
         )
         yield None
         return {
             "result": "success",
             "progress": {
-                **progress,
+                "occurrence_id": "8070001400004",
                 "state": "complete",
                 "base_explore_count": 1500,
                 "confirmed_batches": [{}, {}, {}],
@@ -236,6 +234,16 @@ def test_compound_resume_supplies_only_unconfirmed_batches(monkeypatch) -> None:
     )
     monkeypatch.setattr(compound, "ensure_magic_tianyan_supply", supply)
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
+    monkeypatch.setattr(
+        compound,
+        "load_magic_invasion_occurrence_progress",
+        lambda _occurrence: {
+            "occurrence_id": "8070001400004",
+            "state": "ready",
+            "base_explore_count": 0,
+            "confirmed_batches": [],
+        },
+    )
     payload = {
         "magic_invasion_progress": {
             "occurrence_id": "8070001400004",
@@ -256,14 +264,21 @@ def test_compound_resume_supplies_only_unconfirmed_batches(monkeypatch) -> None:
     )
 
     assert result["status"] == "completed"
-    assert ("supply", 1000) in events
-    assert ("explore", False, 500, 1) in events
+    assert ("supply", 1500) in events
+    assert ("explore", False, False) in events
 
 
-def test_armed_exploration_blocks_before_any_optional_action() -> None:
+def test_occurrence_evidence_blocks_before_any_optional_action(monkeypatch) -> None:
     events = []
     runner = _Runner(events)
-    with pytest.raises(RuntimeError, match="未确认"):
+    monkeypatch.setattr(
+        compound,
+        "load_magic_invasion_occurrence_progress",
+        lambda _occurrence: (_ for _ in ()).throw(
+            RuntimeError("魔道入侵上一 attempt 留有未闭合不可逆证据")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="未闭合不可逆证据"):
         _finish(
             compound.execute_magic_invasion_compound_checkpoint(
                 runner,

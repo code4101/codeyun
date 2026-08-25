@@ -203,6 +203,43 @@ def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated()
     assert rerun == migrated
 
 
+def test_scheduler_migration_normalizes_existing_canonical_ranking_labels():
+    migrated, changed = consolidate_arena_scheduler_instances([
+        {
+            "id": "ranking-lifecycle",
+            "task_type": "old-type",
+            "label": "旧玩法名",
+            "template_id": "old-template",
+            "template_label": "旧模板名",
+            "next_time": "2026-08-22 00:30:00",
+            "payload": {},
+        },
+        {
+            "id": "resource-ranking",
+            "task_type": "old-resource-type",
+            "label": "旧资源名",
+            "template_id": "old-resource-template",
+            "template_label": "旧资源模板名",
+            "next_time": "2026-08-22 00:30:00",
+            "payload": {},
+        },
+    ])
+    assert changed is True
+    by_id = {item["id"]: item for item in migrated}
+    assert (
+        by_id["ranking-lifecycle"]["task_type"],
+        by_id["ranking-lifecycle"]["label"],
+        by_id["ranking-lifecycle"]["template_id"],
+        by_id["ranking-lifecycle"]["template_label"],
+    ) == ("ranking_lifecycle", "玩法榜", "ranking_lifecycle", "玩法榜")
+    assert (
+        by_id["resource-ranking"]["task_type"],
+        by_id["resource-ranking"]["label"],
+        by_id["resource-ranking"]["template_id"],
+        by_id["resource-ranking"]["template_label"],
+    ) == ("resource_ranking", "资源榜", "resource_ranking", "资源榜")
+
+
 def test_arena_next_time_switches_between_sunday_and_weekday_rules():
     saturday_end = datetime(2026, 8, 1, 23, 59, 59)
     sunday_end = datetime(2026, 8, 2, 23, 59, 59)
