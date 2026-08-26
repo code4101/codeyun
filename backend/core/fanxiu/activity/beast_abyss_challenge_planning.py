@@ -230,8 +230,8 @@ def plan_beast_abyss_challenge_once(
     snapshot: BeastAbyssResourceLedger,
     measurement: BeastAbyssBatchMeasurement,
     *,
-    stage8_new_currency: int,
-    stage9_new_currency: int,
+    other_discount_new_currency: int,
+    closing_goods_new_currency: int,
     explore_item_automatic: int,
     challenge_item_automatic: int = 0,
     hierarchy_consume: int = 1,
@@ -275,23 +275,23 @@ def plan_beast_abyss_challenge_once(
             return 0
         return ceil(Fraction(currency, 1) / measurement.currency_per_explore)
 
-    stage9_explores = explores_for(stage9_new_currency)
-    stage8_explores = explores_for(stage8_new_currency)
-    if stage9_explores <= resource_capacity:
-        tier = "stage9"
-        target_currency = max(0, stage9_new_currency)
-        requested = stage9_explores
-        reason = "当前三账本按测速上界可覆盖第9层"
-    elif stage8_explores <= resource_capacity:
-        tier = "stage8"
-        target_currency = max(0, stage8_new_currency)
-        requested = stage8_explores
-        reason = "资源不足覆盖第9层，按固定顺序完成第8层"
+    closing_goods_explores = explores_for(closing_goods_new_currency)
+    other_discount_explores = explores_for(other_discount_new_currency)
+    if closing_goods_explores <= resource_capacity:
+        tier = "收尾道具"
+        target_currency = max(0, closing_goods_new_currency)
+        requested = closing_goods_explores
+        reason = "当前三账本按测速上界可覆盖收尾道具"
+    elif other_discount_explores <= resource_capacity:
+        tier = "其他折扣"
+        target_currency = max(0, other_discount_new_currency)
+        requested = other_discount_explores
+        reason = "资源不足覆盖收尾道具，按固定顺序完成其他折扣"
     else:
-        tier = "approach_stage8"
-        target_currency = max(0, stage8_new_currency)
+        tier = "尽量接近其他折扣"
+        target_currency = max(0, other_discount_new_currency)
         requested = resource_capacity
-        reason = "资源不足覆盖第8层，使用一次性安全容量尽可能接近"
+        reason = "资源不足覆盖其他折扣，使用一次性安全容量尽可能接近"
     estimated = floor(measurement.currency_per_explore * requested)
     return BeastAbyssChallengePlan(
         target_tier=tier,

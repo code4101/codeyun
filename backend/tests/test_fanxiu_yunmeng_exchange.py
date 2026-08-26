@@ -157,7 +157,7 @@ def test_each_yunmeng_period_replans_its_dynamic_goods_without_legacy_state() ->
         assert detail.exchange_plan["observed_item_universe_count"] == 3
 
 
-def test_yunmeng_stage9_uses_purchase_balance_history_and_freshness() -> None:
+def test_yunmeng_closing_goods_budget_uses_purchase_balance_history_and_freshness() -> None:
     with _session() as session:
         activity_id = upsert_exchange_activity_snapshot(
             session,
@@ -185,7 +185,7 @@ def test_yunmeng_stage9_uses_purchase_balance_history_and_freshness() -> None:
 
         assert detail is not None
         assert detail.budget_ready is True
-        assert detail.exchange_plan["stage9_budget"] == {
+        assert detail.exchange_plan["target_budgets"]["收尾道具"] == {
             "target_total_tokens": 1000,
             "target_remaining_tokens": 600,
             "current_currency": 300,

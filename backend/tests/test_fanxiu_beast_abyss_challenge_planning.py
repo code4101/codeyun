@@ -181,7 +181,7 @@ def test_measurement_rejects_changed_shop_or_hierarchy() -> None:
         )
 
 
-def test_one_shot_plan_prefers_stage9_then_stage8_then_approach() -> None:
+def test_one_shot_plan_prefers_closing_then_other_discount_then_approach() -> None:
     measurement = measure_beast_abyss_batch(
         _ledger(),
         _ledger(
@@ -193,24 +193,24 @@ def test_one_shot_plan_prefers_stage9_then_stage8_then_approach() -> None:
         completed_explores=10,
         duration_seconds=8,
     )
-    stage8 = plan_beast_abyss_challenge_once(
+    other_discount = plan_beast_abyss_challenge_once(
         _ledger(challenge_points=600),
         measurement,
-        stage8_new_currency=142_526,
-        stage9_new_currency=274_526,
+        other_discount_new_currency=142_526,
+        closing_goods_new_currency=274_526,
         explore_item_automatic=4,
     )
     approach = plan_beast_abyss_challenge_once(
         _ledger(challenge_points=60),
         measurement,
-        stage8_new_currency=142_526,
-        stage9_new_currency=274_526,
+        other_discount_new_currency=142_526,
+        closing_goods_new_currency=274_526,
         explore_item_automatic=4,
     )
 
-    assert stage8.target_tier == "stage8"
-    assert stage8.requested_explores == 476
-    assert approach.target_tier == "approach_stage8"
+    assert other_discount.target_tier == "其他折扣"
+    assert other_discount.requested_explores == 476
+    assert approach.target_tier == "尽量接近其他折扣"
     assert approach.requested_explores == 80
 
 
@@ -225,8 +225,8 @@ def test_zero_challenge_sample_does_not_infer_infinite_capacity() -> None:
     plan = plan_beast_abyss_challenge_once(
         _ledger(),
         measurement,
-        stage8_new_currency=142_526,
-        stage9_new_currency=274_526,
+        other_discount_new_currency=142_526,
+        closing_goods_new_currency=274_526,
         explore_item_automatic=4,
     )
 
@@ -247,7 +247,7 @@ def test_one_shot_plan_rejects_stale_shop_snapshot() -> None:
         plan_beast_abyss_challenge_once(
             _ledger(shop_snapshot_key="shop:new"),
             measurement,
-            stage8_new_currency=142_526,
-            stage9_new_currency=274_526,
+            other_discount_new_currency=142_526,
+            closing_goods_new_currency=274_526,
             explore_item_automatic=4,
         )

@@ -11,7 +11,7 @@ from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
     YunmengNativeAutoAssets,
     YunmengNativeAutoRequest,
     _set_count,
-    _validated_stage9_budget,
+    _validated_closing_goods_budget,
     classify_yunmeng_auto_terminal,
     plan_yunmeng_native_batch,
     run_yunmeng_native_auto,
@@ -747,9 +747,11 @@ def _activity_detail(**overrides):
         "exchange_plan": {
             "budget_ready": True,
             "budget_block_reason": "",
-            "stage9_budget": {
-                "target_total_tokens": 480_000,
-                "target_remaining_tokens": 80_000,
+            "target_budgets": {
+                "收尾道具": {
+                    "target_total_tokens": 480_000,
+                    "target_remaining_tokens": 80_000,
+                },
             },
         },
     }
@@ -757,8 +759,8 @@ def _activity_detail(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_stage9_budget_accepts_collectors_dict_plan_as_latest_authority():
-    assert _validated_stage9_budget(
+def test_closing_goods_budget_accepts_collectors_dict_plan_as_latest_authority():
+    assert _validated_closing_goods_budget(
         _activity_detail(),
         expected_activity_id="activity-1",
         context="批后",
@@ -785,19 +787,19 @@ def test_stage9_budget_accepts_collectors_dict_plan_as_latest_authority():
             {
                 "exchange_plan": {
                     "budget_ready": True,
-                    "stage9_budget": {"target_total_tokens": 0},
+                    "target_budgets": {"收尾道具": {"target_total_tokens": 0}},
                 }
             },
             "目标金额",
         ),
     ],
 )
-def test_stage9_budget_fails_closed_when_latest_collect_result_is_unsafe(
+def test_closing_goods_budget_fails_closed_when_latest_collect_result_is_unsafe(
     overrides,
     message,
 ):
     with pytest.raises(RuntimeError, match=message):
-        _validated_stage9_budget(
+        _validated_closing_goods_budget(
             _activity_detail(**overrides),
             expected_activity_id="activity-1",
             context="批后",

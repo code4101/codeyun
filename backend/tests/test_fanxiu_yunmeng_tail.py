@@ -91,7 +91,7 @@ def _item(
     )
 
 
-def _detail(*, stage9_gap: int, next_prayer: str | None = None):
+def _detail(*, closing_goods_gap: int, next_prayer: str | None = None):
     items = [
         _item(1, "下周祈愿", 1, 10),
         _item(2, "普通锁定", 2, 20),
@@ -105,32 +105,34 @@ def _detail(*, stage9_gap: int, next_prayer: str | None = None):
             "budget_ready": True,
             "ordered_goods_ids": [3, 1, 2],
             "locked_goods_ids": locked,
-            "stage9_budget": {"required_new_currency": stage9_gap},
+            "target_budgets": {
+                "收尾道具": {"required_new_currency": closing_goods_gap}
+            },
             "card_mail_resource": "普通锁定",
             "next_prayer_resource": next_prayer,
         },
     )
 
 
-def test_stage9_keeps_ordinary_mail_lock() -> None:
+def test_closing_goods_complete_keeps_ordinary_mail_lock() -> None:
     purchases, retained, facts = plan_yunmeng_tail_purchases(
-        _detail(stage9_gap=0), run_date=date(2026, 8, 15)
+        _detail(closing_goods_gap=0), run_date=date(2026, 8, 15)
     )
 
     assert retained == {2}
     assert [row.goods_id for row in purchases] == [3, 1]
-    assert facts["stage9_reached"] is True
+    assert facts["closing_goods_reached"] is True
 
 
-def test_stage8_unlocks_ordinary_lock_and_monday_unlocks_prayer_lock() -> None:
+def test_incomplete_closing_goods_unlocks_ordinary_and_monday_prayer_locks() -> None:
     purchases, retained, facts = plan_yunmeng_tail_purchases(
-        _detail(stage9_gap=1, next_prayer="下周祈愿"),
+        _detail(closing_goods_gap=1, next_prayer="下周祈愿"),
         run_date=date(2026, 8, 17),
     )
 
     assert retained == set()
     assert [row.goods_id for row in purchases] == [3, 1, 2]
-    assert facts["stage9_reached"] is False
+    assert facts["closing_goods_reached"] is False
 
 
 def test_buying_to_limit_uses_plus_ten_cap_instead_of_single_steps() -> None:
@@ -152,7 +154,7 @@ def test_theory_priority_allocates_budget_but_physical_order_executes_once() -> 
             "budget_ready": True,
             "ordered_goods_ids": [2, 1],
             "locked_goods_ids": [],
-            "stage9_budget": {"required_new_currency": 1},
+            "target_budgets": {"收尾道具": {"required_new_currency": 1}},
             "card_mail_resource": "",
             "next_prayer_resource": "",
         },
@@ -240,7 +242,7 @@ def test_terminal_reserved_wallet_does_not_rebuy_unlimited_rows() -> None:
             "budget_ready": True,
             "ordered_goods_ids": [2, 3, 1],
             "locked_goods_ids": [1],
-            "stage9_budget": {"required_new_currency": 0},
+            "target_budgets": {"收尾道具": {"required_new_currency": 0}},
             "card_mail_resource": "卡邮件资源",
             "next_prayer_resource": "",
         },
@@ -282,7 +284,7 @@ def test_completion_floor_is_derived_for_varying_balances_and_lock_remainders() 
                     "budget_ready": True,
                     "ordered_goods_ids": [2, 3, 1],
                     "locked_goods_ids": [1],
-                    "stage9_budget": {"required_new_currency": 0},
+                    "target_budgets": {"收尾道具": {"required_new_currency": 0}},
                     "card_mail_resource": "动态卡邮件资源",
                     "next_prayer_resource": "",
                 },

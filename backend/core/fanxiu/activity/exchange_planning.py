@@ -184,13 +184,13 @@ def plan_available_attempts(
     ideal_needed = int(ideal or 0)
     fallback_needed = int(fallback or 0)
     if ideal_needed <= available:
-        target_level = "stage9"
+        target_level = "收尾道具"
         planned = ideal_needed
     elif fallback_needed <= available:
-        target_level = "stage8"
+        target_level = "其他折扣"
         planned = available
     else:
-        target_level = "approach_stage8"
+        target_level = "尽量接近其他折扣"
         planned = available
     return ExchangeTargetBudget(
         ideal_target_currency=int(ideal_target_currency),

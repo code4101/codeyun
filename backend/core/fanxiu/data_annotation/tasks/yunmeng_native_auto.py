@@ -149,7 +149,7 @@ def _mapping_value(value: Any) -> dict[str, Any]:
     raise RuntimeError(f"云梦试剑：无法读取兑换计划：{type(value).__name__}")
 
 
-def _validated_stage9_budget(
+def _validated_closing_goods_budget(
     detail: Any,
     *,
     expected_activity_id: str,
@@ -167,19 +167,20 @@ def _validated_stage9_budget(
         raise RuntimeError(f"云梦试剑：{context}活动已不在有效期")
     if not bool(getattr(detail, "budget_ready", False)):
         reason = str(getattr(detail, "budget_block_reason", "") or "原因未知")
-        raise RuntimeError(f"云梦试剑：{context}第9档预算 freshness 门禁失效：{reason}")
+        raise RuntimeError(f"云梦试剑：{context}收尾道具预算 freshness 门禁失效：{reason}")
 
     plan = _mapping_value(getattr(detail, "exchange_plan", None))
     if not bool(plan.get("budget_ready")):
         raise RuntimeError(
-            f"云梦试剑：{context}第9档预算 freshness 门禁失效："
+            f"云梦试剑：{context}收尾道具预算 freshness 门禁失效："
             f"{plan.get('budget_block_reason') or '原因未知'}"
         )
-    stage9 = _mapping_value(plan.get("stage9_budget"))
-    target_total_tokens = int(stage9.get("target_total_tokens") or 0)
-    target_remaining_tokens = int(stage9.get("target_remaining_tokens") or 0)
+    target_budgets = _mapping_value(plan.get("target_budgets"))
+    closing_goods = _mapping_value(target_budgets.get("收尾道具"))
+    target_total_tokens = int(closing_goods.get("target_total_tokens") or 0)
+    target_remaining_tokens = int(closing_goods.get("target_remaining_tokens") or 0)
     if target_total_tokens <= 0 or target_remaining_tokens < 0:
-        raise RuntimeError(f"云梦试剑：{context}第9档预算缺少有效的当期目标金额")
+        raise RuntimeError(f"云梦试剑：{context}收尾道具预算缺少有效的当期目标金额")
     return target_total_tokens, target_remaining_tokens
 
 
@@ -994,7 +995,7 @@ def execute_yunmeng_native_auto_job(
             activity_type="yunmeng-trial",
             activity_id=activity_id,
         ).selected_activity
-        target_total_tokens, target_remaining_tokens = _validated_stage9_budget(
+        target_total_tokens, target_remaining_tokens = _validated_closing_goods_budget(
             detail,
             expected_activity_id=activity_id,
             context="执行前",
@@ -1018,7 +1019,7 @@ def execute_yunmeng_native_auto_job(
     if fresh_gap.required_new_currency == 0:
         return {
             "result": "success",
-            "message": "云梦试剑第9档绝对钱包预算已经满足，无需重复挑战",
+            "message": "云梦试剑收尾道具绝对钱包预算已经满足，无需重复挑战",
             "activity_id": activity_id,
             "current_currency": wallet_before["exchange_currency"],
             "cumulative_currency": wallet_before["cumulative_currency"],
@@ -1186,7 +1187,7 @@ def execute_yunmeng_native_auto_job(
 
                 try:
                     target_total_tokens, target_remaining_tokens = (
-                        _validated_stage9_budget(
+                        _validated_closing_goods_budget(
                             latest_detail,
                             expected_activity_id=activity_id,
                             context="批后",
@@ -1221,7 +1222,7 @@ def execute_yunmeng_native_auto_job(
     return {
         "result": "success" if reached else "incomplete",
         "message": (
-            f"云梦试剑第9档已满足，共完成 {total_challenges} 次有界挑战并归位 #34"
+            f"云梦试剑收尾道具已满足，共完成 {total_challenges} 次有界挑战并归位 #34"
             if reached
             else (
                 f"云梦试剑已完成受限的 {total_challenges} 次挑战并归位 #34，"

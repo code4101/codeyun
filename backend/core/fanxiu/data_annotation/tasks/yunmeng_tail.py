@@ -81,8 +81,11 @@ def plan_exchange_tail_purchases(
     if not ordered_ids or any(goods_id not in rows for goods_id in ordered_ids):
         raise RuntimeError(f"{label}：兑换优先级与本期 Runtime 商品集合不一致")
 
-    stage9_budget = dict(plan.get("stage9_budget") or {})
-    stage9_reached = int(stage9_budget.get("required_new_currency") or 0) == 0
+    target_budgets = dict(plan.get("target_budgets") or {})
+    closing_goods_budget = dict(target_budgets.get("收尾道具") or {})
+    closing_goods_reached = (
+        int(closing_goods_budget.get("required_new_currency") or 0) == 0
+    )
     card_name = str(plan.get("card_mail_resource") or "")
     prayer_name = str(plan.get("next_prayer_resource") or "")
     original_locked = {int(value) for value in plan.get("locked_goods_ids") or []}
@@ -96,7 +99,7 @@ def plan_exchange_tail_purchases(
             if run_date.weekday() != 0:
                 retained_locked.add(goods_id)
         elif card_name and name == card_name:
-            if stage9_reached:
+            if closing_goods_reached:
                 retained_locked.add(goods_id)
         else:
             raise RuntimeError(f"{label}：发现未分类锁定商品 {goods_id}/{name}")
@@ -137,7 +140,7 @@ def plan_exchange_tail_purchases(
         )
         spendable -= quantity * price
     return purchases, retained_locked, {
-        "stage9_reached": stage9_reached,
+        "closing_goods_reached": closing_goods_reached,
         "retained_locked_goods_ids": sorted(retained_locked),
         "reserved_tokens": reserve,
         "planned_spend_tokens": int(detail.current_currency) - (spendable + reserve),

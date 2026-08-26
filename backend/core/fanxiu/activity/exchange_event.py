@@ -18,6 +18,7 @@ from backend.models import (
     FanxiuExchangeShopItem,
 )
 from backend.core.fanxiu.activity.exchange_shop_planner import (
+    ExchangePriorityId,
     build_exchange_shop_plan,
     exchange_shop_priority_policy,
 )
@@ -369,6 +370,8 @@ def list_exchange_activity_snapshot(
         ).all()
     )
     selected = next((row for row in activities if row.id == activity_id), None) if activity_id else (activities[0] if activities else None)
+    if selected is not None:
+        _ensure_exchange_shop_plan_current(session, selected)
     return ExchangeActivitySnapshot(
         activities=[_summary(row) for row in activities],
         selected_activity=_detail(session, selected) if selected else None,
@@ -435,6 +438,7 @@ def latest_exchange_activity_snapshot(
     ).first()
     if latest is None:
         return LatestExchangeActivitySnapshot()
+    _ensure_exchange_shop_plan_current(session, latest)
     return LatestExchangeActivitySnapshot(
         activity_type=latest.activity_type,
         snapshot=ExchangeActivitySnapshot(
@@ -512,6 +516,24 @@ def apply_exchange_shop_plan(
     return _detail(session, activity)
 
 
+def _ensure_exchange_shop_plan_current(
+    session: Session,
+    activity: FanxiuExchangeActivity,
+) -> None:
+    """Re-materialize stale policy output from persisted shop facts only."""
+
+    expected_schema = exchange_shop_priority_policy(activity.activity_type).schema
+    exchange_plan = dict((activity.evidence or {}).get("exchange_plan") or {})
+    if int(exchange_plan.get("schema") or 0) == expected_schema:
+        return
+    items = _items(session, activity.id)
+    if not items:
+        return
+    _persist_exchange_shop_plan(session, activity=activity, items=items)
+    session.commit()
+    session.refresh(activity)
+
+
 def _persist_exchange_shop_plan(
     session: Session,
     *,
@@ -579,15 +601,13 @@ def _persist_exchange_shop_plan(
             "溢出兑换": "玄灵丹·珍 > 玄灵丹·尚（不属于活动目标）",
         }
     )
-    if activity.activity_type == "xianyuan-duokui" and plan.front_discounted_goods_ids:
+    daier_ids = plan.priority_group_goods_ids[str(ExchangePriorityId.DAIER)]
+    if activity.activity_type == "xianyuan-duokui" and daier_ids:
         strategy["常规目标"] = "只生产足够兑换5折誓约·黛儿的1万夺魁灵玉；取得后停止"
-        strategy["条件目标"] = "仅用自然多出的兑币顺吃后续商品，不为通用第8/9层继续加打"
+        strategy["条件目标"] = "仅用自然多出的兑币顺吃后续商品，不为其他折扣或收尾道具继续加打"
     else:
-        strategy.setdefault(
-            "常规目标",
-            "完成至各功法最低折扣轮次及其余折扣条目（第8层）",
-        )
-        strategy.setdefault("条件目标", "有条件完成全部限购物品（第9层）")
+        strategy.setdefault("常规目标", "尽量完成到其他折扣")
+        strategy.setdefault("条件目标", "有条件完成到收尾道具")
     activity.resource_strategy = strategy
     evidence = dict(activity.evidence or {})
     refresh_status = evidence.get("refresh_status")
@@ -620,81 +640,81 @@ def _persist_exchange_shop_plan(
         shop_fresh = True
         budget_ready = True
         budget_block_reason = ""
-    stage8_gap = calculate_exchange_currency_gap(
-        target_total_tokens=plan.stage8_total_tokens,
-        target_remaining_tokens=plan.stage8_remaining_tokens,
+    other_discount_id = str(ExchangePriorityId.OTHER_DISCOUNT)
+    closing_goods_id = str(ExchangePriorityId.CLOSING_GOODS)
+    daier_id = str(ExchangePriorityId.DAIER)
+    other_discount_gap = calculate_exchange_currency_gap(
+        target_total_tokens=plan.target_total_tokens[other_discount_id],
+        target_remaining_tokens=plan.target_remaining_tokens[other_discount_id],
         current_currency=activity.current_currency,
         cumulative_currency=activity.cumulative_currency,
     )
-    stage9_gap = calculate_exchange_currency_gap(
-        target_total_tokens=plan.stage9_total_tokens,
-        target_remaining_tokens=plan.stage9_remaining_tokens,
+    closing_goods_gap = calculate_exchange_currency_gap(
+        target_total_tokens=plan.target_total_tokens[closing_goods_id],
+        target_remaining_tokens=plan.target_remaining_tokens[closing_goods_id],
         current_currency=activity.current_currency,
         cumulative_currency=activity.cumulative_currency,
     )
     economical_uses_front_discount = bool(
         activity.activity_type == "xianyuan-duokui"
-        and plan.front_discounted_goods_ids
+        and daier_ids
     )
+    economical_target_id = daier_id if economical_uses_front_discount else other_discount_id
     economical_gap = calculate_exchange_currency_gap(
-        target_total_tokens=(
-            plan.front_discounted_total_tokens
-            if economical_uses_front_discount
-            else plan.stage8_total_tokens
-        ),
-        target_remaining_tokens=(
-            plan.front_discounted_remaining_tokens
-            if economical_uses_front_discount
-            else plan.stage8_remaining_tokens
-        ),
+        target_total_tokens=plan.target_total_tokens[economical_target_id],
+        target_remaining_tokens=plan.target_remaining_tokens[economical_target_id],
         current_currency=activity.current_currency,
         cumulative_currency=activity.cumulative_currency,
     )
     locked_reserve_funded = (
         int(activity.current_currency) >= int(plan.locked_reserved_tokens)
     )
-    stage9_goal_complete = bool(
+    closing_goods_goal_complete = bool(
         budget_ready
-        and plan.stage9_complete
+        and plan.closing_goods_items_complete
         and locked_reserve_funded
-        and int(activity.cumulative_currency) >= int(plan.stage9_total_tokens)
+        and int(activity.cumulative_currency)
+        >= int(plan.target_total_tokens[closing_goods_id])
     )
     evidence["exchange_plan"] = {
         "schema": plan.policy_schema,
+        "priority_order_ids": list(plan.priority_order_ids),
+        "priority_group_goods_ids": {
+            key: list(value) for key, value in plan.priority_group_goods_ids.items()
+        },
         "ordered_goods_ids": list(plan.ordered_goods_ids),
         "locked_goods_ids": list(plan.locked_goods_ids),
         "current_prayer_cycle": plan.current_prayer_cycle,
         "current_prayer_resource": plan.current_prayer_resource,
         "planning_date": plan.planning_date,
-        "shop_close_at": plan.shop_close_at,
-        "weekly_rollover_at": plan.weekly_rollover_at,
-        "shop_closes_after_weekly_rollover": (
-            plan.shop_closes_after_weekly_rollover
+        "activity_page_close_at": plan.activity_page_close_at,
+        "next_prayer_cutoff_at": plan.next_prayer_cutoff_at,
+        "activity_page_closes_after_next_prayer_cutoff": (
+            plan.activity_page_closes_after_next_prayer_cutoff
         ),
         "next_prayer_resource": plan.next_prayer_resource,
         "card_mail_resource": plan.card_mail_resource,
         "card_mail_reserved_tokens": plan.card_mail_reserved_tokens,
         "locked_reserved_tokens": plan.locked_reserved_tokens,
-        "front_discounted_goods_ids": list(plan.front_discounted_goods_ids),
-        "economical_target": (
-            "front_discounted" if economical_uses_front_discount else "stage8"
-        ),
+        "economical_target_id": economical_target_id,
         "economical_budget": asdict(economical_gap),
-        "discounted_book_goods_ids": list(plan.discounted_book_goods_ids),
-        "stage8_goods_ids": list(plan.stage8_goods_ids),
-        "stage9_goods_ids": list(plan.stage9_goods_ids),
-        "stage8_budget": asdict(stage8_gap),
-        "stage9_budget": asdict(stage9_gap),
+        "target_goods_ids": {
+            key: list(value) for key, value in plan.target_goods_ids.items()
+        },
+        "target_budgets": {
+            other_discount_id: asdict(other_discount_gap),
+            closing_goods_id: asdict(closing_goods_gap),
+        },
         "budget_ready": budget_ready,
         "budget_block_reason": budget_block_reason,
         "currency_fact_fresh": currency_fresh,
         "shop_fact_fresh": shop_fresh,
-        "stage9_items_complete": plan.stage9_complete,
+        "closing_goods_items_complete": plan.closing_goods_items_complete,
         "locked_reserve_funded": locked_reserve_funded,
-        "stage9_complete": stage9_goal_complete,
+        "closing_goods_complete": closing_goods_goal_complete,
         "card_mail_close_action": (
             "leave_for_mail"
-            if stage9_goal_complete and plan.card_mail_resource
+            if closing_goods_goal_complete and plan.card_mail_resource
             else "redeem_during_grace_period"
         ),
         "observed_item_universe_count": len(universe),
