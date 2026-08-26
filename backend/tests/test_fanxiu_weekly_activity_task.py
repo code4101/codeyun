@@ -59,6 +59,9 @@ class _Runtime:
     def click_frame_point(self, scene_id: int, x: float, y: float) -> None:
         self.actions.append(("click_point", scene_id, x, y))
 
+    def drag_frame_point(self, scene_id: int, x1: float, y1: float, x2: float, y2: float, *, duration_ms: int) -> None:
+        self.actions.append(("drag", scene_id, x1, y1, x2, y2, duration_ms))
+
     def wait_action_settle(self, seconds: float):
         self.actions.append(("settle", seconds))
         if False:
@@ -211,6 +214,45 @@ def test_weekly_activity_at_threshold_claims_only_proven_tier_and_verifies_green
     assert runtime.full_frame_ocr_calls == 3
 
 
+def test_weekly_activity_rechecks_transient_unknown_after_claim_without_clicking_twice(monkeypatch) -> None:
+    monkeypatch.setattr(behavior_tree_runtime, "_now", lambda: datetime(2026, 7, 23, 0, 5))
+    snapshots = [
+        {
+            milestone: {
+                "state": "claimable" if milestone == 2400 else "claimed",
+                "point": (float(milestone), 270.0),
+            }
+            for milestone in daily_foundation.WEEKLY_ACTIVITY_REWARD_MILESTONES
+        },
+        {
+            milestone: {"state": "claimed", "point": (float(milestone), 270.0)}
+            for milestone in daily_foundation.WEEKLY_ACTIVITY_REWARD_MILESTONES
+        },
+    ]
+    monkeypatch.setattr(
+        daily_foundation,
+        "detect_weekly_activity_reward_states",
+        lambda _frame, _layout: snapshots.pop(0),
+    )
+    runtime_snapshots = [
+        _weekly_snapshot(claimed=set(daily_foundation.WEEKLY_ACTIVITY_REWARD_MILESTONES) - {2400}),
+        _weekly_snapshot(claimed=set(daily_foundation.WEEKLY_ACTIVITY_REWARD_MILESTONES)),
+    ]
+    monkeypatch.setattr(
+        daily_foundation,
+        "read_weekly_activity_runtime_snapshot",
+        lambda: runtime_snapshots.pop(0),
+    )
+    runtime = _Runtime(scenes=[402, None, 402], ocr_results=[([2400], "2400")])
+
+    result = _run(_Runner().weekly_activity_flow(runtime))
+
+    claim_clicks = [action for action in runtime.actions if action[0] == "click_point"]
+    assert result["result"] == "success"
+    assert claim_clicks == [("click_point", 402, 2400.0, 270.0)]
+    assert ("settle", 0.4) in runtime.actions
+
+
 def test_weekly_activity_all_claimed_is_zero_click_idempotent(monkeypatch) -> None:
     monkeypatch.setattr(behavior_tree_runtime, "_now", lambda: datetime(2026, 7, 23, 0, 5))
     monkeypatch.setattr(
@@ -260,7 +302,7 @@ def test_weekly_activity_unknown_eligible_tier_fails_closed(monkeypatch) -> None
     assert not any(action[0] == "click_point" for action in runtime.actions)
 
 
-def test_weekly_activity_invisible_runtime_claimable_tier_fails_closed(monkeypatch) -> None:
+def test_weekly_activity_invisible_runtime_claimable_tier_requires_scroll_progress(monkeypatch) -> None:
     monkeypatch.setattr(behavior_tree_runtime, "_now", lambda: datetime(2026, 7, 23, 0, 5))
     monkeypatch.setattr(
         daily_foundation,
@@ -271,7 +313,7 @@ def test_weekly_activity_invisible_runtime_claimable_tier_fails_closed(monkeypat
         },
     )
     runtime = _Runtime(
-        scenes=[402],
+        scenes=[402, 402],
         ocr_results=[([2400], "2400")],
         reward_tokens=[
             {"text": "1600", "x": 344.0, "y": 348.0, "w": 54.0, "h": 25.0},
@@ -285,11 +327,11 @@ def test_weekly_activity_invisible_runtime_claimable_tier_fails_closed(monkeypat
         lambda: _weekly_snapshot(claimed={1600, 2000, 2400}),
     )
 
-    with pytest.raises(RuntimeError, match=r"Runtime 可领档 \[400, 600, 800, 1200\].*拒绝猜滑动"):
+    with pytest.raises(RuntimeError, match=r"横向滚动后可见档位未推进"):
         _run(_Runner().weekly_activity_flow(runtime))
 
     assert runtime.next_times == []
-    assert not any(action[0] == "click_point" for action in runtime.actions)
+    assert any(action[0] == "drag" for action in runtime.actions)
 
 
 def test_weekly_activity_visual_classifier_distinguishes_claimed_claimable_and_unknown() -> None:

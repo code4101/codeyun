@@ -13,6 +13,7 @@ from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
     _group_ocr_tokens,
 )
 from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import (
+    _ocr_contains_amount,
     _detail_matches,
     plan_exchange_tail_purchases,
     plan_yunmeng_tail_physical_actions,
@@ -35,34 +36,73 @@ def read_xianyuan_shop_wallet_from_ocr(runtime: Any, *, update: bool = True) -> 
     """Read the two exact activity-local counters from the open shop header."""
 
     lines = _group_ocr_tokens(runtime.full_frame_ocr_tokens(update=update))
-    current: list[int] = []
-    cumulative: list[int] = []
-    for line in lines:
-        text = _compact(line.get("text"))
-        current_match = re.search(r"当前拥有夺魁灵玉(\d+)$", text)
-        cumulative_match = re.search(r"活动期间累计夺魁灵玉(\d+)$", text)
-        if current_match:
-            current.append(int(current_match.group(1)))
-        if cumulative_match:
-            cumulative.append(int(cumulative_match.group(1)))
-    if len(current) != 1 or len(cumulative) != 1:
+    numeric_lines = [
+        line
+        for line in lines
+        if re.fullmatch(r"\d+", _compact(line.get("text")))
+    ]
+
+    def amount_after(label: str) -> int:
+        inline = []
+        for line in lines:
+            text = _compact(line.get("text"))
+            match = re.fullmatch(re.escape(label) + r"(\d+)", text)
+            if match:
+                inline.append(int(match.group(1)))
+        if len(inline) == 1:
+            return inline[0]
+        if len(inline) > 1:
+            raise RuntimeError(f"{label}同行合并数值命中数为 {len(inline)}")
+        labels = [line for line in lines if _compact(line.get("text")) == label]
+        if len(labels) != 1:
+            raise RuntimeError(f"{label}命中数为 {len(labels)}")
+        row = labels[0]
+        center_y = float(row.get("y") or 0) + float(row.get("h") or 0) / 2
+        right = float(row.get("x") or 0) + float(row.get("w") or 0)
+        candidates = [
+            line
+            for line in numeric_lines
+            if float(line.get("x") or 0) >= right - 8
+            and abs(
+                float(line.get("y") or 0)
+                + float(line.get("h") or 0) / 2
+                - center_y
+            ) <= 24
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(f"{label}同行数值命中数为 {len(candidates)}")
+        return int(_compact(candidates[0].get("text")))
+
+    try:
+        current = amount_after("当前拥有夺魁灵玉")
+        cumulative = amount_after("活动期间累计夺魁灵玉")
+        if current < 0 or cumulative < 0 or current > cumulative:
+            raise RuntimeError(f"钱包数值不满足 0 <= 当前 {current} <= 累计 {cumulative}")
+    except RuntimeError as exc:
         visible = " | ".join(_compact(line.get("text")) for line in lines)
-        raise RuntimeError(f"仙缘_兑换收尾：钱包标题未唯一对齐：{visible[:1000]}")
-    return current[0], cumulative[0]
+        raise RuntimeError(
+            f"仙缘_兑换收尾：钱包标题未唯一对齐：{exc}；{visible[:1000]}"
+        ) from exc
+    return current, cumulative
 
 
 def _shop_ready(runtime: Any, *, attempts: int = 20, fail_if_missing: bool = True):
     last = ""
+    previous: tuple[int, int] | None = None
     for _ in range(max(1, int(attempts))):
         try:
-            read_xianyuan_shop_wallet_from_ocr(runtime, update=True)
-            return True
+            wallet = read_xianyuan_shop_wallet_from_ocr(runtime, update=True)
+            if wallet == previous:
+                return wallet
+            previous = wallet
+            last = f"仙缘_兑换收尾：钱包等候连续两帧一致，当前 {wallet}"
         except RuntimeError as exc:
             last = str(exc)
+            previous = None
         yield from runtime.wait_action_settle(1.0)
     if fail_if_missing:
         raise RuntimeError(last or "仙缘_兑换收尾：兑换宝阁未就绪")
-    return False
+    return None
 
 
 def _open_exchange_tab(runtime: Any, scene: int) -> None:
@@ -74,6 +114,47 @@ def _open_exchange_tab(runtime: Any, scene: int) -> None:
         frame_height=1600,
     )
     runtime.click_frame_point(scene, target.x, target.y)
+
+
+def _click_exact_compact_shop_name(runtime: Any, expected_name: str) -> None:
+    """Click one visible shop name after punctuation-insensitive exact matching."""
+
+    target = _compact(expected_name)
+    lines = _group_ocr_tokens(runtime.full_frame_ocr_tokens(update=True))
+    matches = [
+        line
+        for line in lines
+        if _compact(line.get("text")) == target
+        and 120 <= float(line.get("x") or 0) <= 700
+        and 250 <= float(line.get("y") or 0) <= 1400
+    ]
+    if len(matches) != 1:
+        visible = " | ".join(_compact(line.get("text")) for line in lines)
+        raise RuntimeError(
+            f"仙缘_兑换收尾：商品名 {expected_name} 唯一命中数为 {len(matches)}；"
+            f"{visible[:1000]}"
+        )
+    row = matches[0]
+    runtime.click_frame_point(
+        XIANYUAN_SHOP_GEOMETRY_SCENE,
+        float(row.get("x") or 0) + float(row.get("w") or 0) / 2,
+        float(row.get("y") or 0) + float(row.get("h") or 0) / 2,
+    )
+
+
+def _wait_ended_home_ready(runtime: Any, *, attempts: int = 20):
+    last = ""
+    for _ in range(max(1, int(attempts))):
+        tokens = runtime.full_frame_ocr_tokens(update=True)
+        last = _compact("".join(str(token.get("text") or "") for token in tokens))
+        if (
+            "仙缘夺魁" in last
+            and "活动已结束" in last
+            and "兑换宝阁" in last
+        ):
+            return True
+        yield from runtime.wait_action_settle(1.0)
+    raise RuntimeError(f"仙缘_兑换收尾：结束态主页业务文本未就绪：{last[:1000]}")
 
 
 def _store_panel_wallet(
@@ -100,6 +181,13 @@ def _store_panel_wallet(
             "same_window_shop_runtime": True,
         },
     })
+    # The collector may have materialized this same schema moments earlier
+    # while the generic WalletVO path was unavailable.  Invalidate only that
+    # derived plan so the next read recomputes budgets from the exact panel
+    # counters and the already-current V_ShowList purchase progress.
+    exchange_plan = dict(evidence.get("exchange_plan") or {})
+    exchange_plan["schema"] = 0
+    evidence["exchange_plan"] = exchange_plan
     activity.current_currency = int(current)
     activity.cumulative_currency = int(cumulative)
     activity.captured_at = captured_at
@@ -121,7 +209,13 @@ def execute_xianyuan_duokui_tail_checkpoint(
         ensure_xianyuan_duokui_activity,
     )
     from backend.core.fanxiu.data_annotation.effective_time import job_now
-    from backend.core.fanxiu.data_annotation.schedule_navigation import select_schedule_activity
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.schedule_navigation import (
+        resolve_schedule_runtime_activity_targets,
+        runtime_activity_entities_for_date,
+    )
     from backend.db import engine
     from backend.models import FanxiuExchangeActivity
 
@@ -150,24 +244,65 @@ def execute_xianyuan_duokui_tail_checkpoint(
         yield from runtime.wait_action_settle(1.0)
     yield from runtime.goto_view(34)
     yield from runtime.goto_view(66)
-    anchor = occurrence.end_at.replace(hour=12, minute=0, second=0, microsecond=0)
-    yield from select_schedule_activity(
-        runtime,
+    # Use full-frame OCR before any inherited shape OCR touches this frame.
+    # The current #66 variant exposes a healthy header/calendar to the full
+    # detector while the two cropped shape reads may both return empty.
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError(f"{label}：Runtime 日程不可用或不完整")
+    ui_today = datetime.now().astimezone().date()
+    day_offset = (occurrence.end_at.date() - ui_today).days
+    full_lines: list[dict[str, Any]] = []
+    for _attempt in range(5):
+        full_lines = _group_ocr_tokens(runtime.full_frame_ocr_tokens(update=True))
+        visible = [_compact(line.get("text")) for line in full_lines]
+        if (
+            any("今天" in text for text in visible)
+            and any("仙缘夺魁" in text for text in visible)
+            and any("跨服8" in text for text in visible)
+        ):
+            break
+        yield from runtime.wait_action_settle(1.0)
+    header_lines = [line for line in full_lines if 190 <= float(line["y"]) < 340]
+    calendar_lines = [line for line in full_lines if 295 <= float(line["y"]) < 750]
+    entities = runtime_activity_entities_for_date(
+        schedule,
         r"仙缘夺魁",
-        enter=True,
-        require_runtime_alignment=True,
-        now=anchor,
+        target_date=occurrence.end_at.date(),
     )
-    yield from runtime.wait_view_or_ocr(
-        34,
-        lambda text: "仙缘夺魁" in text and "活动已结束" in text,
-        timeout=30.0,
-        label=f"{label}：等待结束态主页",
+    exact_entities = tuple(
+        entity
+        for entity in entities
+        if occurrence.runtime_id in str(entity.key).split("|")
     )
+    if len(exact_entities) != 1:
+        raise RuntimeError(
+            f"{label}：Runtime 日程未唯一包含 occurrence {occurrence.runtime_id}"
+        )
+    targets = resolve_schedule_runtime_activity_targets(
+        header_lines=header_lines,
+        calendar_lines=calendar_lines,
+        runtime_entities=exact_entities,
+        day_offset=day_offset,
+        anchor_date=ui_today,
+    )
+    exact_targets = [
+        target
+        for target in targets
+        if occurrence.runtime_id in target.runtime_key.split("|")
+    ]
+    if len(exact_targets) != 1:
+        raise RuntimeError(
+            f"{label}：#66 未唯一对齐 occurrence {occurrence.runtime_id}"
+        )
+    runtime.click_frame_point(66, exact_targets[0].x, exact_targets[0].y)
+    yield from runtime.wait_action_settle(0.8)
+    yield from _wait_ended_home_ready(runtime)
     _open_exchange_tab(runtime, 34)
-    yield from _shop_ready(runtime)
-
-    current, cumulative = read_xianyuan_shop_wallet_from_ocr(runtime, update=True)
+    current, cumulative = yield from _shop_ready(runtime)
     with Session(engine) as session:
         detail = collect_and_store_xianyuan_duokui_activity(session, activity_id=activity_id)
         activity = session.get(FanxiuExchangeActivity, activity_id)
@@ -197,15 +332,30 @@ def execute_xianyuan_duokui_tail_checkpoint(
     initial_counts = {int(item.goods_id): int(item.purchased_count) for item in detail.shop_items}
     expected_wallet = int(current)
     executed: list[dict[str, Any]] = []
+
+    # The game preserves this shop's scroll offset after leaving and re-entering.
+    # Normalize to its clamped top boundary so the Runtime order and the five-row
+    # physical window start from the same fact.  These are navigation-only drags;
+    # no irreversible action occurs before the row OCR gate below succeeds.
+    for _ in range(8):
+        runtime.drag_frame_point(
+            XIANYUAN_SHOP_GEOMETRY_SCENE, 450, 520, 450, 1100, duration_ms=1000
+        )
+        yield from runtime.wait_action_settle(0.2)
+
     for action in actions:
         if stop_event.is_set():
             raise InterruptedError()
         for _ in range(action.scroll_rows):
             runtime.drag_frame_point(
-                XIANYUAN_SHOP_GEOMETRY_SCENE, 450, 900, 450, 775, duration_ms=800
+                XIANYUAN_SHOP_GEOMETRY_SCENE, 450, 900, 450, 720, duration_ms=1000
             )
             yield from runtime.wait_action_settle(0.25)
-        runtime.click_shape_center(XIANYUAN_SHOP_GEOMETRY_SCENE, f"商品行{action.slot}")
+        # Near the bottom the GUI can expose a sixth partial row while the
+        # generic five-slot planner is clamped.  Click the exact OCR name,
+        # rather than a slot center that may fall between the fifth and sixth
+        # cards.  Runtime detail verification still closes the identity gate.
+        _click_exact_compact_shop_name(runtime, action.name)
         yield from runtime.wait_view(
             COMMON_SHOP_DIALOG_SCENE,
             timeout=15.0,
@@ -218,20 +368,26 @@ def execute_xianyuan_duokui_tail_checkpoint(
         )
         for index in range(plus_ten):
             runtime.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+10")
-            if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
+            yield from runtime.wait_action_settle(0.08)
         for index in range(plus_one):
             runtime.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+")
-            if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
+            yield from runtime.wait_action_settle(0.08)
         yield from runtime.wait_action_settle(0.35)
         cost = int(action.quantity) * int(action.unit_price)
         if expected_wallet - cost < int(planning["reserved_tokens"]):
             raise RuntimeError(f"{label}：{action.name} 将突破锁定资源预留额")
+        totals, total_text = runtime.ocr_numbers_in_shapes(
+            COMMON_SHOP_DIALOG_SCENE,
+            ("价格",),
+            padding=8,
+        )
+        if not _ocr_contains_amount(totals, total_text, cost):
+            raise RuntimeError(
+                f"{label}：{action.name} 数量调整后总价未闭环为 {cost}，拒绝购买"
+            )
         runtime.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
-        yield from _shop_ready(runtime)
+        actual_wallet, _ = yield from _shop_ready(runtime)
         expected_wallet -= cost
-        actual_wallet, _ = read_xianyuan_shop_wallet_from_ocr(runtime, update=True)
         if actual_wallet != expected_wallet:
             raise RuntimeError(
                 f"{label}：{action.name} 后余额 {actual_wallet} != {expected_wallet}"
@@ -243,7 +399,7 @@ def execute_xianyuan_duokui_tail_checkpoint(
             "unit_price": action.unit_price,
         })
 
-    final_current, final_cumulative = read_xianyuan_shop_wallet_from_ocr(runtime, update=True)
+    final_current, final_cumulative = yield from _shop_ready(runtime)
     if final_current != int(planning["planned_remaining_tokens"]):
         raise RuntimeError(f"{label}：最终余额没有闭环为 {planning['planned_remaining_tokens']}")
     with Session(engine) as session:
