@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, time
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timedelta
 from typing import Iterable, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,9 @@ PRAYER_RESOURCE_PRIORITY = (
 )
 EQUIPMENT_IRON_BOX = "装备玄铁宝匣"
 DAO_FRAGMENT = "道则碎片·淬灵域"
+DAO_FRAGMENT_EDGE = "道则碎片·淬锋域"
+DAO_FRAGMENT_NAMES = (DAO_FRAGMENT, DAO_FRAGMENT_EDGE)
+XIANYUAN_DUOKUI_DISCOUNTED_DAIER = "誓约·黛儿"
 PARTNER_ROOT_ITEM_IDS = frozenset({29601, 29602, 29603, 29604, 29605})
 PARTNER_ROOT_NAMES = (
     "金蛟心·绝品",
@@ -45,6 +48,7 @@ class ExchangeShopPriorityPolicy:
     prayer_resource_by_cycle: Mapping[str, str]
     prayer_resource_priority: tuple[str, ...]
     equipment_resource_names: tuple[str, ...]
+    front_discounted_names: tuple[str, ...]
     dao_fragment_names: tuple[str, ...]
     partner_root_item_ids: frozenset[int]
     partner_root_names: tuple[str, ...]
@@ -55,11 +59,12 @@ class ExchangeShopPriorityPolicy:
 
 
 DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY = ExchangeShopPriorityPolicy(
-    schema=1,
+    schema=3,
     prayer_resource_by_cycle=PRAYER_RESOURCE_BY_CYCLE,
     prayer_resource_priority=PRAYER_RESOURCE_PRIORITY,
     equipment_resource_names=(EQUIPMENT_IRON_BOX,),
-    dao_fragment_names=(DAO_FRAGMENT,),
+    front_discounted_names=(),
+    dao_fragment_names=DAO_FRAGMENT_NAMES,
     partner_root_item_ids=PARTNER_ROOT_ITEM_IDS,
     partner_root_names=PARTNER_ROOT_NAMES,
     discounted_book_suffixes=("残页", "残篇"),
@@ -67,6 +72,21 @@ DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY = ExchangeShopPriorityPolicy(
     stage9_tail_names=(TEACHING_JADE, "灵根补全自选匣"),
     overflow_names=OVERFLOW_ITEMS,
 )
+
+XIANYUAN_DUOKUI_EXCHANGE_SHOP_PRIORITY_POLICY = replace(
+    DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY,
+    front_discounted_names=(XIANYUAN_DUOKUI_DISCOUNTED_DAIER,),
+)
+
+
+def exchange_shop_priority_policy(
+    activity_type: str,
+) -> ExchangeShopPriorityPolicy:
+    """Return the narrow activity override without changing shared layers."""
+
+    if str(activity_type or "").strip() == "xianyuan-duokui":
+        return XIANYUAN_DUOKUI_EXCHANGE_SHOP_PRIORITY_POLICY
+    return DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY
 
 
 class ShopItemLike(Protocol):
@@ -90,7 +110,12 @@ class ExchangeShopPlan:
     planning_date: str
     next_prayer_resource: str | None
     card_mail_resource: str | None
-    activity_ends_on_sunday: bool
+    shop_close_at: str | None
+    weekly_rollover_at: str
+    shop_closes_after_weekly_rollover: bool
+    front_discounted_goods_ids: tuple[int, ...]
+    front_discounted_total_tokens: int
+    front_discounted_remaining_tokens: int
     discounted_book_goods_ids: tuple[int, ...]
     stage8_goods_ids: tuple[int, ...]
     stage9_goods_ids: tuple[int, ...]
@@ -138,12 +163,18 @@ def exchange_shop_funding_status(
     )
 
 
-def _activity_end_moment(end_date: str) -> datetime:
-    return datetime.combine(
-        datetime.fromisoformat(end_date).date(),
-        time(hour=12),
-        tzinfo=ZoneInfo("Asia/Shanghai"),
+def _local_moment(value: datetime | str | None) -> datetime | None:
+    if value is None:
+        return None
+    moment = (
+        value
+        if isinstance(value, datetime)
+        else datetime.fromisoformat(str(value))
     )
+    timezone = ZoneInfo("Asia/Shanghai")
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone)
+    return moment.astimezone(timezone)
 
 
 def _is_discounted_book(
@@ -203,13 +234,18 @@ def build_exchange_shop_plan(
     *,
     activity_end_date: str,
     planning_date: str | date | None = None,
+    shop_close_at: datetime | str | None = None,
     policy: ExchangeShopPriorityPolicy = DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY,
 ) -> ExchangeShopPlan:
     """Calculate the shared limited-activity exchange order.
 
     ``planning_date`` determines the current prayer week while the activity
     is live. Callers clamp a post-activity grace-period refresh to the end
-    date, so Monday does not reinterpret a Sunday-ending occurrence.
+    date, so Monday does not reinterpret an occurrence that has already ended.
+    The next week's prayer resource is reserved only when the exact
+    ``shop_close_at`` is strictly later than that prayer week's Monday 00:00
+    rollover. A missing exact close time fails closed instead of inferring the
+    window from the activity end weekday.
     Unknown goods remain in the source-ordered limited tier; evidence-poor
     unlimited goods are excluded instead of guessed into the overflow tier.
     """
@@ -219,13 +255,13 @@ def build_exchange_shop_plan(
     for item in rows:
         by_name.setdefault(str(item.name or "").strip(), []).append(item)
 
-    end_moment = _activity_end_moment(activity_end_date)
+    end_date = datetime.fromisoformat(activity_end_date).date()
     effective_planning_date = (
         planning_date
         if isinstance(planning_date, date)
         else datetime.fromisoformat(str(planning_date)).date()
         if planning_date is not None
-        else end_moment.date()
+        else end_date
     )
     planning_moment = datetime.combine(
         effective_planning_date,
@@ -234,12 +270,14 @@ def build_exchange_shop_plan(
     )
     current_week = prayer_cycle_week(planning_moment)
     current_resource = policy.prayer_resource_by_cycle[current_week.name]
-    ends_on_sunday = end_moment.weekday() == 6
+    weekly_rollover = current_week.week_start + timedelta(weeks=1)
+    close_moment = _local_moment(shop_close_at)
+    closes_after_rollover = bool(
+        close_moment is not None and close_moment > weekly_rollover
+    )
     next_resource = (
-        policy.prayer_resource_by_cycle[
-            prayer_cycle_week(end_moment, offset_weeks=1).name
-        ]
-        if ends_on_sunday
+        policy.prayer_resource_by_cycle[prayer_cycle_week(weekly_rollover).name]
+        if closes_after_rollover
         else None
     )
 
@@ -253,6 +291,15 @@ def build_exchange_shop_plan(
             ordered.append(candidate)
             selected_ids.add(int(candidate.goods_id))
 
+    front_discounted = [
+        item
+        for name in policy.front_discounted_names
+        for item in by_name.get(name, ())
+        if item.purchase_limit >= 0
+        and item.discount is not None
+        and int(item.discount) < 100
+    ]
+    append_rows(front_discounted)
     append_rows(by_name.get(current_resource, ()))
     locked: list[ShopItemLike] = []
     if next_resource:
@@ -375,7 +422,16 @@ def build_exchange_shop_plan(
         planning_date=effective_planning_date.isoformat(),
         next_prayer_resource=next_resource,
         card_mail_resource=card_mail_resource,
-        activity_ends_on_sunday=ends_on_sunday,
+        shop_close_at=(
+            close_moment.isoformat(timespec="seconds") if close_moment else None
+        ),
+        weekly_rollover_at=weekly_rollover.isoformat(timespec="seconds"),
+        shop_closes_after_weekly_rollover=closes_after_rollover,
+        front_discounted_goods_ids=tuple(
+            int(item.goods_id) for item in front_discounted
+        ),
+        front_discounted_total_tokens=total_tokens(front_discounted),
+        front_discounted_remaining_tokens=remaining_tokens(front_discounted),
         discounted_book_goods_ids=tuple(
             int(item.goods_id) for item in discounted_books
         ),
@@ -400,6 +456,8 @@ def build_exchange_shop_plan(
 __all__ = [
     "ALCHEMY_SCRAP_BOX_SUFFIX",
     "DAO_FRAGMENT",
+    "DAO_FRAGMENT_EDGE",
+    "DAO_FRAGMENT_NAMES",
     "DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY",
     "EQUIPMENT_IRON_BOX",
     "ExchangeShopPlan",
@@ -411,6 +469,9 @@ __all__ = [
     "PRAYER_RESOURCE_BY_CYCLE",
     "PRAYER_RESOURCE_PRIORITY",
     "TEACHING_JADE",
+    "XIANYUAN_DUOKUI_DISCOUNTED_DAIER",
+    "XIANYUAN_DUOKUI_EXCHANGE_SHOP_PRIORITY_POLICY",
     "build_exchange_shop_plan",
+    "exchange_shop_priority_policy",
     "exchange_shop_funding_status",
 ]

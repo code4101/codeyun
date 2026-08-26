@@ -6,6 +6,7 @@ import time
 from dataclasses import asdict
 from datetime import date, datetime, time as datetime_time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Session, col, select
@@ -18,6 +19,7 @@ from backend.models import (
 )
 from backend.core.fanxiu.activity.exchange_shop_planner import (
     build_exchange_shop_plan,
+    exchange_shop_priority_policy,
 )
 from backend.core.fanxiu.activity.exchange_planning import (
     calculate_exchange_currency_gap,
@@ -526,10 +528,28 @@ def _persist_exchange_shop_plan(
         <= date.fromisoformat(activity.end_date)
         else date.fromisoformat(activity.end_date)
     )
+    activity_evidence = dict(activity.evidence or {})
+    raw_close_ms = (
+        activity_evidence.get("period_close_panel_time")
+        or activity_evidence.get("period_close_panel_time_ms")
+    )
+    try:
+        exact_close_at = (
+            datetime.fromtimestamp(
+                int(raw_close_ms) / 1000,
+                tz=ZoneInfo("Asia/Shanghai"),
+            )
+            if int(raw_close_ms or 0) > 0
+            else None
+        )
+    except (TypeError, ValueError, OSError):
+        exact_close_at = None
     plan = build_exchange_shop_plan(
         items,
         activity_end_date=activity.end_date,
         planning_date=planning_date,
+        shop_close_at=exact_close_at,
+        policy=exchange_shop_priority_policy(activity.activity_type),
     )
     priorities = {
         goods_id: index + 1
@@ -550,16 +570,24 @@ def _persist_exchange_shop_plan(
         ).all()
     }
     strategy = dict(activity.resource_strategy or {})
+    strategy.pop("周日顺延预留", None)
     strategy.update(
         {
             "本周祈愿": f"{plan.current_prayer_cycle}（{plan.current_prayer_resource}最高优先）",
-            "周日顺延预留": plan.next_prayer_resource or "无",
+            "跨周祈愿预留": plan.next_prayer_resource or "无",
             "卡邮件预留": plan.card_mail_resource or "当前商店无候选",
-            "常规目标": "完成至各功法最低折扣轮次及其余折扣条目（第8层）",
-            "条件目标": "有条件完成全部限购物品（第9层）",
             "溢出兑换": "玄灵丹·珍 > 玄灵丹·尚（不属于活动目标）",
         }
     )
+    if activity.activity_type == "xianyuan-duokui" and plan.front_discounted_goods_ids:
+        strategy["常规目标"] = "只生产足够兑换5折誓约·黛儿的1万夺魁灵玉；取得后停止"
+        strategy["条件目标"] = "仅用自然多出的兑币顺吃后续商品，不为通用第8/9层继续加打"
+    else:
+        strategy.setdefault(
+            "常规目标",
+            "完成至各功法最低折扣轮次及其余折扣条目（第8层）",
+        )
+        strategy.setdefault("条件目标", "有条件完成全部限购物品（第9层）")
     activity.resource_strategy = strategy
     evidence = dict(activity.evidence or {})
     refresh_status = evidence.get("refresh_status")
@@ -604,6 +632,24 @@ def _persist_exchange_shop_plan(
         current_currency=activity.current_currency,
         cumulative_currency=activity.cumulative_currency,
     )
+    economical_uses_front_discount = bool(
+        activity.activity_type == "xianyuan-duokui"
+        and plan.front_discounted_goods_ids
+    )
+    economical_gap = calculate_exchange_currency_gap(
+        target_total_tokens=(
+            plan.front_discounted_total_tokens
+            if economical_uses_front_discount
+            else plan.stage8_total_tokens
+        ),
+        target_remaining_tokens=(
+            plan.front_discounted_remaining_tokens
+            if economical_uses_front_discount
+            else plan.stage8_remaining_tokens
+        ),
+        current_currency=activity.current_currency,
+        cumulative_currency=activity.cumulative_currency,
+    )
     locked_reserve_funded = (
         int(activity.current_currency) >= int(plan.locked_reserved_tokens)
     )
@@ -620,11 +666,20 @@ def _persist_exchange_shop_plan(
         "current_prayer_cycle": plan.current_prayer_cycle,
         "current_prayer_resource": plan.current_prayer_resource,
         "planning_date": plan.planning_date,
-        "activity_ends_on_sunday": plan.activity_ends_on_sunday,
+        "shop_close_at": plan.shop_close_at,
+        "weekly_rollover_at": plan.weekly_rollover_at,
+        "shop_closes_after_weekly_rollover": (
+            plan.shop_closes_after_weekly_rollover
+        ),
         "next_prayer_resource": plan.next_prayer_resource,
         "card_mail_resource": plan.card_mail_resource,
         "card_mail_reserved_tokens": plan.card_mail_reserved_tokens,
         "locked_reserved_tokens": plan.locked_reserved_tokens,
+        "front_discounted_goods_ids": list(plan.front_discounted_goods_ids),
+        "economical_target": (
+            "front_discounted" if economical_uses_front_discount else "stage8"
+        ),
+        "economical_budget": asdict(economical_gap),
         "discounted_book_goods_ids": list(plan.discounted_book_goods_ids),
         "stage8_goods_ids": list(plan.stage8_goods_ids),
         "stage9_goods_ids": list(plan.stage9_goods_ids),
