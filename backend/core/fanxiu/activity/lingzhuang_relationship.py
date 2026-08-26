@@ -45,6 +45,18 @@ def _cumulative_task_score(snapshot: LingzhuangStrengtheningSnapshot) -> int:
     return completed + int(snapshot.score_current)
 
 
+def _has_score_progress(snapshot: LingzhuangStrengtheningSnapshot) -> bool:
+    return (
+        snapshot.score_current is not None
+        and snapshot.score_round is not None
+        and bool(snapshot.score_rounds)
+    )
+
+
+def _is_equipment_only_phase(snapshot: LingzhuangStrengtheningSnapshot) -> bool:
+    return bool((snapshot.evidence or {}).get("equipment_only_phase"))
+
+
 def _material_count(snapshot: LingzhuangStrengtheningSnapshot, part: str) -> int:
     for row in snapshot.rows:
         if row.part == part:
@@ -79,7 +91,7 @@ def record_lingzhuang_strengthening_action_sample(
     for label, snapshot in (("点击前", before_snapshot), ("点击后", after_snapshot)):
         if snapshot.equipment_current is None:
             raise ValueError(f"{label}装备任务进度缺失，拒绝记录关系样本")
-        if snapshot.score_current is None or snapshot.score_round is None or not snapshot.score_rounds:
+        if not _has_score_progress(snapshot) and not _is_equipment_only_phase(snapshot):
             raise ValueError(f"{label}积分任务进度缺失，拒绝记录关系样本")
     consumed = _material_count(before_snapshot, part) - _material_count(after_snapshot, part)
     if consumed <= 0:
@@ -88,23 +100,26 @@ def record_lingzhuang_strengthening_action_sample(
     previous_x = max((int(sample.x) for sample in existing.samples), default=0)
     x = previous_x + consumed
     captured_at = after_snapshot.captured_at
+    values = {
+        "equipment_task_progress": int(after_snapshot.equipment_current),
+    }
+    action = {
+        "part": part,
+        "category": category,
+        "consumed": consumed,
+        "material_before": _material_count(before_snapshot, part),
+        "material_after": _material_count(after_snapshot, part),
+        "equipment_task_before": before_snapshot.equipment_current,
+        "equipment_task_after": after_snapshot.equipment_current,
+    }
+    if _has_score_progress(before_snapshot) and _has_score_progress(after_snapshot):
+        values["task_score"] = _cumulative_task_score(after_snapshot)
+        action["task_score_before"] = _cumulative_task_score(before_snapshot)
+        action["task_score_after"] = _cumulative_task_score(after_snapshot)
     payload = {
         "x": x,
-        "values": {
-            "equipment_task_progress": int(after_snapshot.equipment_current),
-            "task_score": _cumulative_task_score(after_snapshot),
-        },
-        "action": {
-            "part": part,
-            "category": category,
-            "consumed": consumed,
-            "material_before": _material_count(before_snapshot, part),
-            "material_after": _material_count(after_snapshot, part),
-            "equipment_task_before": before_snapshot.equipment_current,
-            "equipment_task_after": after_snapshot.equipment_current,
-            "task_score_before": _cumulative_task_score(before_snapshot),
-            "task_score_after": _cumulative_task_score(after_snapshot),
-        },
+        "values": values,
+        "action": action,
     }
     key = _record_key(activity_id, x)
     row = session.exec(

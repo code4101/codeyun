@@ -10,6 +10,7 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     PERSONAL_RANK_VO,
     TEAM_RANK_VO,
     PUBLIC_EXCHANGE_ACTIVITY_TYPES,
+    XIANYUAN_DUOKUI_SPEC,
     YUNMENG_TRIAL_SPEC,
     XUTIAN_PALACE_SPEC,
     build_exchange_activity_registry,
@@ -31,6 +32,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
     assert get_exchange_activity_spec("magic-invasion") is MAGIC_INVASION_SPEC
     assert get_exchange_activity_spec("beast-abyss") is BEAST_ABYSS_SPEC
     assert get_exchange_activity_spec("yunmeng-trial") is YUNMENG_TRIAL_SPEC
+    assert get_exchange_activity_spec("xianyuan-duokui") is XIANYUAN_DUOKUI_SPEC
     with pytest.raises(ValueError, match="重复"):
         build_exchange_activity_registry(
             (XUTIAN_PALACE_SPEC, replace(XUTIAN_PALACE_SPEC, label="重复"))
@@ -52,6 +54,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
     ),
     [
         ("yunmeng-trial", 19, "论剑玉", 210001, True, "YunmengActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
+        ("xianyuan-duokui", 23002, "夺魁灵玉", 360001, True, "YunmengActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("xutian-palace", 12, "纳元晶", 80000, False, "HeavenActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("magic-invasion", 17, "魔晶", 70001, True, "MagicInvadeActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("beast-abyss", 14, "兽元", 150000, True, "BeastExplodeActivityVO", "team", "团队榜", "team", TEAM_RANK_VO),
@@ -199,6 +202,11 @@ def test_spec_rejects_page_scope_and_shop_currency_drift() -> None:
             "yunmeng-trial",
             "backend.core.fanxiu.activity.yunmeng_exchange",
             "collect_and_store_yunmeng_exchange_activity",
+        ),
+        (
+            "xianyuan-duokui",
+            "backend.core.fanxiu.activity.xianyuan_duokui",
+            "collect_and_store_xianyuan_duokui_activity",
         ),
         (
             "xutian-palace",

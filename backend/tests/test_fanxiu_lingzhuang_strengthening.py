@@ -130,6 +130,32 @@ def test_completed_equipment_task_prefix_is_reconstructed_from_live_suffix() -> 
     assert rows[10]["finished"] is False
 
 
+def test_equipment_only_preliminary_task_group_is_complete() -> None:
+    tasks_complete, equipment_only_phase = (
+        lingzhuang_strengthening._task_progress_complete(
+            raw_task_total=14,
+            equipment_task_count=14,
+            score_task_count=0,
+        )
+    )
+
+    assert tasks_complete is True
+    assert equipment_only_phase is True
+
+
+def test_partial_full_phase_task_group_is_not_complete() -> None:
+    tasks_complete, equipment_only_phase = (
+        lingzhuang_strengthening._task_progress_complete(
+            raw_task_total=57,
+            equipment_task_count=14,
+            score_task_count=0,
+        )
+    )
+
+    assert tasks_complete is False
+    assert equipment_only_phase is False
+
+
 def test_collect_strengthening_snapshot_persists_complete_runtime_fact(monkeypatch) -> None:
     monkeypatch.setattr(
         lingzhuang_strengthening,

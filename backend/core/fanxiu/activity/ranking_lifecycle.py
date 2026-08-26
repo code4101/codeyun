@@ -63,6 +63,12 @@ YUANDING_GIFT_TIME = time(5, 0)
 # verification for its page family.
 EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({"magic-invasion", "yunmeng-trial"})
 
+# The shared free-gift executor currently has a proven page/Runtime adapter
+# only for 丹道问鼎.  Resource-rank identity alone must not manufacture a
+# side-effectful checkpoint for activities such as 灵装化道 that do not expose
+# the same gift page.
+RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({"dandao-wending"})
+
 RankingFamily = Literal["gameplay_rank", "resource_rank"]
 
 RANKING_CAPABILITY_STATUS = {
@@ -170,6 +176,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
     )
     family_by_type: dict[str, RankingFamily] = {
         "yunmeng-trial": "gameplay_rank",
+        "xianyuan-duokui": "gameplay_rank",
         "xutian-palace": "gameplay_rank",
         "magic-invasion": "gameplay_rank",
         "beast-abyss": "gameplay_rank",
@@ -182,11 +189,13 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
     }
     runtime_types = {
         "yunmeng-trial": (21,),
+        "xianyuan-duokui": (129,),
         "xutian-palace": (8,),
         "magic-invasion": (7,),
         "beast-abyss": (15,),
     }
     activity_ids = {
+        "xianyuan-duokui": (846001,),
         # Version-specific Activity ids belong only in this adapter boundary.
         # The normalized Runtime schedule deliberately does not retain raw VO
         # classes, so every retained server-count variant must be explicit.
@@ -403,7 +412,11 @@ def checkpoints_for_occurrence(
             )
         )
     resource_kinds = (
-        (RESOURCE_FREE_GIFT_KIND, RESOURCE_FREE_GIFT_TIME, True),
+        (
+            RESOURCE_FREE_GIFT_KIND,
+            RESOURCE_FREE_GIFT_TIME,
+            occurrence.activity_type in RESOURCE_FREE_GIFT_ACTIVITY_TYPES,
+        ),
         (DANDAO_REWARDS_KIND, DANDAO_REWARDS_TIME, occurrence.activity_type == "dandao-wending"),
         (YUANDING_GIFT_KIND, YUANDING_GIFT_TIME, occurrence.activity_type == "yuanding-sansheng"),
     )
@@ -529,6 +542,7 @@ __all__ = [
     "MAGIC_ACTIVE_KIND",
     "XIANMENG_ACTIVE_KIND",
     "RESOURCE_FREE_GIFT_KIND",
+    "RESOURCE_FREE_GIFT_ACTIVITY_TYPES",
     "DANDAO_REWARDS_KIND",
     "YUANDING_GIFT_KIND",
     "RANKING_CAPABILITY_STATUS",

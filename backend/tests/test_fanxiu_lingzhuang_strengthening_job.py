@@ -135,8 +135,57 @@ def test_lingzhuang_strengthening_uses_active_instance_and_default_tier(
         "target_progress": None,
         "target_tier": 10,
         "cross_count": 16,
+        "game_task_activity_id": None,
         "max_clicks": 200,
     }
+
+
+def test_lingzhuang_strengthening_uses_runtime_activity_id_for_local_preliminary(
+    monkeypatch,
+) -> None:
+    runner = _Runner()
+    captured: dict[str, Any] = {}
+    activity = SimpleNamespace(
+        id="lingzhuang-local",
+        cross_count=1,
+        evidence={"game_activity_id": 1044311},
+    )
+    monkeypatch.setattr(
+        task_module,
+        "resolve_lingzhuang_strengthening_activity",
+        lambda _session, **_options: activity,
+    )
+
+    def fake_complete(runtime, **options):
+        captured.update({"runtime": runtime, **options})
+        if False:
+            yield None
+        return {
+            "ok": True,
+            "target_tier": 10,
+            "target_progress": 4000,
+            "equipment_progress": 4000,
+            "click_count": 1,
+        }
+
+    monkeypatch.setattr(
+        task_module,
+        "complete_equipment_strengthening_tasks",
+        fake_complete,
+    )
+
+    result = _drain(
+        task_module.execute_lingzhuang_strengthening_task(
+            runner,
+            {"asset_tree_path": Path("asset-tree.json")},
+            {},
+            threading.Event(),
+        )
+    )
+
+    assert result["outcome"] == "target_reached"
+    assert captured["cross_count"] == 1
+    assert captured["game_task_activity_id"] == 1044311
 
 
 def test_lingzhuang_strengthening_resource_exhaustion_is_normal_stop(

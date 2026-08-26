@@ -29,6 +29,7 @@ PLANE_RANK_VO = "ActivityRankCrossServerVO"
 TEAM_RANK_VO = "ActivityRankTeamVO"
 PUBLIC_EXCHANGE_ACTIVITY_TYPES = (
     "yunmeng-trial",
+    "xianyuan-duokui",
     "xutian-palace",
     "magic-invasion",
     "beast-abyss",
@@ -55,6 +56,24 @@ class YunmengTrialExchangeActivityAdapter:
         return collect_and_store_yunmeng_exchange_activity(
             session,
             activity_id=activity_id,
+        )
+
+
+class XianyuanDuokuiExchangeActivityAdapter:
+    def materialize_activity(self, session: Session) -> str:
+        from backend.core.fanxiu.activity.xianyuan_duokui import (
+            ensure_xianyuan_duokui_activity,
+        )
+
+        return ensure_xianyuan_duokui_activity(session)
+
+    def collect_activity(self, session: Session, *, activity_id: str) -> Any:
+        from backend.core.fanxiu.activity.xianyuan_duokui import (
+            collect_and_store_xianyuan_duokui_activity,
+        )
+
+        return collect_and_store_xianyuan_duokui_activity(
+            session, activity_id=activity_id
         )
 
 
@@ -387,6 +406,44 @@ YUNMENG_TRIAL_SPEC = ExchangeActivitySpec(
 )
 
 
+XIANYUAN_DUOKUI_SPEC = ExchangeActivitySpec(
+    activity_type="xianyuan-duokui",
+    label="仙缘夺魁",
+    worldline_vo_types=("YunmengActivityVO",),
+    currency_type=23002,
+    currency_name="夺魁灵玉",
+    rank_scopes=(
+        _rank_scope(
+            "personal",
+            label="个人榜",
+            role="primary",
+            subject="role",
+            reward_tiers_enabled=True,
+            required=True,
+            vo_type=PERSONAL_RANK_VO,
+            binding=RankActivityIdBinding(source="activity_follow", follow_index=0),
+        ),
+        _rank_scope(
+            "plane",
+            label="位面榜",
+            role="comparative",
+            subject="server",
+            reward_tiers_enabled=True,
+            required=False,
+            vo_type=PLANE_RANK_VO,
+            binding=RankActivityIdBinding(source="activity_follow", follow_index=1),
+        ),
+    ),
+    shop=ShopSpec(base_id=360001, currency_type=23002),
+    page=PageContract(
+        page_kind="exchange-ranking",
+        ranking_scopes=("personal", "plane"),
+        has_shop=True,
+    ),
+    adapter=XianyuanDuokuiExchangeActivityAdapter(),
+)
+
+
 MAGIC_INVASION_SPEC = ExchangeActivitySpec(
     activity_type="magic-invasion",
     label="魔道入侵",
@@ -642,6 +699,7 @@ def build_exchange_activity_registry(
 EXCHANGE_ACTIVITY_SPECS = build_exchange_activity_registry(
     (
         YUNMENG_TRIAL_SPEC,
+        XIANYUAN_DUOKUI_SPEC,
         XUTIAN_PALACE_SPEC,
         MAGIC_INVASION_SPEC,
         BEAST_ABYSS_SPEC,
