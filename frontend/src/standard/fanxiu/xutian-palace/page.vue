@@ -90,13 +90,18 @@ const plannedShopRows = computed<PlannedShopRow[]>(() => {
     });
   });
 
-  // 兼容旧 schema：未进入领取档次的遗留商品统一投影到固定第 14 级。
+  // 兼容旧 schema：未进入语义分组的商品追加到“不需要领”，不依赖数字等级。
   const notNeededItems = items.filter(item => !included.has(item.goods_id));
+  const notNeededId = '不需要领';
+  const existingNotNeededLevel = priorityIds.indexOf(notNeededId);
+  const notNeededLevel = existingNotNeededLevel >= 0
+    ? existingNotNeededLevel + 1
+    : priorityIds.length + 1;
   notNeededItems.forEach((item, groupIndex) => {
     rows.push({
       item,
-      priorityLevel: 14,
-      priorityId: '不需要领',
+      priorityLevel: notNeededLevel,
+      priorityId: notNeededId,
       groupRowSpan: notNeededItems.length,
       isGroupStart: groupIndex === 0,
     });

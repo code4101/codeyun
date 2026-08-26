@@ -45,10 +45,11 @@ class ExchangePriorityId(StrEnum):
     """Stable business identities; their display order may change."""
 
     DAIER = "黛儿"
+    DAO_FRAGMENT = "道则碎片"
     CURRENT_PRAYER = "本周祈愿"
+    ORIGINAL_DAIER = "原价黛儿"
     NEXT_PRAYER = "下周祈愿"
     CARD_MAIL = "卡邮件"
-    DAO_FRAGMENT = "道则碎片"
     PRAYER_RESOURCE = "祈愿资源"
     RESOURCE = "资源"
     PARTNER_ROOT = "仙侣灵根"
@@ -78,7 +79,7 @@ class ExchangeShopPriorityPolicy:
 
 
 DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY = ExchangeShopPriorityPolicy(
-    schema=5,
+    schema=7,
     prayer_resource_by_cycle=PRAYER_RESOURCE_BY_CYCLE,
     prayer_resource_priority=PRAYER_RESOURCE_PRIORITY,
     equipment_resource_names=(EQUIPMENT_IRON_BOX,),
@@ -273,7 +274,19 @@ def build_exchange_shop_plan(
             if item.purchase_limit >= 0 and int(item.discount or 100) == 50
         ),
     )
+    for name in policy.dao_fragment_names:
+        select(ExchangePriorityId.DAO_FRAGMENT, by_name.get(name, ()))
     select(ExchangePriorityId.CURRENT_PRAYER, by_name.get(current_resource, ()))
+    select(
+        ExchangePriorityId.ORIGINAL_DAIER,
+        (
+            item
+            for name in policy.daier_names
+            for item in by_name.get(name, ())
+            if item.purchase_limit >= 0
+            and (item.discount is None or int(item.discount) >= 100)
+        ),
+    )
 
     locked: list[ShopItemLike] = []
     if next_resource:
@@ -295,8 +308,6 @@ def build_exchange_shop_plan(
         select(ExchangePriorityId.CARD_MAIL, card_rows)
         locked.extend(card_rows)
 
-    for name in policy.dao_fragment_names:
-        select(ExchangePriorityId.DAO_FRAGMENT, by_name.get(name, ()))
     for name in policy.prayer_resource_priority:
         select(ExchangePriorityId.PRAYER_RESOURCE, by_name.get(name, ()))
     for name in policy.equipment_resource_names:

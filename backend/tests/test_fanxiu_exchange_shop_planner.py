@@ -72,7 +72,7 @@ def test_wednesday_plan_reserves_one_card_mail_resource() -> None:
     assert plan.next_prayer_resource is None
     assert plan.card_mail_resource == "瑶池玉莲"
     assert plan.locked_goods_ids == (2,)
-    assert plan.ordered_goods_ids == (1, 2, 7, 3, 4, 5, 6, 8)
+    assert plan.ordered_goods_ids == (7, 1, 2, 3, 4, 5, 6, 8)
     assert plan.priority_group_goods_ids[ExchangePriorityId.CURRENT_PRAYER] == (1,)
     assert plan.priority_group_goods_ids[ExchangePriorityId.CARD_MAIL] == (2,)
     assert 2 not in plan.target_goods_ids[ExchangePriorityId.OTHER_DISCOUNT]
@@ -109,8 +109,11 @@ def test_xianyuan_discounted_daier_is_absolute_front_and_economical_target() -> 
         policy=exchange_shop_priority_policy("xianyuan-duokui"),
     )
 
-    assert plan.ordered_goods_ids == (2, 1, 5, 4, 3)
+    assert plan.ordered_goods_ids == (2, 5, 4, 1, 3)
     assert plan.priority_group_goods_ids[ExchangePriorityId.DAIER] == (2,)
+    assert plan.priority_group_goods_ids[ExchangePriorityId.DAO_FRAGMENT] == (5, 4)
+    assert plan.priority_group_goods_ids[ExchangePriorityId.CURRENT_PRAYER] == (1,)
+    assert plan.priority_group_goods_ids[ExchangePriorityId.ORIGINAL_DAIER] == (3,)
     assert plan.target_total_tokens[ExchangePriorityId.DAIER] == 10_000
     assert plan.target_remaining_tokens[ExchangePriorityId.DAIER] == 10_000
 
@@ -130,6 +133,31 @@ def test_xianyuan_only_exact_half_price_daier_enters_daier_group() -> None:
 
     assert plan.priority_group_goods_ids[ExchangePriorityId.DAIER] == (2,)
     assert plan.ordered_goods_ids == (2, 1, 3)
+
+
+def test_xianyuan_original_price_daier_is_a_separate_semantic_group() -> None:
+    items = [
+        _item(1, "道则碎片·淬灵域", source_order=1),
+        _item(2, "瑶池玉莲", source_order=2),
+        _item(3, "誓约·黛儿", source_order=3, item_id=9023, discount=50),
+        _item(4, "誓约·黛儿", source_order=4, item_id=9023, discount=None),
+        _item(5, "誓约·黛儿", source_order=5, item_id=9023, discount=100),
+    ]
+    plan = build_exchange_shop_plan(
+        items,
+        activity_end_date="2026-08-26",
+        policy=exchange_shop_priority_policy("xianyuan-duokui"),
+    )
+    assert plan.priority_order_ids[:5] == (
+        "黛儿",
+        "道则碎片",
+        "本周祈愿",
+        "原价黛儿",
+        "下周祈愿",
+    )
+    assert plan.priority_group_goods_ids[ExchangePriorityId.DAIER] == (3,)
+    assert plan.priority_group_goods_ids[ExchangePriorityId.ORIGINAL_DAIER] == (4, 5)
+    assert plan.ordered_goods_ids == (3, 1, 2, 4, 5)
 
 
 def test_discount_groups_cover_real_goods_not_only_book_suffixes() -> None:
@@ -172,9 +200,10 @@ def test_xianyuan_persisted_plan_uses_daier_as_economical_target() -> None:
     plan = stored.evidence["exchange_plan"]
     assert plan["ordered_goods_ids"] == [2, 1, 3]
     assert plan["priority_group_goods_ids"]["黛儿"] == [2]
+    assert plan["priority_group_goods_ids"]["原价黛儿"] == [3]
     assert plan["economical_target_id"] == "黛儿"
     assert plan["economical_budget"]["target_total_tokens"] == 10_000
-    assert plan["target_budgets"]["其他折扣"]["target_total_tokens"] == 20_000
+    assert plan["target_budgets"]["其他折扣"]["target_total_tokens"] == 80_000
     assert stored.resource_strategy["常规目标"].startswith("只生产足够兑换5折誓约·黛儿")
     assert stored.resource_strategy["条件目标"].startswith("仅用自然多出的兑币")
 
@@ -460,7 +489,7 @@ def test_get_snapshot_rematerializes_old_plan_schema_without_touching_game() -> 
         assert activity is not None
         evidence = dict(activity.evidence or {})
         stale_plan = dict(evidence["exchange_plan"])
-        stale_plan["schema"] = 4
+        stale_plan["schema"] = 5
         stale_plan["priority_order_ids"] = stale_plan["priority_order_ids"][:-1]
         stale_plan["priority_group_goods_ids"].pop("不需要领", None)
         evidence["exchange_plan"] = stale_plan
@@ -476,7 +505,7 @@ def test_get_snapshot_rematerializes_old_plan_schema_without_touching_game() -> 
 
     assert snapshot.selected_activity is not None
     plan = snapshot.selected_activity.exchange_plan
-    assert plan["schema"] == 5
+    assert plan["schema"] == 7
     assert plan["priority_order_ids"][-1] == "不需要领"
     assert plan["priority_group_goods_ids"]["不需要领"] == [1, 2]
     assert plan["ordered_goods_ids"] == []

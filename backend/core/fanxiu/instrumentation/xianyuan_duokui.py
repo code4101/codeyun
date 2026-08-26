@@ -45,19 +45,18 @@ def read_xianyuan_duokui_status_snapshot(
             current_reader,
             address,
             int(currency_type),
-            missing_as_zero=True,
+            missing_as_zero=False,
         ),
         allow_discovery=False,
     )
-    # The loaded WalletData model implements GetCurrencyByType as zero for a
-    # missing event-currency VO, and the activity UI projects missing history
-    # as zero as well.  Keep missing manager/model state fail-closed, but honor
-    # that exact client semantic once the validated wallet root is available.
+    # A missing WalletVO is not an authoritative zero: the redemption panel
+    # can still render a non-zero activity-local balance.  Fail closed and let
+    # the exact open-panel reader provide that fact instead of fabricating 0.
     wallet = wallet_currency_data(
         reader,
         wallet_root,
         int(currency_type),
-        missing_as_zero=True,
+        missing_as_zero=False,
     )
     rank_root, rank_cache_hit = resolve_activity_rank_root(
         memory,
