@@ -470,6 +470,10 @@ from backend.core.fanxiu.data_annotation.navigation_incidents import (
     list_navigation_incident_summaries,
     load_navigation_incident,
 )
+from backend.core.fanxiu.data_annotation.recognition_ambiguity_incidents import (
+    list_recognition_ambiguity_summaries,
+    load_recognition_ambiguity,
+)
 from backend.core.fanxiu.data_annotation.storage import (
     FanxiuDataAnnotationAssetTreeConflict,
     decode_data_annotation_image_data_url,
@@ -4852,6 +4856,7 @@ def get_fanxiu_data_annotation_recognition_ops(
         matrix,
         images,
         navigation_incidents=list_navigation_incident_summaries(entry_id),
+        recognition_ambiguities=list_recognition_ambiguity_summaries(entry_id),
     )
     result.update(
         {
@@ -4880,6 +4885,66 @@ def get_fanxiu_data_annotation_navigation_incident(
     if incident is None:
         raise HTTPException(status_code=404, detail="导航停滞事件不存在")
     return {"ok": True, "entry_id": entry_id, "incident": incident}
+
+
+@status_router.get("/data-annotation/recognition-ops/ambiguities/{signature}")
+def get_fanxiu_data_annotation_recognition_ambiguity(
+    signature: str,
+    entry_id: str,
+    recompute: bool = False,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, entry_id)
+    try:
+        ambiguity = load_recognition_ambiguity(entry_id, signature, include_frames=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if ambiguity is None:
+        raise HTTPException(status_code=404, detail="识别并列事件不存在")
+    if recompute:
+        samples = ambiguity.get("sample_frames") if isinstance(ambiguity.get("sample_frames"), list) else []
+        sample = samples[-1] if samples and isinstance(samples[-1], dict) else None
+        frame_url = (
+            (ambiguity.get("frame_data_urls") or {}).get(str(sample.get("path") or ""))
+            if isinstance(sample, dict) and isinstance(ambiguity.get("frame_data_urls"), dict)
+            else None
+        )
+        tied_scene_ids = [
+            int(item)
+            for item in ambiguity.get("tied_scene_ids") or []
+            if isinstance(item, int) or (isinstance(item, str) and item.isdigit())
+        ]
+        if not frame_url or len(tied_scene_ids) < 2:
+            raise HTTPException(status_code=409, detail="识别并列事件没有可重算的代表原帧")
+        path = _data_annotation_asset_tree_path(entry_id)
+        tree = _BEHAVIOR_TREE_RUNTIME_RUNNER._load_asset_tree(path)
+        ctx = {
+            "entry_id": entry_id,
+            "asset_tree_path": path,
+            "asset_tree": tree,
+            "images": _BEHAVIOR_TREE_RUNTIME_RUNNER._index_images(tree),
+            "asset_tree_revision": hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "",
+            "_disable_recognition_ambiguity_recording": True,
+        }
+        trace: list[dict[str, Any]] = []
+        scene_id, score, status = _BEHAVIOR_TREE_RUNTIME_RUNNER._identify_scene_number_in_graph_candidates(
+            ctx,
+            frame_url,
+            tied_scene_ids,
+            layer_label=f"layer{int(ambiguity.get('layer') or 0)}",
+            trace=trace,
+        )
+        ambiguity["recompute"] = {
+            "scene_id": scene_id,
+            "score": round(float(score or 0.0), 3),
+            "status": status,
+            "calculated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "asset_tree_sha256": ctx["asset_tree_revision"],
+            "trace": trace,
+        }
+    return {"ok": True, "entry_id": entry_id, "ambiguity": ambiguity}
 
 
 def _backup_data_annotation_asset_tree_before_save(path: Path) -> None:

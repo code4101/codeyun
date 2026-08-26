@@ -9,6 +9,7 @@ from backend.core.fanxiu.data_annotation.recognition_graph import normalize_matc
 
 RECOGNITION_OPS_CATEGORIES: tuple[dict[str, str], ...] = (
     {"id": "navigation_stall", "label": "运行停滞"},
+    {"id": "identity_ambiguity", "label": "身份并列"},
     {"id": "mutual_match", "label": "互相匹配"},
     {"id": "multi_source", "label": "多入边匹配"},
     {"id": "cycle_group", "label": "循环匹配组"},
@@ -127,6 +128,7 @@ def build_recognition_ops_report(
     matrix: Mapping[str, Any],
     images: Mapping[Any, Any],
     navigation_incidents: Iterable[Mapping[str, Any]] | None = None,
+    recognition_ambiguities: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     normalized_images = _normalize_images(images)
     scene_ids = [
@@ -227,6 +229,54 @@ def build_recognition_ops_report(
                 "runtime": incident.get("runtime") if isinstance(incident.get("runtime"), Mapping) else {},
                 "resolution": incident.get("resolution") if isinstance(incident.get("resolution"), Mapping) else None,
                 "timeline_count": len(timeline),
+            },
+        })
+
+    for ambiguity in recognition_ambiguities or []:
+        signature = str(ambiguity.get("signature") or "").strip()
+        if not signature:
+            continue
+        node_ids: list[int] = []
+        for value in ambiguity.get("tied_scene_ids") or []:
+            try:
+                scene_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if scene_id > 0 and scene_id not in node_ids:
+                node_ids.append(scene_id)
+        if len(node_ids) < 2:
+            continue
+        occurrence_count = int(ambiguity.get("occurrence_count") or 0)
+        labels = " / ".join(_scene_label(scene_id, normalized_images) for scene_id in node_ids)
+        selected_counts = ambiguity.get("selected_scene_counts") if isinstance(ambiguity.get("selected_scene_counts"), Mapping) else {}
+        unresolved_count = int(selected_counts.get("unresolved") or 0)
+        issues.append({
+            "id": f"ambiguity:{signature}",
+            "category": "identity_ambiguity",
+            "severity": "error" if unresolved_count > 0 else "warning",
+            "label": f"{labels} · {occurrence_count} 次",
+            "node_ids": node_ids,
+            "edges": [],
+            "ambiguity": {
+                key: ambiguity.get(key)
+                for key in (
+                    "id",
+                    "signature",
+                    "review_status",
+                    "layer",
+                    "tied_scene_ids",
+                    "occurrence_count",
+                    "distinct_frame_count",
+                    "first_seen_at",
+                    "last_seen_at",
+                    "selected_scene_counts",
+                    "sample_frames",
+                    "latest_event_id",
+                    "latest_similarities",
+                    "asset_tree_sha256",
+                    "recognizer_version",
+                )
+                if key in ambiguity
             },
         })
 

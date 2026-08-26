@@ -346,9 +346,12 @@ def execute_yunmeng_tail_job(
     )
     from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 
-    del payload
     label = "云梦_收尾"
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
+    scheduler_task_id = str(
+        payload.get("__scheduler_task_id")
+        or ctx.get("scheduler_task_id")
+        or ""
+    )
     with Session(engine) as session:
         activity = session.exec(
             select(FanxiuExchangeActivity)
@@ -361,8 +364,23 @@ def execute_yunmeng_tail_job(
         end_date = date.fromisoformat(activity.end_date)
         close_date = date.fromisoformat(str((activity.evidence or {}).get("period_close_panel_date") or activity.end_date))
         if not end_date < date.today() <= close_date:
+            # ``yunmeng-tail`` was retired when ranking-lifecycle became the
+            # sole Scheduler owner.  A legacy persisted instance may survive
+            # in an already-running service, however.  Its expired window is
+            # a normal terminal business state, not a technical failure that
+            # should retry forever.  Do not clear the canonical parent here:
+            # it owns all ranking occurrences and computes its own next time.
+            if scheduler_task_id == "yunmeng-tail":
+                runner._persist_scheduler_task_next_time(scheduler_task_id, None)
+                return {
+                    "result": "success",
+                    "message": f"{label}：旧调度实例已退役，当前兑换保留期已结束",
+                    "activity_id": activity_id,
+                    "current_scene": None,
+                }
             raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
+    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
     initial_scene, _score, _frame = runtime.current_scene((565, 566), update=True)
     if initial_scene == 565:
         runtime.click_shape_center(565, "云梦试剑")

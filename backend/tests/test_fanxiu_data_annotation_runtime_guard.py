@@ -800,6 +800,70 @@ def test_scene_jump_accepts_route_capable_unexpected_landing_without_waiting_lay
     assert recorded == [2]
 
 
+def test_scene_jump_scoped_world_miss_commits_only_final_414_landing(tmp_path, monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    source_shape = {
+        "id": "open",
+        "kind": "rect",
+        "title": "打开",
+        "sceneJumpTarget": "34",
+    }
+    return_shape = {
+        "id": "return",
+        "kind": "rect",
+        "title": "返回",
+        "sceneJumpTarget": "34",
+    }
+    image171 = _scene_image("仙府", "0171.png", [source_shape], layer=1)
+    image34 = _scene_image("世界", "0034.png", [], layer=1)
+    image414 = _scene_image("潜修真悟", "0414.png", [return_shape], layer=2)
+    tree = [image171, image34, image414]
+    path = tmp_path / "asset_tree.json"
+    path.write_text(json.dumps(tree, ensure_ascii=False), encoding="utf-8")
+    ctx = {
+        "entry": object(),
+        "asset_tree": tree,
+        "asset_tree_path": path,
+        "images": runner._index_images(tree),
+    }
+    commits: list[tuple[int | None, float, str]] = []
+
+    class FakeStopEvent:
+        def is_set(self):
+            return False
+
+        def wait(self, _seconds):
+            return False
+
+    def current_scene(_runtime, views=None, *, frame_data_url=None, **_kwargs):
+        assert views == [34]
+        return None, 0.0, frame_data_url
+
+    monkeypatch.setattr(behavior_tree_runtime_core.BehaviorTreeRuntime, "current_scene", current_scene)
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "same-frame")
+    monkeypatch.setattr(runner, "_identify_scene_number_for_route", lambda *_args, **_kwargs: (414, 100.0))
+    monkeypatch.setattr(runner, "_record_scene_jump_landing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_commit_scene_observation",
+        lambda _ctx, frame, scene_id, score: commits.append((scene_id, score, frame)),
+    )
+
+    result = _drain_generator(runner._wait_scene_jump_result(
+        ctx,
+        path,
+        tree,
+        source_scene_id=171,
+        target_scene_id=34,
+        edge={"source_id": 171, "image": image171, "shape": source_shape, "target_ids": [34]},
+        stop_event=FakeStopEvent(),
+        layer0_wait_seconds=30.0,
+    ))
+
+    assert result == 414
+    assert commits == [(414, 100.0, "same-frame")]
+
+
 def test_go_scene_rejects_stale_target_hit_when_fresh_frame_is_another_scene(tmp_path, monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     image34 = _scene_image("世界", "0034.png", [], layer=1)

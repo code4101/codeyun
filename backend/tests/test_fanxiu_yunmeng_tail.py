@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 from backend.core.fanxiu.data_annotation.tasks import yunmeng_tail
@@ -9,6 +9,62 @@ from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import (
     refresh_yunmeng_final_rankings,
     yunmeng_quantity_clicks,
 )
+
+
+def _drain(generator):
+    while True:
+        try:
+            next(generator)
+        except StopIteration as stopped:
+            return stopped.value
+
+
+def test_expired_legacy_scheduler_instance_retires_without_gui_actions(
+    monkeypatch,
+) -> None:
+    today = date.today()
+    activity = SimpleNamespace(
+        id="old-yunmeng",
+        end_date=(today - timedelta(days=2)).isoformat(),
+        evidence={"period_close_panel_date": (today - timedelta(days=1)).isoformat()},
+    )
+    persisted = []
+
+    class QueryResult:
+        def first(self):
+            return activity
+
+    class Session:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def exec(self, _query):
+            return QueryResult()
+
+    class Runner:
+        def _fanxiu_runtime(self, *_args, **_kwargs):
+            raise AssertionError("expired legacy instance must not create GUI runtime")
+
+        def _persist_scheduler_task_next_time(self, task_id, next_time):
+            persisted.append((task_id, next_time))
+
+    monkeypatch.setattr("sqlmodel.Session", Session)
+    result = _drain(yunmeng_tail.execute_yunmeng_tail_job(
+        Runner(),
+        {"scheduler_task_id": "yunmeng-tail"},
+        {},
+        SimpleNamespace(is_set=lambda: False),
+    ))
+
+    assert result["result"] == "success"
+    assert "已退役" in result["message"]
+    assert persisted == [("yunmeng-tail", None)]
 
 
 def test_bounded_price_ocr_accepts_adjacent_number_concatenation() -> None:

@@ -51,6 +51,10 @@ from backend.core.fanxiu.data_annotation.recognition_graph import (
     SceneGraphCandidate,
     choose_scene_from_graph,
 )
+from backend.core.fanxiu.data_annotation.recognition_ambiguity_incidents import (
+    RECOGNIZER_VERSION,
+    record_recognition_ambiguity,
+)
 from backend.core.fanxiu.data_annotation.scene_navigation import (
     explicit_scene_jump_edges,
     posterior_landing_probabilities,
@@ -495,6 +499,24 @@ class BehaviorTreeRuntime(Runtime):
         include_popup_candidates: bool = True,
     ) -> tuple[int | None, float, str]:
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+
+        def commit(
+            scene_id: int | None,
+            score: float,
+            observed_frame: str,
+            *,
+            commit_miss: bool,
+        ) -> tuple[int | None, float, str]:
+            normalized_score = float(score or 0.0)
+            if not self.ctx.get("_fanxiu_scene_observation_probe") and (scene_id is not None or commit_miss):
+                self.runner._commit_scene_observation(
+                    self.ctx,
+                    observed_frame,
+                    scene_id,
+                    normalized_score,
+                )
+            return scene_id, normalized_score, observed_frame
+
         business_view_ids: list[int] | None = None
         if views is not None:
             business_view_ids = [view.id if isinstance(view, View) else int(view) for view in views]
@@ -516,7 +538,7 @@ class BehaviorTreeRuntime(Runtime):
                     frame,
                     business_view_ids,
                 )
-            return scene_id, float(score or 0.0), frame
+            return commit(scene_id, score, frame, commit_miss=business_view_ids is None)
 
         popup_candidates = self.popup_candidates() if include_popup_candidates else []
         popup_by_scene_id = {
@@ -663,7 +685,7 @@ class BehaviorTreeRuntime(Runtime):
                 or scene_id not in popup_by_scene_id
                 or scene_id in base_view_ids
             ):
-                return scene_id, float(score or 0.0), frame
+                return commit(scene_id, score, frame, commit_miss=business_view_ids is None)
             if interruption_index >= 8:
                 sequence = " -> ".join(f"#{item}" if item >= 0 else "断线重连" for item in handled_popup_ids)
                 raise RuntimeError(f"场景识别连续处理弹窗超过上限：{sequence or 'unknown'}")
@@ -9306,6 +9328,39 @@ class BehaviorTreeRuntimeRunner(
                 for item in candidates
             ]
         result = choose_scene_from_graph(candidates, edges)
+        if (
+            not ctx.get("_disable_recognition_ambiguity_recording")
+            and result.status in {"similarity_tiebreak", "ambiguous"}
+            and len(result.unresolved_candidates) >= 2
+        ):
+            try:
+                captured_at = (
+                    float(ctx.get("_tick_frame_captured_at") or 0.0)
+                    if ctx.get("_tick_frame_data_url") == frame_data_url
+                    else time.time()
+                )
+                record_recognition_ambiguity(
+                    entry_id=str(ctx.get("entry_id") or getattr(ctx.get("entry"), "entry_id", "") or ""),
+                    frame_data_url=frame_data_url,
+                    captured_at=captured_at,
+                    layer=int(str(layer_label).removeprefix("layer") or 0),
+                    tied_scene_ids=result.unresolved_candidates,
+                    similarities={
+                        item.scene_id: item.frame_similarity
+                        for item in result.matched_candidates
+                        if item.scene_id in result.unresolved_candidates
+                    },
+                    fallback_scene_id=result.scene_id if result.status == "similarity_tiebreak" else None,
+                    asset_tree_sha256=str(ctx.get("asset_tree_revision") or ""),
+                    recognizer_version=RECOGNIZER_VERSION,
+                )
+            except Exception as exc:
+                if trace is not None:
+                    trace.append({
+                        "event": "graph_ambiguity_persist_failed",
+                        "layer": layer_label,
+                        "error": str(exc),
+                    })
         if result.status == "unknown":
             if trace is not None:
                 trace.append({
@@ -9396,9 +9451,19 @@ class BehaviorTreeRuntimeRunner(
             preferred_scene_ids,
             trace=trace,
         )
-        scene_id = graph_scene_id
-        score = graph_score
         ctx["_last_scene_recognition_status"] = str(graph_status or "no_match")
+
+        return graph_scene_id, graph_score
+
+    def _commit_scene_observation(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        scene_id: int | None,
+        score: float,
+    ) -> dict[str, Any]:
+        """Project one behavior-tree decision without re-running recognition."""
+
         identity_boxes: list[dict[str, Any]] = []
         all_shape_boxes: list[dict[str, Any]] = []
         frame_width = 0
@@ -9417,17 +9482,46 @@ class BehaviorTreeRuntimeRunner(
                 self._box(shape, matched_image)
                 for shape in self._all_scene_shapes(matched_image)
             ]
+        captured_at = (
+            float(ctx.get("_tick_frame_captured_at") or 0.0)
+            if ctx.get("_tick_frame_data_url") == frame_data_url
+            else 0.0
+        )
+        if captured_at <= 0.0:
+            captured_at = time.time()
+        committed_at = time.time()
         publish_fanxiu_scene_recognition(
             scene_id,
             score,
+            scope="decision",
             source=str(ctx.get("_fanxiu_scene_observation_source") or "runtime"),
+            entry_id=str(ctx.get("entry_id") or getattr(ctx.get("entry"), "entry_id", "") or ""),
+            asset_generation=int(ctx.get("asset_tree_generation") or 0),
+            frame_id=hashlib.sha256(str(frame_data_url).encode("utf-8")).hexdigest()[:16],
             asset_directory=asset_directory,
             boxes=identity_boxes,
             all_shape_boxes=all_shape_boxes,
             frame_width=frame_width,
             frame_height=frame_height,
+            captured_at=captured_at,
+            committed_at=committed_at,
         )
-        return scene_id, score
+        return {"scene_id": scene_id, "score": float(score or 0.0), "frame": frame_data_url}
+
+    @contextmanager
+    def _scene_observation_probe(self, ctx: dict[str, Any]):
+        """Keep nested candidate evaluation out of the authoritative projection."""
+
+        marker = "_fanxiu_scene_observation_probe"
+        previous = ctx.get(marker)
+        ctx[marker] = True
+        try:
+            yield
+        finally:
+            if previous is None:
+                ctx.pop(marker, None)
+            else:
+                ctx[marker] = previous
 
     def _runtime_scene_candidate_ids(self, ctx: dict[str, Any]) -> list[int]:
         return self._runtime_scene_candidate_ids_by_kind(ctx, include_popups=None)
@@ -10608,10 +10702,13 @@ class BehaviorTreeRuntimeRunner(
 
     def _set_tick_frame(self, ctx: dict[str, Any], frame_data_url: str | None) -> None:
         if frame_data_url:
+            if ctx.get("_tick_frame_data_url") != frame_data_url:
+                ctx["_tick_frame_captured_at"] = time.time()
             ctx["_tick_frame_data_url"] = frame_data_url
 
     def _clear_tick_frame(self, ctx: dict[str, Any]) -> None:
         ctx.pop("_tick_frame_data_url", None)
+        ctx.pop("_tick_frame_captured_at", None)
 
     def _capture_frame(self, ctx: dict[str, Any]) -> str:
         entry: Any = ctx["entry"]
@@ -12501,6 +12598,7 @@ class BehaviorTreeRuntimeRunner(
     def _current_scene_number(self, ctx: dict[str, Any], frame: str | None = None) -> tuple[int | None, float, str]:
         frame_data_url = frame or self._screencap(ctx)
         scene_id, score = self._identify_scene_number(ctx, frame_data_url)
+        self._commit_scene_observation(ctx, frame_data_url, scene_id, score)
         if scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
@@ -12674,6 +12772,7 @@ class BehaviorTreeRuntimeRunner(
             *,
             outcome: str,
         ) -> None:
+            self._commit_scene_observation(ctx, frame_data_url, scene_id, score)
             ctx["_last_scene_jump_evidence"] = {
                 "scene_id": scene_id,
                 "score": float(score or 0.0),
@@ -12755,11 +12854,12 @@ class BehaviorTreeRuntimeRunner(
             expected_id_set = {int(item) for item in expected_ids}
             fallback_scene_id: int | None = None
             fallback_score = 0.0
-            matched_expected, expected_score, frame = runtime.current_scene(
-                expected_ids,
-                frame_data_url=frame,
-                include_popup_candidates=elapsed >= popup_guard_delay,
-            )
+            with self._scene_observation_probe(ctx):
+                matched_expected, expected_score, frame = runtime.current_scene(
+                    expected_ids,
+                    frame_data_url=frame,
+                    include_popup_candidates=elapsed >= popup_guard_delay,
+                )
             if matched_expected == source_scene_id and source_scene_id not in expected_ids:
                 history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% preferred-source ignored left={left_source}")
                 matched_expected = None
@@ -13108,7 +13208,8 @@ class BehaviorTreeRuntimeRunner(
             self._raise_if_stopped(stop_event)
             attempts += 1
             ctx.pop("_last_scene_recognition_status", None)
-            current_scene_id, score, frame = runtime.current_scene(frame_data_url=frame)
+            with self._scene_observation_probe(ctx):
+                current_scene_id, score, frame = runtime.current_scene(frame_data_url=frame)
             recognition_status = str(
                 ctx.pop(
                     "_last_scene_recognition_status",
@@ -13152,6 +13253,7 @@ class BehaviorTreeRuntimeRunner(
                         "info",
                         f"场景移动：整体识别等待后命中 #{current_scene_id} {float(score or 0.0):.0f}%",
                     )
+                self._commit_scene_observation(ctx, frame, current_scene_id, score)
                 return current_scene_id, float(score or 0.0), frame, recognition_status
 
             now = time.monotonic()
@@ -13192,6 +13294,7 @@ class BehaviorTreeRuntimeRunner(
                     f"场景移动：完整识别为 unknown（连续 {continuous_unknown_seconds:.1f}s），"
                     f"获得一次 #424 恢复资格，最佳分数 {best_score:.0f}%{layer3_text}",
                 )
+                self._commit_scene_observation(ctx, frame, None, best_score)
                 return None, best_score, frame, "continuous_unknown"
             if elapsed >= max_wait_seconds:
                 ctx["_last_go_scene_recognition_wait_elapsed"] = elapsed
@@ -13201,6 +13304,7 @@ class BehaviorTreeRuntimeRunner(
                     f"场景移动：观察达到 {max_wait_seconds:.1f}s，但未形成连续 "
                     f"{wait_seconds:.1f}s unknown；结果={final_status}，禁止执行 #424",
                 )
+                self._commit_scene_observation(ctx, frame, None, best_score)
                 return None, best_score, frame, final_status
 
             unknown_remaining = wait_seconds - continuous_unknown_seconds

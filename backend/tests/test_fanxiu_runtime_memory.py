@@ -1276,6 +1276,66 @@ def test_redpacket_snapshot_unknown_survivor_fails_semantics_closed(monkeypatch)
     ]
 
 
+def test_redpacket_rewarded_special_event_is_not_a_trigger_candidate(monkeypatch):
+    class FakeReader:
+        def __init__(self, _memory):
+            pass
+
+        def table(self, _address):
+            return {"fields": data}
+
+        def fields(self, value):
+            return value if isinstance(value, dict) else {}
+
+        def list_items(self, value):
+            return list(value), len(value)
+
+        def dictionary_fields(self, value):
+            return dict(value)
+
+        def long(self, value):
+            return value[1] if isinstance(value, tuple) else None
+
+    now_ms = 1_800_000_000_000
+    data = {
+        "_RedBagList": [{
+            "uid": 301,
+            "id": 5022,
+            "channel": 101,
+            "subChannelId": 7,
+            "endTimeStamp": ("long", now_ms + 60_000),
+        }],
+        "_RedBagDetailDic": {301: {"isReward": True, "num": 10, "receiveNum": 1}},
+        "_UserGrabRedBagDic": {301: True},
+        "_HasOverdueUidDic": {},
+        "_BeLimitRedBagIdDic": {},
+        "_ReceiveRedBagList": [],
+        "_idIndependentMap": {},
+        "_eventMap": {},
+        "_MainUiRedBagShowList": [],
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.red_packet.LuaJitReader",
+        FakeReader,
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.red_packet.time.time",
+        lambda: now_ms / 1000,
+    )
+    memory = MumuProcessMemory(pid=1, process_start_ticks=2, adb_serial="test", regions=[])
+
+    result = _redpacket_snapshot(memory, 0x1234, cache_hit=True)
+
+    assert result["pending_count"] == 0
+    assert result["trigger_candidate_count"] == 0
+    assert result["special_event_items"][0]["classification"] == "special_event_excluded"
+    assert result["special_event_items"][0]["claimability"] == "definitively_excluded"
+    assert set(result["special_event_items"][0]["exclusion_reasons"]) == {
+        "server_rewarded",
+        "detail_rewarded",
+    }
+
+
 def test_redpacket_snapshot_preserves_all_real_list_rows_and_triggers_gui_deep_check(
     monkeypatch,
 ):

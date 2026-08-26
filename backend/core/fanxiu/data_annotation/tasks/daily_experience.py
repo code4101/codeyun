@@ -563,9 +563,37 @@ class DailyExperienceTaskMixin:
             if after_scene_id == 414:
                 after_purchase = _compact_text(runtime.ocr_text(after_frame))
                 if not before_purchase or after_purchase == before_purchase:
+                    # The purchase sheet is an overlay on #406.  A successful
+                    # purchase can leave its OCR text unchanged, while closing
+                    # the overlay consumes the owned item and lands on #413 or
+                    # directly on #405.  Close it through the already-proven
+                    # #406 return control before deciding whether the purchase
+                    # was ineffective; never click ``购买`` a second time from
+                    # an unconfirmed postcondition.
+                    runtime.click_shape_center(_EXPERIENCE_BOOKS_SCENE, "返回")
+                    closed = yield from runtime.wait_view(
+                        _EXPERIENCE_RESULT_SCENE,
+                        _EXPERIENCE_BOOKS_SCENE,
+                        _EXPERIENCE_TRAINING_SCENE,
+                        timeout=timeout,
+                        label="日常_经验：购买文本未变化，关闭 #414 后核验落点",
+                    )
+                    closed_id = int(getattr(closed, "id", closed))
+                    if closed_id == _EXPERIENCE_RESULT_SCENE:
+                        yield from self._daily_experience_close_bugged_result(
+                            runtime,
+                            timeout=timeout,
+                        )
+                        return
+                    if closed_id == _EXPERIENCE_TRAINING_SCENE:
+                        yield from self._daily_experience_reopen_books(
+                            runtime,
+                            timeout=timeout,
+                        )
+                        return
                     raise RuntimeError(
-                        "日常_经验：购买潜修真悟后未观察到业务文本变化，"
-                        "拒绝再次购买"
+                        "日常_经验：购买潜修真悟后未观察到业务文本变化；"
+                        "关闭购买层仅返回 #406，拒绝再次购买"
                     )
         frame = runtime.cur_frame(update=True)
         scene_id = self._daily_experience_observe_scene(

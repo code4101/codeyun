@@ -117,3 +117,32 @@ def test_recognition_ops_includes_persisted_navigation_stalls_when_matrix_is_mis
     assert issue["node_ids"] == [54, 34]
     assert {(edge["source_id"], edge["target_id"]) for edge in issue["edges"]} == {(54, 54), (54, 34)}
     assert next(category for category in report["categories"] if category["id"] == "navigation_stall")["count"] == 1
+
+
+def test_recognition_ops_includes_runtime_identity_ambiguity_aggregate():
+    report = build_recognition_ops_report(
+        {"scene_ids": [], "matches": [], "cache_missing": True},
+        {
+            3: {"title": "甲", "filename": "0003.png"},
+            9: {"title": "乙", "filename": "0009.png"},
+        },
+        recognition_ambiguities=[
+            {
+                "id": "ambiguity:abc",
+                "signature": "abc",
+                "layer": 2,
+                "tied_scene_ids": [3, 9],
+                "occurrence_count": 7,
+                "distinct_frame_count": 2,
+                "selected_scene_counts": {"9": 6, "unresolved": 1},
+                "first_seen_at": "2026-08-26T10:00:00+08:00",
+                "last_seen_at": "2026-08-26T11:00:00+08:00",
+            }
+        ],
+    )
+
+    issue = next(item for item in report["issues"] if item["category"] == "identity_ambiguity")
+    assert issue["node_ids"] == [3, 9]
+    assert issue["severity"] == "error"
+    assert issue["ambiguity"]["occurrence_count"] == 7
+    assert next(category for category in report["categories"] if category["id"] == "identity_ambiguity")["count"] == 1

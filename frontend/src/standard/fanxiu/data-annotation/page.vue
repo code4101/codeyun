@@ -492,6 +492,43 @@
               </template>
             </div>
 
+            <div v-else-if="selectedRecognitionOpsIssue?.ambiguity" class="navigation-incident-detail">
+              <div v-if="recognitionAmbiguityLoading" class="annotation-empty">加载并列样本</div>
+              <div v-else-if="recognitionAmbiguityError" class="recognition-ops-error">{{ recognitionAmbiguityError }}</div>
+              <template v-else-if="selectedRecognitionAmbiguity">
+                <div class="navigation-incident-facts">
+                  <span>Layer {{ selectedRecognitionAmbiguity.layer }}</span>
+                  <span>{{ selectedRecognitionAmbiguity.occurrence_count }} 次</span>
+                  <span>{{ selectedRecognitionAmbiguity.distinct_frame_count }} 张不同画面</span>
+                  <span>首次 {{ selectedRecognitionAmbiguity.first_seen_at.replace('T', ' ') }}</span>
+                  <span>最近 {{ selectedRecognitionAmbiguity.last_seen_at.replace('T', ' ') }}</span>
+                  <el-button
+                    size="small"
+                    plain
+                    :loading="recognitionAmbiguityRecomputing"
+                    @click="loadRecognitionAmbiguity(selectedRecognitionAmbiguity.signature, true)"
+                  >按当前资产重算</el-button>
+                </div>
+                <div class="navigation-incident-trigger">
+                  并列候选 {{ selectedRecognitionAmbiguity.tied_scene_ids.map(id => `#${id}`).join(' / ') }}；
+                  临时选择 {{ recognitionAmbiguitySelectionText || '无' }}
+                </div>
+                <div v-if="selectedRecognitionAmbiguity.sample_frames.length" class="navigation-incident-crops">
+                  <figure v-for="frame in selectedRecognitionAmbiguity.sample_frames" :key="frame.sha256">
+                    <img :src="recognitionAmbiguityFrameUrl(frame.path)" alt="识别并列现场原帧" />
+                    <figcaption>
+                      {{ frame.captured_at?.replace('T', ' ') || '现场原帧' }}
+                      · {{ frame.fallback_scene_id ? `临时 #${frame.fallback_scene_id}` : '未解决' }}
+                    </figcaption>
+                  </figure>
+                </div>
+                <details v-if="selectedRecognitionAmbiguity.recompute" class="navigation-incident-diagnostic">
+                  <summary>当前资产重算结果</summary>
+                  <pre>{{ JSON.stringify(selectedRecognitionAmbiguity.recompute, null, 2) }}</pre>
+                </details>
+              </template>
+            </div>
+
             <div v-else-if="selectedImageNode" class="annotation-editor">
               <div class="annotation-main-row">
                 <div
@@ -1491,6 +1528,7 @@ import {
   getFanxiuDataAnnotationImage,
   getFanxiuDataAnnotationAssetTree,
   getFanxiuDataAnnotationNavigationIncident,
+  getFanxiuDataAnnotationRecognitionAmbiguity,
   getFanxiuDataAnnotationRecognitionOps,
   getFanxiuBehaviorTreeRuntimeStatus,
   getFanxiuBehaviorTreeRuntimeLogs,
@@ -1536,6 +1574,7 @@ import {
   type FanxiuGameWindow2PreLabelPayload,
   type FanxiuBehaviorTreeRuntimeStatus,
   type FanxiuDataAnnotationNavigationIncident,
+  type FanxiuDataAnnotationRecognitionAmbiguitySummary,
   type FanxiuDataAnnotationSaveFrameResponse,
   type FanxiuDataAnnotationNavigationIncidentTimelineItem,
   type FanxiuDataAnnotationRecognitionOpsIssue,
@@ -1552,6 +1591,11 @@ import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore, type Device } from '@/store/taskStore';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { useSortableList } from '@/utils/useSortableList';
+import {
+  buildRecognitionOpsTree,
+  formatAmbiguitySelectionCounts,
+  type RecognitionOpsTreeNode,
+} from './recognitionOpsModel';
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import '@vue-flow/controls/dist/style.css';
@@ -7128,14 +7172,6 @@ type RuntimeLogEntry = FanxiuBehaviorTreeRuntimeLogEntry & {
   message: string;
 };
 
-type RecognitionOpsTreeNode = {
-  id: string;
-  label: string;
-  type: 'category' | 'issue';
-  issueId?: string;
-  children?: RecognitionOpsTreeNode[];
-};
-
 type DiscriminatorGroupMember = {
   imageId: number;
   shapeId: string;
@@ -7277,6 +7313,10 @@ const selectedNavigationIncident = ref<FanxiuDataAnnotationNavigationIncident | 
 const navigationIncidentLoading = ref(false);
 const navigationIncidentError = ref('');
 const selectedNavigationTimelineIndex = ref<number | null>(null);
+const selectedRecognitionAmbiguity = ref<FanxiuDataAnnotationRecognitionAmbiguitySummary | null>(null);
+const recognitionAmbiguityLoading = ref(false);
+const recognitionAmbiguityError = ref('');
+const recognitionAmbiguityRecomputing = ref(false);
 let recognitionOpsPollTimer: number | null = null;
 const imageCompareCanvasSizeOf = (image: HTMLImageElement | null) => {
   const fallbackImage = imageCompareSavedImage.value || imageCompareLiveImage.value;
@@ -8504,21 +8544,18 @@ const navigationIncidentIdentityCrops = computed(() => (
 const recognitionOpsCacheMissing = computed(() => Boolean(recognitionOpsReport.value?.matrix?.cache_missing));
 const recognitionOpsRecomputing = computed(() => Boolean(recognitionOpsReport.value?.recompute?.running));
 
-const recognitionOpsTreeData = computed<RecognitionOpsTreeNode[]>(() => (
-  (recognitionOpsReport.value?.categories ?? []).map((category) => ({
-    id: `category:${category.id}`,
-    label: `${category.label} ${category.count}`,
-    type: 'category',
-    children: (recognitionOpsReport.value?.issues ?? [])
-      .filter((issue) => issue.category === category.id)
-      .map((issue) => ({
-        id: `issue:${issue.id}`,
-        label: issue.label,
-        type: 'issue',
-        issueId: issue.id,
-      })),
-  }))
+const recognitionOpsTreeData = computed<RecognitionOpsTreeNode[]>(() => buildRecognitionOpsTree(
+  recognitionOpsReport.value?.categories ?? [],
+  recognitionOpsReport.value?.issues ?? [],
 ));
+
+const recognitionAmbiguitySelectionText = computed(() => (
+  formatAmbiguitySelectionCounts(selectedRecognitionAmbiguity.value?.selected_scene_counts ?? {})
+));
+
+const recognitionAmbiguityFrameUrl = (path: string) => (
+  selectedRecognitionAmbiguity.value?.frame_data_urls?.[path] ?? ''
+);
 
 const recognitionOpsMatrixText = computed(() => {
   const matrix = recognitionOpsReport.value?.matrix;
@@ -8604,6 +8641,7 @@ const loadRecognitionOps = async (recompute = false, silent = false) => {
     if (selectedRecognitionOpsIssueId.value && !response.issues.some((issue) => issue.id === selectedRecognitionOpsIssueId.value)) {
       selectedRecognitionOpsIssueId.value = null;
       selectedNavigationIncident.value = null;
+      selectedRecognitionAmbiguity.value = null;
       selectedNavigationTimelineIndex.value = null;
     }
   } catch (error) {
@@ -8621,13 +8659,40 @@ const handleRecognitionOpsNodeClick = (node: RecognitionOpsTreeNode) => {
   const issue = recognitionOpsIssueById.value.get(node.issueId);
   if (issue?.incident?.id) {
     void loadNavigationIncident(issue.incident.id);
-  } else {
+    selectedRecognitionAmbiguity.value = null;
+    recognitionAmbiguityError.value = '';
+  } else if (issue?.ambiguity?.signature) {
+    void loadRecognitionAmbiguity(issue.ambiguity.signature);
     selectedNavigationIncident.value = null;
     navigationIncidentError.value = '';
+    selectedNavigationTimelineIndex.value = null;
+  } else {
+    selectedNavigationIncident.value = null;
+    selectedRecognitionAmbiguity.value = null;
+    navigationIncidentError.value = '';
+    recognitionAmbiguityError.value = '';
     selectedNavigationTimelineIndex.value = null;
   }
   const firstImageId = issue?.node_ids[0];
   if (firstImageId !== undefined) void focusRecognitionOpsImage(firstImageId);
+};
+
+const loadRecognitionAmbiguity = async (signature: string, recompute = false) => {
+  if (!selectedEntryId.value) return;
+  if (recompute) recognitionAmbiguityRecomputing.value = true;
+  else recognitionAmbiguityLoading.value = true;
+  recognitionAmbiguityError.value = '';
+  try {
+    const response = await getFanxiuDataAnnotationRecognitionAmbiguity(selectedEntryId.value, signature, recompute);
+    if (selectedRecognitionOpsIssue.value?.ambiguity?.signature !== signature) return;
+    selectedRecognitionAmbiguity.value = response.ambiguity;
+  } catch (error) {
+    recognitionAmbiguityError.value = getErrorMessage(error);
+    if (!recompute) selectedRecognitionAmbiguity.value = null;
+  } finally {
+    recognitionAmbiguityLoading.value = false;
+    recognitionAmbiguityRecomputing.value = false;
+  }
 };
 
 const loadNavigationIncident = async (incidentId: string) => {
@@ -10466,6 +10531,8 @@ watch(selectedEntryId, () => {
   selectedNavigationIncident.value = null;
   navigationIncidentError.value = '';
   selectedNavigationTimelineIndex.value = null;
+  selectedRecognitionAmbiguity.value = null;
+  recognitionAmbiguityError.value = '';
   if (assetTreeViewMode.value === 'recognitionOps') void loadRecognitionOps(false);
 });
 
