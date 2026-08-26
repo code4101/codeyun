@@ -583,7 +583,15 @@ def _snapshot(
             end_time = item["end_time_epoch_ms"]
             item["config_loaded"] = True
             expired = end_time is not None and end_time <= int(time.time() * 1000)
-            if expired:
+            # A dedicated activity packet still obeys authoritative server
+            # and detail terminals.  Those facts are stronger than the
+            # generic "open the activity and inspect visually" fallback; if
+            # we overwrite them here, the minute patrol re-triggers a Job that
+            # can only rediscover the same rewarded terminal forever.
+            terminally_excluded = bool(item["exclusion_reasons"])
+            if terminally_excluded:
+                item["claimability"] = "definitively_excluded"
+            elif expired:
                 item["claimability"] = "definitively_excluded"
                 item["exclusion_reasons"].append("special_event_expired")
             else:
@@ -597,13 +605,17 @@ def _snapshot(
                 **special_config,
                 "daily_chat_actionable": False,
                 "classification": (
-                    "special_event_expired"
-                    if expired
-                    else "special_event_gui_deep_check_candidate"
+                    "special_event_excluded"
+                    if terminally_excluded
+                    else (
+                        "special_event_expired"
+                        if expired
+                        else "special_event_gui_deep_check_candidate"
+                    )
                 ),
             }
             special_event_items.append(special_item)
-            if not expired:
+            if not terminally_excluded and not expired:
                 pending.append(special_item)
                 claimability_unknown_reasons.append(
                     "special_event_visual_state_required"

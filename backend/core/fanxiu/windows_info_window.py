@@ -250,7 +250,7 @@ class FanxiuWindowsInfoWindow:
         settings = read_fanxiu_info_window_settings()
         settings_signature = tuple(sorted(settings.items()))
         observation_age_text = format_fanxiu_observation_age(
-            payload.get("observed_at"),
+            payload.get("captured_at") or payload.get("observed_at"),
             now=time.time(),
         )
         if (
@@ -309,7 +309,9 @@ class FanxiuWindowsInfoWindow:
             show_scene_id=bool(self.settings.get("show_scene_id", True)),
             show_scene_score=bool(self.settings.get("show_scene_score", True)),
         )
-        observation_age_text = format_fanxiu_observation_age(self.payload.get("observed_at"))
+        observation_age_text = format_fanxiu_observation_age(
+            self.payload.get("captured_at") or self.payload.get("observed_at")
+        )
         if observation_age_text:
             text = " ".join(part for part in (text, observation_age_text) if part)
         if text:

@@ -176,6 +176,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         trace: list[dict[str, Any]] | None = [] if trace_enabled else None
         frame = runner._screencap(ctx)
         scene_id, score = runner._identify_scene_number(ctx, frame, preferred_scene_ids, trace=trace)
+        if scene_id is not None or preferred_scene_ids is None:
+            runner._commit_scene_observation(ctx, frame, scene_id, score)
         with runner._lock:
             runner._status.update({
                 "phase": "detect_scene_debug" if trace_enabled else "manual_tick",

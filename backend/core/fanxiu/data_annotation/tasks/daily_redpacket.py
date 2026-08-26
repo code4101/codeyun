@@ -815,19 +815,29 @@ class DailyRedpacketTaskMixin:
         *,
         timeout_seconds: float,
         poll_seconds: float,
+        max_scrolls: int = 0,
     ):
-        """Wait for a current-frame group badge and click only its own row."""
+        """Wait for a live badge, then boundedly scan the group list.
+
+        ``_find_and_click_daily_redpacket_group`` keeps the action gate on the
+        current frame: scrolling never authorizes a row click by itself.  A
+        positive ``max_scrolls`` means one complete bounded list scan; once it
+        is exhausted, waiting longer on the bottom window cannot reveal a row
+        that the scan already disproved.
+        """
 
         deadline = time.monotonic() + max(1.0, float(timeout_seconds))
         while time.monotonic() < deadline:
             group = yield from self._find_and_click_daily_redpacket_group(
                 runtime,
                 ctx,
-                max_scrolls=0,
+                max_scrolls=max_scrolls,
                 settle_seconds=poll_seconds,
             )
             if group is not None:
                 return group
+            if max_scrolls > 0:
+                break
             yield from runtime.wait_action_settle(poll_seconds)
         raise TimeoutError("日常_红包：#332[窗口] 持续未匹配到当前帧红包群标记")
 
@@ -1234,6 +1244,7 @@ class DailyRedpacketTaskMixin:
                 ctx,
                 timeout_seconds=redpacket_confirm_seconds,
                 poll_seconds=poll_seconds,
+                max_scrolls=max_scrolls,
             )
         except TimeoutError:
             unavailable = self._daily_redpacket_require_fresh_uid_snapshot(

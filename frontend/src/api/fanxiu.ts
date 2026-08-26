@@ -718,6 +718,49 @@ export interface FanxiuDataAnnotationRecognitionOpsIssue {
   node_ids: number[];
   edges: FanxiuDataAnnotationRecognitionOpsEdge[];
   incident?: FanxiuDataAnnotationNavigationIncidentSummary | null;
+  ambiguity?: FanxiuDataAnnotationRecognitionAmbiguitySummary | null;
+}
+
+export interface FanxiuDataAnnotationRecognitionAmbiguityFrame {
+  sha256: string;
+  path: string;
+  width: number;
+  height: number;
+  captured_at?: string;
+  fallback_scene_id?: number | null;
+}
+
+export interface FanxiuDataAnnotationRecognitionAmbiguitySummary {
+  id: string;
+  signature: string;
+  review_status?: string | null;
+  layer: number;
+  tied_scene_ids: number[];
+  occurrence_count: number;
+  distinct_frame_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  selected_scene_counts: Record<string, number>;
+  sample_frames: FanxiuDataAnnotationRecognitionAmbiguityFrame[];
+  latest_event_id?: string;
+  latest_similarities?: Array<{ scene_id: number; score?: number | null }>;
+  asset_tree_sha256?: string;
+  recognizer_version?: string;
+  frame_data_urls?: Record<string, string>;
+  recompute?: {
+    scene_id?: number | null;
+    score: number;
+    status: string;
+    calculated_at: string;
+    asset_tree_sha256: string;
+    trace: Array<Record<string, unknown>>;
+  };
+}
+
+export interface FanxiuDataAnnotationRecognitionAmbiguityResponse {
+  ok: boolean;
+  entry_id: string;
+  ambiguity: FanxiuDataAnnotationRecognitionAmbiguitySummary;
 }
 
 export interface FanxiuDataAnnotationNavigationIncidentSummary {
@@ -6306,6 +6349,15 @@ export const getFanxiuDataAnnotationNavigationIncident = (entryId: string, incid
     .get<FanxiuDataAnnotationNavigationIncidentResponse>(
       `/fanxiu/data-annotation/recognition-ops/incidents/${encodeURIComponent(incidentId)}`,
       { params: { entry_id: entryId }, timeout: 120000 },
+    )
+    .then(res => res.data);
+};
+
+export const getFanxiuDataAnnotationRecognitionAmbiguity = (entryId: string, signature: string, recompute = false) => {
+  return api
+    .get<FanxiuDataAnnotationRecognitionAmbiguityResponse>(
+      `/fanxiu/data-annotation/recognition-ops/ambiguities/${encodeURIComponent(signature)}`,
+      { params: { entry_id: entryId, recompute }, timeout: 120000 },
     )
     .then(res => res.data);
 };

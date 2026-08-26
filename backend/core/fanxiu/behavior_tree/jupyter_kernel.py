@@ -296,7 +296,9 @@ class FanxiuJupyterBinding:
         try:
             self.runner._clear_tick_frame(self.runtime_ctx)
             frame = self.runner._screencap(self.runtime_ctx)
-            return self.runner._identify_scene_number(self.runtime_ctx, frame)
+            scene_id, score = self.runner._identify_scene_number(self.runtime_ctx, frame)
+            self.runner._commit_scene_observation(self.runtime_ctx, frame, scene_id, score)
+            return scene_id, score
         finally:
             self.runner._clear_tick_frame(self.runtime_ctx)
             if previous is None:

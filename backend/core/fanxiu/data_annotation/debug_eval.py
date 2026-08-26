@@ -93,6 +93,8 @@ class BehaviorTreeRuntimeDebugContext:
         self.check_stop()
         frame_data_url = frame or self.frame()
         scene_id, score = self._runner._identify_scene_number(self._ctx, frame_data_url, preferred_scene_ids)
+        if scene_id is not None or preferred_scene_ids is None:
+            self._runner._commit_scene_observation(self._ctx, frame_data_url, scene_id, score)
         with self._runner._lock:
             self._runner._status.update({
                 "phase": "debug_eval",

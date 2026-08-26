@@ -428,20 +428,22 @@ def test_daily_experience_provider_unavailable_fails_before_replace_click():
     assert calls == []
 
 
-def test_daily_experience_purchase_requires_business_delta_before_second_click():
+def test_daily_experience_purchase_without_ocr_delta_closes_overlay_before_second_click(monkeypatch):
     calls: list[tuple] = []
 
     class Landed:
-        id = 414
+        def __init__(self, scene_id):
+            self.id = scene_id
 
     class Runtime:
         def click_frame_point(self, scene, x, y):
             calls.append(("click_point", scene, x, y))
 
         def wait_view(self, *scenes, **_kwargs):
+            calls.append(("wait_view", scenes))
             if False:
                 yield None
-            return Landed()
+            return Landed(414 if scenes == (414, 413) else 405)
 
         def cur_frame(self, *, update=False):
             return "purchase-dialog"
@@ -457,29 +459,41 @@ def test_daily_experience_purchase_requires_business_delta_before_second_click()
             if False:
                 yield None
 
+        def click_shape_center(self, scene, shape):
+            calls.append(("click_shape_center", scene, shape))
+
         def wait_action_settle(self, seconds):
             if False:
                 yield None
 
     runner = _ExperienceRunner(Runtime())
+
+    def reopen_books(_runtime, *, timeout):
+        calls.append(("reopen_books", timeout))
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_daily_experience_reopen_books", reopen_books)
     group = group_experience_books([
         _line("潜修真悟", 600),
         _line("点击购买道具", 632),
     ])[0]
 
-    with pytest.raises(RuntimeError, match="未观察到业务文本变化"):
-        _run(
-            runner._daily_experience_buy_true_insight(
-                runner.runtime,
-                group,
-                timeout=18,
-                max_purchases=8,
-            )
+    _run(
+        runner._daily_experience_buy_true_insight(
+            runner.runtime,
+            group,
+            timeout=18,
+            max_purchases=8,
         )
+    )
 
     assert [call for call in calls if call[:2] == ("wait_click", 414)] == [
         ("wait_click", 414, "购买")
     ]
+    assert ("click_shape_center", 406, "返回") in calls
+    assert ("wait_view", (413, 406, 405)) in calls
+    assert ("reopen_books", 18) in calls
 
 
 def test_daily_experience_completion_propagates_interrupt_after_commit(monkeypatch):

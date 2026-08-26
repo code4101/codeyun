@@ -835,6 +835,34 @@ def test_daily_redpacket_group_icon_negative_never_clicks_a_chat_row(monkeypatch
     assert result is None
 
 
+def test_daily_redpacket_initial_group_gate_scans_bounded_list_once(monkeypatch):
+    runner = _Runner()
+    calls = []
+
+    def find_group(_runtime, _ctx, *, max_scrolls, settle_seconds):
+        calls.append((max_scrolls, settle_seconds))
+        if False:
+            yield None
+        return {"scroll_index": 9}
+
+    monkeypatch.setattr(
+        runner,
+        "_find_and_click_daily_redpacket_group",
+        find_group,
+    )
+
+    result = _consume(runner._wait_and_click_daily_redpacket_group(
+        object(),
+        {},
+        timeout_seconds=60,
+        poll_seconds=0.8,
+        max_scrolls=12,
+    ))
+
+    assert result == {"scroll_index": 9}
+    assert calls == [(12, 0.8)]
+
+
 def test_daily_redpacket_world_visual_gate_negative_never_clicks(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_now", lambda: datetime(2026, 7, 22, 12, 0, 0))
     runner = _Runner()

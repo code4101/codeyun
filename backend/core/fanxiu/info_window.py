@@ -13,6 +13,7 @@ from backend.core.settings import get_settings
 FANXIU_WINDOWS_INFO_WINDOW_HEARTBEAT_TTL_SECONDS = 3.0
 FANXIU_INFO_WINDOW_ACTIVE_INTERVAL_SECONDS = 1.0
 FANXIU_INFO_WINDOW_ACTIVE_RESULT_TTL_SECONDS = 5.0
+FANXIU_INFO_WINDOW_DECISION_SCOPE = "decision"
 FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
     "enabled": True,
     "active_recognition": False,
@@ -151,17 +152,28 @@ class FanxiuInfoWindowState:
         score: float,
         *,
         source: str,
+        scope: str = "probe",
+        entry_id: str = "",
+        asset_generation: int = 0,
+        frame_id: str = "",
         asset_directory: str = "",
         boxes: list[dict[str, Any]] | None = None,
         all_shape_boxes: list[dict[str, Any]] | None = None,
         frame_width: int = 0,
         frame_height: int = 0,
+        captured_at: float | None = None,
+        committed_at: float | None = None,
         observed_at: float | None = None,
         persist: bool = True,
     ) -> dict[str, Any]:
-        timestamp = float(observed_at if observed_at is not None else time.time())
+        capture_timestamp = float(
+            captured_at
+            if captured_at is not None
+            else (observed_at if observed_at is not None else time.time())
+        )
+        commit_timestamp = float(committed_at if committed_at is not None else time.time())
+        normalized_scope = str(scope or "").strip().lower()
         with self._lock:
-            self._revision += 1
             payload = {
                 "ok": True,
                 "name": "凡修信息窗",
@@ -196,9 +208,32 @@ class FanxiuInfoWindowState:
                 "frame_width": max(0, int(frame_width or 0)),
                 "frame_height": max(0, int(frame_height or 0)),
                 "source": str(source or "runtime"),
-                "observed_at": timestamp,
-                "revision": self._revision,
+                "scope": normalized_scope,
+                "entry_id": str(entry_id or ""),
+                "asset_generation": max(0, int(asset_generation or 0)),
+                "frame_id": str(frame_id or ""),
+                "captured_at": capture_timestamp,
+                "committed_at": commit_timestamp,
+                # Compatibility alias for older readers. Its meaning is now
+                # explicitly the frame capture time, never the commit time.
+                "observed_at": capture_timestamp,
             }
+            # The renderer is a projection of the scene observation which the
+            # behavior tree finally accepted for its current decision.  Layer0
+            # checks, route ranking and other candidate probes are deliberately
+            # non-authoritative: publishing their miss (or transient hit) must
+            # not erase the last committed scene shown in the title.
+            if normalized_scope != FANXIU_INFO_WINDOW_DECISION_SCOPE:
+                return {
+                    **payload,
+                    "revision": self._revision,
+                    "committed": False,
+                }
+            self._revision += 1
+            payload.update({
+                "revision": self._revision,
+                "committed": True,
+            })
             self._latest = payload
         if persist:
             try:
@@ -229,22 +264,34 @@ def publish_fanxiu_scene_recognition(
     scene_id: int | None,
     score: float,
     *,
+    scope: str = "probe",
     source: str = "runtime",
+    entry_id: str = "",
+    asset_generation: int = 0,
+    frame_id: str = "",
     asset_directory: str = "",
     boxes: list[dict[str, Any]] | None = None,
     all_shape_boxes: list[dict[str, Any]] | None = None,
     frame_width: int = 0,
     frame_height: int = 0,
+    captured_at: float | None = None,
+    committed_at: float | None = None,
 ) -> dict[str, Any]:
     return fanxiu_info_window_state.publish(
         scene_id,
         score,
         source=source,
+        scope=scope,
+        entry_id=entry_id,
+        asset_generation=asset_generation,
+        frame_id=frame_id,
         asset_directory=asset_directory,
         boxes=boxes,
         all_shape_boxes=all_shape_boxes,
         frame_width=frame_width,
         frame_height=frame_height,
+        captured_at=captured_at,
+        committed_at=committed_at,
     )
 
 
@@ -306,9 +353,9 @@ class FanxiuInfoWindowObserver:
 
         timestamp = float(now if now is not None else time.time())
         latest = self.state_reader()
-        observed_at = float(latest.get("observed_at") or 0.0)
-        result_age = timestamp - observed_at
-        if observed_at > 0.0 and 0.0 <= result_age < self.result_ttl_seconds:
+        captured_at = float(latest.get("captured_at") or latest.get("observed_at") or 0.0)
+        result_age = timestamp - captured_at
+        if captured_at > 0.0 and 0.0 <= result_age < self.result_ttl_seconds:
             return "fresh"
         if timestamp - self._last_attempt_at < self.interval_seconds:
             return "waiting"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from types import MethodType
 
+from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 from backend.core.fanxiu.info_window import (
     FanxiuInfoWindowObserver,
     FanxiuInfoWindowState,
@@ -87,6 +88,7 @@ def test_info_window_state_keeps_plain_shape_boxes() -> None:
         34,
         100,
         source="runtime",
+        scope="decision",
         asset_directory="日常/任务",
         boxes=[{"x": 818.3333, "y": 161.6666, "w": 46.6666, "h": 116.6666}],
         all_shape_boxes=[{"x": 10.1234, "y": 20.5678, "w": 30.9999, "h": 40.1111}],
@@ -100,6 +102,130 @@ def test_info_window_state_keeps_plain_shape_boxes() -> None:
     assert payload["asset_directory"] == "日常/任务"
     assert payload["text"] == "日常/任务 #34 100%"
     assert (payload["frame_width"], payload["frame_height"]) == (900, 1600)
+    assert payload["scope"] == "decision"
+    assert payload["committed"] is True
+
+
+def test_info_window_age_uses_frame_capture_time_not_commit_time() -> None:
+    state = FanxiuInfoWindowState()
+    payload = state.publish(
+        414,
+        100,
+        source="go_scene",
+        scope="decision",
+        captured_at=100.0,
+        committed_at=109.0,
+        persist=False,
+    )
+
+    assert payload["captured_at"] == 100.0
+    assert payload["committed_at"] == 109.0
+    assert payload["observed_at"] == 100.0
+    assert format_fanxiu_observation_age(payload["captured_at"], now=110.0) == "10s"
+
+
+def test_local_probe_miss_does_not_replace_committed_scene() -> None:
+    state = FanxiuInfoWindowState()
+    committed = state.publish(
+        414,
+        100,
+        source="go_scene",
+        scope="decision",
+        persist=False,
+    )
+
+    probe = state.publish(
+        None,
+        0,
+        source="wait_view",
+        scope="probe",
+        persist=False,
+    )
+
+    assert probe["committed"] is False
+    assert probe["revision"] == committed["revision"]
+    assert state.read()["scene_id"] == 414
+    assert state.read()["source"] == "go_scene"
+
+
+def test_local_probe_miss_without_committed_scene_stays_unpublished(monkeypatch, tmp_path) -> None:
+    from backend.core.fanxiu import info_window as info_window_module
+
+    monkeypatch.setattr(
+        info_window_module,
+        "fanxiu_info_window_state_path",
+        lambda: tmp_path / "missing-info-window-state.json",
+    )
+    state = FanxiuInfoWindowState()
+
+    probe = state.publish(
+        None,
+        0,
+        source="wait_view",
+        scope="probe",
+        persist=False,
+    )
+
+    assert probe["committed"] is False
+    assert state.read() == {}
+
+
+def test_navigation_decision_can_update_committed_projection() -> None:
+    state = FanxiuInfoWindowState()
+
+    payload = state.publish(
+        414,
+        100,
+        source="go_scene",
+        scope="decision",
+        persist=False,
+    )
+
+    assert payload["committed"] is True
+    assert state.read()["scene_id"] == 414
+    assert state.read()["scope"] == "decision"
+
+
+def test_runtime_commits_final_scene_but_not_scoped_miss_or_unaccepted_hit(monkeypatch) -> None:
+    runner = create_behavior_tree_runtime_runner()
+    runtime = runner._fanxiu_runtime({"entry": object(), "images": {34: {}, 414: {}}})
+    results = iter(((414, 100.0), (None, 0.0), (34, 100.0)))
+    commits: list[tuple[int | None, float, str]] = []
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr(
+        runner,
+        "_commit_scene_observation",
+        lambda _ctx, frame, scene_id, score: commits.append((scene_id, score, frame)),
+    )
+
+    assert runtime.current_scene(frame_data_url="global-frame", handle_interruptions=False)[:2] == (414, 100.0)
+    assert runtime.current_scene([34], frame_data_url="scoped-miss", handle_interruptions=False)[:2] == (None, 0.0)
+    with runner._scene_observation_probe(runtime.ctx):
+        assert runtime.current_scene(
+            [34],
+            frame_data_url="unaccepted-hit",
+            handle_interruptions=False,
+        )[:2] == (34, 100.0)
+
+    assert commits == [(414, 100.0, "global-frame")]
+
+
+def test_tick_frame_keeps_one_capture_time_across_same_frame_layers(monkeypatch) -> None:
+    from backend.core.fanxiu.data_annotation import behavior_tree_runtime as behavior_tree_runtime_module
+
+    runner = create_behavior_tree_runtime_runner()
+    ctx: dict = {}
+    now = {"value": 100.0}
+    monkeypatch.setattr(behavior_tree_runtime_module.time, "time", lambda: now["value"])
+
+    runner._set_tick_frame(ctx, "frame-a")
+    now["value"] = 109.0
+    runner._set_tick_frame(ctx, "frame-a")
+    assert ctx["_tick_frame_captured_at"] == 100.0
+
+    runner._clear_tick_frame(ctx)
+    runner._set_tick_frame(ctx, "frame-a")
+    assert ctx["_tick_frame_captured_at"] == 109.0
 
 
 def test_info_window_observer_is_strictly_read_only_when_active_recognition_is_off() -> None:
@@ -205,10 +331,12 @@ def test_runtime_scene_recognition_publishes_existing_result(monkeypatch) -> Non
             **kwargs,
         }),
     )
+    monkeypatch.setattr(behavior_tree_runtime_module.time, "time", lambda: 123.0)
 
-    assert runner._identify_scene_number(
-        {
+    ctx = {
             "_fanxiu_scene_observation_source": "engineering_cell",
+            "entry_id": "fanxiu-entry",
+            "asset_tree_generation": 7,
             "asset_tree": [
                 {
                     "type": "group",
@@ -225,13 +353,18 @@ def test_runtime_scene_recognition_publishes_existing_result(monkeypatch) -> Non
                 },
             ],
             "images": {34: {}},
-        },
-        "frame",
-    ) == (34, 98.5)
+        }
+    scene_id, score = runner._identify_scene_number(ctx, "frame")
+    runner._commit_scene_observation(ctx, "frame", scene_id, score)
+    assert (scene_id, score) == (34, 98.5)
     assert published == [{
         "scene_id": 34,
         "score": 98.5,
+        "scope": "decision",
         "source": "engineering_cell",
+        "entry_id": "fanxiu-entry",
+        "asset_generation": 7,
+        "frame_id": "9dff50df08c63581",
         "asset_directory": "日程/玩法榜",
         "boxes": [{"x": 818.0, "y": 161.0, "w": 47.0, "h": 117.0}],
         "all_shape_boxes": [
@@ -240,10 +373,12 @@ def test_runtime_scene_recognition_publishes_existing_result(monkeypatch) -> Non
         ],
         "frame_width": 900,
         "frame_height": 1600,
+        "captured_at": 123.0,
+        "committed_at": 123.0,
     }]
 
 
-def test_runtime_scene_recognition_publishes_maintenance_ocr_over_generic_popup(monkeypatch) -> None:
+def test_runtime_scene_recognition_does_not_override_graph_with_unscoped_ocr(monkeypatch) -> None:
     from backend.core.fanxiu.data_annotation import behavior_tree_runtime as behavior_tree_runtime_module
 
     runner = object.__new__(behavior_tree_runtime_module.BehaviorTreeRuntimeRunner)
@@ -273,8 +408,6 @@ def test_runtime_scene_recognition_publishes_maintenance_ocr_over_generic_popup(
         "_fanxiu_scene_observation_source": "manual_cell",
         "images": {47: {}, 415: {}},
     }
-    assert runner._identify_scene_number(ctx, "frame") == (415, 100.0)
-    assert ctx["_last_scene_recognition_status"] == "startup_ocr"
-    assert published[0]["scene_id"] == 415
-    assert published[0]["score"] == 100.0
-    assert published[0]["source"] == "manual_cell"
+    assert runner._identify_scene_number(ctx, "frame") == (47, 88.0)
+    assert ctx["_last_scene_recognition_status"] == "matched"
+    assert published == []
