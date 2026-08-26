@@ -63,7 +63,7 @@ def test_estimate_remaining_attempts_leaves_non_targets_blank() -> None:
     ) is None
 
 
-def test_one_shot_budget_prefers_stage9_then_stage8_without_replanning() -> None:
+def test_one_shot_budget_prefers_closing_then_other_discount_without_replanning() -> None:
     rate = ExchangeYieldRate(exchange_currency_delta=1000, attempt_count=10)
 
     full = plan_available_attempts(
@@ -88,10 +88,10 @@ def test_one_shot_budget_prefers_stage9_then_stage8_without_replanning() -> None
         yield_rate=rate,
     )
 
-    assert (full.target_level, full.planned_attempts) == ("stage9", 40)
-    assert (fallback.target_level, fallback.planned_attempts) == ("stage8", 25)
+    assert (full.target_level, full.planned_attempts) == ("收尾道具", 40)
+    assert (fallback.target_level, fallback.planned_attempts) == ("其他折扣", 25)
     assert (approach.target_level, approach.planned_attempts) == (
-        "approach_stage8",
+        "尽量接近其他折扣",
         15,
     )
 

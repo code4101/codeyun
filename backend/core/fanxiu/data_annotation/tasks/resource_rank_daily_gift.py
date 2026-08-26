@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
-import statistics
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -20,7 +19,7 @@ from backend.core.fanxiu.data_annotation.schedule_navigation import (
     CALENDAR_SHAPE,
     HEADER_SHAPE,
     SCHEDULE_SCENE_ID,
-    parse_schedule_header,
+    resolve_schedule_runtime_activity_targets,
     runtime_activity_entities_for_date,
 )
 from backend.core.fanxiu.instrumentation.activity_gift import (
@@ -259,6 +258,57 @@ def _resource_rank_schedule_entry_date(
     return datetime.fromtimestamp(start_millis / 1000.0, tz=zone).date()
 
 
+def _resolve_resource_rank_schedule_target(
+    entities: Iterable[Any],
+    *,
+    activity_id: int,
+    now: datetime,
+    header_lines: Iterable[Mapping[str, Any]],
+    calendar_lines: Iterable[Mapping[str, Any]],
+):
+    """Align one exact occurrence to a calendar row and start-date column.
+
+    Multi-day calendar bars can span several date columns, while their OCR
+    title is rendered near the middle of the bar.  The title's X coordinate is
+    therefore not evidence that the occurrence belongs to that date.  Runtime
+    identity/qualifier selects the row; the occurrence start date independently
+    selects the click column.
+    """
+
+    exact_entities = tuple(
+        entity
+        for entity in entities
+        if int(
+            (
+                entity.get("payload")
+                if isinstance(entity, Mapping)
+                else getattr(entity, "payload", {})
+            ).get("activityId")
+            or 0
+        )
+        == int(activity_id)
+    )
+    entry_date = _resource_rank_schedule_entry_date(
+        exact_entities,
+        activity_id=activity_id,
+        now=now,
+    )
+    day_offset = (entry_date - now.date()).days
+    targets = resolve_schedule_runtime_activity_targets(
+        header_lines=header_lines,
+        calendar_lines=calendar_lines,
+        runtime_entities=exact_entities,
+        day_offset=day_offset,
+        anchor_date=now.date(),
+    )
+    if len(targets) != 1:
+        raise RuntimeError(
+            f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：活动 {activity_id} 在 #66 "
+            f"对齐到 {len(targets)} 个日历任务行，拒绝猜测"
+        )
+    return targets[0], entry_date
+
+
 def _enter_adapter_from_schedule(
     runtime: Any,
     adapter: ResourceRankGiftAdapter,
@@ -277,15 +327,9 @@ def _enter_adapter_from_schedule(
         raise RuntimeError(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：缺少当天 {adapter.label} Runtime 日程实体"
         )
-    entry_date = _resource_rank_schedule_entry_date(
-        entities,
-        activity_id=activity_id,
-        now=now,
-    )
-    day_offset = (entry_date - now.date()).days
-    pattern = re.compile(adapter.schedule_pattern)
-    candidates: list[Mapping[str, Any]] = []
-    target_x = 0.0
+    target = None
+    entry_date = None
+    last_alignment_error: Exception | None = None
     # #66 first becomes recognizable before its calendar cards necessarily
     # finish rendering.  Refresh a bounded number of frames so that this
     # transient state cannot turn an open activity into a false negative.
@@ -303,48 +347,32 @@ def _enter_adapter_from_schedule(
         calendar_lines = runtime.ocr_fragments_in_shapes(
             SCHEDULE_SCENE_ID, [CALENDAR_SHAPE], frame_data_url=frame
         )
-        header = parse_schedule_header(header_lines)
-        target_x = header.x_for_day_offset(day_offset)
-        gaps = [
-            right - left
-            for left, right in zip(header.column_centers, header.column_centers[1:])
-            if right > left
-        ]
-        tolerance = (statistics.median(gaps) if gaps else 150.0) * 0.45
-        candidates = [
-            line
-            for line in calendar_lines
-            if pattern.search(re.sub(r"\s+", "", str(line.get("text") or "")))
-            and abs(
-                float(line.get("x") or 0.0)
-                + float(line.get("w") or 0.0) / 2.0
-                - target_x
+        try:
+            target, entry_date = _resolve_resource_rank_schedule_target(
+                entities,
+                activity_id=activity_id,
+                now=now,
+                header_lines=header_lines,
+                calendar_lines=calendar_lines,
             )
-            <= tolerance
-        ]
-        if candidates or attempt == 2:
+            break
+        except RuntimeError as exc:
+            last_alignment_error = exc
+        if attempt == 2:
             break
         yield from runtime.wait_action_settle(1.0)
-    if not candidates:
+    if target is None or entry_date is None:
         raise RuntimeError(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：Runtime 确认活动 {activity_id} 正在开放，"
-            f"但 #66 连续三帧未在开始日 {entry_date}（偏移 {day_offset}）识别到"
-            f"{adapter.label}；拒绝误报已完成"
+            f"但 #66 连续三帧未把{adapter.label}对齐到唯一任务行；"
+            f"{last_alignment_error or '无可用 OCR 候选'}"
         )
-    if len(candidates) != 1:
-        raise RuntimeError(
-            f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：开始日列 {entry_date} 的"
-            f"{adapter.label}候选数为 {len(candidates)}"
-        )
-    target_y = float(candidates[0].get("y") or 0.0) + float(
-        candidates[0].get("h") or 0.0
-    ) / 2.0
     runtime.runner._raise_if_stopped(runtime.stop_event)
     runtime.runner._click_frame_point(
         runtime.ctx,
         runtime.view(SCHEDULE_SCENE_ID).raw,
-        target_x,
-        target_y,
+        target.x,
+        target.y,
     )
     runtime.clear_frame()
     targets = [*adapter.page_scene_ids]

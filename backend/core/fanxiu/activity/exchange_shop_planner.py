@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
+from enum import StrEnum
 from typing import Iterable, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
@@ -40,50 +41,61 @@ ALCHEMY_SCRAP_BOX_SUFFIX = "废料匣·壹"
 OVERFLOW_ITEMS = ("玄灵丹·珍", "玄灵丹·尚")
 
 
+class ExchangePriorityId(StrEnum):
+    """Stable business identities; their display order may change."""
+
+    DAIER = "黛儿"
+    CURRENT_PRAYER = "本周祈愿"
+    NEXT_PRAYER = "下周祈愿"
+    CARD_MAIL = "卡邮件"
+    DAO_FRAGMENT = "道则碎片"
+    PRAYER_RESOURCE = "祈愿资源"
+    RESOURCE = "资源"
+    PARTNER_ROOT = "仙侣灵根"
+    LOWEST_DISCOUNT = "最低折扣"
+    OTHER_DISCOUNT = "其他折扣"
+    ORDERED_GOODS = "顺序道具"
+    CLOSING_GOODS = "收尾道具"
+    OVERFLOW_PILL = "溢出丹药"
+    NOT_NEEDED = "不需要领"
+
+
+EXCHANGE_PRIORITY_ORDER = tuple(ExchangePriorityId)
+
+
 @dataclass(frozen=True)
 class ExchangeShopPriorityPolicy:
-    """Declarative policy: stable layers plus small ordered tuning points."""
-
     schema: int
     prayer_resource_by_cycle: Mapping[str, str]
     prayer_resource_priority: tuple[str, ...]
     equipment_resource_names: tuple[str, ...]
-    front_discounted_names: tuple[str, ...]
+    daier_names: tuple[str, ...]
     dao_fragment_names: tuple[str, ...]
     partner_root_item_ids: frozenset[int]
     partner_root_names: tuple[str, ...]
-    discounted_book_suffixes: tuple[str, ...]
-    stage9_front_suffixes: tuple[str, ...]
-    stage9_tail_names: tuple[str, ...]
+    closing_goods_names: tuple[str, ...]
     overflow_names: tuple[str, ...]
 
 
 DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY = ExchangeShopPriorityPolicy(
-    schema=3,
+    schema=5,
     prayer_resource_by_cycle=PRAYER_RESOURCE_BY_CYCLE,
     prayer_resource_priority=PRAYER_RESOURCE_PRIORITY,
     equipment_resource_names=(EQUIPMENT_IRON_BOX,),
-    front_discounted_names=(),
+    daier_names=(),
     dao_fragment_names=DAO_FRAGMENT_NAMES,
     partner_root_item_ids=PARTNER_ROOT_ITEM_IDS,
     partner_root_names=PARTNER_ROOT_NAMES,
-    discounted_book_suffixes=("残页", "残篇"),
-    stage9_front_suffixes=(ALCHEMY_SCRAP_BOX_SUFFIX,),
-    stage9_tail_names=(TEACHING_JADE, "灵根补全自选匣"),
+    closing_goods_names=(TEACHING_JADE, "灵根补全自选匣"),
     overflow_names=OVERFLOW_ITEMS,
 )
-
 XIANYUAN_DUOKUI_EXCHANGE_SHOP_PRIORITY_POLICY = replace(
     DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY,
-    front_discounted_names=(XIANYUAN_DUOKUI_DISCOUNTED_DAIER,),
+    daier_names=(XIANYUAN_DUOKUI_DISCOUNTED_DAIER,),
 )
 
 
-def exchange_shop_priority_policy(
-    activity_type: str,
-) -> ExchangeShopPriorityPolicy:
-    """Return the narrow activity override without changing shared layers."""
-
+def exchange_shop_priority_policy(activity_type: str) -> ExchangeShopPriorityPolicy:
     if str(activity_type or "").strip() == "xianyuan-duokui":
         return XIANYUAN_DUOKUI_EXCHANGE_SHOP_PRIORITY_POLICY
     return DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY
@@ -103,6 +115,8 @@ class ShopItemLike(Protocol):
 @dataclass(frozen=True)
 class ExchangeShopPlan:
     policy_schema: int
+    priority_order_ids: tuple[str, ...]
+    priority_group_goods_ids: Mapping[str, tuple[int, ...]]
     ordered_goods_ids: tuple[int, ...]
     locked_goods_ids: tuple[int, ...]
     current_prayer_cycle: str
@@ -110,27 +124,20 @@ class ExchangeShopPlan:
     planning_date: str
     next_prayer_resource: str | None
     card_mail_resource: str | None
-    shop_close_at: str | None
-    weekly_rollover_at: str
-    shop_closes_after_weekly_rollover: bool
-    front_discounted_goods_ids: tuple[int, ...]
-    front_discounted_total_tokens: int
-    front_discounted_remaining_tokens: int
-    discounted_book_goods_ids: tuple[int, ...]
-    stage8_goods_ids: tuple[int, ...]
-    stage9_goods_ids: tuple[int, ...]
-    stage8_total_tokens: int
-    stage8_remaining_tokens: int
-    stage9_total_tokens: int
-    stage9_remaining_tokens: int
-    stage9_complete: bool
+    activity_page_close_at: str | None
+    next_prayer_cutoff_at: str
+    activity_page_closes_after_next_prayer_cutoff: bool
+    target_goods_ids: Mapping[str, tuple[int, ...]]
+    target_total_tokens: Mapping[str, int]
+    target_remaining_tokens: Mapping[str, int]
+    closing_goods_items_complete: bool
     card_mail_reserved_tokens: int
     locked_reserved_tokens: int
 
 
 @dataclass(frozen=True)
 class ExchangeShopFundingStatus:
-    stage: int
+    target_id: str
     current_tokens: int
     remaining_tokens: int
     additional_tokens_required: int
@@ -141,21 +148,17 @@ def exchange_shop_funding_status(
     plan: ExchangeShopPlan,
     *,
     current_tokens: int,
-    stage: int = 9,
+    target_id: ExchangePriorityId | str = ExchangePriorityId.CLOSING_GOODS,
 ) -> ExchangeShopFundingStatus:
-    """Report the additional currency needed for one policy stage."""
-
     if int(current_tokens) < 0:
         raise ValueError("current_tokens 不能为负数")
-    if int(stage) == 8:
-        remaining = int(plan.stage8_remaining_tokens)
-    elif int(stage) == 9:
-        remaining = int(plan.stage9_remaining_tokens)
-    else:
-        raise ValueError("仅支持兑换策略第8层或第9层")
+    semantic_id = str(target_id)
+    if semantic_id not in plan.target_remaining_tokens:
+        raise ValueError(f"不支持的兑换目标：{semantic_id}")
+    remaining = int(plan.target_remaining_tokens[semantic_id])
     shortfall = max(0, remaining - int(current_tokens))
     return ExchangeShopFundingStatus(
-        stage=int(stage),
+        target_id=semantic_id,
         current_tokens=int(current_tokens),
         remaining_tokens=remaining,
         additional_tokens_required=shortfall,
@@ -166,67 +169,41 @@ def exchange_shop_funding_status(
 def _local_moment(value: datetime | str | None) -> datetime | None:
     if value is None:
         return None
-    moment = (
-        value
-        if isinstance(value, datetime)
-        else datetime.fromisoformat(str(value))
-    )
+    moment = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
     timezone = ZoneInfo("Asia/Shanghai")
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone)
     return moment.astimezone(timezone)
 
 
-def _is_discounted_book(
-    item: ShopItemLike,
-    policy: ExchangeShopPriorityPolicy,
-) -> bool:
-    name = str(item.name or "").strip()
+def _is_discounted_item(item: ShopItemLike) -> bool:
     return (
         item.purchase_limit >= 0
         and item.discount is not None
         and int(item.discount) < 100
-        and name.endswith(policy.discounted_book_suffixes)
     )
 
 
-def _ordered_discounted_books(
+def _discounted_item_groups(
     items: Iterable[ShopItemLike],
-    policy: ExchangeShopPriorityPolicy,
-) -> list[ShopItemLike]:
-    """Order discounted book rows in a fair first pass, then by discount.
-
-    Every book gets its lowest-price row before any book gets a second row.
-    Remaining discounted rows then follow discount strength and GUI order.
-    Full-price rows stay in the later source-ordered limited tier.
-    """
+) -> tuple[list[ShopItemLike], list[ShopItemLike]]:
+    """Return every item's lowest discount, then other rows in page order."""
 
     grouped: dict[int, list[ShopItemLike]] = {}
     for item in items:
-        if not _is_discounted_book(item, policy):
-            continue
-        grouped.setdefault(int(item.item_id), []).append(item)
+        if _is_discounted_item(item):
+            grouped.setdefault(int(item.item_id), []).append(item)
+    lowest: list[ShopItemLike] = []
+    other: list[ShopItemLike] = []
     for rows in grouped.values():
-        rows.sort(
-            key=lambda row: (
-                int(row.discount or 100),
-                row.source_order,
-                row.goods_id,
-            )
-        )
-    first_pass = sorted(
-        (rows[0] for rows in grouped.values()),
-        key=lambda row: (row.source_order, row.goods_id),
-    )
-    remaining = sorted(
-        (row for rows in grouped.values() for row in rows[1:]),
-        key=lambda row: (
-            int(row.discount or 100),
-            row.source_order,
-            row.goods_id,
-        ),
-    )
-    return [*first_pass, *remaining]
+        minimum = min(int(row.discount or 100) for row in rows)
+        candidates = [row for row in rows if int(row.discount or 100) == minimum]
+        chosen = min(candidates, key=lambda row: (row.source_order, row.goods_id))
+        lowest.append(chosen)
+        other.extend(row for row in rows if row is not chosen)
+    lowest.sort(key=lambda row: (row.source_order, row.goods_id))
+    other.sort(key=lambda row: (row.source_order, row.goods_id))
+    return lowest, other
 
 
 def build_exchange_shop_plan(
@@ -237,17 +214,11 @@ def build_exchange_shop_plan(
     shop_close_at: datetime | str | None = None,
     policy: ExchangeShopPriorityPolicy = DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY,
 ) -> ExchangeShopPlan:
-    """Calculate the shared limited-activity exchange order.
+    """Build the semantic exchange order and target budgets.
 
-    ``planning_date`` determines the current prayer week while the activity
-    is live. Callers clamp a post-activity grace-period refresh to the end
-    date, so Monday does not reinterpret an occurrence that has already ended.
-    The next week's prayer resource is reserved only when the exact
-    ``shop_close_at`` is strictly later than that prayer week's Monday 00:00
-    rollover. A missing exact close time fails closed instead of inferring the
-    window from the activity end weekday.
-    Unknown goods remain in the source-ordered limited tier; evidence-poor
-    unlimited goods are excluded instead of guessed into the overflow tier.
+    The next-week prayer lock exists only when the exact activity-page close
+    time is strictly later than next Monday 01:00. Missing exact time fails
+    closed. ``activity_end_date`` still defines which prayer week is current.
     """
 
     rows = sorted(items, key=lambda row: (row.source_order, row.goods_id))
@@ -264,47 +235,50 @@ def build_exchange_shop_plan(
         else end_date
     )
     planning_moment = datetime.combine(
-        effective_planning_date,
-        time(hour=12),
-        tzinfo=ZoneInfo("Asia/Shanghai"),
+        effective_planning_date, time(hour=12), tzinfo=ZoneInfo("Asia/Shanghai")
     )
     current_week = prayer_cycle_week(planning_moment)
     current_resource = policy.prayer_resource_by_cycle[current_week.name]
-    weekly_rollover = current_week.week_start + timedelta(weeks=1)
+    next_monday = current_week.week_start + timedelta(weeks=1)
+    next_prayer_cutoff = next_monday + timedelta(hours=1)
     close_moment = _local_moment(shop_close_at)
-    closes_after_rollover = bool(
-        close_moment is not None and close_moment > weekly_rollover
+    closes_after_cutoff = bool(
+        close_moment is not None and close_moment > next_prayer_cutoff
     )
     next_resource = (
-        policy.prayer_resource_by_cycle[prayer_cycle_week(weekly_rollover).name]
-        if closes_after_rollover
+        policy.prayer_resource_by_cycle[prayer_cycle_week(next_monday).name]
+        if closes_after_cutoff
         else None
     )
 
-    ordered: list[ShopItemLike] = []
+    groups: dict[ExchangePriorityId, list[ShopItemLike]] = {
+        semantic_id: [] for semantic_id in EXCHANGE_PRIORITY_ORDER
+    }
     selected_ids: set[int] = set()
 
-    def append_rows(candidates: Iterable[ShopItemLike]) -> None:
+    def select(semantic_id: ExchangePriorityId, candidates: Iterable[ShopItemLike]) -> None:
         for candidate in candidates:
-            if int(candidate.goods_id) in selected_ids:
+            goods_id = int(candidate.goods_id)
+            if goods_id in selected_ids:
                 continue
-            ordered.append(candidate)
-            selected_ids.add(int(candidate.goods_id))
+            groups[semantic_id].append(candidate)
+            selected_ids.add(goods_id)
 
-    front_discounted = [
-        item
-        for name in policy.front_discounted_names
-        for item in by_name.get(name, ())
-        if item.purchase_limit >= 0
-        and item.discount is not None
-        and int(item.discount) < 100
-    ]
-    append_rows(front_discounted)
-    append_rows(by_name.get(current_resource, ()))
+    select(
+        ExchangePriorityId.DAIER,
+        (
+            item
+            for name in policy.daier_names
+            for item in by_name.get(name, ())
+            if item.purchase_limit >= 0 and int(item.discount or 100) == 50
+        ),
+    )
+    select(ExchangePriorityId.CURRENT_PRAYER, by_name.get(current_resource, ()))
+
     locked: list[ShopItemLike] = []
     if next_resource:
-        next_rows = by_name.get(next_resource, ())
-        append_rows(next_rows)
+        next_rows = list(by_name.get(next_resource, ()))
+        select(ExchangePriorityId.NEXT_PRAYER, next_rows)
         locked.extend(next_rows)
 
     excluded_reservations = {current_resource, next_resource}
@@ -317,74 +291,68 @@ def build_exchange_shop_plan(
         None,
     )
     if card_mail_resource:
-        card_rows = by_name[card_mail_resource]
-        append_rows(card_rows)
+        card_rows = list(by_name[card_mail_resource])
+        select(ExchangePriorityId.CARD_MAIL, card_rows)
         locked.extend(card_rows)
 
-    for name in (
-        *policy.prayer_resource_priority,
-        *policy.equipment_resource_names,
-    ):
-        append_rows(by_name.get(name, ()))
     for name in policy.dao_fragment_names:
-        append_rows(by_name.get(name, ()))
-    append_rows(
-        item
-        for item in rows
-        if int(item.item_id) in policy.partner_root_item_ids
-        and str(item.name or "").strip() in policy.partner_root_names
+        select(ExchangePriorityId.DAO_FRAGMENT, by_name.get(name, ()))
+    for name in policy.prayer_resource_priority:
+        select(ExchangePriorityId.PRAYER_RESOURCE, by_name.get(name, ()))
+    for name in policy.equipment_resource_names:
+        select(ExchangePriorityId.RESOURCE, by_name.get(name, ()))
+    select(
+        ExchangePriorityId.PARTNER_ROOT,
+        (
+            item
+            for item in rows
+            if int(item.item_id) in policy.partner_root_item_ids
+            and str(item.name or "").strip() in policy.partner_root_names
+        ),
     )
 
-    discounted_books = _ordered_discounted_books(rows, policy)
-    append_rows(discounted_books)
+    lowest_discount, other_discount = _discounted_item_groups(rows)
+    select(ExchangePriorityId.LOWEST_DISCOUNT, lowest_discount)
+    select(ExchangePriorityId.OTHER_DISCOUNT, other_discount)
 
-    stage9_front = [
-        item
-        for item in rows
-        if item.purchase_limit >= 0
-        and int(item.goods_id) not in selected_ids
-        and str(item.name or "").strip().endswith(policy.stage9_front_suffixes)
-    ]
-    remaining_limited = [
-        item
-        for item in rows
-        if item.purchase_limit >= 0
-        and int(item.goods_id) not in selected_ids
-        and str(item.name or "").strip() not in policy.stage9_tail_names
-        and not str(item.name or "").strip().endswith(
-            policy.stage9_front_suffixes
+    closing_names = set(policy.closing_goods_names)
+    select(
+        ExchangePriorityId.ORDERED_GOODS,
+        (
+            item
+            for item in rows
+            if item.purchase_limit >= 0
+            and str(item.name or "").strip() not in closing_names
+        ),
+    )
+    for name in policy.closing_goods_names:
+        select(
+            ExchangePriorityId.CLOSING_GOODS,
+            (item for item in by_name.get(name, ()) if item.purchase_limit >= 0),
         )
-    ]
-    stage9_tail = [
-        item
-        for name in policy.stage9_tail_names
-        for item in by_name.get(name, ())
-        if item.purchase_limit >= 0 and int(item.goods_id) not in selected_ids
-    ]
-    stage9 = [*stage9_front, *remaining_limited, *stage9_tail]
-    append_rows(stage9)
-
     for name in policy.overflow_names:
-        append_rows(
-            item for item in by_name.get(name, ()) if item.purchase_limit < 0
+        select(
+            ExchangePriorityId.OVERFLOW_PILL,
+            (item for item in by_name.get(name, ()) if item.purchase_limit < 0),
         )
+    select(
+        ExchangePriorityId.NOT_NEEDED,
+        (item for item in rows if int(item.goods_id) not in selected_ids),
+    )
 
-    # The business contract permits at most two concrete locked goods rows.
+    # “不需要领”保留在档次表中供页面展示，但不能进入实际领取顺序。
     locked_unique: list[ShopItemLike] = []
     for item in locked:
         if item not in locked_unique:
             locked_unique.append(item)
     locked_unique = locked_unique[:2]
-
     locked_id_set = {int(item.goods_id) for item in locked_unique}
-    stage8 = [
+    ordered = [
         item
-        for item in ordered
-        if item.purchase_limit >= 0
-        and int(item.goods_id) not in {int(row.goods_id) for row in stage9}
-        and int(item.goods_id) not in locked_id_set
+        for semantic_id in EXCHANGE_PRIORITY_ORDER
+        if semantic_id != ExchangePriorityId.NOT_NEEDED
+        for item in groups[semantic_id]
     ]
-    stage9_through = [*stage8, *stage9]
 
     def total_tokens(targets: Iterable[ShopItemLike]) -> int:
         return sum(
@@ -400,21 +368,61 @@ def build_exchange_shop_plan(
             if item.purchase_limit >= 0
         )
 
-    stage9_complete = bool(stage9_through) and all(
-        item.purchase_limit >= 0
-        and item.purchased_count >= item.purchase_limit
-        for item in stage9_through
-    )
-    card_mail_rows = by_name.get(card_mail_resource or "", ())
-    card_mail_reserved_tokens = sum(
-        max(0, item.purchase_limit - item.purchased_count) * item.token_cost
-        for item in card_mail_rows
-        if item.purchase_limit >= 0
-    )
-    locked_reserved_tokens = remaining_tokens(locked_unique)
     locked_total_tokens = total_tokens(locked_unique)
+    locked_reserved_tokens = remaining_tokens(locked_unique)
+    target_goods: dict[str, tuple[int, ...]] = {}
+    target_totals: dict[str, int] = {}
+    target_remaining: dict[str, int] = {}
+    for target_id in (
+        ExchangePriorityId.DAIER,
+        ExchangePriorityId.OTHER_DISCOUNT,
+        ExchangePriorityId.CLOSING_GOODS,
+    ):
+        through: list[ShopItemLike] = []
+        for semantic_id in EXCHANGE_PRIORITY_ORDER:
+            through.extend(
+                item
+                for item in groups[semantic_id]
+                if item.purchase_limit >= 0
+                and int(item.goods_id) not in locked_id_set
+            )
+            if semantic_id == target_id:
+                break
+        target_goods[str(target_id)] = tuple(int(item.goods_id) for item in through)
+        # 黛儿是仙缘夺魁的独立止损目标；后续两项锁定不能反向抬高它。
+        reserve_total = (
+            0 if target_id == ExchangePriorityId.DAIER else locked_total_tokens
+        )
+        reserve_remaining = (
+            0 if target_id == ExchangePriorityId.DAIER else locked_reserved_tokens
+        )
+        target_totals[str(target_id)] = total_tokens(through) + reserve_total
+        target_remaining[str(target_id)] = (
+            remaining_tokens(through) + reserve_remaining
+        )
+
+    closing_target_ids = set(target_goods[str(ExchangePriorityId.CLOSING_GOODS)])
+    closing_rows = [
+        item
+        for item in ordered
+        if item.purchase_limit >= 0
+        and int(item.goods_id) not in locked_id_set
+        and int(item.goods_id) in closing_target_ids
+    ]
+    closing_complete = bool(closing_rows) and all(
+        item.purchased_count >= item.purchase_limit for item in closing_rows
+    )
+    card_mail_reserved_tokens = remaining_tokens(
+        by_name.get(card_mail_resource or "", ())
+    )
+
     return ExchangeShopPlan(
         policy_schema=policy.schema,
+        priority_order_ids=tuple(str(item) for item in EXCHANGE_PRIORITY_ORDER),
+        priority_group_goods_ids={
+            str(semantic_id): tuple(int(item.goods_id) for item in groups[semantic_id])
+            for semantic_id in EXCHANGE_PRIORITY_ORDER
+        },
         ordered_goods_ids=tuple(int(item.goods_id) for item in ordered),
         locked_goods_ids=tuple(int(item.goods_id) for item in locked_unique),
         current_prayer_cycle=current_week.name,
@@ -422,32 +430,15 @@ def build_exchange_shop_plan(
         planning_date=effective_planning_date.isoformat(),
         next_prayer_resource=next_resource,
         card_mail_resource=card_mail_resource,
-        shop_close_at=(
+        activity_page_close_at=(
             close_moment.isoformat(timespec="seconds") if close_moment else None
         ),
-        weekly_rollover_at=weekly_rollover.isoformat(timespec="seconds"),
-        shop_closes_after_weekly_rollover=closes_after_rollover,
-        front_discounted_goods_ids=tuple(
-            int(item.goods_id) for item in front_discounted
-        ),
-        front_discounted_total_tokens=total_tokens(front_discounted),
-        front_discounted_remaining_tokens=remaining_tokens(front_discounted),
-        discounted_book_goods_ids=tuple(
-            int(item.goods_id) for item in discounted_books
-        ),
-        stage8_goods_ids=tuple(int(item.goods_id) for item in stage8),
-        stage9_goods_ids=tuple(int(item.goods_id) for item in stage9),
-        # Locked goods are intentionally not redemption targets, but their
-        # currency must remain funded for the post-activity mail strategy.
-        stage8_total_tokens=total_tokens(stage8) + locked_total_tokens,
-        stage8_remaining_tokens=(
-            remaining_tokens(stage8) + locked_reserved_tokens
-        ),
-        stage9_total_tokens=total_tokens(stage9_through) + locked_total_tokens,
-        stage9_remaining_tokens=(
-            remaining_tokens(stage9_through) + locked_reserved_tokens
-        ),
-        stage9_complete=stage9_complete,
+        next_prayer_cutoff_at=next_prayer_cutoff.isoformat(timespec="seconds"),
+        activity_page_closes_after_next_prayer_cutoff=closes_after_cutoff,
+        target_goods_ids=target_goods,
+        target_total_tokens=target_totals,
+        target_remaining_tokens=target_remaining,
+        closing_goods_items_complete=closing_complete,
         card_mail_reserved_tokens=card_mail_reserved_tokens,
         locked_reserved_tokens=locked_reserved_tokens,
     )
@@ -460,6 +451,8 @@ __all__ = [
     "DAO_FRAGMENT_NAMES",
     "DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY",
     "EQUIPMENT_IRON_BOX",
+    "EXCHANGE_PRIORITY_ORDER",
+    "ExchangePriorityId",
     "ExchangeShopPlan",
     "ExchangeShopFundingStatus",
     "ExchangeShopPriorityPolicy",

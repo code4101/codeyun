@@ -5,15 +5,11 @@ import { QuestionFilled } from '@element-plus/icons-vue';
 import FanxiuActivityRankingSection from '@/standard/fanxiu/components/FanxiuActivityRankingSection.vue';
 import FanxiuActivityToolbar from '@/standard/fanxiu/components/FanxiuActivityToolbar.vue';
 import { formatActivityUpdatedAt } from '@/standard/fanxiu/components/activityStatus';
-import { defaultExchangeShopSort } from '@/standard/fanxiu/components/exchangeShopSort';
 import { useFanxiuActivityRefresh } from '@/standard/fanxiu/components/useFanxiuActivityRefresh';
 import {
   collectFanxiuExchangeActivity,
   getFanxiuExchangeActivityRankings,
   getFanxiuExchangeActivitySnapshot,
-  planFanxiuExchangeActivityShop,
-  saveFanxiuExchangeActivityPriorities,
-  saveFanxiuExchangeActivityShopItemLock,
   type FanxiuExchangeActivityDetail,
   type FanxiuExchangeActivitySnapshot,
   type FanxiuExchangeActivitySummary,
@@ -42,15 +38,16 @@ const props = withDefaults(defineProps<{
   comparativeRankingEmptyText: '尚未加载位面榜运行态数据',
 });
 
-type SortKey = 'source_order' | 'priority_order' | 'locked' | 'name' | 'token_cost'
-  | 'purchase_limit' | 'row_total_tokens' | 'cumulative_tokens' | 'remaining_challenges';
-type Direction = 'asc' | 'desc';
+interface PlannedShopRow {
+  item: FanxiuExchangeShopItem;
+  priorityLevel: number | null;
+  priorityId: string;
+  groupRowSpan: number;
+  isGroupStart: boolean;
+}
 
 const loading = ref(false);
 const collectingFromGame = ref(false);
-const saving = ref(false);
-const planning = ref(false);
-const lockSavingIds = ref<number[]>([]);
 const activities = ref<FanxiuExchangeActivitySummary[]>(props.initialSnapshot?.activities || []);
 const selectedActivityId = ref(props.initialSnapshot?.selected_activity?.id || '');
 const activity = ref<FanxiuExchangeActivityDetail | null>(props.initialSnapshot?.selected_activity || null);
@@ -61,38 +58,60 @@ const rankingPageSize = 20;
 const rankingTotal = ref(0);
 const rankingLastCapturedAt = ref('');
 const planeRankingLastCapturedAt = ref('');
-const sort = ref<{ key: SortKey; direction: Direction }>(
-  defaultExchangeShopSort(activity.value?.shop_items),
-);
 
 const {
-  canEdit,
   canCollect,
   maybeAutoCollect: maybeAutoCollectFromGame,
 } = useFanxiuActivityRefresh({
   activity,
   collectSilently: () => collectFromGame(false),
 });
-const strategyEntries = computed(() => Object.entries(activity.value?.resource_strategy || {}));
-const selectedGoodsIds = computed(() => [...(activity.value?.shop_items || [])]
-  .filter(item => item.priority_order != null)
-  .sort((a, b) => Number(a.priority_order) - Number(b.priority_order))
-  .map(item => item.goods_id));
-const displayedItems = computed(() => [...(activity.value?.shop_items || [])].sort((a, b) => {
-  const key = sort.value.key;
-  let result = 0;
-  if (key === 'name') result = a.name.localeCompare(b.name, 'zh-CN');
-  else if (key === 'locked') result = Number(a.locked) - Number(b.locked);
-  else {
-    const left = a[key];
-    const right = b[key];
-    if (left == null && right == null) result = 0;
-    else if (left == null) result = 1;
-    else if (right == null) result = -1;
-    else result = left - right;
-  }
-  return (sort.value.direction === 'asc' ? result : -result) || a.source_order - b.source_order;
-}));
+const plannedShopRows = computed<PlannedShopRow[]>(() => {
+  const items = activity.value?.shop_items || [];
+  const itemByGoodsId = new Map(items.map(item => [item.goods_id, item]));
+  const priorityIds = activity.value?.exchange_plan?.priority_order_ids || [];
+  const groups = activity.value?.exchange_plan?.priority_group_goods_ids || {};
+  const included = new Set<number>();
+  const rows: PlannedShopRow[] = [];
+
+  priorityIds.forEach((priorityId, index) => {
+    const groupItems = (groups[priorityId] || [])
+      .map(goodsId => itemByGoodsId.get(goodsId))
+      .filter((item): item is FanxiuExchangeShopItem => Boolean(item && !included.has(item.goods_id)));
+    groupItems.forEach((item, groupIndex) => {
+      included.add(item.goods_id);
+      rows.push({
+        item,
+        priorityLevel: index + 1,
+        priorityId,
+        groupRowSpan: groupItems.length,
+        isGroupStart: groupIndex === 0,
+      });
+    });
+  });
+
+  // 兼容旧 schema：未进入领取档次的遗留商品统一投影到固定第 14 级。
+  const notNeededItems = items.filter(item => !included.has(item.goods_id));
+  notNeededItems.forEach((item, groupIndex) => {
+    rows.push({
+      item,
+      priorityLevel: 14,
+      priorityId: '不需要领',
+      groupRowSpan: notNeededItems.length,
+      isGroupStart: groupIndex === 0,
+    });
+  });
+  return rows;
+});
+
+function remainingPurchaseCount(item: FanxiuExchangeShopItem) {
+  if (item.purchase_limit < 0) return null;
+  return Math.max(0, item.purchase_limit - item.purchased_count);
+}
+
+function formatPurchaseCount(value: number | null) {
+  return value == null ? '不限' : formatChineseCompactNumber(value);
+}
 
 async function loadSnapshot(activityId?: string) {
   loading.value = true;
@@ -101,7 +120,6 @@ async function loadSnapshot(activityId?: string) {
     activities.value = snapshot.activities;
     activity.value = snapshot.selected_activity || null;
     selectedActivityId.value = activity.value?.id || '';
-    sort.value = defaultExchangeShopSort(activity.value?.shop_items);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || `读取${props.activityName}数据失败`);
   } finally {
@@ -148,68 +166,6 @@ async function collectFromGame(showFeedback = true) {
   }
 }
 
-function setSort(key: SortKey) {
-  sort.value = sort.value.key === key
-    ? { key, direction: sort.value.direction === 'asc' ? 'desc' : 'asc' }
-    : { key, direction: 'asc' };
-}
-
-function indicator(key: SortKey) {
-  return sort.value.key === key ? (sort.value.direction === 'asc' ? '↑' : '↓') : '';
-}
-
-function isSelected(item: FanxiuExchangeShopItem) {
-  return selectedGoodsIds.value.includes(item.goods_id);
-}
-
-async function setSelected(item: FanxiuExchangeShopItem, checked: boolean) {
-  if (!activity.value || saving.value || !canEdit.value) return;
-  const ids = selectedGoodsIds.value.filter(id => id !== item.goods_id);
-  if (checked) ids.push(item.goods_id);
-  saving.value = true;
-  try {
-    activity.value = await saveFanxiuExchangeActivityPriorities(props.activityType, activity.value.id, ids);
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存兑换优先级失败');
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function setLocked(item: FanxiuExchangeShopItem, locked: boolean) {
-  if (!activity.value || !canEdit.value || lockSavingIds.value.includes(item.goods_id)) return;
-  const previous = item.locked;
-  item.locked = locked;
-  lockSavingIds.value.push(item.goods_id);
-  try {
-    activity.value = await saveFanxiuExchangeActivityShopItemLock(
-      props.activityType, activity.value.id, item.goods_id, locked,
-    );
-  } catch (error: any) {
-    item.locked = previous;
-    ElMessage.error(error?.response?.data?.detail || error?.message || '保存锁定状态失败');
-  } finally {
-    lockSavingIds.value = lockSavingIds.value.filter(id => id !== item.goods_id);
-  }
-}
-
-async function planShop() {
-  if (!activity.value || !canEdit.value || planning.value) return;
-  planning.value = true;
-  try {
-    activity.value = await planFanxiuExchangeActivityShop(
-      props.activityType,
-      activity.value.id,
-    );
-    sort.value = defaultExchangeShopSort(activity.value.shop_items);
-    ElMessage.success('已按祈愿周、折扣与限购规则生成兑换规划');
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '计算兑换规划失败');
-  } finally {
-    planning.value = false;
-  }
-}
-
 watch(selectedActivityId, value => {
   if (value && value !== activity.value?.id) void loadSnapshot(value).then(loadRankings);
 });
@@ -238,16 +194,6 @@ onMounted(async () => {
 
     <template v-if="activity">
       <section class="section-block">
-        <h3>资源策略</h3>
-        <dl v-if="strategyEntries.length" class="strategy-list">
-          <template v-for="([key, value]) in strategyEntries" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template>
-        </dl>
-        <div v-else class="muted">尚未配置</div>
-      </section>
-
-      <slot name="activity-strategy" :activity="activity" />
-
-      <section class="section-block">
         <div class="section-heading shop-heading">
           <div class="title-with-help">
             <h3>兑换宝阁</h3>
@@ -256,10 +202,11 @@ onMounted(async () => {
               <div class="rules">
                 <h4>兑换规则</h4>
                 <ul>
-                  <li><strong>优先级：</strong>勾选后进入领取计划，数字表示理论领取顺序；未勾选的不领取。</li>
-                  <li><strong>锁定：</strong>按优先级预留兑币但跳过领取，预留部分不能被后续商品占用。</li>
-                  <li><strong>自动规划：</strong>按活动结束日对应的祈愿周计算；周日结束时预留下周祈愿资源，再预留一项卡邮件资源，锁定总数最多两项。</li>
-                  <li><strong>活动目标：</strong>常规完成到各功法全部最低折扣轮次及其余折扣条目；有条件再完成第9层限购物品。不限量玄灵丹只作兑币溢出兜底。</li>
+                  <li><strong>等级与 ID：</strong>按后端固定规则展示业务档次；每档只展开本期兑换宝阁实际存在的商品。</li>
+                  <li><strong>优先级：</strong>等级就是后端算法给出的固定领取顺序，前端只读展示。</li>
+                  <li><strong>锁定：</strong>“锁定”表示按优先级预留兑币但暂不领取，前端只读展示。</li>
+                  <li><strong>跨周预留：</strong>由后端根据活动页面关闭时间与祈愿周边界自动计算。</li>
+                  <li><strong>活动目标：</strong>后端按活动规则计算目标档次；不限量玄灵丹只作兑币溢出兜底。</li>
                   <li><strong>累计兑币：</strong>累计实际领取和锁定预留；不限购商品不计算总计及累计。</li>
                   <li><strong>还需挑战：</strong>按近期挑战速度估算达到该行累计兑币还需挑战多少次；速度尚无数据、已经满足或不限购时留空。</li>
                 </ul>
@@ -267,7 +214,6 @@ onMounted(async () => {
             </el-popover>
           </div>
           <div class="shop-heading-status">
-            <el-button size="small" type="primary" plain :loading="planning" :disabled="!canEdit || saving" @click="planShop">自动规划</el-button>
             <span class="muted">
               {{ activity.currency_fact_fresh ? '当前兑币' : '最近兑币' }} {{ formatChineseCompactNumber(activity.current_currency) }}，活动累计 {{ formatChineseCompactNumber(activity.cumulative_currency) }}（{{ activity.currency_name }}）<template v-if="activity.currency_captured_at || activity.captured_at">，最后更新 {{ formatActivityUpdatedAt(activity.currency_captured_at || activity.captured_at) }}</template><template v-if="!activity.budget_ready">，<span class="budget-not-ready" :title="activity.budget_block_reason">预算未就绪</span></template>
             </span>
@@ -280,37 +226,36 @@ onMounted(async () => {
             </template>
             <template v-else-if="activity.shop_refresh_status === 'updated'">商品与购买进度已刷新。</template>
           </div>
-          <div v-if="activity.exchange_plan?.stage8_budget && activity.exchange_plan?.stage9_budget" class="budget-summary">
-            <span>第8层{{ activity.budget_ready ? '尚需新获' : '最近理论缺口' }} {{ formatChineseCompactNumber(activity.exchange_plan.stage8_budget.required_new_currency) }}</span>
-            <span>第9层{{ activity.budget_ready ? '尚需新获' : '最近理论缺口' }} {{ formatChineseCompactNumber(activity.exchange_plan.stage9_budget.required_new_currency) }}</span>
-            <span v-if="activity.exchange_plan.locked_reserved_tokens">已含锁定预留 {{ formatChineseCompactNumber(activity.exchange_plan.locked_reserved_tokens) }}</span>
-          </div>
         </div>
-        <div class="table-shell" v-loading="saving">
+        <div class="table-shell">
           <table>
             <thead><tr>
-              <th><button class="sort-button" @click="setSort('source_order')">原序 {{ indicator('source_order') }}</button></th>
-              <th><button class="sort-button" @click="setSort('priority_order')">优先级 {{ indicator('priority_order') }}</button></th>
-              <th><button class="sort-button" @click="setSort('locked')">锁定 {{ indicator('locked') }}</button></th>
-              <th><button class="sort-button" @click="setSort('name')">名称 {{ indicator('name') }}</button></th>
-              <th class="number"><button class="sort-button number-sort-button" @click="setSort('token_cost')">所需兑币 {{ indicator('token_cost') }}</button></th>
-              <th class="number"><button class="sort-button number-sort-button" @click="setSort('purchase_limit')">限购数量 {{ indicator('purchase_limit') }}</button></th>
-              <th class="number"><button class="sort-button number-sort-button" @click="setSort('row_total_tokens')">总计兑币 {{ indicator('row_total_tokens') }}</button></th>
-              <th class="number"><button class="sort-button number-sort-button" @click="setSort('cumulative_tokens')">累计兑币 {{ indicator('cumulative_tokens') }}</button></th>
-              <th class="number"><button class="sort-button number-sort-button" @click="setSort('remaining_challenges')">还需挑战 {{ indicator('remaining_challenges') }}</button></th>
+              <th>等级</th>
+              <th>ID</th>
+              <th>锁定</th>
+              <th>名称</th>
+              <th class="number">所需{{ activity.currency_name || '代币' }}</th>
+              <th class="number">限购数量</th>
+              <th class="number">已购</th>
+              <th class="number">剩余</th>
+              <th class="number">总计{{ activity.currency_name || '代币' }}</th>
+              <th class="number">累计{{ activity.currency_name || '代币' }}</th>
+              <th class="number">还需挑战</th>
             </tr></thead>
             <tbody>
-              <tr v-if="!displayedItems.length"><td colspan="9" class="empty">暂无兑换数据</td></tr>
-              <tr v-for="item in displayedItems" :key="item.id">
-                <td>{{ item.source_order }}</td>
-                <td><span class="priority"><el-checkbox :model-value="isSelected(item)" :disabled="!canEdit || saving" @change="value => setSelected(item, Boolean(value))" /><i v-if="item.priority_order != null">{{ item.priority_order }}</i></span></td>
-                <td><el-checkbox :model-value="item.locked" :disabled="!canEdit || lockSavingIds.includes(item.goods_id)" @change="value => setLocked(item, Boolean(value))" /></td>
-                <td>{{ item.name }} <span v-if="item.goods_num > 1" class="muted">×{{ item.goods_num }}</span></td>
-                <td class="number price"><span><del v-if="item.original_price != null && item.original_price > item.token_cost">{{ formatChineseCompactNumber(item.original_price) }}</del>{{ formatChineseCompactNumber(item.token_cost) }}</span></td>
-                <td class="number">{{ item.purchase_limit < 0 ? '不限' : formatChineseCompactNumber(item.purchase_limit) }}</td>
-                <td class="number">{{ item.row_total_tokens == null ? '—' : formatChineseCompactNumber(item.row_total_tokens) }}</td>
-                <td class="number cumulative">{{ item.cumulative_tokens == null ? '—' : formatChineseCompactNumber(item.cumulative_tokens) }}</td>
-                <td class="number">{{ item.remaining_challenges == null ? '' : formatChineseCompactNumber(item.remaining_challenges) }}</td>
+              <tr v-if="!plannedShopRows.length"><td colspan="11" class="empty">暂无兑换数据</td></tr>
+              <tr v-for="row in plannedShopRows" :key="row.item.id">
+                <td v-if="row.isGroupStart" class="priority-level" :rowspan="row.groupRowSpan">{{ row.priorityLevel ?? '—' }}</td>
+                <td v-if="row.isGroupStart" class="priority-id" :rowspan="row.groupRowSpan">{{ row.priorityId }}</td>
+                <td>{{ row.item.locked ? '锁定' : '—' }}</td>
+                <td>{{ row.item.name }} <span v-if="row.item.goods_num > 1" class="muted">×{{ row.item.goods_num }}</span></td>
+                <td class="number price"><span><del v-if="row.item.original_price != null && row.item.original_price > row.item.token_cost">{{ formatChineseCompactNumber(row.item.original_price) }}</del>{{ formatChineseCompactNumber(row.item.token_cost) }}</span></td>
+                <td class="number">{{ formatPurchaseCount(row.item.purchase_limit < 0 ? null : row.item.purchase_limit) }}</td>
+                <td class="number">{{ formatChineseCompactNumber(row.item.purchased_count) }}</td>
+                <td class="number">{{ formatPurchaseCount(remainingPurchaseCount(row.item)) }}</td>
+                <td class="number">{{ row.item.row_total_tokens == null ? '—' : formatChineseCompactNumber(row.item.row_total_tokens) }}</td>
+                <td class="number cumulative">{{ row.item.cumulative_tokens == null ? '—' : formatChineseCompactNumber(row.item.cumulative_tokens) }}</td>
+                <td class="number">{{ row.item.remaining_challenges == null ? '' : formatChineseCompactNumber(row.item.remaining_challenges) }}</td>
               </tr>
             </tbody>
           </table>
@@ -338,5 +283,5 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.exchange-page{display:flex;flex-direction:column;gap:22px;padding:20px}.exchange-page.is-embedded{padding:0}.page-header,.section-heading,.title-with-help,.shop-heading-status,.budget-summary{display:flex;align-items:center;gap:16px}.shop-heading{align-items:flex-start;flex-direction:column;gap:8px}.title-with-help{gap:3px}.shop-heading-status{gap:10px}.budget-summary{flex-wrap:wrap;color:var(--el-text-color-regular);font-size:13px}.page-header h2,.section-block h3{margin:0}.section-block{display:flex;flex-direction:column;align-items:flex-start;gap:10px}.strategy-list{display:grid;grid-template-columns:max-content max-content;gap:6px 18px;margin:0}.strategy-list dt,.strategy-list dd{margin:0}.muted{color:var(--el-text-color-secondary)}.budget-not-ready{color:var(--el-color-warning)}.help{width:24px;height:24px;padding:0;color:var(--el-text-color-secondary)}.rules h4{margin:0 0 8px}.rules ul{margin:0;padding-left:20px;line-height:1.7}.table-shell{max-width:100%;overflow-x:auto}table{width:max-content;max-width:100%;border-collapse:collapse;font-size:14px}th,td{padding:9px 14px;border-bottom:1px solid var(--el-border-color-lighter);text-align:left;white-space:nowrap}th{color:var(--el-text-color-secondary);font-weight:500;background:var(--el-fill-color-light)}.sort-button{display:inline-flex;align-items:center;justify-content:flex-start;width:100%;padding:0;border:0;color:inherit;font:inherit;text-align:left;cursor:pointer;background:transparent}.number{text-align:right}.number-sort-button{justify-content:flex-end;text-align:right}.priority{display:flex;align-items:center;gap:6px}.priority i{color:var(--el-color-primary);font-style:normal}.price{padding-top:4px;padding-bottom:4px}.price span{display:inline-flex;flex-direction:column;align-items:flex-end;line-height:14px}.price del{color:var(--el-text-color-placeholder);font-size:.86em}.cumulative{font-weight:600}.empty{padding:24px;color:var(--el-text-color-secondary);text-align:center}.self{background:var(--el-color-primary-light-9)}.vacant{color:var(--el-text-color-secondary)}
+.exchange-page{display:flex;flex-direction:column;gap:22px;padding:20px}.exchange-page.is-embedded{padding:0}.page-header,.section-heading,.title-with-help,.shop-heading-status{display:flex;align-items:center;gap:16px}.shop-heading{align-items:flex-start;flex-direction:column;gap:8px}.title-with-help{gap:3px}.shop-heading-status{gap:10px}.page-header h2,.section-block h3{margin:0}.section-block{display:flex;flex-direction:column;align-items:flex-start;gap:10px}.muted{color:var(--el-text-color-secondary)}.budget-not-ready{color:var(--el-color-warning)}.help{width:24px;height:24px;padding:0;color:var(--el-text-color-secondary)}.rules h4{margin:0 0 8px}.rules ul{margin:0;padding-left:20px;line-height:1.7}.table-shell{max-width:100%;overflow-x:auto}table{width:max-content;max-width:100%;border-collapse:collapse;font-size:14px}th,td{padding:9px 14px;border-bottom:1px solid var(--el-border-color-lighter);text-align:left;white-space:nowrap}th{color:var(--el-text-color-secondary);font-weight:500;background:var(--el-fill-color-light)}.number{text-align:right}.priority-level,.priority-id{font-weight:600;vertical-align:top}.price{padding-top:4px;padding-bottom:4px}.price span{display:inline-flex;flex-direction:column;align-items:flex-end;line-height:14px}.price del{color:var(--el-text-color-placeholder);font-size:.86em}.cumulative{font-weight:600}.empty{padding:24px;color:var(--el-text-color-secondary);text-align:center}.self{background:var(--el-color-primary-light-9)}.vacant{color:var(--el-text-color-secondary)}
 </style>

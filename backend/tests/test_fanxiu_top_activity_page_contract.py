@@ -17,5 +17,28 @@ def test_yunmeng_uses_generic_exchange_page_shell_without_eager_type_scan() -> N
     assert "Promise.allSettled" not in source
     assert "resolveLatestActivity" not in source
     assert "getLatestFanxiuExchangeActivitySnapshot" in source
-    assert ":activity-type=\"selectedType === 'yunmeng-trial' ? 'yunmeng-trial' : undefined\"" in source
-    assert ":activity-name=\"selectedType === 'yunmeng-trial' ? '云梦试剑' : undefined\"" in source
+    assert ":activity-type=\"['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedType : undefined\"" in source
+    assert ":activity-name=\"['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedActivityName : undefined\"" in source
+
+
+def test_exchange_shop_is_a_read_only_tiered_projection() -> None:
+    source = (
+        REPO_ROOT / "frontend/src/standard/fanxiu/xutian-palace/page.vue"
+    ).read_text(encoding="utf-8")
+
+    assert "<h3>资源策略</h3>" not in source
+    assert "activity-strategy" not in source
+    assert "原序" not in source
+    assert "<th>等级</th>" in source
+    assert "<th>ID</th>" in source
+    assert ":rowspan=\"row.groupRowSpan\"" in source
+    assert "priority_group_goods_ids" in source
+    assert "priorityLevel: 14" in source
+    assert "priorityId: '不需要领'" in source
+    assert "<th>名称</th>" in source
+    assert "限购数量" in source
+    assert "el-checkbox" not in source
+    assert "saveFanxiuExchangeActivityPriorities" not in source
+    assert "saveFanxiuExchangeActivityShopItemLock" not in source
+    assert "planFanxiuExchangeActivityShop" not in source
+    assert "budget-summary" not in source

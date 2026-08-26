@@ -390,6 +390,48 @@ def test_resource_rank_uses_occurrence_start_date_not_current_day() -> None:
     assert entry_date.isoformat() == "2026-08-20"
 
 
+def test_resource_rank_aligns_multiday_bar_row_independently_from_start_column() -> None:
+    """A centered multi-day title must not be forced into its start column."""
+
+    entity = RuntimeEntity(
+        key="1044311|runtime",
+        name="灵装化道 （预赛）",
+        payload={
+            "activityId": 1044311,
+            "name": "灵装化道",
+            "littleName": "（预赛）",
+            "startTime": int(
+                datetime(2026, 8, 26, 5, 0, 5, tzinfo=ZONE).timestamp() * 1000
+            ),
+            "endTime": int(
+                datetime(2026, 8, 26, 22, 0, tzinfo=ZONE).timestamp() * 1000
+            ),
+        },
+    )
+
+    target, entry_date = resource_rank_daily_gift._resolve_resource_rank_schedule_target(
+        [entity],
+        activity_id=1044311,
+        now=datetime(2026, 8, 26, 12, 0, tzinfo=ZONE),
+        header_lines=[
+            {"text": "今天", "x": 80, "y": 210, "w": 60, "h": 30},
+            {"text": "08月27日", "x": 210, "y": 210, "w": 100, "h": 30},
+            {"text": "08月28日", "x": 360, "y": 210, "w": 100, "h": 30},
+        ],
+        calendar_lines=[
+            # The label is centered two columns away from the occurrence's
+            # start date, as happens when a task bar spans several days.
+            {"text": "灵装化道", "x": 365, "y": 470, "w": 130, "h": 36},
+            {"text": "（预赛）", "x": 385, "y": 510, "w": 90, "h": 34},
+        ],
+    )
+
+    assert entry_date.isoformat() == "2026-08-26"
+    assert target.x == pytest.approx(110.0)
+    assert target.y == pytest.approx(488.0)
+    assert target.runtime_key == entity.key
+
+
 def test_resource_gift_is_internal_and_resource_parent_is_the_only_job() -> None:
     register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
