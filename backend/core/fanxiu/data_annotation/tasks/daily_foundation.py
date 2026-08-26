@@ -638,11 +638,6 @@ class DailyFoundationTaskMixin:
             frame_width=900,
             frame_height=1600,
         )
-        if total_activity not in reward_layout:
-            raise RuntimeError(
-                f"周常_活跃度：当前总活跃度 {total_activity} 未出现在可见奖励轨道 "
-                f"{list(reward_layout)}，拒绝点击"
-            )
         reward_states = detect_weekly_activity_reward_states(frame, reward_layout)
         runtime_snapshot = read_weekly_activity_runtime_snapshot()
         if runtime_snapshot.get("complete") is not True:
@@ -661,11 +656,6 @@ class DailyFoundationTaskMixin:
         def validate_gui_cross_check(snapshot: Mapping[str, Any], states: Mapping[int, Mapping[str, Any]]) -> None:
             claimed = {int(value) for value in snapshot.get("claimed_thresholds") or []}
             claimable = {int(value) for value in snapshot.get("claimable_thresholds") or []}
-            invisible_claimable = sorted(claimable - set(states))
-            if invisible_claimable:
-                raise RuntimeError(
-                    f"周常_活跃度：Runtime 可领档 {invisible_claimable} 不在当前可见轨道，拒绝猜滑动"
-                )
             disagreements: list[str] = []
             for milestone, row in states.items():
                 if milestone > total_activity:
@@ -677,48 +667,105 @@ class DailyFoundationTaskMixin:
                 raise RuntimeError(f"周常_活跃度：GUI/Runtime 档位状态不一致：{disagreements}")
 
         validate_gui_cross_check(runtime_snapshot, reward_states)
-        claimable_thresholds = [int(value) for value in runtime_snapshot.get("claimable_thresholds") or []]
+
+        def confirm_reward_scene(frame_data_url: str, *, action_label: str):
+            """Allow the reward page a few frames to settle without repeating the action."""
+            latest_frame = frame_data_url
+            latest_scene_id: int | None = None
+            latest_score = 0.0
+            for attempt in range(3):
+                latest_scene_id, latest_score, _ = runtime.current_scene(
+                    [402],
+                    frame_data_url=latest_frame,
+                )
+                if latest_scene_id == 402:
+                    return latest_frame
+                if attempt < 2:
+                    self._log(
+                        "detail",
+                        f"周常_活跃度：{action_label}后第 {attempt + 1} 帧暂未识别 #402，继续复核",
+                    )
+                    yield from runtime.wait_action_settle(0.4)
+                    latest_frame = runtime.cur_frame(update=True)
+            raise RuntimeError(
+                f"周常_活跃度：{action_label}后未留在 #402："
+                f"#{latest_scene_id or 'unknown'} {latest_score:.0f}%"
+            )
 
         claimed_now: list[int] = []
-        for milestone in claimable_thresholds:
-            before = reward_states[milestone]
-            click_x, click_y = before["point"]
-            runtime.click_frame_point(402, click_x, click_y)
-            yield from runtime.wait_action_settle(float(runtime.payload.get("reward_settle_seconds") or 1.5))
-            after_frame = runtime.cur_frame(update=True)
-            after_scene_id, after_score, _ = runtime.current_scene([402], frame_data_url=after_frame)
-            if after_scene_id != 402:
-                raise RuntimeError(
-                    f"周常_活跃度：点击 {milestone} 档后未留在 #402："
-                    f"#{after_scene_id or 'unknown'} {after_score:.0f}%"
+        scroll_attempts = 0
+        final_frame = frame
+        while True:
+            claimable_thresholds = [
+                int(value) for value in runtime_snapshot.get("claimable_thresholds") or []
+            ]
+            if not claimable_thresholds:
+                break
+            validate_gui_cross_check(runtime_snapshot, reward_states)
+            visible_claimable = [
+                milestone for milestone in claimable_thresholds if milestone in reward_states
+            ]
+            if not visible_claimable:
+                if scroll_attempts >= 4:
+                    raise RuntimeError(
+                        f"周常_活跃度：横向滚动后仍未找到可领档 {claimable_thresholds}"
+                    )
+                before_visible = set(reward_states)
+                runtime.drag_frame_point(402, 760, 350, 260, 350, duration_ms=1000)
+                yield from runtime.wait_action_settle(0.8)
+                final_frame = runtime.cur_frame(update=True)
+                final_frame = yield from confirm_reward_scene(final_frame, action_label="横向滚动")
+                reward_layout = weekly_activity_reward_layout_from_ocr(
+                    runtime.full_frame_ocr_tokens(final_frame),
+                    frame_width=900,
+                    frame_height=1600,
                 )
-            after_layout = weekly_activity_reward_layout_from_ocr(
-                runtime.full_frame_ocr_tokens(after_frame),
-                frame_width=900,
-                frame_height=1600,
-            )
-            if milestone not in after_layout:
-                raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后该档已离开可见轨道，无法复验")
-            after_states = detect_weekly_activity_reward_states(after_frame, after_layout)
-            if after_states[milestone]["state"] != "claimed":
-                raise RuntimeError(
-                    f"周常_活跃度：点击 {milestone} 档后未复验为绿色勾："
-                    f"{after_states[milestone]['state']}"
+                reward_states = detect_weekly_activity_reward_states(final_frame, reward_layout)
+                scroll_attempts += 1
+                if set(reward_states) == before_visible:
+                    raise RuntimeError(
+                        f"周常_活跃度：横向滚动后可见档位未推进：{sorted(before_visible)}"
+                    )
+                continue
+
+            for milestone in visible_claimable:
+                before = reward_states[milestone]
+                click_x, click_y = before["point"]
+                runtime.click_frame_point(402, click_x, click_y)
+                yield from runtime.wait_action_settle(float(runtime.payload.get("reward_settle_seconds") or 1.5))
+                after_frame = runtime.cur_frame(update=True)
+                after_frame = yield from confirm_reward_scene(
+                    after_frame,
+                    action_label=f"点击 {milestone} 档",
                 )
-            runtime_snapshot = read_weekly_activity_runtime_snapshot()
-            if runtime_snapshot.get("complete") is not True:
-                raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后 Runtime 快照不完整")
-            if milestone not in {int(value) for value in runtime_snapshot.get("claimed_thresholds") or []}:
-                raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后 Runtime 未确认该档已领取")
-            validate_gui_cross_check(runtime_snapshot, after_states)
-            claimed_now.append(milestone)
-            reward_states = after_states
+                after_layout = weekly_activity_reward_layout_from_ocr(
+                    runtime.full_frame_ocr_tokens(after_frame),
+                    frame_width=900,
+                    frame_height=1600,
+                )
+                if milestone not in after_layout:
+                    raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后该档已离开可见轨道，无法复验")
+                after_states = detect_weekly_activity_reward_states(after_frame, after_layout)
+                if after_states[milestone]["state"] != "claimed":
+                    raise RuntimeError(
+                        f"周常_活跃度：点击 {milestone} 档后未复验为绿色勾："
+                        f"{after_states[milestone]['state']}"
+                    )
+                runtime_snapshot = read_weekly_activity_runtime_snapshot()
+                if runtime_snapshot.get("complete") is not True:
+                    raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后 Runtime 快照不完整")
+                if milestone not in {int(value) for value in runtime_snapshot.get("claimed_thresholds") or []}:
+                    raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后 Runtime 未确认该档已领取")
+                validate_gui_cross_check(runtime_snapshot, after_states)
+                claimed_now.append(milestone)
+                reward_states = after_states
+                final_frame = after_frame
         remaining_claimable = [int(value) for value in runtime_snapshot.get("claimable_thresholds") or []]
         if remaining_claimable:
             raise RuntimeError(f"周常_活跃度：领取后仍有 Runtime 可领档：{remaining_claimable}")
-        if reward_states.get(total_activity, {}).get("state") != "claimed":
-            raise RuntimeError(f"周常_活跃度：右边界 {total_activity} 档未显示绿色勾")
-        final_frame = after_frame if claimed_now else frame
+        final_milestone = max(WEEKLY_ACTIVITY_REWARD_MILESTONES)
+        if reward_states.get(final_milestone, {}).get("state") != "claimed":
+            raise RuntimeError(f"周常_活跃度：右边界 {final_milestone} 档未显示绿色勾")
         final_tokens = runtime.full_frame_ocr_tokens(final_frame)
         if weekly_activity_pending_badge_present(
             final_tokens,
