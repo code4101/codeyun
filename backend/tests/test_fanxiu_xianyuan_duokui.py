@@ -84,6 +84,13 @@ def test_xianyuan_materialize_and_collect_shop_without_fabricating_wallet(
             FanxiuRuntimeMemoryError("23002 尚未同步")
         ),
     )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.xianyuan_duokui."
+        "read_xianyuan_duokui_status_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            FanxiuRuntimeMemoryError("排名缓存尚未预热")
+        ),
+    )
 
     with _session() as session:
         activity_id = xianyuan_duokui.ensure_xianyuan_duokui_activity(session)
@@ -107,6 +114,8 @@ def test_xianyuan_materialize_and_collect_shop_without_fabricating_wallet(
         assert len(detail.shop_items) == 1
         assert detail.shop_items[0].name == "誓约·黛儿"
         assert detail.shop_refresh_status == "updated"
+        assert detail.rankings_refresh_status == "unavailable"
+        assert detail.rankings_refresh_reason == "排名缓存尚未预热"
         assert detail.currency_fact_fresh is True
         assert detail.budget_ready is True
         assert item is not None
@@ -127,3 +136,63 @@ def test_xianyuan_runtime_occurrence_rejects_ambiguous_schedule(monkeypatch) -> 
         assert "唯一仙缘夺魁实例" in str(exc)
     else:
         raise AssertionError("ambiguous schedule must fail closed")
+
+
+def test_xianyuan_economical_target_is_bounded_by_task_and_rank() -> None:
+    tiers = xianyuan_duokui.XIANYUAN_DUOKUI_TRIAL_TIERS
+    strategy = xianyuan_duokui.xianyuan_duokui_resource_strategy()
+
+    assert [(tier["currency"], tier["rank_limit"]) for tier in tiers] == [
+        (200, None),
+        (450, None),
+        (800, 512),
+        (1000, 256),
+        (1600, 64),
+    ]
+    assert strategy["默认经济档"] == {
+        "累计夺魁灵玉": 10_000,
+        "兑换目标": "5折誓约·黛儿",
+        "goods_id": 8460001,
+        "item_id": 9023,
+        "判断": "仙缘夺魁资源产能有限，通常取得折扣黛儿即停止",
+    }
+    assert strategy["任务性价比档"] == {
+        "累计夺魁灵玉": 1000,
+        "个人榜要求": "前256",
+        "判断": "云梦夺分四与云梦试炼四的双任务重叠档",
+    }
+    assert [tier["currency"] for tier in xianyuan_duokui.XIANYUAN_DUOKUI_CURRENCY_TIERS] == [
+        200,
+        400,
+        700,
+        1000,
+        1400,
+        1800,
+        2400,
+        3000,
+    ]
+    assert strategy["保底档"]["累计夺魁灵玉"] == 800
+    assert strategy["顺吃高档"][-1]["累计夺魁灵玉"] == 1600
+    assert "2008006" in strategy["禁用道具"]
+    assert strategy["自动挑战安全设置"]["自动使用夺魁令补充挑战体力"] is False
+
+
+def test_xianyuan_wallet_uses_canonical_runtime_fields() -> None:
+    assert xianyuan_duokui._wallet_amounts(
+        {
+            "exchange_currency": 720,
+            "currency_amount": 725,
+            "currency_borrow": 5,
+            "cumulative_currency": 760,
+        }
+    ) == (720, 760)
+
+
+def test_xianyuan_higher_task_tiers_are_only_eaten_from_rank_already_held() -> None:
+    choose = xianyuan_duokui.recommended_xianyuan_duokui_trial_target
+
+    assert choose(None)["currency"] == 800
+    assert choose(700)["currency"] == 800
+    assert choose(512)["currency"] == 800
+    assert choose(256)["currency"] == 1000
+    assert choose(64)["currency"] == 1600

@@ -22,6 +22,139 @@ XIANYUAN_DUOKUI_RUNTIME_ACTIVITY_TYPE = 129
 XIANYUAN_DUOKUI_SHOP_BASE_ID = 360001
 XIANYUAN_DUOKUI_CURRENCY_TYPE = 23002
 XIANYUAN_DUOKUI_CURRENCY_NAME = "夺魁灵玉"
+XIANYUAN_DUOKUI_ECONOMICAL_TARGET = 10_000
+XIANYUAN_DUOKUI_TASK_SWEET_SPOT = 1000
+XIANYUAN_DUOKUI_ECONOMICAL_RANK_LIMIT = 256
+XIANYUAN_DUOKUI_DISCOUNTED_DAIER_GOODS_ID = 8460001
+XIANYUAN_DUOKUI_DISCOUNTED_DAIER_ITEM_ID = 9023
+
+# ActiveTask(activityId=846001) 的云梦夺分任务。1000 点会与下方
+# 试炼四同时命中，是两组奖励的重叠档。
+XIANYUAN_DUOKUI_CURRENCY_TIERS: tuple[dict[str, Any], ...] = (
+    {"currency": 200, "rewards": {23003: 1, 9052006: 5}},
+    {"currency": 400, "rewards": {23003: 1, 9052006: 5}},
+    {"currency": 700, "rewards": {23003: 1, 9052006: 5}},
+    {"currency": 1000, "rewards": {23003: 1, 9052006: 5}},
+    {"currency": 1400, "rewards": {23003: 1, 9052006: 5}},
+    {"currency": 1800, "rewards": {23003: 1, 9052006: 5}},
+    {"currency": 2400, "rewards": {23003: 1, 9052006: 10}},
+    {"currency": 3000, "rewards": {2008003: 1, 9052006: 10}},
+)
+
+# ActiveTask(activityId=846001) 的云梦试炼任务。这里保留静态事实，
+# 不把“冲榜”误写成 Scheduler 的独立作业或无界资源目标。
+XIANYUAN_DUOKUI_TRIAL_TIERS: tuple[dict[str, Any], ...] = (
+    {
+        "currency": 200,
+        "rank_limit": None,
+        "rewards": {9020010: 2, 6010001: 1},
+    },
+    {
+        "currency": 450,
+        "rank_limit": None,
+        "rewards": {9020010: 2, 6010001: 2},
+    },
+    {
+        "currency": 800,
+        "rank_limit": 512,
+        "rewards": {9020010: 3, 6010001: 3},
+    },
+    {
+        "currency": 1000,
+        "rank_limit": 256,
+        "rewards": {9020002: 1, 6010001: 6},
+    },
+    {
+        "currency": 1600,
+        "rank_limit": 64,
+        "rewards": {9020005: 2, 6010001: 8},
+    },
+)
+
+
+def recommended_xianyuan_duokui_trial_target(
+    personal_rank: int | None,
+) -> dict[str, Any]:
+    """Choose a bounded task target from the rank already held by the player.
+
+    1000/前256 is the double-task sweet spot.  Fall back to 800/前512 when the
+    live rank cannot claim it; select 1600 only when rank 64 is already held.
+    This function never recommends spending to speculate on a higher rank.
+    """
+
+    rank = int(personal_rank or 0)
+    if 0 < rank <= 64:
+        target = XIANYUAN_DUOKUI_TRIAL_TIERS[4]
+    elif 0 < rank <= 256:
+        target = XIANYUAN_DUOKUI_TRIAL_TIERS[3]
+    else:
+        target = XIANYUAN_DUOKUI_TRIAL_TIERS[2]
+    return dict(target)
+
+
+def xianyuan_duokui_resource_strategy() -> dict[str, Any]:
+    """Return the bounded, evidence-backed resource target for this activity."""
+
+    return {
+        "活动方式": "挑战仙侣并积累夺魁灵玉",
+        "默认经济档": {
+            "累计夺魁灵玉": XIANYUAN_DUOKUI_ECONOMICAL_TARGET,
+            "兑换目标": "5折誓约·黛儿",
+            "goods_id": XIANYUAN_DUOKUI_DISCOUNTED_DAIER_GOODS_ID,
+            "item_id": XIANYUAN_DUOKUI_DISCOUNTED_DAIER_ITEM_ID,
+            "判断": "仙缘夺魁资源产能有限，通常取得折扣黛儿即停止",
+        },
+        "任务性价比档": {
+            "累计夺魁灵玉": XIANYUAN_DUOKUI_TASK_SWEET_SPOT,
+            "个人榜要求": f"前{XIANYUAN_DUOKUI_ECONOMICAL_RANK_LIMIT}",
+            "判断": "云梦夺分四与云梦试炼四的双任务重叠档",
+        },
+        "保底档": {"累计夺魁灵玉": 800, "个人榜要求": "前512"},
+        "顺吃高档": [{"累计夺魁灵玉": 1600, "个人榜要求": "前64"}],
+        "挑战道具": {
+            "2008000": "夺魁令：增加1次挑战",
+            "2008001": "四倍积分令：胜利时个人积分及夺魁灵玉4倍",
+            "2008003": "狙击令：增加1次狙击",
+            "2008005": "属性增幅令：下一场挑战属性2倍",
+            "2008007": "争仙令：榜单积分+100%，可与其他积分增益叠加",
+        },
+        "收益模型": {
+            "单次基础个人积分": "40~60",
+            "四倍积分令": "胜利时个人积分与夺魁灵玉均为4倍",
+            "争仙令": "榜单积分再乘2；与四倍积分令叠加时个人积分最高8倍",
+            "执行要求": "先小批实测绝对钱包增量，再按剩余缺口分批收敛",
+        },
+        "禁用道具": {"2008006": "静态配置明确标记为废弃"},
+        "自动挑战安全设置": {
+            "高战力对手使用属性增幅令": True,
+            "自动使用四倍积分令": True,
+            "自动使用争仙令": True,
+            "默认跳过战斗": True,
+            "自动使用夺魁令补充挑战体力": False,
+            "开启快速自动挑战": True,
+            "跳过动画": True,
+        },
+        "常规目标": "只生产足够兑换5折誓约·黛儿的1万夺魁灵玉；取得后停止",
+        "条件目标": "仅使用自然获得的额外资源顺吃后续商品，不为通用第8/9层继续加打",
+        "策略边界": "兑换目标以5折黛儿为硬停止线；任务奖励先吃1000/前256，排名不足则800保底，已自然前64则顺吃1600",
+    }
+
+
+def _wallet_amounts(snapshot: Mapping[str, Any]) -> tuple[int, int]:
+    """Normalize the canonical wallet snapshot while retaining legacy keys."""
+
+    current = snapshot.get("exchange_currency")
+    if current is None:
+        current = snapshot.get("current")
+    if current is None:
+        current = snapshot.get("amount")
+    current_value = int(current or 0)
+    cumulative = snapshot.get("cumulative_currency")
+    if cumulative is None:
+        cumulative = snapshot.get("cumulative")
+    if cumulative is None:
+        cumulative = snapshot.get("history_amount")
+    return current_value, int(cumulative if cumulative is not None else current_value)
 
 
 def _runtime_occurrence() -> dict[str, Any]:
@@ -153,7 +286,7 @@ def ensure_xianyuan_duokui_activity(session: Session) -> str:
             "currency_name": XIANYUAN_DUOKUI_CURRENCY_NAME,
             "captured_at": period["captured_at"],
             "source_kind": "runtime_schedule_reconcile",
-            "resource_strategy": {"活动方式": "挑战仙侣并积累夺魁灵玉"},
+            "resource_strategy": xianyuan_duokui_resource_strategy(),
             "evidence": evidence,
         },
     )
@@ -164,10 +297,11 @@ def collect_and_store_xianyuan_duokui_activity(
     *,
     activity_id: str,
 ) -> Any:
-    """只刷新已打开兑换页的完整商品投影；钱包未同步时保留旧值。"""
+    """刷新已打开兑换页、精确钱包和已缓存的个人榜事实。"""
 
     from backend.core.fanxiu.activity.exchange_event import (
         list_exchange_activity_snapshot,
+        replace_exchange_rankings,
         upsert_exchange_activity_snapshot,
     )
     from backend.core.fanxiu.activity.standard_observation import (
@@ -175,6 +309,9 @@ def collect_and_store_xianyuan_duokui_activity(
     )
     from backend.core.fanxiu.instrumentation.runtime_memory import (
         FanxiuRuntimeMemoryError,
+    )
+    from backend.core.fanxiu.instrumentation.xianyuan_duokui import (
+        read_xianyuan_duokui_status_snapshot,
     )
     from backend.core.fanxiu.instrumentation.wallet import (
         read_wallet_currency_snapshot,
@@ -209,12 +346,7 @@ def collect_and_store_xianyuan_duokui_activity(
             allow_discovery=True,
         )
         store_runtime_currency_fact(session, wallet)
-        current_currency = int(wallet.get("current") or wallet.get("amount") or 0)
-        cumulative_currency = int(
-            wallet.get("cumulative")
-            or wallet.get("history_amount")
-            or current_currency
-        )
+        current_currency, cumulative_currency = _wallet_amounts(wallet)
         currency_status = "updated"
         currency_evidence = dict(wallet.get("evidence") or {})
     except (FanxiuRuntimeMemoryError, ValueError) as exc:
@@ -237,6 +369,31 @@ def collect_and_store_xianyuan_duokui_activity(
 
     evidence = dict(activity.evidence or {})
     refresh_status = dict(evidence.get("refresh_status") or {})
+    rankings: list[dict[str, Any]] | None = None
+    prior_rankings_status = str(refresh_status.get("rankings") or "unavailable")
+    rankings_status = (
+        "retained" if prior_rankings_status == "updated" else prior_rankings_status
+    )
+    rankings_reason = ""
+    personal_rank: int | None = None
+    try:
+        status = read_xianyuan_duokui_status_snapshot(
+            event_date=activity.start_date,
+        )
+        current_currency = int(status["exchange_currency"])
+        cumulative_currency = int(status["cumulative_currency"])
+        currency_status = "updated"
+        currency_reason = ""
+        currency_evidence = dict(status.get("evidence") or {})
+        rankings = [
+            {**dict(row), "ranking_scope": "personal"}
+            for row in status.get("rankings") or ()
+        ]
+        rankings_status = "updated"
+        personal_rank = int(status.get("rank") or 0) or None
+    except (FanxiuRuntimeMemoryError, KeyError, TypeError, ValueError) as exc:
+        rankings_reason = str(exc)
+
     refresh_status.update(
         {
             "shop": "updated",
@@ -245,7 +402,8 @@ def collect_and_store_xianyuan_duokui_activity(
             "currency_reason": currency_reason,
             "currency_stale": currency_status != "updated",
             "currency_captured_at": captured_at if currency_status == "updated" else "",
-            "rankings": str(refresh_status.get("rankings") or "unavailable"),
+            "rankings": rankings_status,
+            "rankings_reason": rankings_reason,
         }
     )
     evidence.update(
@@ -263,6 +421,12 @@ def collect_and_store_xianyuan_duokui_activity(
             "currency_runtime": currency_evidence,
         }
     )
+    resource_strategy = xianyuan_duokui_resource_strategy()
+    if personal_rank is not None:
+        resource_strategy["本期执行档"] = recommended_xianyuan_duokui_trial_target(
+            personal_rank
+        )
+        resource_strategy["本期个人排名"] = personal_rank
     persisted_id = upsert_exchange_activity_snapshot(
         session,
         {
@@ -278,12 +442,20 @@ def collect_and_store_xianyuan_duokui_activity(
             "cumulative_currency": cumulative_currency,
             "captured_at": captured_at,
             "source_kind": "read_only_runtime_facts",
-            "resource_strategy": {"活动方式": "挑战仙侣并积累夺魁灵玉"},
+            "resource_strategy": resource_strategy,
             "shop_items": list(shop["items"]),
             "expected_shop_item_count": int(shop["active_shop_item_count"]),
             "evidence": evidence,
         },
     )
+    if rankings is not None:
+        replace_exchange_rankings(
+            session,
+            activity_type=XIANYUAN_DUOKUI_ACTIVITY_TYPE,
+            activity_id=persisted_id,
+            rows=rankings,
+            captured_at=captured_at,
+        )
     return list_exchange_activity_snapshot(
         session,
         activity_type=XIANYUAN_DUOKUI_ACTIVITY_TYPE,
@@ -298,6 +470,15 @@ __all__ = [
     "XIANYUAN_DUOKUI_SHOP_BASE_ID",
     "XIANYUAN_DUOKUI_CURRENCY_TYPE",
     "XIANYUAN_DUOKUI_CURRENCY_NAME",
+    "XIANYUAN_DUOKUI_ECONOMICAL_TARGET",
+    "XIANYUAN_DUOKUI_TASK_SWEET_SPOT",
+    "XIANYUAN_DUOKUI_ECONOMICAL_RANK_LIMIT",
+    "XIANYUAN_DUOKUI_DISCOUNTED_DAIER_GOODS_ID",
+    "XIANYUAN_DUOKUI_DISCOUNTED_DAIER_ITEM_ID",
+    "XIANYUAN_DUOKUI_CURRENCY_TIERS",
+    "XIANYUAN_DUOKUI_TRIAL_TIERS",
     "collect_and_store_xianyuan_duokui_activity",
     "ensure_xianyuan_duokui_activity",
+    "recommended_xianyuan_duokui_trial_target",
+    "xianyuan_duokui_resource_strategy",
 ]

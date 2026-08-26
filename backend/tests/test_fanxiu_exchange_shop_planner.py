@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -14,6 +14,7 @@ from backend.core.fanxiu.activity.exchange_shop_planner import (
     DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY,
     PARTNER_ROOT_NAMES,
     build_exchange_shop_plan,
+    exchange_shop_priority_policy,
     exchange_shop_funding_status,
 )
 from backend.models import FanxiuExchangeActivity
@@ -76,7 +77,76 @@ def test_wednesday_plan_reserves_one_card_mail_resource() -> None:
     assert plan.stage8_remaining_tokens == 800
 
 
-def test_sunday_plan_reserves_next_week_then_card_mail() -> None:
+def test_dao_fragments_keep_same_layer_with_edge_after_spirit() -> None:
+    items = [
+        _item(1, "道则碎片·淬锋域", source_order=1),
+        _item(2, "普通限量物品", source_order=2),
+        _item(3, "道则碎片·淬灵域", source_order=3),
+    ]
+
+    plan = build_exchange_shop_plan(items, activity_end_date="2026-08-12")
+
+    assert plan.ordered_goods_ids == (3, 1, 2)
+
+
+def test_xianyuan_discounted_daier_is_absolute_front_and_economical_target() -> None:
+    items = [
+        _item(1, "瑶池玉莲", source_order=1),
+        _item(2, "誓约·黛儿", source_order=2, item_id=9023, token_cost=10_000, discount=50),
+        _item(3, "誓约·黛儿", source_order=3, item_id=9023, token_cost=20_000),
+        _item(4, "道则碎片·淬锋域", source_order=4),
+        _item(5, "道则碎片·淬灵域", source_order=5),
+    ]
+
+    plan = build_exchange_shop_plan(
+        items,
+        activity_end_date="2026-08-26",
+        policy=exchange_shop_priority_policy("xianyuan-duokui"),
+    )
+
+    assert plan.ordered_goods_ids == (2, 1, 5, 4, 3)
+    assert plan.front_discounted_goods_ids == (2,)
+    assert plan.front_discounted_total_tokens == 10_000
+    assert plan.front_discounted_remaining_tokens == 10_000
+
+
+def test_xianyuan_persisted_plan_uses_daier_budget_instead_of_shared_stage8() -> None:
+    with _session() as session:
+        activity_id = upsert_exchange_activity_snapshot(
+            session,
+            {
+                "activity_type": "xianyuan-duokui",
+                "cross_count": 8,
+                "start_date": "2026-08-26",
+                "end_date": "2026-08-26",
+                "current_currency": 0,
+                "cumulative_currency": 0,
+                "resource_strategy": {
+                    "常规目标": "完成至通用第8层",
+                    "条件目标": "有条件完成通用第9层",
+                },
+                "expected_shop_item_count": 3,
+                "shop_items": [
+                    {"goods_id": 1, "item_id": 7020014, "source_order": 1, "name": "瑶池玉莲", "token_cost": 100, "purchase_limit": 100},
+                    {"goods_id": 2, "item_id": 9023, "source_order": 2, "name": "誓约·黛儿", "token_cost": 10_000, "purchase_limit": 1, "discount": 50},
+                    {"goods_id": 3, "item_id": 9023, "source_order": 3, "name": "誓约·黛儿", "token_cost": 20_000, "purchase_limit": 3},
+                ],
+            },
+        )
+        stored = session.get(FanxiuExchangeActivity, activity_id)
+
+    assert stored is not None
+    plan = stored.evidence["exchange_plan"]
+    assert plan["ordered_goods_ids"] == [2, 1, 3]
+    assert plan["front_discounted_goods_ids"] == [2]
+    assert plan["economical_target"] == "front_discounted"
+    assert plan["economical_budget"]["target_total_tokens"] == 10_000
+    assert plan["stage8_budget"]["target_total_tokens"] == 20_000
+    assert stored.resource_strategy["常规目标"].startswith("只生产足够兑换5折誓约·黛儿")
+    assert stored.resource_strategy["条件目标"].startswith("仅用自然多出的兑币")
+
+
+def test_shop_closing_after_monday_rollover_reserves_next_week_then_card_mail() -> None:
     items = [
         _item(1, "珍品饲灵丸"),
         _item(2, "洗灵奇石"),
@@ -87,14 +157,85 @@ def test_sunday_plan_reserves_next_week_then_card_mail() -> None:
     plan = build_exchange_shop_plan(
         items,
         activity_end_date="2026-08-16",
+        shop_close_at="2026-08-17T00:00:01+08:00",
     )
 
-    assert plan.activity_ends_on_sunday is True
+    assert plan.weekly_rollover_at == "2026-08-17T00:00:00+08:00"
+    assert plan.shop_closes_after_weekly_rollover is True
     assert plan.next_prayer_resource == "洗灵奇石"
     assert plan.card_mail_resource == "瑶池玉莲"
     assert plan.ordered_goods_ids[:3] == (1, 2, 3)
     assert plan.locked_goods_ids == (2, 3)
     assert plan.locked_reserved_tokens == 200
+
+
+def test_next_week_reservation_uses_strict_shop_close_boundary_not_end_weekday() -> None:
+    items = [
+        _item(1, "珍品饲灵丸"),
+        _item(2, "洗灵奇石"),
+        _item(3, "瑶池玉莲"),
+    ]
+
+    sunday_before_rollover = build_exchange_shop_plan(
+        items,
+        activity_end_date="2026-08-16",
+        shop_close_at="2026-08-16T23:59:59+08:00",
+    )
+    sunday_without_exact_close = build_exchange_shop_plan(
+        items,
+        activity_end_date="2026-08-16",
+    )
+    sunday_at_rollover = build_exchange_shop_plan(
+        items,
+        activity_end_date="2026-08-16",
+        shop_close_at="2026-08-17T00:00:00+08:00",
+    )
+    saturday_after_rollover = build_exchange_shop_plan(
+        items,
+        activity_end_date="2026-08-15",
+        planning_date="2026-08-15",
+        shop_close_at="2026-08-17T00:00:01+08:00",
+    )
+
+    assert sunday_before_rollover.next_prayer_resource is None
+    assert sunday_without_exact_close.next_prayer_resource is None
+    assert sunday_without_exact_close.shop_close_at is None
+    assert sunday_at_rollover.next_prayer_resource is None
+    assert sunday_at_rollover.shop_closes_after_weekly_rollover is False
+    assert saturday_after_rollover.next_prayer_resource == "洗灵奇石"
+    assert saturday_after_rollover.shop_closes_after_weekly_rollover is True
+
+
+def test_persisted_plan_consumes_exact_runtime_close_panel_time() -> None:
+    close_ms = int(
+        datetime.fromisoformat("2026-08-17T00:00:01+08:00").timestamp() * 1000
+    )
+    with _session() as session:
+        activity_id = upsert_exchange_activity_snapshot(
+            session,
+            {
+                "activity_type": "beast-abyss",
+                "cross_count": 4,
+                "start_date": "2026-08-15",
+                "end_date": "2026-08-15",
+                "evidence": {"period_close_panel_time": close_ms},
+                "expected_shop_item_count": 3,
+                "shop_items": [
+                    {"goods_id": 1, "item_id": 1, "source_order": 1, "name": "珍品饲灵丸", "token_cost": 100, "purchase_limit": 1},
+                    {"goods_id": 2, "item_id": 2, "source_order": 2, "name": "洗灵奇石", "token_cost": 100, "purchase_limit": 1},
+                    {"goods_id": 3, "item_id": 3, "source_order": 3, "name": "瑶池玉莲", "token_cost": 100, "purchase_limit": 1},
+                ],
+            },
+        )
+        stored = session.get(FanxiuExchangeActivity, activity_id)
+
+    assert stored is not None
+    plan = stored.evidence["exchange_plan"]
+    assert plan["weekly_rollover_at"] == "2026-08-17T00:00:00+08:00"
+    assert plan["shop_closes_after_weekly_rollover"] is True
+    assert plan["next_prayer_resource"] == "洗灵奇石"
+    assert stored.resource_strategy["跨周祈愿预留"] == "洗灵奇石"
+    assert "周日顺延预留" not in stored.resource_strategy
 
 
 def test_stage9_completion_excludes_locked_goods_but_requires_funded_reserve() -> None:
