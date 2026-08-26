@@ -209,6 +209,8 @@ def record_recognition_ambiguity(
         }
         selected_key = str(event["fallback_scene_id"]) if event["fallback_scene_id"] is not None else "unresolved"
         selected_counts[selected_key] = selected_counts.get(selected_key, 0) + 1
+        first_timestamp = min(float(group.get("_first_event_timestamp") or captured_timestamp), captured_timestamp)
+        last_captured_timestamp = max(float(group.get("_last_captured_timestamp") or captured_timestamp), captured_timestamp)
         group = {
             "schema_version": 1,
             "id": f"ambiguity:{signature}",
@@ -220,8 +222,8 @@ def record_recognition_ambiguity(
             "tied_scene_ids": list(candidates),
             "occurrence_count": int(group.get("occurrence_count") or 0) + 1,
             "distinct_frame_count": len(frame_hashes),
-            "first_seen_at": str(group.get("first_seen_at") or captured_text),
-            "last_seen_at": captured_text,
+            "first_seen_at": datetime.fromtimestamp(first_timestamp).astimezone().isoformat(timespec="milliseconds"),
+            "last_seen_at": datetime.fromtimestamp(last_captured_timestamp).astimezone().isoformat(timespec="milliseconds"),
             "selected_scene_counts": selected_counts,
             "sample_frames": sample_frames,
             "latest_event_id": event_id,
@@ -229,6 +231,8 @@ def record_recognition_ambiguity(
             "asset_tree_sha256": str(asset_tree_sha256 or ""),
             "recognizer_version": str(recognizer_version or RECOGNIZER_VERSION),
             "_frame_hashes": frame_hashes,
+            "_first_event_timestamp": first_timestamp,
+            "_last_captured_timestamp": last_captured_timestamp,
             "_last_event_fingerprint": event_fingerprint,
             "_last_frame_sha256": frame_ref["sha256"],
             "_last_event_timestamp": captured_timestamp,

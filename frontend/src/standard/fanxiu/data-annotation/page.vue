@@ -513,7 +513,7 @@
                   并列候选 {{ selectedRecognitionAmbiguity.tied_scene_ids.map(id => `#${id}`).join(' / ') }}；
                   临时选择 {{ recognitionAmbiguitySelectionText || '无' }}
                 </div>
-                <div v-if="selectedRecognitionAmbiguity.sample_frames.length" class="navigation-incident-crops">
+                <div v-if="selectedRecognitionAmbiguity.sample_frames.length" class="navigation-incident-crops recognition-ambiguity-frames">
                   <figure v-for="frame in selectedRecognitionAmbiguity.sample_frames" :key="frame.sha256">
                     <img :src="recognitionAmbiguityFrameUrl(frame.path)" alt="识别并列现场原帧" />
                     <figcaption>
@@ -16453,6 +16453,15 @@ const finishShapeDrag = () => {
   color: #606266;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.recognition-ambiguity-frames figure,
+.recognition-ambiguity-frames img {
+  max-width: 260px;
+}
+
+.recognition-ambiguity-frames img {
+  max-height: 460px;
 }
 
 @media (max-width: 900px) {

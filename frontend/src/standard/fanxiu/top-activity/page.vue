@@ -7,7 +7,7 @@ import {
   type FanxiuExchangeActivitySnapshot,
 } from '@/api/fanxiu'
 
-type TopActivityType = 'yunmeng-trial' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss'
+type TopActivityType = 'yunmeng-trial' | 'xianyuan-duokui' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss'
 
 type ActivityOption = {
   label: string
@@ -18,6 +18,10 @@ const activityOptions: ActivityOption[] = [
   {
     label: '云梦试剑',
     value: 'yunmeng-trial',
+  },
+  {
+    label: '仙缘夺魁',
+    value: 'xianyuan-duokui',
   },
   {
     label: '虚天殿',
@@ -65,6 +69,9 @@ const activePage = computed(() => {
   if (selectedType.value === 'beast-abyss') return BeastAbyssPage
   return XutianPalacePage
 })
+const selectedActivityName = computed(() => (
+  activityOptions.find(item => item.value === selectedType.value)?.label ?? '玩法榜'
+))
 
 watch(
   () => route.query.activity,
@@ -97,8 +104,8 @@ watch(
       v-if="activePage"
       embedded
       :initial-snapshot="initialSnapshot ?? undefined"
-      :activity-type="selectedType === 'yunmeng-trial' ? 'yunmeng-trial' : undefined"
-      :activity-name="selectedType === 'yunmeng-trial' ? '云梦试剑' : undefined"
+      :activity-type="['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedType : undefined"
+      :activity-name="['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedActivityName : undefined"
     >
       <template #activity-type-control>
         <el-select v-model="selectedType" class="activity-type-select" aria-label="选择活动类型">

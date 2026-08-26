@@ -106,12 +106,16 @@ def execute_lingzhuang_strengthening_task(
     )
 
     try:
+        game_task_activity_id = int(
+            (getattr(activity, "evidence", None) or {}).get("game_activity_id") or 0
+        ) or None
         result = yield from complete_equipment_strengthening_tasks(
             runtime,
             activity_id=activity.id,
             target_progress=target_progress,
             target_tier=target_tier,
             cross_count=int(activity.cross_count),
+            game_task_activity_id=game_task_activity_id,
             max_clicks=max(1, int(payload.get("max_clicks") or 200)),
         )
     except EquipmentStrengtheningResourceExhausted as exc:

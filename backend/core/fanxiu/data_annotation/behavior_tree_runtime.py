@@ -9328,8 +9328,10 @@ class BehaviorTreeRuntimeRunner(
                 for item in candidates
             ]
         result = choose_scene_from_graph(candidates, edges)
+        ambiguity_entry_id = str(ctx.get("entry_id") or getattr(ctx.get("entry"), "entry_id", "") or "")
         if (
-            not ctx.get("_disable_recognition_ambiguity_recording")
+            ambiguity_entry_id
+            and not ctx.get("_disable_recognition_ambiguity_recording")
             and result.status in {"similarity_tiebreak", "ambiguous"}
             and len(result.unresolved_candidates) >= 2
         ):
@@ -9340,7 +9342,7 @@ class BehaviorTreeRuntimeRunner(
                     else time.time()
                 )
                 record_recognition_ambiguity(
-                    entry_id=str(ctx.get("entry_id") or getattr(ctx.get("entry"), "entry_id", "") or ""),
+                    entry_id=ambiguity_entry_id,
                     frame_data_url=frame_data_url,
                     captured_at=captured_at,
                     layer=int(str(layer_label).removeprefix("layer") or 0),
@@ -9355,6 +9357,7 @@ class BehaviorTreeRuntimeRunner(
                     recognizer_version=RECOGNIZER_VERSION,
                 )
             except Exception as exc:
+                self._log("error", f"识别并列运维事件写入失败：{exc}")
                 if trace is not None:
                     trace.append({
                         "event": "graph_ambiguity_persist_failed",

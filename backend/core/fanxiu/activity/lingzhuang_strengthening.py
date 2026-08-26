@@ -162,7 +162,11 @@ def _quest_activity_tasks(
     activities = _lua_dictionary_items(reader, quest_data.get("AllTaskAcDic"))
     activity_tasks = activities.get(game_activity_id)
     _, total = reader.list_items(activity_tasks)
-    if total < 50:
+    # Full cross-server phases expose the equipment tasks together with the
+    # repeating score tasks, while the local preliminary phase exposes only
+    # the 14 equipment-consumption tiers.  Fourteen is therefore a complete
+    # task group for the operation implemented by this module.
+    if int(total or 0) < len(_EQUIPMENT_TASK_TARGETS):
         raise FanxiuRuntimeMemoryError(
             f"灵装化道任务 {game_activity_id} 尚未加载到 Quest Runtime"
         )
@@ -305,6 +309,24 @@ def _theme_week_task_progress(
     return equipment_rows, current_round, score_rows
 
 
+def _task_progress_complete(
+    *,
+    raw_task_total: int,
+    equipment_task_count: int,
+    score_task_count: int,
+) -> tuple[bool, bool]:
+    """Return (complete, equipment_only_phase) for the live task group."""
+
+    equipment_complete = equipment_task_count == len(_EQUIPMENT_TASK_TARGETS)
+    equipment_only_phase = (
+        raw_task_total == len(_EQUIPMENT_TASK_TARGETS) and score_task_count == 0
+    )
+    return (
+        equipment_complete and (equipment_only_phase or score_task_count == 10),
+        equipment_only_phase,
+    )
+
+
 def _enrich_static_task_reference(
     snapshot: LingzhuangStrengtheningSnapshot,
 ) -> LingzhuangStrengtheningSnapshot:
@@ -387,7 +409,11 @@ def _side_payload(
     }
 
 
-def read_lingzhuang_strengthening_runtime_snapshot(*, cross_count: int = 16) -> dict[str, Any]:
+def read_lingzhuang_strengthening_runtime_snapshot(
+    *,
+    cross_count: int = 16,
+    game_task_activity_id: int | None = None,
+) -> dict[str, Any]:
     """Read one coherent, strictly external process-memory snapshot."""
 
     memory = MumuProcessMemory.discover_cached()
@@ -421,12 +447,17 @@ def read_lingzhuang_strengthening_runtime_snapshot(*, cross_count: int = 16) -> 
     if missing_slots:
         warnings.append(f"初灵/洞玄装备格子尚未加载完整：{missing_slots}")
     equipment_complete = not missing_slots
-    game_task_activity_id = int(cross_count) * 1_000_000 + 44_301
+    resolved_game_task_activity_id = (
+        int(game_task_activity_id)
+        if game_task_activity_id is not None
+        else int(cross_count) * 1_000_000 + 44_301
+    )
     equipment_tasks: list[dict[str, Any]] = []
     score_round: int | None = None
     score_tasks: list[dict[str, Any]] = []
     quest_root: int | None = None
     quest_cache_hit = False
+    raw_task_total = 0
     try:
         quest_root, quest_cache_hit = resolve_manager_root(
             memory,
@@ -435,13 +466,21 @@ def read_lingzhuang_strengthening_runtime_snapshot(*, cross_count: int = 16) -> 
             required_methods=_QUEST_METHODS,
             validate=_quest_data_fields,
         )
-        equipment_tasks, score_round, score_tasks = _theme_week_task_progress(
+        raw_tasks = _quest_activity_tasks(
             reader,
-            _quest_activity_tasks(reader, quest_root, game_task_activity_id),
+            quest_root,
+            resolved_game_task_activity_id,
         )
+        _, raw_task_total_value = reader.list_items(raw_tasks)
+        raw_task_total = int(raw_task_total_value or 0)
+        equipment_tasks, score_round, score_tasks = _theme_week_task_progress(reader, raw_tasks)
     except FanxiuRuntimeMemoryError as exc:
         warnings.append(str(exc))
-    tasks_complete = len(equipment_tasks) == 14 and len(score_tasks) == 10
+    tasks_complete, equipment_only_phase = _task_progress_complete(
+        raw_task_total=raw_task_total,
+        equipment_task_count=len(equipment_tasks),
+        score_task_count=len(score_tasks),
+    )
     if not tasks_complete:
         warnings.append(
             f"灵装化道任务进度尚未加载完整：装备 {len(equipment_tasks)}/14，积分 {len(score_tasks)}/10"
@@ -460,7 +499,7 @@ def read_lingzhuang_strengthening_runtime_snapshot(*, cross_count: int = 16) -> 
         "materials_captured_at": captured_at,
         "equipment_captured_at": captured_at if equipment_complete else "",
         "task_progress_captured_at": captured_at if tasks_complete else "",
-        "game_task_activity_id": game_task_activity_id,
+        "game_task_activity_id": resolved_game_task_activity_id,
         "source_kind": "read_only_runtime_memory",
         "complete": equipment_complete and tasks_complete,
         "warnings": warnings,
@@ -484,6 +523,8 @@ def read_lingzhuang_strengthening_runtime_snapshot(*, cross_count: int = 16) -> 
             "equipment_root_cache_hit": equipment_cache_hit,
             "quest_root": f"0x{quest_root:x}" if quest_root else "",
             "quest_root_cache_hit": quest_cache_hit,
+            "quest_task_total": raw_task_total,
+            "equipment_only_phase": equipment_only_phase,
         },
     }
 
@@ -531,7 +572,13 @@ def collect_and_store_lingzhuang_strengthening_snapshot(
 
     if observed_snapshot is None:
         try:
-            payload = read_lingzhuang_strengthening_runtime_snapshot(cross_count=activity.cross_count)
+            source_game_activity_id = int(
+                (activity.evidence or {}).get("game_activity_id") or 0
+            ) or None
+            read_options: dict[str, Any] = {"cross_count": activity.cross_count}
+            if source_game_activity_id is not None:
+                read_options["game_task_activity_id"] = source_game_activity_id
+            payload = read_lingzhuang_strengthening_runtime_snapshot(**read_options)
         except FanxiuRuntimeMemoryError as exc:
             raise ValueError(str(exc)) from exc
     elif isinstance(observed_snapshot, LingzhuangStrengtheningSnapshot):

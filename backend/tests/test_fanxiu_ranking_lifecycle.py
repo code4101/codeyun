@@ -10,7 +10,10 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     DAILY_RECONCILE_KIND,
     EXCHANGE_TAIL_KIND,
     MAGIC_ACTIVE_KIND,
+    RESOURCE_FREE_GIFT_KIND,
     RankingActivityIdentity,
+    RankingOccurrence,
+    checkpoints_for_occurrence,
     discover_ranking_occurrences,
     due_ranking_checkpoints,
     next_ranking_lifecycle_time,
@@ -215,6 +218,35 @@ def test_0030_collects_previous_tail_today_start_resource_and_missed_days() -> N
     assert [(item.runtime_id, item.business_date) for item in tails] == [
         ("1070011400004", "2026-08-22")
     ]
+
+
+def test_free_gift_checkpoint_is_limited_to_activities_with_a_proven_adapter() -> None:
+    def occurrence(activity_type: str, activity_id: int) -> RankingOccurrence:
+        return RankingOccurrence(
+            activity_type=activity_type,
+            family="resource_rank",
+            runtime_id=f"runtime-{activity_type}",
+            activity_id=activity_id,
+            start_at=datetime(2026, 8, 26, 5, 0, 5, tzinfo=TZ),
+            end_at=datetime(2026, 8, 26, 22, 0, tzinfo=TZ),
+            prepare_at=datetime(2026, 8, 26, 0, 0, tzinfo=TZ),
+            close_at=datetime(2026, 8, 27, 23, 59, 59, tzinfo=TZ),
+            cross_count=1,
+        )
+
+    dandao = checkpoints_for_occurrence(
+        occurrence("dandao-wending", 1043111),
+        business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
+    )
+    lingzhuang = checkpoints_for_occurrence(
+        occurrence("lingzhuang-huadao", 1044311),
+        business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
+    )
+
+    assert RESOURCE_FREE_GIFT_KIND in {item.checkpoint_kind for item in dandao}
+    assert RESOURCE_FREE_GIFT_KIND not in {
+        item.checkpoint_kind for item in lingzhuang
+    }
 
 
 def test_exchange_tail_is_never_replayed_after_panel_close() -> None:

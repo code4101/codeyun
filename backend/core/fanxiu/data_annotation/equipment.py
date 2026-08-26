@@ -790,6 +790,7 @@ def select_equipment_strengthening(
     *,
     snapshot: Any | None = None,
     cross_count: int = 16,
+    game_task_activity_id: int | None = None,
     max_scrolls_per_direction: int = 12,
     settle_seconds: float = 0.8,
 ):
@@ -806,7 +807,8 @@ def select_equipment_strengthening(
         )
 
         snapshot = read_lingzhuang_strengthening_runtime_snapshot(
-            cross_count=int(cross_count)
+            cross_count=int(cross_count),
+            game_task_activity_id=game_task_activity_id,
         )
     target = resolve_equipment_strengthening_target(snapshot, category, part)
     yield from ensure_equipment_strengthening(runtime)
@@ -1016,6 +1018,7 @@ def strengthen_selected_equipment_once(
     category: str,
     part: str,
     cross_count: int = 16,
+    game_task_activity_id: int | None = None,
     settle_seconds: float = 1.0,
     poll_attempts: int = 4,
 ):
@@ -1038,7 +1041,10 @@ def strengthen_selected_equipment_once(
     )
     from backend.db import engine
 
-    before_raw = read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+    before_raw = read_lingzhuang_strengthening_runtime_snapshot(
+        cross_count=int(cross_count),
+        game_task_activity_id=game_task_activity_id,
+    )
     before = LingzhuangStrengtheningSnapshot.model_validate(before_raw)
     # Quest removes all equipment-task rows after the final 1.2w tier is done.
     # Continue the cumulative x-axis from the last persisted exact snapshot so
@@ -1064,7 +1070,10 @@ def strengthen_selected_equipment_once(
     attempts = max(1, int(poll_attempts))
     for attempt in range(attempts):
         candidate = LingzhuangStrengtheningSnapshot.model_validate(
-            read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+            read_lingzhuang_strengthening_runtime_snapshot(
+                cross_count=int(cross_count),
+                game_task_activity_id=game_task_activity_id,
+            )
         )
         candidate_target = resolve_equipment_strengthening_target(candidate, category, part)
         if (
@@ -1087,8 +1096,7 @@ def strengthen_selected_equipment_once(
                 candidate.task_progress_captured_at = candidate.captured_at
                 candidate.complete = bool(
                     candidate.equipment_captured_at
-                    and candidate.score_current is not None
-                    and candidate.score_round is not None
+                    and candidate.task_progress_captured_at
                 )
             after = candidate
             break
@@ -1142,6 +1150,7 @@ def complete_equipment_strengthening_tasks(
     target_progress: int | None = None,
     target_tier: int | None = None,
     cross_count: int = 16,
+    game_task_activity_id: int | None = None,
     max_clicks: int = 200,
 ):
     """Follow the stable part route until the requested equipment-task target.
@@ -1160,7 +1169,10 @@ def complete_equipment_strengthening_tasks(
 
     yield from ensure_equipment_strengthening(runtime)
     initial = LingzhuangStrengtheningSnapshot.model_validate(
-        read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+        read_lingzhuang_strengthening_runtime_snapshot(
+            cross_count=int(cross_count),
+            game_task_activity_id=game_task_activity_id,
+        )
     )
     ordered_tasks = sorted(
         initial.equipment_tasks,
@@ -1205,7 +1217,10 @@ def complete_equipment_strengthening_tasks(
             skipped.append({"part": route_target.part, "reason": "no_material"})
             continue
         live = LingzhuangStrengtheningSnapshot.model_validate(
-            read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+            read_lingzhuang_strengthening_runtime_snapshot(
+                cross_count=int(cross_count),
+                game_task_activity_id=game_task_activity_id,
+            )
         )
         if int(live.equipment_current or 0) >= requested_target:
             break
@@ -1216,6 +1231,7 @@ def complete_equipment_strengthening_tasks(
                 route_target.part,
                 snapshot=live,
                 cross_count=int(cross_count),
+                game_task_activity_id=game_task_activity_id,
             )
         except RuntimeError as exc:
             # Selection itself spends nothing. A depleted/off-screen part must
@@ -1252,6 +1268,7 @@ def complete_equipment_strengthening_tasks(
                 category=route_target.category,
                 part=route_target.part,
                 cross_count=int(cross_count),
+                game_task_activity_id=game_task_activity_id,
             )
             actions.append(action)
             if int(action.get("equipment_task_after") or 0) >= requested_target:
@@ -1271,7 +1288,10 @@ def complete_equipment_strengthening_tasks(
             raise RuntimeError(f"达到强化点击安全上限 {max_clicks}，已停止")
 
     final = LingzhuangStrengtheningSnapshot.model_validate(
-        read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
+        read_lingzhuang_strengthening_runtime_snapshot(
+            cross_count=int(cross_count),
+            game_task_activity_id=game_task_activity_id,
+        )
     )
     if int(final.equipment_current or 0) < requested_target:
         equipment_progress = int(final.equipment_current or 0)

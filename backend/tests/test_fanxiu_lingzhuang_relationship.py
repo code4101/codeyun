@@ -242,3 +242,26 @@ def test_action_sample_accepts_category_complete_snapshot_with_false_global_flag
 
     assert dataset.samples[-1].x == 500
     assert dataset.samples[-1].values["equipment_task_progress"] == 4515
+
+
+def test_action_sample_accepts_equipment_only_preliminary_phase() -> None:
+    before = _runtime_snapshot(stock=100, equipment_progress=0, score=0)
+    after = _runtime_snapshot(stock=0, equipment_progress=100, score=0)
+    for snapshot in (before, after):
+        snapshot["score_round"] = None
+        snapshot["score_current"] = None
+        snapshot["score_rounds"] = []
+        snapshot["evidence"] = {"equipment_only_phase": True}
+
+    with _session() as session:
+        dataset = record_lingzhuang_strengthening_action_sample(
+            session,
+            activity_id="lingzhuang-local-preliminary",
+            before=before,
+            after=after,
+            part="气铠",
+            category="洞玄",
+        )
+
+    assert dataset.samples[-1].x == 100
+    assert dataset.samples[-1].values == {"equipment_task_progress": 100}
