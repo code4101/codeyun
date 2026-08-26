@@ -264,6 +264,33 @@ def test_exchange_tail_is_never_replayed_after_panel_close() -> None:
     assert all(item.checkpoint_kind != EXCHANGE_TAIL_KIND for item in due)
 
 
+def test_xianyuan_exchange_tail_is_due_at_midnight() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="xianyuan-duokui",
+        family="gameplay_rank",
+        runtime_id="846001400015",
+        activity_id=846001,
+        start_at=datetime(2026, 8, 26, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 26, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 26, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 27, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    checkpoints = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 8, 27, tzinfo=TZ).date(),
+    )
+    tail = next(item for item in checkpoints if item.checkpoint_kind == EXCHANGE_TAIL_KIND)
+
+    assert tail.due_at == datetime(2026, 8, 27, 0, 0, tzinfo=TZ)
+    due = due_ranking_checkpoints(
+        (occurrence,),
+        now=datetime(2026, 8, 27, 0, 0, tzinfo=TZ),
+    )
+    assert any(item.key == tail.key for item in due)
+
+
 def test_expired_magic_action_is_never_replayed_but_daily_tail_is_reconciled() -> None:
     server = next(
         row

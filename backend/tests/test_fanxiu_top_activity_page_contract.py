@@ -33,8 +33,10 @@ def test_exchange_shop_is_a_read_only_tiered_projection() -> None:
     assert "<th>ID</th>" in source
     assert ":rowspan=\"row.groupRowSpan\"" in source
     assert "priority_group_goods_ids" in source
-    assert "priorityLevel: 14" in source
-    assert "priorityId: '不需要领'" in source
+    assert "priorityIds.indexOf(notNeededId)" in source
+    assert "priorityLevel: 14" not in source
+    assert "const notNeededId = '不需要领'" in source
+    assert "priorityId: notNeededId" in source
     assert "<th>名称</th>" in source
     assert "限购数量" in source
     assert "el-checkbox" not in source

@@ -116,8 +116,8 @@ def test_xianyuan_materialize_and_collect_shop_without_fabricating_wallet(
         assert detail.shop_refresh_status == "updated"
         assert detail.rankings_refresh_status == "unavailable"
         assert detail.rankings_refresh_reason == "排名缓存尚未预热"
-        assert detail.currency_fact_fresh is True
-        assert detail.budget_ready is True
+        assert detail.currency_fact_fresh is False
+        assert detail.budget_ready is False
         assert item is not None
 
 

@@ -51,6 +51,7 @@ RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 30)
+XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
 XIANMENG_ACTIVE_TIME = time(10, 0)
 RESOURCE_FREE_GIFT_TIME = time(5, 10)
@@ -61,7 +62,11 @@ YUANDING_GIFT_TIME = time(5, 0)
 # activity adapters that have a proven, idempotent executor.  The common
 # lifecycle owns the timing; each adapter still owns navigation and purchase
 # verification for its page family.
-EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({"magic-invasion", "yunmeng-trial"})
+EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
+    "magic-invasion",
+    "yunmeng-trial",
+    "xianyuan-duokui",
+})
 
 # The shared free-gift executor currently has a proven page/Runtime adapter
 # only for 丹道问鼎.  Resource-rank identity alone must not manufacture a
@@ -357,7 +362,12 @@ def checkpoints_for_occurrence(
         )
     ]
     tail_day = occurrence.end_at.date() + timedelta(days=1)
-    tail_at = _at(tail_day, DAILY_RECONCILE_TIME, occurrence.start_at.tzinfo)
+    tail_time = (
+        XIANYUAN_EXCHANGE_TAIL_TIME
+        if occurrence.activity_type == "xianyuan-duokui"
+        else DAILY_RECONCILE_TIME
+    )
+    tail_at = _at(tail_day, tail_time, occurrence.start_at.tzinfo)
     if (
         occurrence.family == "gameplay_rank"
         and occurrence.activity_type in EXCHANGE_TAIL_ACTIVITY_TYPES

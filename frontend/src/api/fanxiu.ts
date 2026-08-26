@@ -2138,8 +2138,14 @@ export interface FanxiuExchangeActivityDetail extends FanxiuExchangeActivitySumm
     next_prayer_resource?: string | null;
     card_mail_resource?: string | null;
     locked_reserved_tokens?: number;
-    stage8_budget?: FanxiuExchangeBudget;
-    stage9_budget?: FanxiuExchangeBudget;
+    priority_order_ids?: string[];
+    priority_group_goods_ids?: Record<string, number[]>;
+    target_budgets?: Record<string, FanxiuExchangeBudget>;
+    economical_target_id?: string;
+    closing_goods_items_complete?: boolean;
+    closing_goods_complete?: boolean;
+    next_prayer_cutoff_at?: string;
+    activity_page_closes_after_next_prayer_cutoff?: boolean;
     card_mail_close_action?: 'leave_for_mail' | 'redeem_during_grace_period';
     [key: string]: unknown;
   };

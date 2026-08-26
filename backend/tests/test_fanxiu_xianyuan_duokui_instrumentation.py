@@ -72,4 +72,4 @@ def test_xianyuan_status_uses_cached_roots_and_exact_ids(monkeypatch) -> None:
     assert calls[1][2]["allow_discovery"] is False
     wallet_calls = [call for call in calls if call[0] == "wallet"]
     assert len(wallet_calls) == 2
-    assert all(call[-1] == {"missing_as_zero": True} for call in wallet_calls)
+    assert all(call[-1] == {"missing_as_zero": False} for call in wallet_calls)

@@ -57,6 +57,13 @@ def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occur
     if occurrence.activity_type == "yunmeng-trial":
         from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import execute_yunmeng_tail_job
         return (yield from execute_yunmeng_tail_job(runner, ctx, payload, stop_event))
+    if occurrence.activity_type == "xianyuan-duokui":
+        from backend.core.fanxiu.data_annotation.tasks.xianyuan_duokui_tail import (
+            execute_xianyuan_duokui_tail_checkpoint,
+        )
+        return (yield from execute_xianyuan_duokui_tail_checkpoint(
+            runner, ctx, payload, stop_event, occurrence=occurrence
+        ))
     raise RuntimeError(f"{occurrence.activity_type} 尚无兑换收尾执行适配器")
 
 

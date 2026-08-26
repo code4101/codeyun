@@ -350,22 +350,7 @@ def collect_and_store_xianyuan_duokui_activity(
         currency_status = "updated"
         currency_evidence = dict(wallet.get("evidence") or {})
     except (FanxiuRuntimeMemoryError, ValueError) as exc:
-        # The live redemption implementation calls GetCurrencyByType(type)
-        # and renders zero when no VO exists; history is explicitly
-        # ``walletvo and walletvo.history or 0``.  A complete V_ShowList panel
-        # with the exact V_WalletType therefore makes this one absence case an
-        # authoritative 0/0 projection rather than a stale unknown.
-        if "未同步" in str(exc) and str(XIANYUAN_DUOKUI_CURRENCY_TYPE) in str(exc):
-            current_currency = 0
-            cumulative_currency = 0
-            currency_status = "updated"
-            currency_evidence = {
-                "source": "activity_redemption_live_panel_absent_wallet_vo",
-                "wallet_type": XIANYUAN_DUOKUI_CURRENCY_TYPE,
-                "page_semantics": "GetCurrencyByType=0; missing WalletVO.history=0",
-            }
-        else:
-            currency_reason = str(exc)
+        currency_reason = str(exc)
 
     evidence = dict(activity.evidence or {})
     refresh_status = dict(evidence.get("refresh_status") or {})

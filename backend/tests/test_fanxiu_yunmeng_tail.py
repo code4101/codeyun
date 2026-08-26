@@ -176,6 +176,40 @@ def test_theory_priority_allocates_budget_but_physical_order_executes_once() -> 
     assert facts["planned_remaining_tokens"] == 0
 
 
+def test_insufficient_for_next_priority_falls_back_to_affordable_later_rows() -> None:
+    items = [
+        _item(1, "誓约·黛儿", 1, 20_000, limit=1),
+        _item(2, "洗灵奇石", 2, 100, limit=100),
+        _item(3, "淬体精魄", 3, 100, limit=100),
+        _item(4, "玄灵丹·珍", 4, 60, limit=-1),
+        _item(5, "玄灵丹·尚", 5, 10, limit=-1),
+    ]
+    detail = SimpleNamespace(
+        current_currency=12_080,
+        shop_items=items,
+        exchange_plan={
+            "budget_ready": True,
+            "ordered_goods_ids": [1, 2, 3, 4, 5],
+            "locked_goods_ids": [],
+            "target_budgets": {"收尾道具": {"required_new_currency": 1}},
+            "card_mail_resource": "",
+            "next_prayer_resource": "",
+        },
+    )
+
+    purchases, _retained, facts = plan_yunmeng_tail_purchases(
+        detail, run_date=date(2026, 8, 26)
+    )
+
+    assert [(row.goods_id, row.quantity) for row in purchases] == [
+        (2, 100),
+        (3, 20),
+        (4, 1),
+        (5, 2),
+    ]
+    assert facts["planned_remaining_tokens"] == 0
+
+
 def test_skipped_rows_keep_slots_and_late_target_only_scrolls_down() -> None:
     items = [
         _item(index, f"skip-{index}", index, 100, limit=1)
