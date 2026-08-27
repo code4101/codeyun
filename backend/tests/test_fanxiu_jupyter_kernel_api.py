@@ -6,7 +6,9 @@ import os
 import platform
 import queue
 import runpy
+import sys
 import threading
+from types import SimpleNamespace
 from types import GeneratorType
 from pathlib import Path
 
@@ -15,6 +17,70 @@ import pytest
 from backend.core.fanxiu.data_annotation import behavior_tree_framework
 from backend.core.fanxiu.data_annotation import behavior_tree_control
 from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
+
+
+def test_control_channel_interrupt_reject_raises_for_manager_fallback(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from backend.core.fanxiu.behavior_tree import jupyter_kernel
+
+    class Session:
+        @staticmethod
+        def msg(_name, content):
+            assert content == {}
+            return {"header": {"msg_id": "interrupt-1"}}
+
+    class ControlChannel:
+        @staticmethod
+        def send(_message):
+            return None
+
+    class Client:
+        session = Session()
+        control_channel = ControlChannel()
+
+        def __init__(self, *, connection_file):
+            assert connection_file == str(tmp_path / "kernel.json")
+
+        @staticmethod
+        def load_connection_file():
+            return None
+
+        @staticmethod
+        def start_channels():
+            return None
+
+        @staticmethod
+        def stop_channels():
+            return None
+
+        @staticmethod
+        def get_control_msg(*, timeout):
+            assert timeout > 0
+            return {
+                "parent_header": {"msg_id": "interrupt-1"},
+                "content": {
+                    "status": "error",
+                    "ename": "NotImplementedError",
+                    "evalue": "Interrupt message not supported on Windows",
+                },
+            }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "jupyter_client",
+        SimpleNamespace(BlockingKernelClient=Client),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Interrupt message not supported on Windows",
+    ):
+        jupyter_kernel._interrupt_kernel_over_control_channel(
+            tmp_path / "kernel.json",
+            timeout_seconds=1,
+        )
 
 
 def test_task_is_only_an_ordinary_cell_constructor() -> None:
@@ -27,24 +93,26 @@ def test_task_is_only_an_ordinary_cell_constructor() -> None:
     assert not hasattr(cell, "submit")
 
 
-def test_repo_wmi_guard_preserves_platform_query_field_arity() -> None:
+def test_managed_worker_wmi_guard_uses_stable_processor_environment(monkeypatch) -> None:
     if os.name != "nt":
         pytest.skip("Windows-only platform WMI contract")
 
-    original = platform._wmi_query
+    original = platform._Processor.get_win32
+    monkeypatch.setenv("CODEYUN_SKIP_PLATFORM_WMI_PROCESSOR", "1")
+    monkeypatch.setenv("PROCESSOR_IDENTIFIER", "CodeYun managed worker CPU")
     try:
-        runpy.run_path(str(Path(__file__).resolve().parents[2] / "sitecustomize.py"))
-        assert platform._wmi_query("CPU", "Manufacturer", "Caption") == ("", "")
-        assert platform._wmi_query(
-            "OS",
-            "Version",
-            "ProductType",
-            "BuildType",
-            "ServicePackMajorVersion",
-            "ServicePackMinorVersion",
-        ) == ("", "1", "", "", "")
+        runpy.run_path(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "core"
+                / "services"
+                / "no_window_sitecustomize"
+                / "sitecustomize.py"
+            )
+        )
+        assert platform._Processor.get_win32() == "CodeYun managed worker CPU"
     finally:
-        platform._wmi_query = original
+        platform._Processor.get_win32 = original
 
 
 def test_kernel_child_environment_skips_optional_platform_wmi_probe() -> None:

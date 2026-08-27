@@ -735,7 +735,12 @@ class DailyRedpacketTaskMixin:
         snapshot = self._daily_redpacket_require_fresh_uid_snapshot(
             phase="#332 Runtime 群列表对齐"
         )
-        route_plan = classify_redpacket_runtime_routes(snapshot)
+        runtime_snapshot = (
+            snapshot.get("snapshot")
+            if isinstance(snapshot.get("snapshot"), dict)
+            else snapshot
+        )
+        route_plan = classify_redpacket_runtime_routes(runtime_snapshot)
         items = list(route_plan.get("ordinary_chat_items") or ())
         if not items:
             return None
@@ -749,14 +754,29 @@ class DailyRedpacketTaskMixin:
                 f"日常_红包：Runtime 群 {channel}_{sub_id} 缺少 GUI 对齐锚点"
             )
 
+        tab_label = str(gui_target.get("tab_label") or "")
+        if not tab_label:
+            raise RuntimeError(
+                f"日常_红包：Runtime 群 {channel}_{sub_id} 缺少 Tab 路由"
+            )
+        yield from runtime.click_shape_center_then_view(
+            332,
+            tab_label,
+            332,
+            timeout=max(3.0, float(settle_seconds) * 10.0),
+            label=f"日常_红包：Runtime 对齐到 {tab_label} Tab",
+        )
+
         window_shape = runtime.shape(332, "窗口")
         window_box = window_shape.box()
+        last_text = ""
 
         for scroll_index in range(max(0, int(max_scrolls)) + 1):
             frame = runtime.cur_frame(update=True)
             cached = self._shared_spatial_ocr_result(ctx, frame)
             spatial = query_spatial_ocr(cached.get("tokens") or [], window_box)
             tokens = spatial.get("tokens") if isinstance(spatial.get("tokens"), list) else []
+            last_text = "".join(str(token.get("text") or "") for token in tokens)
             resolved = None
             matched_anchor = ""
             for anchor in anchors:
@@ -789,6 +809,13 @@ class DailyRedpacketTaskMixin:
                 break
             runtime.drag_shape_content(window_shape, direction="down")
             yield from runtime.wait_action_settle(settle_seconds)
+        self._log(
+            "diagnostic",
+            (
+                f"日常_红包：Runtime 群 {channel}_{sub_id} 未对齐，"
+                f"tab={tab_label}，anchors={anchors}，OCR={last_text[:240]}"
+            ),
+        )
         return None
 
     def _wait_and_click_daily_redpacket_group(

@@ -676,7 +676,16 @@ def _interrupt_kernel_over_control_channel(connection_path: Path, *, timeout_sec
             if str(reply.get("parent_header", {}).get("msg_id") or "") != message_id:
                 continue
             content = reply.get("content") if isinstance(reply.get("content"), dict) else {}
-            return {"ok": str(content.get("status") or "ok") == "ok", "content": content}
+            status = str(content.get("status") or "ok")
+            if status != "ok":
+                error = str(
+                    content.get("evalue")
+                    or content.get("message")
+                    or content.get("ename")
+                    or status
+                )
+                raise RuntimeError(f"Jupyter interrupt_request 失败：{error}")
+            return {"ok": True, "content": content}
         raise TimeoutError("Jupyter interrupt_request 超时")
     finally:
         client.stop_channels()

@@ -1616,6 +1616,49 @@ def test_scheduler_reconciles_matching_runtime_success_without_overwriting_busin
     assert facts[-1][1] == "success"
 
 
+def test_scheduler_reconciles_persisted_terminal_after_runner_state_is_reloaded(monkeypatch):
+    tasks = [{
+        "id": "daily-redpacket",
+        "last_result": "running",
+        "attempt_id": "attempt-persisted",
+        "attempt_original_trigger": "2026-08-27 22:19:37",
+        "attempt_kernel_generation": 7,
+        "next_time": "2026-08-28 11:24:59",
+    }]
+    monkeypatch.setattr(
+        "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": True, "execution_state": "idle", "generation": 7},
+    )
+    monkeypatch.setattr(
+        behavior_tree_control,
+        "behavior_tree_runtime_runner_status",
+        lambda: {"running": False, "status": "idle", "updated_at": 1},
+    )
+    monkeypatch.setattr(
+        behavior_tree_control,
+        "read_behavior_tree_runtime_status",
+        lambda *_args, **_kwargs: {
+            "running": False,
+            "status": "success",
+            "message": "处理 1 个群，共打开 1 个红包",
+            "updated_at": 2,
+            "scheduler_task_id": "daily-redpacket",
+            "scheduler_attempt_id": "attempt-persisted",
+            "scheduler_terminal_result": "success",
+            "scheduler_terminal_message": "处理 1 个群，共打开 1 个红包",
+            "scheduler_terminal_at": real_datetime(2026, 8, 27, 23, 25, 9).timestamp(),
+        },
+    )
+    monkeypatch.setattr(behavior_tree_control, "write_scheduler_tasks", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(behavior_tree_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
+
+    assert behavior_tree_control.reconcile_stale_scheduler_attempts(tasks) is True
+    assert tasks[0]["last_result"] == "success"
+    assert tasks[0]["last_message"] == "处理 1 个群，共打开 1 个红包"
+    assert tasks[0]["next_time"] == "2026-08-28 11:24:59"
+    assert tasks[0]["attempt_id"] is None
+
+
 def test_scheduler_does_not_trust_terminal_from_previous_kernel_generation(monkeypatch):
     class FixedDateTime(real_datetime):
         @classmethod

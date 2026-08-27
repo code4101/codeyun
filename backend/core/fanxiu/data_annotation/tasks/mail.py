@@ -711,7 +711,7 @@ class MailTaskMixin:
                 if desired != "锁定" or policy:
                     failures.append(f"{mail_id}:锁定邮件策略不一致")
                 continue
-            if desired == "留存" and not policy:
+            if desired in {"锁定", "留存"} and not policy:
                 continue
             payload = item.get("payload")
             rewards = fanxiu_mail_rewards_from_payload(payload)

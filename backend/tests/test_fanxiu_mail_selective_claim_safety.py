@@ -355,6 +355,7 @@ def test_mail_policy_snapshot_requires_explicit_complete_classification():
                 _attachment_mail("claim", desired_status="可领", action_policy="claim"),
                 _attachment_mail("retain", desired_status="留存"),
                 _attachment_mail("locked", desired_status="锁定", locked=True),
+                _attachment_mail("pending-lock", desired_status="锁定", locked=False),
             ]
         },
         reason="测试",

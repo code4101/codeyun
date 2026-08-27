@@ -4,8 +4,10 @@ from __future__ import annotations
 
 The adapter reuses the activity-neutral integer-slider transaction established
 by Yunmeng.  It only supplies #680's semantic Shape names and adds a bounded
-``max`` operation.  All values are read back from the current OCR region;
-neither saved screenshots nor slider pixel positions are treated as values.
+hard safety ceiling of 100 rounds.  All values are read back from the current
+OCR region; neither saved screenshots nor slider pixel positions are treated
+as values.  Deliberately setting the native maximum is not a supported
+operation: the live control can expose several thousand irreversible rounds.
 """
 
 from dataclasses import dataclass
@@ -18,6 +20,7 @@ from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
 
 
 TIANDI_YIJU_AUTO_DIALOG_SCENE = 680
+TIANDI_YIJU_MAX_BATCH_ROUNDS = 100
 
 
 @dataclass(frozen=True)
@@ -87,88 +90,35 @@ def read_tiandi_yiju_round_count(
     return unique[0]
 
 
-def _set_maximum_round_count(
-    runtime: Any,
-    assets: TiandiYijuCountAssets,
-    *,
-    max_bound_drags: int,
-) -> Iterator[Any]:
-    if int(max_bound_drags) <= 0:
-        raise ValueError("天地弈局最大次数探测预算必须大于 0")
-    before = read_tiandi_yiju_round_count(runtime, assets)
-    current = before
-    drag_count = 0
-    for _attempt in range(int(max_bound_drags)):
-        runtime.drag_shape_to_frame_edge(
-            assets.settings_scene_id,
-            assets.count_slider_thumb,
-            direction="right",
-            duration=0.6,
-        )
-        drag_count += 1
-        yield from runtime.wait_action_settle(0.5)
-        updated = read_tiandi_yiju_round_count(runtime, assets)
-        if updated < current:
-            raise RuntimeError(
-                "天地弈局次数向右探测未单调增加："
-                f"before={current}, after={updated}"
-            )
-        if updated == current:
-            yield from runtime.wait_action_settle(0.4)
-            verified = read_tiandi_yiju_round_count(runtime, assets)
-            if verified != current:
-                raise RuntimeError(
-                    "天地弈局最大次数稳定复读失败："
-                    f"首次 {current}，稳定复读 {verified}"
-                )
-            return {
-                "before": before,
-                "after": current,
-                "maximum": current,
-                "target": "max",
-                "bound_drag_count": drag_count,
-                "fine_adjustment_actions": 0,
-            }
-        current = updated
-    raise RuntimeError(
-        "天地弈局次数在有界向右拖动内未确认最大值："
-        f"最后读回 {current}，预算 {int(max_bound_drags)} 次"
-    )
-
-
 def set_tiandi_yiju_round_count(
     runtime: Any,
-    target: int | str,
+    target: int,
     *,
     assets: TiandiYijuCountAssets | None = None,
     max_adjustments: int = 10,
-    max_bound_drags: int = 8,
     force_bound_probe: bool = False,
 ) -> Iterator[Any]:
-    """Set an exact positive count or the verified current maximum.
+    """Set an exact, bounded batch count and verify its live readback.
 
     :param runtime: The behavior-tree Runtime that owns OCR and GUI actions.
-    :param target: A positive integer, or ``"max"`` for the current bound.
+    :param target: A positive integer no larger than 100.
     :param assets: Named #680 controls; defaults never imply pixel positions.
     :param max_adjustments: Maximum +/- correction actions after coarse drag.
-    :param max_bound_drags: Maximum rightward probes for ``"max"``.
     :param force_bound_probe: Use fixed track anchors for calibrated exact mode.
     :return dict: OCR-verified adjustment evidence.
     """
 
     resolved_assets = assets or TiandiYijuCountAssets()
-    if isinstance(target, str):
-        if target.strip().lower() != "max":
-            raise ValueError("天地弈局次数目标只能是正整数或 max")
-        return (
-            yield from _set_maximum_round_count(
-                runtime,
-                resolved_assets,
-                max_bound_drags=max_bound_drags,
-            )
+    if (
+        isinstance(target, bool)
+        or not isinstance(target, int)
+        or target <= 0
+        or target > TIANDI_YIJU_MAX_BATCH_ROUNDS
+    ):
+        raise ValueError(
+            "天地弈局单批次数必须为 1.."
+            f"{TIANDI_YIJU_MAX_BATCH_ROUNDS} 的整数；禁止使用原生最大值"
         )
-    if isinstance(target, bool) or int(target) <= 0:
-        raise ValueError("天地弈局次数目标只能是正整数或 max")
 
     evidence = yield from set_verified_integer_slider_count(
         runtime,
@@ -193,6 +143,7 @@ def set_tiandi_yiju_round_count(
 
 __all__ = [
     "TIANDI_YIJU_AUTO_DIALOG_SCENE",
+    "TIANDI_YIJU_MAX_BATCH_ROUNDS",
     "TiandiYijuCountAssets",
     "read_tiandi_yiju_round_count",
     "set_tiandi_yiju_round_count",

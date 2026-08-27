@@ -1825,9 +1825,27 @@ def reconcile_stale_scheduler_attempts(
     # Read it even after the Kernel becomes idle so a detached caller can be
     # reconciled without replaying the business Cell.
     try:
-        runtime = behavior_tree_runtime_runner_status()
+        live_runtime = behavior_tree_runtime_runner_status()
     except Exception:
-        runtime = {}
+        live_runtime = {}
+    try:
+        persisted_runtime = read_behavior_tree_runtime_status()
+    except Exception:
+        persisted_runtime = {}
+    # Kernel 终态先落盘，提交它的 HTTP 调用却可能已经断开；服务进程重载后，
+    # 新建 Runner 的内存状态也不会带回 scheduler attempt 身份。仅补回持久化的
+    # attempt 终态字段，不能让旧磁盘快照覆盖当前 Runner 的 running/task 身份。
+    runtime = dict(live_runtime)
+    if not str(runtime.get("scheduler_terminal_result") or ""):
+        for field in (
+            "scheduler_task_id",
+            "scheduler_attempt_id",
+            "scheduler_terminal_result",
+            "scheduler_terminal_message",
+            "scheduler_terminal_at",
+        ):
+            if persisted_runtime.get(field) not in (None, ""):
+                runtime[field] = persisted_runtime[field]
     runtime_task_id = (
         str(runtime.get("current_task_id") or "")
         if runtime.get("running")
