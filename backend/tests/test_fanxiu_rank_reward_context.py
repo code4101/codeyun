@@ -35,6 +35,7 @@ def test_exchange_context_reconstructs_old_activity_from_cached_occurrence(
     with _session() as session:
         activity = FanxiuExchangeActivity(
             id="beast-period",
+            instance_key="beast-period",
             activity_type="beast-abyss",
             start_date="2026-08-11",
             end_date="2026-08-12",
@@ -62,6 +63,7 @@ def test_exchange_context_does_not_guess_from_wrong_period(monkeypatch) -> None:
     with _session() as session:
         activity = FanxiuExchangeActivity(
             id="beast-period",
+            instance_key="beast-period",
             activity_type="beast-abyss",
             start_date="2026-08-11",
             end_date="2026-08-12",

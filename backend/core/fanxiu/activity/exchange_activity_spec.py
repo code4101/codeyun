@@ -15,6 +15,7 @@ RankBindingSource = Literal[
 RankScopeRole = Literal["primary", "comparative"]
 RankSubject = Literal["role", "server", "team"]
 RankRowMode = Literal["key_points", "full_observed"]
+RankingFamily = Literal["gameplay_rank", "resource_rank"]
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ class ResourceRankingResourceAdapter(Protocol):
 @dataclass(frozen=True)
 class ExchangeActivitySpec:
     activity_type: str
+    family: RankingFamily
     label: str
     worldline_vo_types: tuple[str, ...]
     currency_type: int
@@ -222,6 +224,8 @@ class ExchangeActivitySpec:
     def __post_init__(self) -> None:
         if not self.activity_type.strip():
             raise ValueError("activity_type 不能为空")
+        if self.family not in {"gameplay_rank", "resource_rank"}:
+            raise ValueError(f"活动 {self.activity_type} 的榜单 family 无效")
         if not self.label.strip():
             raise ValueError(f"活动 {self.activity_type} 的 label 不能为空")
         if not self.worldline_vo_types or any(

@@ -8,6 +8,8 @@ natural-strength budget and the exact score transition after an operation.
 """
 
 from datetime import datetime
+from collections import deque
+from fractions import Fraction
 import time
 from typing import Any, Mapping
 
@@ -19,6 +21,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_lua_global_manager_root,
+    table_ref,
 )
 
 
@@ -27,6 +30,7 @@ MANAGER_METHODS = frozenset(
 )
 PLAYABLE_ACTIVITY_IDS = frozenset({8090001, 8090004})
 GROUP_SELECTION_ACTIVITY_ID = 8090002
+TIANYUAN_PIECE_ID = 1
 
 
 def _fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:
@@ -113,6 +117,48 @@ def _decode_pieces(
     if not pieces:
         raise FanxiuRuntimeMemoryError("天地弈局 Runtime 未读取到任何棋点")
     return pieces
+
+
+def _table_array_ints(reader: LuaJitReader, value: Any) -> list[int]:
+    ref = table_ref(value)
+    if ref is None:
+        return []
+    table = reader.table(ref.address)
+    values = {
+        index: int(decoded)
+        for index, item in enumerate(table["array"])
+        if index > 0 and (decoded := as_int(item)) is not None
+    }
+    for raw_index, item in table["fields"].items():
+        index = as_int(raw_index)
+        decoded = as_int(item)
+        if index is not None and index > 0 and decoded is not None:
+            values.setdefault(int(index), int(decoded))
+    return [values[index] for index in sorted(values)]
+
+
+def _config_value(reader: LuaJitReader, row: Any, index: int) -> Any:
+    ref = table_ref(row)
+    if ref is None:
+        raise FanxiuRuntimeMemoryError("天地弈局棋点配置行无效")
+    table = reader.table(ref.address)
+    if index < len(table["array"]) and table["array"][index] is not None:
+        return table["array"][index]
+    value = table["fields"].get(index)
+    return table["fields"].get(float(index)) if value is None else value
+
+
+def _choose_tiandi_yiju_target(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates:
+        raise FanxiuRuntimeMemoryError("天地弈局当前没有可打棋点")
+    return min(
+        candidates,
+        key=lambda item: (
+            int(item["distance_to_tianyuan"]),
+            -Fraction(int(item["own_score"]), max(1, int(item["total_score"]))),
+            int(item["piece_id"]),
+        ),
+    )
 
 
 def _derive_own_alliance_id(
@@ -252,6 +298,114 @@ def read_tiandi_yiju_runtime_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
+    """Choose the nearest currently attackable point to Tianyuan from live Runtime."""
+
+    memory = MumuProcessMemory.discover_cached()
+    state_address = int(_lua_addresses(memory)["state"], 16)
+    root, _cache_hit, _environment = resolve_lua_global_manager_root(
+        memory,
+        manager_key="tiandi-yiju-board",
+        state_address=state_address,
+        global_name="AllianceplaychessMgr",
+        required_methods=MANAGER_METHODS,
+        validate=lambda current_reader, address: _manager_state(current_reader, address),
+    )
+    reader = LuaJitReader(memory)
+    instance, model, data = _manager_state(reader, root)
+    snapshot = _decode_snapshot(reader, instance, model, data)
+    own_alliance_id = int(snapshot.get("own_alliance_id") or 0)
+    if own_alliance_id <= 0:
+        raise FanxiuRuntimeMemoryError("天地弈局尚未确定本宗身份")
+
+    # Generated config columns: 1=id, 7=neighbors, 14=allowed alliances.
+    configs: dict[int, dict[str, list[int]]] = {}
+    config_rows, config_count = reader.list_items(data.get("_ChessPieceCfgList"))
+    if config_count is not None and config_count != len(config_rows):
+        raise FanxiuRuntimeMemoryError("天地弈局棋点配置不完整")
+    for row in config_rows:
+        piece_id = as_int(_config_value(reader, row, 1))
+        if piece_id is None or piece_id <= 0:
+            raise FanxiuRuntimeMemoryError("天地弈局棋点配置 ID 无效")
+        configs[int(piece_id)] = {
+            "neighbors": _table_array_ints(reader, _config_value(reader, row, 7)),
+            "allowed_alliances": _table_array_ints(
+                reader,
+                _config_value(reader, row, 14),
+            ),
+        }
+    if TIANYUAN_PIECE_ID not in configs:
+        raise FanxiuRuntimeMemoryError("天地弈局棋点配置缺少天元")
+
+    graph = {piece_id: set(config["neighbors"]) for piece_id, config in configs.items()}
+    distances = {TIANYUAN_PIECE_ID: 0}
+    pending = deque([TIANYUAN_PIECE_ID])
+    while pending:
+        piece_id = pending.popleft()
+        for neighbor in sorted(graph[piece_id]):
+            if neighbor not in graph:
+                raise FanxiuRuntimeMemoryError("天地弈局棋点相邻关系引用未知棋点")
+            graph[neighbor].add(piece_id)
+            if neighbor not in distances:
+                distances[neighbor] = distances[piece_id] + 1
+                pending.append(neighbor)
+    if len(distances) != len(configs):
+        raise FanxiuRuntimeMemoryError("天地弈局棋盘拓扑不连通")
+
+    left, left_count = reader.list_items(data.get("_ChessConnectListL"))
+    right, right_count = reader.list_items(data.get("_ChessConnectListR"))
+    if left_count != right_count or len(left) != len(right) or not left:
+        raise FanxiuRuntimeMemoryError("天地弈局当前棋路不完整")
+    connected = {int(value) for value in (*left, *right)}
+    frontier = {
+        neighbor
+        for piece_id in connected
+        for neighbor in graph[piece_id]
+        if neighbor not in connected
+    }
+    candidate_ids = sorted(
+        piece_id
+        for piece_id in connected | frontier
+        if own_alliance_id in configs[piece_id]["allowed_alliances"]
+    )
+
+    candidates: list[dict[str, Any]] = []
+    for raw_id, raw_piece in reader.dictionary_fields(data.get("_ChessInfoDic")).items():
+        fields = _fields(reader, raw_piece)
+        piece_id = as_int(fields.get("id")) or as_int(raw_id)
+        if piece_id is None or int(piece_id) not in candidate_ids:
+            continue
+        scores = {
+            int(key): max(0, _long(reader, value))
+            for raw_key, value in reader.dictionary_fields(
+                fields.get("allianceToScore")
+            ).items()
+            if (key := as_int(raw_key)) is not None and int(key) > 0
+        }
+        own_score = scores.get(own_alliance_id, 0)
+        total_score = sum(scores.values())
+        candidates.append(
+            {
+                "piece_id": int(piece_id),
+                "distance_to_tianyuan": distances[int(piece_id)],
+                "own_score": own_score,
+                "total_score": total_score,
+                "own_score_ratio": own_score / total_score if total_score else 0.0,
+            }
+        )
+    target = _choose_tiandi_yiju_target(candidates)
+    return {
+        "ok": True,
+        "complete": True,
+        "own_alliance_id": own_alliance_id,
+        "tianyuan_piece_id": TIANYUAN_PIECE_ID,
+        "candidate_piece_ids": candidate_ids,
+        "target": target,
+        "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source": "runtime_memory.alliance_play_chess",
+    }
+
+
 def validate_tiandi_yiju_natural_play_transition(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
@@ -310,6 +464,8 @@ def validate_tiandi_yiju_natural_play_transition(
 __all__ = [
     "GROUP_SELECTION_ACTIVITY_ID",
     "PLAYABLE_ACTIVITY_IDS",
+    "TIANYUAN_PIECE_ID",
+    "read_tiandi_yiju_recommended_target",
     "read_tiandi_yiju_runtime_snapshot",
     "validate_tiandi_yiju_natural_play_transition",
 ]

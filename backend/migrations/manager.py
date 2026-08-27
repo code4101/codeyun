@@ -5971,6 +5971,140 @@ def v107_add_fanxiu_player_profile_battle_observations(session: Session):
     session.commit()
 
 
+def _sqlite_unique_index_columns(session: Session, table_name: str) -> set[tuple[str, ...]]:
+    result: set[tuple[str, ...]] = set()
+    for row in session.exec(text(f'PRAGMA index_list("{table_name}")')).all():
+        if not bool(row[2]):
+            continue
+        index_name = str(row[1])
+        columns = tuple(
+            str(info[2])
+            for info in session.exec(text(f'PRAGMA index_info("{index_name}")')).all()
+        )
+        result.add(columns)
+    return result
+
+
+def v108_unify_fanxiu_ranking_activity_instances(session: Session):
+    """Promote exact ranking occurrences to the Exchange aggregate root."""
+
+    print("Running System Upgrade V108: Unify Fanxiu ranking activity instances...")
+    table_name = "fanxiuexchangeactivity"
+    if not _table_exists(session, table_name):
+        from backend.models import FanxiuExchangeActivity
+
+        FanxiuExchangeActivity.__table__.create(session.get_bind(), checkfirst=True)
+        session.commit()
+        return
+
+    columns = _get_table_columns(session, table_name)
+    additions = {
+        "instance_key": "VARCHAR",
+        "family": "VARCHAR NOT NULL DEFAULT ''",
+        "runtime_id": "VARCHAR NOT NULL DEFAULT ''",
+        "game_activity_id": "INTEGER",
+        "prepare_at": "VARCHAR NOT NULL DEFAULT ''",
+        "start_at": "VARCHAR NOT NULL DEFAULT ''",
+        "end_at": "VARCHAR NOT NULL DEFAULT ''",
+        "close_at": "VARCHAR NOT NULL DEFAULT ''",
+        "instance_data": "JSON NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            session.exec(text(
+                f'ALTER TABLE "{table_name}" ADD COLUMN "{name}" {definition}'
+            ))
+    session.commit()
+
+    from backend.core.fanxiu.activity.exchange_event import _exchange_instance_identity
+
+    rows = session.execute(text(
+        f'SELECT id, instance_key, family, runtime_id, game_activity_id, '
+        f'prepare_at, start_at, end_at, close_at, activity_type, cross_count, '
+        f'start_date, end_date, evidence '
+        f'FROM "{table_name}"'
+    )).mappings().all()
+    for row in rows:
+        evidence = _load_json_value(row["evidence"], {})
+        identity = _exchange_instance_identity({
+            "activity_type": row["activity_type"],
+            "instance_key": row["instance_key"],
+            "family": row["family"],
+            "runtime_id": row["runtime_id"],
+            "game_activity_id": row["game_activity_id"],
+            "prepare_at": row["prepare_at"],
+            "start_at": row["start_at"],
+            "end_at": row["end_at"],
+            "close_at": row["close_at"],
+            "cross_count": row["cross_count"],
+            "start_date": row["start_date"],
+            "end_date": row["end_date"],
+            "evidence": evidence,
+        })
+        session.execute(
+            text(
+                f'UPDATE "{table_name}" SET '
+                'instance_key=:instance_key, family=:family, runtime_id=:runtime_id, '
+                'game_activity_id=:game_activity_id, prepare_at=:prepare_at, '
+                'start_at=:start_at, end_at=:end_at, close_at=:close_at '
+                'WHERE id=:id'
+            ),
+            {"id": row["id"], **{key: identity[key] for key in (
+                "instance_key", "family", "runtime_id", "game_activity_id",
+                "prepare_at", "start_at", "end_at", "close_at",
+            )}},
+        )
+    session.commit()
+
+    duplicates = session.execute(text(
+        f'SELECT instance_key, COUNT(*) FROM "{table_name}" '
+        'GROUP BY instance_key HAVING COUNT(*) > 1'
+    )).all()
+    if duplicates:
+        raise RuntimeError(f"凡修榜单活动实例身份重复：{duplicates[0][0]}")
+
+    legacy_unique = (
+        "activity_type", "cross_count", "start_date", "end_date"
+    )
+    if legacy_unique not in _sqlite_unique_index_columns(session, table_name):
+        session.exec(text(
+            f'CREATE UNIQUE INDEX IF NOT EXISTS '
+            f'uq_fanxiuexchangeactivity_instance_key ON "{table_name}" (instance_key)'
+        ))
+        session.commit()
+        return
+
+    # SQLite cannot drop a table-level UNIQUE constraint. Rebuild only the
+    # aggregate root, preserving its public id so every child foreign key stays
+    # valid. legacy_alter_table prevents the temporary rename from rewriting
+    # child FK targets to the backup name.
+    backup_name = "fanxiuexchangeactivity_v108_legacy"
+    session.commit()
+    session.exec(text("PRAGMA foreign_keys=OFF"))
+    session.exec(text("PRAGMA legacy_alter_table=ON"))
+    session.exec(text(f'DROP TABLE IF EXISTS "{backup_name}"'))
+    session.exec(text(f'ALTER TABLE "{table_name}" RENAME TO "{backup_name}"'))
+    for row in session.exec(text(f'PRAGMA index_list("{backup_name}")')).all():
+        index_name = str(row[1])
+        if not index_name.startswith("sqlite_autoindex"):
+            session.exec(text(f'DROP INDEX IF EXISTS "{index_name}"'))
+
+    from backend.models import FanxiuExchangeActivity
+
+    FanxiuExchangeActivity.__table__.create(session.connection(), checkfirst=True)
+    model_columns = tuple(column.name for column in FanxiuExchangeActivity.__table__.columns)
+    quoted = ", ".join(f'"{name}"' for name in model_columns)
+    session.exec(text(
+        f'INSERT INTO "{table_name}" ({quoted}) '
+        f'SELECT {quoted} FROM "{backup_name}"'
+    ))
+    session.exec(text(f'DROP TABLE "{backup_name}"'))
+    session.commit()
+    session.exec(text("PRAGMA legacy_alter_table=OFF"))
+    session.exec(text("PRAGMA foreign_keys=ON"))
+    session.commit()
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -6079,6 +6213,7 @@ MIGRATIONS = [
     (105, "Add Fanxiu storage-bag item notes", v105_add_fanxiu_storage_bag_item_note),
     (106, "Add Fanxiu storage-bag usage ledger", v106_add_fanxiu_storage_bag_usage_ledger),
     (107, "Add Fanxiu player battle observations", v107_add_fanxiu_player_profile_battle_observations),
+    (108, "Unify Fanxiu ranking activity instances", v108_unify_fanxiu_ranking_activity_instances),
 ]
 
 def get_current_version(session: Session) -> int:

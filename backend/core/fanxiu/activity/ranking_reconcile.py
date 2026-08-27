@@ -130,12 +130,18 @@ def seed_ranking_occurrence(
         raise ValueError(f"{spec.label} 缺少必需主榜静态绑定")
     existing = session.exec(
         select(FanxiuExchangeActivity).where(
-            FanxiuExchangeActivity.activity_type == occurrence.activity_type,
-            FanxiuExchangeActivity.cross_count == occurrence.cross_count,
-            FanxiuExchangeActivity.start_date == occurrence.start_at.date().isoformat(),
-            FanxiuExchangeActivity.end_date == occurrence.end_at.date().isoformat(),
+            FanxiuExchangeActivity.instance_key == occurrence.instance_key,
         )
     ).first()
+    if existing is None:
+        existing = session.exec(
+            select(FanxiuExchangeActivity).where(
+                FanxiuExchangeActivity.activity_type == occurrence.activity_type,
+                FanxiuExchangeActivity.cross_count == occurrence.cross_count,
+                FanxiuExchangeActivity.start_date == occurrence.start_at.date().isoformat(),
+                FanxiuExchangeActivity.end_date == occurrence.end_at.date().isoformat(),
+            )
+        ).first()
     evidence = dict(existing.evidence or {}) if existing is not None else {}
     refresh_status = dict(evidence.get("refresh_status") or {})
     refresh_status.setdefault("rankings", "unavailable")
@@ -149,6 +155,7 @@ def seed_ranking_occurrence(
             "game_activity_id": occurrence.activity_id,
             "period_start_time": occurrence.start_at.isoformat(timespec="seconds"),
             "period_end_time": occurrence.end_at.isoformat(timespec="seconds"),
+            "period_prepare_time": occurrence.prepare_at.isoformat(timespec="seconds"),
             # Exchange lifecycle readers consume the established
             # ``period_close_panel_*`` envelope.  Keeping a differently named
             # field here made a still-open settlement shop look closed at the
@@ -166,8 +173,16 @@ def seed_ranking_occurrence(
         evidence["server_day"] = server_day
         evidence["server_day_evidence"] = server_day_evidence
     payload: dict[str, Any] = {
+        "instance_key": occurrence.instance_key,
+        "family": occurrence.family,
         "activity_type": occurrence.activity_type,
+        "runtime_id": occurrence.runtime_id,
+        "game_activity_id": occurrence.activity_id,
         "cross_count": occurrence.cross_count,
+        "prepare_at": occurrence.prepare_at.isoformat(timespec="seconds"),
+        "start_at": occurrence.start_at.isoformat(timespec="seconds"),
+        "end_at": occurrence.end_at.isoformat(timespec="seconds"),
+        "close_at": occurrence.close_at.isoformat(timespec="seconds"),
         "start_date": occurrence.start_at.date().isoformat(),
         "end_date": occurrence.end_at.date().isoformat(),
         "game_rank_activity_id": primary_id,
@@ -175,6 +190,11 @@ def seed_ranking_occurrence(
         "currency_name": spec.currency_name,
         "captured_at": captured_at,
         "source_kind": "runtime_schedule_reconcile",
+        "instance_data": {
+            "base_id": occurrence.base_id,
+            "world_level": occurrence.world_level,
+            "rank_scope_activity_ids": scope_ids,
+        },
         "evidence": evidence,
     }
     if occurrence_shop is not None:

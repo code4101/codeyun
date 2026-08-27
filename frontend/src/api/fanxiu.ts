@@ -2097,11 +2097,18 @@ export interface FanxiuYunmengTrialMeasurementCollectResult {
 
 export interface FanxiuExchangeActivitySummary {
   id: string;
+  instance_key: string;
+  family: 'gameplay_rank' | 'resource_rank';
   label: string;
   activity_type: string;
+  runtime_id: string;
+  game_activity_id?: number | null;
   cross_count: number;
+  prepare_at: string;
   start_date: string;
   end_date: string;
+  start_at: string;
+  end_at: string;
   captured_at: string;
   is_active: boolean;
   close_panel_date: string;
@@ -2120,6 +2127,7 @@ export interface FanxiuExchangeActivityDetail extends FanxiuExchangeActivitySumm
   current_currency: number;
   cumulative_currency: number;
   resource_strategy: Record<string, unknown>;
+  instance_data: Record<string, unknown>;
   source_kind: string;
   yield_rate?: null;
   currency_fact_fresh: boolean;
