@@ -61,6 +61,8 @@ def test_snapshot_derives_natural_budget_and_owned_pieces() -> None:
     assert result["own_alliance_id"] == 1003
     assert result["owned_piece_ids"] == [1]
     assert result["personal_score"] == 19595
+    assert result["entry_personal_score"] == 19595
+    assert result["board_personal_score"] == 0
     assert result["alliance_score"] == 65289380
     assert result["resource_spending_choices"] == {
         "multiple_score_item": False,
@@ -125,6 +127,7 @@ def test_natural_play_transition_accepts_bounded_recovery() -> None:
         "natural_strength_recovered": 1,
         "personal_score_gained": 30,
         "alliance_score_gained": 10,
+        "success_terminal_confirmed": 0,
     }
 
 
@@ -146,3 +149,14 @@ def test_natural_play_transition_requires_score_gain() -> None:
             _transition_snapshot(strength=31, personal=19595, alliance=92427000),
             expected_plays=1,
         )
+
+
+def test_natural_play_transition_accepts_verified_success_terminal() -> None:
+    result = tiandi_yiju.validate_tiandi_yiju_natural_play_transition(
+        _transition_snapshot(strength=33, personal=19595, alliance=105675866),
+        _transition_snapshot(strength=32, personal=19595, alliance=105675866),
+        expected_plays=1,
+        success_terminal=True,
+    )
+    assert result["strength_spent"] == 1
+    assert result["success_terminal_confirmed"] == 1

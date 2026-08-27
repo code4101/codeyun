@@ -273,8 +273,14 @@ def setup_env(root_dir):
     apply_background_node_env(env, root_dir=root_dir)
     apply_background_python_env(env, root_dir=root_dir)
 
+    explicit_python = str(env.get("CODEYUN_PYTHON_EXEC") or "").strip()
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
-    if os.path.isdir(venv_scripts):
+    if explicit_python and os.path.isfile(explicit_python):
+        python_executable = os.path.abspath(explicit_python)
+        env["CODEYUN_PYTHON_EXEC"] = python_executable
+        explicit_scripts = os.path.dirname(python_executable)
+        env["PATH"] = explicit_scripts + os.pathsep + env.get("PATH", "")
+    elif os.path.isdir(venv_scripts):
         python_name = "python.exe" if os.name == "nt" else "python"
         candidate = os.path.join(venv_scripts, python_name)
         if os.path.exists(candidate):
@@ -1499,4 +1505,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

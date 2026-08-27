@@ -175,6 +175,8 @@ def _decode_snapshot(
         for raw_key, value in reader.dictionary_fields(data.get("chooseStateDic")).items()
         if (key := as_int(raw_key)) is not None and 1 <= int(key) <= 6
     }
+    entry_personal_score = max(0, _long(reader, play_info.get("personalScore")))
+    board_personal_score = max(0, _long(reader, data.get("_MyScore")))
     return {
         "strength": int(strength),
         "entry_strength": max(0, as_int(instance.get("enterPanelStrength")) or 0),
@@ -186,7 +188,12 @@ def _decode_snapshot(
         "max_multiple": max(1, as_int(data.get("_MaxMulNum")) or 1),
         "is_cross": int(is_cross),
         "personal_rank": max(0, as_int(play_info.get("personalRank")) or as_int(data.get("_MyRank")) or 0),
-        "personal_score": max(0, _long(reader, play_info.get("personalScore") or data.get("_MyScore"))),
+        # Keep both cache layers visible.  Entry-panel data does not refresh
+        # synchronously after a board action; the adapter must not silently
+        # conflate it with the live rank cache.
+        "personal_score": board_personal_score or entry_personal_score,
+        "entry_personal_score": entry_personal_score,
+        "board_personal_score": board_personal_score,
         "alliance_rank": max(0, as_int(play_info.get("allianceRank")) or 0),
         "alliance_score": max(0, _long(reader, play_info.get("allianceScore"))),
         "own_alliance_id": own_alliance_id,
@@ -250,6 +257,7 @@ def validate_tiandi_yiju_natural_play_transition(
     after: Mapping[str, Any],
     *,
     expected_plays: int,
+    success_terminal: bool = False,
 ) -> dict[str, int]:
     """Prove a GUI batch spent only natural strength and advanced score."""
 
@@ -285,7 +293,7 @@ def validate_tiandi_yiju_natural_play_transition(
     personal_after = int(after.get("personal_score") or 0)
     alliance_before = int(before.get("alliance_score") or 0)
     alliance_after = int(after.get("alliance_score") or 0)
-    if personal_after <= personal_before:
+    if personal_after <= personal_before and not success_terminal:
         raise RuntimeError("天地弈局动作后个人棋符未增加")
     if alliance_after < alliance_before:
         raise RuntimeError("天地弈局动作后宗门棋符倒退")
@@ -295,6 +303,7 @@ def validate_tiandi_yiju_natural_play_transition(
         "natural_strength_recovered": recovered,
         "personal_score_gained": personal_after - personal_before,
         "alliance_score_gained": alliance_after - alliance_before,
+        "success_terminal_confirmed": int(bool(success_terminal)),
     }
 
 
