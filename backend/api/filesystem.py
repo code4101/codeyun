@@ -32,6 +32,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pillow_heif import register_heif_opener
 from pydantic import BaseModel, Field as PydanticField
 from sqlalchemy import and_, func, not_, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
 
 from backend.core.devices.device import get_device_id
@@ -5910,6 +5911,13 @@ def update_device_file_weight_for_request(
         raise HTTPException(status_code=400, detail="Path is not a file")
 
     absolute_identity_path = os.fspath(target_path.resolve(strict=False))
+    previous_record = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == device_id,
+            DeviceFile.absolute_path == absolute_identity_path,
+        )
+    ).first()
+    previous_weight = int(previous_record.weight or 0) if previous_record is not None else 0
     try:
         record = update_device_file_weight(
             session,
@@ -5920,6 +5928,24 @@ def update_device_file_weight_for_request(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    gallery_expansion_requested = 0
+    try:
+        from backend.plugins.modules.media_sync.gallery import (
+            request_pixiv_gallery_expansion_for_path,
+        )
+
+        gallery_expansion_requested = request_pixiv_gallery_expansion_for_path(
+            session,
+            absolute_path=absolute_identity_path,
+            previous_weight=previous_weight,
+            new_weight=int(record.weight or 0),
+        )
+    except (ImportError, OSError, SQLAlchemyError):
+        # Media sync is an optional local plugin; ordinary file rating must
+        # remain available when that plugin is absent or not initialized.
+        session.rollback()
+        gallery_expansion_requested = 0
+
     return {
         "ok": True,
         "id": get_device_file_public_id(record),
@@ -5928,6 +5954,7 @@ def update_device_file_weight_for_request(
         "path": resolved["path"],
         "absolute_path": absolute_identity_path,
         "weight": record.weight,
+        "pixiv_gallery_expansion_requested": gallery_expansion_requested,
     }
 
 

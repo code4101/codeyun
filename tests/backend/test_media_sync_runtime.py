@@ -723,19 +723,24 @@ def test_collect_ids_adds_target_to_existing_pending_pool(
     assert per_seed_limit * seed_limit >= expected_remaining
 
 
-def test_pixiv_collect_prefers_author_watermarks_before_home_feed(
+def test_pixiv_collect_prefers_gallery_expansion_then_author_watermarks_before_home_feed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[tuple[str, int]] = []
 
+    def fake_gallery_sync(**kwargs):
+        events.append(("gallery", int(kwargs["download_limit"])))
+        return {"new_download_count": 6}
+
     def fake_author_sync(**kwargs):
         events.append(("author", int(kwargs["target_new_count"])))
-        return {"downloaded_count": 15}
+        return {"downloaded_count": 9}
 
     def fake_home_sync(**kwargs):
         events.append(("home", int(kwargs["download_limit"])))
         return {"new_download_count": 5}
 
+    monkeypatch.setattr(runtime, "run_pixiv_gallery_expansion_sync", fake_gallery_sync)
     monkeypatch.setattr(runtime, "run_pixiv_author_sync", fake_author_sync)
     monkeypatch.setattr(runtime, "run_pixiv_home_sync", fake_home_sync)
     monkeypatch.setattr(runtime, "run_pixiv_related_sync", lambda **_kwargs: {"queued_count": 0})
@@ -749,6 +754,7 @@ def test_pixiv_collect_prefers_author_watermarks_before_home_feed(
         }
     )
 
-    assert events == [("author", 20), ("home", 5)]
+    assert events == [("gallery", 20), ("author", 14), ("home", 5)]
     assert result["new_download_count"] == 20
-    assert result["author"] == {"downloaded_count": 15}
+    assert result["gallery"] == {"new_download_count": 6}
+    assert result["author"] == {"downloaded_count": 9}

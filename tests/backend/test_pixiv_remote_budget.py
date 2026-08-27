@@ -9,6 +9,7 @@ from sqlmodel import Session, create_engine, select
 
 from backend.plugins.modules.media_sync import models
 from backend.plugins.modules.media_sync import sources
+from backend.plugins.modules.media_sync import gallery
 
 
 @pytest.fixture(autouse=True)
@@ -458,6 +459,218 @@ def test_pixiv_source_item_schema_migrates_detail_refresh_columns(tmp_path, monk
     }
     assert {"last_detail_fetched_at", "next_refresh_at", "last_seen_at"} <= column_names
     assert "private_media_sync_pixiv_author_state" in inspect(isolated_engine).get_table_names()
+    assert "private_media_sync_pixiv_gallery_state" in inspect(isolated_engine).get_table_names()
+    assert "private_media_sync_pixiv_gallery_page" in inspect(isolated_engine).get_table_names()
+
+
+def test_pixiv_gallery_three_positive_nodes_allocate_six_unique_children(engine, monkeypatch):
+    monkeypatch.setattr(gallery, "engine", engine)
+    with Session(engine) as session:
+        session.add(
+            models.MediaSyncPixivGalleryState(
+                user_id=999,
+                artwork_id="100",
+                page_count=12,
+                root_dir=r"E:\data\m2510mn",
+            )
+        )
+        for page_index in range(3):
+            session.add(
+                models.MediaSyncPixivGalleryPage(
+                    user_id=999,
+                    artwork_id="100",
+                    page_index=page_index,
+                    depth=1,
+                    expansion_requested_at=100.0 + page_index,
+                )
+            )
+        session.commit()
+
+    allocated = gallery.allocate_requested_pixiv_gallery_children(user_id=999, limit=200)
+
+    assert len(allocated) == 6
+    assert len({row["page_index"] for row in allocated}) == 6
+    assert {row["parent_page_index"] for row in allocated} == {0, 1, 2}
+    assert all(
+        sum(row["parent_page_index"] == parent for row in allocated) == 2
+        for parent in (0, 1, 2)
+    )
+    pending = gallery.pending_pixiv_gallery_pages(user_id=999, limit=20)
+    assert len(pending) == 9
+    assert all(state.artwork_id == node.artwork_id == "100" for state, node in pending)
+    assert gallery.allocate_requested_pixiv_gallery_children(user_id=999, limit=200) == []
+
+
+def test_pixiv_gallery_positive_transition_requests_only_matching_page_once(engine, tmp_path, monkeypatch):
+    monkeypatch.setattr(gallery, "engine", engine)
+    image_path = tmp_path / "100_p3.jpg"
+    image_path.write_bytes(b"image")
+    with Session(engine) as session:
+        session.add(
+            models.MediaSyncPixivGalleryState(user_id=999, artwork_id="100", page_count=8)
+        )
+        session.add(
+            models.MediaSyncPixivGalleryPage(
+                user_id=999,
+                artwork_id="100",
+                page_index=3,
+                downloaded_at=10.0,
+                absolute_path=str(image_path),
+            )
+        )
+        session.add(
+            models.MediaSyncSourceItem(
+                user_id=999,
+                platform="pixiv",
+                remote_id="100",
+                media_index=3,
+                absolute_path=str(image_path),
+                downloaded_at=10.0,
+            )
+        )
+        session.commit()
+
+        assert gallery.request_pixiv_gallery_expansion_for_path(
+            session,
+            absolute_path=str(image_path),
+            previous_weight=0,
+            new_weight=1,
+        ) == 1
+        assert gallery.request_pixiv_gallery_expansion_for_path(
+            session,
+            absolute_path=str(image_path),
+            previous_weight=0,
+            new_weight=1,
+        ) == 0
+        assert gallery.request_pixiv_gallery_expansion_for_path(
+            session,
+            absolute_path=str(image_path),
+            previous_weight=1,
+            new_weight=2,
+        ) == 0
+
+
+def test_build_pixiv_page_rows_keeps_page_zero_name_and_gives_each_page_stable_index(tmp_path):
+    store = sources.PixivStateStore(tmp_path)
+    artwork = {
+        "artwork_id": "100",
+        "title": "gallery",
+        "user_id": "20",
+        "user_name": "author",
+    }
+    pages = [
+        {"urls": {"original": f"https://i.pximg.net/100_p{index}.jpg"}, "width": 10, "height": 20}
+        for index in range(4)
+    ]
+
+    root = sources.build_pixiv_page_rows(store, artwork, pages)
+    children = sources.build_pixiv_page_rows(store, artwork, pages, page_indexes=[3, 1])
+
+    assert root[0]["page_index"] == 0
+    assert "_p0" not in root[0]["relative_path"]
+    assert [row["page_index"] for row in children] == [3, 1]
+    assert children[0]["relative_path"].endswith("_p3.jpg")
+    assert children[1]["relative_path"].endswith("_p1.jpg")
+
+
+def test_pixiv_gallery_initial_seeds_keep_cover_and_add_one_stable_random_page():
+    first = gallery.initial_pixiv_gallery_page_indexes(artwork_id="100", page_count=8)
+    second = gallery.initial_pixiv_gallery_page_indexes(artwork_id="100", page_count=8)
+
+    assert first == second
+    assert len(first) == 2
+    assert first[0] == 0
+    assert first[1] in range(1, 8)
+    assert gallery.initial_pixiv_gallery_page_indexes(artwork_id="100", page_count=1) == [0]
+
+
+def test_new_static_pixiv_gallery_downloads_two_initial_seeds_and_registers_all_page_capacity(
+    engine, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sources, "engine", engine)
+    monkeypatch.setattr(gallery, "engine", engine)
+    monkeypatch.setattr(sources, "get_device_id", lambda: "pytest-device")
+    monkeypatch.setattr(
+        sources,
+        "fetch_pixiv_illust_pages",
+        lambda *_args, **_kwargs: [
+            {"urls": {"original": f"https://i.pximg.net/100_p{index}.jpg"}, "width": 10, "height": 20}
+            for index in range(3)
+        ],
+    )
+
+    def fake_download(_session, *, destination, **_kwargs):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"image")
+
+    monkeypatch.setattr(sources, "download_file", fake_download)
+    monkeypatch.setattr(sources, "align_pixiv_file_to_publication_date", lambda *_args: None)
+
+    class FakeStore:
+        target_root = tmp_path / "3、pixiv" / "recommend"
+        state_root = tmp_path / "1、pixiv"
+        db_path = state_root / "state.sqlite3"
+        manifest_path = state_root / "manifest.json"
+
+        def upsert_artwork_pages(self, _conn, _artwork_id, pages):
+            assert len(pages) == 2
+            assert pages[0]["page_index"] == 0
+            assert pages[1]["page_index"] in {1, 2}
+
+        def scrub_artwork_urls(self, *_args, **_kwargs):
+            return None
+
+        def mark_page_done(self, *_args, **_kwargs):
+            return None
+
+        def mark_page_error(self, *_args, **_kwargs):
+            return None
+
+        def mark_artwork_done(self, *_args, **_kwargs):
+            return None
+
+    artwork = {
+        "artwork_id": "100",
+        "artwork_url": "https://www.pixiv.net/artworks/100",
+        "title": "gallery",
+        "illust_type": 0,
+        "user_id": "20",
+        "user_name": "author",
+        "x_restrict": 0,
+        "tags": [],
+        "alt": "",
+        "create_date": "",
+    }
+    downloaded_ids: set[str] = set()
+
+    sources.download_pixiv_artwork(
+        object(),
+        FakeStore(),
+        object(),
+        artwork,
+        lambda _message: None,
+        user_id=999,
+        source_kind="home_recommend",
+        collection_url=sources.PIXIV_HOME_RECOMMEND_COLLECTION_URL,
+        downloaded_artwork_ids=downloaded_ids,
+    )
+
+    with Session(engine) as session:
+        state = session.exec(select(models.MediaSyncPixivGalleryState)).one()
+        nodes = session.exec(select(models.MediaSyncPixivGalleryPage)).all()
+        source_items = session.exec(select(models.MediaSyncSourceItem)).all()
+    expected_indexes = set(
+        gallery.initial_pixiv_gallery_page_indexes(artwork_id="100", page_count=3)
+    )
+    assert state.page_count == 3
+    assert state.status == "paused"
+    assert len(nodes) == 2
+    assert {node.page_index for node in nodes} == expected_indexes
+    assert all(node.parent_page_index is None and node.downloaded_at is not None for node in nodes)
+    assert {(item.remote_id, item.media_index) for item in source_items} == {
+        ("100", page_index) for page_index in expected_indexes
+    }
+    assert downloaded_ids == {"100"}
 
 
 def test_pixiv_detail_discovery_does_not_create_url_only_source_item(engine, monkeypatch):

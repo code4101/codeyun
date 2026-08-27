@@ -19,8 +19,10 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
     read_current_redpacket_state,
     recover_redpacket_runtime_snapshot,
 )
-from backend.core.fanxiu.instrumentation.chat import read_repeated_chat_phrase
-from backend.core.fanxiu.runtime.mumu_control import text_mumu_adb
+from backend.core.fanxiu.instrumentation.chat import (
+    read_chat_channel_gui_target,
+    read_repeated_chat_phrase,
+)
 
 
 REDPACKET_OCR_PATTERN = re.compile(r"首领[累猎]杀|奖赏|第一|获赠|红包")
@@ -260,9 +262,10 @@ class DailyRedpacketTaskMixin:
         *,
         timeout_seconds: float,
         poll_seconds: float,
+        anchors: list[str] | None = None,
         max_scrolls: int = 8,
     ):
-        """Resolve the unique 鸿运福签 row from current #332 OCR evidence."""
+        """Align the exact Runtime channel to one current #332 row."""
 
         image = (ctx.get("images") or {}).get(332)
         window = self._find_shape(image, "窗口") if isinstance(image, dict) else None
@@ -278,12 +281,13 @@ class DailyRedpacketTaskMixin:
             spatial = query_spatial_ocr(cached.get("tokens") or [], window_box)
             tokens = spatial.get("tokens") if isinstance(spatial.get("tokens"), list) else []
             last_text = "".join(str(token.get("text") or "") for token in tokens)
-            match = select_text_match(
-                find_text_matches(tokens, "鸿运福签"),
-                "鸿运福签",
-            )
-            if match is not None:
-                return frame, match
+            for anchor in list(anchors or ("鸿运福签",)):
+                match = select_text_match(
+                    find_text_matches(tokens, anchor),
+                    anchor,
+                )
+                if match is not None:
+                    return frame, match
             if scroll_count >= max(0, int(max_scrolls)):
                 break
             changed = yield from runtime.scroll_shape_content(
@@ -298,72 +302,59 @@ class DailyRedpacketTaskMixin:
                 break
             yield from runtime.wait_action_settle(poll_seconds)
         raise TimeoutError(
-            f"日常_红包：#332[窗口] 未唯一定位到鸿运福签，OCR={last_text[:200]}"
+            "日常_红包：#332[窗口] 未唯一对齐到 Runtime 指定聊天行，"
+            f"anchors={list(anchors or ())}，OCR={last_text[:200]}"
         )
 
-    def _daily_qmch_entry_matches(
+    def _daily_qmch_copy_box(
         self,
         ctx: dict[str, Any],
         frame: str,
     ) -> dict[str, Any]:
-        """Match the movable redbag marker and its owning ChatBtn in one ROI."""
+        """Resolve the moving copy icon uniquely inside the verified QMCH card."""
 
-        image = (ctx.get("images") or {}).get(395)
+        image = (ctx.get("images") or {}).get(673)
         if not isinstance(image, dict):
-            raise RuntimeError("日常_红包：缺少 #395 业务参考帧")
-        marker = self._find_shape(image, "红包")
-        parent = self._find_shape(image, "聊天")
-        scan = self._find_shape(image, "入口检索区域")
-        if not all(isinstance(shape, dict) for shape in (marker, parent, scan)):
-            raise RuntimeError("日常_红包：#395 缺少红包 marker/聊天父入口/局部检索区域")
+            raise RuntimeError("日常_红包：缺少 #673 业务参考帧")
+        card = self._find_shape(image, "鸿运福签卡片")
+        copy_shape = self._find_shape(image, "复制")
+        if not isinstance(card, dict) or not isinstance(copy_shape, dict):
+            raise RuntimeError("日常_红包：#673 缺少鸿运福签卡片/复制子控件")
+        result = self._match_shape(
+            ctx,
+            image,
+            {
+                **copy_shape,
+                "floating": True,
+                "_match_scan_box": card,
+            },
+            frame,
+            condition="image",
+        )
+        resolved = result.get("resolved_box") if result.get("matched") else None
+        if isinstance(resolved, dict):
+            return resolved
 
-        def match(shape: dict[str, Any]) -> dict[str, Any]:
-            return self._match_shape(
-                ctx,
-                image,
-                {
-                    **shape,
-                    "floating": True,
-                    "_match_scan_box": scan,
-                },
-                frame,
-                condition="image",
+        # The moving banner changes the icon crop enough to miss the global
+        # scene threshold.  Inside the already-verified parent card, accept a
+        # single candidate at >=60 only when it leads to the #390 post-state.
+        candidates = sorted(
+            (
+                item
+                for item in (result.get("matches") or [])
+                if isinstance(item, dict)
+                and float(item.get("crop_similarity") or 0) >= 60.0
+                and isinstance(item.get("box"), dict)
+            ),
+            key=lambda item: float(item.get("crop_similarity") or 0),
+            reverse=True,
+        )
+        if len(candidates) != 1:
+            raise RuntimeError(
+                "日常_红包：#673 卡片内复制图标无法唯一定位，"
+                f"candidate_count={len(candidates)}"
             )
-
-        marker_match = match(marker)
-        parent_match = match(parent)
-        marker_box = marker_match.get("resolved_box") if marker_match.get("matched") else None
-        parent_box = parent_match.get("resolved_box") if parent_match.get("matched") else None
-        if not isinstance(marker_box, dict) or not isinstance(parent_box, dict):
-            return {
-                "matched": False,
-                "marker": marker_match,
-                "parent": parent_match,
-                "reason": "marker_or_parent_unmatched",
-            }
-        marker_template = self._box(marker, image)
-        parent_template = self._box(parent, image)
-        marker_shift = (
-            float(marker_box["x"]) - float(marker_template["x"]),
-            float(marker_box["y"]) - float(marker_template["y"]),
-        )
-        parent_shift = (
-            float(parent_box["x"]) - float(parent_template["x"]),
-            float(parent_box["y"]) - float(parent_template["y"]),
-        )
-        relation_error = max(
-            abs(marker_shift[0] - parent_shift[0]),
-            abs(marker_shift[1] - parent_shift[1]),
-        )
-        matched = relation_error <= 16.0
-        return {
-            "matched": matched,
-            "marker": marker_match,
-            "parent": parent_match,
-            "parent_box": parent_box,
-            "relation_error": relation_error,
-            "reason": "matched" if matched else "marker_parent_relation_mismatch",
-        }
+        return candidates[0]["box"]
 
     def _execute_daily_qmch_reward_route(
         self,
@@ -389,19 +380,16 @@ class DailyRedpacketTaskMixin:
         transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 0.8))
 
-        gate_frame = runtime.cur_frame(update=True)
-        gate = self._daily_qmch_entry_matches(ctx, gate_frame)
-        if not bool(gate.get("matched")):
+        channel_route = read_chat_channel_gui_target(channel, sub_id)
+        if (
+            int(channel_route.get("group_type") or 0) != 1
+            or channel_route.get("tab_label") != "活动"
+        ):
             raise RuntimeError(
-                "日常_红包：qmch_reward fresh，但当前 #395 浮动 marker/父 ChatBtn 关系未通过，"
-                f"拒绝导航：{gate.get('reason')}"
+                "日常_红包：qmch_reward Runtime 频道未对齐活动 Tab，"
+                f"route={channel_route}"
             )
-        parent_box = gate["parent_box"]
-        runtime.click_frame_point(
-            395,
-            float(parent_box["x"]) + float(parent_box["w"]) / 2,
-            float(parent_box["y"]) + float(parent_box["h"]) / 2,
-        )
+        yield from runtime.wait_click(34, "聊天", timeout=transition_timeout)
         landing = yield from runtime.wait_view(
             332,
             333,
@@ -418,34 +406,18 @@ class DailyRedpacketTaskMixin:
             )
         yield from runtime.click_shape_center_then_view(
             332,
-            "活动",
+            str(channel_route["tab_label"]),
             332,
             timeout=transition_timeout,
             label="鸿运福签：幂等切到活动消息",
         )
-        try:
-            _frame, row = yield from self._wait_daily_qmch_activity_row(
-                runtime,
-                ctx,
-                timeout_seconds=transition_timeout,
-                poll_seconds=poll_seconds,
-            )
-        except TimeoutError:
-            # A never-visited activity can initially be exposed only in 全部;
-            # once visited, 活动 is the stable idempotent re-entry path.
-            yield from runtime.click_shape_center_then_view(
-                332,
-                "全部",
-                332,
-                timeout=transition_timeout,
-                label="鸿运福签：首次路径回退到全部消息",
-            )
-            _frame, row = yield from self._wait_daily_qmch_activity_row(
-                runtime,
-                ctx,
-                timeout_seconds=transition_timeout,
-                poll_seconds=poll_seconds,
-            )
+        _frame, row = yield from self._wait_daily_qmch_activity_row(
+            runtime,
+            ctx,
+            timeout_seconds=transition_timeout,
+            poll_seconds=poll_seconds,
+            anchors=list(channel_route.get("anchors") or ()),
+        )
         runtime.click_frame_point(332, float(row.x + row.w / 2), float(row.y + row.h / 2))
         yield from runtime.wait_view(
             30,
@@ -475,45 +447,44 @@ class DailyRedpacketTaskMixin:
                 "日常_红包：当前活动频道 Runtime 未形成唯一重复话术，拒绝发送："
                 f"{phrase_fact.get('reason') or 'unknown'}"
             )
-        runtime.click_shape_center(673, "输入框空态")
-        yield from runtime.wait_action_settle(0.5)
-        text_mumu_adb(phrase)
-        yield from runtime.wait_action_settle(0.5)
-        # Android 输入层打开时，第一次点击正式发送热区只负责收起输入层；
-        # 收起后先 OCR 回读输入框，再授权真正的发送动作。
-        runtime.click_shape_center_fast(673, "发送")
-        yield from runtime.wait_action_settle(0.8)
-        typed_frame = runtime.cur_frame(update=True)
-        typed_text = runtime.ocr_text_in_shapes(
+        copy_frame = runtime.cur_frame(update=True)
+        copy_box = self._daily_qmch_copy_box(ctx, copy_frame)
+        runtime.click_frame_point(
             673,
-            ("输入框空态",),
-            padding=0,
-            frame_data_url=typed_frame,
-            crop=True,
+            float(copy_box["x"]) + float(copy_box["w"]) / 2,
+            float(copy_box["y"]) + float(copy_box["h"]) / 2,
         )
+        yield from runtime.wait_view(
+            390,
+            timeout=transition_timeout,
+            label="鸿运福签：等待复制后的输入层",
+        )
+        copied_text = runtime.ocr_text(update=True)
         normalized_phrase = re.sub(
             r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
             "",
             phrase,
         )
-        normalized_typed = re.sub(
+        normalized_copied = re.sub(
             r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
             "",
-            str(typed_text or ""),
+            str(copied_text or ""),
         )
-        if not normalized_phrase or normalized_phrase not in normalized_typed:
+        phrase_prefix = normalized_phrase[:10]
+        if not phrase_prefix or phrase_prefix not in normalized_copied:
             raise RuntimeError(
-                "日常_红包：Runtime 话术输入后 OCR 回读不一致，拒绝发送："
-                f"expected={normalized_phrase[:80]}, actual={normalized_typed[:80]}"
+                "日常_红包：复制后 #390 未回读到 Runtime 话术前缀，拒绝发送："
+                f"expected={phrase_prefix}, actual={normalized_copied[:80]}"
             )
-        yield from runtime.wait_click_then_shape(
-            673,
+        yield from runtime.wait_click(
+            390,
             "发送",
-            674,
-            "吉签鸿运佳奖落身",
             timeout=transition_timeout,
-            max_clicks=1,
-            label="鸿运福签：发送一次并等待专用开包页",
+        )
+        yield from runtime.wait_view(
+            397,
+            timeout=transition_timeout,
+            label="鸿运福签：发送后等待真实开包弹窗",
         )
 
         # Sending can race with a claim performed elsewhere.  Re-check the
@@ -529,7 +500,7 @@ class DailyRedpacketTaskMixin:
         )
         opened_count = 0
         if already_terminal is None:
-            yield from runtime.wait_click(674, "开", timeout=transition_timeout)
+            yield from runtime.wait_click(397, "开", timeout=transition_timeout)
             opened_count = 1
             yield from runtime.wait_action_settle(poll_seconds)
             yield from self._wait_daily_qmch_uid_terminal(
@@ -759,69 +730,61 @@ class DailyRedpacketTaskMixin:
         max_scrolls: int,
         settle_seconds: float,
     ):
-        # 禁止退化为按 Runtime 群名或标注的聊天群固定位置直接点击。
-        # 只有本轮 current frame 真正匹配到 [红包图标] 的 resolved_box，
-        # 且图标中心仍位于检索区域内，才可用同一行的标注偏移选择群聊。
-        icon_shape = runtime.shape(332, "窗口/检索区域/红包图标")
-        icon_match_shape = runtime.shape(332, "红包")
-        group_shape = runtime.shape(332, "窗口/聊天群")
-        search_shape = runtime.shape(332, "窗口/检索区域")
+        """Click the exact Runtime-selected chat row using OCR only for alignment."""
+
+        snapshot = self._daily_redpacket_require_fresh_uid_snapshot(
+            phase="#332 Runtime 群列表对齐"
+        )
+        route_plan = classify_redpacket_runtime_routes(snapshot)
+        items = list(route_plan.get("ordinary_chat_items") or ())
+        if not items:
+            return None
+        target = items[0]
+        channel = int(target.get("channel") or 0)
+        sub_id = int(target.get("sub_channel_id") or 0)
+        gui_target = read_chat_channel_gui_target(channel, sub_id)
+        anchors = list(gui_target.get("anchors") or ())
+        if not anchors:
+            raise RuntimeError(
+                f"日常_红包：Runtime 群 {channel}_{sub_id} 缺少 GUI 对齐锚点"
+            )
+
         window_shape = runtime.shape(332, "窗口")
-        source_view = icon_shape.parent_view
-        if source_view is None or not isinstance(source_view.raw, dict):
-            raise RuntimeError("日常_红包：#332[红包图标] 缺少所属场景")
-        icon_template = icon_shape.box()
-        group_template = group_shape.box()
-        search_box = search_shape.box()
-        icon_center = (
-            float(icon_template.get("x") or 0) + float(icon_template.get("w") or 0) / 2,
-            float(icon_template.get("y") or 0) + float(icon_template.get("h") or 0) / 2,
-        )
-        group_center = (
-            float(group_template.get("x") or 0) + float(group_template.get("w") or 0) / 2,
-            float(group_template.get("y") or 0) + float(group_template.get("h") or 0) / 2,
-        )
-        offset_x = group_center[0] - icon_center[0]
-        offset_y = group_center[1] - icon_center[1]
+        window_box = window_shape.box()
 
         for scroll_index in range(max(0, int(max_scrolls)) + 1):
             frame = runtime.cur_frame(update=True)
-            # The historical row annotation contains avatar pixels beneath the
-            # badge, so it changes with every group and cannot be a stable
-            # visual template.  #332[红包] is the same red ``福`` badge with a
-            # formal alpha mask. Scan it only inside the group list, while the
-            # row annotation remains the source of the icon-to-row offset.
-            match_shape = {
-                **icon_match_shape.raw,
-                "floating": True,
-                "imageMatchRole": "required",
-                "ocrMatchRole": "off",
-                "_match_scan_box": search_shape.raw,
-            }
-            result = self._match_shape(
-                ctx,
-                source_view.raw,
-                match_shape,
-                frame,
-                condition="image",
-            )
-            resolved = result.get("resolved_box") if isinstance(result.get("resolved_box"), dict) else None
-            if bool(result.get("matched")) and resolved is not None:
-                resolved_center_x = float(resolved.get("x") or 0) + float(resolved.get("w") or 0) / 2
-                resolved_center_y = float(resolved.get("y") or 0) + float(resolved.get("h") or 0) / 2
-                if runtime._point_in_box(resolved_center_x, resolved_center_y, search_box):
-                    click_x = resolved_center_x + offset_x
-                    click_y = resolved_center_y + offset_y
-                    runtime.click_frame_point(332, click_x, click_y)
-                    self._log(
-                        "action",
-                        (
-                            "日常_红包：按 [红包图标] 与 [聊天群] 标注偏移点击同一行聊天群，"
-                            f"scroll={scroll_index}，click=({click_x:.1f},{click_y:.1f})"
-                        ),
-                    )
-                    yield from runtime.wait_action_settle(settle_seconds)
-                    return {"x": click_x, "y": click_y, "scroll_index": scroll_index}
+            cached = self._shared_spatial_ocr_result(ctx, frame)
+            spatial = query_spatial_ocr(cached.get("tokens") or [], window_box)
+            tokens = spatial.get("tokens") if isinstance(spatial.get("tokens"), list) else []
+            resolved = None
+            matched_anchor = ""
+            for anchor in anchors:
+                candidate = select_text_match(find_text_matches(tokens, anchor), anchor)
+                if candidate is not None:
+                    resolved = candidate
+                    matched_anchor = anchor
+                    break
+            if resolved is not None:
+                click_x = float(window_box["x"]) + float(window_box["w"]) * 0.55
+                click_y = float(resolved.y + resolved.h / 2)
+                runtime.click_frame_point(332, click_x, click_y)
+                self._log(
+                    "action",
+                    (
+                        f"日常_红包：Runtime 群 {channel}_{sub_id} 通过列表锚点"
+                        f"「{matched_anchor}」对齐，scroll={scroll_index}"
+                    ),
+                )
+                yield from runtime.wait_action_settle(settle_seconds)
+                return {
+                    "x": click_x,
+                    "y": click_y,
+                    "scroll_index": scroll_index,
+                    "channel": channel,
+                    "sub_channel_id": sub_id,
+                    "anchor": matched_anchor,
+                }
             if scroll_index >= max(0, int(max_scrolls)):
                 break
             runtime.drag_shape_content(window_shape, direction="down")
@@ -837,7 +800,7 @@ class DailyRedpacketTaskMixin:
         poll_seconds: float,
         max_scrolls: int = 0,
     ):
-        """Wait for a live badge, then boundedly scan the group list.
+        """Wait for Runtime-selected group alignment, then boundedly scan the list.
 
         ``_find_and_click_daily_redpacket_group`` keeps the action gate on the
         current frame: scrolling never authorizes a row click by itself.  A
@@ -859,7 +822,7 @@ class DailyRedpacketTaskMixin:
             if max_scrolls > 0:
                 break
             yield from runtime.wait_action_settle(poll_seconds)
-        raise TimeoutError("日常_红包：#332[窗口] 持续未匹配到当前帧红包群标记")
+        raise TimeoutError("日常_红包：#332[窗口] 未对齐到 Runtime 指定红包群")
 
     def _claim_daily_redpackets(
         self,
@@ -1018,7 +981,8 @@ class DailyRedpacketTaskMixin:
         max_open_count: int,
         max_locator_clicks: int = 5,
     ):
-        # 群列表的红包图标只是进入该群的视觉证据，不能授权群内点击。
+        # 群列表行只负责落实 Runtime 已选中的 channel/subChannelId；
+        # 它不参与判断该群是否存在红包，也不能授权群内红包卡片点击。
         # #30 右上角的 [红包] 是游戏提供的待领红包定位入口，不是红包
         # 卡片本身。群聊可能停在任意历史消息；先确认 #30，再优先读取
         # 当前可见卡片，未命中时有界点击定位入口，直到卡片 OCR 连续两帧
@@ -1268,7 +1232,7 @@ class DailyRedpacketTaskMixin:
             )
         except TimeoutError:
             unavailable = self._daily_redpacket_require_fresh_uid_snapshot(
-                phase="#332 红包门卫持续阴性"
+                phase="#332 Runtime-GUI 群行持续未对齐"
             )
             unclaimable_uids = sorted(unavailable.get("uids") or ())
             yield from self._close_daily_redpacket_chat_to_world(
@@ -1278,9 +1242,9 @@ class DailyRedpacketTaskMixin:
             return self._daily_redpacket_result(
                 payload,
                 (
-                    "#332 持续未确认任何可领取红包；"
+                    "#332 持续未对齐到 Runtime 指定红包群；"
                     f"将 fresh Runtime 剩余 {len(unclaimable_uids)} 个 UID "
-                    "类型化为 chat_visual_unclaimable"
+                    "类型化为 chat_gui_unaligned"
                 ),
                 current_scene=34,
                 unclaimable_uids=unclaimable_uids,
@@ -1334,8 +1298,8 @@ class DailyRedpacketTaskMixin:
                     break
                 if quota_exhausted:
                     break
-                # 未能打开领取页时，该群的红包图标可能仍在；强制向下加载，
-                # 避免反复点击同一行。成功领取后图标会消失，可在当前页继续找。
+                # 未能打开领取页时，该 UID 可能仍在 Runtime；强制向下加载，
+                # 避免反复对齐并点击同一行。成功领取后由 fresh UID 集合决定下一目标。
                 force_scroll = not bool(opened_page)
                 continue
             if scroll_count >= max_scrolls:

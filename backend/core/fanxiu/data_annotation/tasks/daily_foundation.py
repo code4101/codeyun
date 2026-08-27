@@ -9132,15 +9132,15 @@ class DailyFoundationTaskMixin:
             snapshot = dict(override)
         else:
             from backend.core.fanxiu.instrumentation.dongtian import (
-                read_dongtian_snapshot,
+                read_dongtian_clear_plan_snapshot,
             )
 
-            snapshot = read_dongtian_snapshot()
+            snapshot = read_dongtian_clear_plan_snapshot()
         payload["__dongtian_runtime_snapshot"] = snapshot
         evidence = snapshot.get("evidence") if isinstance(snapshot.get("evidence"), dict) else {}
         self._log(
             "detail",
-            "洞天_行动力：Runtime 快照 "
+            "洞天_行动力：Runtime 清理计划快照 "
             f"available={bool(snapshot.get('available'))}，"
             f"elapsed={float(snapshot.get('elapsed_seconds') or 0):.3f}s，"
             f"mines_root_cache_hit={evidence.get('mines_root_cache_hit')}，"
@@ -9159,7 +9159,30 @@ class DailyFoundationTaskMixin:
         _ = runtime
         if not isinstance(payload, dict):
             raise RuntimeError("洞天_行动力：缺少 Runtime payload，拒绝降级 OCR")
-        snapshot = self._daily_dongtian_runtime_snapshot(payload)
+        initial_plan = payload.get("__dongtian_runtime_snapshot")
+        initial_consumed = bool(payload.get("__dongtian_initial_action_power_consumed"))
+        override = payload.get("__dongtian_runtime_snapshot_override")
+        if isinstance(initial_plan, dict) and not initial_consumed:
+            snapshot = initial_plan
+            payload["__dongtian_initial_action_power_consumed"] = True
+        elif isinstance(override, dict):
+            snapshot = dict(override)
+        else:
+            from backend.core.fanxiu.instrumentation.dongtian import (
+                read_dongtian_action_power_snapshot,
+            )
+
+            snapshot = read_dongtian_action_power_snapshot()
+        payload["__dongtian_action_power_snapshot"] = snapshot
+        evidence = snapshot.get("evidence") if isinstance(snapshot.get("evidence"), dict) else {}
+        self._log(
+            "detail",
+            "洞天_行动力：Runtime 行动力快照 "
+            f"available={bool(snapshot.get('available'))}，"
+            f"elapsed={float(snapshot.get('elapsed_seconds') or 0):.3f}s，"
+            f"mines_root_cache_hit={evidence.get('mines_root_cache_hit')}，"
+            f"phase_timings={evidence.get('phase_timings_seconds')}",
+        )
         runtime_action_power = snapshot.get("action_power")
         if (
             snapshot.get("available")
@@ -9176,13 +9199,9 @@ class DailyFoundationTaskMixin:
     ) -> str | None:
         """Short-circuit a retry when authoritative action power proves completion."""
 
-        snapshot = self._daily_dongtian_runtime_snapshot(payload)
-        action_power = snapshot.get("action_power")
-        if not (
-            snapshot.get("available")
-            and isinstance(action_power, int)
-            and action_power >= 0
-        ):
+        try:
+            action_power, _source = self._daily_dongtian_action_power(None, payload)
+        except RuntimeError:
             return None
         self._log(
             "detail",
@@ -9225,6 +9244,14 @@ class DailyFoundationTaskMixin:
             if scene_id not in {341, 279}:
                 raise RuntimeError(f"洞天_行动力：循环只接受 #341/#279，当前 #{scene_id} {score:.0f}%")
 
+            # #279 needs the ownership plan.  Read it once before action power
+            # so the same narrow snapshot supplies both the initial scalar and
+            # the stable enemy-place list.  Later rounds read only the scalar.
+            if scene_id == 279 and not isinstance(
+                payload.get("__dongtian_runtime_snapshot"),
+                dict,
+            ):
+                self._daily_dongtian_runtime_snapshot(payload)
             action_power, evidence = self._daily_dongtian_action_power(runtime, payload)
             self._log("detail", f"洞天_行动力：当前 #{scene_id} 行动力={action_power}，来源={evidence!r}")
             if action_power < 100:

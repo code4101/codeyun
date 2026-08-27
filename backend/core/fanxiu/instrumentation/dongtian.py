@@ -1185,6 +1185,13 @@ def _seating_probe_snapshot(
         else _mines_data_fields(reader, mines_root)
     )
     club_data = _club_data_fields(reader, club_root)
+    fatigue_used = as_int(mines_data.get("V_AttackFatigueValue"))
+    action_power_max = as_int(mines_data.get("_MaxAtkMaxTried"))
+    action_power = (
+        max(0, action_power_max - fatigue_used)
+        if action_power_max is not None and fatigue_used is not None
+        else None
+    )
     own_union = _union(
         reader,
         club_data.get("v_crossUnionInfo") or club_data.get("v_redInfo"),
@@ -1489,6 +1496,137 @@ def _snapshot(
     }
 
 
+def _action_power_snapshot(
+    memory: MumuProcessMemory,
+    mines_root: int,
+    *,
+    mines_cache_hit: bool,
+    mines_root_kind: str = "manager",
+) -> dict[str, Any]:
+    """Read only the two scalar fields needed by the clear-stamina loop."""
+
+    reader = LuaJitReader(memory)
+    mines_data = (
+        _mines_data_table_fields(reader, mines_root)
+        if mines_root_kind == "data_table"
+        else _mines_data_fields(reader, mines_root)
+    )
+    fatigue_used = as_int(mines_data.get("V_AttackFatigueValue"))
+    action_power_max = as_int(mines_data.get("_MaxAtkMaxTried"))
+    action_power = (
+        max(0, action_power_max - fatigue_used)
+        if action_power_max is not None and fatigue_used is not None
+        else None
+    )
+    complete = action_power is not None
+    return {
+        "ok": complete,
+        "available": True,
+        "complete": complete,
+        "source": "runtime_memory",
+        "protocol": "XianLvMinesMgr.Model.Data.action_power.v1",
+        "action_power": action_power,
+        "action_power_max": action_power_max,
+        "fatigue_used": fatigue_used,
+        "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "captured_at_epoch": time.time(),
+        "evidence": {
+            "pid": memory.pid,
+            "process_start_ticks": memory.process_start_ticks,
+            "mines_root_address": f"0x{mines_root:x}",
+            "mines_root_kind": mines_root_kind,
+            "mines_root_cache_hit": mines_cache_hit,
+        },
+    }
+
+
+def _clear_plan_snapshot(
+    memory: MumuProcessMemory,
+    mines_root: int,
+    club_root: int,
+    *,
+    mines_cache_hit: bool,
+    club_cache_hit: bool,
+    mines_root_kind: str = "manager",
+    club_root_kind: str = "manager",
+) -> dict[str, Any]:
+    """Read the stable ownership plan without decoding seats or teams."""
+
+    reader = LuaJitReader(memory)
+    mines_data = (
+        _mines_data_table_fields(reader, mines_root)
+        if mines_root_kind == "data_table"
+        else _mines_data_fields(reader, mines_root)
+    )
+    club_data = _club_data_fields(reader, club_root)
+    mine_records, declared_count, last_update_batch_count, config_sha256 = (
+        _validated_mine_records(reader, mines_data)
+    )
+    place_configs, _cached_config_sha256 = _mines_place_static_config()
+    mines: list[dict[str, Any]] = []
+    for _value, fields, mine_id in mine_records:
+        config = place_configs.get(mine_id)
+        if not isinstance(config, dict) or not str(config.get("name") or "").strip():
+            raise FanxiuRuntimeMemoryError(
+                f"洞天地点 {mine_id} 缺少 MinesPlace 结构化配置"
+            )
+        union = _union(reader, fields.get("crossUnion"))
+        mines.append(
+            {
+                "id": mine_id,
+                "config_id": mine_id,
+                "name": str(config["name"]),
+                "config_name": str(config["name"]),
+                "cross_union_id": union["id"],
+                "cross_union_name": union["name"],
+            }
+        )
+
+    own_union = _union(
+        reader,
+        club_data.get("v_crossUnionInfo") or club_data.get("v_redInfo"),
+    )
+    if own_union["id"] is None:
+        red_union = _union(reader, club_data.get("v_redInfo"))
+        own_union["id"] = red_union["id"]
+    complete = bool(
+        action_power is not None
+        and mines
+        and (own_union["id"] is not None or own_union["name"])
+    )
+    return {
+        "ok": complete,
+        "available": True,
+        "complete": complete,
+        "source": "runtime_memory",
+        "protocol": "XianLvMinesMgr.Model.Data.clear_plan.v1",
+        "action_power": action_power,
+        "action_power_max": action_power_max,
+        "fatigue_used": fatigue_used,
+        "own_union_id": own_union["id"],
+        "own_union_name": own_union["name"],
+        "mines": mines,
+        "map_complete": bool(mines),
+        "expected_mine_count": len(mine_records),
+        "declared_mine_count": declared_count,
+        "last_update_batch_count": last_update_batch_count,
+        "mines_place_config_sha256": config_sha256,
+        "decoded_mine_count": len(mines),
+        "captured_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "captured_at_epoch": time.time(),
+        "evidence": {
+            "pid": memory.pid,
+            "process_start_ticks": memory.process_start_ticks,
+            "mines_root_address": f"0x{mines_root:x}",
+            "mines_root_kind": mines_root_kind,
+            "club_root_address": f"0x{club_root:x}",
+            "club_root_kind": club_root_kind,
+            "mines_root_cache_hit": mines_cache_hit,
+            "club_root_cache_hit": club_cache_hit,
+        },
+    }
+
+
 _TRANSIENT_DONGTIAN_RUNTIME_MESSAGES = (
     "Runtime 内存地址越界",
     "读取凡修 Runtime 内存失败",
@@ -1656,6 +1794,140 @@ def read_dongtian_snapshot(*, allow_legacy_scan: bool = False) -> dict[str, Any]
                 "retried_generation_error": getattr(
                     exc, "dongtian_retried_generation_error", None
                 ),
+            },
+        }
+
+
+def read_dongtian_action_power_snapshot(
+    *,
+    allow_legacy_scan: bool = False,
+) -> dict[str, Any]:
+    """Read current action power without decoding the map, seats or teams."""
+
+    started_at = time.perf_counter()
+    stage_started_at = started_at
+    phase = "process_discovery"
+    timings: dict[str, float] = {}
+
+    def finish_stage(name: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        timings[name] = now - stage_started_at
+        stage_started_at = now
+
+    memory: MumuProcessMemory | None = None
+    try:
+        memory = MumuProcessMemory.discover_cached()
+        finish_stage("process_discovery")
+        phase = "lua_state"
+        state_address = int(_lua_addresses(memory)["state"], 16)
+        finish_stage("lua_state")
+        phase = "mines_root"
+        mines_root, mines_cache_hit, mines_root_kind = _resolve_mines_root(
+            memory,
+            state_address=state_address,
+            allow_legacy_scan=allow_legacy_scan,
+        )
+        finish_stage("mines_root")
+        phase = "decode"
+        result = _action_power_snapshot(
+            memory,
+            mines_root,
+            mines_cache_hit=mines_cache_hit,
+            mines_root_kind=mines_root_kind,
+        )
+        finish_stage("decode")
+        result["elapsed_seconds"] = time.perf_counter() - started_at
+        result.setdefault("evidence", {})["phase_timings_seconds"] = timings
+        return result
+    except Exception as exc:
+        timings[f"{phase}_failed"] = time.perf_counter() - stage_started_at
+        reason = str(exc) if isinstance(exc, FanxiuRuntimeMemoryError) else f"{type(exc).__name__}: {exc}"
+        return {
+            "ok": False,
+            "available": False,
+            "complete": False,
+            "source": "runtime_memory",
+            "protocol": "XianLvMinesMgr.Model.Data.action_power.v1",
+            "reason": f"{reason}；失败阶段={phase}；阶段耗时={timings}",
+            "elapsed_seconds": time.perf_counter() - started_at,
+            "evidence": {
+                "pid": memory.pid if memory is not None else None,
+                "process_start_ticks": memory.process_start_ticks if memory is not None else None,
+                "failed_phase": phase,
+                "phase_timings_seconds": timings,
+            },
+        }
+
+
+def read_dongtian_clear_plan_snapshot(
+    *,
+    allow_legacy_scan: bool = False,
+) -> dict[str, Any]:
+    """Read and validate the enemy-place plan once for one clear job."""
+
+    started_at = time.perf_counter()
+    stage_started_at = started_at
+    phase = "process_discovery"
+    timings: dict[str, float] = {}
+
+    def finish_stage(name: str) -> None:
+        nonlocal stage_started_at
+        now = time.perf_counter()
+        timings[name] = now - stage_started_at
+        stage_started_at = now
+
+    memory: MumuProcessMemory | None = None
+    try:
+        memory = MumuProcessMemory.discover_cached()
+        finish_stage("process_discovery")
+        phase = "lua_state"
+        state_address = int(_lua_addresses(memory)["state"], 16)
+        finish_stage("lua_state")
+        phase = "mines_root"
+        mines_root, mines_cache_hit, mines_root_kind = _resolve_mines_root(
+            memory,
+            state_address=state_address,
+            allow_legacy_scan=allow_legacy_scan,
+        )
+        finish_stage("mines_root")
+        phase = "club_root"
+        club_root, club_cache_hit, club_root_kind = _resolve_club_root(
+            memory,
+            state_address=state_address,
+            allow_legacy_scan=allow_legacy_scan,
+        )
+        finish_stage("club_root")
+        phase = "decode"
+        result = _clear_plan_snapshot(
+            memory,
+            mines_root,
+            club_root,
+            mines_cache_hit=mines_cache_hit,
+            club_cache_hit=club_cache_hit,
+            mines_root_kind=mines_root_kind,
+            club_root_kind=club_root_kind,
+        )
+        finish_stage("decode")
+        result["elapsed_seconds"] = time.perf_counter() - started_at
+        result.setdefault("evidence", {})["phase_timings_seconds"] = timings
+        return result
+    except Exception as exc:
+        timings[f"{phase}_failed"] = time.perf_counter() - stage_started_at
+        reason = str(exc) if isinstance(exc, FanxiuRuntimeMemoryError) else f"{type(exc).__name__}: {exc}"
+        return {
+            "ok": False,
+            "available": False,
+            "complete": False,
+            "source": "runtime_memory",
+            "protocol": "XianLvMinesMgr.Model.Data.clear_plan.v1",
+            "reason": f"{reason}；失败阶段={phase}；阶段耗时={timings}",
+            "elapsed_seconds": time.perf_counter() - started_at,
+            "evidence": {
+                "pid": memory.pid if memory is not None else None,
+                "process_start_ticks": memory.process_start_ticks if memory is not None else None,
+                "failed_phase": phase,
+                "phase_timings_seconds": timings,
             },
         }
 

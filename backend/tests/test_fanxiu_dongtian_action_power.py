@@ -26,6 +26,85 @@ def test_dongtian_action_power_uses_runtime_without_gui():
     assert source == "runtime:XianLvMinesMgr.Model.Data.V_AttackFatigueValue"
 
 
+def test_dongtian_action_power_uses_narrow_reader_not_clear_plan(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.dongtian.read_dongtian_action_power_snapshot",
+        lambda: calls.append("action") or {
+            "available": True,
+            "complete": True,
+            "action_power": 200,
+            "elapsed_seconds": 0.2,
+            "evidence": {},
+        },
+    )
+    runner = BehaviorTreeRuntimeRunner()
+    monkeypatch.setattr(
+        runner,
+        "_daily_dongtian_runtime_snapshot",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("不得读取清理计划")),
+    )
+
+    value, _source = runner._daily_dongtian_action_power(object(), {})
+
+    assert value == 200
+    assert calls == ["action"]
+
+
+def test_dongtian_enemy_plan_is_reused_within_same_job(monkeypatch):
+    runner = BehaviorTreeRuntimeRunner()
+    calls = []
+    plan = {
+        "available": True,
+        "complete": True,
+        "own_union_id": 1,
+        "own_union_name": "own",
+        "mines": [
+            {"id": 1, "cross_union_id": 2, "cross_union_name": "enemy"},
+        ],
+        "evidence": {},
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.dongtian.read_dongtian_clear_plan_snapshot",
+        lambda: calls.append("plan") or dict(plan),
+    )
+    payload = {}
+
+    first = runner._daily_dongtian_enemy_places_from_runtime(payload)
+    second = runner._daily_dongtian_enemy_places_from_runtime(payload)
+
+    assert first == second == [_DONGTIAN_PLACE_ANCHORS[0]]
+    assert calls == ["plan"]
+
+
+def test_dongtian_initial_clear_plan_action_power_is_consumed_once(monkeypatch):
+    calls = []
+    runner = BehaviorTreeRuntimeRunner()
+    payload = {
+        "__dongtian_runtime_snapshot": {
+            "available": True,
+            "complete": True,
+            "action_power": 300,
+            "evidence": {},
+        },
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.dongtian.read_dongtian_action_power_snapshot",
+        lambda: calls.append("action") or {
+            "available": True,
+            "complete": True,
+            "action_power": 200,
+            "evidence": {},
+        },
+    )
+
+    first, _ = runner._daily_dongtian_action_power(object(), payload)
+    second, _ = runner._daily_dongtian_action_power(object(), payload)
+
+    assert (first, second) == (300, 200)
+    assert calls == ["action"]
+
+
 def test_dongtian_action_power_finishes_after_battle_started_with_last_100(monkeypatch):
     runner = BehaviorTreeRuntimeRunner()
     powers = iter([(100, "100")])
@@ -99,8 +178,11 @@ def test_dongtian_retry_short_circuits_when_runtime_already_below_100(monkeypatc
     scheduled = []
     monkeypatch.setattr(
         runner,
-        "_daily_dongtian_runtime_snapshot",
-        lambda _payload: {"available": True, "complete": True, "action_power": 0},
+        "_daily_dongtian_action_power",
+        lambda _runtime, _payload: (
+            0,
+            "runtime:XianLvMinesMgr.Model.Data.V_AttackFatigueValue",
+        ),
     )
     monkeypatch.setattr(
         runner,
