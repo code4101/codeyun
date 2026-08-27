@@ -97,6 +97,33 @@ def test_group_selection_is_never_a_playable_board() -> None:
     assert tiandi_yiju.GROUP_SELECTION_ACTIVITY_ID not in tiandi_yiju.PLAYABLE_ACTIVITY_IDS
 
 
+def test_target_selection_prefers_nearest_then_highest_own_ratio() -> None:
+    result = tiandi_yiju._choose_tiandi_yiju_target(
+        [
+            {
+                "piece_id": 7,
+                "distance_to_tianyuan": 2,
+                "own_score": 90,
+                "total_score": 100,
+            },
+            {
+                "piece_id": 2,
+                "distance_to_tianyuan": 1,
+                "own_score": 60,
+                "total_score": 100,
+            },
+            {
+                "piece_id": 5,
+                "distance_to_tianyuan": 1,
+                "own_score": 80,
+                "total_score": 100,
+            },
+        ]
+    )
+
+    assert result["piece_id"] == 5
+
+
 def _transition_snapshot(*, strength: int, personal: int, alliance: int) -> dict:
     return {
         "ok": True,

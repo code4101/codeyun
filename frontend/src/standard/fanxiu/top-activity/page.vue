@@ -76,6 +76,12 @@ const activePage = computed(() => {
 const selectedActivityName = computed(() => (
   activityOptions.find(item => item.value === selectedType.value)?.label ?? '玩法榜'
 ))
+const selectedInitialSnapshot = computed(() => (
+  !isActivityType(route.query.activity)
+  && resolvedDefaultType.value === selectedType.value
+    ? (initialSnapshot.value ?? undefined)
+    : undefined
+))
 
 watch(
   () => route.query.activity,
@@ -106,8 +112,9 @@ watch(
     <component
       :is="activePage"
       v-if="activePage"
+      :key="selectedType"
       embedded
-      :initial-snapshot="initialSnapshot ?? undefined"
+      :initial-snapshot="selectedInitialSnapshot"
       :activity-type="['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedType : undefined"
       :activity-name="['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedActivityName : undefined"
       :comparative-ranking-scope="selectedType === 'tiandi-yiju' ? 'alliance' : undefined"

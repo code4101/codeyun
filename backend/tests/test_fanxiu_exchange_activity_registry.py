@@ -37,6 +37,20 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
     assert get_exchange_activity_spec("yunmeng-trial") is YUNMENG_TRIAL_SPEC
     assert get_exchange_activity_spec("xianyuan-duokui") is XIANYUAN_DUOKUI_SPEC
     assert get_exchange_activity_spec("tiandi-yiju") is TIANDI_YIJU_SPEC
+    assert {
+        key for key, spec in EXCHANGE_ACTIVITY_SPECS.items()
+        if spec.family == "gameplay_rank"
+    } == {
+        "yunmeng-trial", "xianyuan-duokui", "xutian-palace",
+        "magic-invasion", "beast-abyss", "tiandi-yiju",
+    }
+    assert {
+        key for key, spec in EXCHANGE_ACTIVITY_SPECS.items()
+        if spec.family == "resource_rank"
+    } == {
+        "lingzhuang-huadao", "yaochi-flower-festival", "yuanding-sansheng",
+        "lingchong-jingwu", "lianti-faxiang", "dandao-wending",
+    }
     with pytest.raises(ValueError, match="重复"):
         build_exchange_activity_registry(
             (XUTIAN_PALACE_SPEC, replace(XUTIAN_PALACE_SPEC, label="重复"))

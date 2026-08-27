@@ -488,6 +488,7 @@ def test_ensure_activity_preserves_newer_rank_evidence(monkeypatch: pytest.Monke
         session.add(
             FanxiuExchangeActivity(
                 id=activity_id,
+                instance_key=activity_id,
                 activity_type="lingchong-jingwu",
                 cross_count=8,
                 start_date="2026-08-12",
@@ -521,6 +522,7 @@ def test_ensure_activity_preserves_newer_rank_evidence(monkeypatch: pytest.Monke
 
 def test_rank_fact_must_belong_to_selected_activity_period() -> None:
     activity = FanxiuExchangeActivity(
+        instance_key="lingchong-period-test",
         activity_type="lingchong-jingwu",
         cross_count=8,
         start_date="2026-08-12",

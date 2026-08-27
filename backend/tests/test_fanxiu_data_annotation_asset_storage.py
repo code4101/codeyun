@@ -11,6 +11,7 @@ from backend.core.fanxiu.data_annotation.storage import (
     save_data_annotation_frame_tree_node,
     save_data_annotation_image_bytes,
     update_data_annotation_asset_tree,
+    validate_data_annotation_task_directories,
 )
 
 
@@ -291,6 +292,76 @@ def test_asset_tree_snapshot_uses_content_revision_for_conflicts(tmp_path):
     assert saved.revision != initial.revision
     with pytest.raises(FanxiuDataAnnotationAssetTreeConflict):
         save_data_annotation_asset_tree_snapshot(path, initial.tree, expected_revision=initial.revision)
+
+
+def test_task_directory_contract_rejects_direct_scene_in_container():
+    tree = [{
+        "id": "schedule",
+        "type": "folder",
+        "title": "日程",
+        "folderRole": "business-root",
+        "children": [{
+            "id": "resource-rank",
+            "type": "folder",
+            "title": "资源榜",
+            "folderRole": "task-family",
+            "children": [{"id": "scene-1", "type": "image", "title": "丹道问鼎"}],
+        }],
+    }]
+
+    with pytest.raises(ValueError, match="日程 / 资源榜.*不能直接包含 scene/frame"):
+        validate_data_annotation_task_directories(tree)
+
+
+def test_task_directory_contract_allows_task_and_shared_scene_folders():
+    validate_data_annotation_task_directories([{
+        "id": "resource-rank",
+        "type": "folder",
+        "title": "资源榜",
+        "folderRole": "task-family",
+        "children": [
+            {
+                "id": "dandao",
+                "type": "folder",
+                "title": "丹道问鼎",
+                "folderRole": "task",
+                "children": [{"id": "scene-1", "type": "image", "title": "丹道问鼎榜单"}],
+            },
+            {
+                "id": "shared",
+                "type": "folder",
+                "title": "资源榜通用",
+                "folderRole": "shared",
+                "children": [{"id": "scene-2", "type": "image", "title": "资源榜礼包"}],
+            },
+        ],
+    }])
+
+
+def test_frame_tree_save_rejects_container_parent_before_writing_image(tmp_path, monkeypatch):
+    import backend.core.fanxiu.data_annotation.storage as storage
+
+    monkeypatch.setattr(storage, "fanxiu_data_annotation_dir", lambda: tmp_path)
+    path = storage.data_annotation_asset_tree_path("entry-a")
+    save_data_annotation_asset_tree_snapshot(path, [{
+        "id": "resource-rank",
+        "type": "folder",
+        "title": "资源榜",
+        "folderRole": "task-family",
+        "children": [],
+    }])
+
+    with pytest.raises(ValueError, match="请先创建 folderRole=task"):
+        save_data_annotation_frame_tree_node(
+            path,
+            _PNG_1X1,
+            {"id": "scene-new", "type": "image", "title": "新资源榜", "shapes": []},
+            entry_id="entry-a",
+            parent_id="resource-rank",
+        )
+
+    image_dir = storage.data_annotation_entry_image_dir("entry-a")
+    assert not image_dir.exists() or not list(image_dir.iterdir())
 
 
 def test_asset_tree_semantic_update_preserves_unrelated_latest_fields(tmp_path):

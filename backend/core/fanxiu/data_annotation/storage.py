@@ -18,6 +18,8 @@ from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
 
 DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID = "30b82d72-8a76-4a74-be4b-4fc1591c6ce2"
 DATA_ANNOTATION_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+DATA_ANNOTATION_FOLDER_ROLES = frozenset({"business-root", "task-family", "task", "shared"})
+DATA_ANNOTATION_CONTAINER_FOLDER_ROLES = frozenset({"business-root", "task-family"})
 
 AssetStorageKind = Literal["entry_images", "missing"]
 
@@ -48,6 +50,48 @@ class FanxiuDataAnnotationFrameTreeSave:
 
 class FanxiuDataAnnotationAssetTreeConflict(RuntimeError):
     pass
+
+
+def validate_data_annotation_task_directories(nodes: list[dict[str, Any]]) -> None:
+    """Enforce explicit task encapsulation for opted-in asset directories.
+
+    Legacy folders without ``folderRole`` remain readable and writable. Once a
+    business root or task family is marked, scenes must live below a ``task`` or
+    ``shared`` directory instead of being flattened into the container.
+    """
+
+    def visit(items: list[dict[str, Any]], ancestors: tuple[str, ...]) -> None:
+        for node in items:
+            if not isinstance(node, dict):
+                continue
+            title = str(node.get("title") or "").strip() or str(node.get("id") or "未命名")
+            node_type = str(node.get("type") or "")
+            role = str(node.get("folderRole") or "").strip()
+            path = (*ancestors, title)
+            path_label = " / ".join(path)
+
+            if role and node_type != "folder":
+                raise ValueError(f"scene/frame「{path_label}」不能声明 folderRole")
+            if role and role not in DATA_ANNOTATION_FOLDER_ROLES:
+                raise ValueError(f"资产目录「{path_label}」的 folderRole 不合法：{role}")
+
+            children = node.get("children")
+            child_nodes = children if isinstance(children, list) else []
+            if role in DATA_ANNOTATION_CONTAINER_FOLDER_ROLES:
+                direct_images = [
+                    str(child.get("title") or child.get("id") or "未命名")
+                    for child in child_nodes
+                    if isinstance(child, dict) and child.get("type") == "image"
+                ]
+                if direct_images:
+                    joined = "、".join(direct_images[:10])
+                    raise ValueError(
+                        f"资产目录「{path_label}」是容器目录，不能直接包含 scene/frame：{joined}；"
+                        "请先创建 folderRole=task 的任务目录，跨 task 共用场景使用 folderRole=shared"
+                    )
+            visit(child_nodes, path)
+
+    visit(nodes, ())
 
 
 def sanitize_data_annotation_entry_id(entry_id: str | None = None) -> str:
@@ -482,6 +526,7 @@ def save_data_annotation_asset_tree_snapshot(
         normalized_tree, missing = _normalize_asset_tree_images(tree, entry_id=entry_id)
         normalized_tree = normalize_data_annotation_shape_load_directions(normalized_tree)
         normalized_tree = normalize_data_annotation_scene_parent_ids(normalized_tree)
+        validate_data_annotation_task_directories(normalized_tree)
         if missing:
             joined = "、".join(str(item) for item in missing[:10])
             raise FileNotFoundError(f"资产树引用的图片不存在：{joined}")
@@ -584,18 +629,20 @@ def save_data_annotation_frame_tree_node(
                     raise ValueError(
                         f"新增资产编号必须连续：当前应为 #{expected_number}，不能创建 {requested_label}"
                     )
+            inserted = dict(node)
+            inserted.pop("imageDataUrl", None)
+            target.insert(insert_at, inserted)
+            validate_data_annotation_task_directories(tree)
             asset = save_data_annotation_image_bytes(
                 data,
                 entry_id=entry_id,
                 filename=requested_filename,
             )
-            inserted = dict(node)
-            inserted.pop("imageDataUrl", None)
             inserted["filename"] = asset.filename
-            target.insert(insert_at, inserted)
             normalized_tree, missing = _normalize_asset_tree_images(tree, entry_id=entry_id)
             normalized_tree = normalize_data_annotation_shape_load_directions(normalized_tree)
             normalized_tree = normalize_data_annotation_scene_parent_ids(normalized_tree)
+            validate_data_annotation_task_directories(normalized_tree)
             if missing:
                 joined = "、".join(str(item) for item in missing[:10])
                 raise FileNotFoundError(f"资产树引用的图片不存在：{joined}")
@@ -628,6 +675,7 @@ def update_data_annotation_asset_tree(
             return current
         normalized_tree = normalize_data_annotation_shape_load_directions(tree)
         normalized_tree = normalize_data_annotation_scene_parent_ids(normalized_tree)
+        validate_data_annotation_task_directories(normalized_tree)
         if before_write is not None:
             before_write()
         write_data_annotation_json(path, normalized_tree)

@@ -10,7 +10,9 @@ coupling their activity-specific adapters.
 
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Iterable, Mapping
+
+from backend.core.fanxiu.activity.exchange_activity_spec import RankingFamily
 
 
 RANKING_LIFECYCLE_TASK_ID = "ranking-lifecycle"
@@ -76,8 +78,6 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
     "dandao-wending",
     "lingzhuang-huadao",
 })
-
-RankingFamily = Literal["gameplay_rank", "resource_rank"]
 
 RANKING_CAPABILITY_STATUS = {
     "beast-abyss": "observed_reconcile_only",
@@ -187,20 +187,6 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
     from backend.core.fanxiu.activity.exchange_activity_registry import (
         EXCHANGE_ACTIVITY_SPECS,
     )
-    family_by_type: dict[str, RankingFamily] = {
-        "yunmeng-trial": "gameplay_rank",
-        "xianyuan-duokui": "gameplay_rank",
-        "xutian-palace": "gameplay_rank",
-        "magic-invasion": "gameplay_rank",
-        "beast-abyss": "gameplay_rank",
-        "lingzhuang-huadao": "resource_rank",
-        "yaochi-flower-festival": "resource_rank",
-        "yuanding-sansheng": "resource_rank",
-        "lingchong-jingwu": "resource_rank",
-        "lianti-faxiang": "resource_rank",
-        "dandao-wending": "resource_rank",
-        "tiandi-yiju": "gameplay_rank",
-    }
     runtime_types = {
         "yunmeng-trial": (21,),
         "xianyuan-duokui": (129,),
@@ -242,7 +228,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         identities.append(
             RankingActivityIdentity(
                 activity_type=activity_type,
-                family=family_by_type[activity_type],
+                family=spec.family,
                 vo_types=tuple(spec.worldline_vo_types),
                 runtime_activity_types=runtime_types.get(activity_type, ()),
                 activity_ids=activity_ids.get(activity_type, ()),

@@ -7092,6 +7092,7 @@ type DataAnnotationAssetNode = {
   id: string;
   type: 'folder' | 'image';
   title: string;
+  folderRole?: 'business-root' | 'task-family' | 'task' | 'shared';
   children?: DataAnnotationAssetNode[];
   filename?: string;
   imageDataUrl?: string;
@@ -7101,6 +7102,12 @@ type DataAnnotationAssetNode = {
   parentSceneIds?: string;
   shapes?: DataAnnotationShape[];
 };
+
+const CONTAINER_ONLY_FOLDER_ROLES = new Set(['business-root', 'task-family']);
+
+const rejectsDirectSceneChildren = (node: DataAnnotationAssetNode | null | undefined) => (
+  node?.type === 'folder' && CONTAINER_ONLY_FOLDER_ROLES.has(node.folderRole ?? '')
+);
 
 type DataAnnotationShape = {
   id: string;
@@ -10668,6 +10675,14 @@ const addAssetFolder = () => {
 };
 
 const addAssetImage = () => {
+  const selectedNode = selectedAssetNode.value;
+  const targetFolder = selectedNode
+    ? findAssetParentFolder(assetTree.value, selectedNode.id)
+    : null;
+  if (rejectsDirectSceneChildren(targetFolder)) {
+    ElMessage.warning('该层只用于归类；请先创建并选择具体 task 目录，再添加 scene/frame');
+    return;
+  }
   const { siblings } = getAssetInsertContext();
   const imageCount = siblings.filter((node) => node.type === 'image').length + 1;
   const node = createAssetImageNode('图片' + imageCount);
@@ -11151,7 +11166,14 @@ const addSavedFrameToAssetTree = (node: DataAnnotationAssetNode) => {
 const savedFrameInsertTarget = () => {
   const selectedNode = selectedAssetNode.value;
   if (selectedNode?.type === 'folder') {
+    if (rejectsDirectSceneChildren(selectedNode)) {
+      throw new Error('该层只用于归类；请先创建并选择具体 task 目录，再保存 scene/frame');
+    }
     return { parentId: selectedNode.id, afterNodeId: '' };
+  }
+  const parentFolder = findAssetParentFolder(assetTree.value, selectedNode?.id ?? null);
+  if (rejectsDirectSceneChildren(parentFolder)) {
+    throw new Error('该层只用于归类；请先创建并选择具体 task 目录，再保存 scene/frame');
   }
   return { parentId: '', afterNodeId: selectedNode?.id || '' };
 };

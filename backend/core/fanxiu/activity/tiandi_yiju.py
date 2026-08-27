@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Structured 天地弈局 projection for the shared gameplay-ranking page."""
 
+from datetime import datetime
 from typing import Any
 
 from sqlmodel import Session
@@ -15,9 +16,11 @@ from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation.activity_shop import (
     collect_activity_shop_runtime,
 )
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
 from backend.core.fanxiu.instrumentation.tiandi_yiju import (
     read_tiandi_yiju_runtime_snapshot,
 )
+from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 from backend.models import FanxiuExchangeActivity
 
 
@@ -83,26 +86,34 @@ def collect_and_store_tiandi_yiju_activity(
     except KeyError as exc:
         raise ValueError(f"天地弈局活动 {game_activity_id} 不是可采集棋局") from exc
 
-    runtime = read_tiandi_yiju_runtime_snapshot()
     shop = collect_activity_shop_runtime(
         shop_base_id=shop_base_id,
         item_names=_item_names(),
         expected_currency_type=currency_type,
-        expected_cross_count=activity.cross_count,
     )
     if not shop.get("complete"):
         raise ValueError("天地弈局兑换宝阁运行态快照不完整")
-    captured_at = str(runtime.get("captured_at") or "")
+    shop_captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    wallet = read_wallet_currency_snapshot(currency_type)
+    runtime: dict[str, Any] | None = None
+    ranking_error = ""
+    try:
+        runtime = read_tiandi_yiju_runtime_snapshot()
+    except FanxiuRuntimeMemoryError as exc:
+        ranking_error = str(exc)
+    captured_at = str(wallet.get("captured_at") or "")
     evidence.update({
-        "runtime": dict(runtime.get("evidence") or {}),
+        "runtime": dict((runtime or {}).get("evidence") or {}),
         "shop": dict(shop.get("evidence") or {}),
+        "shop_snapshot_captured_at": shop_captured_at,
         "refresh_status": {
             "currency": "updated",
             "shop": "updated",
-            "rankings": "updated",
+            "rankings": "updated" if runtime is not None else "retained",
+            "rankings_reason": ranking_error,
+            "currency_captured_at": captured_at,
         },
     })
-    personal_score = int(runtime.get("personal_score") or 0)
     persisted_id = upsert_exchange_activity_snapshot(session, {
         "activity_type": TIANDI_YIJU_ACTIVITY_TYPE,
         "cross_count": activity.cross_count,
@@ -112,21 +123,22 @@ def collect_and_store_tiandi_yiju_activity(
         "game_shop_base_id": shop_base_id,
         "currency_type": currency_type,
         "currency_name": "棋符",
-        "current_currency": personal_score,
-        "cumulative_currency": personal_score,
+        "current_currency": int(wallet.get("exchange_currency") or 0),
+        "cumulative_currency": int(wallet.get("cumulative_currency") or 0),
         "captured_at": captured_at,
         "source_kind": "runtime_memory.alliance_play_chess_and_activity_shop",
         "shop_items": list(shop["items"]),
         "expected_shop_item_count": int(shop["active_shop_item_count"]),
         "evidence": evidence,
     })
-    replace_exchange_rankings(
-        session,
-        activity_type=TIANDI_YIJU_ACTIVITY_TYPE,
-        activity_id=persisted_id,
-        rows=_ranking_rows(runtime),
-        captured_at=captured_at,
-    )
+    if runtime is not None:
+        replace_exchange_rankings(
+            session,
+            activity_type=TIANDI_YIJU_ACTIVITY_TYPE,
+            activity_id=persisted_id,
+            rows=_ranking_rows(runtime),
+            captured_at=captured_at,
+        )
     return list_exchange_activity_snapshot(
         session,
         activity_type=TIANDI_YIJU_ACTIVITY_TYPE,

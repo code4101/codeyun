@@ -35,9 +35,14 @@ TALENT_PILL_ITEM_ID = 9070095
 
 class ExchangeActivitySummary(BaseModel):
     id: str
+    instance_key: str
+    family: str
     label: str
     activity_type: str
+    runtime_id: str
+    game_activity_id: int | None
     cross_count: int
+    prepare_at: str
     start_date: str
     end_date: str
     start_at: str
@@ -77,6 +82,7 @@ class ExchangeActivityDetail(ExchangeActivitySummary):
     current_currency: int
     cumulative_currency: int
     resource_strategy: dict[str, Any]
+    instance_data: dict[str, Any]
     source_kind: str
     yield_rate: None = None
     currency_fact_fresh: bool = True
@@ -196,6 +202,91 @@ def format_exchange_activity_label(cross_count: int, start_date: str, end_date: 
     return prefix + f"{start_text}-{end.year}/{end.month}/{end.day}"
 
 
+def _parse_exchange_boundary(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        result = value
+    else:
+        raw = str(value).strip()
+        try:
+            numeric = float(raw)
+        except ValueError:
+            try:
+                result = datetime.fromisoformat(raw)
+            except ValueError:
+                return None
+        else:
+            if numeric <= 0:
+                return None
+            if abs(numeric) > 100_000_000_000:
+                numeric /= 1000
+            try:
+                result = datetime.fromtimestamp(numeric).astimezone()
+            except (OSError, OverflowError, ValueError):
+                return None
+    return result.astimezone() if result.tzinfo is not None else result.astimezone()
+
+
+def _legacy_exchange_instance_key(
+    activity_type: str,
+    cross_count: int,
+    start_date: str,
+    end_date: str,
+) -> str:
+    return f"legacy:{activity_type}:{int(cross_count)}:{start_date}:{end_date}"
+
+
+def _exchange_instance_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(payload.get("evidence") or {})
+    activity_type = str(payload["activity_type"]).strip()
+    cross_count = int(payload["cross_count"])
+    start_date = str(payload["start_date"])
+    end_date = str(payload.get("end_date") or start_date)
+    explicit_instance_key = str(
+        payload.get("instance_key") or evidence.get("instance_key") or ""
+    ).strip()
+    instance_key = explicit_instance_key or _legacy_exchange_instance_key(
+        activity_type, cross_count, start_date, end_date
+    )
+    family = str(payload.get("family") or evidence.get("family") or "").strip()
+    if not family:
+        from backend.core.fanxiu.activity.exchange_activity_registry import (
+            get_exchange_activity_spec,
+        )
+
+        family = get_exchange_activity_spec(activity_type).family
+    if family not in {"gameplay_rank", "resource_rank"}:
+        raise ValueError(f"活动 {activity_type} 的榜单 family 无效")
+
+    def boundary(name: str, *evidence_names: str) -> str:
+        candidates = [payload.get(name)]
+        candidates.extend(evidence.get(key) for key in evidence_names)
+        for value in candidates:
+            parsed = _parse_exchange_boundary(value)
+            if parsed is not None:
+                return parsed.isoformat(timespec="seconds")
+        return ""
+
+    start_at = boundary("start_at", "period_start_time", "period_start_time_ms")
+    end_at = boundary("end_at", "period_end_time", "period_end_time_ms")
+    prepare_at = boundary("prepare_at", "period_prepare_time", "period_prepare_time_ms")
+    close_at = boundary(
+        "close_at", "period_close_panel_time", "period_close_panel_time_ms"
+    )
+    return {
+        "instance_key": instance_key,
+        "explicit_instance_key": bool(explicit_instance_key),
+        "family": family,
+        "runtime_id": str(payload.get("runtime_id") or evidence.get("runtime_id") or ""),
+        "game_activity_id": payload.get("game_activity_id") or evidence.get("game_activity_id"),
+        "prepare_at": prepare_at or start_at,
+        "start_at": start_at,
+        "end_at": end_at,
+        "close_at": close_at or end_at,
+    }
+
+
 def is_exchange_activity_active(
     activity: FanxiuExchangeActivity,
     *,
@@ -214,14 +305,16 @@ def exchange_activity_close_panel_date(activity: FanxiuExchangeActivity) -> date
 
 
 def exchange_activity_close_panel_at(activity: FanxiuExchangeActivity) -> datetime:
+    direct = _parse_exchange_boundary(activity.close_at)
+    if direct is not None:
+        return direct
     evidence = dict(activity.evidence or {})
-    raw_ms = evidence.get("period_close_panel_time")
-    try:
-        close_ms = int(raw_ms or 0)
-    except (TypeError, ValueError):
-        close_ms = 0
-    if close_ms > 0:
-        return datetime.fromtimestamp(close_ms / 1000).astimezone()
+    parsed = _parse_exchange_boundary(
+        evidence.get("period_close_panel_time")
+        or evidence.get("period_close_panel_time_ms")
+    )
+    if parsed is not None:
+        return parsed
     raw = str(evidence.get("period_close_panel_date") or activity.end_date)
     try:
         close_day = date.fromisoformat(raw)
@@ -238,13 +331,18 @@ def _exchange_activity_boundary_at(
     fallback_date: str,
     end_of_day: bool,
 ) -> datetime:
+    direct_key = {
+        "period_start_time": "start_at",
+        "period_end_time": "end_at",
+    }.get(evidence_key)
+    if direct_key:
+        direct = _parse_exchange_boundary(getattr(activity, direct_key, ""))
+        if direct is not None:
+            return direct
     evidence = dict(activity.evidence or {})
-    try:
-        epoch_ms = int(evidence.get(evidence_key) or 0)
-    except (TypeError, ValueError):
-        epoch_ms = 0
-    if epoch_ms > 0:
-        return datetime.fromtimestamp(epoch_ms / 1000).astimezone()
+    parsed = _parse_exchange_boundary(evidence.get(evidence_key))
+    if parsed is not None:
+        return parsed
     boundary_time = datetime_time.max if end_of_day else datetime_time.min
     return datetime.combine(date.fromisoformat(fallback_date), boundary_time).astimezone()
 
@@ -926,7 +1024,7 @@ def replace_exchange_rankings(
 
 
 def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any]) -> str:
-    """Agent-only persistence entry for a complete, validated exchange snapshot."""
+    """Persist one validated snapshot into its exact ranking activity instance."""
 
     activity_type = str(payload["activity_type"]).strip()
     if not activity_type:
@@ -945,35 +1043,65 @@ def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any])
     end_date = str(payload.get("end_date") or start_date)
     date.fromisoformat(start_date)
     date.fromisoformat(end_date)
+    identity = _exchange_instance_identity(payload)
     activity = session.exec(
         select(FanxiuExchangeActivity).where(
-            FanxiuExchangeActivity.activity_type == activity_type,
-            FanxiuExchangeActivity.cross_count == cross_count,
-            FanxiuExchangeActivity.start_date == start_date,
-            FanxiuExchangeActivity.end_date == end_date,
+            FanxiuExchangeActivity.instance_key == identity["instance_key"],
         )
     ).first()
     if activity is None:
-        same_start = list(
-            session.exec(
-                select(FanxiuExchangeActivity).where(
-                    FanxiuExchangeActivity.activity_type == activity_type,
-                    FanxiuExchangeActivity.cross_count == cross_count,
-                    FanxiuExchangeActivity.start_date == start_date,
+        legacy_match = session.exec(
+            select(FanxiuExchangeActivity).where(
+                FanxiuExchangeActivity.activity_type == activity_type,
+                FanxiuExchangeActivity.cross_count == cross_count,
+                FanxiuExchangeActivity.start_date == start_date,
+                FanxiuExchangeActivity.end_date == end_date,
+            )
+        ).first()
+        if legacy_match is not None and (
+            not identity["explicit_instance_key"]
+            or not legacy_match.instance_key
+            or str(legacy_match.instance_key).startswith("legacy:")
+            or legacy_match.instance_key == identity["instance_key"]
+        ):
+            activity = legacy_match
+            if not identity["explicit_instance_key"]:
+                # Activity-specific collectors commonly update a seeded root
+                # with only its public id/date envelope. They must enrich that
+                # exact occurrence, never downgrade it to a date-derived key.
+                identity["instance_key"] = (
+                    legacy_match.instance_key or identity["instance_key"]
                 )
-            ).all()
-        )
-        activity = same_start[0] if len(same_start) == 1 else None
+    if activity is not None:
+        for field in (
+            "family", "runtime_id", "game_activity_id", "prepare_at",
+            "start_at", "end_at", "close_at",
+        ):
+            if identity[field] in (None, "") and getattr(activity, field, None) not in (None, ""):
+                identity[field] = getattr(activity, field)
     if activity is None:
+        base_id = f"{activity_type}-{cross_count}-{start_date}-{end_date}"
+        row_id = base_id
+        if session.get(FanxiuExchangeActivity, row_id) is not None:
+            row_id = f"{base_id}-{hashlib.sha256(identity['instance_key'].encode()).hexdigest()[:12]}"
         activity = FanxiuExchangeActivity(
-            id=f"{activity_type}-{cross_count}-{start_date}-{end_date}",
+            id=row_id,
+            instance_key=identity["instance_key"],
             activity_type=activity_type,
             cross_count=cross_count,
             start_date=start_date,
             end_date=end_date,
         )
-    else:
-        activity.end_date = end_date
+    activity.instance_key = identity["instance_key"]
+    activity.family = identity["family"]
+    activity.runtime_id = identity["runtime_id"]
+    activity.game_activity_id = identity["game_activity_id"]
+    activity.prepare_at = identity["prepare_at"]
+    activity.start_at = identity["start_at"]
+    activity.end_at = identity["end_at"]
+    activity.close_at = identity["close_at"]
+    activity.start_date = start_date
+    activity.end_date = end_date
     now = time.time()
     for field in (
         "game_rank_activity_id", "game_shop_base_id", "currency_type", "currency_name",
@@ -983,6 +1111,8 @@ def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any])
             setattr(activity, field, payload[field])
     if "resource_strategy" in payload:
         activity.resource_strategy = dict(payload.get("resource_strategy") or {})
+    if "instance_data" in payload:
+        activity.instance_data = dict(payload.get("instance_data") or {})
     if "evidence" in payload:
         activity.evidence = dict(payload.get("evidence") or {})
     activity.updated_at = now
@@ -1063,9 +1193,14 @@ def _summary(activity: FanxiuExchangeActivity) -> ExchangeActivitySummary:
     lifecycle_phase = exchange_activity_lifecycle_phase(activity)
     return ExchangeActivitySummary(
         id=activity.id,
+        instance_key=str(activity.instance_key or ""),
+        family=activity.family,
         label=format_exchange_activity_label(activity.cross_count, activity.start_date, activity.end_date),
         activity_type=activity.activity_type,
+        runtime_id=activity.runtime_id,
+        game_activity_id=activity.game_activity_id,
         cross_count=activity.cross_count,
+        prepare_at=activity.prepare_at or start_at.isoformat(timespec="seconds"),
         start_date=activity.start_date,
         end_date=activity.end_date,
         start_at=start_at.isoformat(timespec="seconds"),
@@ -1108,6 +1243,7 @@ def _detail(session: Session, activity: FanxiuExchangeActivity) -> ExchangeActiv
         current_currency=activity.current_currency,
         cumulative_currency=activity.cumulative_currency,
         resource_strategy=dict(activity.resource_strategy or {}),
+        instance_data=dict(activity.instance_data or {}),
         source_kind=activity.source_kind,
         currency_fact_fresh=bool(exchange_plan.get("currency_fact_fresh", default_currency_fresh)),
         shop_fact_fresh=bool(exchange_plan.get("shop_fact_fresh", default_shop_fresh)),

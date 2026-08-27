@@ -36,6 +36,7 @@ def _activity(*, offset_start: int = -1, offset_end: int = 1, cross: int = 8):
     start = today + timedelta(days=offset_start)
     end = today + timedelta(days=offset_end)
     return FanxiuExchangeActivity(
+        instance_key=f"xutian:{cross}:{start.isoformat()}:{end.isoformat()}",
         activity_type="xutian-palace",
         cross_count=cross,
         start_date=start.isoformat(),

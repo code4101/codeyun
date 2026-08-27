@@ -347,6 +347,7 @@ def _rank_scope(
 
 XUTIAN_PALACE_SPEC = ExchangeActivitySpec(
     activity_type="xutian-palace",
+    family="gameplay_rank",
     label="虚天殿",
     worldline_vo_types=("HeavenActivityVO",),
     currency_type=12,
@@ -397,6 +398,7 @@ XUTIAN_PALACE_SPEC = ExchangeActivitySpec(
 
 YUNMENG_TRIAL_SPEC = ExchangeActivitySpec(
     activity_type="yunmeng-trial",
+    family="gameplay_rank",
     label="云梦试剑",
     worldline_vo_types=("YunmengActivityVO",),
     currency_type=19,
@@ -441,6 +443,7 @@ YUNMENG_TRIAL_SPEC = ExchangeActivitySpec(
 
 XIANYUAN_DUOKUI_SPEC = ExchangeActivitySpec(
     activity_type="xianyuan-duokui",
+    family="gameplay_rank",
     label="仙缘夺魁",
     worldline_vo_types=("YunmengActivityVO",),
     currency_type=23002,
@@ -479,6 +482,7 @@ XIANYUAN_DUOKUI_SPEC = ExchangeActivitySpec(
 
 MAGIC_INVASION_SPEC = ExchangeActivitySpec(
     activity_type="magic-invasion",
+    family="gameplay_rank",
     label="魔道入侵",
     worldline_vo_types=("MagicInvadeActivityVO",),
     currency_type=17,
@@ -523,6 +527,7 @@ MAGIC_INVASION_SPEC = ExchangeActivitySpec(
 
 BEAST_ABYSS_SPEC = ExchangeActivitySpec(
     activity_type="beast-abyss",
+    family="gameplay_rank",
     label="兽渊探秘",
     worldline_vo_types=("BeastExplodeActivityVO",),
     currency_type=14,
@@ -567,6 +572,7 @@ BEAST_ABYSS_SPEC = ExchangeActivitySpec(
 
 TIANDI_YIJU_SPEC = ExchangeActivitySpec(
     activity_type="tiandi-yiju",
+    family="gameplay_rank",
     label="天地弈局",
     worldline_vo_types=("AlliancePlayChessActivityVO",),
     currency_type=11,
@@ -616,6 +622,7 @@ def _resource_page(scopes: tuple[str, ...]) -> PageContract:
 
 LINGZHUANG_HUADAO_SPEC = ExchangeActivitySpec(
     activity_type="lingzhuang-huadao",
+    family="resource_rank",
     label="灵装化道",
     worldline_vo_types=("CrossRankActivityVO",),
     currency_type=0,
@@ -640,6 +647,7 @@ LINGZHUANG_HUADAO_SPEC = ExchangeActivitySpec(
 
 YAOCHI_FLOWER_FESTIVAL_SPEC = ExchangeActivitySpec(
     activity_type="yaochi-flower-festival",
+    family="resource_rank",
     label="瑶池花会",
     worldline_vo_types=("CrossRankActivityVO",),
     currency_type=0,
@@ -664,6 +672,7 @@ YAOCHI_FLOWER_FESTIVAL_SPEC = ExchangeActivitySpec(
 
 YUANDING_SANSHENG_SPEC = ExchangeActivitySpec(
     activity_type="yuanding-sansheng",
+    family="resource_rank",
     label="缘定三生",
     worldline_vo_types=("EmptyActivityVO",),
     currency_type=0,
@@ -688,6 +697,7 @@ YUANDING_SANSHENG_SPEC = ExchangeActivitySpec(
 
 LINGCHONG_JINGWU_SPEC = ExchangeActivitySpec(
     activity_type="lingchong-jingwu",
+    family="resource_rank",
     label="灵宠竞武",
     worldline_vo_types=("CrossRankActivityVO",),
     currency_type=0,
@@ -712,6 +722,7 @@ LINGCHONG_JINGWU_SPEC = ExchangeActivitySpec(
 
 LIANTI_FAXIANG_SPEC = ExchangeActivitySpec(
     activity_type="lianti-faxiang",
+    family="resource_rank",
     label="炼体法相",
     worldline_vo_types=("RankActivityVO",),
     currency_type=0,
@@ -731,6 +742,7 @@ LIANTI_FAXIANG_SPEC = ExchangeActivitySpec(
 
 DANDAO_WENDING_SPEC = ExchangeActivitySpec(
     activity_type="dandao-wending",
+    family="resource_rank",
     label="丹道问鼎",
     worldline_vo_types=("RankActivityVO",),
     currency_type=0,

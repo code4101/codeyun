@@ -130,6 +130,7 @@ def test_generic_task_api_loader_uses_current_quest_entry_membership(
         session.add(
             FanxiuExchangeActivity(
                 id=activity_id,
+                instance_key=activity_id,
                 activity_type="lianti-faxiang",
                 cross_count=1,
                 start_date="2026-08-14",
@@ -235,6 +236,7 @@ def test_generic_resource_registry_round_trip(
         session.add(
             FanxiuExchangeActivity(
                 id=activity_id,
+                instance_key=activity_id,
                 activity_type="lianti-faxiang",
                 cross_count=1,
                 start_date="2026-08-14",

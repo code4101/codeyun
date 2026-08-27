@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.core.fanxiu.activity.sacred_exchange_planner import (
+from backend.core.fanxiu.resources.sacred_exchange_planner import (
     plan_sacred_exchange_stock,
 )
 

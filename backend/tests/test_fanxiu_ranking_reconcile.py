@@ -203,6 +203,7 @@ def test_seed_inherits_only_explicit_global_monotonic_server_day_floor(monkeypat
         session.add(
             FanxiuExchangeActivity(
                 id="proven-server-day-anchor",
+                instance_key="proven-server-day-anchor",
                 activity_type="magic-invasion",
                 start_date="2026-08-19",
                 end_date="2026-08-19",

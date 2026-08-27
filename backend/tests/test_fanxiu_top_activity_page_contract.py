@@ -21,6 +21,9 @@ def test_yunmeng_uses_generic_exchange_page_shell_without_eager_type_scan() -> N
     assert ":activity-name=\"['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedActivityName : undefined\"" in source
     assert "label: '天地弈局'" in source
     assert "value: 'tiandi-yiju'" in source
+    assert ':key="selectedType"' in source
+    assert ':initial-snapshot="selectedInitialSnapshot"' in source
+    assert "resolvedDefaultType.value === selectedType.value" in source
 
 
 def test_exchange_shop_is_a_read_only_tiered_projection() -> None:

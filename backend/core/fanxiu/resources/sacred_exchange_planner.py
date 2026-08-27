@@ -28,11 +28,12 @@ def plan_sacred_exchange_stock(
     current_stock: int,
     target_stock: int,
 ) -> SacredExchangeStockPlan:
-    """Plan enough common divine-item exchanges to reach an inventory floor.
+    """Plan resource acquisition without coupling it to a gameplay-rank task.
 
-    The plan consumes the complete read-only type=3 shop projection. It never
-    guesses a row from OCR and never asks for a fixed number of exchanges when
-    the backpack already contains part of the target stock.
+    Gameplay tasks may call this planner when they lack a required resource,
+    but the exchange remains an independent resource module. The plan consumes
+    the complete read-only type=3 shop projection, never guesses a row from OCR,
+    and accounts for inventory already held by the player.
     """
 
     if not bool(snapshot.get("complete")):
@@ -90,3 +91,4 @@ def plan_sacred_exchange_stock(
 
 
 __all__ = ["SacredExchangeStockPlan", "plan_sacred_exchange_stock"]
+

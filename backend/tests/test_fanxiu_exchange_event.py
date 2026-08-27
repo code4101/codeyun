@@ -156,6 +156,7 @@ def test_legacy_runtime_snapshot_without_freshness_envelope_is_not_budget_ready(
 def test_exchange_activity_active_period_is_backend_authoritative() -> None:
     activity = FanxiuExchangeActivity(
         id="period-test",
+        instance_key="period-test",
         activity_type="lingzhuang-huadao",
         cross_count=16,
         start_date="2026-08-03",
@@ -260,6 +261,7 @@ def test_exchange_lifecycle_keeps_settlement_window_distinct() -> None:
     from backend.models import FanxiuExchangeActivity
 
     activity = FanxiuExchangeActivity(
+        instance_key="xutian-settlement-date-test",
         activity_type="xutian-palace",
         cross_count=8,
         start_date="2026-08-18",
@@ -281,6 +283,7 @@ def test_exchange_lifecycle_uses_exact_runtime_boundaries_when_timestamp_is_avai
     from backend.models import FanxiuExchangeActivity
 
     activity = FanxiuExchangeActivity(
+        instance_key="xutian-settlement-time-test",
         activity_type="xutian-palace",
         cross_count=8,
         start_date="2026-08-18",

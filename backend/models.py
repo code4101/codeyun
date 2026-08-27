@@ -594,23 +594,25 @@ class FanxiuYunmengTrialMeasurement(SQLModel, table=True):
 
 
 class FanxiuExchangeActivity(SQLModel, table=True):
-    """Generic persisted exchange-event snapshot populated by an Agent collector."""
+    """One persisted gameplay/resource ranking occurrence aggregate root."""
 
     __tablename__ = "fanxiuexchangeactivity"
     __table_args__ = (
-        UniqueConstraint(
-            "activity_type",
-            "cross_count",
-            "start_date",
-            "end_date",
-            name="uq_fanxiuexchangeactivity_type_scope_dates",
-        ),
+        UniqueConstraint("instance_key", name="uq_fanxiuexchangeactivity_instance_key"),
         {"extend_existing": True},
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    instance_key: str = Field(index=True)
+    family: str = Field(default="", index=True)
     activity_type: str = Field(index=True)
+    runtime_id: str = Field(default="", index=True)
+    game_activity_id: Optional[int] = Field(default=None, index=True)
     cross_count: int = Field(default=0, index=True)
+    prepare_at: str = Field(default="", index=True)
+    start_at: str = Field(default="", index=True)
+    end_at: str = Field(default="", index=True)
+    close_at: str = Field(default="", index=True)
     start_date: str = Field(index=True)
     end_date: str = Field(index=True)
     game_rank_activity_id: Optional[int] = Field(default=None, index=True)
@@ -620,6 +622,7 @@ class FanxiuExchangeActivity(SQLModel, table=True):
     current_currency: int = Field(default=0)
     cumulative_currency: int = Field(default=0)
     resource_strategy: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    instance_data: dict = Field(default_factory=dict, sa_column=Column(JSON))
     captured_at: str = Field(default="", index=True)
     source_kind: str = Field(default="instrumentation", index=True)
     evidence: dict = Field(default_factory=dict, sa_column=Column(JSON))
