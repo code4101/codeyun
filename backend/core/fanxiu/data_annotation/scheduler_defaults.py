@@ -20,14 +20,6 @@ from backend.core.fanxiu.data_annotation.arena_schedule import (
 from backend.core.fanxiu.data_annotation.tasks.tianjige_forum_quiz import (
     next_tianjige_forum_quiz_trigger_at,
 )
-from backend.core.fanxiu.data_annotation.tasks.kunlun_secret_jobs import (
-    next_kunlun_config_time,
-    next_kunlun_lottery_time,
-)
-from backend.core.fanxiu.data_annotation.tasks.penglai_xianzang_jobs import (
-    next_xianzang_config_time,
-    next_xianzang_lottery_time,
-)
 from backend.core.fanxiu.data_annotation.tasks.daozu_challenge import (
     next_daozu_challenge_time,
 )
@@ -646,7 +638,7 @@ def default_data_annotation_scheduler_tasks(
             "penglai_xianzang_config",
             "蓬莱仙藏_配置",
             description="动态",
-            initial_next_time=next_xianzang_config_time(current),
+            initial_next_time=None,
             payload={"max_runtime_seconds": 1800},
         ),
         job(
@@ -654,7 +646,7 @@ def default_data_annotation_scheduler_tasks(
             "penglai_xianzang_lottery",
             "蓬莱仙藏_抽奖",
             description="动态",
-            initial_next_time=next_xianzang_lottery_time(current),
+            initial_next_time=None,
             payload={"max_runtime_seconds": 1800},
         ),
         job(
@@ -662,7 +654,7 @@ def default_data_annotation_scheduler_tasks(
             "kunlun_secret_config",
             "昆仑秘藏_配置",
             description="动态",
-            initial_next_time=next_kunlun_config_time(current),
+            initial_next_time=None,
             payload={"max_runtime_seconds": 1800},
         ),
         job(
@@ -670,7 +662,7 @@ def default_data_annotation_scheduler_tasks(
             "kunlun_secret_lottery",
             "昆仑秘藏_抽奖",
             description="动态",
-            initial_next_time=next_kunlun_lottery_time(current),
+            initial_next_time=None,
             payload={"max_runtime_seconds": 1800},
         ),
     ]

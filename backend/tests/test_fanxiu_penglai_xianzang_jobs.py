@@ -122,7 +122,6 @@ def test_non_four_shenlian_week_skips_optional_but_continues_store_and_tasks(mon
         "leave_xianzang",
         lambda _runtime: actions.append("leave") or (34, 100.0),
     )
-    monkeypatch.setattr(jobs, "next_xianzang_config_time", lambda: "2026-08-13 00:05:00")
 
     result = jobs.execute_xianzang_config_job(
         runner,
@@ -136,9 +135,7 @@ def test_non_four_shenlian_week_skips_optional_but_continues_store_and_tasks(mon
     assert result["lottery_outcome"]["round_count"] == 2
     assert result["final_scene"] == 34
     assert result["final_scene_score"] == 100.0
-    assert runner.next_times == [
-        (jobs.XIANZANG_CONFIG_TASK_ID, "2026-08-13 00:05:00")
-    ]
+    assert runner.next_times == [(jobs.XIANZANG_CONFIG_TASK_ID, None)]
 
 
 def test_already_configured_penglai_never_reopens_optional(monkeypatch):
@@ -258,7 +255,6 @@ def test_config_job_resumes_reliable_optional_page_before_entering_main(monkeypa
         "leave_xianzang",
         lambda _runtime: actions.append("leave") or (34, 100.0),
     )
-    monkeypatch.setattr(jobs, "next_xianzang_config_time", lambda: "2026-09-03 00:05:00")
 
     result = jobs.execute_xianzang_config_job(
         runner,
@@ -322,7 +318,6 @@ def test_config_job_closes_reliable_draw_result_before_runtime_reconciliation(mo
         "leave_xianzang",
         lambda _runtime: actions.append("leave") or (34, 100.0),
     )
-    monkeypatch.setattr(jobs, "next_xianzang_config_time", lambda: "2026-09-03 00:05:00")
 
     result = jobs.execute_xianzang_config_job(
         runner,
@@ -402,12 +397,12 @@ def test_other_talisman_runtime_incompleteness_remains_an_error(monkeypatch):
         jobs._optional_selection(runner.runtime, runner)
 
 
-def test_biweekly_bootstrap_times_and_registered_standard_instances():
+def test_daily_sync_owned_jobs_have_no_static_bootstrap_times():
     now = datetime(2026, 8, 6, 19, 5, 0)  # Thursday
     tasks = {item["id"]: item for item in default_data_annotation_scheduler_tasks(now)}
 
-    assert tasks[jobs.XIANZANG_CONFIG_TASK_ID]["next_time"] == "2026-08-20 00:05:00"
-    assert tasks[jobs.XIANZANG_LOTTERY_TASK_ID]["next_time"] == "2026-08-06 21:10:00"
+    assert tasks[jobs.XIANZANG_CONFIG_TASK_ID]["next_time"] is None
+    assert tasks[jobs.XIANZANG_LOTTERY_TASK_ID]["next_time"] is None
     assert tasks[jobs.XIANZANG_CONFIG_TASK_ID]["trigger_description"] == "动态"
     assert tasks[jobs.XIANZANG_LOTTERY_TASK_ID]["trigger_description"] == "动态"
 
@@ -468,7 +463,6 @@ def test_lottery_job_runs_tasks_draw_claim_loop_and_returns_world(monkeypatch):
         "leave_xianzang",
         lambda _runtime: actions.append("leave") or (34, 100.0),
     )
-    monkeypatch.setattr(jobs, "next_xianzang_lottery_time", lambda: "2026-08-13 21:10:00")
 
     result = jobs.execute_xianzang_lottery_job(
         runner,
@@ -480,9 +474,7 @@ def test_lottery_job_runs_tasks_draw_claim_loop_and_returns_world(monkeypatch):
     assert actions == ["enter", "tasks", "lottery", "leave"]
     assert result["lottery_outcome"]["round_count"] == 3
     assert result["final_scene"] == 34
-    assert runner.next_times == [
-        (jobs.XIANZANG_LOTTERY_TASK_ID, "2026-08-13 21:10:00")
-    ]
+    assert runner.next_times == [(jobs.XIANZANG_LOTTERY_TASK_ID, None)]
 
 
 def test_standard_job_does_not_advance_schedule_when_return_to_world_fails(monkeypatch):
@@ -534,11 +526,6 @@ def test_weekly_activity_absence_is_idempotent_skip(monkeypatch):
     )
     monkeypatch.setattr(
         jobs,
-        "next_xianzang_config_time",
-        lambda: "2026-08-13 00:05:00",
-    )
-    monkeypatch.setattr(
-        jobs,
         "_run_xianzang_config_workflow",
         lambda *_args: pytest.fail("活动缺席时不应执行配置流程"),
     )
@@ -553,6 +540,4 @@ def test_weekly_activity_absence_is_idempotent_skip(monkeypatch):
     assert result["result"] == "skipped"
     assert result["skip_reason"] == "activity_unavailable"
     assert result["final_scene"] == 34
-    assert runner.next_times == [
-        (jobs.XIANZANG_CONFIG_TASK_ID, "2026-08-13 00:05:00")
-    ]
+    assert runner.next_times == [(jobs.XIANZANG_CONFIG_TASK_ID, None)]
