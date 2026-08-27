@@ -51,10 +51,27 @@ class ResourceRankGiftListAction:
     y: float
 
 
-# Only 丹道 has a real page/Runtime observation today.  Future resource-rank
-# activities add one adapter after their own scene and negative-sample proof;
-# the zero-cost policy and ChargeMgr idempotency reader stay shared.
+# Each resource-rank family enters the shared #605 gift page only after its own
+# real scene and negative-sample proof.  The zero-cost policy and ChargeMgr
+# idempotency reader stay shared across adapters.
 RESOURCE_RANK_GIFT_ADAPTERS = (
+    ResourceRankGiftAdapter(
+        key="lingzhuang-huadao",
+        label="灵装化道",
+        schedule_pattern=r"灵装化道",
+        activity_ids=(
+            1044501,
+            1044301,
+            2044301,
+            4044301,
+            1044311,
+            8044301,
+            16044301,
+            32044301,
+        ),
+        page_scene_ids=(676,),
+        intro_scene_id=675,
+    ),
     ResourceRankGiftAdapter(
         key="dandao-wending",
         label="丹道问鼎",

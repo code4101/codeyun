@@ -6372,6 +6372,41 @@ def test_lingmai_clear_guiyuan_upgrades_once_and_verifies_resource_delta():
     ]
 
 
+def test_safe_daily_done_cleanup_restores_non_error_runtime_status():
+    runner = create_behavior_tree_runtime_runner()
+    with runner._lock:
+        runner._set_status_locked(
+            "running",
+            "日常_首领：本轮已经结算",
+            phase="daily_boss_done_by_runtime_delta",
+            current_scene=186,
+        )
+
+    def failed_cleanup():
+        with runner._lock:
+            runner._set_status_locked(
+                "error",
+                "cleanup navigation failed",
+                phase="error",
+                current_scene=None,
+            )
+        raise RuntimeError("transient transition frame")
+        yield  # pragma: no cover
+
+    result = _drain_generator(
+        runner._safe_daily_done_cleanup(
+            failed_cleanup,
+            label="日常_首领",
+            repeat_risk="重复挑战",
+        )
+    )
+
+    assert result == "success"
+    assert runner._status["status"] == "running"
+    assert runner._status["phase"] == "daily_boss_done_by_runtime_delta"
+    assert runner._status["message"] == "日常_首领：本轮已经结算"
+
+
 def test_go_scene_does_not_short_circuit_target_below_scene_threshold(tmp_path, monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     image34 = _scene_image("世界", "0034.png", [
@@ -17934,6 +17969,53 @@ def test_daily_baiye_job_preserves_business_result_message(
 
     assert result == {"result": "success", "message": expected_message}
     assert goto_calls == []
+
+
+def test_daily_baiye_persists_completion_before_cleanup_failure(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    events: list[tuple[str, object]] = []
+
+    def record_done(_payload, **kwargs):
+        events.append(("record", kwargs["message"]))
+
+    def failed_cleanup(*_args, **_kwargs):
+        events.append(("cleanup", "start"))
+        if False:
+            yield None
+        raise RuntimeError("transient unknown")
+
+    monkeypatch.setattr(runner, "_record_daily_entry_done", record_done)
+    monkeypatch.setattr(runner, "_return_baiye_to_world", failed_cleanup)
+
+    payload = {"__scheduler_task_id": "legacy-daily-baiye"}
+    result = _drain_generator(
+        runner._finish_baiye_completed(object(), payload, reason="完成后收尾")
+    )
+
+    assert result == "success"
+    assert events == [("record", "今日拜谒已确认完成"), ("cleanup", "start")]
+    assert payload["__baiye_completion_persisted"] is True
+
+
+def test_daily_baiye_cleanup_does_not_swallow_interruption(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+
+    def interrupted_cleanup(*_args, **_kwargs):
+        if False:
+            yield None
+        raise InterruptedError("stop")
+
+    monkeypatch.setattr(runner, "_record_daily_entry_done", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_return_baiye_to_world", interrupted_cleanup)
+
+    with pytest.raises(InterruptedError, match="stop"):
+        _drain_generator(
+            runner._finish_baiye_completed(
+                object(),
+                {"__scheduler_task_id": "legacy-daily-baiye"},
+                reason="完成后收尾",
+            )
+        )
 
 
 class _BaiyeReturnRuntimeMixin:

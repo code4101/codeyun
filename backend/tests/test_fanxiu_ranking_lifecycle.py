@@ -244,7 +244,7 @@ def test_free_gift_checkpoint_is_limited_to_activities_with_a_proven_adapter() -
     )
 
     assert RESOURCE_FREE_GIFT_KIND in {item.checkpoint_kind for item in dandao}
-    assert RESOURCE_FREE_GIFT_KIND not in {
+    assert RESOURCE_FREE_GIFT_KIND in {
         item.checkpoint_kind for item in lingzhuang
     }
 

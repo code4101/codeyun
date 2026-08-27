@@ -2120,10 +2120,34 @@ class DailyFoundationTaskMixin:
         action: str = "收尾回世界",
         repeat_risk: str = "重复执行",
     ):
+        with self._lock:
+            business_status = {
+                "status": self._status.get("status") or "running",
+                "message": self._status.get("message") or f"{label}：业务已完成",
+                "phase": self._status.get("phase") or "daily_done",
+                "current_scene": self._status.get("current_scene"),
+            }
         try:
             yield from cleanup_factory()
+        except (InterruptedError, GeneratorExit):
+            raise
         except Exception as exc:
-            self._log("warning", f"{label}：业务已完成，但{action}失败，按已完成处理避免{repeat_risk}：{exc}")
+            # Navigation helpers publish their own transient ``error`` status
+            # before raising.  This wrapper deliberately turns a cleanup-only
+            # failure into business success, so it must also restore a
+            # non-error runner status; otherwise Scheduler ignores the return
+            # value and schedules an unsafe retry of the completed action.
+            with self._lock:
+                self._set_status_locked(
+                    str(business_status["status"]),
+                    str(business_status["message"]),
+                    phase=str(business_status["phase"]),
+                    current_scene=business_status["current_scene"],
+                )
+                self._log_locked(
+                    "warning",
+                    f"{label}：业务已完成，但{action}失败，按已完成处理避免{repeat_risk}：{exc}",
+                )
         return "success"
 
     def _daily_lingzu_next_time_is_future(self, payload: dict[str, Any]) -> str | None:
@@ -11401,7 +11425,11 @@ class DailyFoundationTaskMixin:
             state, worship_text, _frame = self._baiye_detail_state(runtime, update=True)
             if state == "completed":
                 self._log("success", f"日常_拜谒：已完成拜谒，OCR={worship_text[:120]}")
-                yield from self._return_baiye_to_world(runtime, payload, reason="拜谒完成后收尾")
+                yield from self._finish_baiye_completed(
+                    runtime,
+                    payload,
+                    reason="拜谒完成后收尾",
+                )
                 return "success"
             if attempt >= max_attempts:
                 break
@@ -11417,6 +11445,36 @@ class DailyFoundationTaskMixin:
             f"日常_拜谒：点击 #266「拜谒」后 {timeout:.0f}s 未能确认完成；"
             f"禁止按未知状态返回 success，state={state} OCR={worship_text[:120]}"
         )
+
+    def _finish_baiye_completed(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        reason: str,
+    ) -> Iterator[Any]:
+        """Persist proven completion before best-effort page cleanup."""
+
+        if payload.get("__scheduler_task_id") and not payload.get("__baiye_completion_persisted"):
+            self._record_daily_entry_done(
+                payload,
+                task_id="legacy-daily-baiye",
+                task_type="daily_baiye",
+                label="日常_拜谒",
+                message="今日拜谒已确认完成",
+            )
+            payload["__baiye_completion_persisted"] = True
+        try:
+            yield from self._return_baiye_to_world(runtime, payload, reason=reason)
+        except (InterruptedError, GeneratorExit):
+            raise
+        except Exception as exc:
+            self._log(
+                "warning",
+                f"日常_拜谒：今日拜谒已确认完成，收尾返回 #34 失败，"
+                f"保留完成态并交由后续作业归一：{exc}",
+            )
+        return "success"
 
     def _return_baiye_to_world(
         self,
@@ -11476,7 +11534,7 @@ class DailyFoundationTaskMixin:
         scene_id, _score, frame = runtime.current_scene([266, 265, 264, 69, 34], update=True)
         if scene_id == 266:
             result = yield from self._select_baiye_law_lord(ctx, stop_event, payload, target=target)
-            if result == "success":
+            if result == "success" and not payload.get("__baiye_completion_persisted"):
                 self._record_daily_entry_done(
                     payload,
                     task_id="legacy-daily-baiye",
@@ -11524,7 +11582,7 @@ class DailyFoundationTaskMixin:
                 )
             yield from self._open_baiye_cross_rule(ctx, stop_event, payload, keyword=str(payload.get("cross_keyword") or "16"))
         result = yield from self._select_baiye_law_lord(ctx, stop_event, payload, target=target)
-        if result == "success":
+        if result == "success" and not payload.get("__baiye_completion_persisted"):
             self._record_daily_entry_done(
                 payload,
                 task_id="legacy-daily-baiye",
@@ -11810,7 +11868,11 @@ class DailyFoundationTaskMixin:
                         current_scene=266,
                     )
                 self._log("success", f"日常_拜谒：当前已是完成态，OCR={detail_text[:120]}")
-                yield from self._return_baiye_to_world(runtime, payload, reason="检测到已完成态后收尾")
+                yield from self._finish_baiye_completed(
+                    runtime,
+                    payload,
+                    reason="检测到已完成态后收尾",
+                )
                 return "success"
             if detail_state == "actionable":
                 with self._lock:
@@ -11918,7 +11980,11 @@ class DailyFoundationTaskMixin:
                 after_state, after_text, _after_frame = self._baiye_detail_state(runtime, update=True)
                 if after_state == "completed":
                     self._log("success", f"日常_拜谒：已点击「{target}」，完成态 OCR={after_text[:120]}")
-                    yield from self._return_baiye_to_world(runtime, payload, reason=f"已点击「{target}」进入完成态后收尾")
+                    yield from self._finish_baiye_completed(
+                        runtime,
+                        payload,
+                        reason=f"已点击「{target}」进入完成态后收尾",
+                    )
                     return "success"
                 if after_state == "actionable":
                     if not self._baiye_text_is_target_worship_page(after_text, target):

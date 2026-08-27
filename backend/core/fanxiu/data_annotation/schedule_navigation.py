@@ -372,12 +372,17 @@ def resolve_schedule_runtime_activity_targets(
         text = str(item.get("text") or "").strip()
         if not text:
             continue
-        _anchor_x, anchor_y = _center(item)
+        anchor_x, anchor_y = _center(item)
         nearby = [
             row
             for row in rows
             if str(row.get("text") or "").strip()
             and abs(_center(row)[1] - anchor_y) <= 52
+            # Adjacent date columns can render unrelated activity cards in
+            # the same vertical band.  A subtitle/qualifier belongs only to
+            # the title directly above or below it; do not let one card
+            # borrow ``跨服[8]`` from its neighbour.
+            and abs(_center(row)[0] - anchor_x) <= 110
         ]
         nearby.sort(key=lambda row: (_center(row)[1], _center(row)[0]))
         combined_text = " ".join(

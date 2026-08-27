@@ -68,11 +68,12 @@ EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "xianyuan-duokui",
 })
 
-# The shared free-gift executor currently has a proven page/Runtime adapter
-# only for 丹道问鼎.  Resource-rank identity alone must not manufacture a
-# side-effectful checkpoint for activities such as 灵装化道 that do not expose
-# the same gift page.
-RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({"dandao-wending"})
+# Only resource ranks with a real activity page, shared #605 landing and
+# ChargeMgr idempotency proof may receive this side-effectful checkpoint.
+RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
+    "dandao-wending",
+    "lingzhuang-huadao",
+})
 
 RankingFamily = Literal["gameplay_rank", "resource_rank"]
 

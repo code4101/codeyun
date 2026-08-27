@@ -214,12 +214,12 @@ class DailyXuanhuangTaskMixin:
         while True:
             frame = runtime.cur_frame(update=True)
             scene_id, _score, _frame = runtime.current_scene(
-                [419, 420],
+                [186, 419, 420],
                 frame_data_url=frame,
             )
             if scene_id == 420:
                 return saw_battle_scene
-            if scene_id == 419:
+            if scene_id in {186, 419}:
                 saw_battle_scene = True
             if time.monotonic() >= deadline:
                 final_frame = runtime.cur_frame(update=True)
@@ -233,6 +233,77 @@ class DailyXuanhuangTaskMixin:
                     f"日常_玄荒：等待战斗结束 #420 超过 {timeout_seconds:g} 秒"
                 )
             yield from runtime.wait_action_settle(poll_seconds)
+
+    def _daily_xuanhuang_leave_finished_battle(
+        self,
+        runtime: Any,
+        *,
+        view_timeout: float,
+    ):
+        yield from runtime.wait_click(
+            420,
+            "离开",
+            timeout=view_timeout,
+        )
+        landing = yield from runtime.wait_view(
+            34,
+            395,
+            85,
+            timeout=max(30.0, view_timeout),
+            label="日常_玄荒：离开战斗后等待世界 #34、副本 #395 或区域内页 #85",
+        )
+        if landing.id == 85:
+            # Real #420 departure can land on the formally recognized
+            # generic region interior. Use its own annotated Leave control;
+            # do not wait for #34/#395 until the already-known #85 is gone.
+            yield from runtime.wait_click(
+                85,
+                "离开",
+                timeout=view_timeout,
+            )
+            region_landing = yield from runtime.wait_view(
+                34,
+                86,
+                55,
+                timeout=max(30.0, view_timeout),
+                label="日常_玄荒：#85 离开后等待世界、确认或大地图",
+            )
+            if region_landing.id == 86:
+                yield from runtime.wait_click(86, "确认", timeout=view_timeout)
+                yield from runtime.wait_view(
+                    34,
+                    timeout=max(30.0, view_timeout),
+                    label="日常_玄荒：确认离开区域后等待世界 #34",
+                )
+            elif region_landing.id == 55:
+                yield from runtime.goto_view(34)
+        if landing.id == 395:
+            # #395 与 #420 使用同一右侧「离开」按钮位置。复用既有
+            # #420 shape 坐标，不修改资产树；该点击会进入通用 #86
+            # 确认弹窗，然后才能真正返回世界。
+            runtime.click_shape_center(420, "离开")
+            confirm = yield from runtime.wait_view(
+                34,
+                86,
+                55,
+                timeout=max(30.0, view_timeout),
+                label="日常_玄荒：副本 #395 离开后等待确认、世界或大地图",
+            )
+            if confirm.id == 86:
+                yield from runtime.wait_click(
+                    86,
+                    "确认",
+                    timeout=view_timeout,
+                )
+                yield from runtime.wait_view(
+                    34,
+                    timeout=max(30.0, view_timeout),
+                    label="日常_玄荒：确认离开副本后等待世界 #34",
+                )
+            elif confirm.id == 55:
+                # 实机存在直接落到 #55「大地图」的分支；通用场景图
+                # 已能从 #55 安全返回 #34，复用它而不新增/修改标注。
+                yield from runtime.goto_view(34)
 
     def _run_daily_xuanhuang_flow(
         self,
@@ -251,6 +322,14 @@ class DailyXuanhuangTaskMixin:
         battle_poll_seconds = max(
             0.0,
             float(payload.get("battle_poll_seconds") or 1.0),
+        )
+        battle_entry_timeout_seconds = max(
+            1.0,
+            float(payload.get("battle_entry_timeout_seconds") or 15.0),
+        )
+        battle_entry_max_clicks = max(
+            1,
+            int(payload.get("battle_entry_max_clicks") or 3),
         )
         counter_attempts = max(1, int(payload.get("counter_attempts") or 8))
         counter_retry_seconds = max(
@@ -271,6 +350,7 @@ class DailyXuanhuangTaskMixin:
         rounds_completed = 0
 
         start_from_counter = False
+        resume_battle_scene: int | None = None
         for attempt in range(current_scene_probe_attempts):
             # 作业入口必须先回答“当前实际在哪”，不能只把 #418 当作一次性
             # 候选探针；后者偶发漏判时会错误地先 goto #34，丢掉已在挑战页
@@ -279,12 +359,29 @@ class DailyXuanhuangTaskMixin:
             if current_scene == 418:
                 start_from_counter = True
                 break
+            if current_scene in {186, 419, 420}:
+                resume_battle_scene = current_scene
+                break
             if current_scene is not None:
                 break
             if attempt + 1 < current_scene_probe_attempts:
                 yield from runtime.wait_action_settle(current_scene_probe_retry_seconds)
 
         while True:
+            if resume_battle_scene is not None:
+                if resume_battle_scene != 420:
+                    yield from self._daily_xuanhuang_wait_battle_done(
+                        runtime,
+                        timeout_seconds=battle_timeout_seconds,
+                        poll_seconds=battle_poll_seconds,
+                    )
+                yield from self._daily_xuanhuang_leave_finished_battle(
+                    runtime,
+                    view_timeout=view_timeout,
+                )
+                rounds_completed += 1
+                resume_battle_scene = None
+                continue
             if not start_from_counter:
                 yield from runtime.goto_view(34)
                 counter_state = yield from self._daily_xuanhuang_open_counter(
@@ -329,80 +426,31 @@ class DailyXuanhuangTaskMixin:
                     f"日常_玄荒：已挑战 {rounds_completed} 轮但剩余次数仍为 {remaining}"
                 )
 
-            yield from runtime.wait_click(
+            # #418 的「前往」偶发会吞掉一次点击。不能在没有确认页面状态的
+            # 情况下直接补点（挑战次数属于不可逆动作）；复用 Runtime 的
+            # wait_click_then_view：只有新帧仍可靠识别为源场景 #418 时才重试，
+            # 一旦已进入 #419/#420 或变成 unknown 就停止补点。
+            yield from runtime.wait_click_then_view(
                 418,
                 "前往",
-                timeout=view_timeout,
+                186,
+                419,
+                420,
+                timeout=battle_entry_timeout_seconds,
+                settle_seconds=1.0,
+                retry_if_source_remains=True,
+                max_clicks=battle_entry_max_clicks,
+                label="日常_玄荒：点击前往后等待战斗 #186/#419 或结算 #420",
             )
             yield from self._daily_xuanhuang_wait_battle_done(
                 runtime,
                 timeout_seconds=battle_timeout_seconds,
                 poll_seconds=battle_poll_seconds,
             )
-            yield from runtime.wait_click(
-                420,
-                "离开",
-                timeout=view_timeout,
+            yield from self._daily_xuanhuang_leave_finished_battle(
+                runtime,
+                view_timeout=view_timeout,
             )
-            landing = yield from runtime.wait_view(
-                34,
-                395,
-                85,
-                timeout=max(30.0, view_timeout),
-                label="日常_玄荒：离开战斗后等待世界 #34、副本 #395 或区域内页 #85",
-            )
-            if landing.id == 85:
-                # Real #420 departure can land on the formally recognized
-                # generic region interior. Use its own annotated Leave control;
-                # do not wait for #34/#395 until the already-known #85 is gone.
-                yield from runtime.wait_click(
-                    85,
-                    "离开",
-                    timeout=view_timeout,
-                )
-                region_landing = yield from runtime.wait_view(
-                    34,
-                    86,
-                    55,
-                    timeout=max(30.0, view_timeout),
-                    label="日常_玄荒：#85 离开后等待世界、确认或大地图",
-                )
-                if region_landing.id == 86:
-                    yield from runtime.wait_click(86, "确认", timeout=view_timeout)
-                    yield from runtime.wait_view(
-                        34,
-                        timeout=max(30.0, view_timeout),
-                        label="日常_玄荒：确认离开区域后等待世界 #34",
-                    )
-                elif region_landing.id == 55:
-                    yield from runtime.goto_view(34)
-            if landing.id == 395:
-                # #395 与 #420 使用同一右侧「离开」按钮位置。复用既有
-                # #420 shape 坐标，不修改资产树；该点击会进入通用 #86
-                # 确认弹窗，然后才能真正返回世界。
-                runtime.click_shape_center(420, "离开")
-                confirm = yield from runtime.wait_view(
-                    34,
-                    86,
-                    55,
-                    timeout=max(30.0, view_timeout),
-                    label="日常_玄荒：副本 #395 离开后等待确认、世界或大地图",
-                )
-                if confirm.id == 86:
-                    yield from runtime.wait_click(
-                        86,
-                        "确认",
-                        timeout=view_timeout,
-                    )
-                    yield from runtime.wait_view(
-                        34,
-                        timeout=max(30.0, view_timeout),
-                        label="日常_玄荒：确认离开副本后等待世界 #34",
-                    )
-                elif confirm.id == 55:
-                    # 实机存在直接落到 #55「大地图」的分支；通用场景图
-                    # 已能从 #55 安全返回 #34，复用它而不新增/修改标注。
-                    yield from runtime.goto_view(34)
             rounds_completed += 1
 
     def _execute_daily_xuanhuang_task(
