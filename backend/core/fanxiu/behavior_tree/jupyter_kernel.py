@@ -287,25 +287,6 @@ class FanxiuJupyterBinding:
             "设置触发时间": set_data_annotation_scheduler_task_trigger_time,
         }
 
-    def recognize_info_window_scene(self) -> tuple[int | None, float]:
-        """Publish one observational scene result for explicit active mode."""
-
-        marker = "_fanxiu_scene_observation_source"
-        previous = self.runtime_ctx.get(marker)
-        self.runtime_ctx[marker] = "info_window_active"
-        try:
-            self.runner._clear_tick_frame(self.runtime_ctx)
-            frame = self.runner._screencap(self.runtime_ctx)
-            scene_id, score = self.runner._identify_scene_number(self.runtime_ctx, frame)
-            self.runner._commit_scene_observation(self.runtime_ctx, frame, scene_id, score)
-            return scene_id, score
-        finally:
-            self.runner._clear_tick_frame(self.runtime_ctx)
-            if previous is None:
-                self.runtime_ctx.pop(marker, None)
-            else:
-                self.runtime_ctx[marker] = previous
-
     @staticmethod
     def sleep(seconds: float, *, quantum: float = 0.1) -> None:
         """A Jupyter-interruptible wait for debug cells and framework code."""
@@ -628,18 +609,8 @@ def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
         choice_count = load_choice_knowledge_catalog(session)
 
     binding = FanxiuJupyterBinding(runner, entry, resolved_entry_id, asset_tree_path)
-    from backend.core.fanxiu.info_window import FanxiuInfoWindowObserver
-
-    previous_info_window = shell.user_ns.get("_fanxiu_info_window_observer")
-    if previous_info_window is not None and hasattr(previous_info_window, "stop"):
-        previous_info_window.stop()
-    info_window_observer = FanxiuInfoWindowObserver(
-        execution_lock=binding.execution_lock,
-        recognize=binding.recognize_info_window_scene,
-    ).start()
     shell.user_ns.update(binding.namespace())
     shell.user_ns["_fanxiu_binding"] = binding
-    shell.user_ns["_fanxiu_info_window_observer"] = info_window_observer
     shell.events.register("pre_run_cell", lambda info: binding.begin_cell(info, shell))
     shell.events.register("post_run_cell", binding.end_cell)
     return {
@@ -981,12 +952,12 @@ def execute_fanxiu_jupyter_cell(
     client = BlockingKernelClient(connection_file=str(path))
     client.load_connection_file()
     client.start_channels()
-    try:
-        ready_timeout = 10.0 if deadline is None else min(10.0, max(1.0, deadline - time.time()))
-        client.wait_for_ready(timeout=ready_timeout)
-    except Exception:
-        client.stop_channels()
-        raise
+    # ``wait_for_ready`` is a startup probe, not a per-Cell health check.  A
+    # healthy Kernel that is executing another Cell cannot answer that shell
+    # request immediately, so probing here turns ordinary busy time into a
+    # false failure and tempts callers to restart the process.  ZMQ/Jupyter
+    # already queues shell requests in submission order; send the Cell once and
+    # let its own timeout/interrupt semantics govern the wait.
     outputs: list[str] = []
     error: dict[str, Any] | None = None
     execution_count: int | None = None

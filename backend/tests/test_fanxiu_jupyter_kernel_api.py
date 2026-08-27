@@ -180,7 +180,7 @@ def test_execute_cell_finishes_when_iopub_is_idle_but_shell_reply_is_missing(
             return None
 
         def wait_for_ready(self, *, timeout):
-            assert timeout > 0
+            raise AssertionError("routine cell submission must not probe kernel readiness")
 
         def execute(self, source, *, allow_stdin, stop_on_error):
             assert source == "1 + 1"
@@ -226,6 +226,12 @@ def test_active_kernel_path_has_no_manual_queue_or_kernel_lock() -> None:
     source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
     for forbidden in ("manual_jobs", "claim", "requeue", "dedupe", "job_group_isolation"):
+        assert forbidden not in source
+    for forbidden in (
+        "FanxiuInfoWindowObserver",
+        "_fanxiu_info_window_observer",
+        "recognize_info_window_scene",
+    ):
         assert forbidden not in source
 
 

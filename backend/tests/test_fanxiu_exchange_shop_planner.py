@@ -94,6 +94,21 @@ def test_dao_fragments_keep_same_layer_with_edge_after_spirit() -> None:
     assert plan.priority_group_goods_ids[ExchangePriorityId.DAO_FRAGMENT] == (3, 1)
 
 
+def test_dao_fragment_prefix_variants_share_priority_after_name_normalization() -> None:
+    items = [
+        _item(1, "道则碎片", source_order=1),
+        _item(2, "道则碎片·幻灵域", source_order=2),
+        _item(3, "道则碎片·幻灵域 &#x20;", source_order=3),
+        _item(4, "礼包·道则碎片", source_order=4),
+    ]
+
+    plan = build_exchange_shop_plan(items, activity_end_date="2026-08-12")
+
+    assert plan.priority_group_goods_ids[ExchangePriorityId.DAO_FRAGMENT] == (1, 2, 3)
+    assert plan.priority_group_goods_ids[ExchangePriorityId.ORDERED_GOODS] == (4,)
+    assert plan.ordered_goods_ids == (1, 2, 3, 4)
+
+
 def test_xianyuan_discounted_daier_is_absolute_front_and_economical_target() -> None:
     items = [
         _item(1, "瑶池玉莲", source_order=1),
@@ -504,7 +519,7 @@ def test_get_snapshot_rematerializes_old_plan_schema_without_touching_game() -> 
 
     assert snapshot.selected_activity is not None
     plan = snapshot.selected_activity.exchange_plan
-    assert plan["schema"] == 9
+    assert plan["schema"] == 10
     assert plan["priority_order_ids"][-1] == "不需要领"
     assert plan["priority_group_goods_ids"]["不需要领"] == [1, 2]
     assert plan["ordered_goods_ids"] == []
