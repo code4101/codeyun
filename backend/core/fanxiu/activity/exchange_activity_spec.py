@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Mapping, Protocol, runtime_checkable
 
 from sqlmodel import Session
 
@@ -173,6 +173,17 @@ class ExchangeOccurrenceShopAdapter(Protocol):
     """
 
     def resolve_occurrence_shop(self, *, cross_count: int) -> ShopSpec: ...
+
+
+@runtime_checkable
+class ExchangeOccurrenceRankAdapter(Protocol):
+    """Optional exact rank binding for activities whose phases use different trees."""
+
+    def resolve_occurrence_rank_activity_ids(
+        self,
+        *,
+        activity_id: int,
+    ) -> Mapping[str, int]: ...
 
 
 @runtime_checkable

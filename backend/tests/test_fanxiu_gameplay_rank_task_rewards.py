@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.core.fanxiu.data_annotation.tasks.gameplay_rank_task_rewards import (
     GameplayRankTaskAssets,
     GameplayRankTaskTab,
@@ -110,4 +112,61 @@ def test_no_claimable_rewards_still_inspects_every_configured_tab() -> None:
         (10, "任务", [12, 11]),
         (12, "夺分页签", [11]),
         (11, "玩法主页", [10]),
+    ]
+
+
+def test_incomplete_runtime_facts_fail_before_any_gui_action() -> None:
+    runtime = _Runtime(entry_scene=12)
+    snapshot = _snapshot([101])
+    snapshot["complete"] = False
+
+    with pytest.raises(RuntimeError, match="Runtime 事实不完整"):
+        _run(
+            claim_gameplay_rank_task_tabs(
+                runtime,
+                snapshot,
+                assets=ASSETS,
+                reader=lambda **_options: {},
+            )
+        )
+
+    assert runtime.clicks == []
+
+
+def test_unknown_task_subtype_fails_before_any_gui_action() -> None:
+    runtime = _Runtime(entry_scene=12)
+    snapshot = _snapshot([301])
+    snapshot["task_subtypes"]["301"] = 8
+
+    with pytest.raises(RuntimeError, match="未映射到已验证奖励页签"):
+        _run(
+            claim_gameplay_rank_task_tabs(
+                runtime,
+                snapshot,
+                assets=ASSETS,
+                reader=lambda **_options: {},
+            )
+        )
+
+    assert runtime.clicks == []
+
+
+def test_failed_exact_migration_stops_before_next_row_or_tab() -> None:
+    runtime = _Runtime(entry_scene=12)
+    unchanged = _snapshot([101, 102, 201])
+    unchanged["expected_task_claimed"] = False
+
+    with pytest.raises(RuntimeError, match="未形成精确单步状态迁移"):
+        _run(
+            claim_gameplay_rank_task_tabs(
+                runtime,
+                _snapshot([101, 102, 201]),
+                assets=ASSETS,
+                reader=lambda **_options: unchanged,
+            )
+        )
+
+    assert runtime.clicks == [
+        (10, "任务", [12, 11]),
+        (12, "首条任务领取区", None),
     ]

@@ -1085,7 +1085,15 @@ def _detail(session: Session, activity: FanxiuExchangeActivity) -> ExchangeActiv
     exchange_plan = evidence.get("exchange_plan")
     exchange_plan = exchange_plan if isinstance(exchange_plan, dict) else {}
     refresh_status = evidence.get("refresh_status")
-    refresh_status = refresh_status if isinstance(refresh_status, dict) else {}
+    has_refresh_status = isinstance(refresh_status, dict)
+    refresh_status = refresh_status if has_refresh_status else {}
+    default_currency_fresh = (
+        refresh_status.get("currency") == "updated" if has_refresh_status else True
+    )
+    default_shop_fresh = (
+        refresh_status.get("shop") == "updated" if has_refresh_status else True
+    )
+    default_budget_ready = bool(default_currency_fresh and default_shop_fresh)
     cumulative_by_id: dict[str, int | None] = {}
     cumulative: int | None = 0
     for item in sorted((row for row in items if row.priority_order is not None), key=lambda row: (int(row.priority_order or 0), row.source_order)):
@@ -1101,10 +1109,13 @@ def _detail(session: Session, activity: FanxiuExchangeActivity) -> ExchangeActiv
         cumulative_currency=activity.cumulative_currency,
         resource_strategy=dict(activity.resource_strategy or {}),
         source_kind=activity.source_kind,
-        currency_fact_fresh=bool(exchange_plan.get("currency_fact_fresh", True)),
-        shop_fact_fresh=bool(exchange_plan.get("shop_fact_fresh", True)),
-        budget_ready=bool(exchange_plan.get("budget_ready", True)),
-        budget_block_reason=str(exchange_plan.get("budget_block_reason") or ""),
+        currency_fact_fresh=bool(exchange_plan.get("currency_fact_fresh", default_currency_fresh)),
+        shop_fact_fresh=bool(exchange_plan.get("shop_fact_fresh", default_shop_fresh)),
+        budget_ready=bool(exchange_plan.get("budget_ready", default_budget_ready)),
+        budget_block_reason=str(
+            exchange_plan.get("budget_block_reason")
+            or ("等待游戏内钱包与兑换宝阁快照" if not default_budget_ready else "")
+        ),
         currency_captured_at=str(refresh_status.get("currency_captured_at") or ""),
         shop_snapshot_captured_at=str(evidence.get("shop_snapshot_captured_at") or ""),
         shop_refresh_status=str(refresh_status.get("shop") or ""),

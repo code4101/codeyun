@@ -199,6 +199,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         "lingchong-jingwu": "resource_rank",
         "lianti-faxiang": "resource_rank",
         "dandao-wending": "resource_rank",
+        "tiandi-yiju": "gameplay_rank",
     }
     runtime_types = {
         "yunmeng-trial": (21,),
@@ -206,6 +207,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         "xutian-palace": (8,),
         "magic-invasion": (7,),
         "beast-abyss": (15,),
+        "tiandi-yiju": (9, 13, 17),
     }
     activity_ids = {
         "xianyuan-duokui": (846001,),
@@ -233,6 +235,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
             1041401, 1043101, 2043101, 4043101, 1043111,
             8043101, 16043101, 32043101,
         ),
+        "tiandi-yiju": (8090001, 8090002, 8090004),
     }
     identities: list[RankingActivityIdentity] = []
     for activity_type, spec in EXCHANGE_ACTIVITY_SPECS.items():
@@ -253,18 +256,6 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
                 vo_types=(),
                 runtime_activity_types=(42, 43),
                 base_ids=(28000, 28100, 28200),
-            ),
-            # 8090001/8090004 are playable boards; 8090002 is retained as the
-            # group-selection/schedule surface but never receives an action
-            # checkpoint.  The execution adapter spends natural strength only.
-            RankingActivityIdentity(
-                activity_type="tiandi-yiju",
-                family="gameplay_rank",
-                vo_types=(),
-                runtime_activity_types=(9, 13, 17),
-                activity_ids=(8090001, 8090002, 8090004),
-                base_ids=(90000, 90001, 90002),
-                names=("天地弈局",),
             ),
         )
     )
@@ -361,8 +352,12 @@ def checkpoints_for_occurrence(
 
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
-    checkpoints = [
-        RankingCheckpoint(
+    checkpoints = []
+    if not (
+        occurrence.activity_type == "tiandi-yiju"
+        and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+    ):
+        checkpoints.append(RankingCheckpoint(
             instance_key=occurrence.instance_key,
             activity_type=occurrence.activity_type,
             family=occurrence.family,
@@ -371,8 +366,7 @@ def checkpoints_for_occurrence(
             checkpoint_kind=DAILY_RECONCILE_KIND,
             business_date=business_day.isoformat(),
             due_at=_at(business_day, DAILY_RECONCILE_TIME, occurrence.start_at.tzinfo),
-        )
-    ]
+        ))
     tail_day = occurrence.end_at.date() + timedelta(days=1)
     tail_time = (
         XIANYUAN_EXCHANGE_TAIL_TIME

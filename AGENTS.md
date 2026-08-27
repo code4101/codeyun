@@ -14,7 +14,15 @@
 - 调试截图、OCR 裁剪图、抓包片段、探针 JSON、临时 DB、服务 stdout/stderr 日志、一次性脚本输出等临时产物，统一写到系统临时目录，不要写到仓库根目录或源码子目录。
 - Python 代码优先使用 `backend.core.temp_paths.codeyun_temp_root(...)`；一次性 PowerShell 使用 `$env:TEMP\codeyun\...`。
 - `.codex_tmp/` 是历史遗留目录，不再新建或继续使用；需要保留结论时写入文档摘要，不把大体积原始证据放进仓库。
-- 详细规则见：`docs/临时测试产物目录约定.md`。
+- 详细规则见：`docs/operations/runbooks/临时测试产物目录约定.md`。
+
+## 文档分层约定（重要）
+
+- `docs/README.md` 是文档总入口；新增或迁移文档时必须同步维护其中的导航和层级语义。
+- `docs/` 根目录只保留 `README.md` 和约定俗成的 `AI_CONTEXT.md`，不得继续堆放业务文档。
+- 当前架构与强约定放入 `platform/` 或业务域的 `architecture/`；操作方法放入 `guides/`、`jobs/`、`operations/runbooks/`。
+- 未完成计划、探索记录、自动化增量上下文和历史材料分别放入 `plans/`、`research/`、`context/`、`archive/`，不得覆盖权威正文。
+- 移动文档后必须同步修复 `AGENTS.md`、源码注释、测试和 Markdown 内部链接中的路径引用。
 
 ## 兜底方案
 
@@ -66,7 +74,7 @@
 ## 部署运维约定（重要）
 
 - 仓库内的 GitHub Actions 自动部署链路已于 `2026-04-16` 移除，不要再假设 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh` 仍然存在。
-- 如需恢复旧方案，唯一参考文档是：`docs/自动部署恢复档案.md`。
+- 如需恢复旧方案，唯一参考文档是：`docs/archive/自动部署恢复档案.md`。
 - 当前服务器历史口径仍是系统级 `systemd` 服务 `codeyun-backend`，不是 `systemctl --user`；但相关模板文件已从仓库移除。
 - 服务器运行时 `.env` 只负责应用配置，不负责存 SSH 登录信息。
 - `CODEYUN_DATA_DIR` 是可选项；如果不配置，后端默认使用仓库外的数据工作区

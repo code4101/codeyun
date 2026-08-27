@@ -103,7 +103,7 @@ def quick_synthesis_policy(level: int) -> QuickSynthesisPolicy:
     """Return the verified synthesis policy without re-deriving it at runtime.
 
     Real 2026-08-09 batches proved that failures consume the complete batch and
-    produce no upgraded crystal (evidence route: ``docs/凡修兽魂研究与自动配置.md``
+    produce no upgraded crystal (evidence route: ``docs/domains/fanxiu/jobs/凡修兽魂研究与自动配置.md``
     H5/C2 and facts 30-31).  Therefore expected material cost is ``n / p``.
     Levels 1-3 use the material-optimal 2-at-55% policy and deliberately accept
     the exact low-success confirmation.  Levels 4+ use the separately verified

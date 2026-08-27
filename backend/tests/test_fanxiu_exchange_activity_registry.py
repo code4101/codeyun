@@ -9,6 +9,7 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     PLANE_RANK_VO,
     PERSONAL_RANK_VO,
     TEAM_RANK_VO,
+    TIANDI_YIJU_SPEC,
     PUBLIC_EXCHANGE_ACTIVITY_TYPES,
     XIANYUAN_DUOKUI_SPEC,
     YUNMENG_TRIAL_SPEC,
@@ -16,6 +17,8 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     build_exchange_activity_registry,
     collect_registered_exchange_activity,
     get_exchange_activity_spec,
+    resolve_registered_occurrence_rank_activity_ids,
+    resolve_registered_occurrence_shop,
 )
 from backend.core.fanxiu.activity.exchange_activity_spec import (
     ExchangeActivityAdapter,
@@ -33,6 +36,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
     assert get_exchange_activity_spec("beast-abyss") is BEAST_ABYSS_SPEC
     assert get_exchange_activity_spec("yunmeng-trial") is YUNMENG_TRIAL_SPEC
     assert get_exchange_activity_spec("xianyuan-duokui") is XIANYUAN_DUOKUI_SPEC
+    assert get_exchange_activity_spec("tiandi-yiju") is TIANDI_YIJU_SPEC
     with pytest.raises(ValueError, match="重复"):
         build_exchange_activity_registry(
             (XUTIAN_PALACE_SPEC, replace(XUTIAN_PALACE_SPEC, label="重复"))
@@ -58,6 +62,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
         ("xutian-palace", 12, "纳元晶", 80000, False, "HeavenActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("magic-invasion", 17, "魔晶", 70001, True, "MagicInvadeActivityVO", "plane", "位面榜", "server", PLANE_RANK_VO),
         ("beast-abyss", 14, "兽元", 150000, True, "BeastExplodeActivityVO", "team", "团队榜", "team", TEAM_RANK_VO),
+        ("tiandi-yiju", 11, "棋符", 90000, True, "AlliancePlayChessActivityVO", "alliance", "宗门/位面榜", "team", TEAM_RANK_VO),
     ],
 )
 def test_registered_exchange_activity_contracts_are_conformant(
@@ -179,6 +184,19 @@ def test_rank_activity_id_bindings_resolve_authoritative_ids() -> None:
         activity_follow=(43103, 43104),
     ) == 43104
 
+    assert resolve_registered_occurrence_rank_activity_ids(
+        activity_type="tiandi-yiju", activity_id=8090001
+    ) == {"personal": 90101, "alliance": 90102}
+    assert resolve_registered_occurrence_rank_activity_ids(
+        activity_type="tiandi-yiju", activity_id=8090004
+    ) == {"personal": 90808, "alliance": 90813}
+    assert resolve_registered_occurrence_shop(
+        activity_type="tiandi-yiju", cross_count=1
+    ) == ShopSpec(base_id=90000, currency_type=11)
+    assert resolve_registered_occurrence_shop(
+        activity_type="tiandi-yiju", cross_count=8
+    ) == ShopSpec(base_id=90002, currency_type=13)
+
 
 def test_spec_rejects_page_scope_and_shop_currency_drift() -> None:
     with pytest.raises(ValueError, match="页面榜单 scope"):
@@ -222,6 +240,11 @@ def test_spec_rejects_page_scope_and_shop_currency_drift() -> None:
             "beast-abyss",
             "backend.core.fanxiu.activity.beast_abyss",
             "collect_and_store_beast_abyss_activity",
+        ),
+        (
+            "tiandi-yiju",
+            "backend.core.fanxiu.activity.tiandi_yiju",
+            "collect_and_store_tiandi_yiju_activity",
         ),
     ],
 )

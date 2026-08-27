@@ -7,7 +7,7 @@ import {
   type FanxiuExchangeActivitySnapshot,
 } from '@/api/fanxiu'
 
-type TopActivityType = 'yunmeng-trial' | 'xianyuan-duokui' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss'
+type TopActivityType = 'yunmeng-trial' | 'xianyuan-duokui' | 'xutian-palace' | 'magic-invasion' | 'beast-abyss' | 'tiandi-yiju'
 
 type ActivityOption = {
   label: string
@@ -34,6 +34,10 @@ const activityOptions: ActivityOption[] = [
   {
     label: '兽渊探秘',
     value: 'beast-abyss',
+  },
+  {
+    label: '天地弈局',
+    value: 'tiandi-yiju',
   },
 ]
 const activityTypes = new Set<TopActivityType>(activityOptions.map(item => item.value))
@@ -104,8 +108,11 @@ watch(
       v-if="activePage"
       embedded
       :initial-snapshot="initialSnapshot ?? undefined"
-      :activity-type="['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedType : undefined"
-      :activity-name="['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedActivityName : undefined"
+      :activity-type="['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedType : undefined"
+      :activity-name="['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedActivityName : undefined"
+      :comparative-ranking-scope="selectedType === 'tiandi-yiju' ? 'alliance' : undefined"
+      :comparative-ranking-title="selectedType === 'tiandi-yiju' ? '宗门/位面排名' : undefined"
+      :comparative-ranking-subject-label="selectedType === 'tiandi-yiju' ? '宗门/位面' : undefined"
     >
       <template #activity-type-control>
         <el-select v-model="selectedType" class="activity-type-select" aria-label="选择活动类型">

@@ -32,6 +32,57 @@ def _magic_occurrence(*, cross_count: int) -> RankingOccurrence:
     )
 
 
+def _tiandi_occurrence(activity_id: int, cross_count: int) -> RankingOccurrence:
+    timezone = datetime.now().astimezone().tzinfo
+    assert timezone is not None
+    return RankingOccurrence(
+        activity_type="tiandi-yiju",
+        family="gameplay_rank",
+        runtime_id=f"tiandi-{activity_id}",
+        activity_id=activity_id,
+        start_at=datetime(2026, 8, 27, 10, tzinfo=timezone),
+        end_at=datetime(2026, 8, 27, 22, tzinfo=timezone),
+        prepare_at=datetime(2026, 8, 26, 10, tzinfo=timezone),
+        close_at=datetime(2026, 8, 30, 23, 59, 59, tzinfo=timezone),
+        cross_count=cross_count,
+    )
+
+
+def test_seed_materializes_tiandi_phase_specific_rank_and_shop_contracts() -> None:
+    with _session() as session:
+        server = ranking_reconcile.seed_ranking_occurrence(
+            session,
+            _tiandi_occurrence(8090001, 1),
+            captured_at="2026-08-27T00:30:00+08:00",
+        )
+        cross = ranking_reconcile.seed_ranking_occurrence(
+            session,
+            _tiandi_occurrence(8090004, 8),
+            captured_at="2026-08-27T00:30:00+08:00",
+        )
+        server_contract = (
+            server.game_shop_base_id,
+            server.currency_type,
+            dict(server.evidence["rank_scope_activity_ids"]),
+        )
+        cross_contract = (
+            cross.game_shop_base_id,
+            cross.currency_type,
+            dict(cross.evidence["rank_scope_activity_ids"]),
+        )
+
+    assert server_contract[:2] == (90000, 11)
+    assert server_contract[2] == {
+        "personal": 90101,
+        "alliance": 90102,
+    }
+    assert cross_contract[:2] == (90002, 13)
+    assert cross_contract[2] == {
+        "personal": 90808,
+        "alliance": 90813,
+    }
+
+
 def test_seed_resolves_server_and_cross_magic_shop_independently(monkeypatch) -> None:
     monkeypatch.setattr(
         ranking_reconcile,
