@@ -775,6 +775,121 @@ def test_dongtian_snapshot_resolves_mines_by_stable_data_fields(monkeypatch):
     }
 
 
+def test_dongtian_action_power_probe_skips_club_role_and_full_decode(monkeypatch):
+    memory = MumuProcessMemory(
+        pid=123,
+        process_start_ticks=456,
+        adb_serial="test",
+        regions=[],
+    )
+    calls = []
+    monkeypatch.setattr(MumuProcessMemory, "discover_cached", lambda: memory)
+    monkeypatch.setattr(dongtian, "_lua_addresses", lambda _memory: {"state": "0x4000"})
+    monkeypatch.setattr(
+        dongtian,
+        "_resolve_mines_root",
+        lambda *_args, **_kwargs: (0x2000, True, "lua_global:XianLvMinesMgr"),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_resolve_club_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得解析仙盟根")),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_resolve_role_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得解析角色根")),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得执行全快照")),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_action_power_snapshot",
+        lambda *_args, **kwargs: calls.append(kwargs) or {
+            "ok": True,
+            "available": True,
+            "complete": True,
+            "action_power": 200,
+            "evidence": {},
+        },
+    )
+
+    result = dongtian.read_dongtian_action_power_snapshot()
+
+    assert result["action_power"] == 200
+    assert len(calls) == 1
+    assert set(result["evidence"]["phase_timings_seconds"]) == {
+        "process_discovery",
+        "lua_state",
+        "mines_root",
+        "decode",
+    }
+
+
+def test_dongtian_clear_plan_skips_role_seats_and_teams(monkeypatch):
+    memory = MumuProcessMemory(
+        pid=123,
+        process_start_ticks=456,
+        adb_serial="test",
+        regions=[],
+    )
+    calls = []
+    monkeypatch.setattr(MumuProcessMemory, "discover_cached", lambda: memory)
+    monkeypatch.setattr(dongtian, "_lua_addresses", lambda _memory: {"state": "0x4000"})
+    monkeypatch.setattr(
+        dongtian,
+        "_resolve_mines_root",
+        lambda *_args, **_kwargs: (0x2000, True, "lua_global:XianLvMinesMgr"),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_resolve_club_root",
+        lambda *_args, **_kwargs: (0x3000, True, "lua_global:ClubMgr"),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_resolve_role_root",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得解析角色根")),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_mine_seats",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得解码席位")),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_team",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得解码队伍")),
+    )
+    monkeypatch.setattr(
+        dongtian,
+        "_clear_plan_snapshot",
+        lambda *_args, **kwargs: calls.append(kwargs) or {
+            "ok": True,
+            "available": True,
+            "complete": True,
+            "mines": [{"id": 1}],
+            "own_union_id": 1,
+            "evidence": {},
+        },
+    )
+
+    result = dongtian.read_dongtian_clear_plan_snapshot()
+
+    assert result["complete"] is True
+    assert len(calls) == 1
+    assert set(result["evidence"]["phase_timings_seconds"]) == {
+        "process_discovery",
+        "lua_state",
+        "mines_root",
+        "club_root",
+        "decode",
+    }
+
+
 def test_dongtian_snapshot_retries_one_replaced_lua_generation(monkeypatch):
     memories = [
         MumuProcessMemory(

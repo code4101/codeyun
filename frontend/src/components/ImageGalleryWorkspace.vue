@@ -405,15 +405,6 @@
           >
             {{ openLocalBrowserButtonText }}
           </el-button>
-          <el-button
-            v-if="deleteImage"
-            type="danger"
-            plain
-            :loading="deletingImageId === previewImage.id"
-            @click="handleDeleteImage(previewImage.id)"
-          >
-            {{ deleteButtonText }}
-          </el-button>
           <div
             v-if="shouldShowWeightPanel(previewImage)"
             class="preview-weight-control"
@@ -450,7 +441,18 @@
             {{ openPdfButtonText }}
           </el-button>
         </div>
-        <el-tag>{{ previewPositionText }}</el-tag>
+        <div class="preview-header-side">
+          <el-tag>{{ previewPositionText }}</el-tag>
+          <el-button
+            v-if="deleteImage"
+            type="danger"
+            plain
+            :loading="deletingImageId === previewImage.id"
+            @click="handleDeleteImage(previewImage.id)"
+          >
+            {{ deleteButtonText }}
+          </el-button>
+        </div>
       </div>
     </template>
 
@@ -2519,9 +2521,11 @@ defineExpose({
 
 .preview-header-side {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: flex-end;
   gap: 10px;
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .preview-tags {
@@ -2794,6 +2798,12 @@ defineExpose({
 
   .preview-header {
     flex-direction: column;
+  }
+
+  .preview-header-side {
+    width: 100%;
+    margin-left: 0;
+    justify-content: space-between;
   }
 
   .preview-action-tip {
