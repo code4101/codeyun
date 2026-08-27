@@ -47,6 +47,7 @@ DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
 XIANMENG_ACTIVE_KIND = "xianmeng_active_1000"
+TIANDI_YIJU_ACTIVE_KIND = "tiandi_yiju_active_1005"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
@@ -54,6 +55,7 @@ DAILY_RECONCILE_TIME = time(0, 30)
 XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
 XIANMENG_ACTIVE_TIME = time(10, 0)
+TIANDI_YIJU_ACTIVE_TIME = time(10, 5)
 RESOURCE_FREE_GIFT_TIME = time(5, 10)
 DANDAO_REWARDS_TIME = time(18, 10)
 YUANDING_GIFT_TIME = time(5, 0)
@@ -79,8 +81,13 @@ RankingFamily = Literal["gameplay_rank", "resource_rank"]
 
 RANKING_CAPABILITY_STATUS = {
     "beast-abyss": "observed_reconcile_only",
-    "tiandi-yiju": "observed_unhandled",
+    "tiandi-yiju": "implemented_natural_strength_only",
 }
+
+# 8090002 is the cross-server group-selection/schedule surface.  It overlaps
+# the real 8090004 board interval, so giving both occurrences an action
+# checkpoint would spend the same account stamina twice under two identities.
+TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS = frozenset({8090001, 8090004})
 
 
 @dataclass(frozen=True)
@@ -247,12 +254,16 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
                 runtime_activity_types=(42, 43),
                 base_ids=(28000, 28100, 28200),
             ),
-            # Discovery-only: there is deliberately no execution adapter until
-            # the business action has been explicitly authorized and proven.
+            # 8090001/8090004 are playable boards; 8090002 is retained as the
+            # group-selection/schedule surface but never receives an action
+            # checkpoint.  The execution adapter spends natural strength only.
             RankingActivityIdentity(
                 activity_type="tiandi-yiju",
                 family="gameplay_rank",
                 vo_types=(),
+                runtime_activity_types=(9, 13, 17),
+                activity_ids=(8090001, 8090002, 8090004),
+                base_ids=(90000, 90001, 90002),
                 names=("天地弈局",),
             ),
         )
@@ -422,6 +433,26 @@ def checkpoints_for_occurrence(
                 due_at=xianmeng_at,
             )
         )
+    tiandi_yiju_at = _at(
+        business_day, TIANDI_YIJU_ACTIVE_TIME, occurrence.start_at.tzinfo
+    )
+    if (
+        occurrence.activity_type == "tiandi-yiju"
+        and occurrence.activity_id in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+        and occurrence.start_at <= tiandi_yiju_at <= occurrence.end_at
+    ):
+        checkpoints.append(
+            RankingCheckpoint(
+                instance_key=occurrence.instance_key,
+                activity_type=occurrence.activity_type,
+                family=occurrence.family,
+                runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id,
+                checkpoint_kind=TIANDI_YIJU_ACTIVE_KIND,
+                business_date=business_day.isoformat(),
+                due_at=tiandi_yiju_at,
+            )
+        )
     resource_kinds = (
         (
             RESOURCE_FREE_GIFT_KIND,
@@ -494,6 +525,7 @@ def due_ranking_checkpoints(
                 in {
                     MAGIC_ACTIVE_KIND,
                     XIANMENG_ACTIVE_KIND,
+                    TIANDI_YIJU_ACTIVE_KIND,
                     RESOURCE_FREE_GIFT_KIND,
                     DANDAO_REWARDS_KIND,
                     YUANDING_GIFT_KIND,
@@ -552,6 +584,8 @@ __all__ = [
     "EXCHANGE_TAIL_KIND",
     "MAGIC_ACTIVE_KIND",
     "XIANMENG_ACTIVE_KIND",
+    "TIANDI_YIJU_ACTIVE_KIND",
+    "TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS",
     "RESOURCE_FREE_GIFT_KIND",
     "RESOURCE_FREE_GIFT_ACTIVITY_TYPES",
     "DANDAO_REWARDS_KIND",

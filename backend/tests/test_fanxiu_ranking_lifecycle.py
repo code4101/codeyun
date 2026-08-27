@@ -11,6 +11,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     EXCHANGE_TAIL_KIND,
     MAGIC_ACTIVE_KIND,
     RESOURCE_FREE_GIFT_KIND,
+    TIANDI_YIJU_ACTIVE_KIND,
     RankingActivityIdentity,
     RankingOccurrence,
     checkpoints_for_occurrence,
@@ -134,6 +135,86 @@ def test_discovery_uses_normalized_stable_activity_type_without_raw_vo_class() -
 
     assert len(rows) == 1
     assert rows[0].runtime_id == "8070001400004"
+
+
+@pytest.mark.parametrize(
+    ("activity_id", "activity_type", "base_id"),
+    ((8090001, 9, 90000), (8090002, 13, 90001), (8090004, 17, 90002)),
+)
+def test_discovery_uses_stable_tiandi_yiju_runtime_identity(
+    activity_id: int,
+    activity_type: int,
+    base_id: int,
+) -> None:
+    rows = discover_ranking_occurrences({
+        "items": [{
+            "id": activity_id * 100000 + 4,
+            "activityId": activity_id,
+            "activityType": activity_type,
+            "baseId": base_id,
+            "name": "天地弈局",
+            "serverCount": 8,
+            "prepareEndTime": _ms("2026-08-27T00:00:00+08:00"),
+            "startTime": _ms("2026-08-28T10:00:00+08:00"),
+            "endTime": _ms("2026-08-28T22:00:00+08:00"),
+            "closePanelTime": _ms("2026-08-29T23:59:59+08:00"),
+        }]
+    })
+
+    assert len(rows) == 1
+    assert rows[0].activity_type == "tiandi-yiju"
+    assert rows[0].activity_id == activity_id
+
+
+def test_tiandi_yiju_checkpoint_only_targets_real_board_occurrences() -> None:
+    def occurrence(activity_id: int) -> RankingOccurrence:
+        return RankingOccurrence(
+            activity_type="tiandi-yiju",
+            family="gameplay_rank",
+            runtime_id=f"runtime-{activity_id}",
+            activity_id=activity_id,
+            start_at=datetime(2026, 8, 28, 10, tzinfo=TZ),
+            end_at=datetime(2026, 8, 28, 22, tzinfo=TZ),
+            prepare_at=datetime(2026, 8, 27, 0, tzinfo=TZ),
+            close_at=datetime(2026, 8, 29, 23, 59, 59, tzinfo=TZ),
+            cross_count=8,
+        )
+
+    board = checkpoints_for_occurrence(
+        occurrence(8090004), business_day=datetime(2026, 8, 28, tzinfo=TZ).date()
+    )
+    group_selection = checkpoints_for_occurrence(
+        occurrence(8090002), business_day=datetime(2026, 8, 28, tzinfo=TZ).date()
+    )
+
+    assert TIANDI_YIJU_ACTIVE_KIND in {item.checkpoint_kind for item in board}
+    assert TIANDI_YIJU_ACTIVE_KIND not in {
+        item.checkpoint_kind for item in group_selection
+    }
+
+
+def test_tiandi_yiju_active_checkpoint_catches_up_only_while_board_is_open() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="tiandi-yiju",
+        family="gameplay_rank",
+        runtime_id="8090001400004",
+        activity_id=8090001,
+        start_at=datetime(2026, 8, 27, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 27, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 27, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 30, 23, 59, 59, tzinfo=TZ),
+        cross_count=1,
+    )
+
+    active = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 27, 15, tzinfo=TZ)
+    )
+    expired = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 27, 22, 1, tzinfo=TZ)
+    )
+
+    assert TIANDI_YIJU_ACTIVE_KIND in {item.checkpoint_kind for item in active}
+    assert TIANDI_YIJU_ACTIVE_KIND not in {item.checkpoint_kind for item in expired}
 
 
 @pytest.mark.parametrize(
