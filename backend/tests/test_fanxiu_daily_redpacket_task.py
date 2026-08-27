@@ -1509,6 +1509,8 @@ def test_scene672_is_a_redpacket_local_layer0_not_global_popup():
     from scripts.fanxiu_patch_redpacket_sold_out import validate_tree
 
     snapshot = read_data_annotation_asset_tree_snapshot(data_annotation_asset_tree_path())
+    if not snapshot.tree:
+        pytest.skip("当前测试数据工作区没有正式凡修资产树")
     validate_tree(snapshot.tree)
 
 

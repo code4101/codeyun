@@ -4114,6 +4114,18 @@ class MailTaskMixin:
         else:
             row["runtime_match"] = "missing"
             row["runtime_missing_reason"] = self._mail_row_runtime_missing_reason(title, time_text)
+        # A visible list lock may be claimed only when every active Runtime
+        # record carries the explicit persisted claim policy. Reward inference
+        # alone must not upgrade a protected UI row into a clickable action.
+        if ui_status == "锁定" and (
+            not active_records
+            or any(
+                str(getattr(record, "action_policy", "") or "").strip().lower()
+                != "claim"
+                for record in active_records
+            )
+        ):
+            return
         if action_enabled:
             # These recurring sect activity mails are known reward mails.  Their
             # runtime state can lag behind the visible list, so title recognition

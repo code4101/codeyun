@@ -5151,6 +5151,18 @@ def _write_digitdoor_startgame_cpp2il_consumer_markdown(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+_DIGITDOOR_STARTGAME_CPP2IL_TERMS: dict[str, str] = {
+    "CM_DigitDoorStartGame": "direct_startgame_packet_symbol",
+    "SM_DigitDoorStartGame": "direct_startgame_packet_symbol",
+    "DDFightPartnerVO": "direct_startgame_partner_vo_symbol",
+    "DDSkillVo": "direct_startgame_skill_vo_symbol",
+    "skillVos": "direct_startgame_skillvos_field",
+    "indexList": "direct_startgame_indexlist_field",
+    "GetDigitDoorPartnerAttributes": "digitdoor_partner_attribute_bridge",
+    "DigitDoor": "digitdoor_generic_bridge_surface",
+}
+
+
 def _collect_digitdoor_startgame_cpp2il_bridge_lua_rows(root: Path) -> list[dict[str, Any]]:
     terms = {
         "GetDigitDoorPartnerAttributes": "bridge_lua_function",

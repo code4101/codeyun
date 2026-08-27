@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from backend.core.fanxiu.catalog import doupotd as doupotd_catalog_module
+from backend.core.fanxiu.history_museum.packet_capture import (
+    doupotd_pcap_research_legacy as doupotd_catalog_module,
+)
 from backend.core.fanxiu.catalog.resources import (
     FANXIU_RESOURCE_EXPORT_ROOT_ENV,
     FANXIU_RESOURCE_ROOT_ENV,
@@ -101,46 +103,10 @@ from backend.core.fanxiu.catalog.doupotd import (
     build_fanxiu_doupotd_pvp_report_native_symbol_gap_probe,
     build_fanxiu_doupotd_pvp_report_netlogic_family_probe,
     build_fanxiu_doupotd_pvp_report_lua_binding_boundary_probe,
-    build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
-    build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
-    build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
-    build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
     build_fanxiu_doupotd_pvp_report_trigger_lifecycle_probe,
     build_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe,
     build_fanxiu_doupotd_pvp_report_trigger_delta_probe,
     build_fanxiu_doupotd_pvp_report_raw_export_coverage_probe,
-    build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
     build_fanxiu_doupotd_pvp_report_scene_payload_probe,
     build_fanxiu_doupotd_pvp_report_sender_alias_gap_probe,
     build_fanxiu_doupotd_pvp_report_shape_alias_probe,
@@ -154,6 +120,56 @@ from backend.core.fanxiu.catalog.doupotd import (
     search_fanxiu_doupotd_reward_configs,
     search_fanxiu_doupotd_partner_cards,
 )
+from backend.core.fanxiu.history_museum.packet_capture.doupotd_pcap_research_legacy import (
+    build_fanxiu_doupotd_pcap_observed_activity_base_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_blld_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_land_contend_info_role_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_lundao_last_leave_seat_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_lundao_role_info_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_quanf_draw_syn_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_scene_map_lifecycle_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_self_seat_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_set_client_data_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_activity_rank_sync_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_all_buff_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_camp_flag_panel_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_change_peace_state_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_cross_boss_info_update_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_faze_show_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_is_cross_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_notice_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_partner_arena_play_info_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_practice_collect_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_restrict_status_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_reward_result_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_sync_unit_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sm_veins_select_sort_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_sync_time_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_union_veins_union_list_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_venis_union_seat_role_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_yunmengpk_challenge_record_chain_probe,
+    build_fanxiu_doupotd_pcap_observed_yunmengpk_info_sync_chain_probe,
+    build_fanxiu_doupotd_pvp_report_decoder_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_focused_capture_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_decode_metadata_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_observed_lua_handler_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_observed_schema_coverage_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_protocol_scope_probe,
+    build_fanxiu_doupotd_pvp_report_pcap_stream_readiness_probe,
+    build_fanxiu_doupotd_pvp_report_runtime_coverage_probe,
+)
+from backend.core.fanxiu.history_museum.packet_capture.digitdoor_capture_research_legacy import (
+    build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
+    build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
+    build_fanxiu_digitdoor_runtime_packet_coverage_probe,
+    build_fanxiu_digitdoor_startgame_runtime_sample_probe,
+)
+from backend.core.fanxiu.history_museum.packet_capture.hot_update_capture_research_legacy import (
+    build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
+    build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
+    build_fanxiu_socket_capture_fixture_codec_calibration_probe,
+    build_fanxiu_socket_result_sample_coverage_probe,
+)
 from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_activity_end_probe,
     build_fanxiu_digitdoor_buff_class_formula_probe,
@@ -164,7 +180,6 @@ from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_door_gain_buff_flow_probe,
     build_fanxiu_digitdoor_door_refresh_projection_probe,
     build_fanxiu_digitdoor_gameplayer_cpp2il_consumer_probe,
-    build_fanxiu_digitdoor_gameplayer_runtime_sample_probe,
     build_fanxiu_digitdoor_gameplayer_settlement_probe,
     build_fanxiu_digitdoor_info_snapshot_probe,
     build_fanxiu_digitdoor_monster_effect_class_flow_probe,
@@ -191,18 +206,15 @@ from backend.core.fanxiu.catalog.digitdoor import (
     build_fanxiu_digitdoor_readyfight_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_readyfight_partnerlist_probe,
     build_fanxiu_digitdoor_readyfight_request_levelid_probe,
-    build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
     build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
     build_fanxiu_digitdoor_report_gmbattle_probe,
-    build_fanxiu_digitdoor_runtime_packet_coverage_probe,
     build_fanxiu_digitdoor_skip_level_probe,
     build_fanxiu_digitdoor_skill_enhance_application_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
     build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
     build_fanxiu_digitdoor_startgame_cpp2il_consumer_probe,
     build_fanxiu_digitdoor_startgame_response_boundary_probe,
-    build_fanxiu_digitdoor_startgame_runtime_sample_probe,
     build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
     build_fanxiu_digitdoor_unlock_state_probe,
     build_fanxiu_digitdoor_uplevel_state_probe,
@@ -251,7 +263,6 @@ from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_gongfa_special_faze_reason_probe,
     build_fanxiu_gongfa_special_faze_reason_reuse_index_probe,
     build_fanxiu_gongfa_special_faze_reason_reuse_probe,
-    build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_sample_probe,
     build_fanxiu_gongfa_homemake_detail_view_probe,
@@ -262,7 +273,6 @@ from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_gongfa_homemake_buff_parameter_semantics_probe,
     build_fanxiu_gongfa_homemake_mechanism_ownership_probe,
     build_fanxiu_gongfa_homemake_mechanism_formula_surface_probe,
-    build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
     build_fanxiu_gongfa_homemake_mechanism_result_producer_probe,
     build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe,
     build_fanxiu_buff_change_result_decoder_probe,
@@ -272,8 +282,6 @@ from backend.core.fanxiu.catalog.hot_update import (
     build_fanxiu_typed_pool_runtime_observation_probe,
     build_fanxiu_socket_raw_decoder_probe,
     build_fanxiu_socket_compressed_int_codec_probe,
-    build_fanxiu_socket_capture_fixture_codec_calibration_probe,
-    build_fanxiu_socket_result_sample_coverage_probe,
     build_fanxiu_combat_formula_authority_contrast_probe,
     build_fanxiu_cpp2il_main_combat_formula_surface_probe,
     get_fanxiu_gongfa_homemake_buff_parameter_semantics,
@@ -5725,6 +5733,7 @@ def test_fanxiu_digitdoor_catalog_links_characters_enhances_doors_and_levels(tmp
     item_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_mock" / "text_assets"
     common_dir = export_root / "by_source" / "lscripts" / "lua_mock" / "text_assets"
     packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    capture_dir = export_root / "tcp_captures"
     config_dir.mkdir(parents=True)
     item_dir.mkdir(parents=True)
     common_dir.mkdir(parents=True)
@@ -6756,7 +6765,6 @@ def test_fanxiu_digitdoor_catalog_links_characters_enhances_doors_and_levels(tmp
     assert "ReadyFight skillList wire-shape audit" in readyfight_shape_report
     assert "primitive int-list client write shape" in readyfight_shape_report
 
-    capture_dir = export_root / "tcp_captures"
     capture_dir.mkdir(parents=True, exist_ok=True)
     (capture_dir / "sample.codeyun_decoded.json").write_text(
         json.dumps(
@@ -8444,11 +8452,9 @@ def test_fanxiu_digitdoor_pvp_report_acceptance_gap_probe_marks_missing_sm_repor
     logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock" / "text_assets"
     message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
     index_dir = export_root / "apk_static_index"
-    capture_dir = export_root / "tcp_captures"
     logic_dir.mkdir(parents=True)
     message_dir.mkdir(parents=True)
     index_dir.mkdir(parents=True)
-    capture_dir.mkdir(parents=True)
 
     (message_dir / "CM_DigitDoorReport.lua").write_text(
         "function _M.getId(self)\nreturn 91644\nend\nfunction _M.getName(self)\nreturn\"CM_DigitDoorReport\"\nend\n",
@@ -8476,17 +8482,11 @@ def test_fanxiu_digitdoor_pvp_report_acceptance_gap_probe_marks_missing_sm_repor
         "function\tpacket\tedge\nCM_DigitDoorReportFun\tCM_DigitDoorReport\tpacket_send\n",
         encoding="utf-8",
     )
-    (capture_dir / "sample.codeyun_decoded.json").write_text(
-        json.dumps({"frames": [{"pro_id": 91620, "name": "CM_DigitDoorInfo"}]}),
-        encoding="utf-8",
-    )
-
     result = build_fanxiu_digitdoor_pvp_report_acceptance_gap_probe(export_root=export_root)
 
     assert result["confirmed"] is True
     assert result["verdict"]["request_report_surface_visible"] is True
     assert result["verdict"]["no_visible_sm_report_packet_or_handler"] is True
-    assert result["verdict"]["existing_decoded_fixtures_have_no_report_sample"] is True
     report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
     evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
     assert "DigitDoor PVP report acceptance gap" in report_text
@@ -15388,7 +15388,7 @@ def test_fanxiu_doupotd_pvp_report_trigger_base_dynamic_gap_probe_marks_no_paren
     report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
     evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
     assert "DoupoTD PVP report trigger base/dynamic gap" in report_text
-    assert "runtime observation" in report_text
+    assert "Runtime observation" in report_text
     assert "activity_base_update_tick_surface" in evidence_text
 
 
@@ -29479,12 +29479,12 @@ def test_fanxiu_gongfa_homemake_renderer_source_selection_probe_recommends_stati
     ).read_text(encoding="utf-8")
 
     assert result["verdict"]["can_start_static_wiki_renderer"] is True
-    assert result["verdict"]["runtime_vo_capture_available"] is False
+    assert result["verdict"]["runtime_vo_available"] is False
     assert result["verdict"]["needs_user_intervention_now"] is False
     assert result["selection"]["recommended_first_source"] == "static_gongfa_catalog"
     assert "static_gongfa_catalog" in candidates_text
     assert "vo_shaped_renderer_sample" in candidates_text
-    assert "captured_or_shared_gongfa_homemake_vo" in candidates_text
+    assert "runtime_or_shared_gongfa_homemake_vo" in candidates_text
     assert "not_available_yet" in candidates_text
     assert "CodeYun wiki 现在可以先接静态配置图鉴源" in markdown_text
 
@@ -32116,7 +32116,7 @@ def test_fanxiu_typed_pool_runtime_observation_probe_builds_safe_plan(tmp_path):
     )
 
     result = build_fanxiu_typed_pool_runtime_observation_probe(export_root=export_root)
-    capture_text = (output_dir / "hot_update_typed_pool_runtime_observation_capture_points.tsv").read_text(
+    observation_text = (output_dir / "hot_update_typed_pool_runtime_observation_points.tsv").read_text(
         encoding="utf-8"
     )
     reconstruction_text = (output_dir / "hot_update_typed_pool_runtime_observation_reconstruction.tsv").read_text(
@@ -32130,7 +32130,7 @@ def test_fanxiu_typed_pool_runtime_observation_probe_builds_safe_plan(tmp_path):
     )
     markdown_text = (output_dir / "hot_update_typed_pool_runtime_observation_report.md").read_text(encoding="utf-8")
     assert result["verdict"]["supports_typed_pool_runtime_observation_plan"] is True
-    assert "CsCallLuaMgr.ReceiveSocketMessage" in capture_text
+    assert "CsCallLuaMgr.ReceiveSocketMessage" in observation_text
     assert "poolTypeDataLength" in reconstruction_text
     assert "message.results[].damageView" in sample_text
     assert "never persist" in privacy_text
@@ -32250,7 +32250,7 @@ def test_fanxiu_socket_raw_decoder_probe_maps_frame_outline(tmp_path):
     assert "send_frame_symmetry" in frames_text
     assert "ByteUtil.ReadIntCompress" in primitives_text
     assert "read_package_header" in evidence_text
-    assert "does not capture live traffic" in markdown_text
+    assert "Raw traffic decoding is retired" in markdown_text
 
 
 def test_fanxiu_socket_compressed_int_codec_probe_builds_candidate(tmp_path):
@@ -32481,20 +32481,6 @@ def test_fanxiu_combat_formula_authority_contrast_probe_separates_local_formula_
         "This is a hit-frame/display projection layer, not numeric formula authority.",
         encoding="utf-8",
     )
-    (output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.json").write_text(
-        json.dumps(
-            {
-                "counts": {
-                    "frame_rows": 86,
-                    "matched_frame_body_lengths": 86,
-                    "mismatched_frame_body_lengths": 0,
-                    "fight_result_family_frames": 0,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
     result = build_fanxiu_combat_formula_authority_contrast_probe(export_root=export_root)
     contrast_text = (output_dir / "hot_update_combat_formula_authority_contrast.tsv").read_text(encoding="utf-8")
     evidence_text = (output_dir / "hot_update_combat_formula_authority_evidence.tsv").read_text(encoding="utf-8")
@@ -32502,7 +32488,6 @@ def test_fanxiu_combat_formula_authority_contrast_probe_separates_local_formula_
         encoding="utf-8"
     )
     assert result["verdict"]["supports_combat_formula_authority_contrast"] is True
-    assert result["verdict"]["socket_fixture_lacks_fight_result_family"] is True
     assert "BLLD local mini-game combat" in contrast_text
     assert "server_to_client_SM_FightResult_family" in contrast_text
     assert "client_sm_fight_result_producer_absent\tTrue" in evidence_text

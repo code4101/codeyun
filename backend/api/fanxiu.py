@@ -307,6 +307,7 @@ from backend.core.fanxiu.game.ocr_utils import (
     _extract_ocr_line_entries,
     _extract_shape_rectangle,
     _extract_shape_text,
+    _join_ocr_line_entries,
     _sanitize_ocr_text,
 )
 from backend.core.fanxiu.catalog.formation_ocr import (
@@ -559,6 +560,7 @@ router = APIRouter(
 status_router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
 )
+service_router = APIRouter()
 chars_router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
 )
@@ -5341,7 +5343,7 @@ def set_fanxiu_data_annotation_info_window(
     )
 
 
-@status_router.get(
+@service_router.get(
     "/data-annotation/runtime/service/status",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5462,7 +5464,7 @@ def set_fanxiu_behavior_tree_runtime_behavior_tree(
     return _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(entry, entry_id, req)
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/behavior-tree/set",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5488,7 +5490,7 @@ def restart_fanxiu_behavior_tree_runtime_kernel(
     return _restart_fanxiu_behavior_tree_runtime_kernel(entry, entry_id, req)
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/kernel/restart",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5517,7 +5519,7 @@ def restart_fanxiu_behavior_tree_runtime_device(
     return _restart_fanxiu_behavior_tree_runtime_device(entry_id)
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/device/restart",
     response_model=FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5554,7 +5556,7 @@ def submit_fanxiu_behavior_tree_runtime_task_cell(
     )
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/cells/task",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5592,7 +5594,7 @@ def submit_fanxiu_behavior_tree_runtime_code_cell(
     return FanxiuBehaviorTreeRuntimeStatus.model_validate(_submit_data_annotation_code_cell(entry, entry_id, req))
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/cells/code",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5634,7 +5636,7 @@ def _stop_behavior_tree_runtime_task(
     return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/task/stop",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5705,7 +5707,7 @@ def set_fanxiu_behavior_tree_runtime_guard_group(
     return _set_fanxiu_behavior_tree_runtime_guard_group(entry, entry_id, req)
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/guard/set",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
@@ -5719,7 +5721,7 @@ def set_fanxiu_behavior_tree_runtime_service_guard(
     return _set_fanxiu_behavior_tree_runtime_guard_item(entry, entry_id, req)
 
 
-@status_router.post(
+@service_router.post(
     "/data-annotation/runtime/service/guard/group/set",
     response_model=FanxiuBehaviorTreeRuntimeStatus,
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],

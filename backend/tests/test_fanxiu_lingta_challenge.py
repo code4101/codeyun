@@ -61,14 +61,14 @@ def test_lingta_runtime_admission_uses_planned_business_clock(monkeypatch) -> No
     runner = create_behavior_tree_runtime_runner()
     persisted: list[tuple] = []
     runner._persist_admission_decision = (
-        lambda payload, task_id, decision: persisted.append(
-            (payload, task_id, decision)
+        lambda payload, decision: persisted.append(
+            (payload, decision)
         )
         or decision
     )
 
     assert runner.apply_lingta_challenge_admission({}) is None
-    assert persisted == [({}, "lingta-challenge", None)]
+    assert persisted == [({}, None)]
 
 
 def test_parse_lingta_progress_ignores_completed_and_locked_neighbours() -> None:

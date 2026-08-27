@@ -24,7 +24,6 @@ from backend.core.fanxiu.data_annotation.tasks.daofa import (
     daofa_runtime_facts_advanced,
     daofa_no_target_retry_at,
     daofa_settlement_at,
-    normalize_daofa_packet_record,
     resolve_daofa_remaining_times,
     select_daofa_target,
     should_force_finish_daofa,
@@ -382,36 +381,6 @@ def test_daofa_retry_cannot_escape_the_current_window() -> None:
 
     assert result == "2026-08-02 18:30:00"
     assert writes == [(DAOFA_TASK_ID, result)]
-
-
-def _packet_record(name: str, parsed: dict[str, object]) -> dict[str, object]:
-    return {
-        "name": name,
-        "pro_id": 89202 if name.endswith("PlayInfo") else 89206,
-        "packet_id": "packet-1",
-        "captured_at": "2026-07-18 22:25:45",
-        "payload": {"parsed": parsed},
-    }
-
-
-def test_normalize_daofa_initial_and_challenge_packets() -> None:
-    target = {"id": 7, "rank": 21, "name": "target", "server": 22043, "power": 12.5, "player": True}
-    initial = normalize_daofa_packet_record(
-        _packet_record(
-            "SM_LingArenaPlayInfo",
-            {"joinerVO": {"rank": 26, "remainTimes": 1}, "targets": {"items": [target]}},
-        )
-    )
-    challenge = normalize_daofa_packet_record(
-        _packet_record(
-            "SM_LingArenaChallenge",
-            {"oldRank": 26, "newRank": 21, "remainTimes": 0, "targets": {"items": [target]}},
-        )
-    )
-
-    assert (initial["rank"], initial["remain_times"]) == (26, 1)
-    assert initial["targets"][0]["server_id"] == 22043
-    assert (challenge["old_rank"], challenge["rank"], challenge["remain_times"]) == (26, 21, 0)
 
 
 def test_select_daofa_target_uses_group_order_and_rank(tmp_path: Path) -> None:

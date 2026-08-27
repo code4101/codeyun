@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from pathlib import Path
-
 import pytest
 
 from backend.core.fanxiu.instrumentation.service import (
@@ -29,9 +27,6 @@ from backend.core.fanxiu.instrumentation.redbag_runtime_loader import (
 from backend.core.fanxiu.instrumentation.spirit_artifact_runtime_loader import (
     _deploy as deploy_spirit_artifact_runtime,
     refresh_spirit_artifact_runtime,
-)
-from backend.core.fanxiu.instrumentation.lilian_event import (
-    _deploy_file as deploy_lilian_runtime_file,
 )
 
 
@@ -212,12 +207,6 @@ def test_active_runtime_loaders_are_blocked_before_discovery(operation, expected
     [
         lambda: _deploy_bridge(SimpleNamespace(), "device-1"),
         lambda: deploy_spirit_artifact_runtime(SimpleNamespace(), "device-1"),
-        lambda: deploy_lilian_runtime_file(
-            SimpleNamespace(),
-            "device-1",
-            Path("must-not-be-read"),
-            "/data/local/tmp/must-not-be-written",
-        ),
     ],
 )
 def test_device_deploy_helpers_are_blocked_before_file_or_adb_access(operation):
