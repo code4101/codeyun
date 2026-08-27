@@ -77,42 +77,7 @@ def test_exact_target_reuses_shared_verified_slider(monkeypatch) -> None:
     }
 
 
-def test_maximum_uses_bounded_right_probes_and_stable_readback() -> None:
-    runtime = _Runtime([10, 70, 100, 100, 100])
-    result = _drain(
-        set_tiandi_yiju_round_count(runtime, "max", max_bound_drags=4)
-    )
-
-    assert result == {
-        "before": 10,
-        "after": 100,
-        "maximum": 100,
-        "target": "max",
-        "bound_drag_count": 3,
-        "fine_adjustment_actions": 0,
-    }
-    assert runtime.drags == [
-        (680, "对弈次数_滑块", "right", 0.6),
-        (680, "对弈次数_滑块", "right", 0.6),
-        (680, "对弈次数_滑块", "right", 0.6),
-    ]
-
-
-def test_maximum_rejects_non_monotonic_readback() -> None:
-    runtime = _Runtime([50, 40])
-    with pytest.raises(RuntimeError, match="未单调增加"):
-        _drain(set_tiandi_yiju_round_count(runtime, "max"))
-
-
-def test_maximum_stops_at_bound_budget() -> None:
-    runtime = _Runtime([1, 10, 20])
-    with pytest.raises(RuntimeError, match="未确认最大值"):
-        _drain(
-            set_tiandi_yiju_round_count(runtime, "max", max_bound_drags=2)
-        )
-
-
-@pytest.mark.parametrize("target", [0, -1, True, "all"])
+@pytest.mark.parametrize("target", [0, -1, True, "all", "max", 101, 4451])
 def test_invalid_target_is_rejected(target) -> None:
-    with pytest.raises(ValueError, match="正整数或 max"):
+    with pytest.raises(ValueError, match=r"1\.\.100.*禁止使用原生最大值"):
         _drain(set_tiandi_yiju_round_count(_Runtime([]), target))

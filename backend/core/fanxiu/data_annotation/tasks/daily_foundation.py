@@ -4482,14 +4482,24 @@ class DailyFoundationTaskMixin:
 
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
         matches = re.findall(
-            r"进攻倒计时\s*[:：]?\s*([0-9]{1,3})\s*[:：]\s*([0-9]{1,2})\s*[:：]\s*([0-9]{1,2})",
+            r"进攻倒计时\s*[:：]?\s*(-?)\s*([0-9]{1,3})\s*[:：]\s*([0-9]{1,2})\s*[:：]\s*([0-9]{1,2})",
             normalized,
         )
         if len(matches) != 1:
             return None
-        hours, minutes, seconds = (int(item) for item in matches[0])
+        sign, hours_text, minutes_text, seconds_text = matches[0]
+        hours, minutes, seconds = (
+            int(hours_text),
+            int(minutes_text),
+            int(seconds_text),
+        )
         if minutes >= 60 or seconds >= 60:
             return None
+        if sign == "-":
+            # The game keeps counting below zero after the attack window opens.
+            # A valid negative countdown therefore means "open now", not an
+            # unreadable timer and not a future delay.
+            return 0
         return hours * 3600 + minutes * 60 + seconds
 
     def _defer_daily_mojie_raid_attack_countdown(
@@ -4982,28 +4992,56 @@ class DailyFoundationTaskMixin:
                 yield from runtime.wait_action_settle(retry_seconds)
         raise RuntimeError(f"仙缘斗法：无法从 #308[次数] 识别剩余次数，最后 OCR={last_text[:120]}")
 
-    def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
-        try:
-            yield from runtime.wait_click_then_view(
-                308,
-                "购买",
-                311,
-                timeout=float(payload.get("purchase_open_timeout") or 8.0),
-                max_clicks=int(payload.get("purchase_open_max_clicks") or 1),
-            )
-        except TimeoutError:
-            scene_id, score, frame = runtime.current_scene([311, 308], update=True)
-            if scene_id == 311:
-                pass
-            elif scene_id == 308:
-                text = runtime.ocr_text(frame)
-                raise RuntimeError(
-                    "仙缘斗法：#308 购买入口未打开，无法证明当日 100/200 灵石档已购。"
-                    "必须进入 #311 并确认下一档价格为 300 灵石后才能幂等继续；"
-                    f"当前 #308 {score:.0f}%，OCR={text[:80]}"
+    def _open_daily_xianyuan_duel_purchase(
+        self,
+        runtime: FanxiuRuntimeSession,
+        payload: dict[str, Any],
+        *,
+        reason: str,
+    ):
+        attempts = max(1, int(payload.get("purchase_open_attempts") or 2))
+        timeout = float(payload.get("purchase_open_timeout") or 12.0)
+        last_scene: tuple[int | None, float, str] | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                yield from runtime.wait_click_then_view(
+                    308,
+                    "购买",
+                    311,
+                    timeout=timeout,
+                    max_clicks=1,
                 )
-            else:
-                raise
+                return
+            except TimeoutError as exc:
+                scene_id, score, frame = runtime.current_scene([311, 308], update=True)
+                last_scene = (scene_id, score, runtime.ocr_text(frame))
+                if scene_id == 311:
+                    return
+                if scene_id != 308:
+                    raise
+                if attempt >= attempts:
+                    text = last_scene[2]
+                    raise RuntimeError(
+                        f"仙缘斗法：{reason}后 #308 购买入口仍未打开，"
+                        "无法证明当日 100/200 灵石档已购。必须进入 #311 并确认"
+                        "下一档价格为 300 灵石后才能幂等继续；"
+                        f"当前 #308 {score:.0f}%，OCR={text[:80]}"
+                    ) from exc
+                self._log(
+                    "warning",
+                    f"仙缘斗法：{reason}后等待 #311 超时，但新帧仍确认 #308；"
+                    f"稳定等待后重试购买入口 {attempt + 1}/{attempts}",
+                )
+                yield from runtime.wait_action_settle(
+                    float(payload.get("purchase_open_retry_settle_seconds") or 1.0)
+                )
+
+    def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
+        yield from self._open_daily_xianyuan_duel_purchase(
+            runtime,
+            payload,
+            reason="首次检查购买档位",
+        )
         max_attempts = int(payload.get("purchase_max_attempts") or 6)
         stop_price = max(
             0,
@@ -5050,19 +5088,11 @@ class DailyFoundationTaskMixin:
                     f"重新打开购买页确认下一档为 {stop_price} 灵石；"
                     f"当前 #308 {score:.0f}%，OCR={text[:80]}",
                 )
-                try:
-                    yield from runtime.wait_click_then_view(
-                        308,
-                        "购买",
-                        311,
-                        timeout=float(payload.get("purchase_open_timeout") or 8.0),
-                        max_clicks=int(payload.get("purchase_open_max_clicks") or 1),
-                    )
-                except TimeoutError as exc:
-                    raise RuntimeError(
-                        "仙缘斗法：购买后返回 #308，但重新打开 #311 失败，"
-                        f"无法确认下一档为 {stop_price} 灵石"
-                    ) from exc
+                yield from self._open_daily_xianyuan_duel_purchase(
+                    runtime,
+                    payload,
+                    reason="购买后重新确认下一档",
+                )
                 continue
             if scene_id != 311:
                 raise RuntimeError(
@@ -6134,6 +6164,21 @@ class DailyFoundationTaskMixin:
         )
         return facts
 
+    @staticmethod
+    def _daily_lundao_runtime_catch_up_status(facts: Mapping[str, Any]) -> str:
+        catch_up = facts.get("runtime_catch_up")
+        if not isinstance(catch_up, Mapping):
+            return "unknown"
+        result = catch_up.get("result")
+        nested = result.get("result") if isinstance(result, Mapping) else None
+        for candidate in (nested, result, catch_up):
+            if not isinstance(candidate, Mapping):
+                continue
+            value = str(candidate.get("status") or candidate.get("reason") or "").strip()
+            if value:
+                return value
+        return "unknown"
+
     def _wait_daily_lundao_room_facts(
         self,
         runtime: Any,
@@ -6160,6 +6205,13 @@ class DailyFoundationTaskMixin:
                 and bool(roster_key)
                 and (not baseline_key or roster_key > baseline_key)
             ):
+                return facts
+            if self._daily_lundao_runtime_catch_up_status(facts) == "ingestion_busy":
+                # This is explicit back-pressure from the Runtime ingestion
+                # owner, not a GUI transition that can settle after another
+                # second.  Return the evidence immediately so the caller can
+                # preserve the original trigger and let Scheduler retry the
+                # whole transaction, instead of burning 15 identical polls.
                 return facts
             if retry >= max(0, int(settle_retries)):
                 break
@@ -6516,14 +6568,21 @@ class DailyFoundationTaskMixin:
             if return_scene == 304:
                 next_at = next_lundao_recheck(_behavior_tree_runtime._now())
                 next_time = next_at.strftime("%Y-%m-%d %H:%M:%S")
+                catch_up_status = self._daily_lundao_runtime_catch_up_status(refreshed)
                 self._record_daily_lundao_next_time(
                     payload,
                     next_time,
-                    reason="已在闻道中，Runtime 名单暂不完整，按正常半小时复查",
+                    reason=(
+                        f"已在闻道中，Runtime暂未追平（{catch_up_status}），"
+                        "按正常半小时复查"
+                    ),
                 )
                 return "success"
+            catch_up_status = self._daily_lundao_runtime_catch_up_status(refreshed)
             raise RuntimeError(
-                "论道_座位：Runtime 状态或座位名单不完整，保留原触发时间立即整单重试"
+                "论道_座位：Runtime 状态或座位名单不完整，"
+                "保留原触发时间立即整单重试；"
+                f"runtime_catch_up={catch_up_status}"
             )
 
         # Completion and an existing Daluo seat need only fresh status facts;

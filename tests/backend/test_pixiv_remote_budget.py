@@ -461,6 +461,239 @@ def test_pixiv_source_item_schema_migrates_detail_refresh_columns(tmp_path, monk
     assert "private_media_sync_pixiv_author_state" in inspect(isolated_engine).get_table_names()
     assert "private_media_sync_pixiv_gallery_state" in inspect(isolated_engine).get_table_names()
     assert "private_media_sync_pixiv_gallery_page" in inspect(isolated_engine).get_table_names()
+    author_columns = {
+        column["name"]
+        for column in inspect(isolated_engine).get_columns("private_media_sync_pixiv_author_state")
+    }
+    assert {
+        "positive_weight_artwork_count",
+        "follow_state",
+        "follow_checked_at",
+        "auto_followed_at",
+        "follow_last_error",
+    } <= author_columns
+
+
+def test_weighted_pixiv_author_candidates_count_distinct_artworks(monkeypatch):
+    monkeypatch.setattr(
+        sources,
+        "load_cached_pixiv_artwork_authors",
+        lambda _root: {
+            "100": {"author_id": "9", "author_name": "author"},
+            "101": {"author_id": "9", "author_name": "author"},
+            "200": {"author_id": "10", "author_name": "other"},
+        },
+    )
+    monkeypatch.setattr(
+        sources,
+        "resolve_weighted_pixiv_seeds",
+        lambda **_kwargs: [
+            {"artwork_id": "100", "weight": 1},
+            {"artwork_id": "100", "weight": 3},
+            {"artwork_id": "101", "weight": 2},
+            {"artwork_id": "200", "weight": 9},
+        ],
+    )
+
+    candidates = sources.resolve_weighted_pixiv_author_candidates(
+        user_id=999,
+        root_dir="unused",
+        min_artwork_count=2,
+    )
+
+    assert candidates == [
+        {
+            "author_id": "9",
+            "author_name": "author",
+            "weighted_artwork_ids": ["100", "101"],
+            "weighted_artwork_count": 2,
+            "max_weight": 3,
+        }
+    ]
+
+
+def test_pixiv_author_private_follow_converts_new_follow_to_private(monkeypatch):
+    class FakeButton:
+        text = "加关注"
+
+        def click(self, *, by_js):
+            assert by_js is True
+            self.text = "已关注"
+
+    class FakeTab:
+        def __init__(self, button):
+            self.button = button
+
+        def ele(self, _selector, timeout):
+            assert timeout == 1
+            return self.button
+
+    button = FakeButton()
+    followed_states = iter([False, True])
+    restrict_states = iter(["0", "1"])
+    changed = []
+    monkeypatch.setattr(
+        sources,
+        "navigate_pixiv_author_follow_tab",
+        lambda _tab, *, author_id: button,
+    )
+    monkeypatch.setattr(sources, "pixiv_next_api_token", lambda _tab: "csrf-token")
+    monkeypatch.setattr(
+        sources,
+        "pixiv_author_is_followed",
+        lambda _tab, *, author_id: next(followed_states),
+    )
+    monkeypatch.setattr(
+        sources,
+        "pixiv_author_follow_restrict",
+        lambda _tab, *, author_id: next(restrict_states),
+    )
+    monkeypatch.setattr(
+        sources,
+        "change_pixiv_author_follow_to_private",
+        lambda _tab, *, author_id, api_token: changed.append((author_id, api_token)),
+    )
+    monkeypatch.setattr(
+        sources,
+        "wait_for_pixiv_condition",
+        lambda predicate, **_kwargs: predicate(),
+    )
+
+    result = sources.ensure_pixiv_author_privately_followed(FakeTab(button), author_id="9")
+
+    assert result == {
+        "author_id": "9",
+        "status": "followed_private",
+        "was_followed": False,
+        "restrict_before": "0",
+        "restrict_after": "1",
+    }
+    assert changed == [("9", "csrf-token")]
+
+
+def test_pixiv_author_private_follow_skips_existing_private_follow(monkeypatch):
+    class FakeButton:
+        text = "已关注"
+
+        def click(self, **_kwargs):
+            raise AssertionError("existing private follow must not click")
+
+    monkeypatch.setattr(
+        sources,
+        "navigate_pixiv_author_follow_tab",
+        lambda _tab, *, author_id: FakeButton(),
+    )
+    monkeypatch.setattr(sources, "pixiv_next_api_token", lambda _tab: "csrf-token")
+    monkeypatch.setattr(
+        sources,
+        "pixiv_author_is_followed",
+        lambda _tab, *, author_id: True,
+    )
+    monkeypatch.setattr(
+        sources,
+        "pixiv_author_follow_restrict",
+        lambda _tab, *, author_id: "1",
+    )
+    monkeypatch.setattr(
+        sources,
+        "change_pixiv_author_follow_to_private",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing private follow must not update")
+        ),
+    )
+
+    result = sources.ensure_pixiv_author_privately_followed(object(), author_id="9")
+
+    assert result["status"] == "already_private"
+    assert result["restrict_before"] == "1"
+    assert result["restrict_after"] == "1"
+
+
+def test_pixiv_author_auto_follow_only_processes_threshold_candidates(monkeypatch):
+    candidates = [
+        {
+            "author_id": "9",
+            "author_name": "eligible",
+            "weighted_artwork_count": 10,
+        },
+        {
+            "author_id": "10",
+            "author_name": "below",
+            "weighted_artwork_count": 9,
+        },
+    ]
+    persisted_counts = []
+    persisted_results = []
+    processed = []
+
+    class FakeTab:
+        tab_id = "work"
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    class FakeBrowser:
+        def __init__(self):
+            self.anchor = type("Anchor", (), {"tab_id": "anchor"})()
+            self.work = FakeTab()
+            self.work_active = False
+
+        def get_tabs(self):
+            return (
+                [self.anchor, self.work]
+                if self.work_active and not self.work.closed
+                else [self.anchor]
+            )
+
+        def new_tab(self):
+            self.work_active = True
+            return self.work
+
+    browser = FakeBrowser()
+    monkeypatch.setattr(
+        sources,
+        "resolve_weighted_pixiv_author_candidates",
+        lambda **_kwargs: candidates,
+    )
+    monkeypatch.setattr(
+        sources,
+        "_persist_pixiv_author_weight_counts",
+        lambda **kwargs: persisted_counts.append(kwargs),
+    )
+    monkeypatch.setattr(
+        sources,
+        "_persist_pixiv_author_follow_result",
+        lambda **kwargs: persisted_results.append(kwargs),
+    )
+    monkeypatch.setattr(sources, "open_browser", lambda *, headless: browser)
+    monkeypatch.setattr(
+        sources,
+        "ensure_pixiv_author_privately_followed",
+        lambda _tab, *, author_id: (
+            processed.append(author_id)
+            or {
+                "author_id": author_id,
+                "status": "followed_private",
+                "was_followed": False,
+                "restrict_before": "0",
+                "restrict_after": "1",
+            }
+        ),
+    )
+
+    summary = sources.run_pixiv_author_auto_follow_sync(
+        user_id=999,
+        root_dir="unused",
+        log=lambda _message: None,
+    )
+
+    assert processed == ["9"]
+    assert summary["eligible_count"] == 1
+    assert summary["followed_count"] == 1
+    assert persisted_counts[0]["candidates"] == candidates
+    assert persisted_results[0]["follow_state"] == "private"
+    assert browser.work.closed is True
 
 
 def test_pixiv_gallery_three_positive_nodes_allocate_six_unique_children(engine, monkeypatch):

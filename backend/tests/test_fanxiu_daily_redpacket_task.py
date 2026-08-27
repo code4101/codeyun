@@ -858,7 +858,11 @@ def test_daily_redpacket_group_click_uses_runtime_row_alignment(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_daily_redpacket_require_fresh_uid_snapshot",
-        lambda **_kwargs: _runtime_snapshot([ordinary]),
+        lambda **_kwargs: {
+            "uids": frozenset({"ordinary-uid"}),
+            "pending_count": 1,
+            "snapshot": _runtime_snapshot([ordinary]),
+        },
     )
     monkeypatch.setattr(
         runner,
@@ -869,7 +873,7 @@ def test_daily_redpacket_group_click_uses_runtime_row_alignment(monkeypatch):
     monkeypatch.setattr(
         module,
         "read_chat_channel_gui_target",
-        lambda *_args: {"anchors": ["宗门镇邪"]},
+        lambda *_args: {"anchors": ["宗门镇邪"], "tab_label": "群聊"},
     )
 
     class Runtime:
@@ -879,6 +883,11 @@ def test_daily_redpacket_group_click_uses_runtime_row_alignment(monkeypatch):
         def shape(self, _view, path):
             assert path == "窗口"
             return SimpleNamespace(box=lambda: {"x": 0, "y": 0, "w": 300, "h": 300})
+
+        def click_shape_center_then_view(self, view, shape, target, **_kwargs):
+            assert (view, shape, target) == (332, "群聊", 332)
+            yield "tab"
+            return SimpleNamespace(id=332)
 
         def cur_frame(self, *, update):
             assert update is True
@@ -913,7 +922,11 @@ def test_daily_redpacket_runtime_row_anchor_negative_never_clicks(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_daily_redpacket_require_fresh_uid_snapshot",
-        lambda **_kwargs: _runtime_snapshot([ordinary]),
+        lambda **_kwargs: {
+            "uids": frozenset({"ordinary-uid"}),
+            "pending_count": 1,
+            "snapshot": _runtime_snapshot([ordinary]),
+        },
     )
     monkeypatch.setattr(
         runner,
@@ -924,13 +937,18 @@ def test_daily_redpacket_runtime_row_anchor_negative_never_clicks(monkeypatch):
     monkeypatch.setattr(
         module,
         "read_chat_channel_gui_target",
-        lambda *_args: {"anchors": ["宗门镇邪"]},
+        lambda *_args: {"anchors": ["宗门镇邪"], "tab_label": "群聊"},
     )
 
     class Runtime:
         def shape(self, _view, path):
             assert path == "窗口"
             return SimpleNamespace(box=lambda: {"x": 0, "y": 0, "w": 300, "h": 300})
+
+        def click_shape_center_then_view(self, view, shape, target, **_kwargs):
+            assert (view, shape, target) == (332, "群聊", 332)
+            yield "tab"
+            return SimpleNamespace(id=332)
 
         def cur_frame(self, *, update):
             assert update is True

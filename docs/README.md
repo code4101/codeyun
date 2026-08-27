@@ -11,7 +11,7 @@
 - 星图笔记：进入 [domains/notes](./domains/notes/)。
 - 星云表格：进入 [domains/spreadsheets](./domains/spreadsheets/)。
 - 股票与账单：进入 [domains/finance](./domains/finance/)。
-- 外部数据与内容集成：进入 [domains/integrations](./domains/integrations/)。
+- 外部数据与内容集成：进入 [domains/integrations](./domains/integrations/)；Pixiv 作者关注规则见 [Pixiv 作者私密关注机制](./domains/integrations/architecture/Pixiv作者私密关注机制.md)。
 - 启动、排障和恢复：进入 [operations/runbooks](./operations/runbooks/)。
 - 自动化设计与长期上下文：进入 [automation](./automation/)。
 - 产品能力概览：参见 [中文模块说明](./reference/modules.zh-CN.md) 或 [English modules](./reference/modules.md)。

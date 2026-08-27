@@ -695,8 +695,15 @@ def test_scene_jump_layer0_wait_explicitly_sleeps_before_fresh_frame(tmp_path, m
         def wait(self, _seconds):
             return False
 
-    def current_scene(_runtime, views=None, *, frame_data_url=None, update=False):
-        del views, update
+    def current_scene(
+        _runtime,
+        views=None,
+        *,
+        frame_data_url=None,
+        update=False,
+        include_popup_candidates=True,
+    ):
+        del views, update, include_popup_candidates
         if frame_data_url == "scene-247":
             return 247, 100.0, frame_data_url
         return None, 0.0, frame_data_url
@@ -724,7 +731,11 @@ def test_scene_jump_layer0_wait_explicitly_sleeps_before_fresh_frame(tmp_path, m
     ))
 
     assert result == 247
-    assert sleeps == [pytest.approx(0.5)]
+    assert sleeps == [
+        pytest.approx(
+            behavior_tree_runtime_core.DEFAULT_SCENE_RECOGNITION_POLL_SECONDS
+        )
+    ]
 
 
 def test_scene_jump_accepts_route_capable_unexpected_landing_without_waiting_layer0(tmp_path, monkeypatch):
@@ -763,7 +774,7 @@ def test_scene_jump_accepts_route_capable_unexpected_landing_without_waiting_lay
         def wait(self, _seconds):
             return False
 
-    def current_scene(_runtime, views=None, *, frame_data_url=None, update=False):
+    def current_scene(_runtime, views=None, *, frame_data_url=None, update=False, **_kwargs):
         del views, update
         return None, 0.0, frame_data_url
 
@@ -936,7 +947,7 @@ def test_go_scene_continuous_unknown_is_cancelled_by_any_known_scene(monkeypatch
             return False
 
     class FakeRuntime:
-        def current_scene(self, views=None, *, frame_data_url=None, update=False):
+        def current_scene(self, views=None, *, frame_data_url=None, update=False, **_kwargs):
             del views, update
             if frame_data_url == "scene-185":
                 return 185, 100.0, frame_data_url
@@ -986,7 +997,7 @@ def test_go_scene_continuous_unknown_includes_initial_recognition_time(monkeypat
             return False
 
     class FakeRuntime:
-        def current_scene(self, views=None, *, frame_data_url=None, update=False):
+        def current_scene(self, views=None, *, frame_data_url=None, update=False, **_kwargs):
             del views, update
             if state["first"]:
                 state["first"] = False
@@ -1939,7 +1950,12 @@ def test_runtime_wait_click_then_view_records_landing_frequency(monkeypatch, tmp
     monkeypatch.setattr(runtime, "wait_click", fake_wait_click)
     monkeypatch.setattr(runtime, "wait_action_settle", fake_wait_action_settle)
     monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
-    monkeypatch.setattr(runner, "_write_asset_tree", lambda _path, written_tree: writes.append(written_tree))
+    monkeypatch.setattr(
+        behavior_tree_runtime_core,
+        "update_data_annotation_asset_tree",
+        lambda _path, _update: writes.append(tree)
+        or SimpleNamespace(tree=tree, revision="test-revision"),
+    )
 
     result = _drain_generator(runtime.wait_click_then_view(69, "拜谒", 264))
 
@@ -1966,7 +1982,12 @@ def test_runtime_wait_click_then_wait_view_records_declared_landing_once(monkeyp
     writes: list[list[dict]] = []
     scenes = iter([(69, 100.0), (264, 100.0), (264, 100.0)])
 
-    monkeypatch.setattr(runner, "_write_asset_tree", lambda _path, written_tree: writes.append(written_tree))
+    monkeypatch.setattr(
+        behavior_tree_runtime_core,
+        "update_data_annotation_asset_tree",
+        lambda _path, _update: writes.append(tree)
+        or SimpleNamespace(tree=tree, revision="test-revision"),
+    )
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(scenes))
     monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: None)
@@ -1999,7 +2020,12 @@ def test_runtime_wait_click_then_wait_view_does_not_create_missing_jump_target(m
     writes: list[list[dict]] = []
     scenes = iter([(293, 100.0), (294, 100.0)])
 
-    monkeypatch.setattr(runner, "_write_asset_tree", lambda _path, written_tree: writes.append(written_tree))
+    monkeypatch.setattr(
+        behavior_tree_runtime_core,
+        "update_data_annotation_asset_tree",
+        lambda _path, _update: writes.append(tree)
+        or SimpleNamespace(tree=tree, revision="test-revision"),
+    )
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: next(scenes))
     monkeypatch.setattr(runner, "_click_frame_point", lambda *_args, **_kwargs: None)
@@ -2121,7 +2147,11 @@ def test_runtime_wait_click_then_view_retries_once_when_declared_jump_stays_on_s
         "settle",
         "wait_view",
     ]
-    assert actions[3] == ("current_scene", (), {"update": True})
+    assert actions[3] == (
+        "current_scene",
+        (),
+        {"update": True, "handle_interruptions": True},
+    )
 
 
 def test_runtime_wait_click_then_view_does_not_retry_without_declared_jump(monkeypatch):
@@ -3254,10 +3284,12 @@ def test_scene_route_candidates_use_full_frame_similarity_when_graph_ties(tmp_pa
 def test_route_candidate_prefers_direct_world_over_false_high_score_selection(tmp_path, monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     image34 = _scene_image("世界", "0034.png", [
+        {"id": "world-identity", "kind": "rect", "title": "世界身份", "x": 0.0, "y": 0.0, "w": 0.1, "h": 0.1, "isSceneIdentity": True},
         {"id": "daily", "kind": "rect", "title": "日常", "sceneJumpTarget": "69"},
     ], layer=1)
     image69 = _scene_image("日常", "0069.png", [], layer=1)
     image18 = _scene_image("游戏封面", "0018.png", [
+        {"id": "cover-identity", "kind": "rect", "title": "封面身份", "x": 0.0, "y": 0.0, "w": 0.1, "h": 0.1, "isSceneIdentity": True},
         {"id": "back", "kind": "rect", "title": "返回", "sceneJumpTarget": "20,34"},
     ], layer=1)
     image20 = _scene_image("绿瓶", "0020.png", [
@@ -3350,7 +3382,7 @@ def test_mumu_adb_serial_candidates_use_local_ports_without_proxy_devices_by_def
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
     mumu_control._MUMU_ADB_SESSION.clear()
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
     monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: [])
 
     assert mumu_control._mumu_adb_serial_candidates() == [
@@ -3365,7 +3397,7 @@ def test_mumu_adb_serial_candidates_allow_proxy_devices_when_explicit(monkeypatc
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, "1")
     mumu_control._MUMU_ADB_SESSION.clear()
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
     monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: [])
 
     assert mumu_control._mumu_adb_serial_candidates() == [
@@ -3381,7 +3413,7 @@ def test_mumu_adb_serial_candidates_keep_default_ports_only_without_devices(monk
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
     mumu_control._MUMU_ADB_SESSION.clear()
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "devices", lambda: [])
     monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: [])
 
     assert mumu_control._mumu_adb_serial_candidates() == [
@@ -3396,7 +3428,7 @@ def test_mumu_adb_serial_candidates_include_mumu_manager_devices_by_default(monk
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv(mumu_control.MUMU_ADB_ALLOW_PROXY_DEVICES_ENV, raising=False)
     mumu_control._MUMU_ADB_SESSION.clear()
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "devices", lambda: [])
     monkeypatch.setattr(mumu_control, "_mumu_manager_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
 
     assert mumu_control._mumu_adb_serial_candidates() == [
@@ -3415,8 +3447,8 @@ def test_mumu_adb_input_uses_adb_cli_with_online_serial(monkeypatch):
 
     monkeypatch.setattr(mumu_control, "_ensure_mumu_adb_port_available", lambda: None)
     monkeypatch.setenv("FANXIU_MUMU_ADB_SERIAL", "192.168.31.181:5555")
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "devices", lambda: [])
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "devices", lambda: [])
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
 
     def fake_run(command, **kwargs):
         calls.append((tuple(str(item) for item in command), kwargs.get("timeout")))
@@ -3450,7 +3482,7 @@ def test_mumu_adb_input_reports_failed_process_output(monkeypatch):
 
     monkeypatch.setattr(mumu_control, "_ensure_mumu_adb_port_available", lambda: None)
     monkeypatch.setenv("FANXIU_MUMU_ADB_SERIAL", "192.168.31.181:5555")
-    monkeypatch.setattr(mumu_control.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu_control.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
 
     def fake_run(command, **_kwargs):
         if command[-1] == "wm size":
@@ -6407,7 +6439,7 @@ def test_safe_daily_done_cleanup_restores_non_error_runtime_status():
     assert runner._status["message"] == "日常_首领：本轮已经结算"
 
 
-def test_go_scene_does_not_short_circuit_target_below_scene_threshold(tmp_path, monkeypatch):
+def test_go_scene_fails_fast_when_world_target_is_below_scene_threshold(tmp_path, monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     image34 = _scene_image("世界", "0034.png", [
         {"id": "world-id", "kind": "rect", "title": "大地图", "sceneIdentityRole": "required"},
@@ -6442,7 +6474,10 @@ def test_go_scene_does_not_short_circuit_target_below_scene_threshold(tmp_path, 
 
     assert saved["target_scene_id"] == 34
     assert saved["current_scene_id"] is None
-    assert state["now"] == pytest.approx(160.0)
+    # An unguarded return-to-world must not hold the Runtime for a full minute
+    # on a weak route fallback.  It records the unknown frame immediately and
+    # still refuses to claim target success.
+    assert state["now"] == pytest.approx(100.0)
 
 
 def test_auto_close_guard_candidates_are_cached_by_asset_tree_signature(tmp_path, monkeypatch):
@@ -7259,7 +7294,13 @@ def test_debug_eval_context_exposes_go_scene():
 
 
 def test_runtime_scene_terms_are_documented():
-    docs_root = Path(__file__).resolve().parents[2] / "docs"
+    docs_root = (
+        Path(__file__).resolve().parents[2]
+        / "docs"
+        / "domains"
+        / "fanxiu"
+        / "architecture"
+    )
     text = (
         (docs_root / "凡修GUI场景地图与图模型约定.md").read_text(encoding="utf-8")
         + "\n"
@@ -7477,7 +7518,10 @@ def test_go_scene_moves_by_scene_jump_and_records_declared_target_frequency(tmp_
     runner = create_behavior_tree_runtime_runner()
     jump_shape = {"id": "jump", "kind": "rect", "title": "去二", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "2"}
     tree = [
-        _scene_image("一", "0001.jpg", [jump_shape]),
+        _scene_image("一", "0001.jpg", [
+            jump_shape,
+            {"id": "id1", "kind": "rect", "title": "一标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1},
+        ]),
         _scene_image("二", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
@@ -7512,7 +7556,10 @@ def test_go_scene_waits_layer0_declared_target_through_transition(tmp_path, monk
     runner = create_behavior_tree_runtime_runner()
     jump_shape = {"id": "jump13", "kind": "rect", "title": "去三", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
-        _scene_image("一", "0001.jpg", [jump_shape], layer=1),
+        _scene_image("一", "0001.jpg", [
+            jump_shape,
+            {"id": "id1", "kind": "rect", "title": "一标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1},
+        ], layer=1),
         _scene_image("二过渡", "0002.jpg", [{"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
         _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
@@ -7563,10 +7610,16 @@ def test_go_scene_waits_layer0_declared_target_through_transition(tmp_path, monk
 def test_go_scene_replans_through_annotated_reward_interruption(tmp_path, monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     jump_shape = {"id": "jump13", "kind": "rect", "title": "日常", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
-    claim_shape = {"id": "claim", "kind": "rect", "title": "领取", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1, "sceneJumpTarget": "1"}
+    claim_shape = {"id": "claim", "kind": "rect", "title": "领取奖励", "x": 0.4, "y": 0.6, "w": 0.2, "h": 0.1, "sceneJumpTarget": "1"}
     tree = [
-        _scene_image("一", "0001.jpg", [jump_shape], layer=1),
-        _scene_image("报名领取灵石奖励", "0002.jpg", [claim_shape], layer=1),
+        _scene_image("一", "0001.jpg", [
+            jump_shape,
+            {"id": "id1", "kind": "rect", "title": "一标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1},
+        ], layer=1),
+        _scene_image("报名领取灵石奖励", "0002.jpg", [
+            claim_shape,
+            {"id": "id2", "kind": "rect", "title": "奖励标识", "isSceneIdentity": True, "x": 0.1, "y": 0.2, "w": 0.2, "h": 0.1},
+        ], layer=1),
         _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
@@ -7606,15 +7659,16 @@ def test_go_scene_replans_through_annotated_reward_interruption(tmp_path, monkey
     )
 
     assert result == "success"
-    assert any("奖励/提示页打断" in log["message"] for log in runner.status()["logs"])
+    assert first_jump_interrupted["value"] is True
+    assert scene_state["value"] == 3
 
 
 def test_go_scene_records_new_landing_and_replans_to_target(tmp_path, monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     first_shape = {"id": "jump12", "kind": "rect", "title": "随机跳", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
-        _scene_image("一", "0001.jpg", [first_shape], layer=1),
-        _scene_image("二", "0002.jpg", [{"id": "jump23", "kind": "rect", "title": "继续", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}], layer=1),
+        _scene_image("一", "0001.jpg", [first_shape, {"id": "id1", "kind": "rect", "title": "一标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
+        _scene_image("二", "0002.jpg", [{"id": "jump23", "kind": "rect", "title": "继续", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}, {"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
         _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
@@ -7672,8 +7726,8 @@ def test_go_scene_replans_through_historical_reachable_landing(tmp_path, monkeyp
     }
     second_shape = {"id": "jump23", "kind": "rect", "title": "继续", "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1, "sceneJumpTarget": "3"}
     tree = [
-        _scene_image("一", "0001.jpg", [first_shape], layer=1),
-        _scene_image("二", "0002.jpg", [second_shape], layer=1),
+        _scene_image("一", "0001.jpg", [first_shape, {"id": "id1", "kind": "rect", "title": "一标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
+        _scene_image("二", "0002.jpg", [second_shape, {"id": "id2", "kind": "rect", "title": "二标识", "isSceneIdentity": True, "x": 0.4, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
         _scene_image("三", "0003.jpg", [{"id": "id3", "kind": "rect", "title": "三标识", "isSceneIdentity": True, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.1}], layer=1),
     ]
     path = tmp_path / "asset_tree.json"
@@ -9120,7 +9174,7 @@ def test_daily_lingmai_reward_exit_keeps_scene_186_in_layer0_and_clicks_leave():
     assert ("current_scene", (306, 303, 285, 186, 34, 318, 59)) in runtime.actions
     assert runtime.actions[-1] == (
         "wait_click_then_view",
-        (186, "离开", [47, 34, 69, 289, 86, 85, 386]),
+        (186, "离开", [47, 34, 69, 289, 86, 85, 386, 375, 295]),
         {
             "settle_seconds": 1.5,
             "timeout": 12.0,
@@ -9324,7 +9378,7 @@ def test_world_side_exit_context_accepts_scene_186_and_clicks_its_own_leave(monk
     assert result is True
     assert runtime.actions[0] == (
         "current_scene",
-        (326, 325, 266, 265, 264, 233, 225, 85, 186, 289, 86, 69, 34),
+        (477, 66, 326, 325, 266, 265, 264, 233, 225, 85, 186, 289, 86, 69, 34),
     )
     assert ("wait_click", 186, "离开") in runtime.actions
     assert ctx["_go_scene_known_scene_id"] == 34
@@ -10382,11 +10436,6 @@ def test_daily_lundao_ingestion_busy_keeps_original_trigger_for_immediate_retry(
         actions.append(("return_to_selection", scene_id))
         yield BehaviorTreeStatus.RUNNING
 
-    monkeypatch.setattr(
-        daily_foundation,
-        "read_current_lundao_facts",
-        lambda: {"roster": {"evidence": {"order_key": [1]}}},
-    )
     monkeypatch.setattr(runner, "_click_daily_lundao_dojo", lambda _runtime, target: actions.append(("click_dojo", target)))
     monkeypatch.setattr(
         runner,
@@ -10456,11 +10505,6 @@ def test_daily_lundao_ingestion_busy_while_visibly_seated_uses_normal_recheck(mo
         yield BehaviorTreeStatus.RUNNING
         return 296
 
-    monkeypatch.setattr(
-        daily_foundation,
-        "read_current_lundao_facts",
-        lambda: {"roster": {"evidence": {"order_key": [1]}}},
-    )
     monkeypatch.setattr(runner, "_click_daily_lundao_dojo", lambda _runtime, target: actions.append(("click_dojo", target)))
     monkeypatch.setattr(
         runner,
@@ -10530,12 +10574,21 @@ def test_daily_lundao_visible_sanqing_empty_seat_skips_runtime_refresh(monkeypat
         nonlocal refresh_count
         refresh_count += 1
         return {
-            "status": {"available": True, "room_id": None},
+            "status": (
+                {
+                    "available": True,
+                    "complete": True,
+                    "seated": True,
+                    "room_id": daily_foundation.LUNDAO_SANQING_ROOM_ID,
+                }
+                if refresh_count >= 3
+                else {"available": True, "complete": True, "seated": False, "room_id": None}
+            ),
             "roster": {
                 "available": True,
                 "complete": True,
                 "room_id": daily_foundation.LUNDAO_DALUO_ROOM_ID,
-                "evidence": {"order_key": [2]},
+                "evidence": {"order_key": [refresh_count]},
             },
             "runtime_catch_up": {"ok": True, "status": "completed"},
         }
@@ -10549,11 +10602,6 @@ def test_daily_lundao_visible_sanqing_empty_seat_skips_runtime_refresh(monkeypat
         yield BehaviorTreeStatus.RUNNING
         return "success"
 
-    monkeypatch.setattr(
-        daily_foundation,
-        "read_current_lundao_facts",
-        lambda: {"roster": {"evidence": {"order_key": [1]}}},
-    )
     monkeypatch.setattr(daily_foundation, "current_lundao_player_profile", lambda: {"available": True})
     monkeypatch.setattr(
         daily_foundation,
@@ -10588,7 +10636,7 @@ def test_daily_lundao_visible_sanqing_empty_seat_skips_runtime_refresh(monkeypat
     ))
 
     assert result == "success"
-    assert refresh_count == 1
+    assert refresh_count == 4
     assert ("click_dojo", "三清") in actions
     assert ("room_action", {"action": "empty"}) in actions
     assert ("record_next", "三清画面确认有空位，已直接入座") in actions
@@ -10604,6 +10652,7 @@ def test_daily_lundao_changed_daluo_target_falls_back_to_visible_sanqing_empty_s
     actions: list[tuple] = []
     now = datetime(2026, 8, 3, 20, 19, 35)
     waited_scenes = iter((297, 298))
+    refresh_count = 0
     runtime_status = {
         "available": True,
         "complete": True,
@@ -10638,12 +10687,30 @@ def test_daily_lundao_changed_daluo_target_falls_back_to_visible_sanqing_empty_s
         yield BehaviorTreeStatus.RUNNING
         return "target_changed" if opportunity.get("action") == "kick" else "success"
 
+    def fake_refresh(**_kwargs):
+        nonlocal refresh_count
+        refresh_count += 1
+        return {
+            "status": (
+                {
+                    "available": True,
+                    "complete": True,
+                    "seated": True,
+                    "room_id": daily_foundation.LUNDAO_SANQING_ROOM_ID,
+                }
+                if refresh_count >= 3
+                else {"available": True, "complete": True, "seated": False, "room_id": None}
+            ),
+            "roster": {
+                "available": True,
+                "complete": True,
+                "room_id": daily_foundation.LUNDAO_DALUO_ROOM_ID,
+                "evidence": {"order_key": [refresh_count]},
+            },
+            "runtime_catch_up": {"ok": True, "status": "completed"},
+        }
+
     monkeypatch.setattr(daily_foundation._behavior_tree_runtime, "_now", lambda: now)
-    monkeypatch.setattr(
-        daily_foundation,
-        "read_current_lundao_facts",
-        lambda: {"roster": {"evidence": {"order_key": [1]}}},
-    )
     monkeypatch.setattr(
         daily_foundation,
         "current_lundao_player_profile",
@@ -10683,6 +10750,7 @@ def test_daily_lundao_changed_daluo_target_falls_back_to_visible_sanqing_empty_s
         fake_return_to_selection,
     )
     monkeypatch.setattr(runner, "_run_daily_lundao_room_action", fake_room_action)
+    monkeypatch.setattr(runner, "_refresh_daily_lundao_runtime_facts", fake_refresh)
     monkeypatch.setattr(
         runner,
         "_record_daily_lundao_next_time",
@@ -10750,11 +10818,6 @@ def test_daily_lundao_after_21_with_zero_free_attempts_finishes_until_next_day(
     monkeypatch.setattr(daily_foundation._behavior_tree_runtime, "_now", lambda: now)
     monkeypatch.setattr(
         daily_foundation,
-        "read_current_lundao_facts",
-        lambda: {"roster": {"evidence": {"order_key": [1]}}},
-    )
-    monkeypatch.setattr(
-        daily_foundation,
         "current_lundao_player_profile",
         lambda: {"available": True},
     )
@@ -10790,6 +10853,20 @@ def test_daily_lundao_after_21_with_zero_free_attempts_finishes_until_next_day(
         runner,
         "_return_daily_lundao_to_selection",
         fake_return_to_selection,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_refresh_daily_lundao_runtime_facts",
+        lambda **_kwargs: {
+            "status": {"available": True, "complete": True, "seated": False, "room_id": None},
+            "roster": {
+                "available": True,
+                "complete": True,
+                "room_id": daily_foundation.LUNDAO_DALUO_ROOM_ID,
+                "evidence": {"order_key": [1]},
+            },
+            "runtime_catch_up": {"ok": True, "status": "completed"},
+        },
     )
     monkeypatch.setattr(runner, "_daily_lundao_remaining_attempts", lambda _runtime: 0)
     monkeypatch.setattr(
@@ -11019,12 +11096,12 @@ def test_daily_lundao_room_facts_waits_past_stale_cross_room_roster(monkeypatch)
             actions.append(("settle", seconds))
             yield BehaviorTreeStatus.RUNNING
 
+    snapshots = iter((stale, fresh))
     monkeypatch.setattr(
         runner,
         "_refresh_daily_lundao_runtime_facts",
-        lambda **_kwargs: stale,
+        lambda **_kwargs: next(snapshots),
     )
-    monkeypatch.setattr(daily_foundation, "read_current_lundao_facts", lambda: fresh)
 
     result = _drain_generator(
         runner._wait_daily_lundao_room_facts(
@@ -14847,7 +14924,7 @@ def test_mail_selective_claim_does_not_reclassify_world_side_scene_from_business
         def cur_frame(self, update: bool = False):
             return next(frames)
 
-        def current_scene(self, _candidates=None, *, frame_data_url=None, update=False):
+        def current_scene(self, _candidates=None, *, frame_data_url=None, update=False, **_kwargs):
             del update
             current_frame = frame_data_url if frame_data_url is not None else next(frames)
             scene_id, score = fake_identify(ctx, current_frame, _candidates)
@@ -19518,6 +19595,7 @@ def test_daily_xianyuan_duel_remaining_corrects_plus_as_duplicated_digit():
 def test_daily_xianyuan_duel_purchase_open_failure_cannot_claim_idempotent_completion():
     runner = create_behavior_tree_runtime_runner()
     logs: list[tuple[str, str]] = []
+    open_calls = 0
 
     def failed_open():
         if False:
@@ -19526,9 +19604,16 @@ def test_daily_xianyuan_duel_purchase_open_failure_cannot_claim_idempotent_compl
 
     class FakeRuntime:
         def wait_click_then_view(self, scene, shape, target, **kwargs):
+            nonlocal open_calls
+            open_calls += 1
             assert (scene, shape, target) == (308, "购买", 311)
-            assert kwargs == {"timeout": 8.0, "max_clicks": 1}
+            assert kwargs == {"timeout": 12.0, "max_clicks": 1}
             return failed_open()
+
+        def wait_action_settle(self, seconds):
+            assert seconds == 1.0
+            if False:
+                yield None
 
         def current_scene(self, preferred, *, update=False):
             assert (tuple(preferred), update) == ((311, 308), True)
@@ -19543,7 +19628,58 @@ def test_daily_xianyuan_duel_purchase_open_failure_cannot_claim_idempotent_compl
     with pytest.raises(RuntimeError, match="必须进入 #311.*300 灵石"):
         _drain_generator(runner._prepare_daily_xianyuan_duel_purchases(FakeRuntime(), {}))
 
+    assert open_calls == 2
     assert not any("幂等继续挑战" in message for _kind, message in logs)
+
+
+def test_daily_xianyuan_duel_purchase_open_retries_only_after_reconfirming_308():
+    runner = create_behavior_tree_runtime_runner()
+    calls: list[tuple] = []
+    opens = iter(["timeout", "success"])
+
+    def done(value=None):
+        if False:
+            yield None
+        return value
+
+    def failed_open():
+        if False:
+            yield None
+        raise TimeoutError("still on #308")
+
+    class FakeRuntime:
+        def wait_click_then_view(self, scene, shape, target, **kwargs):
+            calls.append(("wait_click_then_view", scene, shape, target, kwargs))
+            if next(opens) == "timeout":
+                return failed_open()
+            return done(SimpleNamespace(id=target))
+
+        def current_scene(self, preferred, *, update=False):
+            calls.append(("current_scene", tuple(preferred), update))
+            return 308, 100.0, "duel-frame"
+
+        def ocr_text(self, frame):
+            assert frame == "duel-frame"
+            return "仙缘斗法 剩余挑战次数：7"
+
+        def wait_action_settle(self, seconds):
+            calls.append(("wait_action_settle", seconds))
+            return done(None)
+
+    _drain_generator(
+        runner._open_daily_xianyuan_duel_purchase(
+            FakeRuntime(),
+            {},
+            reason="测试",
+        )
+    )
+
+    assert calls == [
+        ("wait_click_then_view", 308, "购买", 311, {"timeout": 12.0, "max_clicks": 1}),
+        ("current_scene", (311, 308), True),
+        ("wait_action_settle", 1.0),
+        ("wait_click_then_view", 308, "购买", 311, {"timeout": 12.0, "max_clicks": 1}),
+    ]
 
 
 def test_daily_xianyuan_duel_purchase_reopens_after_return_to_308_and_confirms_300():
@@ -20431,6 +20567,7 @@ def test_daily_mojie_raid_clicks_annotated_xiuluo_target_by_default():
     [
         ("进攻倒计时：13:57:48", 13 * 3600 + 57 * 60 + 48),
         ("进攻倒计时：００:００:００", 0),
+        ("进攻倒计时：-12：33:50", 0),
         ("进攻倒计时：13:72:00", None),
         ("进攻倒计时", None),
         ("进攻倒计时：00:00:00 进攻倒计时：13:00:00", None),
@@ -20708,6 +20845,9 @@ def test_daily_mojie_raid_commits_direct_320_to_already_joined_scene(tmp_path, m
 
         def ocr_text(self, _frame):
             return "修罗"
+
+        def ocr_text_in_shapes(self, *_args, **_kwargs):
+            return "进攻倒计时：00:00:00"
 
         def click_shape_center_then_view(self, scene_id, shape, *targets):
             calls.append(("click_shape_center_then_view", scene_id, shape, targets))

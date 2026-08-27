@@ -571,6 +571,12 @@ def test_scheduled_pixiv_shortfall_is_allowed_after_cached_downloads(
 def test_pixiv_daily_acquisition_downloads_to_cache_but_refills_only_200(monkeypatch):
     cached_counts = iter([300, 1300, 1300])
     monkeypatch.setattr(runtime, "count_platform_cached_media", lambda *_args: next(cached_counts))
+    daily_counts = iter([0, 1000])
+    monkeypatch.setattr(
+        runtime,
+        "daily_downloaded_source_count",
+        lambda **_kwargs: next(daily_counts),
+    )
     refill_calls: list[dict[str, object]] = []
     monkeypatch.setattr(
         runtime,
@@ -606,6 +612,12 @@ def test_pixiv_daily_acquisition_downloads_to_cache_but_refills_only_200(monkeyp
 def test_pinterest_daily_acquisition_downloads_500_but_refills_only_200(monkeypatch):
     cached_counts = iter([400, 900, 900])
     monkeypatch.setattr(runtime, "count_platform_cached_media", lambda *_args: next(cached_counts))
+    daily_counts = iter([0, 500])
+    monkeypatch.setattr(
+        runtime,
+        "daily_downloaded_source_count",
+        lambda **_kwargs: next(daily_counts),
+    )
     monkeypatch.setattr(runtime, "count_pending_source_candidates", lambda **_kwargs: 500)
     monkeypatch.setattr(
         runtime,
@@ -728,6 +740,10 @@ def test_pixiv_collect_prefers_gallery_expansion_then_author_watermarks_before_h
 ) -> None:
     events: list[tuple[str, int]] = []
 
+    def fake_auto_follow(**_kwargs):
+        events.append(("auto_follow", 0))
+        return {"eligible_count": 0}
+
     def fake_gallery_sync(**kwargs):
         events.append(("gallery", int(kwargs["download_limit"])))
         return {"new_download_count": 6}
@@ -740,6 +756,7 @@ def test_pixiv_collect_prefers_gallery_expansion_then_author_watermarks_before_h
         events.append(("home", int(kwargs["download_limit"])))
         return {"new_download_count": 5}
 
+    monkeypatch.setattr(runtime, "run_pixiv_author_auto_follow_sync", fake_auto_follow)
     monkeypatch.setattr(runtime, "run_pixiv_gallery_expansion_sync", fake_gallery_sync)
     monkeypatch.setattr(runtime, "run_pixiv_author_sync", fake_author_sync)
     monkeypatch.setattr(runtime, "run_pixiv_home_sync", fake_home_sync)
@@ -754,7 +771,8 @@ def test_pixiv_collect_prefers_gallery_expansion_then_author_watermarks_before_h
         }
     )
 
-    assert events == [("gallery", 20), ("author", 14), ("home", 5)]
+    assert events == [("auto_follow", 0), ("gallery", 20), ("author", 14), ("home", 5)]
+    assert result["author_auto_follow"] == {"eligible_count": 0}
     assert result["new_download_count"] == 20
     assert result["gallery"] == {"new_download_count": 6}
     assert result["author"] == {"downloaded_count": 9}
