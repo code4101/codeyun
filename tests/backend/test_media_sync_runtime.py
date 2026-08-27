@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import inspect
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -187,6 +189,37 @@ def test_pinterest_related_sync_accepts_headless_mode() -> None:
 def test_candidate_downloads_are_forced_to_one_worker_per_platform() -> None:
     assert sources.PIXIV_DOWNLOAD_WORKERS == 1
     assert sources.PINTEREST_DOWNLOAD_WORKERS == 1
+
+
+@pytest.mark.parametrize("platform", ["pixiv", "pinterest"])
+def test_candidate_review_refill_units_prioritize_newest_across_full_reservoir(
+    tmp_path,
+    engine,
+    monkeypatch,
+    platform,
+) -> None:
+    reservoir_root = tmp_path / f"3、{platform}"
+    old_path = reservoir_root / "a-old-author" / "old.jpg"
+    new_path = reservoir_root / "z-new-author" / "new.jpg"
+    old_path.parent.mkdir(parents=True)
+    new_path.parent.mkdir(parents=True)
+    old_path.write_bytes(b"old")
+    new_path.write_bytes(b"new")
+    now = time.time()
+    os.utime(old_path, (now - 200, now - 200))
+    os.utime(new_path, (now - 100, now - 100))
+    monkeypatch.setattr(sources, "engine", engine)
+
+    units = sources.build_candidate_review_refill_units(
+        user_id=2,
+        root_dir=tmp_path,
+        platform=platform,
+    )
+
+    assert [unit.relative_paths[0] for unit in units] == [
+        Path("z-new-author/new.jpg"),
+        Path("a-old-author/old.jpg"),
+    ]
 
 
 def test_pixiv_soft_batch_limit_keeps_queued_author_group_whole() -> None:

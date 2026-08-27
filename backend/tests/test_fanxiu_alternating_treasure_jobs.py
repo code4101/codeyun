@@ -11,31 +11,23 @@ from backend.core.fanxiu.data_annotation.default_jobs import (
 from backend.core.fanxiu.data_annotation.scheduler_defaults import (
     default_data_annotation_scheduler_tasks,
 )
-from backend.core.fanxiu.data_annotation.effective_time import job_effective_time
 from backend.core.fanxiu.data_annotation.tasks import kunlun_secret_jobs as kunlun
 from backend.core.fanxiu.data_annotation.tasks import penglai_xianzang_jobs as penglai
 
 
-def test_next_times_alternate_without_iso_week_boundary_assumptions() -> None:
-    before_kunlun = datetime(2026, 8, 13, 0, 1)
-    assert kunlun.next_kunlun_config_time(before_kunlun) == "2026-08-13 00:05:00"
-    assert kunlun.next_kunlun_lottery_time(before_kunlun) == "2026-08-13 21:10:00"
-    assert penglai.next_xianzang_config_time(before_kunlun) == "2026-08-20 00:05:00"
-    assert penglai.next_xianzang_lottery_time(before_kunlun) == "2026-08-20 21:10:00"
-
-    after_kunlun_config = datetime(2026, 8, 13, 19, 5)
-    assert kunlun.next_kunlun_config_time(after_kunlun_config) == "2026-08-27 00:05:00"
-    assert kunlun.next_kunlun_lottery_time(after_kunlun_config) == "2026-08-13 21:10:00"
-
-
-def test_default_scheduler_contains_all_four_alternating_jobs_once() -> None:
+def test_default_scheduler_contains_all_four_daily_sync_owned_jobs_once() -> None:
     tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 13, 0, 1))
     by_id = {item["id"]: item for item in tasks}
 
-    assert by_id[penglai.XIANZANG_CONFIG_TASK_ID]["next_time"] == "2026-08-20 00:05:00"
-    assert by_id[penglai.XIANZANG_LOTTERY_TASK_ID]["next_time"] == "2026-08-20 21:10:00"
-    assert by_id[kunlun.KUNLUN_CONFIG_TASK_ID]["next_time"] == "2026-08-13 00:05:00"
-    assert by_id[kunlun.KUNLUN_LOTTERY_TASK_ID]["next_time"] == "2026-08-13 21:10:00"
+    assert all(
+        by_id[task_id]["next_time"] is None
+        for task_id in (
+            penglai.XIANZANG_CONFIG_TASK_ID,
+            penglai.XIANZANG_LOTTERY_TASK_ID,
+            kunlun.KUNLUN_CONFIG_TASK_ID,
+            kunlun.KUNLUN_LOTTERY_TASK_ID,
+        )
+    )
     assert {
         by_id[task_id]["trigger_description"]
         for task_id in (
@@ -87,17 +79,12 @@ def test_kunlun_config_job_runs_workflow_then_writes_its_own_next_time(monkeypat
         lambda actual: {"configured": actual is runtime},
     )
     monkeypatch.setattr(kunlun, "leave_kunlun", lambda actual: (34, 100.0))
-    monkeypatch.setattr(
-        kunlun,
-        "next_kunlun_config_time",
-        lambda: "2026-08-27 00:05:00",
-    )
 
     result = kunlun.execute_kunlun_config_job(runner, {}, {}, object())
 
     assert result["result"] == "success"
     assert result["configured"] is True
-    assert runner.next_times == [(kunlun.KUNLUN_CONFIG_TASK_ID, "2026-08-27 00:05:00")]
+    assert runner.next_times == [(kunlun.KUNLUN_CONFIG_TASK_ID, None)]
     assert runner.logs[0][0] == "success"
 
 
@@ -112,11 +99,6 @@ def test_kunlun_lottery_job_runs_workflow_then_advances_after_world_return(monke
         lambda actual: {"lottery_outcome": {"done": actual is runtime}},
     )
     monkeypatch.setattr(kunlun, "leave_kunlun", lambda actual: (34, 100.0))
-    monkeypatch.setattr(
-        kunlun,
-        "next_kunlun_lottery_time",
-        lambda: "2026-08-27 21:10:00",
-    )
 
     result = kunlun.execute_kunlun_lottery_job(runner, {}, {}, object())
 
@@ -126,12 +108,10 @@ def test_kunlun_lottery_job_runs_workflow_then_advances_after_world_return(monke
         "每抽可得 5 个昆仑古玉",
         "后续需求：实现兑换宝阁相关功能",
     ]
-    assert runner.next_times == [
-        (kunlun.KUNLUN_LOTTERY_TASK_ID, "2026-08-27 21:10:00")
-    ]
+    assert runner.next_times == [(kunlun.KUNLUN_LOTTERY_TASK_ID, None)]
 
 
-def test_kunlun_lottery_early_run_uses_job_effective_now_for_next_period(monkeypatch) -> None:
+def test_kunlun_lottery_early_run_still_clears_daily_sync_owned_time(monkeypatch) -> None:
     runner = _Runner()
     runtime = object()
     monkeypatch.setattr(kunlun, "_runtime", lambda *_args: runtime)
@@ -143,14 +123,10 @@ def test_kunlun_lottery_early_run_uses_job_effective_now_for_next_period(monkeyp
     )
     monkeypatch.setattr(kunlun, "leave_kunlun", lambda _actual: (34, 100.0))
 
-    with job_effective_time({"effective_now": "2026-08-13 21:15:00"}):
-        result = kunlun.execute_kunlun_lottery_job(runner, {}, {}, object())
+    result = kunlun.execute_kunlun_lottery_job(runner, {}, {}, object())
 
     assert "next_time" not in result
-    assert runner.next_times[-1] == (kunlun.KUNLUN_LOTTERY_TASK_ID, "2026-08-27 21:10:00")
-    assert runner.next_times == [
-        (kunlun.KUNLUN_LOTTERY_TASK_ID, "2026-08-27 21:10:00")
-    ]
+    assert runner.next_times == [(kunlun.KUNLUN_LOTTERY_TASK_ID, None)]
 
 
 def test_kunlun_evening_workflow_claims_tasks_then_continues_shared_state(monkeypatch) -> None:

@@ -19,6 +19,8 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
     read_current_redpacket_state,
     recover_redpacket_runtime_snapshot,
 )
+from backend.core.fanxiu.instrumentation.chat import read_repeated_chat_phrase
+from backend.core.fanxiu.runtime.mumu_control import text_mumu_adb
 
 
 REDPACKET_OCR_PATTERN = re.compile(r"首领[累猎]杀|奖赏|第一|获赠|红包")
@@ -466,25 +468,43 @@ class DailyRedpacketTaskMixin:
             timeout=transition_timeout,
             label="鸿运福签：复制前确认输入框为空",
         )
-        yield from runtime.wait_click(673, "鸿运福签卡片/复制", timeout=transition_timeout)
-        yield from runtime.wait_action_settle(poll_seconds)
-        copied_frame = runtime.cur_frame(update=True)
-        copied_text = runtime.ocr_text_in_shapes(
+        phrase_fact = read_repeated_chat_phrase(channel, sub_id)
+        phrase = str(phrase_fact.get("phrase") or "").strip()
+        if not phrase_fact.get("ready") or not phrase:
+            raise RuntimeError(
+                "日常_红包：当前活动频道 Runtime 未形成唯一重复话术，拒绝发送："
+                f"{phrase_fact.get('reason') or 'unknown'}"
+            )
+        runtime.click_shape_center(673, "输入框空态")
+        yield from runtime.wait_action_settle(0.5)
+        text_mumu_adb(phrase)
+        yield from runtime.wait_action_settle(0.5)
+        # Android 输入层打开时，第一次点击正式发送热区只负责收起输入层；
+        # 收起后先 OCR 回读输入框，再授权真正的发送动作。
+        runtime.click_shape_center_fast(673, "发送")
+        yield from runtime.wait_action_settle(0.8)
+        typed_frame = runtime.cur_frame(update=True)
+        typed_text = runtime.ocr_text_in_shapes(
             673,
             ("输入框空态",),
             padding=0,
-            frame_data_url=copied_frame,
+            frame_data_url=typed_frame,
             crop=True,
         )
-        normalized_copy = re.sub(
+        normalized_phrase = re.sub(
             r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
             "",
-            str(copied_text or ""),
+            phrase,
         )
-        if "吉签启鸿运佳奖落" not in normalized_copy:
+        normalized_typed = re.sub(
+            r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
+            "",
+            str(typed_text or ""),
+        )
+        if not normalized_phrase or normalized_phrase not in normalized_typed:
             raise RuntimeError(
-                "日常_红包：鸿运福签复制后输入框未命中固定祝贺语前缀，拒绝发送："
-                f"{normalized_copy[:80]}"
+                "日常_红包：Runtime 话术输入后 OCR 回读不一致，拒绝发送："
+                f"expected={normalized_phrase[:80]}, actual={normalized_typed[:80]}"
             )
         yield from runtime.wait_click_then_shape(
             673,

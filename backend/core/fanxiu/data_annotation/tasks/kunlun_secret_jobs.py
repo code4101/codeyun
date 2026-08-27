@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.core.fanxiu.data_annotation.job_times import next_biweekly_time
 from backend.core.fanxiu.data_annotation.tasks.kunlun_secret import (
     KunlunFirstRowDecision,
     KunlunFirstRowSelector,
@@ -42,7 +40,6 @@ KUNLUN_CONFIG_TASK_TYPE = "kunlun_secret_config"
 KUNLUN_CONFIG_TASK_ID = "kunlun-secret-config"
 KUNLUN_LOTTERY_TASK_TYPE = "kunlun_secret_lottery"
 KUNLUN_LOTTERY_TASK_ID = "kunlun-secret-lottery"
-KUNLUN_SECRET_WEEK_ANCHOR = date(2026, 8, 13)
 KUNLUN_JADE_PER_DRAW = 5
 KUNLUN_LOTTERY_JOB_NOTES = (
     f"每抽可得 {KUNLUN_JADE_PER_DRAW} 个昆仑古玉",
@@ -126,22 +123,6 @@ def _select_kunlun_special_effect_milestone(
 KUNLUN_FIRST_ROW_SELECTOR: KunlunFirstRowSelector = (
     _select_kunlun_special_effect_milestone
 )
-
-
-def next_kunlun_config_time(now: datetime | None = None) -> str:
-    return next_biweekly_time(
-        "00:05",
-        anchor=KUNLUN_SECRET_WEEK_ANCHOR,
-        now=now,
-    )
-
-
-def next_kunlun_lottery_time(now: datetime | None = None) -> str:
-    return next_biweekly_time(
-        "21:10",
-        anchor=KUNLUN_SECRET_WEEK_ANCHOR,
-        now=now,
-    )
 
 
 def _pending_research_result(
@@ -256,9 +237,11 @@ def execute_kunlun_config_job(
     try:
         enter_kunlun(runtime)
     except KunlunActivityUnavailable as exc:
-        next_time = next_kunlun_config_time()
-        runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, next_time)
-        message = f"昆仑秘藏_配置：本周未发现活动，已跳过，下次 {next_time}"
+        runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
+        message = (
+            "昆仑秘藏_配置：未发现活动，已清空 next_time，"
+            "等待活动_每日清单同步再次触发"
+        )
         runner._log("skip", message)
         return {
             "result": "skipped",
@@ -272,9 +255,11 @@ def execute_kunlun_config_job(
     final_scene, final_score = leave_kunlun(runtime)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError("昆仑秘藏_配置收尾未可靠回到 #34")
-    next_time = next_kunlun_config_time()
-    runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, next_time)
-    message = f"昆仑秘藏_配置：自选、商店、任务、首奖抽取与返回流程已闭环，下次 {next_time}"
+    runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
+    message = (
+        "昆仑秘藏_配置：自选、商店、任务、首奖抽取与返回流程已闭环，"
+        "已清空 next_time，等待活动_每日清单同步再次触发"
+    )
     runner._log("success", message)
     return {
         "result": "success",
@@ -296,9 +281,11 @@ def execute_kunlun_lottery_job(
     try:
         enter_kunlun(runtime)
     except KunlunActivityUnavailable as exc:
-        next_time = next_kunlun_lottery_time()
-        runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, next_time)
-        message = f"昆仑秘藏_抽奖：本周未发现活动，已跳过，下次 {next_time}"
+        runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
+        message = (
+            "昆仑秘藏_抽奖：未发现活动，已清空 next_time，"
+            "等待活动_每日清单同步再次触发"
+        )
         runner._log("skip", message)
         return {
             "result": "skipped",
@@ -313,9 +300,11 @@ def execute_kunlun_lottery_job(
     final_scene, final_score = leave_kunlun(runtime)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError("昆仑秘藏_抽奖收尾未可靠回到 #34")
-    next_time = next_kunlun_lottery_time()
-    runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, next_time)
-    message = f"昆仑秘藏_抽奖：晚间任务与首奖续抽已处理，下次 {next_time}"
+    runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
+    message = (
+        "昆仑秘藏_抽奖：晚间任务与首奖续抽已处理，已清空 next_time，"
+        "等待活动_每日清单同步再次触发"
+    )
     runner._log("success", message)
     return {
         "result": "success",
@@ -336,6 +325,4 @@ __all__ = [
     "KUNLUN_LOTTERY_TASK_TYPE",
     "execute_kunlun_config_job",
     "execute_kunlun_lottery_job",
-    "next_kunlun_config_time",
-    "next_kunlun_lottery_time",
 ]

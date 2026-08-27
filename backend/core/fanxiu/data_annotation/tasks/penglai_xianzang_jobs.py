@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
 from pathlib import Path
 import re
 from typing import Any, Callable
 
-from backend.core.fanxiu.data_annotation.job_times import next_biweekly_time
 from backend.core.fanxiu.data_annotation.tasks.penglai_xianzang import (
     XianzangChoiceNotApplicableError,
     build_xianzang_reward_candidates,
@@ -48,7 +46,6 @@ XIANZANG_CONFIG_TASK_TYPE = "penglai_xianzang_config"
 XIANZANG_CONFIG_TASK_ID = "penglai-xianzang-config"
 XIANZANG_LOTTERY_TASK_TYPE = "penglai_xianzang_lottery"
 XIANZANG_LOTTERY_TASK_ID = "penglai-xianzang-lottery"
-PENGLAI_XIANZANG_WEEK_ANCHOR = date(2026, 8, 6)
 _TALISMAN_NAME_UNRESOLVED_RE = re.compile(r"^法宝\s+\d+\s+的名称无法解析$")
 
 
@@ -59,23 +56,6 @@ class XianzangStandardJobSpec:
     task_id: str
     task_label: str
     completion_summary: str
-    next_time: Callable[[], str]
-
-
-def next_xianzang_config_time(now: datetime | None = None) -> str:
-    return next_biweekly_time(
-        "00:05",
-        anchor=PENGLAI_XIANZANG_WEEK_ANCHOR,
-        now=now,
-    )
-
-
-def next_xianzang_lottery_time(now: datetime | None = None) -> str:
-    return next_biweekly_time(
-        "21:10",
-        anchor=PENGLAI_XIANZANG_WEEK_ANCHOR,
-        now=now,
-    )
 
 
 def _optional_selection(
@@ -207,12 +187,11 @@ def _unavailable_result(
     *,
     task_id: str,
     task_label: str,
-    next_time: str,
     reason: str,
 ) -> dict[str, Any]:
     _record_availability(available=False, reason=reason)
-    runner._persist_scheduler_task_next_time(task_id, next_time)
-    message = f"{task_label}：本周未发现活动，已跳过，下次 {next_time}"
+    runner._persist_scheduler_task_next_time(task_id, None)
+    message = f"{task_label}：未发现活动，已清空 next_time，等待活动_每日清单同步再次触发"
     runner._log("skip", message)
     return {
         "result": "skipped",
@@ -280,7 +259,6 @@ def _execute_xianzang_standard_job(
             runner,
             task_id=spec.task_id,
             task_label=spec.task_label,
-            next_time=spec.next_time(),
             reason=str(exc),
         )
 
@@ -295,9 +273,11 @@ def _execute_xianzang_standard_job(
             f"scene={final_scene}, score={float(final_score):.1f}"
         )
 
-    next_time = spec.next_time()
-    runner._persist_scheduler_task_next_time(spec.task_id, next_time)
-    message = f"{spec.task_label}：{spec.completion_summary}，下次 {next_time}"
+    runner._persist_scheduler_task_next_time(spec.task_id, None)
+    message = (
+        f"{spec.task_label}：{spec.completion_summary}，已清空 next_time，"
+        "等待活动_每日清单同步再次触发"
+    )
     runner._log("success", message)
     return {
         "result": "success",
@@ -360,7 +340,6 @@ def execute_xianzang_config_job(
             task_id=XIANZANG_CONFIG_TASK_ID,
             task_label="蓬莱仙藏_配置",
             completion_summary="自选、商店、任务、鉴宝、累抽奖励与返回流程已闭环",
-            next_time=next_xianzang_config_time,
         ),
         workflow=_run_xianzang_config_workflow,
         resume_optional_page=True,
@@ -383,7 +362,6 @@ def execute_xianzang_lottery_job(
             task_id=XIANZANG_LOTTERY_TASK_ID,
             task_label="蓬莱仙藏_抽奖",
             completion_summary="任务、鉴宝、累抽奖励与返回流程已闭环",
-            next_time=next_xianzang_lottery_time,
         ),
         workflow=_run_xianzang_lottery_workflow,
         resume_draw_result_page=True,
@@ -399,6 +377,4 @@ __all__ = [
     "complete_xianzang_lottery",
     "execute_xianzang_config_job",
     "execute_xianzang_lottery_job",
-    "next_xianzang_config_time",
-    "next_xianzang_lottery_time",
 ]

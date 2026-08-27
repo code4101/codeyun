@@ -64,7 +64,7 @@ class FakeRuntime:
         self.next_time_writes.append(("self", next_time))
 
 
-def _ready_plan(*, operations=None):
+def _ready_plan(*, operations=None, activity_observations=None):
     return {
         "status": "ready",
         "reason": "ready",
@@ -73,7 +73,23 @@ def _ready_plan(*, operations=None):
         "source_kind": "worldline_activity_runtime_memory",
         "captured_at": NOW.isoformat(),
         "operations": list(operations or []),
+        "activity_observations": list(activity_observations or []),
+        "source_evidence": {
+            "supplemental_activity_observation": {"complete": True}
+        },
     }
+
+
+MANAGED_ACTIVITY_NEXT_TIMES = {
+    "penglai-xianzang-config": None,
+    "penglai-xianzang-lottery": None,
+    "kunlun-secret-config": None,
+    "kunlun-secret-lottery": None,
+}
+
+
+def _managed_activity_writes():
+    return list(MANAGED_ACTIVITY_NEXT_TIMES.items())
 
 
 def _sync_result(status: str, *, persist: bool):
@@ -238,14 +254,55 @@ def test_ready_hot_read_dry_runs_then_persists_and_returns_world():
         "reviews": [{"action": "review_unknown_identity"}],
         "job_schedule": {
             "target_date": "2026-08-14",
-            "desired_next_times": {},
+            "desired_next_times": MANAGED_ACTIVITY_NEXT_TIMES,
             "decisions": [],
+            "status": "ready",
         },
         "current_scene": 34,
         "message": "活动_每日清单同步完成：新增 1，已存在 2，待复核 1，活动作业 0 项",
     }
-    assert runtime.next_time_writes == [("self", "2026-08-15 00:20:00")]
+    assert runtime.next_time_writes == _managed_activity_writes() + [
+        ("self", "2026-08-15 00:20:00")
+    ]
     assert [call[:2] for call in runtime.calls] == [("goto", 34), ("wait", 34)]
+
+
+def test_ready_runtime_activity_list_triggers_only_observed_treasure_jobs():
+    runtime = FakeRuntime()
+    plan = _ready_plan(
+        activity_observations=[
+            {
+                "activity_id": 702,
+                "name": "昆仑秘藏",
+                "is_schedule_occurrence": False,
+            }
+        ]
+    )
+
+    result = _drain(
+        run_daily_activity_list_sync_flow(
+            runtime,
+            plan_reader=lambda **_kwargs: plan,
+            synchronizer=lambda _plan, *, persist, now: _sync_result(
+                "no_change", persist=persist
+            ),
+            now=NOW,
+        )
+    )
+
+    assert result["job_schedule"]["desired_next_times"] == {
+        "penglai-xianzang-config": None,
+        "penglai-xianzang-lottery": None,
+        "kunlun-secret-config": "2026-08-14 00:05:00",
+        "kunlun-secret-lottery": "2026-08-14 21:10:00",
+    }
+    assert runtime.next_time_writes == [
+        ("penglai-xianzang-config", None),
+        ("penglai-xianzang-lottery", None),
+        ("kunlun-secret-config", "2026-08-14 00:05:00"),
+        ("kunlun-secret-lottery", "2026-08-14 21:10:00"),
+        ("self", "2026-08-15 00:20:00"),
+    ]
 
 
 def test_xianmeng_qualifying_does_not_create_child_scheduler_write():
@@ -279,8 +336,10 @@ def test_xianmeng_qualifying_does_not_create_child_scheduler_write():
         )
     )
 
-    assert runtime.next_time_writes == [("self", "2026-08-15 00:20:00")]
-    assert result["job_schedule"]["desired_next_times"] == {}
+    assert runtime.next_time_writes == _managed_activity_writes() + [
+        ("self", "2026-08-15 00:20:00")
+    ]
+    assert result["job_schedule"]["desired_next_times"] == MANAGED_ACTIVITY_NEXT_TIMES
     assert result["job_schedule"]["decisions"] == []
 
 
@@ -315,8 +374,10 @@ def test_xianmeng_final_does_not_create_child_scheduler_write():
         )
     )
 
-    assert runtime.next_time_writes == [("self", "2026-08-15 00:20:00")]
-    assert result["job_schedule"]["desired_next_times"] == {}
+    assert runtime.next_time_writes == _managed_activity_writes() + [
+        ("self", "2026-08-15 00:20:00")
+    ]
+    assert result["job_schedule"]["desired_next_times"] == MANAGED_ACTIVITY_NEXT_TIMES
     assert result["job_schedule"]["decisions"] == []
 
 
@@ -345,6 +406,10 @@ def test_runtime_xianmeng_root_final_day_remains_parent_owned():
         "captured_at": final_now.isoformat(),
         "occurrences": [occurrence],
         "operations": [],
+        "activity_observations": [],
+        "source_evidence": {
+            "supplemental_activity_observation": {"complete": True}
+        },
     }
     runtime = FakeRuntime()
 
@@ -360,8 +425,10 @@ def test_runtime_xianmeng_root_final_day_remains_parent_owned():
         )
     )
 
-    assert runtime.next_time_writes == [("self", "2026-08-18 00:20:00")]
-    assert result["job_schedule"]["desired_next_times"] == {}
+    assert runtime.next_time_writes == _managed_activity_writes() + [
+        ("self", "2026-08-18 00:20:00")
+    ]
+    assert result["job_schedule"]["desired_next_times"] == MANAGED_ACTIVITY_NEXT_TIMES
     assert result["job_schedule"]["decisions"] == []
 
 

@@ -391,6 +391,9 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
         def click_shape_center(self, view, shape, **kwargs):
             actions.append(("shape_click", view, shape, kwargs))
 
+        def click_shape_center_fast(self, view, shape, **kwargs):
+            actions.append(("shape_click_fast", view, shape, kwargs))
+
         def wait_view(self, *views, **_kwargs):
             yield "wait_view"
             return SimpleNamespace(id=332 if 332 in views else 30)
@@ -418,9 +421,7 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
             yield "settle"
 
         def ocr_text_in_shapes(self, *_args, **_kwargs):
-            # Real accepted OCR includes punctuation and the adjacent send
-            # button text inside the narrow field crop.
-            return "吉签启鸿运，佳奖落发送"
+            return "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖"
 
     runtime = Runtime()
     row = SimpleNamespace(x=100, y=200, w=80, h=40)
@@ -443,6 +444,15 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
     ])
     snapshots = iter([active, terminal])
     monkeypatch.setattr(runner, "_daily_redpacket_runtime_candidates", lambda: next(snapshots))
+    monkeypatch.setattr(
+        module,
+        "read_repeated_chat_phrase",
+        lambda *_args, **_kwargs: {
+            "ready": True,
+            "phrase": "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖",
+        },
+    )
+    monkeypatch.setattr(module, "text_mumu_adb", lambda text: actions.append(("text", text)))
 
     result = _consume(runner._execute_daily_qmch_reward_route(
         runtime,
@@ -458,6 +468,9 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
     ))
 
     assert result["opened_count"] == 1
+    assert ("shape_click", 673, "输入框空态", {}) in actions
+    assert ("text", "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖") in actions
+    assert ("shape_click_fast", 673, "发送", {}) in actions
     assert [item for item in actions if item[:3] == ("send", 673, "发送")] == [
         ("send", 673, "发送", 674, "吉签鸿运佳奖落身")
     ]
@@ -471,7 +484,7 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
     ]
 
 
-def test_daily_redpacket_qmch_copy_prefix_failure_never_sends_or_opens(monkeypatch):
+def test_daily_redpacket_qmch_typed_phrase_mismatch_never_sends_or_opens(monkeypatch):
     runner = _Runner()
     actions = []
 
@@ -493,9 +506,11 @@ def test_daily_redpacket_qmch_copy_prefix_failure_never_sends_or_opens(monkeypat
         def wait_shape(self, *_args, **_kwargs):
             yield "shape"
 
-        def wait_click(self, view, shape, **_kwargs):
+        def click_shape_center(self, view, shape, **_kwargs):
             actions.append((view, shape))
-            yield "click"
+
+        def click_shape_center_fast(self, view, shape, **_kwargs):
+            actions.append((view, shape))
 
         def wait_action_settle(self, _seconds):
             yield "settle"
@@ -513,8 +528,17 @@ def test_daily_redpacket_qmch_copy_prefix_failure_never_sends_or_opens(monkeypat
         "_wait_daily_qmch_activity_row",
         lambda *_args, **_kwargs: _yield_return(("frame", SimpleNamespace(x=0, y=0, w=10, h=10))),
     )
+    monkeypatch.setattr(
+        module,
+        "read_repeated_chat_phrase",
+        lambda *_args, **_kwargs: {
+            "ready": True,
+            "phrase": "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖",
+        },
+    )
+    monkeypatch.setattr(module, "text_mumu_adb", lambda _text: None)
 
-    with pytest.raises(RuntimeError, match="未命中固定祝贺语前缀"):
+    with pytest.raises(RuntimeError, match="OCR 回读不一致"):
         _consume(runner._execute_daily_qmch_reward_route(
             Runtime(),
             {},
@@ -528,7 +552,7 @@ def test_daily_redpacket_qmch_copy_prefix_failure_never_sends_or_opens(monkeypat
             },
         ))
 
-    assert actions == [(673, "鸿运福签卡片/复制")]
+    assert actions == [(673, "输入框空态"), (673, "发送")]
 
 
 def test_daily_redpacket_has_business_owned_trigger_description():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -22,25 +23,26 @@ def _write(path: Path, content: bytes = b"image") -> Path:
     return path
 
 
-def test_refill_review_batch_moves_oldest_media_until_limit(tmp_path: Path) -> None:
+def test_refill_review_batch_moves_newest_media_until_limit(tmp_path: Path) -> None:
     review_root = media_review_root(tmp_path, "pixiv")
     reservoir_root = media_reservoir_root(tmp_path, "pixiv")
     _write(review_root / "existing.jpg")
     first = _write(reservoir_root / "author" / "first.jpg")
     second = _write(reservoir_root / "author" / "second.png")
     third = _write(reservoir_root / "author" / "third.gif")
-    os.utime(first, ns=(1, 1))
-    os.utime(second, ns=(2, 2))
-    os.utime(third, ns=(3, 3))
+    now = time.time()
+    os.utime(first, (now - 300, now - 300))
+    os.utime(second, (now - 200, now - 200))
+    os.utime(third, (now - 100, now - 100))
 
     result = refill_review_batch(tmp_path, "pixiv", limit=3)
 
     assert result.before_media_count == 1
     assert result.after_media_count == 3
     assert result.moved_media_count == 2
-    assert (review_root / "author" / "first.jpg").is_file()
     assert (review_root / "author" / "second.png").is_file()
-    assert (reservoir_root / "author" / "third.gif").is_file()
+    assert (review_root / "author" / "third.gif").is_file()
+    assert (reservoir_root / "author" / "first.jpg").is_file()
 
 
 def test_pixiv_ugoira_sidecar_moves_with_media_without_consuming_extra_slot(tmp_path: Path) -> None:
@@ -83,8 +85,9 @@ def test_refill_skips_unit_when_any_destination_conflicts(tmp_path: Path) -> Non
     conflicting = _write(reservoir_root / "pin.jpg", b"new")
     _write(review_root / "pin.jpg", b"existing")
     next_path = _write(reservoir_root / "next.jpg", b"next")
-    os.utime(conflicting, (100, 100))
-    os.utime(next_path, (200, 200))
+    now = time.time()
+    os.utime(conflicting, (now - 100, now - 100))
+    os.utime(next_path, (now - 200, now - 200))
 
     result = refill_review_batch(tmp_path, "pinterest", limit=2)
 
