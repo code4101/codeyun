@@ -88,6 +88,29 @@ def test_only_current_open_identity_complete_adapter_is_selected() -> None:
     ]
 
 
+def test_lingzhuang_cross_eight_occurrence_uses_proven_page_adapter() -> None:
+    snapshot = {
+        "occurrences": [
+            _occurrence(
+                8044301,
+                start="2026-08-27T05:00:05+08:00",
+                end="2026-08-28T22:00:00+08:00",
+            )
+        ]
+    }
+
+    selected = active_resource_rank_gift_adapters(
+        snapshot,
+        now=datetime(2026, 8, 27, 14, 30, tzinfo=ZONE),
+    )
+
+    assert len(selected) == 1
+    adapter, activity_id = selected[0]
+    assert (adapter.key, activity_id) == ("lingzhuang-huadao", 8044301)
+    assert adapter.intro_scene_id == 675
+    assert adapter.page_scene_ids == (676,)
+
+
 def test_same_multi_day_resource_rank_occurrence_is_active_on_each_open_day() -> None:
     snapshot = {
         "occurrences": [

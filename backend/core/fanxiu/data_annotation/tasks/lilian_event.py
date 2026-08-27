@@ -370,7 +370,7 @@ def _finish_lilian_event_reward(
         if scene_id == 437:
             landed = yield from runtime.wait_click_then_view(
                 437,
-                "领取",
+                "领取奖励",
                 438,
                 timeout=float(payload.get("lilian_claim_timeout") or 20.0),
             )

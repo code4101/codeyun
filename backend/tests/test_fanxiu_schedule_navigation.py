@@ -244,6 +244,44 @@ def test_runtime_activity_qualifier_does_not_confuse_cross_server_counts() -> No
     assert targets[0].y == pytest.approx(492)
 
 
+def test_runtime_activity_does_not_borrow_qualifier_from_adjacent_column() -> None:
+    entities = runtime_activity_entities_for_date(
+        {
+            "available": True,
+            "items": [
+                {
+                    "activityId": 8044301,
+                    "id": 8044301400004,
+                    "name": "灵装化道",
+                    "littleName": "跨服[8]",
+                    "startTime": _millis("2026-08-27 05:00:05"),
+                    "endTime": _millis("2026-08-28 22:00:00"),
+                }
+            ],
+        },
+        r"灵装化道",
+        target_date=date(2026, 8, 27),
+    )
+
+    targets = resolve_schedule_runtime_activity_targets(
+        header_lines=HEADER,
+        calendar_lines=[
+            _line("灵装化道", 97, y=478, w=131, h=36),
+            _line("(预赛)", 118, y=516, w=92, h=36),
+            # This qualifier belongs to a neighbouring card in the same band.
+            _line("跨服[8]", 419, y=514, w=110, h=39),
+            _line("灵装化道", 254, y=587, w=129, h=36),
+            _line("跨服[8]", 264, y=622, w=107, h=38),
+        ],
+        runtime_entities=entities,
+        anchor_date=date(2026, 8, 27),
+    )
+
+    assert len(targets) == 1
+    assert targets[0].runtime_key.startswith("8044301")
+    assert targets[0].y == pytest.approx(605)
+
+
 def test_runtime_activity_without_concrete_period_is_not_authoritative_for_click() -> None:
     entities = runtime_activity_entities_for_date(
         {"available": True, "items": [{"activityId": 1, "name": "兽渊探秘"}]},

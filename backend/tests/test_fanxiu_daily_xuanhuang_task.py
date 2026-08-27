@@ -66,6 +66,7 @@ class _FakeXuanhuangRuntime:
         self.wait_view_timeouts: list[float | None] = []
         self.loaded_ocr_calls: list[dict[str, Any]] = []
         self.next_times: list[str | None] = []
+        self.wait_click_then_view_calls: list[dict[str, Any]] = []
 
     def set_next_time(self, next_time: str | None) -> None:
         self.next_times.append(next_time)
@@ -122,6 +123,24 @@ class _FakeXuanhuangRuntime:
             yield None
         return self.scene
 
+    def wait_click_then_view(
+        self,
+        scene: int,
+        shape: str,
+        *target_scenes: int,
+        **kwargs: Any,
+    ):
+        self.wait_click_then_view_calls.append(
+            {
+                "scene": scene,
+                "shape": shape,
+                "target_scenes": target_scenes,
+                **kwargs,
+            }
+        )
+        yield from self.wait_click(scene, shape)
+        return type("_View", (), {"id": self.scene})()
+
     def click_shape_center(self, scene: int, shape: str) -> None:
         self.shape_clicks.append((int(scene), shape))
         if (scene, shape) == (420, "离开"):
@@ -139,7 +158,7 @@ class _FakeXuanhuangRuntime:
     ):
         if scenes == [417, 418]:
             return self.scene, 100.0, frame_data_url or self.cur_frame(update)
-        if scenes in ([419, 420], [420]):
+        if scenes in ([186, 419, 420], [420]):
             sequence = self.battle_scenes[self.battle_index]
             index = min(self.battle_poll_index, len(sequence) - 1)
             scene = sequence[index]
@@ -310,6 +329,12 @@ def test_daily_xuanhuang_reenters_and_rereads_until_numerator_is_zero():
 
     assert result["rounds_completed"] == 2
     assert runtime.shape_clicks.count((418, "前往")) == 2
+    assert all(
+        call["target_scenes"] == (186, 419, 420)
+        and call["retry_if_source_remains"] is True
+        and call["max_clicks"] == 3
+        for call in runtime.wait_click_then_view_calls
+    )
     assert runtime.shape_clicks.count((420, "离开")) == 2
     assert runtime.wait_view_calls.count(34) == 2
     assert runtime.goto_calls.count(69) == 3
@@ -509,6 +534,26 @@ def test_daily_xuanhuang_battle_allows_420_without_ever_observing_419():
     )
 
     assert saw_419 is False
+
+
+def test_daily_xuanhuang_resumes_existing_generic_battle_without_reclicking_forward():
+    runtime = _FakeXuanhuangRuntime(
+        [1, 0],
+        initial_scene=186,
+        battle_scenes=[[186, 420]],
+    )
+
+    result = _run(
+        _FakeXuanhuangRunner()._run_daily_xuanhuang_flow(
+            runtime,
+            {"battle_poll_seconds": 0.01},
+        )
+    )
+
+    assert result["result"] == "success"
+    assert result["rounds_completed"] == 1
+    assert runtime.shape_clicks.count((418, "前往")) == 0
+    assert runtime.shape_clicks.count((420, "离开")) == 1
 
 
 def test_daily_xuanhuang_final_deadline_probe_still_accepts_420(monkeypatch):
