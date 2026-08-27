@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pyxllib.prog import read_json_state_dict, write_json_state
 
@@ -11,12 +11,9 @@ from backend.core.settings import get_settings
 
 
 FANXIU_WINDOWS_INFO_WINDOW_HEARTBEAT_TTL_SECONDS = 3.0
-FANXIU_INFO_WINDOW_ACTIVE_INTERVAL_SECONDS = 1.0
-FANXIU_INFO_WINDOW_ACTIVE_RESULT_TTL_SECONDS = 5.0
 FANXIU_INFO_WINDOW_DECISION_SCOPE = "decision"
 FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
     "enabled": True,
-    "active_recognition": False,
     "show_scene_id": True,
     "show_scene_score": True,
     "show_scene_identity_shapes": True,
@@ -61,9 +58,6 @@ def normalize_fanxiu_info_window_settings(payload: dict[str, Any] | None = None)
         key: bool(source.get(key, default))
         for key, default in FANXIU_INFO_WINDOW_DEFAULT_SETTINGS.items()
     }
-    # Migrate the original inverse switch without keeping two runtime meanings.
-    if "active_recognition" not in source and "passive_mode" in source:
-        settings["active_recognition"] = not bool(source["passive_mode"])
     return settings
 
 
@@ -293,95 +287,6 @@ def publish_fanxiu_scene_recognition(
         captured_at=captured_at,
         committed_at=committed_at,
     )
-
-
-class FanxiuInfoWindowObserver:
-    """Keep the shared scene snapshot fresh when active recognition is enabled.
-
-    Existing results are always reused. A new observation is requested only
-    after the shared result is five seconds old and no Cell owns the execution
-    lock. With active recognition disabled (the default), this observer never
-    captures or recognizes anything.
-    """
-
-    def __init__(
-        self,
-        *,
-        execution_lock: Any,
-        recognize: Callable[[], Any],
-        interval_seconds: float = FANXIU_INFO_WINDOW_ACTIVE_INTERVAL_SECONDS,
-        result_ttl_seconds: float = FANXIU_INFO_WINDOW_ACTIVE_RESULT_TTL_SECONDS,
-        settings_reader: Callable[[], dict[str, bool]] = read_fanxiu_info_window_settings,
-        state_reader: Callable[[], dict[str, Any]] | None = None,
-        windows_client: "FanxiuWindowsInfoWindowClient | None" = None,
-    ) -> None:
-        self.execution_lock = execution_lock
-        self.recognize = recognize
-        self.interval_seconds = max(1.0, float(interval_seconds or FANXIU_INFO_WINDOW_ACTIVE_INTERVAL_SECONDS))
-        self.result_ttl_seconds = max(0.0, float(result_ttl_seconds))
-        self.settings_reader = settings_reader
-        self.state_reader = state_reader or fanxiu_info_window_state.read
-        self.windows_client = windows_client
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._last_attempt_at = 0.0
-
-    def start(self) -> "FanxiuInfoWindowObserver":
-        if self._thread is not None and self._thread.is_alive():
-            return self
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="fanxiu-info-window-active-observer",
-            daemon=True,
-        )
-        self._thread.start()
-        return self
-
-    def stop(self, timeout_seconds: float = 2.0) -> None:
-        self._stop_event.set()
-        thread = self._thread
-        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=max(0.0, float(timeout_seconds or 0.0)))
-
-    def tick(self, *, now: float | None = None) -> str:
-        settings = self.settings_reader()
-        if not bool(settings.get("enabled", True)):
-            return "disabled"
-        if not bool(settings.get("active_recognition", False)):
-            return "inactive"
-
-        timestamp = float(now if now is not None else time.time())
-        latest = self.state_reader()
-        captured_at = float(latest.get("captured_at") or latest.get("observed_at") or 0.0)
-        result_age = timestamp - captured_at
-        if captured_at > 0.0 and 0.0 <= result_age < self.result_ttl_seconds:
-            return "fresh"
-        if timestamp - self._last_attempt_at < self.interval_seconds:
-            return "waiting"
-        windows_client = self.windows_client or fanxiu_windows_info_window_client
-        if not windows_client.available(now=timestamp):
-            return "renderer_unavailable"
-        if not self.execution_lock.acquire(blocking=False):
-            return "cell_busy"
-        try:
-            # Charge the attempt before recognition so failures cannot create a
-            # tight retry loop. Only the published result records observed_at.
-            self._last_attempt_at = timestamp
-            self.recognize()
-            return "recognized"
-        finally:
-            self.execution_lock.release()
-
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self.tick()
-            except Exception:
-                # This is an optional debugging view. Recognition failures
-                # never alter Cell/Scheduler semantics.
-                pass
-            self._stop_event.wait(self.interval_seconds)
 
 
 class FanxiuWindowsInfoWindowClient:

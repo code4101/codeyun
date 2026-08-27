@@ -5,7 +5,6 @@ from types import MethodType
 
 from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
 from backend.core.fanxiu.info_window import (
-    FanxiuInfoWindowObserver,
     FanxiuInfoWindowState,
     format_fanxiu_observation_age,
     format_fanxiu_scene_text,
@@ -41,7 +40,6 @@ def test_info_window_settings_are_persisted_and_default_missing_fields(monkeypat
 
     assert write_fanxiu_info_window_settings({"enabled": False, "show_scene_id": False}) == {
         "enabled": False,
-        "active_recognition": False,
         "show_scene_id": False,
         "show_scene_score": True,
         "show_scene_identity_shapes": True,
@@ -50,16 +48,24 @@ def test_info_window_settings_are_persisted_and_default_missing_fields(monkeypat
     assert read_fanxiu_info_window_settings()["enabled"] is False
 
 
-def test_info_window_settings_migrate_legacy_inverse_passive_switch(monkeypatch, tmp_path) -> None:
+def test_info_window_settings_drop_removed_recognition_switches(monkeypatch, tmp_path) -> None:
     from backend.core.fanxiu import info_window as info_window_module
 
     path = tmp_path / "info_window_settings.json"
     monkeypatch.setattr(info_window_module, "fanxiu_info_window_settings_path", lambda: path)
 
-    assert write_fanxiu_info_window_settings({"passive_mode": False})["active_recognition"] is True
+    settings = write_fanxiu_info_window_settings(
+        {"passive_mode": False, "active_recognition": True}
+    )
+
+    assert "passive_mode" not in settings
+    assert "active_recognition" not in settings
+    persisted = path.read_text(encoding="utf-8")
+    assert "passive_mode" not in persisted
+    assert "active_recognition" not in persisted
 
 
-def test_info_window_user_preferences_are_isolated_and_migrate_legacy_settings(monkeypatch, tmp_path) -> None:
+def test_info_window_user_preferences_are_isolated(monkeypatch, tmp_path) -> None:
     from backend.core.fanxiu import info_window as info_window_module
 
     active_path = tmp_path / "info_window_settings.json"
@@ -226,63 +232,6 @@ def test_tick_frame_keeps_one_capture_time_across_same_frame_layers(monkeypatch)
     runner._clear_tick_frame(ctx)
     runner._set_tick_frame(ctx, "frame-a")
     assert ctx["_tick_frame_captured_at"] == 109.0
-
-
-def test_info_window_observer_is_strictly_read_only_when_active_recognition_is_off() -> None:
-    class FailingLock:
-        def acquire(self, **_kwargs):
-            raise AssertionError("inactive recognition must not touch the execution lock")
-
-    observer = FanxiuInfoWindowObserver(
-        execution_lock=FailingLock(),
-        recognize=lambda: (_ for _ in ()).throw(AssertionError("inactive observer must not recognize")),
-        settings_reader=lambda: {"enabled": True, "active_recognition": False},
-    )
-
-    assert observer.tick(now=10.0) == "inactive"
-
-
-def test_info_window_observer_active_recognition_reuses_results_until_they_are_five_seconds_old() -> None:
-    class Lock:
-        def __init__(self) -> None:
-            self.released = False
-
-        def acquire(self, **_kwargs):
-            return True
-
-        def release(self):
-            self.released = True
-
-    class Renderer:
-        def available(self, **_kwargs):
-            return True
-
-    lock = Lock()
-    calls: list[str] = []
-    latest = {"observed_at": 8.0}
-    recognition_times = iter((13.0, 18.0))
-
-    def recognize() -> None:
-        calls.append("recognized")
-        latest["observed_at"] = next(recognition_times)
-
-    observer = FanxiuInfoWindowObserver(
-        execution_lock=lock,
-        recognize=recognize,
-        settings_reader=lambda: {"enabled": True, "active_recognition": True},
-        state_reader=lambda: latest,
-        windows_client=Renderer(),
-    )
-
-    assert observer.tick(now=10.0) == "fresh"
-    assert observer.tick(now=12.999) == "fresh"
-    assert observer.tick(now=13.0) == "recognized"
-    assert observer.tick(now=17.999) == "fresh"
-    assert observer.tick(now=18.0) == "recognized"
-    assert observer.tick(now=18.5) == "fresh"
-    assert latest["observed_at"] == 18.0
-    assert calls == ["recognized", "recognized"]
-    assert lock.released is True
 
 
 def test_info_window_runtime_has_no_adb_bridge() -> None:

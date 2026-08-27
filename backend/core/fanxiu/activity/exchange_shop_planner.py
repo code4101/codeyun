@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from enum import StrEnum
+from html import unescape as html_unescape
 from typing import Iterable, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ PRAYER_RESOURCE_PRIORITY = (
     "炼丹灵草匣",
 )
 EQUIPMENT_IRON_BOX = "装备玄铁宝匣"
+DAO_FRAGMENT_PREFIX = "道则碎片"
 DAO_FRAGMENT = "道则碎片·淬灵域"
 DAO_FRAGMENT_EDGE = "道则碎片·淬锋域"
 DAO_FRAGMENT_NAMES = (DAO_FRAGMENT, DAO_FRAGMENT_EDGE)
@@ -78,7 +80,7 @@ class ExchangeShopPriorityPolicy:
 
 
 DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY = ExchangeShopPriorityPolicy(
-    schema=9,
+    schema=10,
     prayer_resource_by_cycle=PRAYER_RESOURCE_BY_CYCLE,
     prayer_resource_priority=PRAYER_RESOURCE_PRIORITY,
     equipment_resource_names=(EQUIPMENT_IRON_BOX,),
@@ -184,6 +186,12 @@ def _is_discounted_item(item: ShopItemLike) -> bool:
     )
 
 
+def _normalize_item_name(value: object) -> str:
+    """Normalize display-only HTML whitespace before semantic classification."""
+
+    return html_unescape(str(value or "")).strip()
+
+
 def _discounted_item_groups(
     items: Iterable[ShopItemLike],
 ) -> tuple[list[ShopItemLike], list[ShopItemLike]]:
@@ -224,7 +232,7 @@ def build_exchange_shop_plan(
     rows = sorted(items, key=lambda row: (row.source_order, row.goods_id))
     by_name: dict[str, list[ShopItemLike]] = {}
     for item in rows:
-        by_name.setdefault(str(item.name or "").strip(), []).append(item)
+        by_name.setdefault(_normalize_item_name(item.name), []).append(item)
 
     end_date = datetime.fromisoformat(activity_end_date).date()
     effective_planning_date = (
@@ -275,6 +283,14 @@ def build_exchange_shop_plan(
     )
     for name in policy.dao_fragment_names:
         select(ExchangePriorityId.DAO_FRAGMENT, by_name.get(name, ()))
+    select(
+        ExchangePriorityId.DAO_FRAGMENT,
+        (
+            item
+            for item in rows
+            if _normalize_item_name(item.name).startswith(DAO_FRAGMENT_PREFIX)
+        ),
+    )
     select(ExchangePriorityId.CURRENT_PRAYER, by_name.get(current_resource, ()))
     locked: list[ShopItemLike] = []
     if next_resource:
@@ -306,7 +322,7 @@ def build_exchange_shop_plan(
             item
             for item in rows
             if int(item.item_id) in policy.partner_root_item_ids
-            and str(item.name or "").strip() in policy.partner_root_names
+            and _normalize_item_name(item.name) in policy.partner_root_names
         ),
     )
 
@@ -321,7 +337,7 @@ def build_exchange_shop_plan(
             item
             for item in rows
             if item.purchase_limit >= 0
-            and str(item.name or "").strip() not in closing_names
+            and _normalize_item_name(item.name) not in closing_names
         ),
     )
     for name in policy.closing_goods_names:
@@ -448,6 +464,7 @@ __all__ = [
     "DAO_FRAGMENT",
     "DAO_FRAGMENT_EDGE",
     "DAO_FRAGMENT_NAMES",
+    "DAO_FRAGMENT_PREFIX",
     "DEFAULT_EXCHANGE_SHOP_PRIORITY_POLICY",
     "EQUIPMENT_IRON_BOX",
     "EXCHANGE_PRIORITY_ORDER",

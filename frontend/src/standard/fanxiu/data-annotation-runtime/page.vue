@@ -151,7 +151,6 @@ const gameStateInspectionProbeText = computed(() => (
 ));
 const defaultInfoWindowSettings: FanxiuInfoWindowSettings = {
   enabled: true,
-  active_recognition: false,
   show_scene_id: true,
   show_scene_score: true,
   show_scene_identity_shapes: true,
@@ -1015,15 +1014,6 @@ onUnmounted(() => {
           />
         </div>
         <div class="info-window-options" :class="{ 'is-disabled': !infoWindowSettings.enabled }">
-          <label title="默认关闭；开启后优先读取最近识别结果，仅当结果已超过 5 秒才主动识别并更新时间">
-            <span>主动识别</span>
-            <el-switch
-              size="small"
-              :model-value="infoWindowSettings.active_recognition"
-              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
-              @change="setInfoWindowSetting('active_recognition', Boolean($event))"
-            />
-          </label>
           <label>
             <span>场景编号</span>
             <el-switch
