@@ -3,7 +3,9 @@ from __future__ import annotations
 """Occurrence-specific QuestMgr facts for Tiandi Yiju task rewards."""
 
 import json
+from dataclasses import dataclass
 from functools import lru_cache
+from threading import RLock
 from typing import Any, Mapping
 
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
@@ -11,6 +13,7 @@ from backend.core.fanxiu.instrumentation.daily_task_rewards import (
     TaskRewardDomainSpec,
     build_activity_task_reward_snapshot,
     read_activity_task_reward_snapshots,
+    read_task_reward_spec_fast_snapshot,
 )
 
 
@@ -20,6 +23,19 @@ _RUNTIME_TO_TASK_ACTIVITY_ID = {
 }
 
 
+@dataclass(frozen=True)
+class _LiveTaskSpecBinding:
+    spec: TaskRewardDomainSpec
+    task_subtypes: dict[str, int]
+    task_names: dict[str, str]
+    pid: int
+    process_start_ticks: int
+
+
+_LIVE_TASK_SPEC_LOCK = RLock()
+_LIVE_TASK_SPECS: dict[int, _LiveTaskSpecBinding] = {}
+
+
 @lru_cache(maxsize=1)
 def _active_task_rows() -> tuple[dict[str, Any], ...]:
     path = resolve_fanxiu_export_root() / "parsed_configs/ActiveTask/rows.json"
@@ -27,6 +43,38 @@ def _active_task_rows() -> tuple[dict[str, Any], ...]:
     if not isinstance(rows, list):
         raise RuntimeError("ActiveTask 静态配置不是列表")
     return tuple(dict(row) for row in rows if isinstance(row, Mapping))
+
+
+@lru_cache(maxsize=2)
+def _static_task_index(
+    task_activity_id: int,
+) -> tuple[dict[int, dict[str, Any]], dict[tuple[int, int], tuple[int, ...]]]:
+    """Cache the immutable ActiveTask identity map for one occurrence family."""
+
+    static_by_id: dict[int, dict[str, Any]] = {}
+    duplicate_ids: set[int] = set()
+    logical_slots: dict[tuple[int, int], list[int]] = {}
+    for raw in _active_task_rows():
+        if (
+            int(raw.get("activityId") or 0) != int(task_activity_id)
+            or int(raw.get("type") or 0) != 3
+            or int(raw.get("subType") or 0) not in {6, 7}
+        ):
+            continue
+        task_id = int(raw.get("id") or 0)
+        if task_id <= 0:
+            continue
+        if task_id in static_by_id:
+            duplicate_ids.add(task_id)
+        row = dict(raw)
+        static_by_id[task_id] = row
+        slot = (int(row.get("subType") or 0), int(row.get("sort") or 0))
+        logical_slots.setdefault(slot, []).append(task_id)
+    if duplicate_ids:
+        raise RuntimeError(f"ActiveTask 天地弈局任务 ID 重复：{min(duplicate_ids)}")
+    return static_by_id, {
+        slot: tuple(task_ids) for slot, task_ids in logical_slots.items()
+    }
 
 
 def tiandi_yiju_task_activity_id(activity_id: int) -> int:
@@ -58,29 +106,15 @@ def build_tiandi_yiju_task_reward_snapshot(
             "authorized_claim_task_ids": [],
         }
 
-    rows = [
-        row
-        for row in _active_task_rows()
-        if int(row.get("activityId") or 0) == task_activity_id
-        and int(row.get("type") or 0) == 3
-        and int(row.get("subType") or 0) in {6, 7}
-    ]
-    static_by_id: dict[int, dict[str, Any]] = {}
-    duplicate_ids: set[int] = set()
-    for row in rows:
-        task_id = int(row.get("id") or 0)
-        if task_id <= 0:
-            continue
-        if task_id in static_by_id:
-            duplicate_ids.add(task_id)
-        static_by_id[task_id] = row
-    if duplicate_ids:
+    try:
+        static_by_id, logical_slots = _static_task_index(task_activity_id)
+    except RuntimeError as exc:
         return {
             "ok": False,
             "available": False,
             "complete": False,
             "state": "ambiguous",
-            "reason": f"ActiveTask 天地弈局任务 ID 重复：{min(duplicate_ids)}",
+            "reason": str(exc),
             "authorized_claim_task_ids": [],
         }
 
@@ -92,11 +126,6 @@ def build_tiandi_yiju_task_reward_snapshot(
     represented_ids.update(
         int(task_id) for task_id in finished_task_ids if int(task_id) in static_by_id
     )
-    logical_slots: dict[tuple[int, int], list[int]] = {}
-    for task_id, row in static_by_id.items():
-        slot = (int(row.get("subType") or 0), int(row.get("sort") or 0))
-        logical_slots.setdefault(slot, []).append(task_id)
-
     live_ids: list[int] = []
     missing_slots: list[tuple[int, int]] = []
     ambiguous_slots: list[tuple[int, int]] = []
@@ -183,6 +212,35 @@ def read_tiandi_yiju_task_reward_snapshot(
     *,
     expected_claimed_task_id: int | None = None,
 ) -> dict[str, Any]:
+    runtime_activity_id = int(activity_id)
+    if expected_claimed_task_id is not None:
+        expected_claimed_task_id = int(expected_claimed_task_id)
+        with _LIVE_TASK_SPEC_LOCK:
+            binding = _LIVE_TASK_SPECS.get(runtime_activity_id)
+        if binding is not None and expected_claimed_task_id in binding.spec.task_ids:
+            fast = read_task_reward_spec_fast_snapshot(
+                binding.spec,
+                expected_claimed_task_id=expected_claimed_task_id,
+            )
+            evidence = dict(fast.get("evidence") or {})
+            same_process = (
+                evidence.get("pid") == binding.pid
+                and evidence.get("process_start_ticks") == binding.process_start_ticks
+            )
+            if fast.get("ok") and fast.get("complete") and same_process:
+                fast.update(
+                    {
+                        "runtime_activity_id": runtime_activity_id,
+                        "task_activity_id": binding.spec.activity_id,
+                        "task_subtypes": dict(binding.task_subtypes),
+                        "task_names": dict(binding.task_names),
+                    }
+                )
+                return fast
+            with _LIVE_TASK_SPEC_LOCK:
+                if _LIVE_TASK_SPECS.get(runtime_activity_id) is binding:
+                    _LIVE_TASK_SPECS.pop(runtime_activity_id, None)
+
     shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
     if not shared.get("ok") or not shared.get("available"):
         return {
@@ -194,12 +252,41 @@ def read_tiandi_yiju_task_reward_snapshot(
             "authorized_claim_task_ids": [],
         }
     snapshot = build_tiandi_yiju_task_reward_snapshot(
-        activity_id=int(activity_id),
+        activity_id=runtime_activity_id,
         task_entries=list(shared.get("task_entries") or []),
         finished_task_ids=list(shared.get("finished_task_ids") or []),
     )
+    evidence = dict(shared.get("evidence") or {})
+    snapshot.update(
+        {
+            "elapsed_seconds": shared.get("elapsed_seconds"),
+            "stage_timings": dict(shared.get("stage_timings") or {}),
+            "evidence": evidence,
+        }
+    )
+    if snapshot.get("ok") and snapshot.get("complete"):
+        pid = evidence.get("pid")
+        process_start_ticks = evidence.get("process_start_ticks")
+        task_ids = tuple(int(row["task_id"]) for row in snapshot.get("tasks") or [])
+        if pid is not None and process_start_ticks is not None and task_ids:
+            binding = _LiveTaskSpecBinding(
+                spec=TaskRewardDomainSpec(
+                    key=f"tiandi_yiju_{runtime_activity_id}",
+                    label="天地弈局",
+                    activity_id=int(snapshot["task_activity_id"]),
+                    task_ids=task_ids,
+                    condition_key="AlliancePlayChessVersioned",
+                    thresholds=tuple(0 for _ in task_ids),
+                ),
+                task_subtypes=dict(snapshot.get("task_subtypes") or {}),
+                task_names=dict(snapshot.get("task_names") or {}),
+                pid=int(pid),
+                process_start_ticks=int(process_start_ticks),
+            )
+            with _LIVE_TASK_SPEC_LOCK:
+                _LIVE_TASK_SPECS[runtime_activity_id] = binding
     if expected_claimed_task_id is not None:
-        expected = int(expected_claimed_task_id)
+        expected = expected_claimed_task_id
         snapshot["expected_task_claimed"] = expected in {
             int(value) for value in snapshot.get("claimed_task_ids") or []
         }

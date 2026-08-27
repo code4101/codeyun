@@ -11,6 +11,7 @@ from backend.models import FanxiuExchangeActivity
 from backend.core.fanxiu.activity.exchange_activity_spec import (
     ExchangeActivityAdapter,
     ExchangeActivityMaterializer,
+    ExchangeOccurrenceRankAdapter,
     ExchangeOccurrenceShopAdapter,
     ExchangeActivitySpec,
     PageContract,
@@ -39,6 +40,7 @@ PUBLIC_EXCHANGE_ACTIVITY_TYPES = (
     "lingchong-jingwu",
     "lianti-faxiang",
     "dandao-wending",
+    "tiandi-yiju",
 )
 
 
@@ -143,6 +145,37 @@ class BeastAbyssExchangeActivityAdapter:
             session,
             activity_id=activity_id,
         )
+
+
+class TiandiYijuExchangeActivityAdapter:
+    _RANK_IDS = {
+        8090001: {"personal": 90101, "alliance": 90102},
+        8090004: {"personal": 90808, "alliance": 90813},
+    }
+
+    def resolve_occurrence_rank_activity_ids(
+        self,
+        *,
+        activity_id: int,
+    ) -> Mapping[str, int]:
+        try:
+            return self._RANK_IDS[int(activity_id)]
+        except KeyError as exc:
+            raise ValueError(f"天地弈局活动 {int(activity_id)} 不是可物化棋局") from exc
+
+    def resolve_occurrence_shop(self, *, cross_count: int) -> ShopSpec:
+        if int(cross_count) == 1:
+            return ShopSpec(base_id=90000, currency_type=11)
+        if int(cross_count) == 8:
+            return ShopSpec(base_id=90002, currency_type=13)
+        raise ValueError(f"天地弈局不支持 {int(cross_count)} 跨商店")
+
+    def collect_activity(self, session: Session, *, activity_id: str) -> Any:
+        from backend.core.fanxiu.activity.tiandi_yiju import (
+            collect_and_store_tiandi_yiju_activity,
+        )
+
+        return collect_and_store_tiandi_yiju_activity(session, activity_id=activity_id)
 
 
 class LingzhuangHuadaoActivityAdapter:
@@ -532,6 +565,44 @@ BEAST_ABYSS_SPEC = ExchangeActivitySpec(
 )
 
 
+TIANDI_YIJU_SPEC = ExchangeActivitySpec(
+    activity_type="tiandi-yiju",
+    label="天地弈局",
+    worldline_vo_types=("AlliancePlayChessActivityVO",),
+    currency_type=11,
+    currency_name="棋符",
+    rank_scopes=(
+        _rank_scope(
+            "personal",
+            label="个人榜",
+            role="primary",
+            subject="role",
+            reward_tiers_enabled=True,
+            required=True,
+            vo_type=PERSONAL_RANK_VO,
+            binding=RankActivityIdBinding(source="fixed", fixed_id=90101),
+        ),
+        _rank_scope(
+            "alliance",
+            label="宗门/位面榜",
+            role="comparative",
+            subject="team",
+            reward_tiers_enabled=True,
+            required=False,
+            vo_type=TEAM_RANK_VO,
+            binding=RankActivityIdBinding(source="fixed", fixed_id=90102),
+        ),
+    ),
+    shop=ShopSpec(base_id=90000, currency_type=11),
+    page=PageContract(
+        page_kind="exchange-ranking",
+        ranking_scopes=("personal", "alliance"),
+        has_shop=True,
+    ),
+    adapter=TiandiYijuExchangeActivityAdapter(),
+)
+
+
 def _resource_page(scopes: tuple[str, ...]) -> PageContract:
     return PageContract(
         page_kind="resource-ranking",
@@ -703,6 +774,7 @@ EXCHANGE_ACTIVITY_SPECS = build_exchange_activity_registry(
         XUTIAN_PALACE_SPEC,
         MAGIC_INVASION_SPEC,
         BEAST_ABYSS_SPEC,
+        TIANDI_YIJU_SPEC,
         LINGZHUANG_HUADAO_SPEC,
         YAOCHI_FLOWER_FESTIVAL_SPEC,
         YUANDING_SANSHENG_SPEC,
@@ -766,6 +838,17 @@ def resolve_registered_occurrence_shop(
     if isinstance(adapter, ExchangeOccurrenceShopAdapter):
         return adapter.resolve_occurrence_shop(cross_count=int(cross_count))
     return spec.shop
+
+
+def resolve_registered_occurrence_rank_activity_ids(
+    *,
+    activity_type: str,
+    activity_id: int,
+) -> Mapping[str, int] | None:
+    adapter = get_exchange_activity_spec(activity_type).adapter
+    if isinstance(adapter, ExchangeOccurrenceRankAdapter):
+        return adapter.resolve_occurrence_rank_activity_ids(activity_id=int(activity_id))
+    return None
 
 
 def load_registered_resource_ranking_tasks(

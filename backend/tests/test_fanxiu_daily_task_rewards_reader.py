@@ -5,10 +5,12 @@ from backend.core.fanxiu.instrumentation.daily_task_rewards import (
     LINGMAI_TASK_REWARD_SPEC,
     LUNDAO_TASK_REWARD_SPEC,
     QIXI_MOJIE_TASK_REWARD_SPEC,
+    TaskRewardDomainSpec,
     build_activity_task_reward_snapshot,
     read_activity_task_reward_fast_snapshot,
     read_activity_task_reward_snapshot,
     read_all_activity_task_reward_snapshots,
+    read_task_reward_spec_fast_snapshot,
 )
 
 
@@ -395,3 +397,43 @@ def test_fast_reader_rejects_expected_task_from_another_domain(monkeypatch) -> N
         assert "不属于奖励域" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_fast_reader_supports_occurrence_specific_spec_without_global_registration(
+    monkeypatch,
+) -> None:
+    entries, finished, calls = _install_fast_runtime_fakes(monkeypatch)
+    custom_ids = tuple(range(900001, 900019))
+    entries.extend(_entry(task_id) for task_id in custom_ids)
+    custom = TaskRewardDomainSpec(
+        key="occurrence_specific",
+        label="动态玩法榜",
+        activity_id=9000,
+        task_ids=custom_ids,
+        condition_key="Versioned",
+        thresholds=tuple(0 for _ in custom_ids),
+    )
+    entries[-len(custom_ids)].update(status=4)
+
+    first = read_task_reward_spec_fast_snapshot(custom)
+
+    assert first["ok"] is True
+    assert first["authorized_claim_task_ids"] == [custom_ids[0]]
+    assert first["evidence"]["entry_index_source"] == "rebuilt"
+    first_field_reads = calls["selected_fields"]
+    assert first_field_reads == len(entries) + len(custom_ids)
+
+    removed_index = next(
+        index for index, row in enumerate(entries) if row["taskId"] == custom_ids[0]
+    )
+    entries.pop(removed_index)
+    finished.append(custom_ids[0])
+    second = read_task_reward_spec_fast_snapshot(
+        custom,
+        expected_claimed_task_id=custom_ids[0],
+    )
+
+    assert second["ok"] is True
+    assert second["expected_task_claimed"] is True
+    assert second["evidence"]["entry_index_source"] == "derived_after_expected_claim"
+    assert calls["selected_fields"] - first_field_reads == len(custom_ids) - 1

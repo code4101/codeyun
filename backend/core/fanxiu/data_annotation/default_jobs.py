@@ -1612,7 +1612,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         # task.  An Agent may submit it only after an explicit user command;
         # questions such as “现在启动？” authorize inspection, not execution.
         # Once submitted, do not run screenshots/doctor probes beside its
-        # ten-second countdown.  See docs/凡修活动答题作业.md.
+        # ten-second countdown.  See docs/domains/fanxiu/jobs/凡修活动答题作业.md.
         from backend.core.fanxiu.data_annotation.tasks.activity_quiz import (
             execute_activity_quiz_task,
         )

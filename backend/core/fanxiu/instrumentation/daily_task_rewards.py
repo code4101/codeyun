@@ -446,13 +446,15 @@ def _rebuild_entry_indices(
     reader: LuaJitReader,
     values: list[Any],
     key: tuple[int, int, int, int, int] | None,
+    *,
+    expected_task_ids: frozenset[int] = _ALL_EXPECTED_TASK_IDS,
 ) -> dict[int, int]:
     grouped: dict[int, list[int]] = {}
     for index, value in enumerate(values):
         task_id = _positive_int(
             _selected_string_fields(reader, value, frozenset({"taskId"})).get("taskId")
         )
-        if task_id in _ALL_EXPECTED_TASK_IDS:
+        if task_id in expected_task_ids:
             grouped.setdefault(task_id, []).append(index)
     mapping = {
         task_id: indices[0]
@@ -656,12 +658,12 @@ def read_all_activity_task_reward_snapshots() -> dict[str, Any]:
     return read_activity_task_reward_snapshots()
 
 
-def read_activity_task_reward_fast_snapshot(
-    domain: str,
+def read_task_reward_spec_fast_snapshot(
+    spec: TaskRewardDomainSpec,
     *,
     expected_claimed_task_id: int | None = None,
 ) -> dict[str, Any]:
-    """Re-read one domain by validated task-list slots.
+    """Re-read one exact task-reward spec by validated task-list slots.
 
     This is the post-click verification path. It always reads the current
     process identity, QuestMgr root, activity-task list and complete
@@ -671,14 +673,13 @@ def read_activity_task_reward_fast_snapshot(
     snapshot is returned.
     """
 
-    specs = _validated_domain_specs((domain,))
-    spec = specs[0]
     if expected_claimed_task_id is not None:
         expected_claimed_task_id = int(expected_claimed_task_id)
         if expected_claimed_task_id not in spec.task_ids:
             raise ValueError(
-                f"任务 {expected_claimed_task_id} 不属于奖励域 {domain}"
+                f"任务 {expected_claimed_task_id} 不属于奖励域 {spec.key}"
             )
+    expected_task_ids = frozenset(int(task_id) for task_id in spec.task_ids)
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
@@ -752,7 +753,12 @@ def read_activity_task_reward_fast_snapshot(
         # finishTasks. That is a complete current fact, not a missing index.
         required_ids = set(spec.task_ids) - finished_in_domain
         if not required_ids.issubset(mapping):
-            mapping = _rebuild_entry_indices(reader, entry_values, cache_key)
+            mapping = _rebuild_entry_indices(
+                reader,
+                entry_values,
+                cache_key,
+                expected_task_ids=expected_task_ids,
+            )
             index_source = "rebuilt"
         if not required_ids.issubset(mapping):
             missing = sorted(required_ids - set(mapping))
@@ -782,7 +788,12 @@ def read_activity_task_reward_fast_snapshot(
             if cache_key is not None:
                 with _ENTRY_INDEX_CACHE_LOCK:
                     _ENTRY_INDEX_CACHE.pop(cache_key, None)
-            mapping = _rebuild_entry_indices(reader, entry_values, cache_key)
+            mapping = _rebuild_entry_indices(
+                reader,
+                entry_values,
+                cache_key,
+                expected_task_ids=expected_task_ids,
+            )
             index_source = "rebuilt_after_mismatch"
             if not required_ids.issubset(mapping):
                 raise FanxiuRuntimeMemoryError(
@@ -872,6 +883,20 @@ def read_activity_task_reward_fast_snapshot(
         }
 
 
+def read_activity_task_reward_fast_snapshot(
+    domain: str,
+    *,
+    expected_claimed_task_id: int | None = None,
+) -> dict[str, Any]:
+    """Re-read one registered reward domain by validated task-list slots."""
+
+    spec = _validated_domain_specs((domain,))[0]
+    return read_task_reward_spec_fast_snapshot(
+        spec,
+        expected_claimed_task_id=expected_claimed_task_id,
+    )
+
+
 def read_activity_task_reward_snapshot(domain: str) -> dict[str, Any]:
     """Read one reward domain, preserving the legacy single-domain shape."""
 
@@ -897,4 +922,5 @@ __all__ = [
     "read_activity_task_reward_snapshot",
     "read_activity_task_reward_snapshots",
     "read_all_activity_task_reward_snapshots",
+    "read_task_reward_spec_fast_snapshot",
 ]

@@ -17,8 +17,10 @@ def test_yunmeng_uses_generic_exchange_page_shell_without_eager_type_scan() -> N
     assert "Promise.allSettled" not in source
     assert "resolveLatestActivity" not in source
     assert "getLatestFanxiuExchangeActivitySnapshot" in source
-    assert ":activity-type=\"['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedType : undefined\"" in source
-    assert ":activity-name=\"['yunmeng-trial', 'xianyuan-duokui'].includes(selectedType) ? selectedActivityName : undefined\"" in source
+    assert ":activity-type=\"['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedType : undefined\"" in source
+    assert ":activity-name=\"['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedActivityName : undefined\"" in source
+    assert "label: '天地弈局'" in source
+    assert "value: 'tiandi-yiju'" in source
 
 
 def test_exchange_shop_is_a_read_only_tiered_projection() -> None:

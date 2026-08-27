@@ -20,6 +20,7 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     collect_registered_resource_ranking_resources,
     get_exchange_activity_spec,
     materialize_registered_exchange_activity,
+    resolve_registered_occurrence_rank_activity_ids,
     resolve_registered_occurrence_shop,
 )
 from backend.core.fanxiu.activity.exchange_activity_spec import (
@@ -54,6 +55,12 @@ def _activity_definition_index() -> dict[int, dict[str, Any]]:
 
 def _rank_scope_activity_ids(occurrence: RankingOccurrence) -> dict[str, int]:
     spec = get_exchange_activity_spec(occurrence.activity_type)
+    resolved = resolve_registered_occurrence_rank_activity_ids(
+        activity_type=occurrence.activity_type,
+        activity_id=occurrence.activity_id,
+    )
+    if resolved is not None:
+        return {str(scope): int(activity_id) for scope, activity_id in resolved.items()}
     definition = _activity_definition_index().get(occurrence.activity_id)
     if definition is None:
         raise ValueError(f"活动静态配置 {occurrence.activity_id} 不存在")
