@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 import re
 
-from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_fraction_numbers
+from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.instrumentation.bothdraw import (
     derive_bothdraw_ordinary_draw_delta,
     read_bothdraw_basic_runtime,
@@ -124,7 +124,7 @@ def read_lingxiao_gui_ticket_draws(
     fractions = re.findall(r"\d+\s*[/|丨｜]\s*\d+", normalized)
     if len(fractions) != 2:
         return None
-    values = [parse_ocr_fraction_numbers(item) for item in fractions]
+    values = [parse_ocr_values(item, expected_count=2) for item in fractions]
     if any(item is None for item in values):
         return None
     pairs = [(int(item[0]), int(item[1])) for item in values if item is not None]

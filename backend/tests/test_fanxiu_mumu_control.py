@@ -399,7 +399,7 @@ def test_run_mumu_adb_input_connects_tcp_serial_before_shell(monkeypatch):
 
     monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
     monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
 
     def fake_run(command, **_kwargs):
         commands.append(command)
@@ -423,7 +423,7 @@ def test_run_mumu_adb_input_falls_back_to_manager_when_adb_cannot_inject(monkeyp
 
     monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
     monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
     monkeypatch.setattr(
         mumu,
         "_run_mumu_manager_input",
@@ -460,7 +460,7 @@ def test_mumu_adb_port_check_recovers_local_port(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     mumu._MUMU_ADB_SESSION.clear()
     mumu._clear_mumu_adb_failure_cache()
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
 
     calls = []
     attempts = {"count": 0}
@@ -497,8 +497,8 @@ def test_mumu_adb_recovery_does_not_use_proxy_device_by_default(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     mumu._MUMU_ADB_SESSION.clear()
     mumu._clear_mumu_adb_failure_cache()
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
 
     calls = []
 
@@ -1203,7 +1203,7 @@ def test_force_restart_cleans_target_process_after_manager_shutdown(monkeypatch,
 
 def test_ensure_mumu_adb_resolution_repairs_wrong_wm_size(monkeypatch):
     monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
     monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:7555"])
     commands = []
     state = {"size": "Physical size: 720x1280", "density": "Physical density: 240"}
@@ -1391,7 +1391,7 @@ def test_mumu_adb_session_ignores_cached_proxy_device_by_default(monkeypatch):
     mumu._clear_mumu_adb_failure_cache()
     mumu._MUMU_ADB_SESSION.update({"device": object(), "host": "192.168.31.181", "port": 5555, "serial": "192.168.31.181:5555"})
     monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "devices", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
     monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: [])
 
     attempted = []
@@ -1432,7 +1432,7 @@ def test_mumu_adb_candidates_keep_cached_manager_device_during_transient_manager
         mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.add("192.168.31.181:5555")
     mumu._MUMU_ADB_SESSION["serial"] = "192.168.31.181:5555"
     monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: [])
-    monkeypatch.setattr(mumu.fanxiu_android_proxy_service, "devices", lambda: [])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "devices", lambda: [])
 
     try:
         assert mumu._mumu_adb_serial_candidates() == [

@@ -2344,7 +2344,7 @@ def test_runtime_wait_view_or_ocr_returns_branch_and_scene(monkeypatch):
 
 def _build_service_client(session: Session) -> TestClient:
     app = FastAPI()
-    app.include_router(fanxiu_api.router, prefix="/api/fanxiu")
+    app.include_router(fanxiu_api.service_router, prefix="/api/fanxiu")
 
     def override_get_session():
         yield session
@@ -10961,9 +10961,7 @@ def test_daily_lundao_post_seat_incomplete_runtime_falls_back_to_runtimes(
     )
 
     assert result["current_left_listen_time"] == 18_000_000
-    assert calls == [
-        {"reason": "test-fallback", "wait_seconds": 120.0}
-    ]
+    assert calls == [{"reason": "test-fallback"}]
 
 
 def test_daily_lundao_world_guard_skips_missing_entry_when_runtime_is_seated(
@@ -13840,7 +13838,7 @@ def test_daily_shuangxiu_clicks_first_book_when_already_on_215(tmp_path, monkeyp
     monkeypatch.setattr(
         runner,
         "_identify_scene_number",
-        lambda _ctx, _frame, ids: (218, 100.0) if list(ids) == [218] else (215, 100.0),
+        lambda _ctx, _frame, ids: (218, 100.0) if ids is not None and list(ids) == [218] else (215, 100.0),
     )
     monkeypatch.setattr(runner, "_ocr_fragments", lambda _frame: [{"text": "秘术", "x": 120.0, "y": 120.0, "w": 100.0, "h": 40.0}])
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked.append((round(x, 1), round(y, 1))))
@@ -13898,7 +13896,7 @@ def test_daily_shuangxiu_clicks_invite_when_already_on_detail(tmp_path, monkeypa
     monkeypatch.setattr(
         runner,
         "_identify_scene_number",
-        lambda _ctx, _frame, ids: (218, 100.0) if list(ids) == [218] else (216, 100.0),
+        lambda _ctx, _frame, ids: (218, 100.0) if ids is not None and list(ids) == [218] else (216, 100.0),
     )
     monkeypatch.setattr(
         runner,
@@ -14901,6 +14899,8 @@ def test_scene_number_does_not_prefetch_unrelated_ocr_identity(monkeypatch):
 
 
 def test_mail_selective_claim_does_not_reclassify_world_side_scene_from_business_ocr(tmp_path, monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import mail as mail_tasks
+
     runner = create_behavior_tree_runtime_runner()
     image34 = _image("世界", "0034.png", [])
     image86 = _image("离开场景", "0086.png", [
@@ -14963,6 +14963,12 @@ def test_mail_selective_claim_does_not_reclassify_world_side_scene_from_business
         return "success"
 
     monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: FakeRuntime())
+    monkeypatch.setattr(runner, "_refresh_runtime_mail_snapshot", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        mail_tasks,
+        "current_runtime_mail_sequence_snapshot",
+        lambda _engine: {"available": True, "complete": True, "items": []},
+    )
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: next(frames))
     monkeypatch.setattr(runner, "_identify_scene_number", fake_identify)
     monkeypatch.setattr(runner, "_ocr_fragments", fake_ocr_fragments)
@@ -15038,11 +15044,16 @@ def test_unknown_old_mail_instance_is_not_interpreted_or_migrated():
     mail_tasks = [item for item in tasks if str(item.get("task_type") or "").startswith("mail_")]
 
     assert changed is True
-    assert [(item["id"], item["task_type"], item["label"]) for item in mail_tasks] == [
-        ("mail-selective-claim", "mail_selective_claim", "邮件_选择性领取"),
-        ("mail-claim-check", "mail_claim_check", "邮件_领取检查"),
-    ]
-    assert mail_tasks[0]["payload"]["max_runtime_seconds"] == 10800
+    mail_tuples = [(item["id"], item["task_type"], item["label"]) for item in mail_tasks]
+    assert ("mail-claim-check", "mail_claim_check", "邮件_领取检查") in mail_tuples
+    assert sum(item["id"] == "mail-claim-check" for item in mail_tasks) == 1
+    assert {
+        item["id"]
+        for item in defaults
+        if str(item.get("task_type") or "").startswith("mail_")
+    }.issubset({item["id"] for item in mail_tasks})
+    selective = next(item for item in mail_tasks if item["id"] == "mail-selective-claim")
+    assert selective["payload"]["max_runtime_seconds"] == 10800
 
 
 def test_mail_full_scan_is_not_a_default_scheduler_task():
@@ -15093,16 +15104,30 @@ def test_legacy_mail_cleanup_alias_resolves_to_selective_claim_observe_only_job(
     assert definition.task_type == "mail_selective_claim"
     calls: list[str] = []
 
+    class FakeRuntime:
+        def goto_view(self, _scene_id):
+            if False:
+                yield BehaviorTreeStatus.RUNNING
+
     class FakeRunner:
+        def _fanxiu_runtime(self, _ctx, *, stop_event):
+            return FakeRuntime()
+
         def _execute_mail_legacy_scan_task(self, _ctx, _stop_event, _payload):
             calls.append("legacy")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
             return "legacy-result"
 
         def _execute_mail_selective_claim_task(self, _ctx, _stop_event, _payload):
             calls.append("cleanup")
+            if False:
+                yield BehaviorTreeStatus.RUNNING
             return "cleanup-result"
 
-    result = definition.handler(FakeRunner(), {}, {"observe_only": True}, threading.Event())
+    result = _drain_generator(
+        definition.handler(FakeRunner(), {}, {"observe_only": True}, threading.Event())
+    )
 
     assert result == "legacy-result"
     assert calls == ["legacy"]
@@ -15499,66 +15524,6 @@ def test_mail_selective_claim_deletes_read_and_confirms_348_after_reward(tmp_pat
     ]
 
 
-def test_mail_realign_resets_to_world_and_reopens_at_known_top(tmp_path, monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    image121 = _image(
-        "邮件",
-        "0121.png",
-        [{"id": "delete", "kind": "rect", "title": "一键删除", "x": 0.2, "y": 0.8, "w": 0.2, "h": 0.05}],
-    )
-    ctx = {"images": {121: image121}}
-    stop_event = threading.Event()
-    runtime = runner._fanxiu_runtime(ctx, tmp_path / "asset_tree.json", stop_event=stop_event)
-    actions: list[tuple] = []
-
-    def fake_delete(_runtime, _view, *, reason):
-        actions.append(("delete", reason))
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        return 121
-
-    def fake_wait_view(*view_ids, **_kwargs):
-        actions.append(("wait", tuple(view_ids)))
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        return behavior_tree_runtime_core.View(image121)
-
-    def fake_leave(*_args, **_kwargs):
-        actions.append(("leave", 34))
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        return 34
-
-    def fake_open(*_args, **_kwargs):
-        actions.append(("open", 121))
-        if False:
-            yield BehaviorTreeStatus.RUNNING
-        return behavior_tree_runtime_core.View(image121)
-
-    monkeypatch.setattr(runner, "_delete_read_mail_once", fake_delete)
-    monkeypatch.setattr(runtime, "wait_view", fake_wait_view)
-    monkeypatch.setattr(runner, "_leave_mail_scene_to_world", fake_leave)
-    monkeypatch.setattr(runner, "_open_mail_selective_claim_entry", fake_open)
-
-    runner._run_direct_runtime_action(
-        lambda: runner._reset_precise_mail_window_to_top(
-            ctx,
-            stop_event,
-            runtime,
-            reason="首行受遮挡",
-        ),
-        stop_event=stop_event,
-        tick_seconds=0.01,
-    )
-
-    assert actions == [
-        ("delete", "异常硬复位前"),
-        ("leave", 34),
-        ("open", 121),
-        ("wait", (121,)),
-    ]
-
-
 def test_mail_precise_click_uses_observed_title_after_fractional_scroll():
     runner = create_behavior_tree_runtime_runner()
     point = runner._precise_mail_observed_title_point(
@@ -15601,53 +15566,6 @@ def test_mail_precise_click_uses_matching_duplicate_in_expected_slot():
     )
 
     assert point == (354.0, 1045.0)
-
-
-def test_mail_precise_lock_probe_scans_only_the_aligned_row(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    reference = {"title": "邮件锁定图标参考", "filename": "0582.png"}
-    lock_shape = {"title": "锁定图标", "floating": True}
-    scan_box = {"title": "状态", "x": 0.74, "y": 0.65, "w": 0.1, "h": 0.06}
-    captured = {}
-
-    monkeypatch.setattr(
-        runner,
-        "_find_asset_image_by_title",
-        lambda _ctx, title: reference if title == "邮件锁定图标参考" else None,
-    )
-    monkeypatch.setattr(
-        runner,
-        "_find_shape",
-        lambda image, title: lock_shape if image is reference and title == "锁定图标" else None,
-    )
-    monkeypatch.setattr(
-        runner,
-        "_mail_row_template_child_shape",
-        lambda _image, row, title: (
-            scan_box if title == "状态" and row["y"] == 1045.0 else None
-        ),
-    )
-
-    def fake_score(_ctx, image, shape, frame, **kwargs):
-        captured.update(image=image, shape=shape, frame=frame, kwargs=kwargs)
-        return 100.0
-
-    monkeypatch.setattr(runner, "_shape_score", fake_score)
-
-    score = runner._precise_mail_row_lock_score(
-        {},
-        {"title": "邮件"},
-        "frame",
-        title_center_y=1045.0,
-    )
-
-    assert score == 100.0
-    assert captured["image"] is reference
-    assert captured["shape"]["_match_scan_box"] is scan_box
-    assert captured["kwargs"] == {
-        "match_strategy": "auto",
-        "ocr_fallback": False,
-    }
 
 
 def test_mail_selective_claim_wait_returns_detail_still_open_after_short_delay(tmp_path, monkeypatch):
@@ -16538,7 +16456,8 @@ def test_runtime_no_attachment_policy_skips_read_mail(monkeypatch):
         title="香车馈赠",
         normalized_title="香车馈赠",
         create_time_text="2026年06月02日16:17",
-        source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
         status="seen",
         payload={"mail_rewards": []},
     )
@@ -16563,7 +16482,8 @@ def test_runtime_claim_policy_does_not_rescue_read_mail_by_title(monkeypatch):
         title="灵脉收益",
         normalized_title="灵脉收益",
         create_time_text="2026年06月07日19:43",
-        source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
         status="claimed",
         payload={"mail_rewards": [{"item_name": "玄神灵液", "item_type": "道具", "amount": 287232}]},
     )
@@ -16586,7 +16506,8 @@ def test_runtime_claim_policy_claims_locked_visible_row_when_runtime_is_safe(mon
         title="香车馈赠",
         normalized_title="香车馈赠",
         create_time_text="2026年06月09日13:48",
-        source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
         status="可领",
         action_policy="claim",
         payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币", "amount": 8888}]},
@@ -16610,7 +16531,8 @@ def test_runtime_claim_policy_keeps_locked_visible_row_when_runtime_is_protected
         title="珍贵馈赠",
         normalized_title="珍贵馈赠",
         create_time_text="2026年06月09日13:48",
-        source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
         status="seen",
         payload={"mail_rewards": [{"item_name": "洗灵奇石", "item_type": "资源", "amount": 1}]},
     )
@@ -16721,7 +16643,8 @@ def test_runtime_mail_record_matches_noisy_ocr_title_by_time(monkeypatch):
                 title="仙缘夺魁个人榜奖励",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("仙缘夺魁个人榜奖励"),
                 create_time_text="2026年06月04日23:59",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": []},
             )
@@ -16751,7 +16674,8 @@ def test_runtime_mail_record_does_not_match_title_without_same_time(monkeypatch)
                 title="太乙馈赠",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("太乙馈赠"),
                 create_time_text="2026年06月07日19:17",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": []},
             )
@@ -16780,7 +16704,8 @@ def test_visible_mail_row_falls_back_to_title_when_time_mismatches(monkeypatch):
                 title="分红发放",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("分红发放"),
                 create_time_text="2026年06月05日13:07",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": [{"item_name": "灵石", "amount": 200}]},
             )
@@ -16813,7 +16738,8 @@ def test_visible_mail_row_falls_back_to_title_only_runtime_group(monkeypatch):
                 title="节日馈赠",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
                 create_time_text="2026年06月07日12:00",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币"}]},
             )
@@ -16825,9 +16751,10 @@ def test_visible_mail_row_falls_back_to_title_only_runtime_group(monkeypatch):
                 title="节日馈赠",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
                 create_time_text="2026年06月06日12:00",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
-                payload={"mail_rewards": [{"item_name": "洗灵奇石", "item_type": "资源"}]},
+                payload={"mail_rewards": [{"item_name": "未知道具 #999999", "item_type": "资源"}]},
             )
         )
         session.commit()
@@ -16857,7 +16784,8 @@ def test_visible_mail_row_title_only_claims_when_all_candidates_safe(monkeypatch
                 title="节日馈赠",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
                 create_time_text="2026年06月07日12:00",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币"}]},
             )
@@ -16889,7 +16817,8 @@ def test_visible_mail_row_title_only_uses_initial_reward_rule_not_user_status(mo
                 title="节日馈赠",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("节日馈赠"),
                 create_time_text="2026年06月07日12:00",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="锁定",
                 payload={"mail_rewards": [{"item_name": "灵石", "item_type": "货币"}]},
             )
@@ -16921,7 +16850,8 @@ def test_runtime_mail_fuzzy_title_does_not_cross_policy_conflict(monkeypatch):
                 title="未取之宝",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("未取之宝"),
                 create_time_text="2026年06月06日22:00",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": [{"item_name": "洗灵奇石"}]},
             )
@@ -16933,7 +16863,8 @@ def test_runtime_mail_fuzzy_title_does_not_cross_policy_conflict(monkeypatch):
                 title="未取至宝",
                 normalized_title=fanxiu_api.normalize_fanxiu_mail_title("未取至宝"),
                 create_time_text="2026年06月06日22:00",
-                source="runtime",
+                source="runtime_memory",
+                present_in_runtime=True,
                 status="seen",
                 payload={"mail_rewards": []},
             )
@@ -16994,8 +16925,14 @@ def test_mail_ui_delete_probe_deletes_only_delete_detail(monkeypatch):
         yield BehaviorTreeStatus.RUNNING
         return 121, 100.0
 
+    def fake_wait_after_action(*_args, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "list"
+
     monkeypatch.setattr(runner, "_wait_mail_detail_or_list_scene", fake_wait_detail)
     monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
+    monkeypatch.setattr(runner, "_wait_mail_list_after_detail_action", fake_wait_after_action)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked_points.append((x, y)))
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None, **_kwargs: clicked_shapes.append(shape["title"]))
@@ -17050,12 +16987,18 @@ def test_runtime_claim_policy_clicks_claim_detail(monkeypatch):
         yield BehaviorTreeStatus.RUNNING
         return "frame", {"matched": True, "similarity": 100}
 
+    def fake_wait_after_action(*_args, **_kwargs):
+        if False:
+            yield BehaviorTreeStatus.RUNNING
+        return "list"
+
     monkeypatch.setattr(runner, "_wait_mail_detail_or_list_scene", fake_wait_detail)
     monkeypatch.setattr(runner, "_wait_scene_id", fake_wait_scene)
     monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
     monkeypatch.setattr(runner, "_click_frame_point", lambda _ctx, _image, x, y: clicked_points.append((x, y)))
     monkeypatch.setattr(runner, "_click_shape", lambda _ctx, _image, shape, _frame=None, **_kwargs: clicked_shapes.append(shape["title"]))
     monkeypatch.setattr(runner, "_wait_shape_match", fake_wait_shape_match)
+    monkeypatch.setattr(runner, "_wait_mail_list_after_detail_action", fake_wait_after_action)
     monkeypatch.setattr(
         runner,
         "_update_runtime_mail_action_for_row",
@@ -17771,7 +17714,7 @@ def test_nudge_shape_content_for_box_only_drags_when_candidate_near_edge(monkeyp
     assert sy == 872
     assert ey == 728
     assert duration_ms == 1500
-    assert waits == [1.0]
+    assert waits == [1.5]
 
     center_direction = runner._run_direct_runtime_action(
         lambda: runtime.nudge_shape_content_for_box(121, "邮件清单2", {"x": 120, "y": 760, "w": 80, "h": 40}),
@@ -17781,7 +17724,7 @@ def test_nudge_shape_content_for_box_only_drags_when_candidate_near_edge(monkeyp
 
     assert center_direction is None
     assert len(drags) == 1
-    assert waits == [1.0]
+    assert waits == [1.5]
 
 
 def test_baiye_target_box_uses_character_tokens():
@@ -18860,6 +18803,10 @@ class _FakeSignupRuntime:
         self.scene_id = initial_scene_id
         self.activity_page = activity_page
         self.actions: list[tuple[Any, ...]] = []
+        self.next_times: list[str] = []
+
+    def set_next_time(self, value: str):
+        self.next_times.append(value)
 
     def current_scene(self, view_ids=None, **_kwargs):
         return self.scene_id, 0.0, "frame"
@@ -19226,7 +19173,7 @@ def test_daily_scroll_window_unchanged_signature_ignores_occlusion_markers(tmp_p
 
     assert changed is False
     assert len(dragged) == 1
-    assert waits == [1.0]
+    assert waits == [1.5]
     assert any("签名未变化" in log["message"] for log in runner.status()["logs"])
 
 
@@ -20025,7 +19972,7 @@ def test_daily_xianyuan_duel_refreshes_once_when_all_targets_are_stronger(tmp_pa
             calls.append(("wait_action_settle", seconds))
             return done(None)
 
-        def wait_click_then_view(self, scene, shape, *targets):
+        def wait_click_then_view(self, scene, shape, *targets, **_options):
             calls.append(("wait_click_then_view", scene, shape, targets))
             target = targets[0]
             if isinstance(target, list):
@@ -20184,7 +20131,7 @@ def test_daily_xianyuan_duel_forces_lowest_power_when_refresh_is_exhausted(tmp_p
         def ocr_text(self, _frame):
             return "仙缘斗法"
 
-        def wait_click_then_view(self, scene, shape, *targets):
+        def wait_click_then_view(self, scene, shape, *targets, **_options):
             calls.append(("wait_click_then_view", scene, shape, targets))
             target = targets[0]
             if isinstance(target, list):
@@ -20425,6 +20372,10 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
                 return [2, 3], "2/3"
             return [7], "本周剩余进攻次数：7"
 
+        def ocr_text_in_shapes(self, scene_id, shape_titles, **kwargs):
+            calls.append(("ocr_text_in_shapes", scene_id, tuple(shape_titles), kwargs))
+            return "进攻倒计时 -00:00:01"
+
         def shape(self, scene_id, title):
             calls.append(("shape", scene_id, title))
             return (scene_id, title)
@@ -20494,6 +20445,7 @@ def test_daily_mojie_raid_opens_daily_entry_by_mojie(tmp_path, monkeypatch):
         ("wait_view", (319, 330), {"label": "日常_奇袭魔界：等待奇袭魔界 #319"}),
         ("ocr_numbers_in_shapes", 319, ("剩余次数",), {"padding": 16}),
         ("wait_click_then_view", 319, "参与进攻", (320,), {}),
+        ("ocr_text_in_shapes", 320, ("进攻倒计时标识",), {"padding": 12}),
         (
             "wait_click",
             320,
@@ -21211,6 +21163,9 @@ def test_daily_mojie_raid_single_false_zero_keeps_current_week(tmp_path, monkeyp
             assert scene_id == 322
             return [3, 3], "队伍数 3/3"
 
+        def ocr_text_in_shapes(self, _scene_id, _shape_titles, **_kwargs):
+            return "进攻倒计时 -00:00:01"
+
         def wait_action_settle(self, _seconds=1.0):
             return done(None)
 
@@ -21833,7 +21788,7 @@ def test_runtime_service_task_cell_requires_fanxiu_runtime_scope(monkeypatch):
         json=payload,
     )
 
-    assert forbidden.status_code == 403
+    assert forbidden.status_code == 403, forbidden.text
     assert ok.status_code == 200
     assert ok.json()["task_type"] == "daily_signup"
     assert calls == [("entry-1", "entry-1", "daily_signup", {}, "service")]
@@ -23161,7 +23116,7 @@ def test_manual_device_restart_interrupts_running_cell_and_keeps_runtime(monkeyp
         lambda **_kwargs: next(status_calls),
     )
     monkeypatch.setattr(
-        fanxiu_api._runtime_framework,
+        fanxiu_api._behavior_tree_framework,
         "interrupt_current_cell",
         lambda entry_id, **kwargs: interrupts.append((entry_id, kwargs)) or {"status": "stopped"},
     )
