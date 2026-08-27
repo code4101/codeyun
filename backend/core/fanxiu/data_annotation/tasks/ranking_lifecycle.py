@@ -17,6 +17,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     RANKING_LIFECYCLE_TASK_ID,
     RESOURCE_FREE_GIFT_KIND,
     RESOURCE_RANKING_TASK_ID,
+    TIANDI_YIJU_ACTIVE_KIND,
     XIANMENG_ACTIVE_KIND,
     YUANDING_GIFT_KIND,
     RankingFamily,
@@ -96,6 +97,15 @@ def _execute_xianmeng_checkpoint(runner, ctx, payload, stop_event, *, occurrence
             "retry_at": retry_at.isoformat(timespec="seconds"),
         }
     return {"status": "completed", "message": f"仙盟内部执行 {result}"}
+
+
+def _execute_tiandi_yiju_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+    from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju import (
+        execute_tiandi_yiju_checkpoint,
+    )
+    return (yield from execute_tiandi_yiju_checkpoint(
+        runner, ctx, payload, stop_event, occurrence=occurrence
+    ))
 
 
 def _execute_resource_checkpoint(
@@ -210,6 +220,10 @@ def _execute_family_job(
                 )
             elif checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:
                 result = yield from _execute_xianmeng_checkpoint(
+                    runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind == TIANDI_YIJU_ACTIVE_KIND:
+                result = yield from _execute_tiandi_yiju_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
                 )
             else:
