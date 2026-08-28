@@ -1559,6 +1559,13 @@ def _clear_plan_snapshot(
         else _mines_data_fields(reader, mines_root)
     )
     club_data = _club_data_fields(reader, club_root)
+    fatigue_used = as_int(mines_data.get("V_AttackFatigueValue"))
+    action_power_max = as_int(mines_data.get("_MaxAtkMaxTried"))
+    action_power = (
+        max(0, action_power_max - fatigue_used)
+        if action_power_max is not None and fatigue_used is not None
+        else None
+    )
     mine_records, declared_count, last_update_batch_count, config_sha256 = (
         _validated_mine_records(reader, mines_data)
     )
