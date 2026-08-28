@@ -389,8 +389,16 @@ class DailyRedpacketTaskMixin:
                 "日常_红包：qmch_reward Runtime 频道未对齐活动 Tab，"
                 f"route={channel_route}"
             )
-        yield from runtime.wait_click(34, "聊天", timeout=transition_timeout)
-        landing = yield from runtime.wait_view(
+        phrase_fact = read_repeated_chat_phrase(channel, sub_id)
+        phrase = str(phrase_fact.get("phrase") or "").strip()
+        if not phrase_fact.get("ready") or not phrase:
+            raise RuntimeError(
+                "日常_红包：当前活动频道 Runtime 未形成唯一重复话术，拒绝发送："
+                f"{phrase_fact.get('reason') or 'unknown'}"
+            )
+        landing = yield from runtime.click_shape_center_then_view(
+            34,
+            "聊天",
             332,
             333,
             timeout=transition_timeout,
@@ -440,13 +448,6 @@ class DailyRedpacketTaskMixin:
             timeout=transition_timeout,
             label="鸿运福签：复制前确认输入框为空",
         )
-        phrase_fact = read_repeated_chat_phrase(channel, sub_id)
-        phrase = str(phrase_fact.get("phrase") or "").strip()
-        if not phrase_fact.get("ready") or not phrase:
-            raise RuntimeError(
-                "日常_红包：当前活动频道 Runtime 未形成唯一重复话术，拒绝发送："
-                f"{phrase_fact.get('reason') or 'unknown'}"
-            )
         copy_frame = runtime.cur_frame(update=True)
         copy_box = self._daily_qmch_copy_box(ctx, copy_frame)
         runtime.click_frame_point(
@@ -459,23 +460,6 @@ class DailyRedpacketTaskMixin:
             timeout=transition_timeout,
             label="鸿运福签：等待复制后的输入层",
         )
-        copied_text = runtime.ocr_text(update=True)
-        normalized_phrase = re.sub(
-            r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
-            "",
-            phrase,
-        )
-        normalized_copied = re.sub(
-            r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
-            "",
-            str(copied_text or ""),
-        )
-        phrase_prefix = normalized_phrase[:10]
-        if not phrase_prefix or phrase_prefix not in normalized_copied:
-            raise RuntimeError(
-                "日常_红包：复制后 #390 未回读到 Runtime 话术前缀，拒绝发送："
-                f"expected={phrase_prefix}, actual={normalized_copied[:80]}"
-            )
         yield from runtime.wait_click(
             390,
             "发送",

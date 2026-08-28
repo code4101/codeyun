@@ -1,41 +1,15 @@
-# 凡修 data-annotation 运行设备约定
+# 凡修 data-annotation 运行设备
 
-> Last Updated: 2026-06-25
+## 当前入口
 
-## 当前事实
+- 凡修自动化只使用当前 CodeYun 数据目录绑定的正式设备配置。
+- 设备发现、ADB 连接、截图和输入统一走项目控制层，不在业务 Task 中写设备序列号或 MuMu 端口。
+- 旧机器、旧数据库和旧资产副本不作为当前事实源。
 
-- 凡修脚本、data-annotation 标注、Runtime、Scheduler、守护和 MuMu 画面流都以 `codepc_mf` 为唯一运行目标。
-- `codepc_mi15` 上的旧版凡修脚本和旧云手机流程已经退役，不再作为凡修运行、验证、截图、日志或资产树事实来源。
-- `data-annotation` 资产树按设备 `entry_id` 存放；当前有效资产树是 `codepc_mf` 对应的 `30b82d72-8a76-4a74-be4b-4fc1591c6ce2.json`。
-- `frontend/src/standard/fanxiu/game-window2` 是历史博物馆代码，不再注册为当前页面；当前“数据标注”页面是 `/fanxiu/data-annotation`，由 `data-annotation` 承载。
-- 后端和前端里仍有 `game-window2` 命名的截图、点击、匹配、流式画面 API，这是给 `data-annotation` 复用的底层兼容能力，不代表 `game-window2` 页面仍在运行。
-- 经验观察：凡修有时会在下午 16:00 左右进入临时维护。`#415`“停更码字中，敬请期待更新”是明确维护证据；启动后的 `#14` 游戏公告不是恢复证据，`#18` 的小号服务文字也不作为唯一判据。系统在 17:00、17:30、18:00、18:30 复查，之后必要时继续每半小时复查；每次先完整重启 MuMu，再于 `#18` 每 5 秒尝试进入、持续 30 秒，只有到达 `#34` 才解除维护门闩。
-- 游戏客户端启动本身可能卡在“正在初始化资源”等加载画面。启动后 5 分钟仍未进入 `#14` 公告、`#18` 封面、`#415` 维护页或 `#34` 世界时，按客户端启动卡死处理，完整重启 MuMu 并重新计时；这条看门狗同时适用于普通登录和维护复查，不把加载卡死误判为维护，也不因下午时段主动重启正常游戏。
+## 诊断
 
-## 开发要求
+1. 先检查正式 Runtime/设备状态接口。
+2. 再检查 ADB 设备是否唯一、目标进程是否存在、截图是否为当前凡修画面。
+3. 只有设备层正常后才诊断 scene、Shape、OCR 或业务逻辑。
 
-- 凡修 data-annotation 页面默认选择 `codepc_mf`，不要再优先选择 `mi15`。
-- 后端 Runtime、Scheduler、守护和调试验证都应使用 `codepc_mf` 入口。
-- 标注资产访问必须走 data-annotation 存储解析层，不要在业务代码里手拼物理路径。上层 API 只传 `entry_id`、`filename`、场景编号、shape 等业务标识；资产树、图片和 sidecar JSON 由 `backend/core/fanxiu/data_annotation/storage.py` 统一解析。
-- 一个 entry 是一个自包含资产目录：`fanxiu/data-annotation/entries/<entry_id>/asset-tree.json` 存帧树；图片位于 `fanxiu/data-annotation/entries/<entry_id>/images/<filename>`；单图 sidecar JSON 与图片放在同一目录并使用同名 stem，例如 `0034.png` 与 `0034.json`。
-- Runtime 不再读取旧 `asset-trees/<entry_id>.json`、共享图片目录或 `m2508凡修/mainwin/截图`。缺资产应迁移/补齐新 entry 目录，不做旧框架兼容；发现旧资产残留时应清理掉，避免形成第二事实源。
-- Runtime/守护截图与点击默认只使用本机 MuMu ADB 通道：优先尝试常规本机端口，例如 `127.0.0.1:7555/16416/5555`，也允许 `MuMuManager.exe info --vmindex all` 返回的当前本机实例 `adb_host_ip:adb_port`。抓包或 Android proxy 服务从普通 `adb devices` 发现的远端设备（如非 MuMuManager 返回的 `192.168.*:5555`）不是凡修 Runtime 的默认截图/点击目标。抓包服务可以使用 ADB 做代理配置或设备发现，但它发现到的设备不能自动进入 Runtime 截图/点击候选。确需调试远端设备时必须显式设置环境变量，不得由抓包服务自动混入。
-- `MuMuManager.exe` 只属于低频设备发现/恢复控制面，不得进入截图、点击、拖拽等 ADB 热路径。Manager 返回的实例地址需要跨进程持久缓存；正常健康检查优先探测缓存 ADB，只有首次发现或 ADB 确认失联时才在跨进程锁与刷新冷却下重新调用 Manager。
-- ADB 是 Runtime 的主通道；桌面窗口捕获只允许作为显式调试兜底，目标也必须是本机 `MuMu` 窗口，不再使用向日葵窗口标题或向日葵投屏通道。
-- 桌面窗口捕获、窗口预览和窗口点击兜底必须默认归一到 `900x1600` 标注坐标系；MuMu 恢复后外层窗口尺寸或缩放可能变化，不得让截图输出跟随窗口实际像素漂移。
-- 当前 Runtime 底层模块边界：
-  - `backend/core/fanxiu/runtime/mumu_control.py`：MuMu ADB、MuMu 窗口捕获兜底、截图匹配、点击/拖拽/输入。
-  - `backend/core/devices/window_capture_preview.py`：通用 Windows 窗口捕获工具。
-  - 抓包服务只能负责网络代理、证书、pcap/数据流解析，不应提供截图、点击、OCR 或行为树设备候选。
-- 不要重新注册 `/fanxiu/game-window2` 页面；需要做当前标注功能时改 `/fanxiu/data-annotation`。
-- 若发现 `codepc_mi15` 下残留凡修 data-annotation 资产树、旧画面流或旧脚本文档，应视为历史残留清理对象，不要用它推断当前运行状态。
-- 遇到“当前运行事实”和旧文档冲突时，以 `codepc_mf` 本机运行状态和这份约定为准。
-
-## 常见误区
-
-- 不要把考勤、小鹅通等其它业务里仍可能使用 `mi15` 的说明套到凡修 data-annotation。
-- 不要把每设备一份资产树理解为凡修当前有多套有效标注。凡修当前只保留 mf 这套。
-
-## 运维恢复
-
-- TapTap 内置 MuMu 出现「运行异常，请重启安卓设备尝试解决」时，优先按 [凡修 MuMu 模拟器异常恢复手册](./凡修MuMu模拟器异常恢复手册.md) 处理。此时 `ADB截图失败` 通常是模拟器/安卓容器崩溃后的下游症状，不应先按 Runtime 截图链路判断根因。
+不得使用 Computer Use 替代 ADB，不得在业务代码中增加私有设备探测。具体命令和端口以当前控制模块及状态接口为准。

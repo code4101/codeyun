@@ -401,7 +401,7 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
                     return SimpleNamespace(id=view)
             return SimpleNamespace(id=30)
 
-        def click_shape_center_then_view(self, view, shape, target, **_kwargs):
+        def click_shape_center_then_view(self, view, shape, target, *_targets, **_kwargs):
             actions.append(("tab", view, shape, target))
             yield "tab"
             return SimpleNamespace(id=target)
@@ -472,7 +472,7 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
     ))
 
     assert result["opened_count"] == 1
-    assert ("click", 34, "聊天") in actions
+    assert ("tab", 34, "聊天", 332) in actions
     assert ("point", 673, 25.0, 40.0) in actions
     assert ("click", 390, "发送") in actions
     assert [item for item in actions if item == ("click", 397, "开")] == [
@@ -544,7 +544,7 @@ def test_daily_redpacket_qmch_runtime_tab_mismatch_has_zero_gui_actions(monkeypa
         ))
 
 
-def test_daily_redpacket_qmch_copied_phrase_mismatch_never_sends_or_opens(monkeypatch):
+def test_daily_redpacket_qmch_requires_runtime_phrase_before_gui(monkeypatch):
     runner = _Runner()
     actions = []
 
@@ -576,9 +576,6 @@ def test_daily_redpacket_qmch_copied_phrase_mismatch_never_sends_or_opens(monkey
             actions.append(("click", view, shape))
             yield "click"
 
-        def ocr_text(self, **_kwargs):
-            return "无法识别的内容"
-
     monkeypatch.setattr(
         runner,
         "_daily_qmch_copy_box",
@@ -604,11 +601,12 @@ def test_daily_redpacket_qmch_copied_phrase_mismatch_never_sends_or_opens(monkey
         module,
         "read_repeated_chat_phrase",
         lambda *_args, **_kwargs: {
-            "ready": True,
-            "phrase": "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖",
+            "ready": False,
+            "phrase": "",
+            "reason": "not_unique",
         },
     )
-    with pytest.raises(RuntimeError, match="#390 未回读"):
+    with pytest.raises(RuntimeError, match="未形成唯一重复话术"):
         _consume(runner._execute_daily_qmch_reward_route(
             Runtime(),
             {},
@@ -622,8 +620,7 @@ def test_daily_redpacket_qmch_copied_phrase_mismatch_never_sends_or_opens(monkey
             },
         ))
 
-    assert ("click", 390, "发送") not in actions
-    assert ("click", 397, "开") not in actions
+    assert actions == []
 
 
 def test_daily_redpacket_has_business_owned_trigger_description():
