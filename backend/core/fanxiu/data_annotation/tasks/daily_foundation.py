@@ -1428,7 +1428,11 @@ class DailyFoundationTaskMixin:
                     )
                     self._log_locked(result if result == "success" else "skip", self._status["message"])
                 yield from self._safe_daily_done_cleanup(
-                    lambda: self._return_daily_boss_to_world(ctx, stop_event),
+                    lambda: self._return_daily_boss_to_world(
+                        ctx,
+                        stop_event,
+                        allow_post_boss_transition=True,
+                    ),
                     label="日常_首领",
                     repeat_risk="重复挑战",
                 )
@@ -1477,7 +1481,11 @@ class DailyFoundationTaskMixin:
             )
             self._log_locked(result, self._status["message"])
         yield from self._safe_daily_done_cleanup(
-            lambda: self._return_daily_boss_to_world(ctx, stop_event),
+            lambda: self._return_daily_boss_to_world(
+                ctx,
+                stop_event,
+                allow_post_boss_transition=True,
+            ),
             label="日常_首领",
             repeat_risk="重复挑战",
         )
@@ -1527,7 +1535,13 @@ class DailyFoundationTaskMixin:
         yield from self._return_daily_boss_to_world(ctx, stop_event)
         return result
 
-    def _return_daily_boss_to_world(self, ctx: dict[str, Any], stop_event: threading.Event):
+    def _return_daily_boss_to_world(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        *,
+        allow_post_boss_transition: bool = False,
+    ):
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             with self._lock:
@@ -1539,6 +1553,42 @@ class DailyFoundationTaskMixin:
             scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
         if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, _text)):
             scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        transition_forward_point = (
+            self._daily_boss_transition_forward_point(runtime, _frame)
+            if scene_id is None and allow_post_boss_transition
+            else None
+        )
+        if transition_forward_point is not None:
+            x, y = transition_forward_point
+            images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+            reference = images.get(314) if isinstance(images, dict) else None
+            if not isinstance(reference, dict):
+                raise RuntimeError("日常_首领：结算后过渡页已确认，但缺少 #314 尺寸参考，拒绝点击")
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    "日常_首领：结算后过渡页唯一命中 OCR「前往」，确认进入活动入口再回世界",
+                    phase="daily_boss_transition_forward",
+                    current_scene=None,
+                )
+                self._log_locked("action", self._status["message"])
+            runtime.click_frame_point(reference, x, y)
+            deadline = time.monotonic() + 60.0
+            while True:
+                self._raise_if_stopped(stop_event)
+                yield from runtime.wait_action_settle(2.0)
+                scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
+                    ctx,
+                    runtime,
+                    update=True,
+                )
+                if scene_id in {34, 661}:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "日常_首领：点击结算过渡页「前往」后 60 秒内未落到 #661/#34；"
+                        "为防止转场期间重复点击，已中断"
+                    )
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         image314 = images.get(314) if isinstance(images, dict) else None
         loading_similarity = (
@@ -1615,8 +1665,75 @@ class DailyFoundationTaskMixin:
         except Exception as exc:
             with self._lock:
                 self._log_locked("warning", f"日常_首领：收尾回世界 #34 失败：{exc}")
+            # Leaving #186/#181 can enter a long, control-free transition.
+            # ``goto_view`` may exhaust its generic unknown budget after the
+            # formal Leave/Confirm actions have already succeeded.  From this
+            # point a second click is unsafe; only wait for the authoritative
+            # world identity to settle before surfacing the original error.
+            try:
+                landing = yield from runtime.wait_view(
+                    34,
+                    timeout=120.0,
+                    label="日常_首领：离开确认后等待长加载落到世界 #34",
+                )
+                if getattr(landing, "id", landing) == 34:
+                    with self._lock:
+                        self._status.update({"current_scene": 34, "updated_at": time.time()})
+                        self._log_locked("success", "日常_首领：长加载结束，已回到世界 #34")
+                    return "success"
+            except Exception as settle_exc:
+                with self._lock:
+                    self._log_locked("warning", f"日常_首领：继续等待长加载仍未回世界：{settle_exc}")
             raise
         return "success"
+
+    def _daily_boss_transition_forward_point(
+        self,
+        runtime: BehaviorTreeRuntime,
+        frame: str | None,
+    ) -> tuple[float, float] | None:
+        """Locate the unique post-boss ``前往`` button from the live OCR frame.
+
+        The boss completion flow can land on an unannotated activity splash
+        before the known #661 entrance.  Requiring the splash identity text and
+        exactly one standalone ``前往`` line keeps this narrower than a generic
+        OCR click and avoids teaching the scene graph a transient frame.
+        """
+
+        if (
+            not isinstance(frame, str)
+            or not frame
+            or not hasattr(runtime, "full_frame_ocr_tokens")
+        ):
+            return None
+        lines = group_ocr_tokens(runtime.full_frame_ocr_tokens(frame))
+        normalized_lines = [
+            re.sub(r"\s+", "", str(item.get("text") or ""))
+            for item in lines
+        ]
+        compact = "".join(normalized_lines)
+        if (
+            "活动规则" not in compact
+            or "雁行布陈" not in compact
+            or not any(re.search(r"天地.局", text) for text in normalized_lines)
+        ):
+            return None
+        matches = [
+            item
+            for item, text in zip(lines, normalized_lines)
+            if text == "前往"
+            and 300 <= float(item.get("x") or -1) <= 600
+            and 1200 <= float(item.get("y") or -1) <= 1450
+            and float(item.get("w") or 0) > 0
+            and float(item.get("h") or 0) > 0
+        ]
+        if len(matches) != 1:
+            return None
+        match = matches[0]
+        return (
+            float(match.get("x") or 0) + float(match.get("w") or 0) / 2,
+            float(match.get("y") or 0) + float(match.get("h") or 0) / 2,
+        )
 
     def _daily_boss_item_detail_text_matches(self, text: str) -> bool:
         compact = re.sub(r"\s+", "", _sanitize_ocr_text(text))
@@ -1779,8 +1896,13 @@ class DailyFoundationTaskMixin:
                     self._log_locked("action", "日常_首领：点击 #181「离开」")
                 leave_shape.click(runtime)
                 try:
-                    yield from runtime.wait_view_id(178, timeout=20.0, label="日常_首领：等待首领列表 #178")
-                    returned_to_list = True
+                    landing = yield from runtime.wait_view(
+                        178,
+                        34,
+                        timeout=120.0,
+                        label="日常_首领：离开完成页后等待首领列表 #178 或世界 #34",
+                    )
+                    returned_to_list = getattr(landing, "id", landing) == 178
                 except Exception as exc:
                     with self._lock:
                         self._log_locked("warning", f"日常_首领：离开 #181 后未能回到 #178 读取刷新时间：{exc}")
@@ -1903,7 +2025,32 @@ class DailyFoundationTaskMixin:
     def _daily_boss_status_text_from_frame(self, ctx: dict[str, Any], frame: str | None = None) -> str:
         asset_tree_path = ctx.get("asset_tree_path")
         runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
-        return runtime.ocr_text(frame) if isinstance(frame, str) and frame else runtime.ocr_text(update=True)
+        current_frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
+        scene_text = runtime.ocr_text(current_frame)
+        # #186's formal shapes identify the page and the Leave control, but
+        # the live refresh countdown is a floating combat field outside those
+        # shapes.  Reuse the same frame's shared OCR result and admit only the
+        # narrow boss HUD regions proven by the real 900x1600 frame.  This
+        # preserves scene identity while avoiding a generic full-screen
+        # countdown interpretation.
+        hud_texts: list[str] = []
+        for item in group_ocr_tokens(runtime.full_frame_ocr_tokens(current_frame)):
+            text = re.sub(r"\s+", "", str(item.get("text") or ""))
+            x = float(item.get("x") or 0)
+            y = float(item.get("y") or 0)
+            if (
+                250 <= x <= 650
+                and 250 <= y <= 550
+                and re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?后刷新", text)
+            ):
+                hud_texts.append(text)
+            elif 450 <= x <= 800 and 80 <= y <= 650 and any(
+                token in text for token in ("伤害", "数据统计", "自动战斗中", "封印")
+            ):
+                hud_texts.append(text)
+            elif 750 <= x <= 900 and 50 <= y <= 350 and "首领" in text:
+                hud_texts.append(text)
+        return " ".join([scene_text, *hud_texts]).strip()
 
     def _daily_boss_text_is_list(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -1930,7 +2077,15 @@ class DailyFoundationTaskMixin:
         return "首领" in text and any(fragment in text for fragment in ("自动战斗中", "后刷新", "数据统计", "伤害"))
 
     def _daily_boss_done_text(self, text: str) -> bool:
-        return "封印" in _sanitize_ocr_text(text)
+        normalized = _sanitize_ocr_text(text)
+        if "封印" in normalized:
+            return True
+        has_refresh_countdown = bool(
+            re.search(r"\d{1,2}:\d{2}(?::\d{2})?后刷新", normalized)
+        )
+        return has_refresh_countdown and "首领" in normalized and any(
+            token in normalized for token in ("伤害", "数据统计")
+        )
 
     def _daily_boss_stuck_map_text(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)

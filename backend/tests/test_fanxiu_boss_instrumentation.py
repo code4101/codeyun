@@ -348,7 +348,7 @@ def test_daily_boss_done_uses_post_battle_next_time_probe(
             True,
         )
 
-    def fake_return(_ctx, _stop_event):
+    def fake_return(_ctx, _stop_event, **_kwargs):
         returned.append(True)
         if False:
             yield

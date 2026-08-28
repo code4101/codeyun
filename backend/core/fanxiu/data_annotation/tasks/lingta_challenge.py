@@ -294,6 +294,7 @@ class LingtaChallengeTaskMixin:
 
         if not isinstance(frame, str) or not frame.startswith("data:image"):
             return "；现场帧不可用"
+        runtime_snapshot: dict[str, Any] = {}
         try:
             evidence = build_unknown_evidence(
                 runtime.runner,
@@ -374,13 +375,46 @@ class LingtaChallengeTaskMixin:
             LINGTA_LIST_SCENE_ID,
             *lingta_current_card_point(fragment),
         )
-        landing = yield from runtime.wait_view(
-            LINGTA_OVERVIEW_SCENE_ID,
-            LINGTA_CURRENT_FLOOR_SCENE_ID,
-            timeout=15,
-            label="灵塔_挑战：等待总览 #531 或当前层 #532",
-        )
+        runtime_snapshot: dict[str, Any] = {}
+        try:
+            landing = yield from runtime.wait_view(
+                LINGTA_OVERVIEW_SCENE_ID,
+                LINGTA_CURRENT_FLOOR_SCENE_ID,
+                timeout=15,
+                label="灵塔_挑战：等待总览 #531 或当前层 #532",
+            )
+        except TimeoutError:
+            # The overview's highest-floor label is dynamic and can make the
+            # full #531 identity fail even though the page and its stable
+            # action are already present.  Runtime proves that Lingta data is
+            # loaded; the following wait_any still requires either the formal
+            # #531 action shape or the complete #532 identity before clicking.
+            # Neither signal alone authorizes the transition.
+            runtime_snapshot = self._read_lingta_challenge_snapshot()
+            if runtime_snapshot.get("complete") is not True:
+                raise
+            self._log(
+                "warning",
+                "灵塔_挑战：#531 完整身份受动态最高层文字影响，"
+                "Runtime 数据已加载，改由正式动作锚点与 #532 联合对齐",
+            )
+            landing = LINGTA_OVERVIEW_SCENE_ID
         if getattr(landing, "id", landing) == LINGTA_OVERVIEW_SCENE_ID:
+            if runtime_snapshot.get("complete") is True:
+                challenge_frame = runtime.cur_frame(update=True)
+                challenge_text = runtime.ocr_text_in_shapes(
+                    LINGTA_CURRENT_FLOOR_SCENE_ID,
+                    ("挑战文字",),
+                    padding=12,
+                    frame_data_url=challenge_frame,
+                )
+                if "挑战" in re.sub(r"\s+", "", str(challenge_text or "")):
+                    self._log(
+                        "success",
+                        "灵塔_挑战：Runtime 数据与 #532「挑战文字」OCR 对齐，"
+                        "确认已在当前层详情",
+                    )
+                    return progress
             overview_result = yield from runtime.wait_any(
                 {
                     "current_floor": runtime.view_visible(LINGTA_CURRENT_FLOOR_SCENE_ID),

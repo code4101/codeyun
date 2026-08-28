@@ -241,6 +241,9 @@ class DailyXuanhuangTaskMixin:
                             phase="daily_xuanhuang_battle",
                             current_scene=scene_id,
                         )
+                    status_persister = getattr(self, "_persist_status", None)
+                    if callable(status_persister):
+                        status_persister(min_interval_seconds=2.0)
                 next_status_at = now + 30.0
             if now >= deadline:
                 final_frame = runtime.cur_frame(update=True)
