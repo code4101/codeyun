@@ -1843,7 +1843,7 @@ def test_scheduler_settings_switch_to_ai_interrupts_running_engineering_cell(tmp
     monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda _session, _user, _entry_id: entry)
     monkeypatch.setattr(
         fanxiu._behavior_tree_control,
-        "runtime_status",
+        "behavior_tree_runtime_status",
         lambda **_kwargs: {
             "running": True,
             "current_task_id": "daily-zhenxie",
@@ -1852,7 +1852,7 @@ def test_scheduler_settings_switch_to_ai_interrupts_running_engineering_cell(tmp
     )
     monkeypatch.setattr(
         fanxiu._behavior_tree_framework,
-        "interrupt_current_cell",
+        "take_runtime_control",
         lambda entry_id, **kwargs: calls.update({"entry_id": entry_id, **kwargs}) or {
             "status": "stopped",
             "running": False,
@@ -1881,7 +1881,7 @@ def test_scheduler_settings_switch_to_ai_preserves_manual_cell(tmp_path, monkeyp
     monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda _session, _user, _entry_id: entry)
     monkeypatch.setattr(
         fanxiu._behavior_tree_control,
-        "runtime_status",
+        "behavior_tree_runtime_status",
         lambda **_kwargs: {
             "running": True,
             "current_task_id": "",
@@ -1890,8 +1890,8 @@ def test_scheduler_settings_switch_to_ai_preserves_manual_cell(tmp_path, monkeyp
     )
     monkeypatch.setattr(
         fanxiu._behavior_tree_framework,
-        "interrupt_current_cell",
-        lambda *_args, **_kwargs: pytest.fail("AI/人工 Cell 不得被工程运行权切换中断"),
+        "take_runtime_control",
+        lambda *_args, **_kwargs: {"status": "running", "running": True},
     )
 
     response = fanxiu.put_fanxiu_data_annotation_scheduler_settings(
@@ -7679,7 +7679,7 @@ def test_data_annotation_service_stop_task_endpoint_uses_shared_runtime_paths(tm
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     calls = {}
 
-    def fake_interrupt_current_cell(entry_id, **kwargs):
+    def fake_take_runtime_control(entry_id, **kwargs):
         calls["entry_id"] = entry_id
         calls.update(kwargs)
         return {
@@ -7691,7 +7691,7 @@ def test_data_annotation_service_stop_task_endpoint_uses_shared_runtime_paths(tm
             "logs": [],
         }
 
-    monkeypatch.setattr(fanxiu._behavior_tree_framework, "interrupt_current_cell", fake_interrupt_current_cell)
+    monkeypatch.setattr(fanxiu._behavior_tree_framework, "take_runtime_control", fake_take_runtime_control)
 
     response = fanxiu.stop_fanxiu_behavior_tree_runtime_service_task(
         fanxiu.FanxiuBehaviorTreeRuntimeStopRequest(entry_id="request-stop-entry")
@@ -7700,6 +7700,9 @@ def test_data_annotation_service_stop_task_endpoint_uses_shared_runtime_paths(tm
     assert response.running is False
     assert response.entry_id == "request-stop-entry"
     assert calls["entry_id"] == "request-stop-entry"
+    assert calls["interrupt_any_cell"] is True
+    assert calls["scheduler_state_path"] == _scheduler_state_path(tmp_path)
+    assert calls["scheduler_settings_path"] == fanxiu._data_annotation_scheduler_settings_path()
     assert calls["runtime_state_path"] == tmp_path / "runtime_state.json"
     assert calls["world_facts_path"] == tmp_path / "world_facts.json"
 

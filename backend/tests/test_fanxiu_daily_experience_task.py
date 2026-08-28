@@ -1064,6 +1064,14 @@ def test_daily_boss_sets_experience_only_after_true_success(monkeypatch):
         "_read_data_annotation_scheduler_tasks",
         lambda: [
             {
+                "id": "daily-boss",
+                "task_type": "daily_boss",
+                "label": "日常_首领",
+                "last_result": "success",
+                "finished_at": "2026-07-23 13:10:00",
+                "next_time": "2026-07-24 05:00:00",
+            },
+            {
                 "id": "legacy-daily-activity",
                 "task_type": "daily_activity",
                 "label": "日常_活跃度",
@@ -1152,6 +1160,14 @@ def test_daily_activity_can_be_the_last_prerequisite_and_does_not_retrigger_afte
             "next_time": "2026-08-09 05:00:00",
         },
         {
+            "id": "legacy-daily-activity",
+            "task_type": "daily_activity",
+            "label": "日常_活跃度",
+            "last_result": "success",
+            "finished_at": "2026-08-08 10:00:00",
+            "next_time": "2026-08-09 07:00:00",
+        },
+        {
             "id": "daily-experience",
             "task_type": "daily_experience",
             "label": "日常_经验",
@@ -1173,12 +1189,55 @@ def test_daily_activity_can_be_the_last_prerequisite_and_does_not_retrigger_afte
         completed_at=datetime(2026, 8, 8, 10, 0),
     ) == "2026-08-08 10:00:00"
 
-    tasks[1]["finished_at"] = "2026-08-08 10:30:00"
+    tasks[2]["finished_at"] = "2026-08-08 10:30:00"
     assert runner._trigger_daily_experience_after_prerequisites(
         completed_task_type="daily_activity",
         completed_at=datetime(2026, 8, 8, 10, 0),
     ) is None
     assert len(triggered) == 1
+
+
+def test_daily_experience_keeps_completed_prerequisite_after_later_interrupt(monkeypatch):
+    triggered: list[tuple[str, object]] = []
+    tasks = [
+        {
+            "id": "daily-boss",
+            "task_type": "daily_boss",
+            "label": "日常_首领",
+            "last_result": "interrupted",
+            "finished_at": "2026-08-28 10:41:53",
+            "next_time": "2026-08-29 05:00:00",
+        },
+        {
+            "id": "legacy-daily-activity",
+            "task_type": "daily_activity",
+            "label": "日常_活跃度",
+            "last_result": "success",
+            "finished_at": "2026-08-28 12:35:37",
+            "next_time": "2026-08-29 07:00:00",
+        },
+        {
+            "id": "daily-experience",
+            "task_type": "daily_experience",
+            "label": "日常_经验",
+            "last_result": "success",
+            "finished_at": "2026-08-27 07:20:03",
+            "next_time": None,
+        },
+    ]
+    monkeypatch.setattr(daily_foundation_module, "_read_data_annotation_scheduler_tasks", lambda: tasks)
+    monkeypatch.setattr(
+        behavior_tree_runtime_module,
+        "set_data_annotation_scheduler_task_trigger_time",
+        lambda name, when: triggered.append((name, when)) or "2026-08-28 12:35:37",
+    )
+
+    runner = _BossRunner("success")
+    assert runner._trigger_daily_experience_after_prerequisites(
+        completed_task_type="daily_activity",
+        completed_at=datetime(2026, 8, 28, 12, 35, 37),
+    ) == "2026-08-28 12:35:37"
+    assert triggered == [("日常_经验", datetime(2026, 8, 28, 12, 35, 37))]
 
 
 def test_daily_experience_is_manual_scheduler_catalog_type_without_scene_policy():

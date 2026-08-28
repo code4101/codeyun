@@ -508,30 +508,18 @@ class DailyFoundationTaskMixin:
     ):
         normalized_payload = dict(payload or {})
         normalized_payload.setdefault("fallback_seconds", 3600)
-        activity_completed = False
-
-        def tracked_flow(runtime: Any):
-            nonlocal activity_completed
-            flow_result = yield from self.daily_activity_flow(runtime)
-            activity_completed = (
-                isinstance(flow_result, dict)
-                and str(flow_result.get("result") or "success") == "success"
-            )
-            return flow_result
-
         result = yield from self._execute_daily_runtime_task(
             ctx,
             stop_event,
             normalized_payload,
             task_type="daily_activity",
             label="日常_活跃度",
-            flow=tracked_flow,
+            flow=self.daily_activity_flow,
         )
-        if activity_completed:
-            self._trigger_daily_experience_after_prerequisites(
-                completed_task_type="daily_activity",
-                completed_at=_behavior_tree_runtime._now(),
-            )
+        self._trigger_daily_experience_after_prerequisites(
+            completed_task_type="daily_activity",
+            completed_at=_behavior_tree_runtime._now(),
+        )
         return result
 
     def _next_weekly_activity_time_text(
@@ -819,7 +807,7 @@ class DailyFoundationTaskMixin:
     ) -> datetime | None:
         """Return a same-cycle business completion, proven by Job-owned next_time."""
 
-        if not isinstance(task, Mapping) or str(task.get("last_result") or "") != "success":
+        if not isinstance(task, Mapping):
             return None
         finished_at = cls._parse_scheduler_datetime(task.get("finished_at"))
         next_time = cls._parse_scheduler_datetime(task.get("next_time"))
@@ -834,16 +822,9 @@ class DailyFoundationTaskMixin:
             return None
 
         if task_type == "daily_boss":
-            expected_next_time = finished_at.replace(hour=5, minute=0, second=0, microsecond=0)
-            if expected_next_time <= finished_at:
-                expected_next_time += timedelta(days=1)
+            expected_next_time = cycle_end
         elif task_type == "daily_activity":
-            expected_next_time = (finished_at + timedelta(days=1)).replace(
-                hour=7,
-                minute=0,
-                second=0,
-                microsecond=0,
-            )
+            expected_next_time = cycle_end.replace(hour=7)
         else:
             return None
         return finished_at if next_time == expected_next_time else None
@@ -864,14 +845,11 @@ class DailyFoundationTaskMixin:
         }
         completion_times: dict[str, datetime | None] = {}
         for task_type in ("daily_boss", "daily_activity"):
-            if task_type == completed_task_type:
-                completion_times[task_type] = completed_at
-            else:
-                completion_times[task_type] = self._daily_prerequisite_completion_at(
-                    tasks_by_type.get(task_type),
-                    task_type=task_type,
-                    cycle_now=completed_at,
-                )
+            completion_times[task_type] = self._daily_prerequisite_completion_at(
+                tasks_by_type.get(task_type),
+                task_type=task_type,
+                cycle_now=completed_at,
+            )
 
         missing = [
             "日常_首领" if task_type == "daily_boss" else "日常_活跃度"

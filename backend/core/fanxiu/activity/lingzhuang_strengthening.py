@@ -319,7 +319,7 @@ def _task_progress_complete(
 
     equipment_complete = equipment_task_count == len(_EQUIPMENT_TASK_TARGETS)
     equipment_only_phase = (
-        raw_task_total == len(_EQUIPMENT_TASK_TARGETS) and score_task_count == 0
+        equipment_complete and score_task_count == 0
     )
     return (
         equipment_complete and (equipment_only_phase or score_task_count == 10),

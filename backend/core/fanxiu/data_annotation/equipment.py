@@ -1094,6 +1094,11 @@ def strengthen_selected_equipment_once(
                     for task in before.equipment_tasks
                 ]
                 candidate.task_progress_captured_at = candidate.captured_at
+                if bool((before.evidence or {}).get("equipment_only_phase")):
+                    candidate.evidence = {
+                        **(candidate.evidence or {}),
+                        "equipment_only_phase": True,
+                    }
                 candidate.complete = bool(
                     candidate.equipment_captured_at
                     and candidate.task_progress_captured_at

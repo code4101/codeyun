@@ -1095,6 +1095,7 @@ def restart_behavior_tree_kernel(
 def stop_current_task(
     entry_id: str,
     *,
+    interrupt_timeout_seconds: float = 15.0,
     scheduler_state_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
@@ -1105,8 +1106,14 @@ def stop_current_task(
     )
     task_id = str(before.get("current_task_id") or "")
     task_label = str(before.get("current_task") or before.get("task_type") or "当前 Cell")
-    kernel = stop_fanxiu_behavior_tree_current_task(entry_id)
-    if str(kernel.get("execution_state") or "") != "idle":
+    kernel = stop_fanxiu_behavior_tree_current_task(
+        entry_id,
+        timeout_seconds=interrupt_timeout_seconds,
+    )
+    if (
+        str(kernel.get("execution_state") or "") != "idle"
+        or kernel.get("interrupt_confirmed") is False
+    ):
         return {**before, "kernel": kernel}
 
     now = datetime.now()
@@ -1153,11 +1160,14 @@ def stop_current_task(
                 task["attempt_original_trigger"] = None
                 task["attempt_kernel_generation"] = None
                 task["attempt_kernel_idle_since"] = None
-                write_scheduler_tasks(
+                terminal_written = write_scheduler_tasks(
                     tasks,
                     scheduler_state_path=scheduler_state_path,
                     runtime_update_ids={task_id},
+                    expected_runtime_attempt_ids={task_id: interrupted_attempt_id or None},
                 )
+                if terminal_written is False:
+                    break
                 record_scheduler_task_fact(
                     task,
                     "interrupted",
@@ -1180,6 +1190,43 @@ def stop_current_task(
                 )
             break
     return terminal
+
+
+def take_ai_runtime_control(
+    entry_id: str,
+    *,
+    interrupt_any_cell: bool = False,
+    interrupt_timeout_seconds: float = 15.0,
+    scheduler_state_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    """Atomically revoke engineering dispatch before yielding the GUI to AI/user."""
+
+    settings = set_scheduler_job_group_enabled(
+        False,
+        scheduler_settings_path=scheduler_settings_path,
+    )
+    status = behavior_tree_runtime_status(
+        scheduler_settings_path=scheduler_settings_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+    kernel = status.get("kernel") if isinstance(status.get("kernel"), dict) else {}
+    engineering_cell = bool(str(status.get("current_task_id") or ""))
+    active_cell = status.get("running") or str(kernel.get("execution_state") or "") == "busy"
+    if active_cell and (engineering_cell or interrupt_any_cell):
+        status = stop_current_task(
+            entry_id,
+            interrupt_timeout_seconds=interrupt_timeout_seconds,
+            scheduler_state_path=scheduler_state_path,
+            runtime_state_path=runtime_state_path,
+            world_facts_path=world_facts_path,
+        )
+    status["job_group_enabled"] = bool(settings.get("job_group_enabled"))
+    status["runtime_control"] = "ai"
+    return status
 
 
 def set_runtime_guard(

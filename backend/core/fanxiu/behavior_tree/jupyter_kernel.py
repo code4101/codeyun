@@ -25,6 +25,27 @@ FANXIU_KERNEL_MANAGER_ADDRESS = ("127.0.0.1", 48731)
 FANXIU_KERNEL_MANAGER_AUTHKEY = b"codeyun-fanxiu-kernel-v1"
 
 
+def _apply_kernel_iopub_status(state: dict[str, Any], message: dict[str, Any]) -> None:
+    """Track the active execute request, ignoring unrelated control traffic."""
+
+    if str(message.get("msg_type") or "") != "status":
+        return
+    parent = message.get("parent_header") if isinstance(message.get("parent_header"), dict) else {}
+    if str(parent.get("msg_type") or "") != "execute_request":
+        return
+    msg_id = str(parent.get("msg_id") or "")
+    if not msg_id:
+        return
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    execution_state = str(content.get("execution_state") or "")
+    if execution_state == "busy":
+        state["active_cell_msg_id"] = msg_id
+        state["execution_state"] = "busy"
+    elif execution_state == "idle" and state.get("active_cell_msg_id") == msg_id:
+        state["active_cell_msg_id"] = ""
+        state["execution_state"] = "idle"
+
+
 def fanxiu_jupyter_connection_path() -> Path:
     from backend.core.fanxiu.behavior_tree.runtime import fanxiu_behavior_tree_runtime_dir
 
@@ -513,6 +534,26 @@ class FanxiuJupyterBinding:
         self.runner._persist_status()
         try:
             result = self.run_task(task_type, normalized_payload)
+        except KeyboardInterrupt:
+            detail = "Cell 已由 interrupt 中断"
+            with self.runner._lock:
+                self.runner._clear_current_task_locked()
+                self.runner._status.update({
+                    "ok": True,
+                    "status": "interrupted",
+                    "phase": "interrupted",
+                    "message": detail,
+                    "error": "",
+                    "scheduler_task_id": task_id,
+                    "scheduler_attempt_id": attempt_id,
+                    "scheduler_terminal_result": "interrupted",
+                    "scheduler_terminal_message": detail,
+                    "scheduler_terminal_at": time.time(),
+                    "finished_at": time.time(),
+                    "updated_at": time.time(),
+                })
+            self.runner._persist_status()
+            raise
         except Exception as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             with self.runner._lock:
@@ -630,7 +671,10 @@ def send_fanxiu_kernel_manager_command(
     connection = Client(FANXIU_KERNEL_MANAGER_ADDRESS, authkey=FANXIU_KERNEL_MANAGER_AUTHKEY)
     try:
         connection.send({"command": str(command or "status"), "timeout_seconds": float(timeout_seconds)})
-        if not connection.poll(max(0.1, float(timeout_seconds))):
+        # The manager uses the requested timeout to confirm the target Cell's
+        # terminal IOPub status.  Give the local transport a small delivery
+        # margin instead of racing that same deadline.
+        if not connection.poll(max(0.1, float(timeout_seconds)) * 2.0 + 1.0):
             raise TimeoutError(f"凡修 KernelManager 命令超时：{command}")
         response = connection.recv()
     finally:
@@ -703,7 +747,11 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     connection_path = fanxiu_jupyter_connection_path()
     connection_path.parent.mkdir(parents=True, exist_ok=True)
     state_lock = threading.RLock()
-    state: dict[str, Any] = {"execution_state": "starting", "generation": 0}
+    state: dict[str, Any] = {
+        "execution_state": "starting",
+        "active_cell_msg_id": "",
+        "generation": 0,
+    }
     monitor_stop: threading.Event | None = None
     monitor_client: Any = None
     manager: KernelManager | None = None
@@ -806,13 +854,8 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                     continue
                 except Exception:
                     return
-                if str(message.get("msg_type") or "") != "status":
-                    continue
-                content = message.get("content") if isinstance(message.get("content"), dict) else {}
-                execution_state = str(content.get("execution_state") or "")
-                if execution_state:
-                    with state_lock:
-                        state["execution_state"] = execution_state
+                with state_lock:
+                    _apply_kernel_iopub_status(state, message)
 
         threading.Thread(target=monitor, name="fanxiu-kernel-state", daemon=True).start()
 
@@ -848,6 +891,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
         with state_lock:
             state["generation"] = int(state.get("generation") or 0) + 1
             state["execution_state"] = "idle"
+            state["active_cell_msg_id"] = ""
             state["behavior_tree_code_signature"] = loaded_code_signature
         start_monitor(km)
         return km
@@ -869,19 +913,49 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                 request = connection.recv()
                 command = str(request.get("command") or "status") if isinstance(request, dict) else "status"
                 timeout = float(request.get("timeout_seconds") or 15.0) if isinstance(request, dict) else 15.0
+                interrupted_cell_msg_id = ""
+                interrupt_confirmed = False
                 if command == "interrupt":
-                    try:
-                        _interrupt_kernel_over_control_channel(connection_path, timeout_seconds=timeout)
-                    except Exception:
-                        # KernelManager remains the native fallback for kernels whose
-                        # control channel does not implement interrupt_request.
-                        manager.interrupt_kernel()
-                    deadline = time.time() + max(0.5, timeout)
-                    while time.time() < deadline:
+                    with state_lock:
+                        interrupted_cell_msg_id = str(state.get("active_cell_msg_id") or "")
+                    if interrupted_cell_msg_id:
+                        deadline = time.time() + max(0.5, timeout)
+                        try:
+                            _interrupt_kernel_over_control_channel(
+                                connection_path,
+                                timeout_seconds=min(1.0, max(0.5, timeout / 3)),
+                            )
+                        except Exception:
+                            # KernelManager remains the native fallback for kernels whose
+                            # control channel does not implement interrupt_request.
+                            manager.interrupt_kernel()
+                        else:
+                            # A control-channel ACK only confirms receipt.  Give the target
+                            # Cell a brief chance to stop, then resend the same native
+                            # interrupt through KernelManager if it is still active.
+                            grace_deadline = min(deadline, time.time() + 0.5)
+                            while time.time() < grace_deadline:
+                                with state_lock:
+                                    if state.get("active_cell_msg_id") != interrupted_cell_msg_id:
+                                        break
+                                time.sleep(0.05)
+                            with state_lock:
+                                target_still_active = (
+                                    state.get("active_cell_msg_id") == interrupted_cell_msg_id
+                                )
+                            if target_still_active:
+                                manager.interrupt_kernel()
+                        while time.time() < deadline:
+                            with state_lock:
+                                if state.get("active_cell_msg_id") != interrupted_cell_msg_id:
+                                    break
+                            time.sleep(0.05)
                         with state_lock:
-                            if state.get("execution_state") != "busy":
-                                break
-                        time.sleep(0.05)
+                            if state.get("active_cell_msg_id") == interrupted_cell_msg_id:
+                                raise TimeoutError(
+                                    f"Cell interrupt 未确认终止：{interrupted_cell_msg_id}"
+                                )
+                    interrupt_confirmed = True
                 elif command == "restart":
                     stop_monitor()
                     previous_manager = manager
@@ -911,6 +985,9 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
                         "command": command,
                         "alive": alive,
                         "execution_state": state.get("execution_state") if alive else "dead",
+                        "active_cell_msg_id": state.get("active_cell_msg_id") if alive else "",
+                        "interrupted_cell_msg_id": interrupted_cell_msg_id,
+                        "interrupt_confirmed": interrupt_confirmed if command == "interrupt" else None,
                         "generation": state.get("generation"),
                         "behavior_tree_code_signature": state.get("behavior_tree_code_signature"),
                         "manager_pid": os.getpid(),

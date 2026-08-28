@@ -192,7 +192,11 @@ def test_explicit_interrupt_closes_runtime_and_attempt_without_consuming_trigger
     monkeypatch.setattr(
         behavior_tree_control,
         "stop_fanxiu_behavior_tree_current_task",
-        lambda _entry_id: {"alive": True, "execution_state": "idle"},
+        lambda _entry_id, **_kwargs: {
+            "alive": True,
+            "execution_state": "idle",
+            "interrupt_confirmed": True,
+        },
     )
     monkeypatch.setattr(
         behavior_tree_control,
@@ -229,6 +233,38 @@ def test_explicit_interrupt_closes_runtime_and_attempt_without_consuming_trigger
     assert facts[-1][1] == "interrupted"
     assert incidents[-1]["incident"]["kind"] == "attempt_interrupted"
     assert incidents[-1]["attempt_id"] == "attempt-a"
+
+
+def test_take_ai_runtime_control_revokes_dispatch_before_interrupt(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        behavior_tree_control,
+        "set_scheduler_job_group_enabled",
+        lambda enabled, **_kwargs: events.append(("mode", enabled)) or {"job_group_enabled": enabled},
+    )
+    monkeypatch.setattr(
+        behavior_tree_control,
+        "behavior_tree_runtime_status",
+        lambda **_kwargs: {
+            "running": True,
+            "current_task_id": "job-a",
+            "kernel": {"execution_state": "busy"},
+        },
+    )
+    monkeypatch.setattr(
+        behavior_tree_control,
+        "stop_current_task",
+        lambda *_args, **_kwargs: events.append(("interrupt", None)) or {
+            "status": "interrupted",
+            "kernel": {"execution_state": "idle", "interrupt_confirmed": True},
+        },
+    )
+
+    result = behavior_tree_control.take_ai_runtime_control("entry-a")
+
+    assert events == [("mode", False), ("interrupt", None)]
+    assert result["job_group_enabled"] is False
+    assert result["runtime_control"] == "ai"
 
 
 def test_runtime_status_never_projects_running_when_kernel_is_idle(monkeypatch):

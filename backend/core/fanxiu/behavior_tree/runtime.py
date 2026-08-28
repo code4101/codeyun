@@ -494,11 +494,15 @@ def ensure_fanxiu_behavior_tree_service(
     return status
 
 
-def stop_fanxiu_behavior_tree_current_task(entry_id: str) -> dict[str, Any]:
+def stop_fanxiu_behavior_tree_current_task(
+    entry_id: str,
+    *,
+    timeout_seconds: float = 15.0,
+) -> dict[str, Any]:
     del entry_id
     from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
 
-    return FanxiuKernel().interrupt()
+    return FanxiuKernel().interrupt(timeout_seconds=timeout_seconds)
 
 
 def start_fanxiu_local_service(request: FanxiuLocalServiceRequest) -> dict[str, Any]:
