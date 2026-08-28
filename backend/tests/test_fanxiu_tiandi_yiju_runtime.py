@@ -16,6 +16,10 @@ class _Reader:
     def long(self, value):
         return value if isinstance(value, int) else None
 
+    def list_items(self, value):
+        rows = list(value) if isinstance(value, list) else []
+        return rows, len(rows)
+
 
 def _state():
     instance = {
@@ -84,6 +88,33 @@ def test_snapshot_fails_closed_when_own_alliance_is_ambiguous() -> None:
         tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
 
 
+def test_cross_snapshot_joins_own_alliance_from_live_connected_lane() -> None:
+    instance, model, data = _state()
+    data["_IsCross"] = 1
+    data["_ChessConnectListL"] = [2]
+    data["_ChessConnectListR"] = [2]
+    instance["playChessInfo"]["allianceRank"] = 1  # stale/misaligned cross cache
+    instance["playChessInfo"]["allianceScore"] = 123
+    data["rankDic"][1][2]["score"] = 999_999
+
+    result = tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+    assert result["own_alliance_id"] == 1004
+    assert result["owned_piece_ids"] == [2]
+    assert result["entry_alliance_score"] == 123
+    assert result["alliance_score"] == 999_999
+
+
+def test_cross_snapshot_fails_closed_when_connected_lane_has_two_owners() -> None:
+    instance, model, data = _state()
+    data["_IsCross"] = 1
+    data["_ChessConnectListL"] = [1]
+    data["_ChessConnectListR"] = [2]
+
+    with pytest.raises(FanxiuRuntimeMemoryError, match="占领者不唯一"):
+        tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+
 def test_snapshot_rejects_invalid_consume_cost() -> None:
     instance, model, data = _state()
     data["_ConsumeNum"] = 0
@@ -122,6 +153,47 @@ def test_target_selection_prefers_nearest_then_highest_own_ratio() -> None:
     )
 
     assert result["piece_id"] == 5
+
+
+def test_cross_alliance_maps_to_unique_config_slot_from_exclusive_home_pieces() -> None:
+    configs = {
+        10: {"allowed_alliances": [1001]},
+        11: {"allowed_alliances": [1001]},
+        20: {"allowed_alliances": [1002]},
+        1: {"allowed_alliances": [1001, 1002]},
+    }
+    pieces = [
+        {"id": 10, "belong_alliance": 22078},
+        {"id": 11, "belong_alliance": 22078},
+        {"id": 20, "belong_alliance": 22028},
+        {"id": 1, "belong_alliance": 22078},
+    ]
+
+    assert (
+        tiandi_yiju._derive_own_config_alliance_id(
+            configs,
+            pieces,
+            own_alliance_id=22078,
+        )
+        == 1001
+    )
+
+
+def test_cross_alliance_config_slot_fails_closed_when_evidence_ties() -> None:
+    configs = {
+        10: {"allowed_alliances": [1001]},
+        20: {"allowed_alliances": [1002]},
+    }
+    pieces = [
+        {"id": 10, "belong_alliance": 22078},
+        {"id": 20, "belong_alliance": 22078},
+    ]
+    with pytest.raises(FanxiuRuntimeMemoryError, match="槽位不唯一"):
+        tiandi_yiju._derive_own_config_alliance_id(
+            configs,
+            pieces,
+            own_alliance_id=22078,
+        )
 
 
 def _transition_snapshot(*, strength: int, personal: int, alliance: int) -> dict:

@@ -11,12 +11,7 @@ operation: the live control can expose several thousand irreversible rounds.
 """
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any, Iterator
-
-from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
-    set_verified_integer_slider_count,
-)
 
 
 TIANDI_YIJU_AUTO_DIALOG_SCENE = 680
@@ -53,21 +48,6 @@ class TiandiYijuCountAssets:
             raise ValueError("天地弈局次数滑杆左右锚点必须成对提供")
 
 
-def _shared_slider_assets(assets: TiandiYijuCountAssets) -> SimpleNamespace:
-    """Project #680 names onto the existing activity-neutral slider contract."""
-
-    return SimpleNamespace(
-        settings_scene_id=int(assets.settings_scene_id),
-        count_region=assets.count_region,
-        count_decrease=assets.count_decrease,
-        count_increase=assets.count_increase,
-        count_slider_thumb=assets.count_slider_thumb,
-        count_minimum_marker=assets.count_minimum_marker,
-        count_slider_left_anchor=assets.count_slider_left_anchor,
-        count_slider_right_anchor=assets.count_slider_right_anchor,
-    )
-
-
 def read_tiandi_yiju_round_count(
     runtime: Any,
     assets: TiandiYijuCountAssets,
@@ -95,7 +75,7 @@ def set_tiandi_yiju_round_count(
     target: int,
     *,
     assets: TiandiYijuCountAssets | None = None,
-    max_adjustments: int = 10,
+    max_adjustments: int = TIANDI_YIJU_MAX_BATCH_ROUNDS,
     force_bound_probe: bool = False,
 ) -> Iterator[Any]:
     """Set an exact, bounded batch count and verify its live readback.
@@ -103,8 +83,9 @@ def set_tiandi_yiju_round_count(
     :param runtime: The behavior-tree Runtime that owns OCR and GUI actions.
     :param target: A positive integer no larger than 100.
     :param assets: Named #680 controls; defaults never imply pixel positions.
-    :param max_adjustments: Maximum +/- correction actions after coarse drag.
-    :param force_bound_probe: Use fixed track anchors for calibrated exact mode.
+    :param max_adjustments: Maximum verified ``+`` actions after resetting to 1.
+    :param force_bound_probe: Unsupported.  天地弈局 must never probe the native
+        right bound because the live maximum can be several thousand rounds.
     :return dict: OCR-verified adjustment evidence.
     """
 
@@ -120,25 +101,63 @@ def set_tiandi_yiju_round_count(
             f"{TIANDI_YIJU_MAX_BATCH_ROUNDS} 的整数；禁止使用原生最大值"
         )
 
-    evidence = yield from set_verified_integer_slider_count(
-        runtime,
-        _shared_slider_assets(resolved_assets),
-        int(target),
-        max_adjustments=int(max_adjustments),
-        force_bound_probe=bool(force_bound_probe),
-        count_label="天地弈局对弈次数",
-    )
-    result = dict(evidence or {})
-    try:
-        verified = int(result["after"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("天地弈局对弈次数缺少稳定读回证据") from exc
+    if force_bound_probe:
+        raise ValueError("天地弈局禁止向右探测原生滑杆上限")
+    adjustment_budget = int(max_adjustments)
+    if adjustment_budget < int(target) - 1:
+        raise ValueError(
+            f"天地弈局对弈次数调整预算不足：目标 {int(target)}，"
+            f"至少需要 {int(target) - 1} 次，预算 {adjustment_budget} 次"
+        )
+
+    before = read_tiandi_yiju_round_count(runtime, resolved_assets)
+    # This is the only coarse gesture allowed for this activity.  It moves the
+    # value toward the safe minimum, never through an irreversible high-count
+    # intermediate state such as the previously observed 4451.
+    if before != 1:
+        runtime.drag_shape_to_frame_edge(
+            resolved_assets.settings_scene_id,
+            resolved_assets.count_slider_thumb,
+            direction="left",
+            duration=0.6,
+        )
+        yield from runtime.wait_action_settle(0.5)
+    current = read_tiandi_yiju_round_count(runtime, resolved_assets)
+    if current != 1:
+        raise RuntimeError(
+            f"天地弈局滑杆向左归一失败：期望 1，实际 {current}"
+        )
+
+    actions = 0
+    while current < int(target):
+        runtime.click_shape_center(
+            resolved_assets.settings_scene_id,
+            resolved_assets.count_increase,
+        )
+        actions += 1
+        yield from runtime.wait_action_settle(0.12)
+        updated = read_tiandi_yiju_round_count(runtime, resolved_assets)
+        if updated != current + 1:
+            raise RuntimeError(
+                "天地弈局加号没有按单步递增，已停止："
+                f"调整前 {current}，调整后 {updated}"
+            )
+        current = updated
+
+    yield from runtime.wait_action_settle(0.4)
+    verified = read_tiandi_yiju_round_count(runtime, resolved_assets)
     if verified != int(target):
         raise RuntimeError(
-            f"天地弈局对弈次数验证失败：目标 {int(target)}，实际 {verified}"
+            f"天地弈局对弈次数稳定读回失败：目标 {int(target)}，实际 {verified}"
         )
-    result["target"] = int(target)
-    return result
+    return {
+        "before": before,
+        "after": verified,
+        "target": int(target),
+        "reset_to_minimum": before != 1,
+        "increase_actions": actions,
+        "native_maximum_probed": False,
+    }
 
 
 __all__ = [
