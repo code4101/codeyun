@@ -3,11 +3,22 @@ from __future__ import annotations
 """Small shared persistence primitives for gameplay Exchange collectors."""
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from sqlmodel import Session, select
 
 from backend.models import FanxiuExchangeRanking
+
+
+@dataclass(frozen=True)
+class RankingMergeResult:
+    """One occurrence's current and retained ranking projection."""
+
+    rankings: tuple[dict[str, Any], ...]
+    current_related_scopes: frozenset[str]
+    retained_related_scopes: frozenset[str]
+    captured_at: str
 
 
 def load_stored_exchange_rankings(
@@ -49,6 +60,79 @@ def load_stored_exchange_rankings(
     ]
 
 
+def merge_occurrence_rankings(
+    session: Session,
+    *,
+    observation: Mapping[str, Any],
+    existing_activity_id: str | None,
+    primary_scope: str,
+    related_rank_activity_ids: Sequence[tuple[str, int]],
+    valid_from: str,
+    valid_through: str,
+) -> RankingMergeResult:
+    """Merge current companion facts with retained rows from this occurrence.
+
+    Related scopes are current only when their fact timestamp belongs to the
+    exact occurrence window.  Missing or out-of-window companion scopes retain
+    the previously persisted rows for this activity instance; they never leak
+    rows from another occurrence.
+    """
+
+    from backend.core.fanxiu.activity.standard_observation import (
+        ActivityObservationUnavailable,
+        read_activity_rank_fact,
+    )
+
+    declared_scopes = {str(scope) for scope, _rank_id in related_rank_activity_ids}
+    current_scopes: set[str] = set()
+    related_times: list[str] = []
+    for scope, rank_id in related_rank_activity_ids:
+        try:
+            fact = read_activity_rank_fact(session, int(rank_id))
+        except ActivityObservationUnavailable:
+            continue
+        captured_at = str(fact.get("captured_at") or "")
+        if str(valid_from) <= captured_at[:10] <= str(valid_through):
+            current_scopes.add(str(scope))
+            related_times.append(captured_at)
+
+    rankings = [
+        dict(row)
+        for row in observation.get("rankings") or ()
+        if str(row.get("ranking_scope") or primary_scope) == primary_scope
+        or str(row.get("ranking_scope") or "") in current_scopes
+    ]
+    retained_scopes: set[str] = set()
+    if existing_activity_id:
+        retained = load_stored_exchange_rankings(
+            session,
+            activity_id=str(existing_activity_id),
+            scopes=declared_scopes - current_scopes,
+        )
+        rankings.extend(retained)
+        retained_scopes = {str(row["ranking_scope"]) for row in retained}
+
+    evidence = dict(observation.get("evidence") or {})
+    captured_at = max(
+        (
+            str(value)
+            for value in (
+                evidence.get("rank_captured_at") or "",
+                evidence.get("currency_captured_at") or "",
+                *related_times,
+            )
+            if str(value)
+        ),
+        default="",
+    )
+    return RankingMergeResult(
+        rankings=tuple(rankings),
+        current_related_scopes=frozenset(current_scopes),
+        retained_related_scopes=frozenset(retained_scopes),
+        captured_at=captured_at,
+    )
+
+
 def persist_exchange_materialization(
     session: Session,
     *,
@@ -81,6 +165,8 @@ def persist_exchange_materialization(
 
 
 __all__ = [
+    "RankingMergeResult",
     "load_stored_exchange_rankings",
+    "merge_occurrence_rankings",
     "persist_exchange_materialization",
 ]

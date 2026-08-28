@@ -7,7 +7,7 @@ from typing import Any, Mapping
 from sqlmodel import Session, col, select
 
 from backend.core.fanxiu.activity.standard_exchange_materializer import (
-    load_stored_exchange_rankings,
+    merge_occurrence_rankings,
     persist_exchange_materialization,
 )
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
@@ -315,40 +315,17 @@ def collect_and_store_magic_invasion_activity(
         raise ActivityObservationUnavailable(
             "魔道入侵个人榜事实不属于当前活动周期"
         )
-    declared_related_scopes = {scope for scope, _rank_id in related}
-    current_related_scopes: set[str] = set()
-    current_related_captured_at: list[str] = []
-    for scope, rank_id in related:
-        try:
-            fact = read_activity_rank_fact(session, rank_id)
-        except ActivityObservationUnavailable:
-            continue
-        captured_date = str(fact.get("captured_at") or "")[:10]
-        if period["start_date"] <= captured_date <= period["end_date"]:
-            current_related_scopes.add(scope)
-            current_related_captured_at.append(str(fact.get("captured_at") or ""))
-    observation["rankings"] = [
-        row for row in observation["rankings"]
-        if str(row.get("ranking_scope") or primary_scope_spec.scope) == primary_scope_spec.scope
-        or str(row.get("ranking_scope") or "") in current_related_scopes
-    ]
-    retained_related_scopes: set[str] = set()
-    if existing is not None:
-        missing_scopes = declared_related_scopes - current_related_scopes
-        retained_rows = load_stored_exchange_rankings(
-            session,
-            activity_id=existing.id,
-            scopes=missing_scopes,
-        )
-        observation["rankings"].extend(retained_rows)
-        retained_related_scopes = {
-            str(row["ranking_scope"]) for row in retained_rows
-        }
-    observation["captured_at"] = max(
-        str(observation.get("evidence", {}).get("rank_captured_at") or ""),
-        str(observation.get("evidence", {}).get("currency_captured_at") or ""),
-        *current_related_captured_at,
+    ranking_merge = merge_occurrence_rankings(
+        session,
+        observation=observation,
+        existing_activity_id=existing.id if existing is not None else None,
+        primary_scope=primary_scope_spec.scope,
+        related_rank_activity_ids=related,
+        valid_from=period["start_date"],
+        valid_through=period["end_date"],
     )
+    observation["rankings"] = list(ranking_merge.rankings)
+    observation["captured_at"] = ranking_merge.captured_at
 
     shop: dict[str, Any] | None = None
     has_shop = bool(existing) and session.exec(
@@ -384,8 +361,8 @@ def collect_and_store_magic_invasion_activity(
         "rank_scope_activity_ids": {
             scope.scope: rank_id for scope, rank_id in resolved_scopes
         },
-        "current_related_ranking_scopes": sorted(current_related_scopes),
-        "retained_related_ranking_scopes": sorted(retained_related_scopes),
+        "current_related_ranking_scopes": sorted(ranking_merge.current_related_scopes),
+        "retained_related_ranking_scopes": sorted(ranking_merge.retained_related_scopes),
         "refresh_status": {
             "currency": currency_refresh_status,
             "currency_reason": currency_refresh_reason,
