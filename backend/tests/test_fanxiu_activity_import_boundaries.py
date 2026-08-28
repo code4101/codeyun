@@ -90,7 +90,7 @@ def test_no_new_cross_activity_import_debt() -> None:
     )
 
 
-def test_gameplay_collectors_share_stored_ranking_loader() -> None:
+def test_gameplay_collectors_share_occurrence_ranking_merge() -> None:
     collector_paths = (
         FANXIU_ROOT / "activity" / "yunmeng_exchange.py",
         FANXIU_ROOT / "activity" / "magic_invasion.py",
@@ -99,7 +99,8 @@ def test_gameplay_collectors_share_stored_ranking_loader() -> None:
     for path in collector_paths:
         source = path.read_text(encoding="utf-8")
         assert "def _stored_ranking_rows(" not in source
-        assert "load_stored_exchange_rankings(" in source
+        assert "load_stored_exchange_rankings(" not in source
+        assert "merge_occurrence_rankings(" in source
 
 
 def test_tiandi_yiju_occurrence_shop_has_one_registered_authority() -> None:

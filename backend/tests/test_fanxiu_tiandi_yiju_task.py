@@ -220,6 +220,41 @@ def test_batch_fails_before_any_click_when_count_shapes_are_missing() -> None:
     assert runtime.clicks == []
 
 
+def test_batch_fails_before_any_click_when_result_scene_is_pending() -> None:
+    import pytest
+
+    runtime = _Runtime()
+    with pytest.raises(RuntimeError, match="结果浮层尚未接入正式 scene"):
+        _run(
+            run_tiandi_yiju_bounded_batch(
+                runtime,
+                requested_rounds=10,
+                cross_count=8,
+            )
+        )
+
+    assert runtime.clicks == []
+
+
+def test_batch_fails_before_any_click_when_result_confirm_shape_is_missing(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    runtime = _Runtime()
+    monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", 998)
+    with pytest.raises(RuntimeError, match="缺少正式『确认』Shape"):
+        _run(
+            run_tiandi_yiju_bounded_batch(
+                runtime,
+                requested_rounds=10,
+                cross_count=8,
+            )
+        )
+
+    assert runtime.clicks == []
+
+
 def test_new_result_overlay_is_distinct_from_legacy_scene() -> None:
     class _OverlayRuntime(_Runtime):
         def current_scene(self, _candidates, **_options):
@@ -280,6 +315,7 @@ def test_empty_point_forces_one_round_and_reuses_public_count_setter(monkeypatch
     runtime = _Runtime()
     snapshots = iter([_auto_snapshot(enabled=True), _auto_snapshot(enabled=True)])
     count_calls = []
+    monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", 999)
 
     def fake_set_count(_runtime, target):
         count_calls.append(target)
@@ -577,12 +613,13 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_tianyuan(
     assert wallet_calls == [(13, True), (13, False), (13, False), (13, False)]
 
 
-def test_production_checkpoint_fails_before_navigation_when_assets_are_pending(
+def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
     monkeypatch,
 ) -> None:
     import pytest
 
     runtime = _Runtime()
+    events = []
 
     class _Runner:
         def _fanxiu_runtime(self, *_args, **_kwargs):
@@ -591,6 +628,31 @@ def test_production_checkpoint_fails_before_navigation_when_assets_are_pending(
     monkeypatch.setattr(
         "backend.core.fanxiu.activity.runtime_schedule.read_fanxiu_activity_runtime_schedule",
         lambda **_kwargs: {"available": True, "complete": True},
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.schedule_navigation.select_schedule_activity",
+        lambda *_args, **_kwargs: (
+            yield from (_value for _value in ())
+        ),
+    )
+    monkeypatch.setattr(
+        tiandi_task,
+        "_wait_tiandi_yiju_home_ready",
+        lambda *_args, **_kwargs: (
+            yield from (_value for _value in ())
+        ),
+    )
+
+    def refresh_exchange(*_args, **_kwargs):
+        events.append("exchange_refreshed")
+        if False:
+            yield None
+        return {"shop_item_count": 19}
+
+    monkeypatch.setattr(
+        tiandi_task,
+        "_refresh_tiandi_yiju_exchange_facts",
+        refresh_exchange,
     )
 
     with pytest.raises(RuntimeError, match="结果浮层尚未接入正式 scene"):
@@ -604,7 +666,8 @@ def test_production_checkpoint_fails_before_navigation_when_assets_are_pending(
             )
         )
 
-    assert runtime.clicks == []
+    assert events == ["exchange_refreshed"]
+    assert runtime.clicks == [("goto", 66, None)]
 
 
 def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) -> None:
@@ -634,6 +697,17 @@ def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) 
         "_wait_tiandi_yiju_home_ready",
         lambda *_args, **_kwargs: empty_generator({"ok": True}),
     )
+    refresh_calls = []
+
+    def fake_refresh(_runtime, **kwargs):
+        refresh_calls.append(kwargs)
+        return (yield from empty_generator({"shop_item_count": 19}))
+
+    monkeypatch.setattr(
+        tiandi_task,
+        "_refresh_tiandi_yiju_exchange_facts",
+        fake_refresh,
+    )
     monkeypatch.setattr(
         tiandi_task,
         "claim_tiandi_yiju_task_rewards",
@@ -659,5 +733,6 @@ def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) 
     )
 
     assert result["status"] == "completed"
+    assert refresh_calls == [{"occurrence": _occurrence()}]
     assert loop_calls and loop_calls[0]["max_batches"] == 7
     assert all(click[1] != "己方中心棋点候选" for click in runtime.clicks)

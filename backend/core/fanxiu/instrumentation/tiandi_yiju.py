@@ -371,8 +371,9 @@ def _decode_snapshot(
         "owned_piece_ids": owned_piece_ids,
         "pieces": pieces,
         "rank_rows": {str(key): value for key, value in ranks.items()},
-        # These are persisted UI choices.  The task must visually force all
-        # three resource-spending switches off before it starts an operation.
+        # Keep the original three-field projection for historical transition
+        # evidence. Production configuration consumes ``auto_challenge_choices``
+        # and applies the five-option cross/local policy instead.
         "choose_states": choose_states,
         "auto_challenge_choices": auto_challenge_choices,
         "resource_spending_choices": {

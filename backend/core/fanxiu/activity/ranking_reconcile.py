@@ -120,6 +120,7 @@ def seed_ranking_occurrence(
     occurrence_shop = resolve_registered_occurrence_shop(
         activity_type=occurrence.activity_type,
         cross_count=occurrence.cross_count,
+        activity_id=occurrence.activity_id,
     )
     scope_ids = _rank_scope_activity_ids(occurrence)
     primary = next(

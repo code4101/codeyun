@@ -1,0 +1,107 @@
+{
+  "run_time": "2026-08-28T16:09:13.891406",
+  "status": {
+    "repo_keys": [
+      "pyxllib",
+      "xlproject",
+      "codeyun"
+    ],
+    "cron": "15 0 * * *",
+    "next_run_at": null,
+    "latest_run": {
+      "id": "07877d3c7347433da2d67c5b3c7407a0",
+      "status": "skipped",
+      "trigger_reason": "codex_automation_hourly",
+      "run_date": "2026-08-28",
+      "stage": "below_threshold",
+      "stage_label": "未达到自动提交阈值",
+      "repo_count": 3,
+      "changed_repo_count": 1,
+      "committed_repo_count": 0,
+      "skipped_repo_count": 3,
+      "failed_repo_count": 0,
+      "result": {
+        "repos": [
+          {
+            "name": "pyxllib",
+            "cwd": "D:\\home\\chenkunze\\slns\\pyxllib",
+            "entry_id": "30b82d72-8a76-4a74-be4b-4fc1591c6ce2",
+            "user_id": 2,
+            "username": "code4101",
+            "status": "clean",
+            "has_changes": false,
+            "repo_root": "D:\\home\\chenkunze\\slns\\pyxllib",
+            "branch": "main",
+            "changed_file_count": 0,
+            "changed_paths": [],
+            "added_line_count": 0,
+            "deleted_line_count": 0,
+            "estimated_changed_line_count": 0
+          },
+          {
+            "name": "xlproject",
+            "cwd": "D:\\home\\chenkunze\\slns\\xlproject",
+            "entry_id": "30b82d72-8a76-4a74-be4b-4fc1591c6ce2",
+            "user_id": 2,
+            "username": "code4101",
+            "status": "clean",
+            "has_changes": false,
+            "repo_root": "D:\\home\\chenkunze\\slns\\xlproject",
+            "branch": "main",
+            "changed_file_count": 0,
+            "changed_paths": [],
+            "added_line_count": 0,
+            "deleted_line_count": 0,
+            "estimated_changed_line_count": 0
+          },
+          {
+            "name": "codeyun",
+            "cwd": "D:\\home\\chenkunze\\slns\\codeyun",
+            "entry_id": "30b82d72-8a76-4a74-be4b-4fc1591c6ce2",
+            "user_id": 2,
+            "username": "code4101",
+            "status": "skipped",
+            "has_changes": true,
+            "repo_root": "D:\\home\\chenkunze\\slns\\codeyun",
+            "branch": "main",
+            "changed_file_count": 8,
+            "changed_paths": [
+              "backend/core/fanxiu/activity/ranking_reconcile.py",
+              "backend/core/fanxiu/data_annotation/tasks/tiandi_yiju.py",
+              "backend/core/fanxiu/instrumentation/tiandi_yiju.py",
+              "backend/tests/test_fanxiu_ranking_reconcile.py",
+              "backend/tests/test_fanxiu_tiandi_yiju_task.py",
+              "docs/domains/fanxiu/architecture/凡修天地弈局功能逻辑.md",
+              "docs/domains/fanxiu/architecture/凡修统一榜单生命周期系统设计.md",
+              "docs/domains/fanxiu/research/2026-08-27凡修研发与运行复盘.md"
+            ],
+            "added_line_count": 119,
+            "deleted_line_count": 19,
+            "estimated_changed_line_count": 138,
+            "auto_commit_eligible": false,
+            "auto_commit_line_threshold": 500,
+            "auto_commit_age_threshold_days": 1,
+            "auto_commit_eligibility_reason": "below_line_threshold",
+            "last_commit_age_days": 0.04,
+            "skip_reason": "below_line_threshold",
+            "error_message": "有效变更 138 行，低于自动提交阈值 500 行，且距离上次提交不足 1 天"
+          }
+        ]
+      },
+      "error_message": null,
+      "queue_task_id": null,
+      "heartbeat_at": 1787904519.7443666,
+      "started_at": 1787904517.575995,
+      "finished_at": 1787904519.7443666,
+      "created_at": 1787904517.5708778,
+      "updated_at": 1787904519.7443666
+    },
+    "active_run": null,
+    "queue": {
+      "is_idle": true,
+      "running": null,
+      "pending": [],
+      "recent": []
+    }
+  }
+}

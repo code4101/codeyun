@@ -7,7 +7,7 @@ from typing import Any
 from sqlmodel import Session, col, select
 
 from backend.core.fanxiu.activity.standard_exchange_materializer import (
-    load_stored_exchange_rankings,
+    merge_occurrence_rankings,
     persist_exchange_materialization,
 )
 from backend.core.fanxiu.activity.yunmeng_trial_instrumentation import (
@@ -259,38 +259,17 @@ def collect_and_store_yunmeng_exchange_activity(
     if not period["start_date"] <= personal_date <= fact_end_date:
         raise ActivityObservationUnavailable("云梦试剑个人榜事实不属于当前活动周期")
 
-    declared_related = {scope for scope, _ in related}
-    current_related: set[str] = set()
-    related_times: list[str] = []
-    for scope, rank_id in related:
-        try:
-            fact = read_activity_rank_fact(session, rank_id)
-        except ActivityObservationUnavailable:
-            continue
-        captured_at = str(fact.get("captured_at") or "")
-        if period["start_date"] <= captured_at[:10] <= fact_end_date:
-            current_related.add(scope)
-            related_times.append(captured_at)
-    observation["rankings"] = [
-        row
-        for row in observation["rankings"]
-        if str(row.get("ranking_scope") or primary_spec.scope) == primary_spec.scope
-        or str(row.get("ranking_scope") or "") in current_related
-    ]
-    retained_related: set[str] = set()
-    if existing is not None:
-        retained = load_stored_exchange_rankings(
-            session,
-            activity_id=existing.id,
-            scopes=declared_related - current_related,
-        )
-        observation["rankings"].extend(retained)
-        retained_related = {str(row["ranking_scope"]) for row in retained}
-    observation["captured_at"] = max(
-        str(observation.get("evidence", {}).get("rank_captured_at") or ""),
-        str(observation.get("evidence", {}).get("currency_captured_at") or ""),
-        *related_times,
+    ranking_merge = merge_occurrence_rankings(
+        session,
+        observation=observation,
+        existing_activity_id=existing.id if existing is not None else None,
+        primary_scope=primary_spec.scope,
+        related_rank_activity_ids=related,
+        valid_from=period["start_date"],
+        valid_through=fact_end_date,
     )
+    observation["rankings"] = list(ranking_merge.rankings)
+    observation["captured_at"] = ranking_merge.captured_at
 
     has_shop = bool(existing) and session.exec(
         select(FanxiuExchangeShopItem.id)
@@ -333,8 +312,8 @@ def collect_and_store_yunmeng_exchange_activity(
         world_level=period["world_level"],
         rank_activity_ids=list(follow),
         rank_scope_activity_ids={scope.scope: rank_id for scope, rank_id in resolved_scopes},
-        current_related_ranking_scopes=sorted(current_related),
-        retained_related_ranking_scopes=sorted(retained_related),
+        current_related_ranking_scopes=sorted(ranking_merge.current_related_scopes),
+        retained_related_ranking_scopes=sorted(ranking_merge.retained_related_scopes),
         refresh_status=refresh_status,
     )
     if currency_runtime_evidence:

@@ -269,16 +269,7 @@ def run_tiandi_yiju_bounded_batch(
         raise ValueError(
             f"天地弈局单批必须为 1..{TIANDI_YIJU_MAX_BATCH_ROUNDS} 次"
         )
-    count_assets = TiandiYijuCountAssets()
-    _assert_dialog_shape_assets(
-        runtime,
-        [
-            count_assets.count_region,
-            count_assets.count_decrease,
-            count_assets.count_increase,
-            count_assets.count_slider_thumb,
-        ],
-    )
+    _assert_tiandi_yiju_production_asset_contract(runtime)
     opened = yield from open_tiandi_yiju_recommended_target(
         runtime,
         target_reader=target_reader,

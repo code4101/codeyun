@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.core.fanxiu.activity import ranking_reconcile
@@ -81,6 +82,16 @@ def test_seed_materializes_tiandi_phase_specific_rank_and_shop_contracts() -> No
         "personal": 90808,
         "alliance": 90813,
     }
+
+
+def test_seed_rejects_tiandi_activity_and_cross_count_mismatch() -> None:
+    with _session() as session:
+        with pytest.raises(ValueError, match="活动与跨数不一致"):
+            ranking_reconcile.seed_ranking_occurrence(
+                session,
+                _tiandi_occurrence(8090001, 8),
+                captured_at="2026-08-27T00:30:00+08:00",
+            )
 
 
 def test_seed_resolves_server_and_cross_magic_shop_independently(monkeypatch) -> None:
