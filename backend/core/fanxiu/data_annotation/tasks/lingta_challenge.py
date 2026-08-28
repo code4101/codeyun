@@ -258,16 +258,58 @@ class LingtaChallengeTaskMixin:
     def _leave_lingta_failure_to_world(self, runtime: Any):
         """Leave the failure result through either observed stable landing."""
 
-        landing = yield from runtime.wait_click_then_view(
-            LINGTA_FAILURE_SCENE_ID,
-            "退出",
-            [34, LINGTA_CURRENT_FLOOR_SCENE_ID],
-            timeout=60,
-            max_clicks=1,
-            retry_if_source_remains=False,
-            label="灵塔_挑战：失败后退出",
-        )
+        try:
+            landing = yield from runtime.wait_click_then_view(
+                LINGTA_FAILURE_SCENE_ID,
+                "退出",
+                [34, LINGTA_CURRENT_FLOOR_SCENE_ID],
+                timeout=60,
+                max_clicks=1,
+                retry_if_source_remains=False,
+                label="灵塔_挑战：失败后退出",
+            )
+        except TimeoutError:
+            # #532 contains dynamic floor/reward art and can miss its complete
+            # image identity after #365 exits.  Accept it only when Runtime
+            # proves Lingta is loaded and the formal #532 Challenge OCR anchor
+            # agrees with the GUI; neither source authorizes the click alone.
+            if not all(
+                hasattr(runtime, name)
+                for name in (
+                    "cur_frame",
+                    "ocr_text_in_shapes",
+                    "click_frame_point",
+                    "wait_view",
+                )
+            ):
+                raise
+            snapshot = self._read_lingta_challenge_snapshot()
+            frame = runtime.cur_frame(update=True)
+            challenge_text = runtime.ocr_text_in_shapes(
+                LINGTA_CURRENT_FLOOR_SCENE_ID,
+                ("挑战文字",),
+                padding=12,
+                frame_data_url=frame,
+            )
+            if snapshot.get("complete") is not True or "挑战" not in re.sub(
+                r"\s+", "", str(challenge_text or "")
+            ):
+                raise
+            self._log(
+                "warning",
+                "灵塔_挑战：失败退出后由 Runtime 数据与 #532「挑战文字」OCR 联合确认当前层详情",
+            )
+            runtime.click_frame_point(LINGTA_CURRENT_FLOOR_SCENE_ID, 80, 1480)
+            landing = yield from runtime.wait_view(
+                LINGTA_LIST_SCENE_ID,
+                34,
+                timeout=30.0,
+                label="灵塔_挑战：动态 #532 返回后等待列表或世界",
+            )
         landing_id = getattr(landing, "id", landing)
+        if landing_id == LINGTA_LIST_SCENE_ID:
+            yield from runtime.goto_view(34)
+            return
         if landing_id == LINGTA_CURRENT_FLOOR_SCENE_ID:
             yield from runtime.goto_view(34)
             return
@@ -354,12 +396,22 @@ class LingtaChallengeTaskMixin:
                 runtime.stop_event or threading.Event(),
             )
 
-        scene_id, _score, frame = runtime.current_scene(
-            [LINGTA_LIST_SCENE_ID],
-            update=True,
-        )
-        if scene_id != LINGTA_LIST_SCENE_ID:
-            raise RuntimeError("灵塔_挑战：定位当前卡片前未确认 #194")
+        # The entry wait can first match #194 while its card contents are still
+        # settling.  An immediate one-frame recheck intermittently falls back
+        # to unknown even though the same page becomes a 100% match seconds
+        # later.  Keep this as a bounded view wait so OCR never races the
+        # transition animation.
+        stable_deadline = time.monotonic() + 15.0
+        while True:
+            scene_id, _score, frame = runtime.current_scene(
+                [LINGTA_LIST_SCENE_ID],
+                update=True,
+            )
+            if scene_id == LINGTA_LIST_SCENE_ID:
+                break
+            if time.monotonic() >= stable_deadline:
+                raise RuntimeError("灵塔_挑战：等待列表 #194 稳定超时")
+            yield from runtime.wait_action_settle(1.0)
         fragments = runtime.ocr_fragments_in_shapes(
             LINGTA_LIST_SCENE_ID,
             ("当前灵塔信息区",),

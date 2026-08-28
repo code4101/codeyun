@@ -340,8 +340,8 @@ def collect_xutian_palace_rank_snapshot(
 ) -> dict[str, Any]:
     """Read the complete loaded personal/plane models for durable storage."""
 
-    from backend.core.fanxiu.activity.yunmeng_rank_reward import (
-        load_yunmeng_rank_reward_tiers,
+    from backend.core.fanxiu.activity.rank_reward import (
+        load_activity_rank_reward_tiers,
     )
     from backend.core.fanxiu.instrumentation.runtime_memory import (
         LuaJitReader,
@@ -359,18 +359,18 @@ def collect_xutian_palace_rank_snapshot(
         or (80000 + int(cross_count) * 100 + 91)
     )
     plane_rank_activity_id = 80000 + int(cross_count) * 100 + 71
-    from backend.core.fanxiu.activity.yunmeng_rank_reward import (
-        YunmengRankRewardConfigError,
+    from backend.core.fanxiu.activity.rank_reward import (
+        ActivityRankRewardConfigError,
     )
 
     def reward_tiers(rank_activity_id: int) -> list[dict[str, Any]]:
         try:
-            return load_yunmeng_rank_reward_tiers(
+            return load_activity_rank_reward_tiers(
                 rank_activity_id=rank_activity_id,
                 event_date=event_date,
                 server_day=server_day,
             )
-        except YunmengRankRewardConfigError:
+        except ActivityRankRewardConfigError:
             # Full ranking rows are authoritative without reward decoration.
             # New Xutian cohorts can become live before the generated reward
             # table is available in the local static snapshot.
@@ -518,9 +518,9 @@ def collect_and_store_xutian_palace_activity(
         read_currency_fact,
         store_runtime_currency_fact,
     )
-    from backend.core.fanxiu.activity.yunmeng_rank_reward import (
-        YunmengRankRewardConfigError,
-        load_yunmeng_rank_reward_tiers,
+    from backend.core.fanxiu.activity.rank_reward import (
+        ActivityRankRewardConfigError,
+        load_activity_rank_reward_tiers,
     )
     from backend.core.fanxiu.instrumentation.runtime_memory import (
         FanxiuRuntimeMemoryError,
@@ -624,12 +624,12 @@ def collect_and_store_xutian_palace_activity(
                 scope for scope in exchange_spec.rank_scopes
                 if scope.effective_role == "comparative"
             )
-            tiers = load_yunmeng_rank_reward_tiers(
+            tiers = load_activity_rank_reward_tiers(
                 rank_activity_id=rank_activity_id,
                 event_date=period["start_date"],
                 server_day=int((activity.evidence or {}).get("server_day") or 0),
             )
-            plane_tiers = load_yunmeng_rank_reward_tiers(
+            plane_tiers = load_activity_rank_reward_tiers(
                 rank_activity_id=80000 + int(activity.cross_count) * 100 + 71,
                 event_date=period["start_date"],
                 server_day=int((activity.evidence or {}).get("server_day") or 0),
@@ -659,7 +659,7 @@ def collect_and_store_xutian_palace_activity(
                 },
             )
             rankings_source = "standard_runtime_facts"
-    except (ActivityObservationUnavailable, YunmengRankRewardConfigError) as exc:
+    except (ActivityObservationUnavailable, ActivityRankRewardConfigError) as exc:
         fallback_reason = str(exc)
         rankings_unavailable_reason = (
             f"{rankings_unavailable_reason}；标准事实不可用：{fallback_reason}"

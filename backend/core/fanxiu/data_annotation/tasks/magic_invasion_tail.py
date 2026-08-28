@@ -9,13 +9,16 @@ from typing import Any
 from sqlmodel import Session
 
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
-from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import (
-    plan_exchange_tail_purchases,
-    plan_yunmeng_tail_physical_actions,
-    yunmeng_quantity_clicks,
+from backend.core.fanxiu.data_annotation.ocr_spatial import (
+    group_ocr_tokens as _group_ocr_tokens,
 )
-from backend.core.fanxiu.runtime_gui.magic_invasion import (
-    resolve_magic_invasion_bottom_tab,
+from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
+    exchange_quantity_clicks as yunmeng_quantity_clicks,
+    plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
+    plan_exchange_tail_purchases,
+)
+from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
+    resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
 )
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 
@@ -163,31 +166,6 @@ def _resolve_exact_magic_calendar_fallback(
             alignment_score=1.0,
         ),
     )
-
-
-def _group_ocr_tokens(tokens: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for index, token in enumerate(tokens):
-        key = str(token.get("parent_line_id") or f"token-{index}")
-        grouped.setdefault(key, []).append(token)
-    lines: list[dict[str, Any]] = []
-    for rows in grouped.values():
-        # Runtime tokens may expose ``order`` as an integer or a composite
-        # tuple depending on the OCR provider. Horizontal position is the
-        # stable line-local ordering fact for this screen.
-        ordered = sorted(rows, key=lambda item: float(item.get("x") or 0))
-        left = min(float(item.get("x") or 0) for item in ordered)
-        top = min(float(item.get("y") or 0) for item in ordered)
-        right = max(float(item.get("x") or 0) + float(item.get("w") or 0) for item in ordered)
-        bottom = max(float(item.get("y") or 0) + float(item.get("h") or 0) for item in ordered)
-        lines.append({
-            "text": "".join(str(item.get("text") or "") for item in ordered),
-            "x": left,
-            "y": top,
-            "w": right - left,
-            "h": bottom - top,
-        })
-    return sorted(lines, key=lambda item: (float(item["y"]), float(item["x"])))
 
 
 def _verify_dialog(runtime: Any, *, name: str, unit_price: int) -> None:

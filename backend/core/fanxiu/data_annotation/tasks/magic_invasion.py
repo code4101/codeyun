@@ -25,9 +25,9 @@ from backend.core.fanxiu.activity.magic_invasion_explore import (
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_supply import (
     TIANYAN_ITEM_ID,
 )
-from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
-    YunmengNativeAutoAssets,
-    _set_count as _set_verified_slider_count,
+from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerSliderAssets,
+    set_verified_integer_slider_count as _set_verified_slider_count,
 )
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
 from backend.core.fanxiu.instrumentation.magic_invasion_task_rewards import (
@@ -386,10 +386,8 @@ def _configure_use_quantity(runtime: Any, *, quantity: int) -> Iterator[Any]:
     owned = parse_owned_item_count(_shape_text(runtime, MAGIC_INVASION_USE_SCENE_ID, "持有数量"))
     if quantity > owned:
         raise RuntimeError(f"天眼符不足：需要 {quantity}，持有 {owned}")
-    assets = YunmengNativeAutoAssets(
-        home_scene_id=MAGIC_INVASION_MAP_SCENE_ID,
+    assets = IntegerSliderAssets(
         settings_scene_id=MAGIC_INVASION_USE_SCENE_ID,
-        terminal_scene_ids=(MAGIC_INVASION_USE_SCENE_ID,),
         count_region="使用数量",
         count_decrease="数量减",
         count_increase="数量加",

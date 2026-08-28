@@ -4,7 +4,7 @@ from datetime import datetime
 import time
 from typing import Any
 
-from backend.core.fanxiu.activity.yunmeng_rank_reward import (
+from backend.core.fanxiu.activity.rank_reward import (
     load_activity_rank_reward_tiers,
 )
 from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
@@ -16,7 +16,9 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     LuaJitReader,
     MumuProcessMemory,
 )
-from backend.core.fanxiu.instrumentation.yunmeng_trial import reward_guard_tiers
+from backend.core.fanxiu.instrumentation.activity_rank_projection import (
+    reward_guard_tiers,
+)
 
 
 LINGZHUANG_HUADAO_RANK_ACTIVITY_ID = 44307

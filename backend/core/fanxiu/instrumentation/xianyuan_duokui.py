@@ -6,7 +6,7 @@ from datetime import datetime
 import time
 from typing import Any
 
-from backend.core.fanxiu.activity.yunmeng_rank_reward import (
+from backend.core.fanxiu.activity.rank_reward import (
     load_activity_rank_reward_tiers,
 )
 from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
@@ -22,7 +22,9 @@ from backend.core.fanxiu.instrumentation.wallet import (
     WALLET_METHODS,
     wallet_currency_data,
 )
-from backend.core.fanxiu.instrumentation.yunmeng_trial import _rank_data
+from backend.core.fanxiu.instrumentation.activity_rank_projection import (
+    project_activity_rank_data as _rank_data,
+)
 
 
 def read_xianyuan_duokui_status_snapshot(

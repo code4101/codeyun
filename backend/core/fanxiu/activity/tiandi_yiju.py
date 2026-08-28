@@ -12,6 +12,9 @@ from backend.core.fanxiu.activity.exchange_event import (
     replace_exchange_rankings,
     upsert_exchange_activity_snapshot,
 )
+from backend.core.fanxiu.activity.exchange_activity_registry import (
+    resolve_registered_occurrence_shop,
+)
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
 from backend.core.fanxiu.instrumentation.activity_shop import (
     collect_activity_shop_runtime,
@@ -25,10 +28,6 @@ from backend.models import FanxiuExchangeActivity
 
 
 TIANDI_YIJU_ACTIVITY_TYPE = "tiandi-yiju"
-_OCCURRENCE_SHOPS = {
-    8090001: (90000, 11),
-    8090004: (90002, 13),
-}
 
 
 def _item_names() -> dict[int, str]:
@@ -81,10 +80,15 @@ def collect_and_store_tiandi_yiju_activity(
         raise ValueError("天地弈局活动实例不存在")
     evidence = dict(activity.evidence or {})
     game_activity_id = int(evidence.get("game_activity_id") or 0)
-    try:
-        shop_base_id, currency_type = _OCCURRENCE_SHOPS[game_activity_id]
-    except KeyError as exc:
-        raise ValueError(f"天地弈局活动 {game_activity_id} 不是可采集棋局") from exc
+    shop_spec = resolve_registered_occurrence_shop(
+        activity_type=TIANDI_YIJU_ACTIVITY_TYPE,
+        activity_id=game_activity_id,
+        cross_count=int(activity.cross_count),
+    )
+    if shop_spec is None:
+        raise ValueError(f"天地弈局活动 {game_activity_id} 缺少商店身份")
+    shop_base_id = int(shop_spec.base_id)
+    currency_type = int(shop_spec.currency_type)
 
     shop = collect_activity_shop_runtime(
         shop_base_id=shop_base_id,

@@ -50,7 +50,7 @@ def _state():
             },
             2: {1: {"roleId": 2001, "score": 999, "name": "甲"}},
         },
-        "chooseStateDic": {2: False, 3: True, 4: False},
+        "chooseStateDic": {2: False, 3: True, 4: False, 5: True, 6: False},
     }
     return instance, {}, data
 
@@ -72,6 +72,25 @@ def test_snapshot_derives_natural_budget_and_owned_pieces() -> None:
         "multiple_score_item": False,
         "double_reward_item": True,
         "auto_use_strength_item": False,
+    }
+    assert result["auto_challenge_choices"] == {
+        "auto_use_strength_item": False,
+        "continue_after_defeat": True,
+        "skip_animation": False,
+        "master_skill_item": True,
+        "quadruple_chess_token_item": False,
+    }
+
+
+def test_snapshot_keeps_missing_auto_choice_keys_absent() -> None:
+    instance, model, data = _state()
+    data["chooseStateDic"] = {2: True, 4: False}
+
+    result = tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+    assert result["auto_challenge_choices"] == {
+        "auto_use_strength_item": False,
+        "quadruple_chess_token_item": True,
     }
 
 
@@ -111,8 +130,23 @@ def test_cross_snapshot_fails_closed_when_connected_lane_has_two_owners() -> Non
     data["_ChessConnectListL"] = [1]
     data["_ChessConnectListR"] = [2]
 
-    with pytest.raises(FanxiuRuntimeMemoryError, match="占领者不唯一"):
+    with pytest.raises(FanxiuRuntimeMemoryError, match="多个本人候选"):
         tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+
+def test_cross_snapshot_excludes_explicit_ally_from_shared_lane() -> None:
+    instance, model, data = _state()
+    data["_IsCross"] = 1
+    data["_ChessConnectListL"] = [1]
+    data["_ChessConnectListR"] = [2]
+    data["allyAlliance"] = 1004
+    instance["playChessInfo"]["allianceRank"] = 1  # independently stale
+    instance["playChessInfo"]["allianceScore"] = 123
+
+    result = tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+    assert result["own_alliance_id"] == 1003
+    assert result["owned_piece_ids"] == [1]
 
 
 def test_snapshot_rejects_invalid_consume_cost() -> None:

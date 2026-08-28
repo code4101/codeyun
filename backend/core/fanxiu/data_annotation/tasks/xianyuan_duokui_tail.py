@@ -9,18 +9,18 @@ from typing import Any
 from sqlmodel import Session, select
 
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
-from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
-    _group_ocr_tokens,
+from backend.core.fanxiu.data_annotation.ocr_spatial import (
+    group_ocr_tokens as _group_ocr_tokens,
 )
-from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import (
-    _ocr_contains_amount,
-    _detail_matches,
+from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
+    exchange_quantity_clicks as yunmeng_quantity_clicks,
+    ocr_contains_amount as _ocr_contains_amount,
+    plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
     plan_exchange_tail_purchases,
-    plan_yunmeng_tail_physical_actions,
-    yunmeng_quantity_clicks,
+    verify_exchange_detail as _detail_matches,
 )
-from backend.core.fanxiu.runtime_gui.magic_invasion import (
-    resolve_magic_invasion_bottom_tab,
+from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
+    resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
 )
 
 

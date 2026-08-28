@@ -81,7 +81,7 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
 
 RANKING_CAPABILITY_STATUS = {
     "beast-abyss": "observed_reconcile_only",
-    "tiandi-yiju": "implemented_natural_strength_only",
+    "tiandi-yiju": "implemented_exchange_target_loop_pending_asset_contract",
 }
 
 # 8090002 is the cross-server group-selection/schedule surface.  It overlaps

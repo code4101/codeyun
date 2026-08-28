@@ -90,7 +90,17 @@ def test_mozu_waits_three_seconds_after_entering_scene_66(monkeypatch):
         ("select_schedule_activity", "魔祖", {"enter": True})
     )
     assert ("wait_action_settle", 30.0) in calls
-    assert calls.index(("wait_action_settle", 30.0)) < calls.index(("goto_view", 34))
+    transition_wait = (
+        "wait_view",
+        (20, 34, 339),
+        {
+            "timeout": 120.0,
+            "label": "日常_魔祖：等待战场结束并落到可返回页面",
+        },
+    )
+    assert transition_wait in calls
+    assert calls.index(("wait_action_settle", 30.0)) < calls.index(transition_wait)
+    assert calls.index(transition_wait) < calls.index(("goto_view", 34))
     assert result["entry_observed"] is True
     assert result["exit_confirmed"] is True
 

@@ -13,6 +13,11 @@ operation: the live control can expose several thousand irreversible rounds.
 from dataclasses import dataclass
 from typing import Any, Iterator
 
+from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    read_positive_integer_count,
+    set_minimum_then_increment_count,
+)
+
 
 TIANDI_YIJU_AUTO_DIALOG_SCENE = 680
 TIANDI_YIJU_MAX_BATCH_ROUNDS = 100
@@ -54,20 +59,11 @@ def read_tiandi_yiju_round_count(
 ) -> int:
     """Read one positive round count from #680's current OCR region."""
 
-    values, text = runtime.ocr_numbers_in_shapes(
-        assets.settings_scene_id,
-        [assets.count_region],
+    return read_positive_integer_count(
+        runtime,
+        assets,
+        count_label="天地弈局对弈次数",
     )
-    unique = sorted({int(value) for value in values if int(value) > 0})
-    if not unique and assets.count_minimum_marker:
-        if runtime.shape_matches(
-            assets.settings_scene_id,
-            assets.count_minimum_marker,
-        ) is not None:
-            return 1
-    if len(unique) != 1:
-        raise RuntimeError(f"天地弈局对弈次数无法唯一读回：{text!r}")
-    return unique[0]
 
 
 def set_tiandi_yiju_round_count(
@@ -89,75 +85,18 @@ def set_tiandi_yiju_round_count(
     :return dict: OCR-verified adjustment evidence.
     """
 
-    resolved_assets = assets or TiandiYijuCountAssets()
-    if (
-        isinstance(target, bool)
-        or not isinstance(target, int)
-        or target <= 0
-        or target > TIANDI_YIJU_MAX_BATCH_ROUNDS
-    ):
-        raise ValueError(
-            "天地弈局单批次数必须为 1.."
-            f"{TIANDI_YIJU_MAX_BATCH_ROUNDS} 的整数；禁止使用原生最大值"
-        )
-
     if force_bound_probe:
         raise ValueError("天地弈局禁止向右探测原生滑杆上限")
-    adjustment_budget = int(max_adjustments)
-    if adjustment_budget < int(target) - 1:
-        raise ValueError(
-            f"天地弈局对弈次数调整预算不足：目标 {int(target)}，"
-            f"至少需要 {int(target) - 1} 次，预算 {adjustment_budget} 次"
+    return (
+        yield from set_minimum_then_increment_count(
+            runtime,
+            assets or TiandiYijuCountAssets(),
+            target,
+            maximum=TIANDI_YIJU_MAX_BATCH_ROUNDS,
+            max_adjustments=max_adjustments,
+            count_label="天地弈局单批次数",
         )
-
-    before = read_tiandi_yiju_round_count(runtime, resolved_assets)
-    # This is the only coarse gesture allowed for this activity.  It moves the
-    # value toward the safe minimum, never through an irreversible high-count
-    # intermediate state such as the previously observed 4451.
-    if before != 1:
-        runtime.drag_shape_to_frame_edge(
-            resolved_assets.settings_scene_id,
-            resolved_assets.count_slider_thumb,
-            direction="left",
-            duration=0.6,
-        )
-        yield from runtime.wait_action_settle(0.5)
-    current = read_tiandi_yiju_round_count(runtime, resolved_assets)
-    if current != 1:
-        raise RuntimeError(
-            f"天地弈局滑杆向左归一失败：期望 1，实际 {current}"
-        )
-
-    actions = 0
-    while current < int(target):
-        runtime.click_shape_center(
-            resolved_assets.settings_scene_id,
-            resolved_assets.count_increase,
-        )
-        actions += 1
-        yield from runtime.wait_action_settle(0.12)
-        updated = read_tiandi_yiju_round_count(runtime, resolved_assets)
-        if updated != current + 1:
-            raise RuntimeError(
-                "天地弈局加号没有按单步递增，已停止："
-                f"调整前 {current}，调整后 {updated}"
-            )
-        current = updated
-
-    yield from runtime.wait_action_settle(0.4)
-    verified = read_tiandi_yiju_round_count(runtime, resolved_assets)
-    if verified != int(target):
-        raise RuntimeError(
-            f"天地弈局对弈次数稳定读回失败：目标 {int(target)}，实际 {verified}"
-        )
-    return {
-        "before": before,
-        "after": verified,
-        "target": int(target),
-        "reset_to_minimum": before != 1,
-        "increase_actions": actions,
-        "native_maximum_probed": False,
-    }
+    )
 
 
 __all__ = [

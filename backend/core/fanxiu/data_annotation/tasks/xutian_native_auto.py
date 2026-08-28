@@ -23,12 +23,14 @@ import time
 import uuid
 from typing import Any, Callable, Iterator, Mapping
 
-from backend.core.fanxiu.data_annotation.tasks.yunmeng_native_auto import (
-    YunmengNativeAutoAssets,
-    YunmengNativeBatchPlan,
-    _read_count,
-    _set_count,
-    plan_yunmeng_native_batch,
+from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerSliderAssets,
+    read_integer_slider_count as _read_count,
+    set_verified_integer_slider_count as _set_count,
+)
+from backend.core.fanxiu.data_annotation.tasks.bounded_batch_planning import (
+    FeedbackBatchPlan,
+    plan_feedback_batch,
 )
 
 
@@ -158,10 +160,10 @@ def plan_xutian_native_batch(
     measured_challenges: int | None = None,
     previous_currency_delta: int | None = None,
     previous_challenges: int | None = None,
-) -> YunmengNativeBatchPlan:
-    """Reuse the proven probe/geometric/stable-final planner from Yunmeng."""
+) -> FeedbackBatchPlan:
+    """Reuse the activity-neutral probe/geometric/stable-final planner."""
 
-    return plan_yunmeng_native_batch(
+    return plan_feedback_batch(
         required_new_currency=required_new_currency,
         measured_currency_delta=measured_currency_delta,
         measured_challenges=measured_challenges,
@@ -511,10 +513,8 @@ def _configure_and_run_batch(
             runtime, name=name, desired=True, identity=identity
         )
 
-    count_assets = YunmengNativeAutoAssets(
-        home_scene_id=XUTIAN_MAP_SCENE_ID,
+    count_assets = IntegerSliderAssets(
         settings_scene_id=XUTIAN_SETTINGS_SCENE_ID,
-        terminal_scene_ids=(XUTIAN_MAP_SCENE_ID,),
     )
     yield from _set_count(
         runtime,

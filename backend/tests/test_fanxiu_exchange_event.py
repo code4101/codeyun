@@ -462,7 +462,7 @@ def test_xutian_refresh_uses_personal_total_rank_instead_of_inner_hall(
     monkeypatch,
 ) -> None:
     from backend.core.fanxiu.activity import xutian_palace_instrumentation as xutian
-    from backend.core.fanxiu.activity import yunmeng_rank_reward
+    from backend.core.fanxiu.activity import rank_reward
     from backend.core.fanxiu.activity.exchange_event import list_exchange_rankings
     from backend.core.fanxiu.instrumentation.activity_shop import (
         FanxiuActivityShopNotLoadedError,
@@ -596,8 +596,8 @@ def test_xutian_refresh_uses_personal_total_rank_instead_of_inner_hall(
         )
         session.commit()
         monkeypatch.setattr(
-            yunmeng_rank_reward,
-            "load_yunmeng_rank_reward_tiers",
+            rank_reward,
+            "load_activity_rank_reward_tiers",
             lambda **kwargs: (
                 [{"rank_start": 17, "rank_end": 32, "rewards": []}]
                 if int(kwargs["rank_activity_id"]) == 83291
@@ -653,7 +653,7 @@ def test_xutian_refresh_uses_personal_total_rank_instead_of_inner_hall(
 
 def test_xutian_runtime_rank_snapshot_keeps_full_rows_for_storage(monkeypatch) -> None:
     from backend.core.fanxiu.activity import xutian_palace_instrumentation as xutian
-    from backend.core.fanxiu.activity import yunmeng_rank_reward
+    from backend.core.fanxiu.activity import rank_reward
     from backend.core.fanxiu.instrumentation import (
         activity_rank_runtime,
         resource_ranking,
@@ -672,8 +672,8 @@ def test_xutian_runtime_rank_snapshot_keeps_full_rows_for_storage(monkeypatch) -
         lambda *_args, **_kwargs: (0x1234, True),
     )
     monkeypatch.setattr(
-        yunmeng_rank_reward,
-        "load_yunmeng_rank_reward_tiers",
+        rank_reward,
+        "load_activity_rank_reward_tiers",
         lambda **kwargs: [
             {
                 "rank_start": 1,
@@ -744,15 +744,15 @@ def test_xutian_runtime_rank_snapshot_keeps_full_rows_for_storage(monkeypatch) -
 
 
 def test_exchange_ranking_page_returns_full_entries_and_separate_reward_tiers(monkeypatch) -> None:
-    from backend.core.fanxiu.activity import yunmeng_rank_reward
+    from backend.core.fanxiu.activity import rank_reward
     from backend.core.fanxiu.activity.exchange_event import (
         list_exchange_rankings,
         replace_exchange_rankings,
     )
 
     monkeypatch.setattr(
-        yunmeng_rank_reward,
-        "load_yunmeng_rank_reward_tiers",
+        rank_reward,
+        "load_activity_rank_reward_tiers",
         lambda **_: [
             {"rank_start": 1, "rank_end": 1, "rewards": ["Item|9070095_320"]},
         ],

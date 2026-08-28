@@ -269,7 +269,7 @@ def test_collect_yaochi_flower_festival_persists_visible_ranking(monkeypatch) ->
         lambda **_: reward_tiers,
     )
     monkeypatch.setattr(
-        "backend.core.fanxiu.activity.yunmeng_rank_reward.load_yunmeng_rank_reward_tiers",
+        "backend.core.fanxiu.activity.rank_reward.load_activity_rank_reward_tiers",
         lambda **_: reward_tiers,
     )
     monkeypatch.setattr(

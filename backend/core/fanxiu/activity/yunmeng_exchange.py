@@ -6,6 +6,10 @@ from typing import Any
 
 from sqlmodel import Session, col, select
 
+from backend.core.fanxiu.activity.standard_exchange_materializer import (
+    load_stored_exchange_rankings,
+    persist_exchange_materialization,
+)
 from backend.core.fanxiu.activity.yunmeng_trial_instrumentation import (
     collect_yunmeng_trial_shop_snapshot,
 )
@@ -16,7 +20,6 @@ from backend.core.fanxiu.instrumentation.activity_shop import (
 )
 from backend.models import (
     FanxiuExchangeActivity,
-    FanxiuExchangeRanking,
     FanxiuExchangeShopItem,
     FanxiuPacketBusinessRecord,
 )
@@ -150,40 +153,6 @@ def _shop_snapshot(*, cross_count: int) -> dict[str, Any]:
     return snapshot
 
 
-def _stored_ranking_rows(
-    session: Session,
-    *,
-    activity_id: str,
-    scopes: set[str],
-) -> list[dict[str, Any]]:
-    if not scopes:
-        return []
-    rows = session.exec(
-        select(FanxiuExchangeRanking).where(
-            FanxiuExchangeRanking.activity_id == activity_id,
-            FanxiuExchangeRanking.ranking_scope.in_(scopes),
-        )
-    ).all()
-    return [
-        {
-            "ranking_scope": row.ranking_scope,
-            "rank": row.rank,
-            "score": row.score,
-            "role_key": row.role_key,
-            "name": row.name,
-            "server_id": row.server_id,
-            "server_name": row.server_name,
-            "club_name": row.club_name,
-            "is_self": row.is_self,
-            "is_reward_guard": row.is_reward_guard,
-            "is_last_player": row.is_last_player,
-            "has_player": row.has_player,
-            "reward_rank_start": row.reward_rank_start,
-            "reward_rank_end": row.reward_rank_end,
-            "raw_data": dict(row.raw_data or {}),
-        }
-        for row in rows
-    ]
 
 
 def collect_and_store_yunmeng_exchange_activity(
@@ -196,11 +165,6 @@ def collect_and_store_yunmeng_exchange_activity(
 
     from backend.core.fanxiu.activity.exchange_activity_registry import (
         get_exchange_activity_spec,
-    )
-    from backend.core.fanxiu.activity.exchange_event import (
-        list_exchange_activity_snapshot,
-        replace_exchange_rankings,
-        upsert_exchange_activity_snapshot,
     )
     from backend.core.fanxiu.activity.standard_observation import (
         ActivityObservationUnavailable,
@@ -315,7 +279,7 @@ def collect_and_store_yunmeng_exchange_activity(
     ]
     retained_related: set[str] = set()
     if existing is not None:
-        retained = _stored_ranking_rows(
+        retained = load_stored_exchange_rankings(
             session,
             activity_id=existing.id,
             scopes=declared_related - current_related,
@@ -397,19 +361,13 @@ def collect_and_store_yunmeng_exchange_activity(
     if shop is not None:
         payload["shop_items"] = list(shop["items"])
         payload["expected_shop_item_count"] = int(shop["active_shop_item_count"])
-    persisted_id = upsert_exchange_activity_snapshot(session, payload)
-    replace_exchange_rankings(
+    return persist_exchange_materialization(
         session,
         activity_type=YUNMENG_ACTIVITY_TYPE,
-        activity_id=persisted_id,
-        rows=list(observation["rankings"]),
+        payload=payload,
+        rankings=list(observation["rankings"]),
         captured_at=str(observation["captured_at"]),
     )
-    return list_exchange_activity_snapshot(
-        session,
-        activity_type=YUNMENG_ACTIVITY_TYPE,
-        activity_id=persisted_id,
-    ).selected_activity
 
 
 def ensure_yunmeng_exchange_activity(session: Session) -> None:
