@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
-from backend.core.fanxiu.data_annotation.tasks.daily_foundation import (
+from backend.core.fanxiu.data_annotation.tasks.lingmai import (
     select_visible_lingmai_target,
 )
 from backend.core.fanxiu.data_annotation.tasks.lingmai import lingmai_facts_retry_seconds

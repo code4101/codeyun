@@ -155,8 +155,8 @@ def test_dongtian_action_power_keeps_final_battle_visual_error_as_failure(monkey
 
     monkeypatch.setattr(
         runner,
-        "_daily_dongtian_runtime_snapshot",
-        lambda _payload: {"available": True, "complete": True, "action_power": 100},
+        "_daily_dongtian_action_power",
+        lambda _runtime, _payload: (100, "100"),
     )
     monkeypatch.setattr(runner, "_daily_dongtian_continue_enemy_occupation", fail_after_battle_started)
     monkeypatch.setattr(

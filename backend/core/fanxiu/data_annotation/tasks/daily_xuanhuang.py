@@ -209,7 +209,14 @@ class DailyXuanhuangTaskMixin:
         timeout_seconds: float,
         poll_seconds: float,
     ):
-        deadline = time.monotonic() + timeout_seconds
+        started_at = time.monotonic()
+        # ``timeout_seconds`` is a loss-of-liveness deadline, not a total
+        # battle-duration limit.  Real Xuanhuang fights can stay healthy for
+        # well over 30 minutes; cutting them off by wall clock releases the
+        # device to unrelated Scheduler jobs while the game is still in
+        # battle.  Every positively recognized battle frame renews the lease.
+        deadline = started_at + timeout_seconds
+        next_status_at = started_at
         saw_battle_scene = False
         while True:
             frame = runtime.cur_frame(update=True)
@@ -221,16 +228,36 @@ class DailyXuanhuangTaskMixin:
                 return saw_battle_scene
             if scene_id in {186, 419}:
                 saw_battle_scene = True
-            if time.monotonic() >= deadline:
+                deadline = time.monotonic() + timeout_seconds
+            now = time.monotonic()
+            if now >= next_status_at:
+                status_setter = getattr(self, "_set_status_locked", None)
+                status_lock = getattr(self, "_lock", None)
+                if callable(status_setter) and status_lock is not None:
+                    with status_lock:
+                        status_setter(
+                            "running",
+                            f"日常_玄荒：自动战斗中，已等待 {int(now - started_at)} 秒",
+                            phase="daily_xuanhuang_battle",
+                            current_scene=scene_id,
+                        )
+                next_status_at = now + 30.0
+            if now >= deadline:
                 final_frame = runtime.cur_frame(update=True)
                 final_scene, _score, _frame = runtime.current_scene(
-                    [420],
+                    [186, 419, 420],
                     frame_data_url=final_frame,
                 )
                 if final_scene == 420:
                     return saw_battle_scene
+                if final_scene in {186, 419}:
+                    saw_battle_scene = True
+                    deadline = time.monotonic() + timeout_seconds
+                    yield from runtime.wait_action_settle(poll_seconds)
+                    continue
                 raise TimeoutError(
-                    f"日常_玄荒：等待战斗结束 #420 超过 {timeout_seconds:g} 秒"
+                    "日常_玄荒：连续无法识别战斗 #186/#419 或结算 #420 "
+                    f"超过 {timeout_seconds:g} 秒"
                 )
             yield from runtime.wait_action_settle(poll_seconds)
 
@@ -317,7 +344,11 @@ class DailyXuanhuangTaskMixin:
         )
         battle_timeout_seconds = max(
             0.01,
-            float(payload.get("battle_timeout_seconds") or 300.0),
+            # This is the maximum continuous time without recognizing either
+            # an active battle or its result. Positively recognized battle
+            # frames renew the lease; the outer Job budget remains the hard
+            # ceiling for a genuinely endless fight.
+            float(payload.get("battle_timeout_seconds") or 120.0),
         )
         battle_poll_seconds = max(
             0.0,
@@ -346,6 +377,10 @@ class DailyXuanhuangTaskMixin:
             payload.get("resume_probe_retry_seconds") or 0.5,
         )
         current_scene_probe_retry_seconds = max(0.0, float(current_scene_probe_retry_seconds_value))
+        resume_transition_timeout_seconds = max(
+            1.0,
+            float(payload.get("resume_transition_timeout_seconds") or 60.0),
+        )
         max_rounds = max(1, int(payload.get("max_rounds") or 20))
         rounds_completed = 0
 
@@ -366,6 +401,34 @@ class DailyXuanhuangTaskMixin:
                 break
             if attempt + 1 < current_scene_probe_attempts:
                 yield from runtime.wait_action_settle(current_scene_probe_retry_seconds)
+
+        if current_scene is None:
+            # A long #186/#419 battle can finish between Scheduler attempts.
+            # Its departure briefly renders a blank transition frame with no
+            # actionable control. Treating that frame as a missing route makes
+            # goto_view(34) fail before the world page has time to appear.
+            # Wait only for existing safe anchors; this adds no asset identity
+            # and performs no irreversible click during the transition.
+            resumed = yield from runtime.wait_view(
+                34,
+                418,
+                186,
+                419,
+                420,
+                85,
+                395,
+                86,
+                55,
+                timeout=resume_transition_timeout_seconds,
+                label="日常_玄荒：等待战斗退出过渡落到已知页面",
+            )
+            current_scene = resumed.id
+            if current_scene == 418:
+                start_from_counter = True
+            elif current_scene in {186, 419, 420}:
+                resume_battle_scene = current_scene
+            elif current_scene in {85, 395, 86, 55}:
+                yield from runtime.goto_view(34)
 
         while True:
             if resume_battle_scene is not None:

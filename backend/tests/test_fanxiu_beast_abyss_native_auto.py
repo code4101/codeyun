@@ -12,6 +12,34 @@ from backend.core.fanxiu.data_annotation.tasks.beast_abyss_native_auto import (
     prepare_beast_abyss_native_auto,
     run_beast_abyss_native_auto,
 )
+from backend.core.fanxiu.data_annotation.tasks.beast_abyss_task_rewards import (
+    claim_beast_abyss_cultivation_rewards,
+)
+
+
+@pytest.fixture(autouse=True)
+def _stub_cultivation_reward_maintenance(monkeypatch):
+    """Keep native-auto unit tests independent from the live Runtime reader."""
+
+    calls: list[object] = []
+
+    def no_claimable_rewards(runtime):
+        calls.append(runtime)
+        if False:
+            yield None
+        return {
+            "checked": True,
+            "claimed_task_ids": [],
+            "remaining_claimable": [],
+            "gui_opened": False,
+        }
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.tasks.beast_abyss_native_auto."
+        "claim_beast_abyss_cultivation_rewards",
+        no_claimable_rewards,
+    )
+    return calls
 
 
 class _Match:
@@ -163,6 +191,82 @@ def _assets():
     return BeastAbyssNativeAutoAssets(601, 603, (604,))
 
 
+def test_cultivation_reward_maintenance_skips_gui_when_runtime_has_no_claims():
+    result = _drain(
+        claim_beast_abyss_cultivation_rewards(
+            object(),
+            reader=lambda: {
+                "ok": True,
+                "complete": True,
+                "authorized_claim_task_ids": [],
+            },
+        )
+    )
+
+    assert result == {
+        "checked": True,
+        "claimed_task_ids": [],
+        "remaining_claimable": [],
+        "gui_opened": False,
+    }
+
+
+def test_cultivation_reward_maintenance_claims_exact_runtime_task_and_returns():
+    state = {"claimed": False}
+
+    def reader():
+        return {
+            "ok": True,
+            "complete": True,
+            "authorized_claim_task_ids": [] if state["claimed"] else [101],
+            "claimed_task_ids": [101] if state["claimed"] else [],
+        }
+
+    class RewardRuntime:
+        def __init__(self):
+            self.scene = 657
+            self.actions: list[object] = []
+
+        def current_scene(self, expected, update=False):
+            self.actions.append(("scene", tuple(expected), update))
+            return self.scene, 100.0, "frame"
+
+        def wait_click_then_view(self, scene_id, title, target_scene_ids, **_options):
+            self.actions.append(("transition", scene_id, title))
+            self.scene = int(target_scene_ids[0])
+            if False:
+                yield None
+            return self.scene
+
+        def click_shape_center(self, scene_id, title):
+            self.actions.append(("click", scene_id, title))
+            state["claimed"] = True
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+        def goto_view(self, scene_id):
+            self.actions.append(("goto", scene_id))
+            self.scene = int(scene_id)
+            if False:
+                yield None
+
+    runtime = RewardRuntime()
+    result = _drain(
+        claim_beast_abyss_cultivation_rewards(runtime, reader=reader)
+    )
+
+    assert result == {
+        "checked": True,
+        "claimed_task_ids": [101],
+        "remaining_claimable": [],
+        "gui_opened": True,
+    }
+    assert ("click", 664, "首条任务进度区") in runtime.actions
+    assert runtime.scene == 657
+
+
 def test_native_auto_preflight_allows_missing_terminal_assets_without_starting():
     runtime = FakeRuntime()
     assets = BeastAbyssNativeAutoAssets(601, 603, ())
@@ -178,6 +282,22 @@ def test_native_auto_preflight_allows_missing_terminal_assets_without_starting()
     assert settings.requested_explores == 10
     assert runtime.stage == "help_view"
     assert "开启自动" not in runtime.clicks
+
+
+def test_native_auto_preflight_always_runs_cultivation_reward_maintenance(
+    _stub_cultivation_reward_maintenance,
+):
+    runtime = FakeRuntime()
+
+    _drain(
+        prepare_beast_abyss_native_auto(
+            runtime,
+            BeastAbyssNativeAutoAssets(601, 603, ()),
+            BeastAbyssNativeAutoRequest(False),
+        )
+    )
+
+    assert _stub_cultivation_reward_maintenance == [runtime]
 
 
 def test_native_auto_measurement_clamps_item_backed_capacity_before_setting_ten():

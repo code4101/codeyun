@@ -460,6 +460,7 @@ def test_mumu_adb_port_check_recovers_local_port(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     mumu._MUMU_ADB_SESSION.clear()
     mumu._clear_mumu_adb_failure_cache()
+    monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: [])
     monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
 
     calls = []
@@ -497,6 +498,7 @@ def test_mumu_adb_recovery_does_not_use_proxy_device_by_default(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     mumu._MUMU_ADB_SESSION.clear()
     mumu._clear_mumu_adb_failure_cache()
+    monkeypatch.setattr(mumu, "_mumu_manager_adb_serial_candidates", lambda: [])
     monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
     monkeypatch.setattr(mumu.fanxiu_adb_device_service, "devices", lambda: ["192.168.31.181:5555"])
 

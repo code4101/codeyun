@@ -197,6 +197,11 @@ def test_mail_packet_sync_uses_pcap_modified_at_for_last_seen_capture(monkeypatc
     monkeypatch.setattr(fanxiu_mail_packet_sync, "_iter_fanxiu_tcp_decoded_sources", lambda _data_dir=None: [source])
     monkeypatch.setattr(fanxiu_mail_packet_sync, "_load_json_file", lambda _path: payload)
     monkeypatch.setattr(fanxiu_mail_packet_sync, "load_fanxiu_mail_envelope_titles", lambda _export_root=None: {})
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_load_mail_item_name_index",
+        lambda **_kwargs: {},
+    )
 
     result = fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
     session.commit()
@@ -433,6 +438,11 @@ def test_packet_mail_reward_claim_beats_followup_delete(monkeypatch, tmp_path):
         lambda _data_dir=None: [{"decoded_path": decoded_path, "created_at": "2026-06-06 20:00:00"}],
     )
     monkeypatch.setattr(fanxiu_mail_packet_sync, "load_fanxiu_mail_envelope_titles", lambda _export_root=None: {})
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_load_mail_item_name_index",
+        lambda **_kwargs: {},
+    )
 
     result = fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
 
@@ -483,6 +493,7 @@ def test_mail_packet_sync_does_not_promote_runtime_action_to_final_status(monkey
     )
     session.commit()
     monkeypatch.setattr(fanxiu_mail_packet_sync, "_iter_fanxiu_tcp_decoded_sources", lambda _data_dir=None: [])
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "_load_mail_item_name_index", lambda **_kwargs: {})
 
     fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
 
@@ -1483,6 +1494,11 @@ def test_mail_packet_sync_marks_empty_body_and_empty_attachment_notice(monkeypat
         lambda _data_dir=None: [{"decoded_path": decoded_path, "created_at": "2026-06-06 20:00:00"}],
     )
     monkeypatch.setattr(fanxiu_mail_packet_sync, "load_fanxiu_mail_envelope_titles", lambda _export_root=None: {})
+    monkeypatch.setattr(
+        fanxiu_mail_packet_sync,
+        "_load_mail_item_name_index",
+        lambda **_kwargs: {},
+    )
 
     result = fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
 
@@ -1529,6 +1545,7 @@ def test_mail_packet_sync_keeps_i18n_params_when_content_template_missing(monkey
         lambda _data_dir=None: [{"decoded_path": decoded_path, "created_at": "2026-06-06 20:00:00"}],
     )
     monkeypatch.setattr(fanxiu_mail_packet_sync, "load_fanxiu_mail_envelope_titles", lambda _export_root=None: {})
+    monkeypatch.setattr(fanxiu_mail_packet_sync, "_load_mail_item_name_index", lambda **_kwargs: {})
 
     fanxiu_mail_packet_sync.sync_fanxiu_mail_packets(session)
 

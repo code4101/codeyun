@@ -65,3 +65,6 @@ where = ["."]
 
 [tool.uv.sources]
 pyxllib = { path = "../../pyxllib", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = [".."]
