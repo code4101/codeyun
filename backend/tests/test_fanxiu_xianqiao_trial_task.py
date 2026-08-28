@@ -47,7 +47,10 @@ def test_xianqiao_trial_is_registered_as_daily_five_task():
 
 def test_xianqiao_trial_task_flow_enters_then_runs_complete_daily(monkeypatch):
     runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime({"images": {}, "attrs": {"payload": {}}}, stop_event=threading.Event())
+    runtime = runner._fanxiu_runtime(
+        {"images": {}, "attrs": {"payload": {"__scheduler_task_id": "xianqiao-trial"}}},
+        stop_event=threading.Event(),
+    )
     events: list[object] = []
 
     def enter(**_kwargs):

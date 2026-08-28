@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import date, timedelta
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, create_engine, select
 
 import backend.core.fanxiu.data_annotation.tasks.xutian_native_auto as xutian_auto
 from backend.models import FanxiuExchangeActivity
@@ -22,7 +22,11 @@ def xutian_engine(tmp_path, monkeypatch):
         f"sqlite:///{tmp_path / 'xutian-evidence.sqlite3'}",
         connect_args={"check_same_thread": False},
     )
-    SQLModel.metadata.create_all(engine)
+    # These coordinator tests persist only the activity aggregate.  Creating the
+    # application's full metadata here makes every function-scoped fixture pay
+    # for hundreds of unrelated tables and obscures the feedback loop we need
+    # while debugging the native-auto state machine.
+    FanxiuExchangeActivity.__table__.create(engine)
     monkeypatch.setattr("backend.db.engine", engine)
     monkeypatch.setattr(
         "backend.core.fanxiu.activity.standard_observation.store_runtime_currency_fact",

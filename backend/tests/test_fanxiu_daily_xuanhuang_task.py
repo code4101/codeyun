@@ -556,6 +556,33 @@ def test_daily_xuanhuang_resumes_existing_generic_battle_without_reclicking_forw
     assert runtime.shape_clicks.count((420, "离开")) == 1
 
 
+def test_daily_xuanhuang_waits_out_blank_resume_transition_before_goto():
+    runtime = _FakeXuanhuangRuntime([0], initial_scene=34)
+    initial_scenes = iter((None, None, None))
+    original_current_scene = runtime.current_scene
+
+    def current_scene(*args: Any, **kwargs: Any):
+        if not args or args[0] is None:
+            try:
+                return next(initial_scenes), 0.0, runtime.cur_frame(True)
+            except StopIteration:
+                pass
+        return original_current_scene(*args, **kwargs)
+
+    runtime.current_scene = current_scene  # type: ignore[method-assign]
+
+    result = _run(
+        _FakeXuanhuangRunner()._run_daily_xuanhuang_flow(
+            runtime,
+            {"current_scene_probe_retry_seconds": 0},
+        )
+    )
+
+    assert result["result"] == "success"
+    assert runtime.wait_view_calls[0] == 34
+    assert runtime.wait_view_timeouts[0] == 60.0
+
+
 def test_daily_xuanhuang_final_deadline_probe_still_accepts_420(monkeypatch):
     runtime = _FakeXuanhuangRuntime([1], battle_scenes=[[None, 420]])
     times = iter([100.0, 401.0])
@@ -570,6 +597,22 @@ def test_daily_xuanhuang_final_deadline_probe_still_accepts_420(monkeypatch):
     )
 
     assert saw_419 is False
+
+
+def test_daily_xuanhuang_recognized_battle_renews_liveness_deadline(monkeypatch):
+    runtime = _FakeXuanhuangRuntime([1], battle_scenes=[[419, 420]])
+    times = iter([100.0, 401.0, 401.0, 401.0])
+    monkeypatch.setattr(daily_xuanhuang.time, "monotonic", lambda: next(times))
+
+    saw_battle = _run(
+        _FakeXuanhuangRunner()._daily_xuanhuang_wait_battle_done(
+            runtime,
+            timeout_seconds=300,
+            poll_seconds=0,
+        )
+    )
+
+    assert saw_battle is True
 
 
 def test_daily_xuanhuang_missing_counter_is_never_treated_as_zero():
@@ -760,4 +803,39 @@ def test_daily_xuanhuang_catalog_is_manual_five_am_task_without_scene_policy():
     assert task["trigger_description"] == "每日"
     assert task["next_time"]
     assert task["payload"]["recommend_timeout_seconds"] == 60
-    assert task["payload"]["battle_timeout_seconds"] == 300
+    assert task["payload"]["battle_timeout_seconds"] == 120
+    assert task["payload"]["max_runtime_seconds"] == 10800
+
+
+def test_daily_xuanhuang_cell_does_not_preempt_task_owned_resume_with_generic_goto():
+    register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition("daily_xuanhuang")
+    assert definition is not None
+
+    class Runner:
+        def _fanxiu_runtime(self, *_args: Any, **_kwargs: Any):
+            raise AssertionError("玄荒 Cell 外层不得先创建 Runtime 并 goto 世界")
+
+        def _execute_daily_xuanhuang_task(
+            self,
+            ctx: dict[str, Any],
+            stop_event: Any,
+            payload: dict[str, Any],
+        ):
+            assert ctx == {"asset": "tree"}
+            assert stop_event == "stop"
+            assert payload == {"resume": True}
+            if False:
+                yield None
+            return {"result": "success"}
+
+    result = _run(
+        definition.handler(
+            Runner(),
+            {"asset": "tree"},
+            {"resume": True},
+            "stop",
+        )
+    )
+
+    assert result == {"result": "success"}

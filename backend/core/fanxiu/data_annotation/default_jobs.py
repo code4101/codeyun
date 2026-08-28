@@ -1355,11 +1355,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
-        result = yield from runner._execute_daily_xuanhuang_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
-        return result
+        # Xuanhuang owns battle resumption and every departure branch itself.
+        # A generic pre/post goto(34) cannot distinguish a live #186/#419
+        # battle or its blank exit transition from an ordinary navigable page;
+        # it used to fail before the task's recovery logic could run and could
+        # also duplicate cleanup after the business result was committed.
+        return (yield from runner._execute_daily_xuanhuang_task(ctx, stop_event, payload))
 
     @register_fanxiu_data_annotation_task_cell(
         "daily_dongtian",
@@ -2138,4 +2139,3 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         )
 
         return (yield from execute_yunmeng_tail_job(runner, ctx, payload, stop_event))
-

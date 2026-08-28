@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import os
 import re
+import socket
 import threading
 import time
 from pathlib import Path
@@ -98,6 +99,7 @@ _builtin_jobs_status_refresh_lock = threading.Lock()
 _builtin_jobs_status_refreshing = False
 _ATTENDANCE_BEHAVIOR_TREE_HOST_HINT = "考勤行为树只在 codepc_mf 执行主机上管理"
 _FANXIU_BEHAVIOR_TREE_HOST_HINT = "凡修行为树未在当前机器启用；当前正式运行目标默认是 codepc_mf"
+_DEFAULT_FANXIU_BEHAVIOR_TREE_HOSTS = {"codepc_mf", "mf"}
 
 
 def _invalidate_builtin_services_status_cache() -> None:
@@ -116,14 +118,20 @@ def _env_enabled(value: str | None) -> bool | None:
     return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
-def _fanxiu_runtime_service_enabled(service_key: str, aliases: set[str], env_name: str) -> bool:
+def _fanxiu_runtime_service_enabled(
+    service_key: str,
+    aliases: set[str],
+    env_name: str,
+    *,
+    default: bool = False,
+) -> bool:
     configured = _env_enabled(os.getenv(env_name))
     if configured is not None:
         return configured
 
     services_text = os.getenv("FX_RUNTIME_SERVICES")
     if services_text is None:
-        return False
+        return default
     services = {item.strip().lower() for item in services_text.split(",") if item.strip()}
     return bool(services & {"*", "all", "fanxiu", service_key, *aliases})
 
@@ -141,6 +149,8 @@ def is_fanxiu_behavior_tree_service_enabled() -> bool:
         FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
         {"fanxiu_behavior_tree", "behavior_tree", "runtime", "scheduler", "凡修行为树"},
         "FX_BEHAVIOR_TREE_SERVICE_ENABLED",
+        default=socket.gethostname().replace("-", "_").split(".", 1)[0].strip().lower()
+        in _DEFAULT_FANXIU_BEHAVIOR_TREE_HOSTS,
     )
 
 

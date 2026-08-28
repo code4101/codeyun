@@ -6,10 +6,38 @@ from backend.core.runtime import management
 from backend.models import Task
 
 
+def test_fanxiu_behavior_tree_defaults_to_the_formal_mf_host(monkeypatch):
+    monkeypatch.delenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED", raising=False)
+    monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
+    monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc-mf.example")
+
+    assert management.is_fanxiu_behavior_tree_service_enabled() is True
+
+
+def test_fanxiu_behavior_tree_stays_disabled_by_default_on_other_hosts(monkeypatch):
+    monkeypatch.delenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED", raising=False)
+    monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
+    monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc_mi15")
+
+    assert management.is_fanxiu_behavior_tree_service_enabled() is False
+
+
+def test_fanxiu_behavior_tree_explicit_configuration_overrides_host_default(monkeypatch):
+    monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc_mf")
+    monkeypatch.setenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED", "false")
+    monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
+    assert management.is_fanxiu_behavior_tree_service_enabled() is False
+
+    monkeypatch.delenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED", raising=False)
+    monkeypatch.setenv("FX_RUNTIME_SERVICES", "behavior_tree")
+    monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc_mi15")
+    assert management.is_fanxiu_behavior_tree_service_enabled() is True
+
+
 def test_fanxiu_startup_ensures_the_single_external_scheduler(monkeypatch):
     entry = type("Entry", (), {"entry_id": "entry-a"})()
     calls = []
-    monkeypatch.setattr(management, "_resolve_behavior_tree_runtime_entry", lambda _session: entry)
+    monkeypatch.setattr(management, "_resolve_data_annotation_runtime_entry", lambda _session: entry)
     monkeypatch.setattr(management, "ensure_fanxiu_behavior_tree_service", lambda **_kwargs: {})
     monkeypatch.setattr(management, "_get_data_annotation_behavior_tree_status", lambda: {})
     monkeypatch.setattr(management, "_fanxiu_doctor_watch_autostart_enabled", lambda: True)
@@ -25,7 +53,7 @@ def test_fanxiu_startup_ensures_the_single_external_scheduler(monkeypatch):
     assert calls == [{}]
 
 
-def test_build_runtime_status_reuses_runtime_device_for_command_status(monkeypatch):
+def test_build_runtime_status_reuses_runtime_device_for_command_services(monkeypatch):
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine, tables=[Task.__table__])
     local_device_id = "device-local"
@@ -76,8 +104,8 @@ def test_build_runtime_status_reuses_runtime_device_for_command_status(monkeypat
 
         payload = management.build_runtime_status(session, local_device_id)
 
-    assert [item["key"] for item in payload["items"]] == ["service-1", "job-1"]
-    assert fake_device.status_calls == ["service-1", "job-1"]
+    assert [item["key"] for item in payload["items"]] == ["service-1"]
+    assert fake_device.status_calls == ["service-1"]
     assert payload["device"]["name"] == "Local Device"
 
 

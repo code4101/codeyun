@@ -92,8 +92,10 @@ from backend.core.fanxiu.data_annotation.tasks.lingmai import (
     LINGMAI_UNION_SHENGMAI_ROOM_ID,
     LINGMAI_UNION_SHENMAI_ROOM_ID,
     lingmai_facts_retry_seconds,
+    lingmai_name_variants,
     refresh_and_select_lingmai_seat_action,
     refresh_lingmai_daily_status,
+    select_visible_lingmai_target,
 )
 from backend.core.fanxiu.data_annotation.tasks.xianyuan_duel import (
     choose_xianyuan_duel_target,
@@ -268,33 +270,6 @@ class _DailyMojieRaidAttackCountdown(RuntimeError):
         super().__init__(text)
         self.seconds = int(seconds)
         self.text = str(text)
-
-
-def _lingmai_name_variants(value: Any) -> list[str]:
-    name = _sanitize_ocr_text(value)
-    return list(dict.fromkeys(
-        variant
-        for variant in [
-            name,
-            *(part.strip() for part in re.split(r"[|｜]+", name)),
-        ]
-        if len(normalize_ocr_name(variant)) >= 2
-    ))
-
-
-def select_visible_lingmai_target(
-    eligible_targets: list[dict[str, Any]],
-    visible_text: str,
-    *,
-    threshold: float = DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD,
-) -> dict[str, Any] | None:
-    """Return the weakest Runtime-authorized target still visible in the GUI."""
-
-    for target in eligible_targets:
-        variants = _lingmai_name_variants(target.get("name"))
-        if variants and max(ocr_name_similarity(item, visible_text) for item in variants) >= threshold:
-            return target
-    return None
 
 
 _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
@@ -10787,7 +10762,7 @@ class DailyFoundationTaskMixin:
         # value while the seat list renders only one visible segment.  Keep the
         # full value as identity evidence, but let OCR locate any non-trivial
         # rendered segment instead of demanding the invisible suffix.
-        target_name_variants = _lingmai_name_variants(target_name)
+        target_name_variants = lingmai_name_variants(target_name)
         if not target_id or not target_name_match:
             raise RuntimeError(f"{task_label}：驱离目标缺少稳定座位 ID 或姓名，已停止且未点击")
         if bool(target_player.get("excluded") or target_player.get("is_ally")):

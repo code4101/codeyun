@@ -464,6 +464,9 @@ def test_xutian_refresh_uses_personal_total_rank_instead_of_inner_hall(
     from backend.core.fanxiu.activity import xutian_palace_instrumentation as xutian
     from backend.core.fanxiu.activity import yunmeng_rank_reward
     from backend.core.fanxiu.activity.exchange_event import list_exchange_rankings
+    from backend.core.fanxiu.instrumentation.activity_shop import (
+        FanxiuActivityShopNotLoadedError,
+    )
     from backend.models import FanxiuPacketBusinessRecord
 
     with _session() as session:
@@ -602,6 +605,13 @@ def test_xutian_refresh_uses_personal_total_rank_instead_of_inner_hall(
                     {"rank_start": 1, "rank_end": 1, "rewards": []},
                     {"rank_start": 2, "rank_end": 2, "rewards": []},
                 ]
+            ),
+        )
+        monkeypatch.setattr(
+            xutian,
+            "collect_xutian_palace_shop_snapshot",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                FanxiuActivityShopNotLoadedError("测试未加载活动商店")
             ),
         )
 

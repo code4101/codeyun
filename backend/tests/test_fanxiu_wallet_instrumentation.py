@@ -14,6 +14,11 @@ class _Memory:
 def _patch_common(monkeypatch) -> None:
     monkeypatch.setattr(
         wallet.MumuProcessMemory,
+        "discover",
+        lambda **_kwargs: _Memory(),
+    )
+    monkeypatch.setattr(
+        wallet.MumuProcessMemory,
         "discover_cached",
         lambda **_kwargs: _Memory(),
     )

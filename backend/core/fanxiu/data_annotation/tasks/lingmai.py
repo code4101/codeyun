@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import time
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from backend.core.fanxiu.catalog.server_relations import classify_fanxiu_target_relation
+from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+from backend.core.fanxiu.runtime_gui import (
+    DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD,
+    normalize_ocr_name,
+    ocr_name_similarity,
+)
 LINGMAI_SHENMAI_ROOM_ID = 10
 LINGMAI_UNION_SHENMAI_ROOM_ID = 17
 LINGMAI_UNION_SHENGMAI_ROOM_ID = 18
@@ -14,6 +21,35 @@ LINGMAI_SAFE_BATTLE_RATIO = 1.0
 LINGMAI_SHENGMAI_MIN_STRENGTH = 300
 LINGMAI_DEFAULT_RETRY_SECONDS = 1800
 LINGMAI_PROTECTION_RETRY_GRACE_MS = 5000
+
+
+def lingmai_name_variants(value: Any) -> list[str]:
+    """Normalize the Runtime name and its server-prefix-free GUI variants."""
+
+    name = _sanitize_ocr_text(value)
+    return list(dict.fromkeys(
+        variant
+        for variant in [
+            name,
+            *(part.strip() for part in re.split(r"[|｜]+", name)),
+        ]
+        if len(normalize_ocr_name(variant)) >= 2
+    ))
+
+
+def select_visible_lingmai_target(
+    eligible_targets: list[dict[str, Any]],
+    visible_text: str,
+    *,
+    threshold: float = DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD,
+) -> dict[str, Any] | None:
+    """Return the weakest Runtime-authorized target still visible in the GUI."""
+
+    for target in eligible_targets:
+        variants = lingmai_name_variants(target.get("name"))
+        if variants and max(ocr_name_similarity(item, visible_text) for item in variants) >= threshold:
+            return target
+    return None
 
 
 def lingmai_facts_retry_seconds(payload: Mapping[str, Any]) -> int:

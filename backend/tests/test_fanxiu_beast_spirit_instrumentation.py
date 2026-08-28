@@ -277,8 +277,11 @@ def test_order_only_projection_explicitly_skips_materialized_dictionary(monkeypa
         cache_mode = "hot"
 
     options = []
+    context_calls = []
     monkeypatch.setattr(
-        beast_spirit, "acquire_ui_runtime_context", lambda _keys: Context()
+        beast_spirit,
+        "acquire_ui_runtime_context_fast",
+        lambda keys: context_calls.append(set(keys)) or Context(),
     )
     monkeypatch.setattr(
         beast_spirit,
@@ -294,6 +297,7 @@ def test_order_only_projection_explicitly_skips_materialized_dictionary(monkeypa
 
     assert result["complete"] is True
     assert options == [False]
+    assert context_calls == [set(beast_spirit._BEAST_UI_KEYS)]
 
 
 def test_order_cache_freshly_reads_ids_when_same_slot_refs_swap_in_place():
