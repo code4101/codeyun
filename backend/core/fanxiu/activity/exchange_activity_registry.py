@@ -104,7 +104,12 @@ class XutianPalaceExchangeActivityAdapter:
 
 
 class MagicInvasionExchangeActivityAdapter:
-    def resolve_occurrence_shop(self, *, cross_count: int) -> ShopSpec:
+    def resolve_occurrence_shop(
+        self,
+        *,
+        cross_count: int,
+        activity_id: int | None = None,
+    ) -> ShopSpec:
         from backend.core.fanxiu.activity.magic_invasion import (
             resolve_magic_invasion_shop_identity,
         )
@@ -148,9 +153,17 @@ class BeastAbyssExchangeActivityAdapter:
 
 
 class TiandiYijuExchangeActivityAdapter:
-    _RANK_IDS = {
-        8090001: {"personal": 90101, "alliance": 90102},
-        8090004: {"personal": 90808, "alliance": 90813},
+    _OCCURRENCES = {
+        8090001: {
+            "cross_count": 1,
+            "shop": ShopSpec(base_id=90000, currency_type=11),
+            "rank_ids": {"personal": 90101, "alliance": 90102},
+        },
+        8090004: {
+            "cross_count": 8,
+            "shop": ShopSpec(base_id=90002, currency_type=13),
+            "rank_ids": {"personal": 90808, "alliance": 90813},
+        },
     }
 
     def resolve_occurrence_rank_activity_ids(
@@ -159,16 +172,38 @@ class TiandiYijuExchangeActivityAdapter:
         activity_id: int,
     ) -> Mapping[str, int]:
         try:
-            return self._RANK_IDS[int(activity_id)]
+            return self._OCCURRENCES[int(activity_id)]["rank_ids"]
         except KeyError as exc:
             raise ValueError(f"天地弈局活动 {int(activity_id)} 不是可物化棋局") from exc
 
-    def resolve_occurrence_shop(self, *, cross_count: int) -> ShopSpec:
-        if int(cross_count) == 1:
-            return ShopSpec(base_id=90000, currency_type=11)
-        if int(cross_count) == 8:
-            return ShopSpec(base_id=90002, currency_type=13)
-        raise ValueError(f"天地弈局不支持 {int(cross_count)} 跨商店")
+    def resolve_occurrence_shop(
+        self,
+        *,
+        cross_count: int,
+        activity_id: int | None = None,
+    ) -> ShopSpec:
+        expected_cross_count = int(cross_count)
+        if activity_id is not None:
+            try:
+                occurrence = self._OCCURRENCES[int(activity_id)]
+            except KeyError as exc:
+                raise ValueError(
+                    f"天地弈局活动 {int(activity_id)} 不是可物化棋局"
+                ) from exc
+            if int(occurrence["cross_count"]) != expected_cross_count:
+                raise ValueError(
+                    "天地弈局活动与跨数不一致："
+                    f"activity_id={int(activity_id)}, cross_count={expected_cross_count}"
+                )
+            return occurrence["shop"]
+        matches = [
+            occurrence["shop"]
+            for occurrence in self._OCCURRENCES.values()
+            if int(occurrence["cross_count"]) == expected_cross_count
+        ]
+        if len(matches) != 1:
+            raise ValueError(f"天地弈局不支持 {expected_cross_count} 跨商店")
+        return matches[0]
 
     def collect_activity(self, session: Session, *, activity_id: str) -> Any:
         from backend.core.fanxiu.activity.tiandi_yiju import (
@@ -842,13 +877,17 @@ def resolve_registered_occurrence_shop(
     *,
     activity_type: str,
     cross_count: int,
+    activity_id: int | None = None,
 ) -> ShopSpec | None:
     """Resolve the effective shop for one concrete activity occurrence."""
 
     spec = get_exchange_activity_spec(activity_type)
     adapter = spec.adapter
     if isinstance(adapter, ExchangeOccurrenceShopAdapter):
-        return adapter.resolve_occurrence_shop(cross_count=int(cross_count))
+        return adapter.resolve_occurrence_shop(
+            cross_count=int(cross_count),
+            activity_id=(int(activity_id) if activity_id is not None else None),
+        )
     return spec.shop
 
 

@@ -173,7 +173,12 @@ class ExchangeOccurrenceShopAdapter(Protocol):
     lifecycle core.
     """
 
-    def resolve_occurrence_shop(self, *, cross_count: int) -> ShopSpec: ...
+    def resolve_occurrence_shop(
+        self,
+        *,
+        cross_count: int,
+        activity_id: int | None = None,
+    ) -> ShopSpec: ...
 
 
 @runtime_checkable

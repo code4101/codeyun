@@ -10,6 +10,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     DAILY_RECONCILE_KIND,
     EXCHANGE_TAIL_KIND,
     MAGIC_ACTIVE_KIND,
+    RANKING_CAPABILITY_STATUS,
     RESOURCE_FREE_GIFT_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
     RankingActivityIdentity,
@@ -26,6 +27,12 @@ from backend.core.fanxiu.activity.ranking_lifecycle_store import (
 
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def test_tiandi_yiju_capability_status_matches_production_assembly() -> None:
+    assert RANKING_CAPABILITY_STATUS["tiandi-yiju"] == (
+        "implemented_exchange_target_loop_pending_asset_contract"
+    )
 
 RESOURCE_RANK_ACTIVITY_ID_CASES = (
     *((value, "lingzhuang-huadao") for value in (

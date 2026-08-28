@@ -226,8 +226,17 @@ def _derive_cross_own_alliance_id(
     reader: LuaJitReader,
     data: Mapping[Any, Any],
     pieces: list[dict[str, int]],
+    play_info: Mapping[Any, Any],
+    rank_rows: Mapping[int, list[dict[str, Any]]],
 ) -> int:
-    """Derive the player's dynamic alliance id from the live cross-board lane."""
+    """Derive the player's alliance from score, ally, and live-lane facts.
+
+    A cross camp can contain both the player's alliance and ``allyAlliance``;
+    both therefore legitimately own pieces on the connected lane.  The rank
+    cache is not an identity fact because it can refresh independently.  The
+    player's exact score row and the lane owner left after excluding the
+    explicit ally must agree whenever both are available.
+    """
 
     left, left_count = reader.list_items(data.get("_ChessConnectListL"))
     right, right_count = reader.list_items(data.get("_ChessConnectListR"))
@@ -240,11 +249,36 @@ def _derive_cross_own_alliance_id(
         for piece_id in connected
         if owner_by_piece.get(piece_id, 0) > 0
     }
-    if len(owners) != 1:
+
+    candidates: list[int] = []
+    ally_alliance_id = as_int(data.get("allyAlliance")) or 0
+    player_lane_owners = owners - ({int(ally_alliance_id)} if ally_alliance_id > 0 else set())
+    if len(player_lane_owners) == 1:
+        candidates.append(int(next(iter(player_lane_owners))))
+    elif len(player_lane_owners) > 1:
         raise FanxiuRuntimeMemoryError(
-            f"天地弈局跨服棋路占领者不唯一：owners={sorted(owners)}"
+            "天地弈局跨服棋路排除盟友后仍有多个本人候选："
+            f"owners={sorted(owners)}, ally={ally_alliance_id}"
         )
-    return int(owners.pop())
+
+    expected_score = _long(reader, play_info.get("allianceScore"))
+    score_matches = [
+        row for row in rank_rows.get(1, []) if int(row["score"]) == int(expected_score)
+    ]
+    if len(score_matches) == 1:
+        candidates.append(int(score_matches[0]["id"]))
+
+    if not candidates and len(owners) == 1:
+        candidates.append(int(next(iter(owners))))
+    if not candidates:
+        raise FanxiuRuntimeMemoryError(
+            "天地弈局跨服身份缺少本人积分或排除盟友后的棋路证据"
+        )
+    if len(set(candidates)) != 1:
+        raise FanxiuRuntimeMemoryError(
+            f"天地弈局跨服本人身份多源证据冲突：candidates={candidates}"
+        )
+    return int(candidates[0])
 
 
 def _decode_snapshot(
@@ -272,7 +306,7 @@ def _decode_snapshot(
     ranks = _decode_rank_rows(reader, data.get("rankDic"))
     pieces = _decode_pieces(reader, data.get("_ChessInfoDic"))
     own_alliance_id = (
-        _derive_cross_own_alliance_id(reader, data, pieces)
+        _derive_cross_own_alliance_id(reader, data, pieces, play_info, ranks)
         if is_cross != 0
         else _derive_own_alliance_id(play_info, ranks, reader=reader)
     )
@@ -291,6 +325,23 @@ def _decode_snapshot(
         int(key): bool(value)
         for raw_key, value in reader.dictionary_fields(data.get("chooseStateDic")).items()
         if (key := as_int(raw_key)) is not None and 1 <= int(key) <= 6
+    }
+    # #680 live Runtime-GUI alignment (2026-08-28): clicking the existing
+    # semantic Shapes changed 4=自动仙弈盒, 3=妙手珠 and 2=四倍棋符.  The two
+    # remaining persisted rows follow the dialog's contiguous common-option
+    # order: 5=失败不中断, 6=跳过动画.  Keep absent keys absent so the
+    # configuration planner fails closed instead of inventing ``False``.
+    auto_choice_indices = {
+        "auto_use_strength_item": 4,
+        "continue_after_defeat": 5,
+        "skip_animation": 6,
+        "master_skill_item": 3,
+        "quadruple_chess_token_item": 2,
+    }
+    auto_challenge_choices = {
+        key: bool(choose_states[index])
+        for key, index in auto_choice_indices.items()
+        if index in choose_states
     }
     entry_personal_score = max(0, _long(reader, play_info.get("personalScore")))
     board_personal_score = max(0, _long(reader, data.get("_MyScore")))
@@ -323,6 +374,7 @@ def _decode_snapshot(
         # These are persisted UI choices.  The task must visually force all
         # three resource-spending switches off before it starts an operation.
         "choose_states": choose_states,
+        "auto_challenge_choices": auto_challenge_choices,
         "resource_spending_choices": {
             "multiple_score_item": bool(choose_states.get(2, False)),
             "double_reward_item": bool(choose_states.get(3, False)),

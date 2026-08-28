@@ -816,6 +816,43 @@ def test_lingta_failure_persists_terminal_mark_before_exit_error() -> None:
     assert mark["terminal_scene_id"] == 365
 
 
+def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
+    class DynamicCurrentFloorRuntime(_FakeLingtaRuntime):
+        def wait_click_then_view(self, *_args, **_kwargs):
+            if False:
+                yield None
+            raise TimeoutError("dynamic #532 identity")
+
+        def cur_frame(self, **_kwargs):
+            return "frame-532"
+
+        def ocr_text_in_shapes(self, scene_id, shape_titles, **_kwargs):
+            self.actions.append(("ocr_shapes", scene_id, tuple(shape_titles)))
+            return "挑 战"
+
+        def click_frame_point(self, scene_id, x, y):
+            self.actions.append(("click_point", scene_id, x, y))
+
+        def wait_view(self, *scene_ids, **kwargs):
+            self.actions.append(("wait_view", scene_ids, kwargs.get("label")))
+            if False:
+                yield None
+            return SimpleNamespace(id=194)
+
+    runner = create_behavior_tree_runtime_runner()
+    runtime = DynamicCurrentFloorRuntime((365,))
+    runner._read_lingta_challenge_snapshot = lambda: {"complete": True}
+    runner._set_scheduler_task_payload_flag = lambda *_args: True
+    runner._clear_scheduler_task_payload_flag = lambda *_args: None
+
+    result = _drain(runner.灵塔挑战流程(runtime))
+
+    assert result["outcome"] == "power_limit"
+    assert ("ocr_shapes", 532, ("挑战文字",)) in runtime.actions
+    assert ("click_point", 532, 80, 1480) in runtime.actions
+    assert ("goto", 34) in runtime.actions
+
+
 def test_lingta_retry_from_532_power_limit_mark_never_reclicks_challenge() -> None:
     runner = create_behavior_tree_runtime_runner()
     runtime = _FakeLingtaRuntime(

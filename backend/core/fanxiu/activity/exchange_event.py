@@ -867,12 +867,12 @@ def list_exchange_rankings(
         from backend.core.fanxiu.activity.rank_reward_context import (
             resolve_exchange_rank_reward_context,
         )
-        from backend.core.fanxiu.activity.yunmeng_rank_reward import (
-            load_yunmeng_rank_reward_tiers,
+        from backend.core.fanxiu.activity.rank_reward import (
+            load_activity_rank_reward_tiers,
         )
 
         reward_context = resolve_exchange_rank_reward_context(session, activity)
-        tiers = load_yunmeng_rank_reward_tiers(
+        tiers = load_activity_rank_reward_tiers(
             rank_activity_id=int(rank_activity_id),
             event_date=activity.start_date,
             server_day=reward_context["server_day"],

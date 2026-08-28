@@ -53,6 +53,10 @@ from backend.core.fanxiu.runtime_gui.sacred_exchange import (
     sacred_exchange_quantity_observations,
     visible_sacred_exchange_rows,
 )
+from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
+    VerticalBottomTabTarget,
+    resolve_vertical_bottom_tab,
+)
 from backend.core.fanxiu.runtime_gui.magic_invasion import (
     MagicInvasionBottomTabTarget,
     resolve_magic_invasion_bottom_tab,
@@ -79,6 +83,7 @@ __all__ = [
     "StorageBagQuantityObservation",
     "StorageBagVisibleCell",
     "StorageBagViewport",
+    "VerticalBottomTabTarget",
     "WorldMenuClickPlan",
     "align_runtime_gui_candidates",
     "best_ocr_name_match",
@@ -95,6 +100,7 @@ __all__ = [
     "register_storage_bag_viewport_from_quantity_ocr",
     "rank_ocr_name_matches",
     "resolve_magic_invasion_bottom_tab",
+    "resolve_vertical_bottom_tab",
     "register_storage_bag_viewport",
     "score_runtime_gui_pair",
     "validate_runtime_evidence",

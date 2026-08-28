@@ -100,6 +100,18 @@ class MozuTaskMixin:
 
         if entry_observed:
             yield from runtime.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
+            # The battlefield can keep rendering an unlabelled animated map
+            # after the minimum participation time.  Wait for a routable
+            # landing instead of asking goto_view() to navigate from that
+            # transient frame immediately.
+            transition = yield from runtime.wait_view(
+                20,
+                34,
+                339,
+                timeout=120.0,
+                label="日常_魔祖：等待战场结束并落到可返回页面",
+            )
+            completed_scene_id = getattr(transition, "id", transition)
         landed = yield from runtime.goto_view(34)
         completed_scene_id = getattr(landed, "id", landed)
         exit_confirmed = completed_scene_id == 34

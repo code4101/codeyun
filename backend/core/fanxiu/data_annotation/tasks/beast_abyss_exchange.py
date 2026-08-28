@@ -6,12 +6,12 @@ from typing import Any
 from backend.core.fanxiu.activity.beast_abyss import (
     collect_and_store_beast_abyss_activity,
 )
-from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import (
-    _detail_matches,
-    _ocr_contains_amount,
+from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
+    exchange_quantity_clicks as yunmeng_quantity_clicks,
+    ocr_contains_amount as _ocr_contains_amount,
+    plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
     plan_exchange_tail_purchases,
-    plan_yunmeng_tail_physical_actions,
-    yunmeng_quantity_clicks,
+    verify_exchange_detail as _detail_matches,
 )
 
 

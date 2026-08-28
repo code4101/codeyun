@@ -18,7 +18,7 @@ from backend.core.fanxiu.activity.standard_observation import (
     ActivityObservationUnavailable,
     read_activity_rank_fact,
 )
-from backend.core.fanxiu.activity.yunmeng_rank_reward import (
+from backend.core.fanxiu.activity.rank_reward import (
     load_activity_rank_reward_tiers,
 )
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
