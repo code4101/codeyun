@@ -1958,19 +1958,7 @@ export interface RelationshipDataset {
   samples: RelationshipSample[];
 }
 
-export interface FanxiuYunmengTrialActivitySummary {
-  id: string;
-  label: string;
-  cross_count: number;
-  start_date: string;
-  end_date: string;
-  start_at: string;
-  end_at: string;
-  captured_at: string;
-  is_active: boolean;
-}
-
-export interface FanxiuYunmengTrialShopItem {
+export interface FanxiuExchangeShopItem {
   id: string;
   goods_id: number;
   item_id: number;
@@ -1989,29 +1977,7 @@ export interface FanxiuYunmengTrialShopItem {
   original_price?: number | null;
 }
 
-export interface FanxiuYunmengTrialActivityDetail extends FanxiuYunmengTrialActivitySummary {
-  game_rank_activity_id?: number | null;
-  game_shop_base_id?: number | null;
-  currency_type?: number | null;
-  current_currency: number;
-  cumulative_currency: number;
-  resource_strategy: Record<string, unknown>;
-  source_kind: string;
-  yield_rate?: {
-    sample_challenges: number;
-    average_score_per_100: number;
-    average_exchange_currency_per_100: number;
-    captured_at: string;
-  } | null;
-  shop_items: FanxiuYunmengTrialShopItem[];
-}
-
-export interface FanxiuYunmengTrialSnapshot {
-  activities: FanxiuYunmengTrialActivitySummary[];
-  selected_activity?: FanxiuYunmengTrialActivityDetail | null;
-}
-
-export interface FanxiuYunmengTrialRankingItem {
+export interface FanxiuExchangeRankingItem {
   id: string;
   ranking_scope: string;
   rank: number;
@@ -2048,50 +2014,26 @@ export interface FanxiuRankingScopeMetadata {
   subject_kind?: string;
 }
 
-export interface FanxiuYunmengTrialRankingPage {
+export interface FanxiuExchangeRankingPage {
   page: number;
   page_size: number;
   total: number;
-  items: FanxiuYunmengTrialRankingItem[];
+  items: FanxiuExchangeRankingItem[];
   last_captured_at: string;
-  entries?: FanxiuYunmengTrialRankingItem[];
-  reward_tiers?: FanxiuYunmengTrialRankingItem[];
+  entries?: FanxiuExchangeRankingItem[];
+  reward_tiers?: FanxiuExchangeRankingItem[];
   entry_total?: number;
   declared_rank_count?: number;
   loaded_entry_count?: number;
   complete?: boolean;
   view_mode?: string;
-  self_entry?: FanxiuYunmengTrialRankingItem | null;
-  last_entry?: FanxiuYunmengTrialRankingItem | null;
+  self_entry?: FanxiuExchangeRankingItem | null;
+  last_entry?: FanxiuExchangeRankingItem | null;
   scope?: FanxiuRankingScopeMetadata;
   ranking_scope?: string;
   scope_label?: string;
   scope_role?: string;
   scope_subject?: string;
-}
-
-export interface FanxiuYunmengTrialMeasurement {
-  id: string;
-  captured_at: string;
-  score: number;
-  exchange_currency: number;
-  rank?: number | null;
-  challenge_count_delta?: number | null;
-  note: string;
-  source_kind: string;
-}
-
-export interface FanxiuYunmengTrialMeasurementPage {
-  items: FanxiuYunmengTrialMeasurement[];
-}
-
-export interface FanxiuYunmengTrialMeasurementCollectResult {
-  measurement: FanxiuYunmengTrialMeasurement;
-  previous_measurement?: FanxiuYunmengTrialMeasurement | null;
-  score_delta?: number | null;
-  exchange_currency_delta?: number | null;
-  average_score_per_challenge?: number | null;
-  average_exchange_currency_per_challenge?: number | null;
 }
 
 export interface FanxiuExchangeActivitySummary {
@@ -2115,8 +2057,6 @@ export interface FanxiuExchangeActivitySummary {
   lifecycle_phase: 'scheduled' | 'active' | 'settlement' | 'closed';
   is_collectible: boolean;
 }
-
-export type FanxiuExchangeShopItem = FanxiuYunmengTrialShopItem;
 
 export interface FanxiuExchangeActivityDetail extends FanxiuExchangeActivitySummary {
   game_rank_activity_id?: number | null;
@@ -2206,9 +2146,6 @@ export interface FanxiuYuandingSanshengTaskMilestone {
   must_get: boolean;
   rewards: string[];
 }
-
-export type FanxiuExchangeRankingItem = FanxiuYunmengTrialRankingItem;
-export type FanxiuExchangeRankingPage = FanxiuYunmengTrialRankingPage;
 
 export interface FanxiuWikiCatalog {
   export_root: string;
@@ -6726,12 +6663,6 @@ export const saveFanxiuActivityList = (payload: FanxiuActivityListSnapshot) => {
   return api.put<FanxiuActivityListSnapshot>('/fanxiu/activity-list', payload).then(res => res.data);
 };
 
-export const getFanxiuYunmengTrialSnapshot = (activityId?: string) => {
-  return api.get<FanxiuYunmengTrialSnapshot>('/fanxiu/activity-list/yunmeng-trial', {
-    params: activityId ? { activity_id: activityId } : undefined,
-  }).then(res => res.data);
-};
-
 export const getFanxiuLingzhuangHuadaoRankingSnapshot = () => {
   return api.get<FanxiuLingzhuangHuadaoRankingSnapshot>(
     '/fanxiu/dynamic-instrumentation/activity-ranks/lingzhuang-huadao',
@@ -6896,54 +6827,6 @@ export const collectFanxiuExchangeActivity = (
     `/fanxiu/activity-list/exchange-events/${encodeURIComponent(activityType)}/${encodeURIComponent(activityId)}/collect`,
     {},
     { timeout: 120000 },
-  ).then(res => res.data);
-};
-
-export const saveFanxiuYunmengTrialPriorities = (activityId: string, orderedGoodsIds: number[]) => {
-  return api.put<FanxiuYunmengTrialActivityDetail>(
-    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/priorities`,
-    { ordered_goods_ids: orderedGoodsIds },
-  ).then(res => res.data);
-};
-
-export const saveFanxiuYunmengTrialShopItemLock = (
-  activityId: string,
-  goodsId: number,
-  locked: boolean,
-) => {
-  return api.put<FanxiuYunmengTrialActivityDetail>(
-    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/shop-items/${goodsId}/lock`,
-    { locked },
-  ).then(res => res.data);
-};
-
-export const getFanxiuYunmengTrialRankings = (
-  activityId: string,
-  page = 1,
-  pageSize = 20,
-  rankingScope: string = 'personal',
-) => {
-  return api.get<FanxiuYunmengTrialRankingPage>(
-    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/rankings`,
-    { params: { page, page_size: pageSize, ranking_scope: rankingScope } },
-  ).then(res => res.data);
-};
-
-export const getFanxiuYunmengTrialMeasurements = (activityId: string) => {
-  return api.get<FanxiuYunmengTrialMeasurementPage>(
-    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/measurements`,
-  ).then(res => res.data);
-};
-
-export const collectFanxiuYunmengTrialMeasurement = (
-  activityId: string,
-  challengeCountDelta?: number,
-  note = '',
-) => {
-  return api.post<FanxiuYunmengTrialMeasurementCollectResult>(
-    `/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/measurements/collect`,
-    { challenge_count_delta: challengeCountDelta, note },
-    { timeout: 15000 },
   ).then(res => res.data);
 };
 

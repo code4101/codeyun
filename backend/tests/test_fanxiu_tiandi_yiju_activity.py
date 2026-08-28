@@ -35,6 +35,7 @@ def test_tiandi_yiju_collect_persists_independent_shop_capture_time(
 ) -> None:
     activity = SimpleNamespace(
         id="tiandi-yiju-1-2026-08-27-2026-08-27",
+        instance_key="runtime:test-occurrence",
         activity_type="tiandi-yiju",
         cross_count=1,
         start_date="2026-08-27",
@@ -106,6 +107,7 @@ def test_tiandi_yiju_collect_persists_independent_shop_capture_time(
 
     assert result is activity
     assert persisted_payload["captured_at"] == "2026-08-27T19:31:00+08:00"
+    assert persisted_payload["instance_key"] == "runtime:test-occurrence"
     evidence = persisted_payload["evidence"]
     assert evidence["shop_snapshot_captured_at"] == "2026-08-27T19:30:00+08:00"
     assert evidence["refresh_status"]["currency_captured_at"] == (
