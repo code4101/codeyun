@@ -88,7 +88,7 @@ class FanxiuKernel:
             "runtime": behavior_tree.fanxiu_behavior_tree_runtime_status(),
         }
 
-    def interrupt(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    def interrupt(self, *, timeout_seconds: float = 15.0) -> dict[str, Any]:
         from backend.core.fanxiu.behavior_tree.jupyter_kernel import send_fanxiu_kernel_manager_command
 
         return send_fanxiu_kernel_manager_command("interrupt", timeout_seconds=timeout_seconds)

@@ -74,6 +74,7 @@ def set_kernel_enabled(
 def interrupt_current_cell(
     entry_id: str,
     *,
+    timeout_seconds: float = 15.0,
     scheduler_state_path: Path | None = None,
     runtime_state_path: Path | None = None,
     world_facts_path: Path | None = None,
@@ -84,7 +85,31 @@ def interrupt_current_cell(
     """
     return behavior_tree_control.stop_current_task(
         entry_id,
+        interrupt_timeout_seconds=timeout_seconds,
         scheduler_state_path=scheduler_state_path,
+        runtime_state_path=runtime_state_path,
+        world_facts_path=world_facts_path,
+    )
+
+
+def take_runtime_control(
+    entry_id: str,
+    *,
+    interrupt_any_cell: bool = False,
+    timeout_seconds: float = 15.0,
+    scheduler_state_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
+    runtime_state_path: Path | None = None,
+    world_facts_path: Path | None = None,
+) -> dict[str, Any]:
+    """Yield the shared GUI to AI/user and stop the current Cell if needed."""
+
+    return behavior_tree_control.take_ai_runtime_control(
+        entry_id,
+        interrupt_any_cell=interrupt_any_cell,
+        interrupt_timeout_seconds=timeout_seconds,
+        scheduler_state_path=scheduler_state_path,
+        scheduler_settings_path=scheduler_settings_path,
         runtime_state_path=runtime_state_path,
         world_facts_path=world_facts_path,
     )

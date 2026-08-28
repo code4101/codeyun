@@ -64,7 +64,7 @@ from backend.core.fanxiu.data_annotation.behavior_tree_control import (
     run_due_scheduler_tasks,
     run_now_scheduler_task,
     scheduler_task_retry_delay_seconds,
-    stop_current_task,
+    take_ai_runtime_control,
     write_scheduler_tasks,
 )
 _DOCTOR_LOG_KEYWORDS = (
@@ -1741,8 +1741,8 @@ def main() -> int:
     service = subparsers.add_parser("service", help="启动本地前台 Jupyter KernelManager")
     service.add_argument("--duration-seconds", type=float, default=0.0, help="默认一直运行，直到 Ctrl+C")
 
-    interrupt = subparsers.add_parser("interrupt", help="立即中断当前 Jupyter cell")
-    interrupt.add_argument("--interrupt-timeout-seconds", type=float, default=3.0)
+    interrupt = subparsers.add_parser("interrupt", help="切到 AI 运行权并中断当前 Jupyter cell")
+    interrupt.add_argument("--interrupt-timeout-seconds", type=float, default=15.0)
 
     restart = subparsers.add_parser("restart", help="原生重启 Jupyter Kernel")
     restart.add_argument("--restart-timeout-seconds", type=float, default=15.0)
@@ -1918,9 +1918,20 @@ def main() -> int:
         _print_status(status)
         return 0 if str(status.get("status") or "") not in {"error", "stopped"} else 1
     if args.command == "interrupt":
-        result = stop_current_task(str(args.entry_id))
+        result = take_ai_runtime_control(
+            str(args.entry_id),
+            interrupt_any_cell=True,
+            interrupt_timeout_seconds=float(args.interrupt_timeout_seconds or 15.0),
+            scheduler_state_path=fanxiu_data_annotation_scheduler_state_path(),
+            scheduler_settings_path=fanxiu_data_annotation_scheduler_settings_path(),
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0 if str(result.get("status") or "") == "stopped" else 1
+        confirmed = (
+            str(result.get("kernel", {}).get("execution_state") or "") == "idle"
+            and result.get("kernel", {}).get("interrupt_confirmed") is not False
+            and result.get("job_group_enabled") is False
+        )
+        return 0 if confirmed else 1
     if args.command == "restart":
         kernel = FanxiuKernel(entry_id=str(args.entry_id))
         result = kernel.restart(

@@ -19,6 +19,38 @@ from backend.core.fanxiu.data_annotation import behavior_tree_control
 from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
 
 
+def test_kernel_status_tracks_only_the_matching_execute_request() -> None:
+    from backend.core.fanxiu.behavior_tree.jupyter_kernel import _apply_kernel_iopub_status
+
+    state = {"execution_state": "idle", "active_cell_msg_id": ""}
+    _apply_kernel_iopub_status(state, {
+        "msg_type": "status",
+        "parent_header": {"msg_type": "execute_request", "msg_id": "cell-a"},
+        "content": {"execution_state": "busy"},
+    })
+    _apply_kernel_iopub_status(state, {
+        "msg_type": "status",
+        "parent_header": {"msg_type": "interrupt_request", "msg_id": "control-a"},
+        "content": {"execution_state": "idle"},
+    })
+
+    assert state == {"execution_state": "busy", "active_cell_msg_id": "cell-a"}
+
+    _apply_kernel_iopub_status(state, {
+        "msg_type": "status",
+        "parent_header": {"msg_type": "execute_request", "msg_id": "other-cell"},
+        "content": {"execution_state": "idle"},
+    })
+    assert state["execution_state"] == "busy"
+
+    _apply_kernel_iopub_status(state, {
+        "msg_type": "status",
+        "parent_header": {"msg_type": "execute_request", "msg_id": "cell-a"},
+        "content": {"execution_state": "idle"},
+    })
+    assert state == {"execution_state": "idle", "active_cell_msg_id": ""}
+
+
 def test_control_channel_interrupt_reject_raises_for_manager_fallback(
     monkeypatch,
     tmp_path,
@@ -971,6 +1003,45 @@ def test_managed_task_cell_persists_error_terminal_status() -> None:
     assert binding.runner.persisted[-1]["scheduler_attempt_id"] == "attempt-b"
     assert binding.runner.persisted[-1]["scheduler_terminal_result"] == "error"
     assert binding.runner.persisted[-1]["scheduler_terminal_message"] == "boom"
+
+
+def test_managed_task_cell_persists_interrupt_terminal_status() -> None:
+    from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
+
+    class Runner:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self._status = {}
+            self.persisted = []
+
+        def _persist_status(self):
+            self.persisted.append(dict(self._status))
+
+        def _clear_current_task_locked(self):
+            self._status.update({
+                "running": False,
+                "task_type": "",
+                "current_task": "",
+                "current_task_id": "",
+                "interruptible": True,
+            })
+
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = Runner()
+    binding.run_task = lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        binding.run_task_cell(
+            "test-interrupt",
+            {"__scheduler_task_id": "job-c", "__scheduler_attempt_id": "attempt-c"},
+        )
+
+    terminal = binding.runner.persisted[-1]
+    assert terminal["status"] == "interrupted"
+    assert terminal["phase"] == "interrupted"
+    assert terminal["scheduler_task_id"] == "job-c"
+    assert terminal["scheduler_attempt_id"] == "attempt-c"
+    assert terminal["scheduler_terminal_result"] == "interrupted"
 
 
 def test_recovered_emulator_restart_schedules_login_and_ends_old_gui_transaction() -> None:

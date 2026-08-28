@@ -133,7 +133,7 @@ def test_completed_equipment_task_prefix_is_reconstructed_from_live_suffix() -> 
 def test_equipment_only_preliminary_task_group_is_complete() -> None:
     tasks_complete, equipment_only_phase = (
         lingzhuang_strengthening._task_progress_complete(
-            raw_task_total=14,
+            raw_task_total=17,
             equipment_task_count=14,
             score_task_count=0,
         )
@@ -143,7 +143,7 @@ def test_equipment_only_preliminary_task_group_is_complete() -> None:
     assert equipment_only_phase is True
 
 
-def test_partial_full_phase_task_group_is_not_complete() -> None:
+def test_equipment_only_group_ignores_unrelated_quest_rows() -> None:
     tasks_complete, equipment_only_phase = (
         lingzhuang_strengthening._task_progress_complete(
             raw_task_total=57,
@@ -152,8 +152,8 @@ def test_partial_full_phase_task_group_is_not_complete() -> None:
         )
     )
 
-    assert tasks_complete is False
-    assert equipment_only_phase is False
+    assert tasks_complete is True
+    assert equipment_only_phase is True
 
 
 def test_collect_strengthening_snapshot_persists_complete_runtime_fact(monkeypatch) -> None:

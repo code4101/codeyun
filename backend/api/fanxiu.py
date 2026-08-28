@@ -5628,8 +5628,11 @@ def _stop_behavior_tree_runtime_task(
     req: FanxiuBehaviorTreeRuntimeStopRequest,
 ) -> FanxiuBehaviorTreeRuntimeStatus:
     _sync_behavior_tree_runtime_runner_to_core()
-    status = _behavior_tree_framework.interrupt_current_cell(
+    status = _behavior_tree_framework.take_runtime_control(
         req.entry_id or "",
+        interrupt_any_cell=True,
+        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
         runtime_state_path=_behavior_tree_runtime_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
@@ -6189,15 +6192,26 @@ def put_fanxiu_data_annotation_scheduler_settings(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    settings = _behavior_tree_control.set_scheduler_job_group_enabled(
-        req.job_group_enabled,
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-    )
     _sync_behavior_tree_runtime_runner_to_core()
-    if req.entry_id:
+    if req.entry_id and not req.job_group_enabled:
         entry = _get_user_device_or_404(session, current_user, req.entry_id)
         entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-        if req.job_group_enabled:
+        control = _behavior_tree_framework.take_runtime_control(
+            entry_id,
+            scheduler_state_path=_data_annotation_scheduler_state_path(),
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+            runtime_state_path=_behavior_tree_runtime_state_path(),
+            world_facts_path=_data_annotation_world_facts_path(),
+        )
+        settings = {"job_group_enabled": bool(control.get("job_group_enabled", False))}
+    else:
+        settings = _behavior_tree_control.set_scheduler_job_group_enabled(
+            req.job_group_enabled,
+            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        )
+        if req.entry_id:
+            entry = _get_user_device_or_404(session, current_user, req.entry_id)
+            entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
             _behavior_tree_framework.set_kernel_enabled(
                 entry=entry,
                 entry_id=entry_id,
@@ -6207,21 +6221,6 @@ def put_fanxiu_data_annotation_scheduler_settings(
                 runtime_state_path=_behavior_tree_runtime_state_path(),
                 world_facts_path=_data_annotation_world_facts_path(),
             )
-        else:
-            runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
-                scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-                runtime_state_path=_behavior_tree_runtime_state_path(),
-                world_facts_path=_data_annotation_world_facts_path(),
-            )
-            # 取得 AI 运行权时只终止正在运行的工程 Scheduler Cell。
-            # 普通 AI/人工 Cell 没有 current_task_id，不能被模式切换误杀。
-            if runtime_status.get("running") and str(runtime_status.get("current_task_id") or ""):
-                _behavior_tree_framework.interrupt_current_cell(
-                    entry_id,
-                    scheduler_state_path=_data_annotation_scheduler_state_path(),
-                    runtime_state_path=_behavior_tree_runtime_state_path(),
-                    world_facts_path=_data_annotation_world_facts_path(),
-                )
     tasks = _read_data_annotation_scheduler_tasks()
     return FanxiuDataAnnotationSchedulerTasksResponse(
         tasks=[
