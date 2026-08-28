@@ -161,6 +161,39 @@ def _choose_tiandi_yiju_target(candidates: list[dict[str, Any]]) -> dict[str, An
     )
 
 
+def _derive_own_config_alliance_id(
+    configs: Mapping[int, Mapping[str, list[int]]],
+    pieces: list[dict[str, int]],
+    *,
+    own_alliance_id: int,
+) -> int:
+    """Map the live cross-alliance id onto the board config's 1001..1004 slot.
+
+    Cross boards use dynamic alliance ids in chess state while piece config
+    uses stable slot ids.  Exclusive home-quadrant pieces provide the runtime
+    join between them; shared center pieces are deliberately ignored.
+    """
+
+    owner_by_piece = {int(item["id"]): int(item["belong_alliance"]) for item in pieces}
+    scores: dict[int, int] = {}
+    for piece_id, config in configs.items():
+        allowed = [int(value) for value in config.get("allowed_alliances", [])]
+        if len(allowed) != 1:
+            continue
+        if owner_by_piece.get(int(piece_id)) == int(own_alliance_id):
+            slot = allowed[0]
+            scores[slot] = scores.get(slot, 0) + 1
+    if not scores:
+        raise FanxiuRuntimeMemoryError("天地弈局无法从专属棋点映射本宗配置槽位")
+    maximum = max(scores.values())
+    winners = [slot for slot, score in scores.items() if score == maximum]
+    if len(winners) != 1:
+        raise FanxiuRuntimeMemoryError(
+            f"天地弈局本宗配置槽位不唯一：scores={scores}"
+        )
+    return int(winners[0])
+
+
 def _derive_own_alliance_id(
     play_info: Mapping[Any, Any],
     rank_rows: Mapping[int, list[dict[str, Any]]],
@@ -169,19 +202,49 @@ def _derive_own_alliance_id(
 ) -> int:
     """Derive the non-cross camp without guessing a server/alliance constant."""
 
-    expected_score = _long(reader, play_info.get("allianceScore"))
     expected_rank = as_int(play_info.get("allianceRank")) or 0
-    candidates = [
-        row
-        for row in rank_rows.get(1, [])
-        if row["score"] == expected_score
-    ]
+    expected_score = _long(reader, play_info.get("allianceScore"))
+    rows = rank_rows.get(1, [])
+    # Rank is the stable identity join on a live board.  The entry-panel score
+    # is a stale cache and can legitimately differ after other alliances keep
+    # playing; the current 8-cross board demonstrated exactly that condition.
+    candidates = [row for row in rows if expected_rank > 0 and row["rank"] == expected_rank]
+    identity_basis = "rank"
+    if not candidates:
+        candidates = [row for row in rows if row["score"] == expected_score]
+        identity_basis = "score"
     if len(candidates) != 1:
         raise FanxiuRuntimeMemoryError(
             "天地弈局无法从宗门榜唯一反推本宗身份："
-            f"score={expected_score}, rank={expected_rank}, candidates={len(candidates)}"
+            f"score={expected_score}, rank={expected_rank}, "
+            f"basis={identity_basis}, candidates={len(candidates)}"
         )
     return int(candidates[0]["id"])
+
+
+def _derive_cross_own_alliance_id(
+    reader: LuaJitReader,
+    data: Mapping[Any, Any],
+    pieces: list[dict[str, int]],
+) -> int:
+    """Derive the player's dynamic alliance id from the live cross-board lane."""
+
+    left, left_count = reader.list_items(data.get("_ChessConnectListL"))
+    right, right_count = reader.list_items(data.get("_ChessConnectListR"))
+    if left_count != right_count or len(left) != len(right) or not left:
+        raise FanxiuRuntimeMemoryError("天地弈局跨服棋路不完整，无法确认本宗身份")
+    connected = {int(value) for value in (*left, *right)}
+    owner_by_piece = {int(item["id"]): int(item["belong_alliance"]) for item in pieces}
+    owners = {
+        owner_by_piece[piece_id]
+        for piece_id in connected
+        if owner_by_piece.get(piece_id, 0) > 0
+    }
+    if len(owners) != 1:
+        raise FanxiuRuntimeMemoryError(
+            f"天地弈局跨服棋路占领者不唯一：owners={sorted(owners)}"
+        )
+    return int(owners.pop())
 
 
 def _decode_snapshot(
@@ -208,9 +271,17 @@ def _decode_snapshot(
 
     ranks = _decode_rank_rows(reader, data.get("rankDic"))
     pieces = _decode_pieces(reader, data.get("_ChessInfoDic"))
-    own_alliance_id = None
-    if is_cross == 0:
-        own_alliance_id = _derive_own_alliance_id(play_info, ranks, reader=reader)
+    own_alliance_id = (
+        _derive_cross_own_alliance_id(reader, data, pieces)
+        if is_cross != 0
+        else _derive_own_alliance_id(play_info, ranks, reader=reader)
+    )
+    own_alliance_row = next(
+        (row for row in ranks.get(1, []) if row["id"] == own_alliance_id),
+        None,
+    )
+    if own_alliance_row is None:
+        raise FanxiuRuntimeMemoryError("天地弈局本宗榜单行在身份解析后消失")
     owned_piece_ids = [
         item["id"]
         for item in pieces
@@ -241,7 +312,8 @@ def _decode_snapshot(
         "entry_personal_score": entry_personal_score,
         "board_personal_score": board_personal_score,
         "alliance_rank": max(0, as_int(play_info.get("allianceRank")) or 0),
-        "alliance_score": max(0, _long(reader, play_info.get("allianceScore"))),
+        "alliance_score": max(0, int(own_alliance_row["score"])),
+        "entry_alliance_score": max(0, _long(reader, play_info.get("allianceScore"))),
         "own_alliance_id": own_alliance_id,
         "piece_count": len(pieces),
         "owned_piece_count": len(owned_piece_ids),
@@ -337,6 +409,12 @@ def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
     if TIANYUAN_PIECE_ID not in configs:
         raise FanxiuRuntimeMemoryError("天地弈局棋点配置缺少天元")
 
+    own_config_alliance_id = _derive_own_config_alliance_id(
+        configs,
+        list(snapshot.get("pieces") or []),
+        own_alliance_id=own_alliance_id,
+    )
+
     graph = {piece_id: set(config["neighbors"]) for piece_id, config in configs.items()}
     distances = {TIANYUAN_PIECE_ID: 0}
     pending = deque([TIANYUAN_PIECE_ID])
@@ -366,7 +444,7 @@ def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
     candidate_ids = sorted(
         piece_id
         for piece_id in connected | frontier
-        if own_alliance_id in configs[piece_id]["allowed_alliances"]
+        if own_config_alliance_id in configs[piece_id]["allowed_alliances"]
     )
 
     candidates: list[dict[str, Any]] = []
@@ -398,6 +476,7 @@ def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
         "ok": True,
         "complete": True,
         "own_alliance_id": own_alliance_id,
+        "own_config_alliance_id": own_config_alliance_id,
         "tianyuan_piece_id": TIANYUAN_PIECE_ID,
         "candidate_piece_ids": candidate_ids,
         "target": target,

@@ -813,6 +813,19 @@ def select_schedule_activity(
         targets = ()
     if len(targets) == 1:
         selected_target = targets[0]
+    elif selected_projection.exact_match:
+        # The verified card and its Runtime entity already establish both
+        # activity identity and time coverage.  Header OCR is only needed to
+        # locate a calendar cell; it must not block the independent card
+        # entry path (real #66 evidence can omit both “今天” and today's date).
+        selected_target = ScheduleActivityTarget(
+            day_offset=int(day_offset),
+            x=0.0,
+            y=0.0,
+            matched_text=selected_projection.text,
+            runtime_key=selected_projection.runtime_key,
+            alignment_score=selected_projection.name_score,
+        )
     else:
         header = parse_schedule_header(header_lines)
         selected_target = ScheduleActivityTarget(

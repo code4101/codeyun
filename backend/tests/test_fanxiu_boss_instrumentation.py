@@ -174,6 +174,122 @@ def test_boss_snapshot_reads_reward_count_and_refresh_time(
     assert result["refresh_remaining_seconds"] == 10
 
 
+def test_boss_snapshot_projects_alive_normal_bosses(monkeypatch):
+    boss_maps = LuaRef("table", 0x2000)
+    normal_map = LuaRef("table", 0x2100)
+    big_map = LuaRef("table", 0x2200)
+    normal_infos = LuaRef("table", 0x2300)
+    big_infos = LuaRef("table", 0x2400)
+    alive_normal = LuaRef("table", 0x2500)
+    dead_normal = LuaRef("table", 0x2600)
+    dead_big = LuaRef("table", 0x2700)
+    big_boss = LuaRef("table", 0x2800)
+    monkeypatch.setattr(
+        boss,
+        "_boss_data_fields",
+        lambda _reader, _root: {
+            "bossInfoVOS": boss_maps,
+            "fatigue": 2.0,
+            "bigBossInfoVo": big_boss,
+        },
+    )
+    fields = {
+        boss_maps: {"count": 2.0},
+        normal_map: {
+            "mapId": 500002.0,
+            "isBigBossMap": False,
+            "infoVOS": normal_infos,
+        },
+        big_map: {
+            "mapId": 500001.0,
+            "isBigBossMap": True,
+            "infoVOS": big_infos,
+        },
+        alive_normal: {
+            "bossGroupId": 1001.0,
+            "bossId": 1103210.0,
+            "isBigBoss": False,
+            "isDead": False,
+            "currHp": 100.0,
+            "maxHp": 100.0,
+        },
+        dead_normal: {
+            "bossGroupId": 1002.0,
+            "bossId": 1103212.0,
+            "isBigBoss": False,
+            "isDead": True,
+            "currHp": 0.0,
+            "maxHp": 100.0,
+        },
+        dead_big: {
+            "bossGroupId": 2004.0,
+            "bossId": 1104005.0,
+            "isBigBoss": True,
+            "isDead": True,
+            "currHp": 0.0,
+            "maxHp": 1000.0,
+        },
+        big_boss: {"isDead": True},
+    }
+    monkeypatch.setattr(
+        LuaJitReader,
+        "fields",
+        lambda _reader, value: fields.get(value, {}),
+    )
+    lists = {
+        boss_maps: ([normal_map, big_map], 2),
+        normal_infos: ([alive_normal, dead_normal], 2),
+        big_infos: ([dead_big], 1),
+    }
+    monkeypatch.setattr(
+        LuaJitReader,
+        "list_items",
+        lambda _reader, value: lists.get(value, ([], None)),
+    )
+    memory = MumuProcessMemory(
+        pid=123,
+        process_start_ticks=456,
+        adb_serial="test",
+        regions=[],
+    )
+
+    result = boss._snapshot(
+        memory,
+        0x3000,
+        root_cache_hit=True,
+        now_epoch_ms=1_700_000_000_000,
+    )
+
+    assert result["normal_boss_alive_count"] == 1
+    assert result["boss_maps"][0]["map_id"] == 500002
+    assert result["boss_maps"][0]["boss_count"] == 2
+    assert result["boss_maps"][0]["bosses"][0] == {
+        "boss_group_id": 1001,
+        "boss_id": 1103210,
+        "is_big_boss": False,
+        "is_dead": False,
+        "curr_hp": 100,
+        "max_hp": 100,
+    }
+
+
+def test_daily_boss_available_map_skips_unknown_and_refresh_cd():
+    runner = create_behavior_tree_runtime_runner()
+    lines = [
+        {"text": "战灵台", "y": 10},
+        {"text": "当前首领：未知", "y": 20},
+        {"text": "首领境界：炼虚前期拾层", "y": 30},
+        {"text": "坠魔战境", "y": 40},
+        {"text": "当前首领：00:08:54后刷新", "y": 50},
+        {"text": "首领境界：炼气后期拾层", "y": 60},
+        {"text": "魄虎林", "y": 70},
+        {"text": "当前首领：巨虎仙傀", "y": 80},
+        {"text": "首领境界：炼气后期拾层", "y": 90},
+    ]
+
+    assert runner._daily_boss_available_map_line(lines) == lines[6]
+
+
 def test_daily_boss_next_time_prefers_runtime_refresh(
     monkeypatch,
 ):

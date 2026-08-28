@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-import backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count as count_module
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count import (
     TiandiYijuCountAssets,
     read_tiandi_yiju_round_count,
@@ -22,6 +21,7 @@ class _Runtime:
     def __init__(self, readings):
         self.readings = iter(readings)
         self.drags = []
+        self.clicks = []
 
     def ocr_numbers_in_shapes(self, scene_id, shapes):
         value = next(self.readings)
@@ -35,6 +35,9 @@ class _Runtime:
             yield None
         return None
 
+    def click_shape_center(self, scene_id, shape):
+        self.clicks.append((scene_id, shape))
+
 
 def test_read_count_requires_one_positive_ocr_value() -> None:
     runtime = _Runtime([12])
@@ -47,34 +50,36 @@ def test_read_count_fails_closed_when_ocr_is_empty() -> None:
         read_tiandi_yiju_round_count(runtime, TiandiYijuCountAssets())
 
 
-def test_exact_target_reuses_shared_verified_slider(monkeypatch) -> None:
-    captured = {}
+def test_exact_target_only_moves_from_minimum_with_verified_plus_steps() -> None:
+    runtime = _Runtime([4, 1, 2, 3, 3])
+    result = _drain(set_tiandi_yiju_round_count(runtime, 3))
 
-    def _shared(runtime, assets, desired, **options):
-        captured.update(
-            runtime=runtime,
-            assets=assets,
-            desired=desired,
-            options=options,
-        )
-        if False:
-            yield None
-        return {"before": 1, "after": desired, "fine_adjustment_actions": 2}
-
-    monkeypatch.setattr(count_module, "set_verified_integer_slider_count", _shared)
-    runtime = object()
-    result = _drain(set_tiandi_yiju_round_count(runtime, 30, max_adjustments=6))
-
-    assert result["target"] == 30
-    assert result["after"] == 30
-    assert captured["desired"] == 30
-    assert captured["assets"].settings_scene_id == 680
-    assert captured["assets"].count_region == "单次对弈"
-    assert captured["options"] == {
-        "max_adjustments": 6,
-        "force_bound_probe": False,
-        "count_label": "天地弈局对弈次数",
+    assert result == {
+        "before": 4,
+        "after": 3,
+        "target": 3,
+        "reset_to_minimum": True,
+        "increase_actions": 2,
+        "native_maximum_probed": False,
     }
+    assert runtime.drags == [(680, "对弈次数_滑块", "left", 0.6)]
+    assert runtime.clicks == [(680, "对弈次数_增加"), (680, "对弈次数_增加")]
+
+
+def test_right_bound_probe_is_forbidden() -> None:
+    with pytest.raises(ValueError, match="禁止向右探测"):
+        _drain(set_tiandi_yiju_round_count(_Runtime([]), 10, force_bound_probe=True))
+
+
+def test_adjustment_budget_must_cover_monotonic_increase() -> None:
+    with pytest.raises(ValueError, match="调整预算不足"):
+        _drain(set_tiandi_yiju_round_count(_Runtime([]), 30, max_adjustments=10))
+
+
+def test_plus_step_must_be_exactly_one() -> None:
+    runtime = _Runtime([1, 1, 3])
+    with pytest.raises(RuntimeError, match="没有按单步递增"):
+        _drain(set_tiandi_yiju_round_count(runtime, 2))
 
 
 @pytest.mark.parametrize("target", [0, -1, True, "all", "max", 101, 4451])

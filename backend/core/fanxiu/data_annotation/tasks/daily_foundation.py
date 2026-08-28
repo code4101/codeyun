@@ -1102,6 +1102,19 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("success", self._status["message"])
             return "done"
+        if (
+            runtime_snapshot.get("complete") is True
+            and runtime_snapshot.get("big_boss_dead") is True
+            and int(runtime_snapshot.get("normal_boss_alive_count") or 0) > 0
+        ):
+            return (
+                yield from self._open_available_normal_daily_boss_detail(
+                    ctx,
+                    runtime,
+                    stop_event,
+                    payload,
+                )
+            )
         if xianjie_shape is not None:
             with self._lock:
                 self._set_status_locked("running", "日常_首领：确认仙界页签", phase="daily_boss_open_xianjie", current_scene=178)
@@ -1183,6 +1196,163 @@ class DailyFoundationTaskMixin:
             )
             self._log_locked("skip", self._status["message"])
         return "skipped"
+
+    def _open_available_normal_daily_boss_detail(
+        self,
+        ctx: dict[str, Any],
+        runtime: Any,
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+    ):
+        """Open one equivalent low-realm boss after Runtime proves availability."""
+
+        image178 = ctx.get("images", {}).get(178)
+        if not isinstance(image178, dict):
+            raise RuntimeError("日常_首领：缺少 #178 首领列表，无法选择普通首领")
+        tabs_shape = self._find_shape(image178, "界面页签")
+        list_shape = self._find_shape(image178, "首领列表")
+        if tabs_shape is None or list_shape is None:
+            raise RuntimeError("日常_首领：缺少 #178 页签或首领列表标注")
+
+        frame = runtime.cur_frame(update=True)
+        human_line = next(
+            (
+                line
+                for line in self._daily_boss_ocr_lines_in_shape(
+                    runtime, image178, tabs_shape, frame
+                )
+                if "人界"
+                in re.sub(r"\s+", "", str(line.get("text") or ""))
+            ),
+            None,
+        )
+        if human_line is None:
+            raise RuntimeError("日常_首领：#178 页签区未读到「人界」")
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                "日常_首领：大首领已死亡，切到人界选择存活普通首领",
+                phase="daily_boss_open_human_normal",
+                current_scene=178,
+            )
+            self._log_locked("action", self._status["message"])
+        runtime.click_frame_point(
+            View(image178),
+            float(human_line["x"]) + float(human_line["w"]) / 2,
+            float(human_line["y"]) + float(human_line["h"]) / 2,
+        )
+
+        deadline = time.monotonic() + 25.0
+        map_lines: list[dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            self._raise_if_stopped(stop_event)
+            yield from runtime.wait_action_settle(1.5)
+            frame = runtime.cur_frame(update=True)
+            map_lines = self._daily_boss_ocr_lines_in_shape(
+                runtime, image178, list_shape, frame
+            )
+            if any(
+                "当前首领" in str(line.get("text") or "")
+                for line in map_lines
+            ):
+                break
+        else:
+            raise RuntimeError("日常_首领：切到人界后 25 秒未加载地图卡片")
+
+        for scroll_index in range(5):
+            candidate = self._daily_boss_available_map_line(map_lines)
+            if candidate is not None:
+                title = str(candidate.get("text") or "").strip()
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"日常_首领：选择无刷新 CD 的普通地图「{title}」",
+                        phase="daily_boss_click_normal_map",
+                        current_scene=178,
+                    )
+                    self._log_locked("action", self._status["message"])
+                runtime.click_frame_point(
+                    View(image178),
+                    float(candidate["x"]) + float(candidate["w"]) / 2,
+                    float(candidate["y"]) + float(candidate["h"]) / 2,
+                )
+                yield from runtime.wait_view(
+                    179,
+                    timeout=45.0,
+                    label="日常_首领：等待普通首领详情 #179",
+                )
+                return "opened"
+
+            if scroll_index >= 4:
+                break
+            changed = yield from self._scroll_shape_content_changed(
+                ctx, image178, list_shape, stop_event
+            )
+            if not changed:
+                break
+            frame = runtime.cur_frame(update=True)
+            map_lines = self._daily_boss_ocr_lines_in_shape(
+                runtime, image178, list_shape, frame
+            )
+        raise RuntimeError(
+            "日常_首领：Runtime 仍有存活普通首领，但人界可见地图均为未知或刷新 CD"
+        )
+
+    def _daily_boss_ocr_lines_in_shape(
+        self,
+        runtime: Any,
+        image: dict[str, Any],
+        shape: dict[str, Any],
+        frame: str,
+    ) -> list[dict[str, Any]]:
+        box = self._box(shape, image)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+        lines: list[dict[str, Any]] = []
+        for line in group_ocr_tokens(runtime.full_frame_ocr_tokens(frame)):
+            x = float(line.get("x") or 0)
+            y = float(line.get("y") or 0)
+            w = float(line.get("w") or 0)
+            h = float(line.get("h") or 0)
+            if left <= x + w / 2 <= right and top <= y + h / 2 <= bottom:
+                lines.append(dict(line))
+        return sorted(lines, key=lambda line: float(line.get("y") or 0))
+
+    def _daily_boss_available_map_line(
+        self,
+        lines: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        for index, line in enumerate(lines):
+            title = re.sub(r"\s+", "", str(line.get("text") or ""))
+            if not title or any(
+                marker in title
+                for marker in (
+                    "当前首领",
+                    "首领境界",
+                    "刷新倒计",
+                    "剩余奖励",
+                    "掉落记录",
+                )
+            ):
+                continue
+            following = [
+                re.sub(r"\s+", "", str(item.get("text") or ""))
+                for item in lines[index + 1 : index + 4]
+            ]
+            leader = next(
+                (text for text in following if "当前首领" in text), ""
+            )
+            realm = next(
+                (text for text in following if "首领境界" in text), ""
+            )
+            if not leader or not realm:
+                continue
+            if "未知" in leader or "后刷新" in leader:
+                continue
+            return line
+        return None
 
     def _daily_boss_handle_watched_item_cd(
         self,
@@ -1413,6 +1583,14 @@ class DailyFoundationTaskMixin:
                     result = "success"
                     source = "Runtime 剩余奖励次数已降为 0"
                 else:
+                    continued = yield from self._continue_daily_boss_rounds_if_available(
+                        ctx,
+                        stop_event,
+                        payload,
+                        runtime_snapshot,
+                    )
+                    if continued is not None:
+                        return continued
                     next_time = self._record_daily_boss_recheck_time(payload, seconds=60)
                     result = "skipped"
                     source = (
@@ -1461,6 +1639,45 @@ class DailyFoundationTaskMixin:
         yield from self._return_daily_boss_to_world(ctx, stop_event)
         return "skipped"
 
+    def _continue_daily_boss_rounds_if_available(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+        runtime_snapshot: dict[str, Any],
+    ):
+        try:
+            remaining = int(runtime_snapshot.get("reward_remaining"))
+            normal_alive = int(
+                runtime_snapshot.get("normal_boss_alive_count") or 0
+            )
+        except (TypeError, ValueError):
+            return None
+        rounds = int(payload.get("_daily_boss_rounds_completed") or 0)
+        if remaining <= 0 or normal_alive <= 0 or rounds >= 3:
+            return None
+        payload["_daily_boss_rounds_completed"] = rounds + 1
+        payload.pop("_daily_boss_challenge_remaining", None)
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"日常_首领：本轮结算后仍有 {remaining} 次奖励，继续选择下一个普通首领",
+                phase="daily_boss_continue_normal_round",
+            )
+            self._log_locked("success", self._status["message"])
+        yield from self._return_daily_boss_to_world(
+            ctx,
+            stop_event,
+            allow_post_boss_transition=True,
+        )
+        return (
+            yield from self._execute_daily_boss_task_flow(
+                ctx,
+                stop_event,
+                payload,
+            )
+        )
+
     def _complete_daily_boss_from_done_frame(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]) -> str:
         runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
         return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
@@ -1471,6 +1688,15 @@ class DailyFoundationTaskMixin:
             stop_event,
             payload,
         )
+        if not completed:
+            continued = yield from self._continue_daily_boss_rounds_if_available(
+                ctx,
+                stop_event,
+                payload,
+                self._daily_boss_runtime_snapshot(payload),
+            )
+            if continued is not None:
+                return continued
         result = "success" if completed else "skipped"
         with self._lock:
             self._set_status_locked(
@@ -1624,6 +1850,54 @@ class DailyFoundationTaskMixin:
         if scene_id == 34:
             yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
             return "success"
+        if allow_post_boss_transition and scene_id in {186, 678}:
+            result_view = runtime.get_view(scene_id)
+            leave_shape = (
+                result_view.get_shape("离开")
+                if isinstance(result_view, View)
+                else None
+            )
+            if leave_shape is None:
+                raise RuntimeError(
+                    f"日常_首领：战后 #{scene_id} 缺少正式「离开」标注"
+                )
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"日常_首领：从战后 #{scene_id} 点击「离开」",
+                    phase="daily_boss_leave_result_scene",
+                    current_scene=scene_id,
+                )
+                self._log_locked("action", self._status["message"])
+            leave_shape.click(runtime)
+            landing = yield from runtime.wait_view(
+                86,
+                34,
+                178,
+                timeout=30.0,
+                label="日常_首领：等待战后离开确认或稳定场景",
+            )
+            landing_id = getattr(landing, "id", landing)
+            if landing_id == 86:
+                with self._lock:
+                    self._log_locked("action", "日常_首领：点击 #86「确认」离开战场")
+                yield from runtime.wait_click(86, "确认", timeout=10.0)
+                landing = yield from runtime.wait_view(
+                    34,
+                    178,
+                    timeout=30.0,
+                    label="日常_首领：确认离开后等待世界或首领列表",
+                )
+                landing_id = getattr(landing, "id", landing)
+            if landing_id == 34:
+                with self._lock:
+                    self._status.update(
+                        {"current_scene": 34, "updated_at": time.time()}
+                    )
+                return "success"
+            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
+                ctx, runtime, update=True
+            )
         image178 = images.get(178)
         back_shape = self._find_shape(image178, "返回") if isinstance(image178, dict) else None
         if self._daily_boss_text_is_list(_text) and isinstance(image178, dict) and back_shape is not None:

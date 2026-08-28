@@ -103,6 +103,59 @@ def _snapshot(
     data_fields = _boss_data_fields(reader, root_address)
     boss_list_fields = reader.fields(data_fields.get("bossInfoVOS"))
     boss_list_count = as_int(boss_list_fields.get("count"))
+    boss_maps: list[dict[str, Any]] = []
+    normal_boss_alive_count = 0
+    try:
+        boss_map_items, declared_map_count = reader.list_items(
+            data_fields.get("bossInfoVOS")
+        )
+        if (
+            boss_list_count is not None
+            and declared_map_count is not None
+            and boss_list_count != declared_map_count
+        ):
+            raise FanxiuRuntimeMemoryError(
+                "BossMgr bossInfoVOS count 不一致"
+            )
+        for map_item in boss_map_items:
+            map_fields = reader.fields(map_item)
+            boss_items, boss_count = reader.list_items(
+                map_fields.get("infoVOS")
+            )
+            bosses: list[dict[str, Any]] = []
+            for boss_item in boss_items:
+                boss_fields = reader.fields(boss_item)
+                is_big_boss = boss_fields.get("isBigBoss") is True
+                is_dead = boss_fields.get("isDead") is True
+                boss_projection = {
+                    "boss_group_id": as_int(
+                        boss_fields.get("bossGroupId")
+                    ),
+                    "boss_id": as_int(boss_fields.get("bossId")),
+                    "is_big_boss": is_big_boss,
+                    "is_dead": is_dead,
+                    "curr_hp": as_int(boss_fields.get("currHp")),
+                    "max_hp": as_int(boss_fields.get("maxHp")),
+                }
+                bosses.append(boss_projection)
+                if not is_big_boss and not is_dead:
+                    normal_boss_alive_count += 1
+            boss_maps.append(
+                {
+                    "map_id": as_int(map_fields.get("mapId")),
+                    "is_big_boss_map": (
+                        map_fields.get("isBigBossMap") is True
+                    ),
+                    "boss_count": boss_count,
+                    "bosses": bosses,
+                }
+            )
+    except FanxiuRuntimeMemoryError:
+        raise
+    except Exception as exc:
+        raise FanxiuRuntimeMemoryError(
+            f"BossMgr bossInfoVOS 解码失败：{type(exc).__name__}: {exc}"
+        ) from exc
     reward_remaining = as_int(data_fields.get("fatigue"))
     big_boss_reward_remaining = as_int(
         data_fields.get("bigBossRecRewardTimes")
@@ -154,6 +207,8 @@ def _snapshot(
         "protocol": "BossMgr.Model.BossData",
         "list_loaded": list_loaded,
         "boss_list_count": boss_list_count,
+        "boss_maps": boss_maps,
+        "normal_boss_alive_count": normal_boss_alive_count,
         "reward_remaining": reward_remaining,
         "big_boss_reward_remaining": big_boss_reward_remaining,
         "kill_reward_remaining": kill_reward_remaining,

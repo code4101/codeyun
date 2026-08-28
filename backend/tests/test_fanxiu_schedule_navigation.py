@@ -517,3 +517,54 @@ def test_select_current_clock_card_does_not_require_calendar_label() -> None:
     assert runtime.pager_calls == 0
     assert runtime.clicked_shapes[0][0][1] == "活动卡片/前往"
     assert runtime.clicked_shapes[0][1]["frame_data_url"] == "mozu-frame"
+
+
+def test_runtime_aligned_exact_card_does_not_require_today_header_ocr() -> None:
+    class Runtime:
+        clicked_shapes = []
+
+        def cur_frame(self, *, update=False):
+            return "chess-card-frame"
+
+        def ocr_fragments_in_shapes(self, _scene, _shapes, **_kwargs):
+            return []
+
+        def paged_content_snapshot(self, *_args, **_kwargs):
+            return {
+                "frame": "chess-card-frame",
+                "lines": [
+                    _line("天地弈局 活动时间：08月28日-08月29日 前往参与", 80)
+                ],
+            }
+
+        def click_shape(self, *args, **kwargs):
+            self.clicked_shapes.append((args, kwargs))
+
+    runtime = Runtime()
+    schedule = {
+        "available": True,
+        "items": [
+            {
+                "activityId": 8090004,
+                "id": 8090004400004,
+                "name": "天地弈局",
+                "startTime": _millis("2026-08-28 10:00:00"),
+                "endTime": _millis("2026-08-29 22:00:00"),
+            }
+        ],
+    }
+
+    selected = _finish(
+        select_schedule_activity(
+            runtime,
+            r"天地弈局",
+            enter=True,
+            runtime_schedule=schedule,
+            require_runtime_alignment=True,
+            now=datetime(2026, 8, 28, 11, 0),
+        )
+    )
+
+    assert "8090004400004" in selected.runtime_key
+    assert selected.x == 0.0 and selected.y == 0.0
+    assert runtime.clicked_shapes[0][0][1] == "活动卡片/前往"
