@@ -17,6 +17,9 @@ SCANNED_ROOTS = (
 )
 FANXIU_API = REPO_ROOT / "backend" / "api" / "fanxiu.py"
 FRONTEND_FANXIU_API = REPO_ROOT / "frontend" / "src" / "api" / "fanxiu.ts"
+LEGACY_YUNMENG_PAGE_ROOT = (
+    REPO_ROOT / "frontend" / "src" / "standard" / "fanxiu" / "yunmeng-trial"
+)
 
 ACTIVITY_FAMILIES = (
     "beast_abyss",
@@ -40,14 +43,7 @@ KNOWN_LEGACY_YUNMENG_BACKEND_ROUTES = {
     "/activity-list/yunmeng-trial/{activity_id}/rankings",
     "/activity-list/yunmeng-trial/{activity_id}/shop-items/{goods_id}/lock",
 }
-KNOWN_LEGACY_YUNMENG_FRONTEND_ROUTES = {
-    "/fanxiu/activity-list/yunmeng-trial",
-    "/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/measurements",
-    "/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/measurements/collect",
-    "/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/priorities",
-    "/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/rankings",
-    "/fanxiu/activity-list/yunmeng-trial/${encodeURIComponent(activityId)}/shop-items/${goodsId}/lock",
-}
+KNOWN_LEGACY_YUNMENG_FRONTEND_ROUTES: set[str] = set()
 
 
 def _activity_family(value: str) -> str | None:
@@ -149,6 +145,8 @@ def test_legacy_yunmeng_api_surface_cannot_expand() -> None:
 
     assert backend_routes <= KNOWN_LEGACY_YUNMENG_BACKEND_ROUTES
     assert frontend_routes <= KNOWN_LEGACY_YUNMENG_FRONTEND_ROUTES
+    assert not (LEGACY_YUNMENG_PAGE_ROOT / "index.ts").exists()
+    assert not (LEGACY_YUNMENG_PAGE_ROOT / "page.vue").exists()
 
 
 def test_legacy_yunmeng_rows_have_explicit_unified_storage_targets() -> None:

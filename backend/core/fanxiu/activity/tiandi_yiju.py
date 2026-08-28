@@ -119,6 +119,7 @@ def collect_and_store_tiandi_yiju_activity(
         },
     })
     persisted_id = upsert_exchange_activity_snapshot(session, {
+        "instance_key": activity.instance_key,
         "activity_type": TIANDI_YIJU_ACTIVITY_TYPE,
         "cross_count": activity.cross_count,
         "start_date": activity.start_date,

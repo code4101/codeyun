@@ -10,6 +10,7 @@ from typing import Any
 
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.effective_time import job_now
+from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
 from backend.core.fanxiu.data_annotation.tasks.gameplay_rank_task_rewards import (
     GameplayRankTaskAssets,
     GameplayRankTaskTab,
@@ -31,6 +32,9 @@ from backend.core.fanxiu.instrumentation.tiandi_yiju import (
 )
 from backend.core.fanxiu.instrumentation.tiandi_yiju_task_rewards import (
     read_tiandi_yiju_task_reward_snapshot,
+)
+from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
+    resolve_vertical_bottom_tab,
 )
 
 
@@ -558,6 +562,82 @@ def _wait_tiandi_yiju_home_ready(
         yield from runtime.wait_action_settle(0.8)
 
 
+def _refresh_tiandi_yiju_exchange_facts(
+    runtime: Any,
+    *,
+    occurrence: RankingOccurrence,
+    timeout: float = 20.0,
+):
+    """Load the live exchange manager, persist it, then return to the home tab."""
+
+    from sqlmodel import Session, select
+
+    from backend.core.fanxiu.activity.tiandi_yiju import (
+        collect_and_store_tiandi_yiju_activity,
+    )
+    from backend.core.fanxiu.instrumentation.runtime_memory import (
+        FanxiuRuntimeMemoryError,
+    )
+    from backend.db import engine
+    from backend.models import FanxiuExchangeActivity
+
+    runtime.click_shape_center(TIANDI_YIJU_HOME_SCENE, "兑换宝阁")
+    yield from runtime.wait_action_settle(0.8)
+    deadline = time.monotonic() + float(timeout)
+    last_error = ""
+    detail: Any | None = None
+    while detail is None:
+        try:
+            with Session(engine) as session:
+                activity = session.exec(
+                    select(FanxiuExchangeActivity).where(
+                        FanxiuExchangeActivity.activity_type == "tiandi-yiju",
+                        FanxiuExchangeActivity.instance_key == occurrence.instance_key,
+                    )
+                ).first()
+                if activity is None:
+                    raise RuntimeError("天地弈局缺少当前 occurrence 的通用活动实例")
+                detail = collect_and_store_tiandi_yiju_activity(
+                    session,
+                    activity_id=str(activity.id),
+                )
+        except (FanxiuRuntimeMemoryError, ValueError) as exc:
+            last_error = str(exc)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"天地弈局兑换宝阁 Runtime 未在期限内完整加载：{last_error}"
+                ) from exc
+            yield from runtime.wait_action_settle(0.8)
+
+    frame = runtime.cur_frame(update=True)
+    lines = group_ocr_tokens(runtime.full_frame_ocr_tokens(frame))
+    frame_width, frame_height = runtime.runner._frame_size(
+        runtime.view(TIANDI_YIJU_HOME_SCENE).raw
+    )
+    target = resolve_vertical_bottom_tab(
+        lines,
+        tab_name="天地弈局",
+        frame_width=frame_width,
+        frame_height=frame_height,
+    )
+    runtime.click_frame_point(
+        TIANDI_YIJU_HOME_SCENE,
+        target.x,
+        target.y,
+    )
+    yield from runtime.wait_action_settle(0.8)
+    yield from _wait_tiandi_yiju_home_ready(runtime)
+    return {
+        "activity_id": str(getattr(detail, "id", "") or ""),
+        "instance_key": str(getattr(detail, "instance_key", "") or ""),
+        "shop_item_count": len(getattr(detail, "shop_items", None) or []),
+        "current_currency": int(getattr(detail, "current_currency", 0) or 0),
+        "cumulative_currency": int(
+            getattr(detail, "cumulative_currency", 0) or 0
+        ),
+    }
+
+
 def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float = 120.0):
     """Click once and accept either legacy #681 or the live 对弈/确认 terminal."""
 
@@ -620,7 +700,6 @@ def execute_tiandi_yiju_checkpoint(
     if not bool(schedule.get("available") and schedule.get("complete")):
         raise RuntimeError("天地弈局 Runtime 日程不可用或不完整")
     runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-    _assert_tiandi_yiju_production_asset_contract(runtime)
     yield from runtime.goto_view(66)
     yield from select_schedule_activity(
         runtime,
@@ -631,6 +710,11 @@ def execute_tiandi_yiju_checkpoint(
         now=job_now(),
     )
     yield from _wait_tiandi_yiju_home_ready(runtime)
+    exchange_facts = yield from _refresh_tiandi_yiju_exchange_facts(
+        runtime,
+        occurrence=occurrence,
+    )
+    _assert_tiandi_yiju_production_asset_contract(runtime)
     task_rewards = yield from claim_tiandi_yiju_task_rewards(
         runtime,
         activity_id=occurrence.activity_id,
@@ -648,6 +732,7 @@ def execute_tiandi_yiju_checkpoint(
         max_batches=max(1, int(payload.get("max_batches") or 1000)),
     )
     result["task_rewards"] = task_rewards
+    result["exchange_facts"] = exchange_facts
     if result.get("status") in {"completed", "incomplete"}:
         yield from runtime.goto_view(34)
     return result

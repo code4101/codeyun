@@ -670,6 +670,106 @@ def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
     assert runtime.clicks == [("goto", 66, None)]
 
 
+def test_refresh_exchange_facts_uses_exact_occurrence_and_returns_by_runtime_gui(
+    monkeypatch,
+) -> None:
+    import sqlmodel
+    from types import SimpleNamespace
+
+    occurrence = _occurrence()
+    activity = SimpleNamespace(id="activity-1", instance_key=occurrence.instance_key)
+    collected_ids = []
+
+    class _Result:
+        def first(self):
+            return activity
+
+    class _Session:
+        def __init__(self, _engine):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def exec(self, _statement):
+            return _Result()
+
+    class _RunnerAdapter:
+        @staticmethod
+        def _frame_size(_raw):
+            return 900, 1600
+
+    class _ExchangeRuntime(_Runtime):
+        runner = _RunnerAdapter()
+
+        def cur_frame(self, *, update=False):
+            assert update is True
+            return "frame"
+
+        def full_frame_ocr_tokens(self, frame):
+            assert frame == "frame"
+            return [{
+                "text": "天地弈局",
+                "x": 800,
+                "y": 1200,
+                "w": 40,
+                "h": 180,
+                "score": 99,
+            }]
+
+        def view(self, scene):
+            assert scene == 677
+            return SimpleNamespace(raw={})
+
+        def click_frame_point(self, scene, x, y):
+            self.clicks.append((scene, round(x), round(y)))
+
+    monkeypatch.setattr(sqlmodel, "Session", _Session)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.activity.tiandi_yiju.collect_and_store_tiandi_yiju_activity",
+        lambda _session, *, activity_id: (
+            collected_ids.append(activity_id)
+            or SimpleNamespace(
+                id=activity_id,
+                instance_key=occurrence.instance_key,
+                shop_items=[1, 2, 3],
+                current_currency=66,
+                cumulative_currency=88,
+            )
+        ),
+    )
+    monkeypatch.setattr(tiandi_task, "group_ocr_tokens", lambda tokens: tokens)
+    monkeypatch.setattr(
+        tiandi_task,
+        "_wait_tiandi_yiju_home_ready",
+        lambda *_args, **_kwargs: (
+            yield from (_value for _value in ())
+        ),
+    )
+
+    runtime = _ExchangeRuntime()
+    result = _run(
+        tiandi_task._refresh_tiandi_yiju_exchange_facts(
+            runtime,
+            occurrence=occurrence,
+        )
+    )
+
+    assert collected_ids == ["activity-1"]
+    assert result == {
+        "activity_id": "activity-1",
+        "instance_key": occurrence.instance_key,
+        "shop_item_count": 3,
+        "current_currency": 66,
+        "cumulative_currency": 88,
+    }
+    assert runtime.clicks[0] == (677, "兑换宝阁", None)
+    assert runtime.clicks[-1] == (677, 820, 1290)
+
+
 def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) -> None:
     runtime = _Runtime()
     loop_calls = []
