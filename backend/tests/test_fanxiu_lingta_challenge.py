@@ -413,6 +413,82 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
     ]
 
 
+def test_lingta_route_aligns_runtime_loaded_overview_with_stable_jump_anchor(monkeypatch) -> None:
+    class RuntimeAlignedOverview:
+        payload = {}
+
+        def __init__(self) -> None:
+            self.actions: list[tuple] = []
+
+        def goto_view(self, _scene_id):
+            if False:
+                yield None
+
+        def wait_click_then_view(self, source, shape, target, **_kwargs):
+            self.actions.append(("wait_click", source, shape, target))
+            if False:
+                yield None
+            return target
+
+        def view_visible(self, scene_id):
+            return ("view", scene_id)
+
+        def shape_visible(self, scene_id, shape):
+            return ("shape", scene_id, shape)
+
+        def wait_any(self, conditions, **_kwargs):
+            self.actions.append(("wait_any", tuple(conditions)))
+            if False:
+                yield None
+            return "jump"
+
+        def open_daily_entry(self, **_kwargs):
+            if False:
+                yield None
+            return "open"
+
+        def wait_view(self, *scene_ids, **_kwargs):
+            if False:
+                yield None
+            if scene_ids == (193, 194):
+                return 194
+            raise TimeoutError("dynamic overview identity")
+
+        def current_scene(self, *_args, **_kwargs):
+            return 194, 100.0, "frame"
+
+        def ocr_fragments_in_shapes(self, *_args, **_kwargs):
+            return [{"text": "已通过：160/500层", "x": 504, "y": 918, "w": 254, "h": 30}]
+
+        def click_frame_point(self, _scene_id, _x, _y):
+            return None
+
+        def cur_frame(self, **_kwargs):
+            return "frame-532"
+
+        def ocr_text_in_shapes(self, scene_id, shape_titles, **_kwargs):
+            self.actions.append(("ocr_shapes", scene_id, tuple(shape_titles)))
+            return "挑战"
+
+    runner = create_behavior_tree_runtime_runner()
+    monkeypatch.setattr(
+        runner,
+        "_read_lingta_challenge_snapshot",
+        lambda: {"complete": True, "current_tower_id": 1426},
+    )
+    runtime = RuntimeAlignedOverview()
+
+    progress = _drain(runner._open_lingta_current_floor_detail(runtime))
+
+    assert progress == LingtaProgress(passed=160, total=500, text="已通过：160/500层")
+    assert ("ocr_shapes", 532, ("挑战文字",)) in runtime.actions
+    assert not [action for action in runtime.actions if action[0] == "wait_any"]
+    assert not [
+        action for action in runtime.actions
+        if action[0] == "wait_click" and action[1] == 531
+    ]
+
+
 def test_lingta_route_propagates_overview_race_timeout_without_clicking() -> None:
     class MissingBranchRuntime:
         payload = {}

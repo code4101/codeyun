@@ -597,6 +597,9 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
                 action_required.append(str(item.get("message") or f"处理阻断项：{title}"))
     elif scheduler.get("next_action") == "job_group_disabled" and due_tasks:
         action_required.append("当前有到期任务但工程作业组已关闭；等待 AI 显式提交 cell")
+    elif runtime.get("running") and due_tasks:
+        current_label = str(runtime.get("current_task") or runtime.get("task_type") or "当前作业")
+        action_required.append(f"{current_label}正在执行，其余到期任务等待资源仲裁")
     elif scheduler.get("next_action") == "run_due" and due_tasks:
         action_required.append("当前有到期任务且未发现阻断，请检查外部 Scheduler 提交记录")
     elif critical_failed_tasks:
@@ -629,6 +632,11 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif due_tasks and scheduler.get("next_action") == "job_group_disabled":
         severity = "attention"
         summary = f"{len(due_tasks)} 个任务已到期；AI 调度器占用运行权，工程不自动执行"
+    elif due_tasks and runtime.get("running"):
+        severity = "attention"
+        current_label = str(runtime.get("current_task") or runtime.get("task_type") or "当前作业")
+        waiting_count = max(0, len(due_tasks) - 1)
+        summary = f"{current_label}正在执行，另有 {waiting_count} 个到期任务排队"
     elif due_tasks and scheduler.get("next_action") == "run_due":
         severity = "attention"
         summary = f"{len(due_tasks)} 个任务已到期，等待自动执行"

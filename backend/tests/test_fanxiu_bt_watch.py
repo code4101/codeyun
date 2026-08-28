@@ -368,6 +368,21 @@ def test_plain_business_error_does_not_become_annotation_blocker():
     assert maintenance["automation_safe"] is True
 
 
+def test_maintenance_summary_reports_real_running_attempt_instead_of_missing_dispatch():
+    report = _report("mail", "boss")
+    report["runtime"] = {
+        "running": True,
+        "status": "running",
+        "current_task": "日常_玄荒",
+        "task_type": "daily_xuanhuang",
+    }
+
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+
+    assert maintenance["summary"] == "日常_玄荒正在执行，另有 1 个到期任务排队"
+    assert maintenance["action_required"] == ["日常_玄荒正在执行，其余到期任务等待资源仲裁"]
+
+
 def test_explicit_missing_annotation_error_blocks_only_its_job():
     report = {
         "runtime": {

@@ -21841,7 +21841,7 @@ def test_daily_boss_runtime_zero_skips_daily_list_before_gui(tmp_path, monkeypat
         lambda _payload: "2026-08-14 05:00:00",
     )
 
-    def fake_return(_ctx, _stop_event):
+    def fake_return(_ctx, _stop_event, **_kwargs):
         returned.append("world")
         if False:
             yield BehaviorTreeStatus.RUNNING
@@ -21972,7 +21972,7 @@ def test_daily_boss_detail_clicks_challenge_when_reward_remains_even_if_button_o
     assert clicked == [("首领详情", 450.0, 1368.0)]
 
 
-def test_daily_boss_after_challenge_records_retry_when_refresh_cd_visible(tmp_path, monkeypatch):
+def test_daily_boss_after_challenge_treats_refresh_countdown_as_round_done(tmp_path, monkeypatch):
     monkeypatch.setattr(fanxiu_api, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(behavior_tree_runtime_core, "_data_annotation_world_facts_path", lambda: tmp_path / "world_facts.json")
     monkeypatch.setattr(behavior_tree_runtime_core, "_now", lambda: datetime(2026, 6, 11, 11, 0, 0))
@@ -21990,21 +21990,15 @@ def test_daily_boss_after_challenge_records_retry_when_refresh_cd_visible(tmp_pa
     monkeypatch.setattr(runner, "_current_scene_number", lambda _ctx: (180, 100.0, "fight"))
 
     monkeypatch.setattr(runner, "_daily_boss_status_text_from_frame", lambda _ctx, frame=None: "首领自动战斗中 00:07:17后刷新首领伤害数据统计")
-    retries: list[tuple[dict[str, object], int]] = []
-    returned: list[bool] = []
+    finished: list[dict[str, object]] = []
 
-    def fake_record_retry(payload, *, seconds):
-        retries.append((dict(payload), seconds))
-        return "2026-06-11 11:07:27"
-
-    def fake_return(_ctx, _stop_event):
-        returned.append(True)
+    def fake_finish(_ctx, _runtime, _stop_event, payload):
+        finished.append(dict(payload))
         if False:
             yield BehaviorTreeStatus.RUNNING
-        return "success"
+        return "skipped"
 
-    monkeypatch.setattr(runner, "_record_daily_boss_recheck_time", fake_record_retry)
-    monkeypatch.setattr(runner, "_return_daily_boss_to_world", fake_return)
+    monkeypatch.setattr(runner, "_finish_daily_boss_round_after_done", fake_finish)
     original_set_status = runner._set_status_locked
 
     def record_status(status, message="", **extra):
@@ -22021,9 +22015,8 @@ def test_daily_boss_after_challenge_records_retry_when_refresh_cd_visible(tmp_pa
     )
 
     assert result == "skipped"
-    assert "daily_boss_wait_boss_done" in phases
-    assert retries == [({"post_challenge_wait_seconds": 0.01}, 1800)]
-    assert returned == [True]
+    assert "daily_boss_wait_boss_done" not in phases
+    assert finished == [{"post_challenge_wait_seconds": 0.01}]
 
 
 def test_daily_boss_after_challenge_accepts_runtime_reward_delta_without_waiting_for_scene_181(tmp_path, monkeypatch):
@@ -22054,7 +22047,7 @@ def test_daily_boss_after_challenge_accepts_runtime_reward_delta_without_waiting
         lambda _payload, *, seconds: retries.append(seconds) or "2026-06-11 11:01:00",
     )
 
-    def fake_return(_ctx, _stop_event):
+    def fake_return(_ctx, _stop_event, **_kwargs):
         returned.append(True)
         if False:
             yield BehaviorTreeStatus.RUNNING
