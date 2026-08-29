@@ -568,3 +568,68 @@ def test_runtime_aligned_exact_card_does_not_require_today_header_ocr() -> None:
     assert "8090004400004" in selected.runtime_key
     assert selected.x == 0.0 and selected.y == 0.0
     assert runtime.clicked_shapes[0][0][1] == "活动卡片/前往"
+
+
+def test_select_duplicate_title_by_expected_runtime_activity_id() -> None:
+    class Runtime:
+        def __init__(self):
+            self.clicked_points = []
+
+        def cur_frame(self, *, update=False):
+            return "frame"
+
+        def ocr_fragments_in_shapes(self, _scene, shapes, **_kwargs):
+            if shapes == ["表头"]:
+                return HEADER
+            return [
+                _line("天地弈局", 175, y=560, w=134, h=38),
+                _line("跨服[8]", 175, y=605, w=100, h=30),
+                _line("天地弈局", 175, y=760, w=134, h=38),
+            ]
+
+        def paged_content_snapshot(self, *_args, **_kwargs):
+            return {"lines": [_line("云梦试剑", 80)]}
+
+        def click_frame_point(self, *args):
+            self.clicked_points.append(args)
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+    schedule = {
+        "available": True,
+        "items": [
+            {
+                "activityId": 8090004,
+                "id": 8090004400004,
+                "name": "天地弈局",
+                "littleName": "跨服[8]",
+                "startTime": _millis("2026-08-28 10:00:00"),
+                "endTime": _millis("2026-08-29 22:00:00"),
+            },
+            {
+                "activityId": 8090003,
+                "id": 8090003400004,
+                "name": "天地弈局",
+                "startTime": _millis("2026-08-29 10:00:00"),
+                "endTime": _millis("2026-08-29 22:00:00"),
+            },
+        ],
+    }
+    runtime = Runtime()
+
+    selected = _finish(
+        select_schedule_activity(
+            runtime,
+            r"天地弈局",
+            enter=True,
+            runtime_schedule=schedule,
+            require_runtime_alignment=True,
+            expected_activity_id=8090004,
+            now=datetime(2026, 8, 29, 12, 0),
+        )
+    )
+
+    assert "8090004400004" in selected.runtime_key
+    assert len(runtime.clicked_points) == 1

@@ -652,6 +652,7 @@ def select_schedule_activity(
     settle_seconds: float = 0.8,
     runtime_schedule: Mapping[str, Any] | None = None,
     require_runtime_alignment: bool = False,
+    expected_activity_id: int | None = None,
     now: datetime | None = None,
 ) :
     """Select and verify a #66 activity without encoding rotating content."""
@@ -678,6 +679,12 @@ def select_schedule_activity(
     runtime_entities = runtime_activity_entities_for_date(
         runtime_schedule or {}, activity_pattern, target_date=target_date
     )
+    if expected_activity_id is not None:
+        runtime_entities = tuple(
+            entity
+            for entity in runtime_entities
+            if int(entity.payload.get("activityId") or 0) == int(expected_activity_id)
+        )
     current_page = runtime.paged_content_snapshot(
         SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE, frame_data_url=frame
     )
@@ -694,7 +701,13 @@ def select_schedule_activity(
 
     if require_runtime_alignment and not runtime_entities:
         raise RuntimeError(
-            f"#66 缺少覆盖 {target_date.isoformat()} 的权威 Runtime 活动实体，拒绝只按 OCR 操作"
+            f"#66 缺少覆盖 {target_date.isoformat()} 的权威 Runtime 活动实体"
+            + (
+                f" activityId={int(expected_activity_id)}"
+                if expected_activity_id is not None
+                else ""
+            )
+            + "，拒绝只按 OCR 操作"
         )
 
     # An exact Runtime-aligned calendar cell is itself the activity entry.
