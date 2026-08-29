@@ -340,10 +340,10 @@ def inspect_game_state_once(
     selected = tuple(probes) if probes is not None else registered_game_state_probes()
     if due_sink is None:
         from backend.core.fanxiu.data_annotation.behavior_tree_control import (
-            set_scheduler_task_next_time,
+            advance_scheduler_task_from_fact,
         )
 
-        due_sink = lambda task_id, due_at: set_scheduler_task_next_time(task_id, due_at)
+        due_sink = lambda task_id, due_at: advance_scheduler_task_from_fact(task_id, due_at)
     for probe in selected:
         _validate_game_state_probe_source(probe.source)
     facts: dict[str, Any] = {}

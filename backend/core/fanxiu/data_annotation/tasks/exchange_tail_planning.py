@@ -33,10 +33,104 @@ class ExchangeTailPhysicalAction:
 def exchange_quantity_clicks(quantity: int, *, buying_to_cap: bool) -> tuple[int, int]:
     value = int(quantity)
     if value < 1:
-        raise ValueError("云梦兑换数量至少为 1")
+        raise ValueError("兑换数量至少为 1")
     if buying_to_cap:
         return ((value - 1 + 9) // 10, 0)
     return divmod(value - 1, 10)
+
+
+def authorize_exchange_purchase(
+    *,
+    current_wallet: int,
+    quantity: int,
+    unit_price: int,
+    reserved_tokens: int,
+    name: str,
+    label: str = "玩法榜_收尾",
+) -> tuple[int, int]:
+    """Return ``(cost, remaining_wallet)`` only when the purchase is safe."""
+
+    wallet = int(current_wallet)
+    amount = int(quantity)
+    price = int(unit_price)
+    reserve = int(reserved_tokens)
+    if wallet < 0 or reserve < 0:
+        raise RuntimeError(f"{label}：钱包或预留额不能为负数")
+    if amount < 1 or price < 1:
+        raise RuntimeError(f"{label}：{name} 缺少有效购买数量或单价")
+    cost = amount * price
+    remaining = wallet - cost
+    if remaining < reserve:
+        raise RuntimeError(f"{label}：{name} 将突破锁定资源预留额")
+    return cost, remaining
+
+
+def verify_exchange_wallet(
+    expected_wallet: int,
+    observed_wallets: dict[str, Any],
+    *,
+    label: str = "玩法榜_收尾",
+    stage: str = "最终",
+) -> int:
+    """Require every authoritative wallet source to equal one expectation."""
+
+    expected = int(expected_wallet)
+    if expected < 0:
+        raise RuntimeError(f"{label}：{stage}预期钱包不能为负数")
+    if not observed_wallets:
+        raise RuntimeError(f"{label}：{stage}钱包缺少权威读数")
+    mismatches = {
+        str(source): int(value)
+        for source, value in observed_wallets.items()
+        if int(value) != expected
+    }
+    if mismatches:
+        visible = "，".join(f"{source}={value}" for source, value in mismatches.items())
+        raise RuntimeError(f"{label}：{stage}钱包没有闭环为 {expected}：{visible}")
+    return expected
+
+
+def verify_exchange_purchase_counts(
+    initial_shop_items: Any,
+    final_shop_items: Any,
+    purchases: Any,
+    *,
+    label: str = "玩法榜_收尾",
+) -> dict[int, int]:
+    """Verify finite-row purchase counts after an irreversible exchange batch."""
+
+    def unique_rows(items: Any, *, stage: str) -> dict[int, Any]:
+        rows: dict[int, Any] = {}
+        for item in items:
+            goods_id = int(item.goods_id)
+            if goods_id in rows:
+                raise RuntimeError(f"{label}：{stage}商品 {goods_id} 重复")
+            rows[goods_id] = item
+        return rows
+
+    initial_rows = unique_rows(initial_shop_items, stage="购买前")
+    final_rows = unique_rows(final_shop_items, stage="购买后")
+    expected_counts: dict[int, int] = {}
+    seen_purchases: set[int] = set()
+    for purchase in purchases:
+        goods_id = int(purchase.goods_id)
+        if goods_id in seen_purchases:
+            raise RuntimeError(f"{label}：商品 {goods_id} 出现重复购买计划")
+        seen_purchases.add(goods_id)
+        original = initial_rows.get(goods_id)
+        if original is None:
+            raise RuntimeError(f"{label}：购买前缺少商品 {goods_id}/{purchase.name}")
+        if int(original.purchase_limit) < 0:
+            continue
+        expected_count = int(original.purchased_count) + int(purchase.quantity)
+        actual = final_rows.get(goods_id)
+        actual_count = int(actual.purchased_count) if actual is not None else -1
+        if actual_count != expected_count:
+            raise RuntimeError(
+                f"{label}：{purchase.name} 最终购买数 {actual_count} != {expected_count}"
+            )
+        expected_counts[goods_id] = expected_count
+    return expected_counts
 
 
 def _compact(value: Any) -> str:
@@ -164,7 +258,7 @@ def plan_exchange_tail_physical_actions(
         raise ValueError("兑换宝阁可见行数至少为 1")
     targets = {int(row.goods_id): row for row in purchases}
     if len(targets) != len(purchases):
-        raise RuntimeError("云梦_收尾：同一商品出现重复理论分配")
+        raise RuntimeError(f"{label}：同一商品出现重复理论分配")
 
     active: list[dict[str, Any]] = []
     known_ids: set[int] = set()
@@ -199,7 +293,7 @@ def plan_exchange_tail_physical_actions(
     top = 0
     while any(int(row["target"]) > 0 for row in active):
         if cursor >= len(active):
-            raise RuntimeError("云梦_收尾：物理序列结束后仍有未执行理论目标")
+            raise RuntimeError(f"{label}：物理序列结束后仍有未执行理论目标")
         row = active[cursor]
         quantity = int(row["target"])
         if quantity <= 0:
@@ -256,9 +350,12 @@ def verify_exchange_detail(
 __all__ = [
     "ExchangeTailPhysicalAction",
     "ExchangeTailPurchase",
+    "authorize_exchange_purchase",
     "exchange_quantity_clicks",
     "ocr_contains_amount",
     "plan_exchange_tail_physical_actions",
     "plan_exchange_tail_purchases",
     "verify_exchange_detail",
+    "verify_exchange_purchase_counts",
+    "verify_exchange_wallet",
 ]

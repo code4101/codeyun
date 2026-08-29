@@ -2,7 +2,9 @@ from __future__ import annotations
 
 """天地弈局 target selection, dialog configuration, and bounded execution."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
 import re
 import threading
 import time
@@ -63,34 +65,190 @@ TIANDI_YIJU_MASTER_SKILL_ITEM_ID = 100000008
 TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID = 100000002
 
 RuntimeReader = Callable[[], dict[str, Any]]
+TIANDI_YIJU_YIELD_LEDGER_KEY = "tiandi_yiju_yield_samples_v1"
+TIANDI_YIJU_YIELD_LEDGER_LIMIT = 32
 
 
-def _plan_shared_exchange_batch(**kwargs: Any) -> Any:
-    """Lazy adapter to the activity-neutral feedback batch planner."""
+@dataclass(frozen=True, slots=True)
+class TiandiYijuBatchPlan:
+    estimated_remaining_rounds: int | None
+    challenge_batch_rounds: int
+    supply_target_rounds: int
+    planning_mode: str
 
-    from backend.core.fanxiu.data_annotation.tasks.bounded_batch_planning import (
-        plan_feedback_batch,
+
+def _load_tiandi_yiju_yield_samples(
+    evidence: Mapping[str, Any],
+    *,
+    occurrence_instance_key: str,
+    allowed_feature_keys: set[str],
+) -> list[Any]:
+    """Load only occurrence-bound, internally verified ledger rows."""
+
+    from backend.core.fanxiu.activity.exchange_planning import (
+        ExchangeYieldScatterSample,
     )
 
-    return plan_feedback_batch(**kwargs)
+    result: list[Any] = []
+    for raw in evidence.get(TIANDI_YIJU_YIELD_LEDGER_KEY) or ():
+        if not isinstance(raw, Mapping):
+            continue
+        usage = raw.get("feature_item_usage")
+        usage = usage if isinstance(usage, Mapping) else {}
+        if (
+            int(raw.get("version") or 0) != 1
+            or str(raw.get("occurrence_instance_key") or "")
+            != str(occurrence_instance_key)
+            or not bool(raw.get("same_process_verified"))
+            or int(raw.get("process_pid") or 0) <= 0
+            or int(raw.get("process_start_ticks") or 0) <= 0
+            or int(raw.get("rounds") or 0) <= 0
+            or int(raw.get("currency_delta") or 0) <= 0
+        ):
+            continue
+        if bool(raw.get("plain")):
+            normalized_usage: tuple[tuple[str, int], ...] = ()
+        elif bool(raw.get("feature_usage_known")) and set(usage).issubset(
+            allowed_feature_keys
+        ):
+            normalized_usage = tuple(
+                sorted((str(key), int(value)) for key, value in usage.items())
+            )
+        else:
+            # Keep unknown boosted rows in evidence, but never pretend they are
+            # plain or feed them to a model without an authoritative spec.
+            continue
+        result.append(
+            ExchangeYieldScatterSample(
+                exchange_currency_delta=int(raw["currency_delta"]),
+                attempt_count=int(raw["rounds"]),
+                feature_item_usage=normalized_usage,
+            )
+        )
+    return result
 
 
-def _select_tiandi_yiju_batch_rounds(
+def _append_tiandi_yiju_yield_evidence(
+    evidence: Mapping[str, Any],
     *,
-    planned_rounds: int,
-    required_currency: int,
-    measured_currency_delta: int | None,
-    measured_rounds: int | None,
-) -> int:
-    """Apply the one game-specific tail rule to the shared estimate."""
+    occurrence_instance_key: str,
+    rounds: int,
+    currency_delta: int,
+    process_identity: tuple[Any, ...],
+    feature_item_usage: Mapping[str, int] | None,
+) -> dict[str, Any]:
+    """Append one authoritative batch while retaining large historical rows."""
 
-    delta = int(measured_currency_delta or 0)
-    rounds = int(measured_rounds or 0)
-    if delta > 0 and rounds > 0:
-        estimated = (int(required_currency) * rounds + delta - 1) // delta
-        if estimated <= TIANDI_YIJU_MAX_BATCH_ROUNDS:
-            return TIANDI_YIJU_MAX_BATCH_ROUNDS
-    return max(1, int(planned_rounds))
+    usage = (
+        {str(key): int(value) for key, value in feature_item_usage.items()}
+        if feature_item_usage is not None
+        else None
+    )
+    row = {
+        "version": 1,
+        "occurrence_instance_key": str(occurrence_instance_key),
+        "rounds": int(rounds),
+        "currency_delta": int(currency_delta),
+        "feature_item_usage": usage or {},
+        "feature_usage_known": usage is not None,
+        "plain": usage == {},
+        "same_process_verified": True,
+        "process_pid": int(process_identity[2]),
+        "process_start_ticks": int(process_identity[3]),
+        "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    if row["rounds"] <= 0 or row["currency_delta"] <= 0:
+        raise ValueError("天地弈局兑币样本必须具有正次数与正增量")
+    rows = [
+        dict(item)
+        for item in evidence.get(TIANDI_YIJU_YIELD_LEDGER_KEY) or ()
+        if isinstance(item, Mapping)
+    ]
+    rows.append(row)
+    if len(rows) > TIANDI_YIJU_YIELD_LEDGER_LIMIT:
+        newest = rows[-16:]
+        largest = sorted(rows[:-16], key=lambda item: int(item.get("rounds") or 0))[-16:]
+        rows = largest + newest
+    updated = dict(evidence)
+    updated[TIANDI_YIJU_YIELD_LEDGER_KEY] = rows
+    return updated
+
+
+def _plan_tiandi_yiju_batch_rounds(
+    *,
+    required_currency: int,
+    yield_samples: Iterable[Any] = (),
+    feature_specs: Iterable[Any] = (),
+    feature_item_fractions: Mapping[str, float] | None = None,
+) -> TiandiYijuBatchPlan:
+    """Choose a deterministic 10%..50% batch from all supplied scatter rows.
+
+    Persisted and caller-supplied samples share the same input.  Missing or
+    underidentified evidence fails closed to the established 100-round probe.
+    Callers must supply feature specs explicitly; this adapter never invents
+    an item's multiplier.
+    """
+
+    from backend.core.fanxiu.activity.exchange_planning import (
+        fit_exchange_yield_scatter_model,
+    )
+
+    samples = tuple(yield_samples)
+    specs = tuple(feature_specs)
+    allowed_features = {str(spec.key) for spec in specs}
+    observed_features = {
+        str(key)
+        for sample in samples
+        for key, _count in sample.feature_item_usage
+    }
+    if not observed_features.issubset(allowed_features):
+        missing = sorted(observed_features - allowed_features)
+        raise ValueError(f"天地弈局散点缺少道具增益规格：{missing}")
+    model = fit_exchange_yield_scatter_model(samples, feature_specs=specs)
+    if model is None or model.plain_attempts <= 0:
+        return TiandiYijuBatchPlan(
+            estimated_remaining_rounds=None,
+            challenge_batch_rounds=TIANDI_YIJU_MAX_BATCH_ROUNDS,
+            supply_target_rounds=TIANDI_YIJU_MAX_BATCH_ROUNDS,
+            planning_mode="probe",
+        )
+
+    estimated = model.estimate_attempts(
+        int(required_currency),
+        feature_item_fractions=feature_item_fractions,
+    )
+    if estimated <= TIANDI_YIJU_MAX_BATCH_ROUNDS:
+        return TiandiYijuBatchPlan(
+            estimated_remaining_rounds=estimated,
+            challenge_batch_rounds=TIANDI_YIJU_MAX_BATCH_ROUNDS,
+            supply_target_rounds=TIANDI_YIJU_MAX_BATCH_ROUNDS,
+            planning_mode="tail_100",
+        )
+    if model.total_attempts >= 1000:
+        progress_ratio = 0.50
+    elif model.total_attempts >= 200:
+        progress_ratio = 0.25
+    else:
+        progress_ratio = 0.10
+    challenge_batch = max(
+        1,
+        (estimated * int(progress_ratio * 100) + 99) // 100,
+    )
+    return TiandiYijuBatchPlan(
+        estimated_remaining_rounds=estimated,
+        challenge_batch_rounds=challenge_batch,
+        # Supply navigation is expensive.  Ask its own resource-bounded
+        # adapter to cover the full estimated gap once; do not confuse this
+        # inventory target with the bounded irreversible challenge batch.
+        supply_target_rounds=estimated,
+        planning_mode=f"evidence_{int(progress_ratio * 100)}pct",
+    )
+
+
+def _select_tiandi_yiju_batch_rounds(**kwargs: Any) -> int:
+    """Compatibility projection for callers that only need challenge rounds."""
+
+    return _plan_tiandi_yiju_batch_rounds(**kwargs).challenge_batch_rounds
 
 
 TIANDI_YIJU_TASK_ASSETS = GameplayRankTaskAssets(
@@ -534,6 +692,9 @@ def _run_tiandi_yiju_exchange_target_loop(
     stop_event: threading.Event,
     max_batches: int = 1000,
     supply_executor: Callable[..., Any] | None = None,
+    yield_samples: Iterable[Any] = (),
+    yield_feature_specs: Iterable[Any] = (),
+    feature_item_fractions: Mapping[str, float] | None = None,
 ):
     """Reach the unified closing-goods target through bounded feedback batches."""
 
@@ -543,6 +704,7 @@ def _run_tiandi_yiju_exchange_target_loop(
         list_exchange_activity_snapshot,
     )
     from backend.core.fanxiu.activity.exchange_planning import (
+        ExchangeYieldScatterSample,
         calculate_exchange_currency_gap,
     )
     from backend.core.fanxiu.instrumentation.backpack import (
@@ -554,6 +716,8 @@ def _run_tiandi_yiju_exchange_target_loop(
     from backend.db import engine
     from backend.models import FanxiuExchangeActivity
 
+    scatter_feature_specs = tuple(yield_feature_specs)
+    allowed_feature_keys = {str(spec.key) for spec in scatter_feature_specs}
     with Session(engine) as session:
         activity = session.exec(
             select(FanxiuExchangeActivity).where(
@@ -574,6 +738,11 @@ def _run_tiandi_yiju_exchange_target_loop(
             detail,
             activity_id=activity_id,
         )
+        persisted_samples = _load_tiandi_yiju_yield_samples(
+            dict(activity.evidence or {}),
+            occurrence_instance_key=occurrence.instance_key,
+            allowed_feature_keys=allowed_feature_keys,
+        )
     if currency_type <= 0:
         raise RuntimeError("天地弈局通用活动实例缺少棋符货币类型")
 
@@ -586,13 +755,10 @@ def _run_tiandi_yiju_exchange_target_loop(
         cumulative_currency=int(wallet_before["cumulative_currency"]),
     )
     required_new_currency = int(remaining_gap.required_new_currency)
-    measured_delta: int | None = None
-    measured_rounds: int | None = None
-    previous_delta: int | None = None
-    previous_rounds: int | None = None
     total_rounds = 0
     batches: list[dict[str, Any]] = []
     locked_recommendation: dict[str, Any] | None = None
+    scatter_samples = [*persisted_samples, *yield_samples]
 
     for _batch_index in range(max(1, int(max_batches))):
         if required_new_currency == 0:
@@ -614,25 +780,16 @@ def _run_tiandi_yiju_exchange_target_loop(
         available_rounds = int(board.get("natural_play_budget") or 0) + int(
             item_counts.get(strength_item_id, 0)
         )
-        planning_cap = max(TIANDI_YIJU_MAX_BATCH_ROUNDS, required_new_currency)
-        shared_plan = _plan_shared_exchange_batch(
-            required_new_currency=required_new_currency,
-            measured_currency_delta=measured_delta,
-            measured_challenges=measured_rounds,
-            previous_currency_delta=previous_delta,
-            previous_challenges=previous_rounds,
-            probe_challenges=TIANDI_YIJU_MAX_BATCH_ROUNDS,
-            maximum_batch_challenges=planning_cap,
-        )
-        requested = _select_tiandi_yiju_batch_rounds(
-            planned_rounds=int(shared_plan.requested_challenges),
+        batch_plan = _plan_tiandi_yiju_batch_rounds(
             required_currency=required_new_currency,
-            measured_currency_delta=measured_delta,
-            measured_rounds=measured_rounds,
+            yield_samples=scatter_samples,
+            feature_specs=scatter_feature_specs,
+            feature_item_fractions=feature_item_fractions,
         )
+        requested = int(batch_plan.challenge_batch_rounds)
         if requested <= 0:
             raise RuntimeError("天地弈局统一分批规划器返回了无效次数")
-        if available_rounds < requested:
+        if available_rounds < int(batch_plan.supply_target_rounds):
             if supply_executor is None:
                 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_supply import (
                     ensure_tiandi_yiju_round_supply,
@@ -643,7 +800,8 @@ def _run_tiandi_yiju_exchange_target_loop(
                 runtime,
                 required_boxes=max(
                     0,
-                    requested - int(board.get("natural_play_budget") or 0),
+                    int(batch_plan.supply_target_rounds)
+                    - int(board.get("natural_play_budget") or 0),
                 ),
             )
             yield from runtime.goto_view(TIANDI_YIJU_HOME_SCENE)
@@ -653,19 +811,40 @@ def _run_tiandi_yiju_exchange_target_loop(
                 timeout=40.0,
                 label="天地弈局：补给后返回棋盘",
             )
-            continue
+            board = read_tiandi_yiju_runtime_snapshot()
+            if int(board.get("strength_item_id") or 0) != strength_item_id:
+                raise RuntimeError("天地弈局补给前后仙弈盒物品 ID 变化")
+            item_counts, _ = read_backpack_item_counts(
+                [
+                    strength_item_id,
+                    TIANDI_YIJU_MASTER_SKILL_ITEM_ID,
+                    TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID,
+                ],
+                manager_key="tiandi-yiju-batch-items-after-supply",
+            )
+            available_rounds = int(board.get("natural_play_budget") or 0) + int(
+                item_counts.get(strength_item_id, 0)
+            )
+            if available_rounds <= 0:
+                raise RuntimeError("天地弈局补给后仍无可用对弈次数")
+            # Supply is intentionally capped by real tree stock and shop
+            # limits.  When it cannot cover the estimated batch, consume the
+            # verified remainder in one run instead of abandoning usable
+            # boxes or reopening the bag for another impossible attempt.
+            requested = min(requested, available_rounds)
+        feature_item_available = {
+            MASTER_SKILL_ITEM: int(occurrence.cross_count) > 1
+            and item_counts[TIANDI_YIJU_MASTER_SKILL_ITEM_ID] > 0,
+            QUADRUPLE_CHESS_TOKEN_ITEM: int(occurrence.cross_count) > 1
+            and item_counts[TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID] > 0,
+        }
         batch = yield from run_tiandi_yiju_bounded_batch(
             runtime,
             requested_rounds=requested,
             cross_count=int(occurrence.cross_count),
             recommendation_override=locked_recommendation,
             verified_available_rounds=available_rounds,
-            feature_item_available={
-                MASTER_SKILL_ITEM: item_counts[TIANDI_YIJU_MASTER_SKILL_ITEM_ID] > 0,
-                QUADRUPLE_CHESS_TOKEN_ITEM: item_counts[
-                    TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID
-                ] > 0,
-            },
+            feature_item_available=feature_item_available,
         )
         actual_rounds = int(batch["requested_rounds"])
         batch_target = dict(batch["target"])
@@ -691,6 +870,60 @@ def _run_tiandi_yiju_exchange_target_loop(
         if current_delta != cumulative_delta:
             raise RuntimeError("天地弈局批次余额与累计棋符增量不一致")
 
+        feature_usage: dict[str, int] | None = {}
+        if any(feature_item_available.values()):
+            after_feature_counts, _ = read_backpack_item_counts(
+                [
+                    TIANDI_YIJU_MASTER_SKILL_ITEM_ID,
+                    TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID,
+                ],
+                manager_key="tiandi-yiju-feature-items-after-batch",
+            )
+            feature_usage = {
+                MASTER_SKILL_ITEM: int(
+                    item_counts[TIANDI_YIJU_MASTER_SKILL_ITEM_ID]
+                )
+                - int(after_feature_counts[TIANDI_YIJU_MASTER_SKILL_ITEM_ID]),
+                QUADRUPLE_CHESS_TOKEN_ITEM: int(
+                    item_counts[TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID]
+                )
+                - int(after_feature_counts[TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID]),
+            }
+            if any(value < 0 or value > actual_rounds for value in feature_usage.values()):
+                feature_usage = None
+            elif feature_usage is not None:
+                feature_usage = {
+                    key: value for key, value in feature_usage.items() if value > 0
+                }
+
+        if feature_usage is not None and set(feature_usage).issubset(
+            allowed_feature_keys
+        ):
+            scatter_samples.append(
+                ExchangeYieldScatterSample(
+                    exchange_currency_delta=current_delta,
+                    attempt_count=actual_rounds,
+                    feature_item_usage=tuple(sorted(feature_usage.items())),
+                )
+            )
+        with Session(engine) as session:
+            stored_activity = session.get(FanxiuExchangeActivity, activity_id)
+            if (
+                stored_activity is None
+                or str(stored_activity.instance_key) != occurrence.instance_key
+            ):
+                raise RuntimeError("天地弈局兑币样本写入时活动实例发生变化")
+            stored_activity.evidence = _append_tiandi_yiju_yield_evidence(
+                dict(stored_activity.evidence or {}),
+                occurrence_instance_key=occurrence.instance_key,
+                rounds=actual_rounds,
+                currency_delta=current_delta,
+                process_identity=wallet_identity,
+                feature_item_usage=feature_usage,
+            )
+            session.add(stored_activity)
+            session.commit()
+
         remaining_gap = calculate_exchange_currency_gap(
             target_total_tokens=target_total_tokens,
             target_remaining_tokens=target_remaining_tokens,
@@ -707,10 +940,6 @@ def _run_tiandi_yiju_exchange_target_loop(
             }
         )
         total_rounds += actual_rounds
-        previous_delta = measured_delta
-        previous_rounds = measured_rounds
-        measured_delta = current_delta
-        measured_rounds = actual_rounds
         wallet_before = wallet_after
 
     reached = required_new_currency == 0
@@ -735,8 +964,11 @@ def run_tiandi_yiju_exchange_target_loop(
     occurrence: RankingOccurrence,
     stop_event: threading.Event,
     max_batches: int = 1000,
+    yield_samples: Iterable[Any] = (),
+    yield_feature_specs: Iterable[Any] = (),
+    feature_item_fractions: Mapping[str, float] | None = None,
 ):
-    """Run one formal challenge attempt, including its idempotent reward gate."""
+    """Run the taught reward -> shop facts -> challenge sequence from home."""
 
     # The opponent portrait changes the full-frame score of #677.  The caller
     # has already returned to the activity home, so validate the stable action
@@ -746,6 +978,38 @@ def run_tiandi_yiju_exchange_target_loop(
         runtime,
         activity_id=occurrence.activity_id,
     )
+    # Rewards can change both the current wallet and the exchange plan.  The
+    # shop snapshot is authoritative only after the idempotent reward gate.
+    exchange_facts = yield from _refresh_tiandi_yiju_exchange_facts(
+        runtime,
+        occurrence=occurrence,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_tail import (
+        execute_tiandi_yiju_exchange_tail,
+    )
+
+    if int(exchange_facts.get("required_new_currency", -1)) == 0:
+        result = {
+            "status": "completed",
+            "target_reached": True,
+            "rounds": 0,
+            "batch_count": 0,
+            "batches": [],
+            "required_new_currency": 0,
+            "message": "天地弈局收尾道具目标已满足，无需再次进入棋盘",
+        }
+        result["exchange_tail"] = yield from execute_tiandi_yiju_exchange_tail(
+            None,
+            {},
+            occurrence=occurrence,
+            stop_event=stop_event,
+            runtime=runtime,
+            start="home",
+        )
+        result["task_rewards"] = task_rewards
+        result["exchange_facts"] = exchange_facts
+        return result
+    _assert_tiandi_yiju_production_asset_contract(runtime)
     runtime.click_shape_center(TIANDI_YIJU_HOME_SCENE, "进入弈局")
     yield from runtime.wait_scene(
         TIANDI_YIJU_BOARD_SCENE,
@@ -757,8 +1021,22 @@ def run_tiandi_yiju_exchange_target_loop(
         occurrence=occurrence,
         stop_event=stop_event,
         max_batches=max_batches,
+        yield_samples=yield_samples,
+        yield_feature_specs=yield_feature_specs,
+        feature_item_fractions=feature_item_fractions,
     )
+    if result.get("target_reached"):
+        yield from runtime.goto_view(TIANDI_YIJU_HOME_SCENE)
+        result["exchange_tail"] = yield from execute_tiandi_yiju_exchange_tail(
+            None,
+            {},
+            occurrence=occurrence,
+            stop_event=stop_event,
+            runtime=runtime,
+            start="home",
+        )
     result["task_rewards"] = task_rewards
+    result["exchange_facts"] = exchange_facts
     return result
 
 
@@ -813,6 +1091,38 @@ def _goto_tiandi_yiju_schedule(runtime: Any):
         )
     if _scene_id(landed) != 66:
         raise RuntimeError("天地弈局日程入口未到达 #66")
+
+
+def enter_tiandi_yiju_occurrence_home(
+    runtime: Any,
+    *,
+    occurrence: RankingOccurrence,
+):
+    """Enter the exact playable occurrence through the authoritative schedule."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.schedule_navigation import (
+        select_schedule_activity,
+    )
+
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("天地弈局 Runtime 日程不可用或不完整")
+    yield from _goto_tiandi_yiju_schedule(runtime)
+    yield from select_schedule_activity(
+        runtime,
+        r"天地弈局",
+        enter=True,
+        runtime_schedule=schedule,
+        require_runtime_alignment=True,
+        expected_activity_id=occurrence.activity_id,
+        now=job_now(),
+    )
 
 
 def _refresh_tiandi_yiju_exchange_facts(
@@ -887,6 +1197,10 @@ def _refresh_tiandi_yiju_exchange_facts(
         "current_currency": int(getattr(detail, "current_currency", 0) or 0),
         "cumulative_currency": int(
             getattr(detail, "cumulative_currency", 0) or 0
+        ),
+        "required_new_currency": _required_closing_currency(
+            detail,
+            activity_id=str(getattr(detail, "id", "") or ""),
         ),
     }
 
@@ -995,36 +1309,17 @@ def execute_tiandi_yiju_checkpoint(
 
     if occurrence.activity_id not in PLAYABLE_ACTIVITY_IDS:
         raise RuntimeError(f"天地弈局 activityId={occurrence.activity_id} 不是可操作棋盘")
-    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
-    from backend.core.fanxiu.data_annotation.schedule_navigation import select_schedule_activity
-
-    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
-    if not bool(schedule.get("available") and schedule.get("complete")):
-        raise RuntimeError("天地弈局 Runtime 日程不可用或不完整")
     runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-    yield from _goto_tiandi_yiju_schedule(runtime)
-    yield from select_schedule_activity(
-        runtime,
-        r"天地弈局",
-        enter=True,
-        runtime_schedule=schedule,
-        require_runtime_alignment=True,
-        expected_activity_id=occurrence.activity_id,
-        now=job_now(),
-    )
-    yield from _wait_tiandi_yiju_home_ready(runtime)
-    exchange_facts = yield from _refresh_tiandi_yiju_exchange_facts(
+    yield from enter_tiandi_yiju_occurrence_home(
         runtime,
         occurrence=occurrence,
     )
-    _assert_tiandi_yiju_production_asset_contract(runtime)
     result = yield from run_tiandi_yiju_exchange_target_loop(
         runtime,
         occurrence=occurrence,
         stop_event=stop_event,
         max_batches=max(1, int(payload.get("max_batches") or 1000)),
     )
-    result["exchange_facts"] = exchange_facts
     if result.get("status") in {"completed", "incomplete"}:
         yield from runtime.goto_view(34)
     return result
@@ -1032,6 +1327,7 @@ def execute_tiandi_yiju_checkpoint(
 
 __all__ = [
     "execute_tiandi_yiju_checkpoint",
+    "enter_tiandi_yiju_occurrence_home",
     "claim_tiandi_yiju_task_rewards",
     "configure_tiandi_yiju_auto_dialog",
     "open_tiandi_yiju_recommended_target",

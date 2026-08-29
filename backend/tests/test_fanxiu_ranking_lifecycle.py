@@ -33,7 +33,7 @@ TZ = ZoneInfo("Asia/Shanghai")
 
 def test_tiandi_yiju_capability_status_matches_production_assembly() -> None:
     assert RANKING_CAPABILITY_STATUS["tiandi-yiju"] == (
-        "implemented_exchange_target_loop_pending_asset_contract"
+        "implemented_active_and_idempotent_exchange_tail"
     )
 
 RESOURCE_RANK_ACTIVITY_ID_CASES = (
@@ -246,7 +246,9 @@ def test_tiandi_yiju_exchange_tail_is_due_during_post_end_grace_period() -> None
     assert EXCHANGE_TAIL_KIND in {item.checkpoint_kind for item in due}
 
 
-def test_tiandi_yiju_exchange_tail_blocks_before_any_runtime_action() -> None:
+def test_tiandi_yiju_exchange_tail_dispatches_the_idempotent_executor(monkeypatch) -> None:
+    from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju_tail
+
     occurrence = RankingOccurrence(
         activity_type="tiandi-yiju",
         family="gameplay_rank",
@@ -258,6 +260,19 @@ def test_tiandi_yiju_exchange_tail_blocks_before_any_runtime_action() -> None:
         close_at=datetime(2026, 8, 30, 23, 59, 59, tzinfo=TZ),
         cross_count=1,
     )
+    calls = []
+
+    def execute(*args, **kwargs):
+        calls.append((args, kwargs))
+        if False:
+            yield None
+        return {"status": "completed", "purchases": []}
+
+    monkeypatch.setattr(
+        tiandi_yiju_tail,
+        "execute_tiandi_yiju_exchange_tail_checkpoint",
+        execute,
+    )
     generator = lifecycle_task._execute_exchange_tail_checkpoint(
         object(), {}, {}, threading.Event(), occurrence=occurrence
     )
@@ -266,12 +281,8 @@ def test_tiandi_yiju_exchange_tail_blocks_before_any_runtime_action() -> None:
         next(generator)
 
     result = stopped.value.value
-    assert result["status"] == "blocked"
-    assert result["block_reason"] == "missing_exchange_shop_asset_contract"
-    assert result["required_new_assets"] == [
-        "天地弈局兑换宝阁列表 scene（含返回、商品行1-5）",
-        "天地弈局兑换购买框 scene（含价格、+、+10、购买）",
-    ]
+    assert result == {"status": "completed", "purchases": []}
+    assert calls[0][1]["occurrence"] == occurrence
 
 
 def test_tiandi_yiju_group_selection_never_gets_exchange_tail() -> None:

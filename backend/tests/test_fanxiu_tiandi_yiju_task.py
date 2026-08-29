@@ -6,6 +6,10 @@ import threading
 
 import pytest
 
+from backend.core.fanxiu.activity.exchange_planning import (
+    ExchangeYieldFeatureSpec,
+    ExchangeYieldScatterSample,
+)
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju as tiandi_task
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju import (
@@ -553,13 +557,27 @@ def test_unified_closing_gap_fails_closed_when_freshness_is_missing() -> None:
         tiandi_task._required_closing_currency(detail, activity_id="activity-1")
 
 
-def test_shared_batch_planner_is_the_activity_neutral_implementation() -> None:
-    plan = tiandi_task._plan_shared_exchange_batch(
-        required_new_currency=50_000,
-    )
+def test_yield_ledger_keeps_large_history_when_bounded() -> None:
+    evidence: dict = {}
+    for rounds in [1_479, *range(1, 40)]:
+        evidence = tiandi_task._append_tiandi_yiju_yield_evidence(
+            evidence,
+            occurrence_instance_key="occurrence-1",
+            rounds=rounds,
+            currency_delta=rounds * 40,
+            process_identity=(13, "runtime_memory", 11, 22),
+            feature_item_usage={},
+        )
 
-    assert plan.requested_challenges == 10
-    assert plan.planning_mode == "probe"
+    rows = evidence[tiandi_task.TIANDI_YIJU_YIELD_LEDGER_KEY]
+    assert len(rows) == tiandi_task.TIANDI_YIJU_YIELD_LEDGER_LIMIT
+    assert any(row["rounds"] == 1_479 for row in rows)
+    loaded = tiandi_task._load_tiandi_yiju_yield_samples(
+        evidence,
+        occurrence_instance_key="occurrence-1",
+        allowed_feature_keys=set(),
+    )
+    assert sum(sample.attempt_count for sample in loaded) >= 1_479
 
 
 def test_wallet_identity_rejects_non_runtime_source() -> None:
@@ -576,10 +594,14 @@ def test_wallet_identity_rejects_non_runtime_source() -> None:
         )
 
 
-def test_exchange_loop_reuses_persisted_shop_target_and_live_wallet(
+def test_exchange_loop_supplies_shortfall_and_reuses_persisted_shop_target(
     monkeypatch,
 ) -> None:
-    activity = SimpleNamespace(id="activity-1")
+    activity = SimpleNamespace(
+        id="activity-1",
+        instance_key=_occurrence().instance_key,
+        evidence={},
+    )
 
     class _ExecResult:
         def first(self):
@@ -597,6 +619,15 @@ def test_exchange_loop_reuses_persisted_shop_target_and_live_wallet(
 
         def exec(self, _statement):
             return _ExecResult()
+
+        def get(self, _model, _identity):
+            return activity
+
+        def add(self, _row):
+            return None
+
+        def commit(self):
+            return None
 
     detail = SimpleNamespace(
         id="activity-1",
@@ -652,12 +683,6 @@ def test_exchange_loop_reuses_persisted_shop_target_and_live_wallet(
         wallet_calls.append((currency_type, allow_discovery))
         return next(wallets)
 
-    planner_calls = []
-
-    def planner(**kwargs):
-        planner_calls.append(kwargs)
-        return SimpleNamespace(requested_challenges=500)
-
     batch_calls = []
     locked_recommendation = {
         "ok": True,
@@ -681,41 +706,57 @@ def test_exchange_loop_reuses_persisted_shop_target_and_live_wallet(
     from backend.core.fanxiu.instrumentation import wallet as wallet_module
 
     monkeypatch.setattr(sqlmodel, "Session", _Session)
+    shop_snapshot_calls = []
     monkeypatch.setattr(
         exchange_event_module,
         "list_exchange_activity_snapshot",
-        lambda *_args, **_kwargs: SimpleNamespace(selected_activity=detail),
+        lambda *_args, **_kwargs: (
+            shop_snapshot_calls.append(1)
+            or SimpleNamespace(selected_activity=detail)
+        ),
     )
     monkeypatch.setattr(
         tiandi_task,
         "read_tiandi_yiju_runtime_snapshot",
         lambda: {"strength_item_id": 100000004, "natural_play_budget": 0},
     )
+    # The first supply is resource-capped and still leaves fewer than the
+    # planned 100 rounds.  The loop must consume that verified remainder.
+    inventory_counts = iter([40, 40, 1000, 1000])
     monkeypatch.setattr(
         backpack_module,
         "read_backpack_item_counts",
         lambda _ids, *, manager_key: (
-            {100000004: 1000, 100000008: 0, 100000002: 0},
+            {100000004: next(inventory_counts), 100000008: 0, 100000002: 0},
             {},
         ),
     )
     monkeypatch.setattr(wallet_module, "read_wallet_currency_snapshot", wallet)
-    monkeypatch.setattr(tiandi_task, "_plan_shared_exchange_batch", planner)
     monkeypatch.setattr(tiandi_task, "run_tiandi_yiju_bounded_batch", batch)
+    supply_calls = []
+
+    def supply(_runtime, **kwargs):
+        supply_calls.append(kwargs)
+        if False:
+            yield None
+        return {"status": "supplied"}
+
     result = _run(
         tiandi_task._run_tiandi_yiju_exchange_target_loop(
-            object(),
+            _Runtime(),
             occurrence=_occurrence(),
             stop_event=threading.Event(),
             max_batches=3,
+            supply_executor=supply,
         )
     )
 
     assert result["status"] == "completed"
-    assert result["rounds"] == 1500
-    assert len(planner_calls) == 3
-    assert [call["requested_rounds"] for call in batch_calls] == [500, 500, 500]
-    assert all(call["verified_available_rounds"] == 1000 for call in batch_calls)
+    assert result["rounds"] == 240
+    assert shop_snapshot_calls == [1]
+    assert supply_calls == [{"required_boxes": 100}]
+    assert [call["requested_rounds"] for call in batch_calls] == [40, 100, 100]
+    assert [call["verified_available_rounds"] for call in batch_calls] == [40, 1000, 1000]
     assert batch_calls[0]["recommendation_override"] is None
     assert batch_calls[0]["feature_item_available"] == {
         "master_skill_item": False,
@@ -723,35 +764,6 @@ def test_exchange_loop_reuses_persisted_shop_target_and_live_wallet(
     }
     assert batch_calls[1]["recommendation_override"] == locked_recommendation
     assert batch_calls[2]["recommendation_override"] == locked_recommendation
-    assert planner_calls == [
-        {
-            "required_new_currency": 50_000,
-            "measured_currency_delta": None,
-            "measured_challenges": None,
-            "previous_currency_delta": None,
-            "previous_challenges": None,
-            "probe_challenges": 100,
-            "maximum_batch_challenges": 50_000,
-        },
-        {
-            "required_new_currency": 10_000,
-            "measured_currency_delta": 40_000,
-            "measured_challenges": 500,
-            "previous_currency_delta": None,
-            "previous_challenges": None,
-            "probe_challenges": 100,
-            "maximum_batch_challenges": 10_000,
-        },
-        {
-            "required_new_currency": 5_000,
-            "measured_currency_delta": 5_000,
-            "measured_challenges": 500,
-            "previous_currency_delta": 40_000,
-            "previous_challenges": 500,
-            "probe_challenges": 100,
-            "maximum_batch_challenges": 5_000,
-        },
-    ]
     assert wallet_calls == [(13, True), (13, False), (13, False), (13, False)]
 
 
@@ -780,6 +792,12 @@ def test_formal_challenge_checks_rewards_before_entering_board(monkeypatch) -> N
             yield None
         return {"status": "completed"}
 
+    def refresh(*_args, **_kwargs):
+        events.append(("refresh",))
+        if False:
+            yield None
+        return {"shop_item_count": 19}
+
     def home_ready(*_args, **_kwargs):
         events.append(("home-ready",))
         if False:
@@ -787,6 +805,12 @@ def test_formal_challenge_checks_rewards_before_entering_board(monkeypatch) -> N
         return {"snapshot": {"ok": True}}
 
     monkeypatch.setattr(tiandi_task, "claim_tiandi_yiju_task_rewards", claim)
+    monkeypatch.setattr(tiandi_task, "_refresh_tiandi_yiju_exchange_facts", refresh)
+    monkeypatch.setattr(
+        tiandi_task,
+        "_assert_tiandi_yiju_production_asset_contract",
+        lambda _runtime: events.append(("asset-gate",)),
+    )
     monkeypatch.setattr(
         tiandi_task,
         "_wait_tiandi_yiju_home_ready",
@@ -809,11 +833,14 @@ def test_formal_challenge_checks_rewards_before_entering_board(monkeypatch) -> N
     assert events == [
         ("home-ready",),
         ("claim",),
+        ("refresh",),
+        ("asset-gate",),
         ("click", 677, "进入弈局"),
         ("wait", 678),
         ("challenge",),
     ]
     assert result["task_rewards"] == {"claimed_task_ids": []}
+    assert result["exchange_facts"] == {"shop_item_count": 19}
 
 
 def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -> None:
@@ -824,6 +851,7 @@ def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -
         ]
     )
     claim_calls = []
+    refresh_calls = []
     challenge_calls = []
 
     def claim(*_args, **_kwargs):
@@ -838,12 +866,24 @@ def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -
             yield None
         return {"status": "completed"}
 
+    def refresh(*_args, **_kwargs):
+        refresh_calls.append(1)
+        if False:
+            yield None
+        return {"shop_item_count": 19}
+
     def home_ready(*_args, **_kwargs):
         if False:
             yield None
         return {"snapshot": {"ok": True}}
 
     monkeypatch.setattr(tiandi_task, "claim_tiandi_yiju_task_rewards", claim)
+    monkeypatch.setattr(tiandi_task, "_refresh_tiandi_yiju_exchange_facts", refresh)
+    monkeypatch.setattr(
+        tiandi_task,
+        "_assert_tiandi_yiju_production_asset_contract",
+        lambda _runtime: None,
+    )
     monkeypatch.setattr(tiandi_task, "_wait_tiandi_yiju_home_ready", home_ready)
     monkeypatch.setattr(
         tiandi_task,
@@ -867,7 +907,7 @@ def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -
         )
     )
 
-    assert len(claim_calls) == len(challenge_calls) == 2
+    assert len(claim_calls) == len(refresh_calls) == len(challenge_calls) == 2
     assert first["task_rewards"]["claimed_task_ids"] == [101]
     assert second["task_rewards"] == {
         "claimed_task_ids": [],
@@ -876,21 +916,66 @@ def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -
 
 
 def test_batch_policy_closes_estimated_tail_with_one_hundred_rounds() -> None:
-    assert tiandi_task._select_tiandi_yiju_batch_rounds(
-        planned_rounds=40,
-        required_currency=99,
-        measured_currency_delta=100,
-        measured_rounds=100,
-    ) == 100
-    assert tiandi_task._select_tiandi_yiju_batch_rounds(
-        planned_rounds=40,
-        required_currency=99,
-        measured_currency_delta=100,
-        measured_rounds=100,
-    ) == 100
+    plan = tiandi_task._plan_tiandi_yiju_batch_rounds(
+        required_currency=1_000,
+        yield_samples=[ExchangeYieldScatterSample(4_100, 100)],
+    )
+
+    assert plan.estimated_remaining_rounds == 25
+    assert plan.challenge_batch_rounds == 100
+    assert plan.supply_target_rounds == 100
+    assert plan.planning_mode == "tail_100"
 
 
-def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
+def test_batch_policy_uses_all_scatter_weight_and_separates_supply_target() -> None:
+    plan = tiandi_task._plan_tiandi_yiju_batch_rounds(
+        required_currency=293_402,
+        yield_samples=[
+            ExchangeYieldScatterSample(450, 10),
+            ExchangeYieldScatterSample(
+                97_899,
+                1_479,
+                feature_item_usage=(("fourfold", 284), ("master", 480)),
+            ),
+            ExchangeYieldScatterSample(1_638, 41),
+        ],
+        feature_specs=[
+            ExchangeYieldFeatureSpec("fourfold", 3.0),
+            ExchangeYieldFeatureSpec("master", 1.0),
+        ],
+    )
+
+    assert plan.estimated_remaining_rounds == 7_167
+    assert plan.challenge_batch_rounds == 3_584
+    assert plan.supply_target_rounds == 7_167
+    assert plan.planning_mode == "evidence_50pct"
+
+
+def test_batch_policy_fails_closed_when_feature_multiplier_is_unknown() -> None:
+    with pytest.raises(ValueError, match="缺少道具增益规格"):
+        tiandi_task._plan_tiandi_yiju_batch_rounds(
+            required_currency=10_000,
+            yield_samples=[
+                ExchangeYieldScatterSample(
+                    20_000,
+                    100,
+                    feature_item_usage=(("unknown_item", 10),),
+                )
+            ],
+        )
+
+
+def test_batch_policy_without_authoritative_scatter_uses_probe_only() -> None:
+    plan = tiandi_task._plan_tiandi_yiju_batch_rounds(
+        required_currency=999_999,
+    )
+
+    assert plan.estimated_remaining_rounds is None
+    assert plan.challenge_batch_rounds == 100
+    assert plan.supply_target_rounds == 100
+
+
+def test_production_checkpoint_checks_reward_before_exchange_and_asset_gate(
     monkeypatch,
 ) -> None:
     import pytest
@@ -932,11 +1017,18 @@ def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
             yield None
         return {"shop_item_count": 19}
 
+    def claim(*_args, **_kwargs):
+        events.append("reward_checked")
+        if False:
+            yield None
+        return {"claimed_task_ids": []}
+
     monkeypatch.setattr(
         tiandi_task,
         "_refresh_tiandi_yiju_exchange_facts",
         refresh_exchange,
     )
+    monkeypatch.setattr(tiandi_task, "claim_tiandi_yiju_task_rewards", claim)
 
     with pytest.raises(RuntimeError, match="结果浮层尚未接入正式 scene"):
         _run(
@@ -949,7 +1041,7 @@ def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
             )
         )
 
-    assert events == ["exchange_refreshed"]
+    assert events == ["reward_checked", "exchange_refreshed"]
     assert runtime.clicks == []
 
 
@@ -1043,6 +1135,15 @@ def test_refresh_exchange_facts_uses_exact_occurrence_and_returns_by_runtime_gui
             or SimpleNamespace(
                 id=activity_id,
                 instance_key=occurrence.instance_key,
+                activity_type="tiandi-yiju",
+                is_active=True,
+                budget_ready=True,
+                exchange_plan={
+                    "budget_ready": True,
+                    "target_budgets": {
+                        "收尾道具": {"required_new_currency": 0}
+                    },
+                },
                 shop_items=[1, 2, 3],
                 current_currency=66,
                 cumulative_currency=88,
@@ -1073,6 +1174,7 @@ def test_refresh_exchange_facts_uses_exact_occurrence_and_returns_by_runtime_gui
         "shop_item_count": 3,
         "current_currency": 66,
         "cumulative_currency": 88,
+        "required_new_currency": 0,
     }
     assert runtime.clicks[0] == (677, "兑换宝阁", None)
     assert runtime.clicks[-1] == (677, 820, 1290)
@@ -1096,9 +1198,15 @@ def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) 
         "backend.core.fanxiu.activity.runtime_schedule.read_fanxiu_activity_runtime_schedule",
         lambda **_kwargs: {"available": True, "complete": True},
     )
+    schedule_select_calls = []
+
+    def select_activity(*_args, **kwargs):
+        schedule_select_calls.append(kwargs)
+        return empty_generator({"ok": True})
+
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.schedule_navigation.select_schedule_activity",
-        lambda *_args, **_kwargs: empty_generator({"ok": True}),
+        select_activity,
     )
     monkeypatch.setattr(
         tiandi_task,
@@ -1146,6 +1254,9 @@ def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) 
     )
 
     assert result["status"] == "completed"
-    assert refresh_calls == [{"occurrence": _occurrence()}]
+    assert schedule_select_calls[0]["expected_activity_id"] == _occurrence().activity_id
+    # The active-flow wrapper owns reward and shop refresh ordering; replacing
+    # that wrapper here intentionally bypasses both details.
+    assert refresh_calls == []
     assert loop_calls and loop_calls[0]["max_batches"] == 7
     assert all(click[1] != "己方中心棋点候选" for click in runtime.clicks)

@@ -66,22 +66,16 @@ def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occur
             runner, ctx, payload, stop_event, occurrence=occurrence
         ))
     if occurrence.activity_type == "tiandi-yiju":
-        # The lifecycle must retain this due side effect instead of silently
-        # omitting it.  The current asset tree has only #677-#686 and no
-        # production exchange-list or purchase-dialog contract, so fail
-        # closed before creating a Runtime or issuing any GUI action.
-        return {
-            "status": "blocked",
-            "message": (
-                "天地弈局兑换收尾已触发，但缺少正式兑换宝阁资产契约，"
-                "已在任何 GUI 动作前失败关闭"
-            ),
-            "block_reason": "missing_exchange_shop_asset_contract",
-            "required_new_assets": [
-                "天地弈局兑换宝阁列表 scene（含返回、商品行1-5）",
-                "天地弈局兑换购买框 scene（含价格、+、+10、购买）",
-            ],
-        }
+        from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_tail import (
+            execute_tiandi_yiju_exchange_tail_checkpoint,
+        )
+        return (yield from execute_tiandi_yiju_exchange_tail_checkpoint(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+            occurrence=occurrence,
+        ))
     raise RuntimeError(f"{occurrence.activity_type} 尚无兑换收尾执行适配器")
 
 

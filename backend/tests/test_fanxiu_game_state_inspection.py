@@ -19,6 +19,7 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
     refresh_redpacket_runtime_snapshot,
 )
 from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+    advance_scheduler_task_from_fact,
     set_scheduler_task_next_time,
     task_payload_with_meta,
 )
@@ -188,6 +189,47 @@ def test_scheduler_next_time_command_repairs_missing_standard_instance(tmp_path)
     tasks = json.loads(path.read_text(encoding="utf-8"))
     redpacket = next(task for task in tasks if task["id"] == "daily-redpacket")
     assert redpacket["next_time"] == "2026-07-28 12:01:00"
+
+
+@pytest.mark.parametrize("last_result", ["running", "error", "interrupted"])
+def test_fact_patrol_preserves_active_attempt_or_retry_backoff(tmp_path, last_result):
+    path = tmp_path / "scheduler_tasks.json"
+    path.write_text(json.dumps([{
+        "id": "daily-redpacket",
+        "next_time": "2026-07-28 12:10:00",
+        "last_result": last_result,
+        "attempt_id": "attempt-1",
+        "started_at": "2026-07-28 11:59:00",
+        "finished_at": None if last_result == "running" else "2026-07-28 12:00:00",
+    }]), encoding="utf-8")
+
+    result = advance_scheduler_task_from_fact(
+        "daily-redpacket",
+        datetime(2026, 7, 28, 12, 1, 0),
+        scheduler_state_path=path,
+    )
+
+    assert result == "2026-07-28 12:10:00"
+    task = json.loads(path.read_text(encoding="utf-8"))[0]
+    assert task["next_time"] == "2026-07-28 12:10:00"
+
+
+def test_fact_patrol_advances_normal_business_schedule(tmp_path):
+    path = tmp_path / "scheduler_tasks.json"
+    path.write_text(json.dumps([{
+        "id": "daily-redpacket",
+        "next_time": "2026-07-28 18:00:00",
+        "last_result": "success",
+        "finished_at": "2026-07-28 06:00:00",
+    }]), encoding="utf-8")
+
+    result = advance_scheduler_task_from_fact(
+        "daily-redpacket",
+        datetime(2026, 7, 28, 12, 1, 0),
+        scheduler_state_path=path,
+    )
+
+    assert result == "2026-07-28 12:01:00"
 
 
 def test_scheduler_payload_never_transports_inspection_business_context():

@@ -3,6 +3,7 @@ from __future__ import annotations
 """Minimal storage-bag supply transaction for 天地弈局 rounds."""
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_runtime_index
@@ -99,9 +100,22 @@ def plan_tiandi_yiju_supply(
     tree_count = _total(backpack, SACRED_TREE_ITEM_ID)
     if plan.cost_item_id != SACRED_TREE_ITEM_ID:
         raise RuntimeError("弈技·仙弈盒消耗物不是灵眼神树")
-    if not plan.ready or plan.total_cost > tree_count:
-        raise RuntimeError(
-            f"天地弈局补给不足：需灵眼神树 {plan.total_cost}，当前 {tree_count}"
+    affordable = min(
+        int(plan.exchange_count),
+        tree_count // max(1, int(plan.cost_per_exchange)),
+    )
+    if affordable <= 0 and plan.projected_stock < max(0, int(required_boxes)):
+        raise RuntimeError(f"天地弈局补给不足：当前灵眼神树 {tree_count}")
+    if affordable < int(plan.exchange_count) or not plan.ready:
+        projected = int(plan.current_stock) + affordable * int(plan.goods_per_exchange)
+        plan = replace(
+            plan,
+            target_stock=projected,
+            exchange_count=affordable,
+            total_cost=affordable * int(plan.cost_per_exchange),
+            projected_stock=projected,
+            ready=True,
+            reason=f"按当前灵眼神树与限购能力尽量补给至 {projected}",
         )
     return plan
 
@@ -159,7 +173,13 @@ def _open_sacred_tree(runtime: Any, snapshot: Mapping[str, Any], cards: Mapping[
         yield from runtime.wait_action_settle(0.3)
     yield from runtime.wait_view(ITEM_DETAIL_SCENE, timeout=8.0, label="天地弈局：灵眼神树详情")
     yield from runtime.wait_click(ITEM_DETAIL_SCENE, "使用（高风险）", timeout=8.0)
-    yield from runtime.wait_view(SACRED_ITEM_SCENE, timeout=10.0, label="天地弈局：神物兑换")
+    landed = yield from runtime.wait_view(
+        SACRED_ITEM_SCENE,
+        SACRED_SHOP_SCENE,
+        timeout=10.0,
+        label="天地弈局：神物兑换",
+    )
+    return int(getattr(landed, "id", landed))
 
 
 def _box(raw: Mapping[str, Any]) -> tuple[float, float, float, float]:
@@ -274,8 +294,11 @@ def ensure_tiandi_yiju_round_supply(
         yield from runtime.goto_view(WORLD_SCENE)
         return {"status": "sufficient", "boxes_after": _total(before, TIANDI_YIJU_BOX_ITEM_ID)}
     cards = dict(catalog_reader())
-    yield from _open_sacred_tree(runtime, before, cards)
-    yield from _open_tree_shop(runtime, before)
+    sacred_scene = yield from _open_sacred_tree(runtime, before, cards)
+    if sacred_scene == SACRED_ITEM_SCENE:
+        yield from _open_tree_shop(runtime, before)
+    elif sacred_scene != SACRED_SHOP_SCENE:
+        raise RuntimeError("灵眼神树使用后未进入神物兑换")
     plan = plan_tiandi_yiju_supply(before, dict(shop_reader()), required_boxes=required_boxes)
     yield from _open_box_product(runtime, plan)
     yield from _exchange_quantity(runtime, plan, buy_reader)
