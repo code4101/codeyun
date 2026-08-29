@@ -6,7 +6,7 @@
 
 - AI 接手整个仓库：先读 [AI_CONTEXT.md](./AI_CONTEXT.md)，再按其中链接进入具体业务域。
 - CodeYun 平台架构：进入 [platform/architecture](./platform/architecture/)；开发约定见 [platform/conventions](./platform/conventions/)。
-- 凡修：先读 [凡修文档地图](./domains/fanxiu/README.md)。
+- 凡修：先读 [凡修文档地图](./domains/fanxiu/README.md)；红包稳定路径与事故演进见 [凡修红包作业](./domains/fanxiu/jobs/凡修红包作业.md)。
 - 考勤：进入 [domains/attendance](./domains/attendance/)。
 - 星图笔记：进入 [domains/notes](./domains/notes/)。
 - 星云表格：进入 [domains/spreadsheets](./domains/spreadsheets/)。

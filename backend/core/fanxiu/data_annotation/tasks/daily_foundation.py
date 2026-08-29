@@ -9993,14 +9993,37 @@ class DailyFoundationTaskMixin:
                         raise RuntimeError(f"{task_label}：地点名称内部一致性校验失败：place={place!r}")
                     if click_x <= 0 or click_y <= 0:
                         raise RuntimeError(f"{task_label}：地点「{place}」 OCR 坐标无效，line={line}")
-                    self._log(
-                        "click",
-                        f"{task_label}：调用方目标地点「{place}」，"
-                        f"点击同一 OCR 地点上方热区=({click_x:.0f},{click_y:.0f})",
-                    )
-                    runtime.click_frame_point(279, click_x, click_y)
-                    yield from runtime.wait_action_settle(float(runtime.payload.get("place_click_settle_seconds") or 2.0))
-                    return place
+                    click_candidates = [(click_x, click_y)]
+                    location_width = float(line.get("w") or 0)
+                    fallback_x = click_x - min(40.0, max(18.0, location_width * 0.25))
+                    if (
+                        point_in_box(fallback_x, click_y, window_box)
+                        and not point_in_box(fallback_x, click_y, roster_box)
+                    ):
+                        click_candidates.append((fallback_x, click_y))
+
+                    settle_seconds = float(runtime.payload.get("place_click_settle_seconds") or 2.0)
+                    for attempt, (candidate_x, candidate_y) in enumerate(click_candidates, start=1):
+                        self._log(
+                            "click",
+                            f"{task_label}：调用方目标地点「{place}」，"
+                            f"点击同一 OCR 地点上方热区=({candidate_x:.0f},{candidate_y:.0f})"
+                            f"，尝试 {attempt}/{len(click_candidates)}",
+                        )
+                        runtime.click_frame_point(279, candidate_x, candidate_y)
+                        yield from runtime.wait_action_settle(settle_seconds)
+                        if not hasattr(runtime, "current_scene"):
+                            return place
+                        landed_scene, _score, _frame = runtime.current_scene([341, 279], update=True)
+                        if landed_scene != 279:
+                            return place
+                        if attempt < len(click_candidates):
+                            self._log(
+                                "warning",
+                                f"{task_label}：地点「{place}」点击未生效，仍在 #279，"
+                                "改用同一地点的备用热区重试",
+                            )
+                    raise RuntimeError(f"{task_label}：地点「{place}」点击重试后仍停在 #279")
                 if scroll_index >= max_scrolls:
                     break
                 direction_text = "向下" if direction == "down" else "向上"
