@@ -576,7 +576,7 @@ def test_wallet_identity_rejects_non_runtime_source() -> None:
         )
 
 
-def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
+def test_exchange_loop_reuses_persisted_shop_target_and_live_wallet(
     monkeypatch,
 ) -> None:
     activity = SimpleNamespace(id="activity-1")
@@ -598,65 +598,23 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
         def exec(self, _statement):
             return _ExecResult()
 
-    details = iter([
-        SimpleNamespace(
-            id="activity-1",
-            activity_type="tiandi-yiju",
-            is_active=True,
-            budget_ready=True,
-            currency_type=13,
-            exchange_plan={
-                "budget_ready": True,
-                "target_budgets": {
-                    "收尾道具": {"required_new_currency": 50_000},
+    detail = SimpleNamespace(
+        id="activity-1",
+        activity_type="tiandi-yiju",
+        is_active=True,
+        budget_ready=True,
+        currency_type=13,
+        exchange_plan={
+            "budget_ready": True,
+            "target_budgets": {
+                "收尾道具": {
+                    "target_total_tokens": 51_000,
+                    "target_remaining_tokens": 50_100,
+                    "required_new_currency": 50_000,
                 },
             },
-        ),
-        SimpleNamespace(
-            id="activity-1",
-            activity_type="tiandi-yiju",
-            is_active=True,
-            budget_ready=True,
-            currency_type=13,
-            exchange_plan={
-                "budget_ready": True,
-                "target_budgets": {
-                    "收尾道具": {"required_new_currency": 10_000},
-                },
-            },
-        ),
-        SimpleNamespace(
-            id="activity-1",
-            activity_type="tiandi-yiju",
-            is_active=True,
-            budget_ready=True,
-            currency_type=13,
-            exchange_plan={
-                "budget_ready": True,
-                "target_budgets": {
-                    "收尾道具": {"required_new_currency": 5_000},
-                },
-            },
-        ),
-        SimpleNamespace(
-            id="activity-1",
-            activity_type="tiandi-yiju",
-            is_active=True,
-            budget_ready=True,
-            currency_type=13,
-            exchange_plan={
-                "budget_ready": True,
-                "target_budgets": {
-                    "收尾道具": {"required_new_currency": 0},
-                },
-            },
-        ),
-    ])
-    collect_calls = []
-
-    def collect(_session, *, activity_id):
-        collect_calls.append(activity_id)
-        return next(details)
+        },
+    )
 
     wallets = iter([
         {
@@ -669,22 +627,22 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
         {
             "currency_type": 13,
             "source": "runtime_memory",
-            "exchange_currency": 200,
-            "cumulative_currency": 1_100,
+            "exchange_currency": 40_100,
+            "cumulative_currency": 41_000,
             "evidence": {"pid": 11, "process_start_ticks": 22},
         },
         {
             "currency_type": 13,
             "source": "runtime_memory",
-            "exchange_currency": 300,
-            "cumulative_currency": 1_200,
+            "exchange_currency": 45_100,
+            "cumulative_currency": 46_000,
             "evidence": {"pid": 11, "process_start_ticks": 22},
         },
         {
             "currency_type": 13,
             "source": "runtime_memory",
-            "exchange_currency": 600,
-            "cumulative_currency": 1_500,
+            "exchange_currency": 50_100,
+            "cumulative_currency": 51_000,
             "evidence": {"pid": 11, "process_start_ticks": 22},
         },
     ])
@@ -718,12 +676,16 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
         }
 
     import sqlmodel
-    from backend.core.fanxiu.activity import tiandi_yiju as activity_module
+    from backend.core.fanxiu.activity import exchange_event as exchange_event_module
     from backend.core.fanxiu.instrumentation import backpack as backpack_module
     from backend.core.fanxiu.instrumentation import wallet as wallet_module
 
     monkeypatch.setattr(sqlmodel, "Session", _Session)
-    monkeypatch.setattr(activity_module, "collect_and_store_tiandi_yiju_activity", collect)
+    monkeypatch.setattr(
+        exchange_event_module,
+        "list_exchange_activity_snapshot",
+        lambda *_args, **_kwargs: SimpleNamespace(selected_activity=detail),
+    )
     monkeypatch.setattr(
         tiandi_task,
         "read_tiandi_yiju_runtime_snapshot",
@@ -741,7 +703,7 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
     monkeypatch.setattr(tiandi_task, "_plan_shared_exchange_batch", planner)
     monkeypatch.setattr(tiandi_task, "run_tiandi_yiju_bounded_batch", batch)
     result = _run(
-        tiandi_task.run_tiandi_yiju_exchange_target_loop(
+        tiandi_task._run_tiandi_yiju_exchange_target_loop(
             object(),
             occurrence=_occurrence(),
             stop_event=threading.Event(),
@@ -769,29 +731,148 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
             "previous_currency_delta": None,
             "previous_challenges": None,
             "probe_challenges": 100,
-            "maximum_batch_challenges": 500,
+            "maximum_batch_challenges": 50_000,
         },
         {
             "required_new_currency": 10_000,
-            "measured_currency_delta": 100,
+            "measured_currency_delta": 40_000,
             "measured_challenges": 500,
             "previous_currency_delta": None,
             "previous_challenges": None,
             "probe_challenges": 100,
-            "maximum_batch_challenges": 500,
+            "maximum_batch_challenges": 10_000,
         },
         {
             "required_new_currency": 5_000,
-            "measured_currency_delta": 100,
+            "measured_currency_delta": 5_000,
             "measured_challenges": 500,
-            "previous_currency_delta": 100,
+            "previous_currency_delta": 40_000,
             "previous_challenges": 500,
             "probe_challenges": 100,
-            "maximum_batch_challenges": 500,
+            "maximum_batch_challenges": 5_000,
         },
     ]
-    assert collect_calls == ["activity-1"] * 4
     assert wallet_calls == [(13, True), (13, False), (13, False), (13, False)]
+
+
+def test_formal_challenge_checks_rewards_before_entering_board(monkeypatch) -> None:
+    events = []
+
+    class _FormalRuntime(_Runtime):
+        def click_shape_center(self, scene, shape):
+            events.append(("click", scene, shape))
+
+        def wait_scene(self, scene, **_options):
+            events.append(("wait", scene))
+            if False:
+                yield None
+            return scene
+
+    def claim(*_args, **_kwargs):
+        events.append(("claim",))
+        if False:
+            yield None
+        return {"claimed_task_ids": []}
+
+    def challenge(*_args, **_kwargs):
+        events.append(("challenge",))
+        if False:
+            yield None
+        return {"status": "completed"}
+
+    def home_ready(*_args, **_kwargs):
+        events.append(("home-ready",))
+        if False:
+            yield None
+        return {"snapshot": {"ok": True}}
+
+    monkeypatch.setattr(tiandi_task, "claim_tiandi_yiju_task_rewards", claim)
+    monkeypatch.setattr(
+        tiandi_task,
+        "_wait_tiandi_yiju_home_ready",
+        home_ready,
+    )
+    monkeypatch.setattr(
+        tiandi_task,
+        "_run_tiandi_yiju_exchange_target_loop",
+        challenge,
+    )
+
+    result = _run(
+        tiandi_task.run_tiandi_yiju_exchange_target_loop(
+            _FormalRuntime(),
+            occurrence=_occurrence(),
+            stop_event=threading.Event(),
+        )
+    )
+
+    assert events == [
+        ("home-ready",),
+        ("claim",),
+        ("click", 677, "进入弈局"),
+        ("wait", 678),
+        ("challenge",),
+    ]
+    assert result["task_rewards"] == {"claimed_task_ids": []}
+
+
+def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -> None:
+    reward_results = iter(
+        [
+            {"claimed_task_ids": [101], "idempotent": False},
+            {"claimed_task_ids": [], "idempotent": True},
+        ]
+    )
+    claim_calls = []
+    challenge_calls = []
+
+    def claim(*_args, **_kwargs):
+        claim_calls.append(1)
+        if False:
+            yield None
+        return next(reward_results)
+
+    def challenge(*_args, **_kwargs):
+        challenge_calls.append(1)
+        if False:
+            yield None
+        return {"status": "completed"}
+
+    def home_ready(*_args, **_kwargs):
+        if False:
+            yield None
+        return {"snapshot": {"ok": True}}
+
+    monkeypatch.setattr(tiandi_task, "claim_tiandi_yiju_task_rewards", claim)
+    monkeypatch.setattr(tiandi_task, "_wait_tiandi_yiju_home_ready", home_ready)
+    monkeypatch.setattr(
+        tiandi_task,
+        "_run_tiandi_yiju_exchange_target_loop",
+        challenge,
+    )
+    runtime = _Runtime()
+
+    first = _run(
+        tiandi_task.run_tiandi_yiju_exchange_target_loop(
+            runtime,
+            occurrence=_occurrence(),
+            stop_event=threading.Event(),
+        )
+    )
+    second = _run(
+        tiandi_task.run_tiandi_yiju_exchange_target_loop(
+            runtime,
+            occurrence=_occurrence(),
+            stop_event=threading.Event(),
+        )
+    )
+
+    assert len(claim_calls) == len(challenge_calls) == 2
+    assert first["task_rewards"]["claimed_task_ids"] == [101]
+    assert second["task_rewards"] == {
+        "claimed_task_ids": [],
+        "idempotent": True,
+    }
 
 
 def test_batch_policy_closes_estimated_tail_with_one_hundred_rounds() -> None:
@@ -800,15 +881,13 @@ def test_batch_policy_closes_estimated_tail_with_one_hundred_rounds() -> None:
         required_currency=99,
         measured_currency_delta=100,
         measured_rounds=100,
-        available_rounds=500,
     ) == 100
     assert tiandi_task._select_tiandi_yiju_batch_rounds(
         planned_rounds=40,
         required_currency=99,
         measured_currency_delta=100,
         measured_rounds=100,
-        available_rounds=60,
-    ) == 60
+    ) == 100
 
 
 def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
@@ -833,6 +912,11 @@ def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
         lambda *_args, **_kwargs: (
             yield from (_value for _value in ())
         ),
+    )
+    monkeypatch.setattr(
+        tiandi_task,
+        "_goto_tiandi_yiju_schedule",
+        lambda *_args, **_kwargs: (yield from (_value for _value in ())),
     )
     monkeypatch.setattr(
         tiandi_task,
@@ -866,7 +950,32 @@ def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
         )
 
     assert events == ["exchange_refreshed"]
-    assert runtime.clicks == [("goto", 66, None)]
+    assert runtime.clicks == []
+
+
+def test_schedule_entry_uses_observed_cover_hop() -> None:
+    events = []
+
+    class _ScheduleRuntime:
+        def goto_view(self, scene):
+            events.append(("goto", scene))
+            if False:
+                yield None
+            return scene
+
+        def wait_click_then_view(self, source, shape, targets, **_options):
+            events.append(("click", source, shape, tuple(targets)))
+            if False:
+                yield None
+            return SimpleNamespace(id=477 if source == 34 else 66)
+
+    _run(tiandi_task._goto_tiandi_yiju_schedule(_ScheduleRuntime()))
+
+    assert events == [
+        ("goto", 34),
+        ("click", 34, "日程", (66, 477)),
+        ("click", 477, "返回", (66,)),
+    ]
 
 
 def test_refresh_exchange_facts_uses_exact_occurrence_and_returns_by_runtime_gui(
@@ -990,6 +1099,11 @@ def test_production_checkpoint_routes_to_runtime_target_batch_loop(monkeypatch) 
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.schedule_navigation.select_schedule_activity",
         lambda *_args, **_kwargs: empty_generator({"ok": True}),
+    )
+    monkeypatch.setattr(
+        tiandi_task,
+        "_goto_tiandi_yiju_schedule",
+        lambda *_args, **_kwargs: empty_generator(66),
     )
     monkeypatch.setattr(
         tiandi_task,
