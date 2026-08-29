@@ -61,10 +61,15 @@ from backend.core.fanxiu.runtime_gui.magic_invasion import (
     MagicInvasionBottomTabTarget,
     resolve_magic_invasion_bottom_tab,
 )
+from backend.core.fanxiu.runtime_gui.exchange_shop import (
+    ExchangeShopItemTarget,
+    resolve_exchange_shop_item,
+)
 
 __all__ = [
     "DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD",
     "GuiCandidate",
+    "ExchangeShopItemTarget",
     "OcrNameMatch",
     "MenuAnchorEvidence",
     "MagicInvasionBottomTabTarget",
@@ -100,6 +105,7 @@ __all__ = [
     "register_storage_bag_viewport_from_quantity_ocr",
     "rank_ocr_name_matches",
     "resolve_magic_invasion_bottom_tab",
+    "resolve_exchange_shop_item",
     "resolve_vertical_bottom_tab",
     "register_storage_bag_viewport",
     "score_runtime_gui_pair",

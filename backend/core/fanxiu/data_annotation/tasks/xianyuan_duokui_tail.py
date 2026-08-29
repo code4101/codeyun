@@ -13,15 +13,19 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
     group_ocr_tokens as _group_ocr_tokens,
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
-    exchange_quantity_clicks as yunmeng_quantity_clicks,
+    authorize_exchange_purchase,
+    exchange_quantity_clicks,
     ocr_contains_amount as _ocr_contains_amount,
-    plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
+    plan_exchange_tail_physical_actions,
     plan_exchange_tail_purchases,
     verify_exchange_detail as _detail_matches,
+    verify_exchange_purchase_counts,
+    verify_exchange_wallet,
 )
 from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
     resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
 )
+from backend.core.fanxiu.runtime_gui.exchange_shop import resolve_exchange_shop_item
 
 
 XIANYUAN_SHOP_GEOMETRY_SCENE = 559
@@ -116,29 +120,44 @@ def _open_exchange_tab(runtime: Any, scene: int) -> None:
     runtime.click_frame_point(scene, target.x, target.y)
 
 
-def _click_exact_compact_shop_name(runtime: Any, expected_name: str) -> None:
-    """Click one visible shop name after punctuation-insensitive exact matching."""
+def _click_exact_compact_shop_name(
+    runtime: Any,
+    expected_name: str,
+    *,
+    expected_unit_price: int | None = None,
+) -> None:
+    """Collect the current shop frame, resolve one product, and click it."""
 
-    target = _compact(expected_name)
     lines = _group_ocr_tokens(runtime.full_frame_ocr_tokens(update=True))
-    matches = [
-        line
-        for line in lines
-        if _compact(line.get("text")) == target
-        and 120 <= float(line.get("x") or 0) <= 700
-        and 250 <= float(line.get("y") or 0) <= 1400
-    ]
-    if len(matches) != 1:
+    shop_view = runtime.view(XIANYUAN_SHOP_GEOMETRY_SCENE)
+    list_shape = shop_view.get_shape("商品列表")
+    if list_shape is None:
+        raise RuntimeError(
+            f"仙缘_兑换收尾：缺少 #{XIANYUAN_SHOP_GEOMETRY_SCENE}「商品列表」Shape"
+        )
+    row_boxes = []
+    for slot in range(1, 6):
+        row_shape = shop_view.get_shape(f"商品行{slot}")
+        if row_shape is not None:
+            row_boxes.append(row_shape.box())
+    try:
+        target = resolve_exchange_shop_item(
+            lines,
+            product_list_box=list_shape.box(),
+            product_row_boxes=row_boxes,
+            expected_name=expected_name,
+            expected_unit_price=expected_unit_price,
+        )
+    except RuntimeError as exc:
         visible = " | ".join(_compact(line.get("text")) for line in lines)
         raise RuntimeError(
-            f"仙缘_兑换收尾：商品名 {expected_name} 唯一命中数为 {len(matches)}；"
+            f"仙缘_兑换收尾：{exc}；"
             f"{visible[:1000]}"
-        )
-    row = matches[0]
+        ) from exc
     runtime.click_frame_point(
         XIANYUAN_SHOP_GEOMETRY_SCENE,
-        float(row.get("x") or 0) + float(row.get("w") or 0) / 2,
-        float(row.get("y") or 0) + float(row.get("h") or 0) / 2,
+        target.x,
+        target.y,
     )
 
 
@@ -328,8 +347,11 @@ def execute_xianyuan_duokui_tail_checkpoint(
         run_date=occurrence.end_at.date(),
         label=label,
     )
-    actions = plan_yunmeng_tail_physical_actions(detail.shop_items, purchases)
-    initial_counts = {int(item.goods_id): int(item.purchased_count) for item in detail.shop_items}
+    actions = plan_exchange_tail_physical_actions(
+        detail.shop_items,
+        purchases,
+        label=label,
+    )
     expected_wallet = int(current)
     executed: list[dict[str, Any]] = []
 
@@ -355,14 +377,18 @@ def execute_xianyuan_duokui_tail_checkpoint(
         # generic five-slot planner is clamped.  Click the exact OCR name,
         # rather than a slot center that may fall between the fifth and sixth
         # cards.  Runtime detail verification still closes the identity gate.
-        _click_exact_compact_shop_name(runtime, action.name)
+        _click_exact_compact_shop_name(
+            runtime,
+            action.name,
+            expected_unit_price=action.unit_price,
+        )
         yield from runtime.wait_view(
             COMMON_SHOP_DIALOG_SCENE,
             timeout=15.0,
             label=f"{label}：等待 {action.name} 购买框",
         )
         _detail_matches(runtime, expected_name=action.name, expected_price=action.unit_price)
-        plus_ten, plus_one = yunmeng_quantity_clicks(
+        plus_ten, plus_one = exchange_quantity_clicks(
             action.quantity,
             buying_to_cap=action.clears_row,
         )
@@ -373,9 +399,14 @@ def execute_xianyuan_duokui_tail_checkpoint(
             runtime.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+")
             yield from runtime.wait_action_settle(0.08)
         yield from runtime.wait_action_settle(0.35)
-        cost = int(action.quantity) * int(action.unit_price)
-        if expected_wallet - cost < int(planning["reserved_tokens"]):
-            raise RuntimeError(f"{label}：{action.name} 将突破锁定资源预留额")
+        cost, remaining_wallet = authorize_exchange_purchase(
+            current_wallet=expected_wallet,
+            quantity=action.quantity,
+            unit_price=action.unit_price,
+            reserved_tokens=planning["reserved_tokens"],
+            name=action.name,
+            label=label,
+        )
         totals, total_text = runtime.ocr_numbers_in_shapes(
             COMMON_SHOP_DIALOG_SCENE,
             ("价格",),
@@ -387,11 +418,13 @@ def execute_xianyuan_duokui_tail_checkpoint(
             )
         runtime.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
         actual_wallet, _ = yield from _shop_ready(runtime)
-        expected_wallet -= cost
-        if actual_wallet != expected_wallet:
-            raise RuntimeError(
-                f"{label}：{action.name} 后余额 {actual_wallet} != {expected_wallet}"
-            )
+        expected_wallet = remaining_wallet
+        verify_exchange_wallet(
+            expected_wallet,
+            {"商店": actual_wallet},
+            label=label,
+            stage=f"购买 {action.name} 后",
+        )
         executed.append({
             "goods_id": action.goods_id,
             "name": action.name,
@@ -400,22 +433,19 @@ def execute_xianyuan_duokui_tail_checkpoint(
         })
 
     final_current, final_cumulative = yield from _shop_ready(runtime)
-    if final_current != int(planning["planned_remaining_tokens"]):
-        raise RuntimeError(f"{label}：最终余额没有闭环为 {planning['planned_remaining_tokens']}")
+    verify_exchange_wallet(
+        int(planning["planned_remaining_tokens"]),
+        {"商店": final_current, "执行账本": expected_wallet},
+        label=label,
+    )
     with Session(engine) as session:
         final_detail = collect_and_store_xianyuan_duokui_activity(session, activity_id=activity_id)
-        final_rows = {int(item.goods_id): item for item in final_detail.shop_items}
-        for purchase in purchases:
-            original = next(item for item in detail.shop_items if int(item.goods_id) == purchase.goods_id)
-            if int(original.purchase_limit) < 0:
-                continue
-            actual = final_rows.get(purchase.goods_id)
-            actual_count = int(actual.purchased_count) if actual is not None else -1
-            expected_count = initial_counts[purchase.goods_id] + purchase.quantity
-            if actual_count != expected_count:
-                raise RuntimeError(
-                    f"{label}：{purchase.name} 最终购买数 {actual_count} != {expected_count}"
-                )
+        verify_exchange_purchase_counts(
+            detail.shop_items,
+            final_detail.shop_items,
+            purchases,
+            label=label,
+        )
         activity = session.get(FanxiuExchangeActivity, activity_id)
         if activity is None:
             raise RuntimeError(f"{label}：活动实例消失")

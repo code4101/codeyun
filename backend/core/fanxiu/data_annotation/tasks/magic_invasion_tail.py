@@ -13,9 +13,12 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
     group_ocr_tokens as _group_ocr_tokens,
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
-    exchange_quantity_clicks as yunmeng_quantity_clicks,
-    plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
+    authorize_exchange_purchase,
+    exchange_quantity_clicks,
+    plan_exchange_tail_physical_actions,
     plan_exchange_tail_purchases,
+    verify_exchange_purchase_counts,
+    verify_exchange_wallet,
 )
 from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
     resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
@@ -405,20 +408,22 @@ def execute_magic_invasion_tail_checkpoint(
         allow_discovery=False,
     )
     expected_wallet = int(wallet["exchange_currency"])
-    if int(detail.current_currency) != expected_wallet:
-        raise RuntimeError(
-            f"{label}：商店与钱包不是同窗口事实："
-            f"activity={detail.current_currency}, wallet={expected_wallet}"
-        )
+    verify_exchange_wallet(
+        expected_wallet,
+        {"商店": detail.current_currency},
+        label=label,
+        stage="购买前",
+    )
     purchases, retained_locked, planning = plan_exchange_tail_purchases(
         detail,
         run_date=occurrence.end_at.date(),
         label=label,
     )
-    actions = plan_yunmeng_tail_physical_actions(detail.shop_items, purchases)
-    initial_counts = {
-        int(item.goods_id): int(item.purchased_count) for item in detail.shop_items
-    }
+    actions = plan_exchange_tail_physical_actions(
+        detail.shop_items,
+        purchases,
+        label=label,
+    )
     executed: list[dict[str, Any]] = []
 
     # The shop exposes five rows.  Allocation is already fixed by business
@@ -441,7 +446,7 @@ def execute_magic_invasion_tail_checkpoint(
             label=f"{label}：等待 {action.name} 购买框",
         )
         _verify_dialog(runtime, name=action.name, unit_price=action.unit_price)
-        plus_ten, plus_one = yunmeng_quantity_clicks(
+        plus_ten, plus_one = exchange_quantity_clicks(
             action.quantity,
             buying_to_cap=action.clears_row,
         )
@@ -454,15 +459,20 @@ def execute_magic_invasion_tail_checkpoint(
             if (index + 1) % 25 == 0:
                 yield from runtime.wait_action_settle(0.05)
         yield from runtime.wait_action_settle(0.35)
-        cost = int(action.quantity) * int(action.unit_price)
-        if expected_wallet - cost < int(planning["reserved_tokens"]):
-            raise RuntimeError(f"{label}：{action.name} 将突破锁定资源预留额")
+        _cost, remaining_wallet = authorize_exchange_purchase(
+            current_wallet=expected_wallet,
+            quantity=action.quantity,
+            unit_price=action.unit_price,
+            reserved_tokens=planning["reserved_tokens"],
+            name=action.name,
+            label=label,
+        )
         runtime.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
         yield from _wait_exchange_shop_ready(
             runtime,
             label=f"{label}：购买 {action.name} 后返回宝阁",
         )
-        expected_wallet -= cost
+        expected_wallet = remaining_wallet
         executed.append({
             "goods_id": action.goods_id,
             "name": action.name,
@@ -478,30 +488,25 @@ def execute_magic_invasion_tail_checkpoint(
             runtime_period_override=runtime_period_override,
         )
         session.commit()
-    final_rows = {int(item.goods_id): item for item in final_detail.shop_items}
-    for purchase in purchases:
-        original = next(
-            item for item in detail.shop_items if int(item.goods_id) == purchase.goods_id
-        )
-        if int(original.purchase_limit) < 0:
-            continue
-        actual = final_rows.get(purchase.goods_id)
-        actual_count = int(actual.purchased_count) if actual is not None else -1
-        expected_count = initial_counts[purchase.goods_id] + purchase.quantity
-        if actual_count != expected_count:
-            raise RuntimeError(
-                f"{label}：{purchase.name} 最终购买数 {actual_count} != {expected_count}"
-            )
+    verify_exchange_purchase_counts(
+        detail.shop_items,
+        final_detail.shop_items,
+        purchases,
+        label=label,
+    )
     final_wallet = read_wallet_currency_snapshot(
         int(final_detail.currency_type),
         allow_discovery=False,
     )
-    if (
-        int(final_detail.current_currency) != expected_wallet
-        or int(final_wallet["exchange_currency"]) != expected_wallet
-        or expected_wallet != int(planning["planned_remaining_tokens"])
-    ):
-        raise RuntimeError(f"{label}：最终钱包没有闭环为 {expected_wallet}")
+    verify_exchange_wallet(
+        expected_wallet,
+        {
+            "商店": final_detail.current_currency,
+            "钱包": final_wallet["exchange_currency"],
+            "计划": planning["planned_remaining_tokens"],
+        },
+        label=label,
+    )
     # #519 is deliberately recognized by business OCR because its historical
     # currency label differs from the old required identity anchor. Leave via
     # its annotated return first; asking the global navigator to start from an

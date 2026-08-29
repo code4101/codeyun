@@ -23,6 +23,7 @@ from backend.core.fanxiu.instrumentation.chat import (
     read_chat_channel_gui_target,
     read_repeated_chat_phrase,
 )
+from backend.core.fanxiu.runtime.mumu_control import text_mumu_adb
 
 
 REDPACKET_OCR_PATTERN = re.compile(r"首领[累猎]杀|奖赏|第一|获赠|红包")
@@ -306,55 +307,13 @@ class DailyRedpacketTaskMixin:
             f"anchors={list(anchors or ())}，OCR={last_text[:200]}"
         )
 
-    def _daily_qmch_copy_box(
-        self,
-        ctx: dict[str, Any],
-        frame: str,
-    ) -> dict[str, Any]:
-        """Resolve the moving copy icon uniquely inside the verified QMCH card."""
-
-        image = (ctx.get("images") or {}).get(673)
-        if not isinstance(image, dict):
-            raise RuntimeError("日常_红包：缺少 #673 业务参考帧")
-        card = self._find_shape(image, "鸿运福签卡片")
-        copy_shape = self._find_shape(image, "复制")
-        if not isinstance(card, dict) or not isinstance(copy_shape, dict):
-            raise RuntimeError("日常_红包：#673 缺少鸿运福签卡片/复制子控件")
-        result = self._match_shape(
-            ctx,
-            image,
-            {
-                **copy_shape,
-                "floating": True,
-                "_match_scan_box": card,
-            },
-            frame,
-            condition="image",
+    @staticmethod
+    def _normalize_daily_qmch_phrase(value: Any) -> str:
+        return re.sub(
+            r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
+            "",
+            str(value or ""),
         )
-        resolved = result.get("resolved_box") if result.get("matched") else None
-        if isinstance(resolved, dict):
-            return resolved
-
-        # The moving banner changes the icon crop enough to miss the global
-        # scene threshold.  Inside the already-verified parent card, accept a
-        # single candidate at >=60 only when it leads to the #390 post-state.
-        candidates = sorted(
-            (
-                item
-                for item in (result.get("matches") or [])
-                if isinstance(item, dict)
-                and float(item.get("crop_similarity") or 0) >= 60.0
-                and isinstance(item.get("box"), dict)
-            ),
-            key=lambda item: float(item.get("crop_similarity") or 0),
-            reverse=True,
-        )
-        if len(candidates) != 1:
-            raise RuntimeError(
-                "日常_红包：#673 卡片内复制图标无法唯一定位，"
-                f"candidate_count={len(candidates)}"
-            )
-        return candidates[0]["box"]
 
     def _execute_daily_qmch_reward_route(
         self,
@@ -446,29 +405,41 @@ class DailyRedpacketTaskMixin:
             673,
             "输入框空态",
             timeout=transition_timeout,
-            label="鸿运福签：复制前确认输入框为空",
+            label="鸿运福签：输入话术前确认输入框为空",
         )
-        copy_frame = runtime.cur_frame(update=True)
-        copy_box = self._daily_qmch_copy_box(ctx, copy_frame)
-        runtime.click_frame_point(
+        # Runtime 已经给出当前活动频道的唯一话术；GUI 只负责进入对应聊天、
+        # 输入、发送和领取。禁止再依赖会随卡片动画漂移的复制图标。
+        runtime.click_shape_center(673, "输入框空态")
+        yield from runtime.wait_action_settle(0.5)
+        text_mumu_adb(phrase)
+        yield from runtime.wait_action_settle(0.5)
+        # 输入法打开时，第一次点击发送热区只收起输入层。收起后先 OCR
+        # 回读输入框，确认 Runtime 话术确实落入 GUI，再授权真正发送。
+        runtime.click_shape_center_fast(673, "发送")
+        yield from runtime.wait_action_settle(0.8)
+        typed_frame = runtime.cur_frame(update=True)
+        typed_text = runtime.ocr_text_in_shapes(
             673,
-            float(copy_box["x"]) + float(copy_box["w"]) / 2,
-            float(copy_box["y"]) + float(copy_box["h"]) / 2,
+            ("输入框空态",),
+            padding=0,
+            frame_data_url=typed_frame,
+            crop=True,
         )
-        yield from runtime.wait_view(
-            390,
-            timeout=transition_timeout,
-            label="鸿运福签：等待复制后的输入层",
-        )
-        yield from runtime.wait_click(
-            390,
+        normalized_phrase = self._normalize_daily_qmch_phrase(phrase)
+        normalized_typed = self._normalize_daily_qmch_phrase(typed_text)
+        if not normalized_phrase or normalized_phrase not in normalized_typed:
+            raise RuntimeError(
+                "日常_红包：Runtime 话术输入后 OCR 回读不一致，拒绝发送："
+                f"expected={normalized_phrase[:80]}, actual={normalized_typed[:80]}"
+            )
+        yield from runtime.wait_click_then_shape(
+            673,
             "发送",
-            timeout=transition_timeout,
-        )
-        yield from runtime.wait_view(
             397,
+            "开",
             timeout=transition_timeout,
-            label="鸿运福签：发送后等待真实开包弹窗",
+            max_clicks=1,
+            label="鸿运福签：发送一次并等待真实开包弹窗",
         )
 
         # Sending can race with a claim performed elsewhere.  Re-check the

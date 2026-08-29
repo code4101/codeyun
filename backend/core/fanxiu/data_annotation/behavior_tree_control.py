@@ -673,6 +673,77 @@ def set_scheduler_task_next_time(
     return str(task["next_time"]) if task.get("next_time") else None
 
 
+def advance_scheduler_task_from_fact(
+    task_name: str,
+    due_at: datetime,
+    *,
+    scheduler_state_path: Path | None = None,
+) -> str | None:
+    """Advance an idle Job from a passive fact without defeating attempt state.
+
+    Patrol facts are level-triggered and can remain true after a failed attempt.
+    They may advance a normal business schedule, but must not overwrite a live
+    attempt or the retry time owned by an error/interruption terminal.
+    """
+
+    path = scheduler_state_path or fanxiu_data_annotation_scheduler_state_path()
+    lock_path = path.with_name(f"{path.name}.lock")
+    with FileLock(str(lock_path), timeout=30):
+        tasks = read_data_annotation_json(path, [])
+        if not isinstance(tasks, list):
+            tasks = []
+        task = next(
+            (
+                item
+                for item in tasks
+                if isinstance(item, dict)
+                and str(item.get("id") or "") == str(task_name or "")
+            ),
+            None,
+        )
+        if task is None:
+            tasks, _changed = repair_data_annotation_scheduler_tasks(
+                tasks,
+                default_data_annotation_scheduler_tasks(),
+                {},
+                task_supported=task_supported,
+                now=due_at,
+            )
+            task = next(
+                item
+                for item in tasks
+                if str(item.get("id") or "") == str(task_name or "")
+            )
+
+        last_result = str(task.get("last_result") or "").strip().lower()
+        scheduled_at = parse_data_annotation_task_time(task.get("next_time"))
+        due_timestamp = due_at.timestamp()
+        attempt_active = bool(
+            last_result == "running"
+            or (
+                task.get("attempt_id")
+                and task.get("started_at")
+                and not task.get("finished_at")
+            )
+        )
+        retry_backoff_active = bool(
+            last_result in {"error", "interrupted"}
+            and scheduled_at is not None
+            and scheduled_at > due_timestamp
+        )
+        if attempt_active or retry_backoff_active:
+            return str(task["next_time"]) if task.get("next_time") else None
+
+        task = set_scheduler_task_trigger_time(
+            tasks,
+            task_name,
+            due_at,
+            now=due_at,
+        )
+        write_data_annotation_json(path, tasks)
+    return str(task["next_time"]) if task.get("next_time") else None
+
+
 def trigger_scheduler_task_once(
     task_id: str,
     *,

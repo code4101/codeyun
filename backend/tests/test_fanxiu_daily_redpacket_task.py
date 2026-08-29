@@ -415,19 +415,18 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
             actions.append(("click", view, shape))
             yield "click"
 
+        def wait_click_then_shape(self, view, shape, target_view, target_shape, **_kwargs):
+            actions.append(("send", view, shape, target_view, target_shape))
+            yield "send"
+
         def wait_action_settle(self, _seconds):
             yield "settle"
 
-        def ocr_text(self, **_kwargs):
+        def ocr_text_in_shapes(self, *_args, **_kwargs):
             return "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖"
 
     runtime = Runtime()
     row = SimpleNamespace(x=100, y=200, w=80, h=40)
-    monkeypatch.setattr(
-        runner,
-        "_daily_qmch_copy_box",
-        lambda *_args: {"x": 10, "y": 20, "w": 30, "h": 40},
-    )
     monkeypatch.setattr(
         runner,
         "_wait_daily_qmch_activity_row",
@@ -458,6 +457,7 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
             "phrase": "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖",
         },
     )
+    monkeypatch.setattr(module, "text_mumu_adb", lambda text: actions.append(("text", text)))
     result = _consume(runner._execute_daily_qmch_reward_route(
         runtime,
         {},
@@ -473,8 +473,10 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
 
     assert result["opened_count"] == 1
     assert ("tab", 34, "聊天", 332) in actions
-    assert ("point", 673, 25.0, 40.0) in actions
-    assert ("click", 390, "发送") in actions
+    assert ("shape_click", 673, "输入框空态", {}) in actions
+    assert ("text", "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖") in actions
+    assert ("shape_click_fast", 673, "发送", {}) in actions
+    assert ("send", 673, "发送", 397, "开") in actions
     assert [item for item in actions if item == ("click", 397, "开")] == [
         ("click", 397, "开")
     ]
@@ -483,37 +485,6 @@ def test_daily_redpacket_qmch_sends_and_opens_once_then_requires_same_uid_termin
         ("tab", 30, "返回", 332),
         ("tab", 332, "返回", 34),
     ]
-
-
-def test_daily_redpacket_qmch_copy_icon_accepts_one_parent_scoped_candidate(monkeypatch):
-    runner = _Runner()
-    card = {"title": "鸿运福签卡片"}
-    copy_shape = {"title": "复制", "pixelTolerance": 30}
-    monkeypatch.setattr(
-        runner,
-        "_find_shape",
-        lambda _image, title: card if title == "鸿运福签卡片" else copy_shape,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        runner,
-        "_match_shape",
-        lambda *_args, **_kwargs: {
-            "matched": False,
-            "matches": [
-                {
-                    "crop_similarity": 66.0,
-                    "box": {"x": 500, "y": 510, "w": 60, "h": 57},
-                }
-            ],
-        },
-        raising=False,
-    )
-
-    assert runner._daily_qmch_copy_box(
-        {"images": {673: {"id": 673}}},
-        "frame",
-    ) == {"x": 500, "y": 510, "w": 60, "h": 57}
 
 
 def test_daily_redpacket_qmch_runtime_tab_mismatch_has_zero_gui_actions(monkeypatch):
@@ -578,11 +549,6 @@ def test_daily_redpacket_qmch_requires_runtime_phrase_before_gui(monkeypatch):
 
     monkeypatch.setattr(
         runner,
-        "_daily_qmch_copy_box",
-        lambda *_args: {"x": 0, "y": 0, "w": 10, "h": 10},
-    )
-    monkeypatch.setattr(
-        runner,
         "_wait_daily_qmch_activity_row",
         lambda *_args, **_kwargs: _yield_return(("frame", SimpleNamespace(x=0, y=0, w=10, h=10))),
     )
@@ -621,6 +587,90 @@ def test_daily_redpacket_qmch_requires_runtime_phrase_before_gui(monkeypatch):
         ))
 
     assert actions == []
+
+
+def test_daily_redpacket_qmch_typed_phrase_postcondition_blocks_send(monkeypatch):
+    runner = _Runner()
+    actions = []
+
+    class Runtime:
+        def click_shape_center_then_view(self, _view, _shape, target, *_targets, **_kwargs):
+            yield "tab"
+            return SimpleNamespace(id=target)
+
+        def wait_shape(self, *_args, **_kwargs):
+            yield "shape"
+
+        def click_frame_point(self, *_args, **_kwargs):
+            return None
+
+        def wait_view(self, *views, **_kwargs):
+            yield "wait"
+            return SimpleNamespace(id=next(iter(views)))
+
+        def click_shape_center(self, view, shape, **_kwargs):
+            actions.append(("shape_click", view, shape))
+
+        def click_shape_center_fast(self, view, shape, **_kwargs):
+            actions.append(("shape_click_fast", view, shape))
+
+        def wait_action_settle(self, _seconds):
+            yield "settle"
+
+        def cur_frame(self, **_kwargs):
+            return "frame"
+
+        def ocr_text_in_shapes(self, *_args, **_kwargs):
+            return "输入动作没有填入口令"
+
+        def wait_click_then_shape(self, view, shape, target_view, target_shape, **_kwargs):
+            actions.append(("send", view, shape, target_view, target_shape))
+            yield "send"
+
+    monkeypatch.setattr(
+        runner,
+        "_wait_daily_qmch_activity_row",
+        lambda *_args, **_kwargs: _yield_return(("frame", SimpleNamespace(x=0, y=0, w=10, h=10))),
+    )
+    monkeypatch.setattr(
+        module,
+        "read_chat_channel_gui_target",
+        lambda channel, sub_id: {
+            "channel": channel,
+            "sub_channel_id": sub_id,
+            "group_type": 1,
+            "tab_label": "活动",
+            "anchors": ["吉签启鸿运"],
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "read_repeated_chat_phrase",
+        lambda *_args, **_kwargs: {
+            "ready": True,
+            "phrase": "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖",
+        },
+    )
+    monkeypatch.setattr(module, "text_mumu_adb", lambda text: actions.append(("text", text)))
+
+    with pytest.raises(RuntimeError, match="OCR 回读不一致"):
+        _consume(runner._execute_daily_qmch_reward_route(
+            Runtime(),
+            {},
+            None,
+            {},
+            {
+                "route": "qmch_reward",
+                "channel": 101,
+                "sub_id": 20050134,
+                "uids": ["qmch-uid"],
+            },
+        ))
+
+    assert ("shape_click", 673, "输入框空态") in actions
+    assert any(action[0] == "text" for action in actions)
+    assert not any(action[0] == "send" for action in actions)
+    assert ("click", 397, "开") not in actions
 
 
 def test_daily_redpacket_has_business_owned_trigger_description():

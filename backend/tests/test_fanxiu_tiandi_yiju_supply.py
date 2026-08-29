@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju_supply as supply_module
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_supply import (
     SACRED_TREE_ITEM_ID,
     TIANDI_YIJU_BOX_ITEM_ID,
@@ -61,6 +62,20 @@ def test_supply_plan_buys_only_the_box_shortfall() -> None:
     assert plan.projected_stock == 5
 
 
+def test_supply_plan_uses_all_affordable_trees_toward_large_target() -> None:
+    plan = plan_tiandi_yiju_supply(
+        _snapshot(trees=1_000, boxes=2),
+        _shop(),
+        required_boxes=20,
+    )
+
+    assert plan.exchange_count == 5
+    assert plan.total_cost == 1_000
+    assert plan.projected_stock == 7
+    assert plan.target_stock == 7
+    assert plan.ready is True
+
+
 def test_supply_delta_requires_exact_tree_cost_and_box_gain() -> None:
     before = _snapshot(trees=1_000, boxes=2)
     plan = plan_tiandi_yiju_supply(before, _shop(), required_boxes=5)
@@ -115,3 +130,49 @@ def test_supply_replay_passes_without_opening_shop_when_boxes_are_sufficient() -
     )
 
     assert result == {"status": "sufficient", "boxes_after": 5}
+
+
+def test_supply_accepts_direct_product_shop_after_using_tree(monkeypatch) -> None:
+    def done(result=None):
+        if False:
+            yield None
+        return result
+
+    snapshots = iter(
+        [
+            _snapshot(trees=1_000, boxes=2),
+            _snapshot(trees=400, boxes=5, fingerprint="b"),
+        ]
+    )
+    monkeypatch.setattr(supply_module, "_open_daily_bag", lambda *_args: done())
+    monkeypatch.setattr(
+        supply_module,
+        "_open_sacred_tree",
+        lambda *_args: done(supply_module.SACRED_SHOP_SCENE),
+    )
+    monkeypatch.setattr(
+        supply_module,
+        "_open_tree_shop",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("直达 #633 时不得再选一次灵眼神树")
+        ),
+    )
+    monkeypatch.setattr(supply_module, "_open_box_product", lambda *_args: done())
+    monkeypatch.setattr(supply_module, "_exchange_quantity", lambda *_args: done())
+
+    class Runtime:
+        def goto_view(self, _scene):
+            return done()
+
+    result = _drain(
+        ensure_tiandi_yiju_round_supply(
+            Runtime(),
+            required_boxes=5,
+            snapshot_reader=lambda: next(snapshots),
+            shop_reader=_shop,
+            catalog_reader=lambda: {},
+        )
+    )
+
+    assert result["status"] == "supplied"
+    assert result["exchange_count"] == 3
