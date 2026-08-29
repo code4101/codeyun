@@ -35,12 +35,20 @@ RESOURCE_RANK_DAILY_GIFT_TRIGGER = (5, 10)
 
 @dataclass(frozen=True)
 class ResourceRankGiftAdapter:
+    """Navigation identity only; every adapter uses the shared claim policy.
+
+    Resource-rank families may vary in schedule identity and entry scenes, but
+    they cannot override list scanning, free-only authorization, Runtime
+    increment validation, full scrolling, re-entry refresh, or completion.
+    """
+
     key: str
     label: str
     schedule_pattern: str
     activity_ids: tuple[int, ...]
     page_scene_ids: tuple[int, ...]
     intro_scene_id: int | None = None
+    gift_shape_scene_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -52,8 +60,9 @@ class ResourceRankGiftListAction:
 
 
 # Each resource-rank family enters the shared #605 gift page only after its own
-# real scene and negative-sample proof.  The zero-cost policy and ChargeMgr
-# idempotency reader stay shared across adapters.
+# real scene and negative-sample proof.  Adapters contain navigation facts only;
+# the complete scrolling/re-entry policy and ChargeMgr idempotency validation
+# stay shared and deliberately cannot be customized per family.
 RESOURCE_RANK_GIFT_ADAPTERS = (
     ResourceRankGiftAdapter(
         key="lingzhuang-huadao",
@@ -71,6 +80,26 @@ RESOURCE_RANK_GIFT_ADAPTERS = (
         ),
         page_scene_ids=(676,),
         intro_scene_id=675,
+    ),
+    ResourceRankGiftAdapter(
+        key="yaochi-flower-festival",
+        label="瑶池花会",
+        schedule_pattern=r"瑶池花会",
+        activity_ids=(
+            1042801,
+            2042801,
+            4042801,
+            1042811,
+            8042801,
+            16042801,
+            32042801,
+        ),
+        page_scene_ids=(458, 459),
+        intro_scene_id=457,
+        # #458/#459 and #676 share the same resource-rank bottom tab bar.
+        # The existing #676 "礼包" Shape was positively replayed from #458
+        # to the shared #605 page on 2026-08-29; keep the asset tree read-only.
+        gift_shape_scene_id=676,
     ),
     ResourceRankGiftAdapter(
         key="dandao-wending",
@@ -159,8 +188,10 @@ def project_resource_rank_gift_list_actions(
 ) -> tuple[ResourceRankGiftListAction, ...]:
     """Project only the fixed right-hand action column of visible gift rows.
 
-    Free rows form a prefix.  The first numeric spiritual-stone price is the
-    hard stop boundary; reward quantities live to its left and are ignored.
+    Reward quantities live to the left and are ignored.  Numeric prices are
+    returned only as explicit non-clickable evidence; they are not a list-end
+    boundary because additional free rows can appear after scrolling or after
+    re-entering the page refreshes claimed rows to the back.
     """
 
     minimum_x = float(frame_width) * 0.62
@@ -460,13 +491,41 @@ def _open_adapter_gift_page(
         activity_id=activity_id,
         now=now,
     )
-    runtime.click_shape_center(int(scene), "礼包")
+    gift_shape_scene_id = int(adapter.gift_shape_scene_id or scene)
+    runtime.click_shape_center(gift_shape_scene_id, "礼包")
     # #605 is the first real shared ActivityRankGiftView asset.  Additional
     # activities reuse this scene only after their own positive/negative replay.
     yield from runtime.wait_view(
         605,
         timeout=20.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}礼包页",
+    )
+    return True
+
+
+def _reenter_adapter_gift_page(
+    runtime: Any,
+    adapter: ResourceRankGiftAdapter,
+    *,
+    activity_id: int,
+    now: datetime,
+):
+    """Refresh #605 so claimed rows move behind still-claimable free rows."""
+
+    runtime.click_shape_center(605, "返回")
+    targets = [66, *adapter.page_scene_ids]
+    if adapter.intro_scene_id is not None:
+        targets.append(adapter.intro_scene_id)
+    yield from runtime.wait_scene(
+        *targets,
+        timeout=20.0,
+        label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：退出礼包页以刷新排序",
+    )
+    yield from _open_adapter_gift_page(
+        runtime,
+        adapter,
+        activity_id=activity_id,
+        now=now,
     )
     return True
 
@@ -563,11 +622,13 @@ def run_resource_rank_daily_gift_flow(
 
     claimed_count = 0
     claimed_ids: list[int] = []
+    refresh_count = 0
     scroll_steps = 0
+    empty_after_refresh = False
     boundary = ""
     while claimed_count < 20:
         remaining_free_ids = _claimable_free_gift_ids(runtime_snapshot)
-        if not remaining_free_ids:
+        if bool(runtime_snapshot.get("active_filter_applied")) and not remaining_free_ids:
             # The read-only ChargeMgr counters are the authoritative
             # idempotency fact.  A visually stale "免费" row must never be
             # clicked again after every free configuration is exhausted.
@@ -578,18 +639,16 @@ def run_resource_rank_daily_gift_flow(
             605, ["礼包列表窗口"], frame_data_url=frame
         )
         actions = project_resource_rank_gift_list_actions(lines)
-        if actions:
-            first = actions[0]
-            if first.kind == "spirit_stone":
-                boundary = f"spirit_stone:{first.text}"
-                break
+        free_action = next((item for item in actions if item.kind == "free"), None)
+        if free_action is not None:
+            empty_after_refresh = False
             before = runtime_snapshot
             runtime.runner._raise_if_stopped(runtime.stop_event)
             runtime.runner._click_frame_point(
                 runtime.ctx,
                 runtime.view(605).raw,
-                first.x,
-                first.y,
+                free_action.x,
+                free_action.y,
             )
             runtime.clear_frame()
             yield from runtime.wait_action_settle(1.0)
@@ -615,23 +674,34 @@ def run_resource_rank_daily_gift_flow(
             claimed_count += 1
             runtime_snapshot = after
             continue
-        if any("适度娱乐" in str(line.get("text") or "") for line in lines):
-            boundary = "list_footer"
-            break
         changed = yield from runtime.scroll_shape_content(
             605,
             "礼包列表窗口",
             direction="down",
         )
-        scroll_steps += 1
-        if not changed:
+        if changed:
+            scroll_steps += 1
+            if scroll_steps >= 40:
+                raise RuntimeError(
+                    f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：40 次滚动内未完成礼包列表扫描"
+                )
+            continue
+        if empty_after_refresh:
+            boundary = "visual_no_free_after_refresh"
+            break
+        if refresh_count >= 12:
             raise RuntimeError(
-                f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：未找到灵石边界且列表无法继续滚动"
+                f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：刷新礼包页 12 次仍未收敛"
             )
-        if scroll_steps >= 20:
-            raise RuntimeError(
-                f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：20 次滚动内未找到免费前缀终点"
-            )
+        yield from _reenter_adapter_gift_page(
+            runtime,
+            adapter,
+            activity_id=activity_id,
+            now=current,
+        )
+        refresh_count += 1
+        scroll_steps = 0
+        empty_after_refresh = True
     if not boundary:
         raise RuntimeError(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：免费领取达到安全上限但未见付费边界"
@@ -667,8 +737,13 @@ def run_resource_rank_daily_gift_flow(
         "boundary": boundary,
         "message": (
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：{adapter.label}"
-            f"本次领取 {claimed_count} 项，Runtime 已确认无可领免费礼包；"
-            f"下次 {next_time}"
+            f"本次领取 {claimed_count} 项；"
+            + (
+                "Runtime 已确认无可领免费礼包；"
+                if boundary == "runtime_all_free_claimed"
+                else "重进刷新后页面已无免费项，且每次领取均经 Runtime 增量确认；"
+            )
+            + f"下次 {next_time}"
         ),
     }
 

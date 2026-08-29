@@ -845,8 +845,22 @@ class DailyFoundationTaskMixin:
         }
         completion_times: dict[str, datetime | None] = {}
         for task_type in ("daily_boss", "daily_activity"):
+            task = tasks_by_type.get(task_type)
+            if task_type == completed_task_type and isinstance(task, Mapping):
+                # This callback runs inside the successful Job Cell, after the
+                # business flow has atomically persisted its next_time but
+                # before the Scheduler records this attempt's finished_at.
+                # Re-reading finished_at here therefore observes the previous
+                # attempt and can suppress the first valid cross-day trigger.
+                # Consume the caller's proven completion time for only the
+                # current prerequisite while retaining the persisted
+                # next_time as the completion-vs-retry discriminator.
+                task = {
+                    **task,
+                    "finished_at": completed_at.strftime("%Y-%m-%d %H:%M:%S"),
+                }
             completion_times[task_type] = self._daily_prerequisite_completion_at(
-                tasks_by_type.get(task_type),
+                task,
                 task_type=task_type,
                 cycle_now=completed_at,
             )

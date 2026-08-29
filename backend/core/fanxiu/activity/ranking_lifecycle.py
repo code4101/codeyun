@@ -78,6 +78,7 @@ EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
 RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
     "dandao-wending",
     "lingzhuang-huadao",
+    "yaochi-flower-festival",
 })
 
 RANKING_CAPABILITY_STATUS = {

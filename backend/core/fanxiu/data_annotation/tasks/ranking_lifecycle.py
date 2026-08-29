@@ -190,6 +190,22 @@ def _execute_family_job(
     with Session(engine) as session:
         completed = completed_ranking_checkpoint_keys(session, family=family)
         due = due_ranking_checkpoints(occurrences, now=now, completed_keys=completed)
+        initial_next_time = next_ranking_lifecycle_time(
+            occurrences,
+            now=now,
+            completed_keys=completed,
+            retry_times=ranking_checkpoint_retry_times(session, family=family),
+        )
+
+    # Persist a future wake before running any checkpoint.  Ranking checkpoints
+    # may spend a long time in GUI flows, and the external attempt reaper can
+    # observe the Cell terminal before the dispatching thread writes its final
+    # projection.  Leaving the claimed Job's old (often already-consumed)
+    # trigger in place made that race able to strand ranking-lifecycle at
+    # ``next_time = null`` even though the Cell result reported a future wake.
+    # The final write below still refines this baseline with retry_at values
+    # produced by the current attempt.
+    runner._persist_scheduler_task_next_time(scheduler_task_id, initial_next_time)
     xianmeng_counts: dict[str, int] = {}
     for checkpoint in due:
         if checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:

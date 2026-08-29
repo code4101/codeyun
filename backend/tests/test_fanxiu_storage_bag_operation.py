@@ -18,6 +18,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import (
     EXPECTED_QUICK_SETTING_VALUES,
     _finish_reward_chain,
     _observe_known_scene,
+    _wait_quick_operation_panel,
     execute_storage_bag_operation_task,
     next_storage_bag_operation_at,
 )
@@ -56,6 +57,8 @@ class _Runtime:
             self.scene = 525
         elif (scene, shape) == (525, "快捷操作"):
             self.scene = 526
+            self.active_outcome = None
+            self.toast_reads = 0
         elif (scene, shape) == (526, "执行快捷操作（高风险）"):
             self.active_outcome = self.outcomes.pop(0)
             self.toast_reads = 0
@@ -377,6 +380,66 @@ def test_unknown_observation_waits_without_clicking_then_times_out(monkeypatch):
     with pytest.raises(TimeoutError, match="unknown 期间未执行点击"):
         _consume(_observe_known_scene(runtime, (525,), deadline=1.0))
     assert not [call for call in runtime.calls if call[0] in {"click", "checkbox"}]
+
+
+def test_quick_panel_accepts_shape_contract_when_title_identity_is_missing():
+    class Runtime(_Runtime):
+        def __init__(self):
+            super().__init__([])
+            self.scene = 999
+
+        def current_scene(self, scenes, *, frame_data_url):
+            return None, 0, None
+
+        def shape_matches(self, scene, title, *, frame_data_url):
+            assert scene == 526
+            assert frame_data_url == "frame-999"
+            return {"matched": True} if title in {
+                "四项快捷标签",
+                "执行快捷操作（高风险）",
+            } else None
+
+    runtime = Runtime()
+    result = _consume(_wait_quick_operation_panel(runtime, timeout=1.0))
+
+    assert result["evidence"] == "panel_shape_contract"
+    assert not [call for call in runtime.calls if call[0] in {"click", "checkbox"}]
+
+
+def test_shape_contract_restores_526_for_observe_and_fixed_point(monkeypatch):
+    class Runtime(_Runtime):
+        def __init__(self):
+            super().__init__([])
+            self.scene = 999
+
+        def current_scene(self, scenes, *, frame_data_url):
+            return None, 0, None
+
+        def shape_matches(self, scene, title, *, frame_data_url):
+            return {"matched": True} if scene == 526 and title in {
+                "四项快捷标签",
+                "执行快捷操作（高风险）",
+            } else None
+
+    observed = Runtime()
+    landed, _frame = _consume(
+        _observe_known_scene(
+            observed,
+            (526,),
+            deadline=storage_bag_operation.time.monotonic() + 100.0,
+        )
+    )
+    assert landed == 526
+
+    clock = {"value": 0.0}
+
+    def monotonic():
+        clock["value"] += 1.0
+        return clock["value"]
+
+    monkeypatch.setattr(storage_bag_operation.time, "monotonic", monotonic)
+    outcome = _consume(_finish_reward_chain(Runtime(), deadline=100.0))
+    assert outcome == "empty_fixed_point"
 
 
 def test_next_time_is_following_day_at_0100():

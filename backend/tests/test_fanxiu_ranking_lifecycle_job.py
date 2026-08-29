@@ -84,7 +84,9 @@ def _arrange(monkeypatch, *, reconcile):
     return engine
 
 
-def test_job_records_daily_checkpoint_and_owns_one_next_time(monkeypatch) -> None:
+def test_job_records_daily_checkpoint_and_persists_wake_before_and_after_work(
+    monkeypatch,
+) -> None:
     engine = _arrange(
         monkeypatch,
         reconcile=lambda *_args, **_kwargs: {
@@ -110,6 +112,7 @@ def test_job_records_daily_checkpoint_and_owns_one_next_time(monkeypatch) -> Non
     ]
     assert result["result"] == "success"
     assert runner.next_times == [
+        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
         ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ))
     ]
 
@@ -134,7 +137,10 @@ def test_job_isolates_checkpoint_error_and_schedules_retry(monkeypatch) -> None:
         row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
     assert row.status == "error"
     assert row.retry_at == "2026-08-21T00:40:00+08:00"
-    assert runner.next_times[0][1] == datetime(2026, 8, 21, 0, 40, tzinfo=TZ)
+    assert runner.next_times == [
+        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 0, 40, tzinfo=TZ)),
+    ]
     assert result["result"] == "success"
     assert "待重试 1" in result["message"]
 
@@ -229,6 +235,7 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     assert result["result"] == "success"
     assert "成功 0，待重试 1" in result["message"]
     assert runner.next_times == [
+        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
         ("ranking-lifecycle", datetime(2026, 8, 21, 0, 40, tzinfo=TZ))
     ]
 
@@ -266,5 +273,6 @@ def test_resource_parent_executes_only_resource_family_and_owns_its_next_time(
     ]
     assert result["family"] == "resource_rank"
     assert runner.next_times == [
+        ("resource-ranking", datetime(2026, 8, 22, 0, 30).astimezone()),
         ("resource-ranking", datetime(2026, 8, 22, 0, 30).astimezone())
     ]

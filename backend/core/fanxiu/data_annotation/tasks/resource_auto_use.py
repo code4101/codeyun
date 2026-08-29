@@ -169,12 +169,12 @@ def execute_resource_auto_use_task(
 ):
     """Run storage preflight -> quick op -> fresh selected plan -> other domains.
 
-    The selected-item preflight rejects unsupported policy before the mutating
-    quick operation.  Its executor deliberately reads and validates again
-    afterward instead of reusing the preflight snapshot.  The other domains may
-    skip UI only when their native read-only snapshot proves an empty candidate
-    set.  Incomplete evidence, unsafe candidates, and an executable set without
-    a formal adapter all fail closed.
+    The selected-item preflight identifies unsupported present items before the
+    mutating quick operation.  Those items remain deferred and block the broad
+    ``Use=ON`` action, while exact adapters may still consume the independently
+    validated safe subset.  The executor deliberately reads and validates again
+    instead of reusing the preflight snapshot.  Other domains may skip UI only
+    when their native read-only snapshot proves an empty candidate set.
     """
 
     domains: list[dict[str, Any]] = []
@@ -187,14 +187,22 @@ def execute_resource_auto_use_task(
     )
     if not isinstance(preflight_result, dict) or not preflight_result.get("ok"):
         raise RuntimeError("资源_自动使用/储物袋：勾选物品全局预检未返回就绪终态")
-    storage_result = yield from execute_storage_bag_operation_task(
-        runner,
-        ctx,
-        payload,
-        stop_event,
-    )
-    if not isinstance(storage_result, dict) or not storage_result.get("ok"):
-        raise RuntimeError("资源_自动使用/储物袋：既有完整流程未返回成功终态")
+    if preflight_result.get("quick_operation_allowed") is False:
+        storage_result = {
+            "ok": True,
+            "outcome": "skipped_fail_closed",
+            "reason": "存在尚无正式生产适配器的已勾选可使用物品，拒绝宽泛 Use=ON 快捷操作",
+            "blockers": list(preflight_result.get("quick_operation_blockers") or []),
+        }
+    else:
+        storage_result = yield from execute_storage_bag_operation_task(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+        )
+        if not isinstance(storage_result, dict) or not storage_result.get("ok"):
+            raise RuntimeError("资源_自动使用/储物袋：既有完整流程未返回成功终态")
     selected_result = yield from storage_auto_claim_executor(
         runner,
         ctx,
@@ -203,9 +211,14 @@ def execute_resource_auto_use_task(
     )
     if not isinstance(selected_result, dict) or not selected_result.get("ok"):
         raise RuntimeError("资源_自动使用/储物袋：勾选物品流程未返回成功终态")
+    storage_outcome = (
+        "partial_safe"
+        if storage_result.get("outcome") == "skipped_fail_closed"
+        else "complete"
+    )
     domains.append({
         "domain": "储物袋",
-        "outcome": "complete",
+        "outcome": storage_outcome,
         "quick_operation": storage_result,
         "selected_items": selected_result,
     })
@@ -238,7 +251,12 @@ def execute_resource_auto_use_task(
             )
         )
     )
-    return {"ok": True, "outcome": "complete", "domains": domains}
+    outcome = (
+        "partial_safe"
+        if any(domain.get("outcome") == "partial_safe" for domain in domains)
+        else "complete"
+    )
+    return {"ok": True, "outcome": outcome, "domains": domains}
 
 
 __all__ = [

@@ -301,6 +301,67 @@ def test_selected_batch_preflight_blocks_before_quick_operation(monkeypatch):
     assert quick_operation_calls == []
 
 
+def test_unadapted_selected_items_skip_broad_quick_operation_but_run_safe_executor(
+    monkeypatch,
+):
+    order = []
+
+    def quick_operation(*_args, **_kwargs):
+        order.append("不应宽泛快捷操作")
+        yield None
+        return {"ok": True}
+
+    def preflight(*_args, **_kwargs):
+        order.append("勾选预检")
+        yield None
+        return {
+            "ok": True,
+            "outcome": "ready",
+            "quick_operation_allowed": False,
+            "quick_operation_blockers": [{
+                "base_id": 1010,
+                "name": "VIP经验",
+                "template": "direct_use",
+                "quantity": 2,
+            }],
+        }
+
+    def selected_executor(*_args, **_kwargs):
+        order.append("安全精确适配器")
+        yield None
+        return {
+            "ok": True,
+            "outcome": "complete",
+            "executed_count": 36,
+            "deferred_count": 4,
+        }
+
+    monkeypatch.setattr(
+        resource_auto_use,
+        "execute_storage_bag_operation_task",
+        quick_operation,
+    )
+    result = _consume(resource_auto_use.execute_resource_auto_use_task(
+        object(),
+        {},
+        {},
+        threading.Event(),
+        talisman_reader=_empty_talisman,
+        pet_reader=_empty_pet,
+        storage_auto_claim_preflight=preflight,
+        storage_auto_claim_executor=selected_executor,
+    ))
+
+    assert order == ["勾选预检", "安全精确适配器"]
+    assert result["ok"] is True
+    assert result["outcome"] == "partial_safe"
+    assert result["domains"][0]["outcome"] == "partial_safe"
+    assert (
+        result["domains"][0]["quick_operation"]["outcome"]
+        == "skipped_fail_closed"
+    )
+
+
 def test_resource_auto_use_is_single_manual_standard_job():
     default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(

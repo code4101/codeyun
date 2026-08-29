@@ -411,11 +411,16 @@ def test_free_gift_checkpoint_is_limited_to_activities_with_a_proven_adapter() -
         occurrence("lingzhuang-huadao", 1044311),
         business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
     )
+    yaochi = checkpoints_for_occurrence(
+        occurrence("yaochi-flower-festival", 2042801),
+        business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
+    )
 
     assert RESOURCE_FREE_GIFT_KIND in {item.checkpoint_kind for item in dandao}
     assert RESOURCE_FREE_GIFT_KIND in {
         item.checkpoint_kind for item in lingzhuang
     }
+    assert RESOURCE_FREE_GIFT_KIND in {item.checkpoint_kind for item in yaochi}
 
 
 def test_exchange_tail_is_never_replayed_after_panel_close() -> None:
