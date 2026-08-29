@@ -12,6 +12,7 @@ from backend.core.fanxiu.activity.exchange_planning import (
 )
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju as tiandi_task
+from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju_yield as yield_module
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju import (
     configure_tiandi_yiju_auto_dialog,
     execute_tiandi_yiju_checkpoint,
@@ -560,7 +561,7 @@ def test_unified_closing_gap_fails_closed_when_freshness_is_missing() -> None:
 def test_yield_ledger_keeps_large_history_when_bounded() -> None:
     evidence: dict = {}
     for rounds in [1_479, *range(1, 40)]:
-        evidence = tiandi_task._append_tiandi_yiju_yield_evidence(
+        evidence = yield_module.append_tiandi_yiju_yield_evidence(
             evidence,
             occurrence_instance_key="occurrence-1",
             rounds=rounds,
@@ -569,10 +570,10 @@ def test_yield_ledger_keeps_large_history_when_bounded() -> None:
             feature_item_usage={},
         )
 
-    rows = evidence[tiandi_task.TIANDI_YIJU_YIELD_LEDGER_KEY]
-    assert len(rows) == tiandi_task.TIANDI_YIJU_YIELD_LEDGER_LIMIT
+    rows = evidence[yield_module.TIANDI_YIJU_YIELD_LEDGER_KEY]
+    assert len(rows) == yield_module.TIANDI_YIJU_YIELD_LEDGER_LIMIT
     assert any(row["rounds"] == 1_479 for row in rows)
-    loaded = tiandi_task._load_tiandi_yiju_yield_samples(
+    loaded = yield_module.load_tiandi_yiju_yield_samples(
         evidence,
         occurrence_instance_key="occurrence-1",
         allowed_feature_keys=set(),
@@ -916,7 +917,7 @@ def test_formal_challenge_rechecks_rewards_idempotently_on_replay(monkeypatch) -
 
 
 def test_batch_policy_closes_estimated_tail_with_one_hundred_rounds() -> None:
-    plan = tiandi_task._plan_tiandi_yiju_batch_rounds(
+    plan = yield_module.plan_tiandi_yiju_batch_rounds(
         required_currency=1_000,
         yield_samples=[ExchangeYieldScatterSample(4_100, 100)],
     )
@@ -928,7 +929,7 @@ def test_batch_policy_closes_estimated_tail_with_one_hundred_rounds() -> None:
 
 
 def test_batch_policy_uses_all_scatter_weight_and_separates_supply_target() -> None:
-    plan = tiandi_task._plan_tiandi_yiju_batch_rounds(
+    plan = yield_module.plan_tiandi_yiju_batch_rounds(
         required_currency=293_402,
         yield_samples=[
             ExchangeYieldScatterSample(450, 10),
@@ -953,7 +954,7 @@ def test_batch_policy_uses_all_scatter_weight_and_separates_supply_target() -> N
 
 def test_batch_policy_fails_closed_when_feature_multiplier_is_unknown() -> None:
     with pytest.raises(ValueError, match="缺少道具增益规格"):
-        tiandi_task._plan_tiandi_yiju_batch_rounds(
+        yield_module.plan_tiandi_yiju_batch_rounds(
             required_currency=10_000,
             yield_samples=[
                 ExchangeYieldScatterSample(
@@ -966,7 +967,7 @@ def test_batch_policy_fails_closed_when_feature_multiplier_is_unknown() -> None:
 
 
 def test_batch_policy_without_authoritative_scatter_uses_probe_only() -> None:
-    plan = tiandi_task._plan_tiandi_yiju_batch_rounds(
+    plan = yield_module.plan_tiandi_yiju_batch_rounds(
         required_currency=999_999,
     )
 

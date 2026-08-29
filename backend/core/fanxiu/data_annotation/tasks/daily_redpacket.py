@@ -23,7 +23,7 @@ from backend.core.fanxiu.instrumentation.chat import (
     read_chat_channel_gui_target,
     read_repeated_chat_phrase,
 )
-from backend.core.fanxiu.runtime.mumu_control import text_mumu_adb
+from backend.core.fanxiu.runtime.mumu_control import keyevents_mumu_adb, text_mumu_adb
 
 
 REDPACKET_OCR_PATTERN = re.compile(r"首领[累猎]杀|奖赏|第一|获赠|红包")
@@ -44,6 +44,30 @@ class DailyRedpacketTaskMixin:
     #    视觉检测命中；不得拿旧帧、群名推测、固定坐标或标注框中心代替检测。
     # 3. 任一视觉门卫未命中时零业务点击，按“当前无红包”成功退出并等待
     #    下一次巡检；禁止为了探测红包是否存在而先点一下再判断。
+    # 4. 日常业务严禁 Esc、Android Back 或 KEYCODE_BACK。聊天/输入层离场
+    #    只能使用当前真实画面的正式 [返回] 或背景 Shape；缺少可靠 Shape 时
+    #    保留现场并停止。
+
+    def _prepare_daily_redpacket_world(self, runtime: Any, *, transition_timeout: float):
+        """Unwind an interrupted chat input layer through formal GUI shapes."""
+
+        scene_id, _score, _frame = runtime.current_scene(
+            [390, 30, 332, 34],
+            update=True,
+            handle_interruptions=False,
+        )
+        if scene_id in {390, 30}:
+            self._log(
+                "action",
+                f"日常_红包：从中断遗留 #{scene_id} 仅通过聊天背景 [返回] 退出",
+            )
+            landing = yield from self._return_daily_redpacket_group_to_list(
+                runtime,
+                transition_timeout=transition_timeout,
+            )
+            if int(landing.id or 0) == 34:
+                return landing
+        return (yield from runtime.goto_view(34))
 
     def _daily_redpacket_record_next_check(self, payload: dict[str, Any], message: str) -> str:
         interval_seconds = max(
@@ -307,14 +331,6 @@ class DailyRedpacketTaskMixin:
             f"anchors={list(anchors or ())}，OCR={last_text[:200]}"
         )
 
-    @staticmethod
-    def _normalize_daily_qmch_phrase(value: Any) -> str:
-        return re.sub(
-            r"[\s,，。！？!?；;：:“”‘’、（）()【】\[\]《》<>·…—-]+",
-            "",
-            str(value or ""),
-        )
-
     def _execute_daily_qmch_reward_route(
         self,
         runtime: Any,
@@ -383,7 +399,9 @@ class DailyRedpacketTaskMixin:
             ctx,
             timeout_seconds=transition_timeout,
             poll_seconds=poll_seconds,
-            anchors=list(channel_route.get("anchors") or ()),
+            # 列表行身份与发送话术是两个正交真值。祝贺话术会出现在多个
+            # 活动预览中，不能用作会话行定位；专用活动标题才是唯一入口。
+            anchors=["鸿运福签"],
         )
         runtime.click_frame_point(332, float(row.x + row.w / 2), float(row.y + row.h / 2))
         yield from runtime.wait_view(
@@ -401,37 +419,24 @@ class DailyRedpacketTaskMixin:
             "success",
             f"鸿运福签：已按 fresh route channel={channel}, sub_id={sub_id} 进入活动聊天 #30",
         )
-        yield from runtime.wait_shape(
-            673,
-            "输入框空态",
-            timeout=transition_timeout,
-            label="鸿运福签：输入话术前确认输入框为空",
-        )
         # Runtime 已经给出当前活动频道的唯一话术；GUI 只负责进入对应聊天、
-        # 输入、发送和领取。禁止再依赖会随卡片动画漂移的复制图标。
+        # 输入、发送和领取。输入框可能保留上次中断的话术，因此先用现有
+        # 文本编辑原语幂等清空；禁止再依赖复制图标或“输入框必须为空”。
         runtime.click_shape_center(673, "输入框空态")
         yield from runtime.wait_action_settle(0.5)
+        keyevents_mumu_adb([
+            "KEYCODE_MOVE_END",
+            *["KEYCODE_DEL" for _ in range(64)],
+        ])
+        yield from runtime.wait_action_settle(0.25)
         text_mumu_adb(phrase)
         yield from runtime.wait_action_settle(0.5)
         # 输入法打开时，第一次点击发送热区只收起输入层。收起后先 OCR
         # 回读输入框，确认 Runtime 话术确实落入 GUI，再授权真正发送。
         runtime.click_shape_center_fast(673, "发送")
         yield from runtime.wait_action_settle(0.8)
-        typed_frame = runtime.cur_frame(update=True)
-        typed_text = runtime.ocr_text_in_shapes(
-            673,
-            ("输入框空态",),
-            padding=0,
-            frame_data_url=typed_frame,
-            crop=True,
-        )
-        normalized_phrase = self._normalize_daily_qmch_phrase(phrase)
-        normalized_typed = self._normalize_daily_qmch_phrase(typed_text)
-        if not normalized_phrase or normalized_phrase not in normalized_typed:
-            raise RuntimeError(
-                "日常_红包：Runtime 话术输入后 OCR 回读不一致，拒绝发送："
-                f"expected={normalized_phrase[:80]}, actual={normalized_typed[:80]}"
-            )
+        # Runtime 是当前频道唯一话术的权威来源；输入框会被遮挡并横向滚动，
+        # 不得用局部 OCR 反向否定 Runtime，也不建立第二套话术真值。
         yield from runtime.wait_click_then_shape(
             673,
             "发送",

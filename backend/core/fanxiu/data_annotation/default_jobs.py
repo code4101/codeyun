@@ -417,7 +417,11 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
+        yield from runner._prepare_daily_redpacket_world(
+            runtime,
+            transition_timeout=transition_timeout,
+        )
         result = yield from runner._execute_daily_redpacket_task(ctx, stop_event, payload)
         yield from runtime.goto_view(34)
         return result

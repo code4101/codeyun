@@ -335,6 +335,65 @@ def test_dongtian_enemy_click_uses_runtime_aligned_name_box_not_global_template_
     assert clicks == [(279, 451.5, 555.0)]
 
 
+def test_dongtian_enemy_click_retries_bounded_left_hotspot_when_first_click_stays_on_list():
+    clicks = []
+
+    class Shape:
+        def __init__(self, box):
+            self._box = box
+
+        def box(self):
+            return dict(self._box)
+
+    class Runtime:
+        payload = {}
+
+        def view(self, _scene_id):
+            return object()
+
+        def shape(self, _scene_id, title):
+            if title == "窗口":
+                return Shape({"x": 0, "y": 0, "w": 900, "h": 1400})
+            if title == "我的编队":
+                return Shape({"x": 650, "y": 300, "w": 240, "h": 500})
+            raise AssertionError(title)
+
+        def wait_view(self, *_args, **_kwargs):
+            if False:
+                yield None
+
+        def cur_frame(self, *, update=False):
+            assert update is True
+            return "frame-279"
+
+        def ocr_fragments_in_shapes(self, *_args, **_kwargs):
+            return [{"text": "[洞天]月虹梁", "x": 700, "y": 887, "w": 160, "h": 30, "line_id": "target"}]
+
+        def ocr_tokens_in_shapes(self, *_args, **_kwargs):
+            return []
+
+        def click_frame_point(self, scene_id, x, y):
+            clicks.append((scene_id, x, y))
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+        def current_scene(self, scene_ids, *, update=False):
+            assert (scene_ids, update) == ([341, 279], True)
+            scene_id = 279 if len(clicks) == 1 else 341
+            return scene_id, 1.0, "frame"
+
+    result = _finish_generator(
+        BehaviorTreeRuntimeRunner()._daily_dongtian_click_first_enemy_place(
+            Runtime(), threading.Event(), ["[洞天]月虹梁"], max_scrolls=0
+        )
+    )
+
+    assert result == "[洞天]月虹梁"
+    assert clicks == [(279, 781.5, 802.0), (279, 741.5, 802.0)]
+
+
 @pytest.mark.parametrize("place", _DONGTIAN_PLACE_ANCHORS)
 def test_dongtian_location_box_accepts_every_known_exact_place_name(place):
     runner = BehaviorTreeRuntimeRunner()
