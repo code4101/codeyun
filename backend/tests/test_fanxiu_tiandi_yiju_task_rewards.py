@@ -32,7 +32,7 @@ def _clear_live_spec_cache():
         rewards_module._LIVE_TASK_SPECS.clear()
 
 
-@pytest.mark.parametrize("runtime_id,task_id", [(8090001, 8090001), (8090004, 8090002)])
+@pytest.mark.parametrize("runtime_id,task_id", [(8090001, 8090001), (8090004, 8090003)])
 def test_maps_only_playable_occurrences(runtime_id: int, task_id: int) -> None:
     assert tiandi_yiju_task_activity_id(runtime_id) == task_id
 
@@ -44,7 +44,7 @@ def test_group_selection_occurrence_fails_closed() -> None:
 
 @pytest.mark.parametrize(
     "activity_id,shared_start,score_variant_start",
-    [(8090001, 400501, 400510), (8090004, 400301, 400310)],
+    [(8090001, 400501, 400510), (8090004, 400801, 400810)],
 )
 def test_selects_one_live_score_ladder(
     activity_id: int, shared_start: int, score_variant_start: int

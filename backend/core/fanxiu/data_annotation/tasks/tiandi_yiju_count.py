@@ -99,10 +99,83 @@ def set_tiandi_yiju_round_count(
     )
 
 
+def set_tiandi_yiju_all_funded_rounds(
+    runtime: Any,
+    expected_maximum: int,
+    *,
+    assets: TiandiYijuCountAssets | None = None,
+) -> Iterator[Any]:
+    """Select the Runtime-proven funded maximum with coarse slider gestures.
+
+    This is the explicit exhaust-resources path.  It is allowed only when the
+    caller has already read the exact natural-strength plus strength-item
+    budget and supplies that value as ``expected_maximum``.  The GUI's live
+    right bound must read back to the same integer before 对弈 is permitted.
+    """
+
+    expected = int(expected_maximum)
+    if expected <= 0:
+        raise ValueError("天地弈局可用挑战次数必须为正整数")
+    source = assets or TiandiYijuCountAssets()
+    before = read_tiandi_yiju_round_count(runtime, source)
+    left_x, thumb_y = runtime.shape_center(
+        source.settings_scene_id,
+        source.count_slider_thumb,
+    )
+    right_button_x, _right_button_y = runtime.shape_center(
+        source.settings_scene_id,
+        source.count_increase,
+    )
+    thumb_box = runtime.shape_box(
+        source.settings_scene_id,
+        source.count_slider_thumb,
+    )
+    right_x = right_button_x - float(thumb_box.get("w") or 0.0) * 0.5
+    if right_x <= left_x:
+        raise RuntimeError("天地弈局次数滑轨几何无效")
+    safe_right_x = right_button_x + (right_x - left_x) * 0.15
+    current = before
+    drag_count = 0
+    while current != expected and drag_count < 4:
+        fraction = (current - 1) / max(1, expected - 1)
+        estimated_thumb_x = left_x + (right_x - left_x) * fraction
+        runtime.drag_frame_point(
+            source.settings_scene_id,
+            estimated_thumb_x,
+            thumb_y,
+            safe_right_x,
+            thumb_y,
+            duration_ms=650,
+        )
+        drag_count += 1
+        yield from runtime.wait_action_settle(0.8)
+        updated = read_tiandi_yiju_round_count(runtime, source)
+        if updated <= current:
+            raise RuntimeError(
+                f"天地弈局滚动条未向目标推进：调整前={current}，调整后={updated}"
+            )
+        current = updated
+    after = current
+    if after != expected:
+        raise RuntimeError(
+            "天地弈局滑杆上限与 Runtime 可用资源不一致："
+            f"Runtime={expected}，GUI读回={after}"
+        )
+    return {
+        "before": before,
+        "after": after,
+        "target": expected,
+        "slider_fraction": 1.0,
+        "drag_count": drag_count,
+        "fine_adjustment_actions": 0,
+    }
+
+
 __all__ = [
     "TIANDI_YIJU_AUTO_DIALOG_SCENE",
     "TIANDI_YIJU_MAX_BATCH_ROUNDS",
     "TiandiYijuCountAssets",
     "read_tiandi_yiju_round_count",
     "set_tiandi_yiju_round_count",
+    "set_tiandi_yiju_all_funded_rounds",
 ]

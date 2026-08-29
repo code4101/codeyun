@@ -50,20 +50,21 @@ def test_read_count_fails_closed_when_ocr_is_empty() -> None:
         read_tiandi_yiju_round_count(runtime, TiandiYijuCountAssets())
 
 
-def test_exact_target_only_moves_from_minimum_with_verified_plus_steps() -> None:
-    runtime = _Runtime([4, 1, 2, 3, 3])
+def test_exact_target_converges_directly_with_verified_minus_step() -> None:
+    runtime = _Runtime([4, 3, 3])
     result = _drain(set_tiandi_yiju_round_count(runtime, 3))
 
     assert result == {
         "before": 4,
         "after": 3,
         "target": 3,
-        "reset_to_minimum": True,
-        "increase_actions": 2,
+        "reset_to_minimum": False,
+        "increase_actions": 0,
+        "decrease_actions": 1,
         "native_maximum_probed": False,
     }
-    assert runtime.drags == [(680, "对弈次数_滑块", "left", 0.6)]
-    assert runtime.clicks == [(680, "对弈次数_增加"), (680, "对弈次数_增加")]
+    assert runtime.drags == []
+    assert runtime.clicks == [(680, "对弈次数_减少")]
 
 
 def test_right_bound_probe_is_forbidden() -> None:
@@ -73,12 +74,12 @@ def test_right_bound_probe_is_forbidden() -> None:
 
 def test_adjustment_budget_must_cover_monotonic_increase() -> None:
     with pytest.raises(ValueError, match="调整预算不足"):
-        _drain(set_tiandi_yiju_round_count(_Runtime([]), 30, max_adjustments=10))
+        _drain(set_tiandi_yiju_round_count(_Runtime([1]), 30, max_adjustments=10))
 
 
 def test_plus_step_must_be_exactly_one() -> None:
-    runtime = _Runtime([1, 1, 3])
-    with pytest.raises(RuntimeError, match="没有按单步递增"):
+    runtime = _Runtime([1, 3])
+    with pytest.raises(RuntimeError, match="没有按单步变化"):
         _drain(set_tiandi_yiju_round_count(runtime, 2))
 
 

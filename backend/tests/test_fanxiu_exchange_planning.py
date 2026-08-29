@@ -1,8 +1,11 @@
 from backend.core.fanxiu.activity.exchange_planning import (
     ExchangeMeasurement,
+    ExchangeYieldFeatureSpec,
     ExchangeYieldRate,
+    ExchangeYieldScatterSample,
     calculate_exchange_currency_gap,
     estimate_remaining_attempts,
+    fit_exchange_yield_scatter_model,
     latest_exchange_yield_rate,
     plan_available_attempts,
 )
@@ -129,3 +132,109 @@ def test_currency_gap_uses_purchases_balance_and_cumulative_history() -> None:
     assert spent_outside_target.cumulative_gap == 0
     assert spent_outside_target.balance_gap == 800
     assert spent_outside_target.required_new_currency == 800
+
+
+def test_scatter_model_uses_attempt_weighted_plain_batches() -> None:
+    model = fit_exchange_yield_scatter_model(
+        [
+            ExchangeYieldScatterSample(
+                exchange_currency_delta=100,
+                attempt_count=10,
+            ),
+            ExchangeYieldScatterSample(
+                exchange_currency_delta=20_000,
+                attempt_count=1_000,
+            ),
+        ]
+    )
+
+    assert model is not None
+    assert model.plain_currency_per_attempt == 20_100 / 1_010
+    assert model.total_attempts == 1_010
+    assert model.plain_attempts == 1_010
+    assert model.estimate_attempts(1_000) == 51
+
+
+def test_scatter_model_separates_tiandi_yiju_plain_rate_from_shrunken_bonuses() -> None:
+    """The large mixed batch fits bonuses, not a false 66-token plain rate."""
+
+    model = fit_exchange_yield_scatter_model(
+        [
+            ExchangeYieldScatterSample(
+                exchange_currency_delta=450,
+                attempt_count=10,
+            ),
+            ExchangeYieldScatterSample(
+                exchange_currency_delta=97_899,
+                attempt_count=1_479,
+                feature_item_usage=(("fourfold", 284), ("miaoshou", 480)),
+            ),
+            ExchangeYieldScatterSample(
+                exchange_currency_delta=1_638,
+                attempt_count=41,
+            ),
+        ],
+        feature_specs=[
+            # A nominal fourfold adds 3x, but the fitted realization is learned.
+            ExchangeYieldFeatureSpec(
+                key="fourfold",
+                nominal_extra_multiplier=3.0,
+                default_realization_ratio=0.5,
+                prior_item_weight=50.0,
+            ),
+            ExchangeYieldFeatureSpec(
+                key="miaoshou",
+                nominal_extra_multiplier=1.0,
+                default_realization_ratio=0.5,
+                prior_item_weight=50.0,
+            ),
+        ],
+    )
+
+    assert model is not None
+    # Both direct no-confirmed-bonus batches contribute by attempt count:
+    # (450 + 1638) / (10 + 41).
+    assert model.plain_currency_per_attempt == 2_088 / 51
+    assert model.plain_attempts == 51
+    assert model.total_attempts == 1_530
+    fits = {fit.key: fit for fit in model.feature_fits}
+    assert 0.5 < fits["fourfold"].realization_ratio < 0.8
+    assert 1.0 < fits["fourfold"].effective_multiplier < 4.0
+    assert 0.5 < fits["miaoshou"].realization_ratio < 0.8
+    # A future no-item forecast must not reuse the mixed batch's 66.2/run.
+    assert model.estimate_attempts(293_402) == 7_167
+    # Planned inventories can still use the learned, discounted feature yield.
+    assert model.currency_per_attempt(
+        feature_item_fractions={"fourfold": 0.2, "miaoshou": 0.3}
+    ) > model.plain_currency_per_attempt
+
+
+def test_scatter_model_keeps_activity_specific_features_out_of_base_contract() -> None:
+    model = fit_exchange_yield_scatter_model(
+        [
+            ExchangeYieldScatterSample(1_000, 100),
+            ExchangeYieldScatterSample(
+                1_750,
+                100,
+                feature_item_usage=(("activity_item", 50),),
+            ),
+        ],
+        feature_specs=[
+            ExchangeYieldFeatureSpec(
+                key="activity_item",
+                nominal_extra_multiplier=2.0,
+                default_realization_ratio=0.5,
+                prior_item_weight=0.0,
+            )
+        ],
+    )
+
+    assert model is not None
+    fit = model.feature_fits[0]
+    assert model.plain_currency_per_attempt == 10.0
+    assert fit.realization_ratio == 0.75
+    assert fit.effective_multiplier == 2.5
+    assert model.estimate_attempts(
+        1_000,
+        feature_item_fractions={"activity_item": 0.5},
+    ) == 58

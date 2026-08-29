@@ -12,6 +12,9 @@ from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju import (
     open_tiandi_yiju_recommended_target,
     run_tiandi_yiju_bounded_batch,
 )
+from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count import (
+    set_tiandi_yiju_round_count,
+)
 
 
 def _run(generator):
@@ -76,8 +79,10 @@ class _View:
                 _Shape("妙手珠开关"),
                 _Shape("四倍棋符开关"),
             ]
-        if self.scene == 999:
-            return [_Shape("确认")]
+        if self.scene in {688, 999}:
+            return [_Shape("点击屏幕继续")]
+        if self.scene == 687:
+            return [_Shape("不再提醒"), _Shape("仍要对弈")]
         return [_Shape("棋点001-天元"), _Shape("棋点002-中腹·四")]
 
 
@@ -115,7 +120,7 @@ class _Runtime:
     def ocr_text(self, _frame):
         return ""
 
-    def wait_scene(self, target, **_options):
+    def wait_scene(self, target, *_targets, **_options):
         if False:
             yield None
         return target
@@ -128,6 +133,33 @@ class _Runtime:
         if False:
             yield None
         return target
+
+
+class _DelayedCountRuntime:
+    def __init__(self):
+        self.values = iter([1, 1, 2, 2])
+        self.clicks = []
+
+    def ocr_numbers_in_shapes(self, _scene, _shapes):
+        value = next(self.values)
+        return [value], str(value)
+
+    def click_shape_center(self, scene, shape):
+        self.clicks.append((scene, shape))
+
+    def wait_action_settle(self, _seconds):
+        if False:
+            yield None
+        return None
+
+
+def test_round_count_waits_for_delayed_single_step_repaint() -> None:
+    runtime = _DelayedCountRuntime()
+
+    result = _run(set_tiandi_yiju_round_count(runtime, 2))
+
+    assert result["after"] == 2
+    assert runtime.clicks == [(680, "对弈次数_增加")]
 
 
 def test_recommended_target_uses_exact_runtime_piece_shape_and_waits_transition() -> None:
@@ -220,10 +252,11 @@ def test_batch_fails_before_any_click_when_count_shapes_are_missing() -> None:
     assert runtime.clicks == []
 
 
-def test_batch_fails_before_any_click_when_result_scene_is_pending() -> None:
+def test_batch_fails_before_any_click_when_result_scene_is_pending(monkeypatch) -> None:
     import pytest
 
     runtime = _Runtime()
+    monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", None)
     with pytest.raises(RuntimeError, match="结果浮层尚未接入正式 scene"):
         _run(
             run_tiandi_yiju_bounded_batch(
@@ -243,7 +276,7 @@ def test_batch_fails_before_any_click_when_result_confirm_shape_is_missing(
 
     runtime = _Runtime()
     monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", 998)
-    with pytest.raises(RuntimeError, match="缺少正式『确认』Shape"):
+    with pytest.raises(RuntimeError, match="缺少正式『点击屏幕继续』Shape"):
         _run(
             run_tiandi_yiju_bounded_batch(
                 runtime,
@@ -261,7 +294,7 @@ def test_new_result_overlay_is_distinct_from_legacy_scene() -> None:
             return None, 0.0, "overlay-frame"
 
         def ocr_text(self, _frame):
-            return "对弈 个人棋符 +100 体力消耗 10 确认"
+            return "批战结束 总计获得奖励 天地棋玉 450 体力消耗 10"
 
     result = _run(
         tiandi_task._start_one_tiandi_yiju_round_and_wait_result(
@@ -271,7 +304,41 @@ def test_new_result_overlay_is_distinct_from_legacy_scene() -> None:
     )
 
     assert result["terminal_kind"] == "new_result_overlay"
-    assert result["scene_id"] is None
+    assert result["scene_id"] == 688
+
+
+def test_ally_point_confirmation_is_handled_before_result() -> None:
+    class _AllyConfirmRuntime(_Runtime):
+        def __init__(self):
+            super().__init__()
+            self.confirmed = False
+
+        def current_scene(self, candidates, **_options):
+            if 687 in candidates and not self.confirmed:
+                return 687, 100.0, "ally-confirm-frame"
+            if 681 in candidates:
+                return 681, 100.0, "result-frame"
+            return None, 0.0, "frame"
+
+        def wait_click(self, source, shape, **_options):
+            self.clicks.append((source, shape, None))
+            if shape == "仍要对弈":
+                self.confirmed = True
+            if False:
+                yield None
+            return None
+
+    runtime = _AllyConfirmRuntime()
+
+    result = _run(
+        tiandi_task._start_one_tiandi_yiju_round_and_wait_result(runtime, timeout=1)
+    )
+
+    assert result["terminal_kind"] == "legacy_scene"
+    assert runtime.clicks == [
+        (687, "不再提醒", None),
+        (687, "仍要对弈", None),
+    ]
 
 
 def test_formal_new_result_scene_uses_its_own_confirm_transaction(monkeypatch) -> None:
@@ -307,7 +374,7 @@ def test_formal_new_result_scene_uses_its_own_confirm_transaction(monkeypatch) -
     )
 
     assert result["result"]["terminal_kind"] == "new_result_overlay"
-    assert (999, "确认", None) in runtime.clicks
+    assert (999, "点击屏幕继续", None) in runtime.clicks
     assert (681, "点击屏幕继续", None) not in runtime.clicks
 
 
@@ -331,7 +398,7 @@ def test_empty_point_forces_one_round_and_reuses_public_count_setter(monkeypatch
     }
     monkeypatch.setattr(
         tiandi_task,
-        "read_tiandi_yiju_runtime_snapshot",
+        "read_tiandi_yiju_auto_dialog_snapshot",
         lambda: next(snapshots),
     )
     monkeypatch.setattr(
@@ -620,6 +687,7 @@ def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(
 
     runtime = _Runtime()
     events = []
+    monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", None)
 
     class _Runner:
         def _fanxiu_runtime(self, *_args, **_kwargs):

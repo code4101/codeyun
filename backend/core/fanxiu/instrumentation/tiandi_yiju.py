@@ -281,6 +281,33 @@ def _derive_cross_own_alliance_id(
     return int(candidates[0])
 
 
+def _decode_auto_challenge_choices(
+    reader: LuaJitReader,
+    data: Mapping[Any, Any],
+) -> dict[str, bool]:
+    """Project only #680's five persisted switches from loaded Runtime state."""
+
+    choose_states = {
+        int(key): bool(value)
+        for raw_key, value in reader.dictionary_fields(data.get("chooseStateDic")).items()
+        if (key := as_int(raw_key)) is not None and 1 <= int(key) <= 6
+    }
+    # #680 live Runtime-GUI alignment (2026-08-28): 4=自动仙弈盒,
+    # 5=失败不中断, 6=跳过动画, 3=妙手珠, 2=四倍棋符.
+    indices = {
+        "auto_use_strength_item": 4,
+        "continue_after_defeat": 5,
+        "skip_animation": 6,
+        "master_skill_item": 3,
+        "quadruple_chess_token_item": 2,
+    }
+    return {
+        key: bool(choose_states[index])
+        for key, index in indices.items()
+        if index in choose_states
+    }
+
+
 def _decode_snapshot(
     reader: LuaJitReader,
     instance: Mapping[Any, Any],
@@ -326,23 +353,7 @@ def _decode_snapshot(
         for raw_key, value in reader.dictionary_fields(data.get("chooseStateDic")).items()
         if (key := as_int(raw_key)) is not None and 1 <= int(key) <= 6
     }
-    # #680 live Runtime-GUI alignment (2026-08-28): clicking the existing
-    # semantic Shapes changed 4=自动仙弈盒, 3=妙手珠 and 2=四倍棋符.  The two
-    # remaining persisted rows follow the dialog's contiguous common-option
-    # order: 5=失败不中断, 6=跳过动画.  Keep absent keys absent so the
-    # configuration planner fails closed instead of inventing ``False``.
-    auto_choice_indices = {
-        "auto_use_strength_item": 4,
-        "continue_after_defeat": 5,
-        "skip_animation": 6,
-        "master_skill_item": 3,
-        "quadruple_chess_token_item": 2,
-    }
-    auto_challenge_choices = {
-        key: bool(choose_states[index])
-        for key, index in auto_choice_indices.items()
-        if index in choose_states
-    }
+    auto_challenge_choices = _decode_auto_challenge_choices(reader, data)
     entry_personal_score = max(0, _long(reader, play_info.get("personalScore")))
     board_personal_score = max(0, _long(reader, data.get("_MyScore")))
     return {
@@ -421,6 +432,46 @@ def read_tiandi_yiju_runtime_snapshot() -> dict[str, Any]:
         }
     )
     return snapshot
+
+
+def read_tiandi_yiju_auto_dialog_snapshot() -> dict[str, Any]:
+    """Read only the five #680 switches needed by the idempotent config step.
+
+    Dialog configuration must not depend on board-owner/rank inference.  Those
+    facts belong to target selection and remain strict in the full snapshot.
+    """
+
+    started_at = time.perf_counter()
+    memory = MumuProcessMemory.discover_cached()
+    state_address = int(_lua_addresses(memory)["state"], 16)
+    root, cache_hit, environment = resolve_lua_global_manager_root(
+        memory,
+        manager_key="tiandi-yiju-board",
+        state_address=state_address,
+        global_name="AllianceplaychessMgr",
+        required_methods=MANAGER_METHODS,
+        validate=lambda current_reader, address: _manager_state(current_reader, address),
+    )
+    reader = LuaJitReader(memory)
+    _instance, _model, data = _manager_state(reader, root)
+    return {
+        "ok": True,
+        "available": True,
+        "complete": True,
+        "source": "runtime_memory.alliance_play_chess.auto_dialog",
+        "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "elapsed_seconds": time.perf_counter() - started_at,
+        "is_cross": max(0, as_int(data.get("_IsCross")) or 0),
+        "auto_challenge_choices": _decode_auto_challenge_choices(reader, data),
+        "read_only": True,
+        "evidence": {
+            "pid": memory.pid,
+            "process_start_ticks": memory.process_start_ticks,
+            "manager_root": f"0x{root:x}",
+            "root_cache_hit": cache_hit,
+            "lua_environment": environment,
+        },
+    }
 
 
 def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
