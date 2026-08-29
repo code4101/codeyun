@@ -3,7 +3,7 @@ from __future__ import annotations
 """Activity-neutral, Runtime-verified integer count controls."""
 
 from dataclasses import dataclass
-from typing import Any, Iterator, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 
 class IntegerCountAssets(Protocol):
@@ -83,6 +83,7 @@ def set_minimum_then_increment_count(
     maximum: int,
     max_adjustments: int,
     count_label: str,
+    count_reader: Callable[[Any, IntegerCountAssets], int] | None = None,
 ) -> Iterator[Any]:
     """Converge a bounded count with exact verified +/- steps.
 
@@ -105,11 +106,14 @@ def set_minimum_then_increment_count(
     if adjustment_budget < 0:
         raise ValueError(f"{count_label}调整预算不得为负数")
 
-    before = read_positive_integer_count(
-        runtime,
-        assets,
-        count_label=count_label,
+    read_current = count_reader or (
+        lambda active_runtime, active_assets: read_positive_integer_count(
+            active_runtime,
+            active_assets,
+            count_label=count_label,
+        )
     )
+    before = read_current(runtime, assets)
     required_actions = abs(int(desired) - before)
     if required_actions > adjustment_budget:
         raise ValueError(
@@ -136,11 +140,7 @@ def set_minimum_then_increment_count(
         yield from runtime.wait_action_settle(0.12)
         updated = current
         for observation_attempt in range(4):
-            updated = read_positive_integer_count(
-                runtime,
-                assets,
-                count_label=count_label,
-            )
+            updated = read_current(runtime, assets)
             if updated != current:
                 break
             if observation_attempt < 3:
@@ -156,11 +156,7 @@ def set_minimum_then_increment_count(
         current = updated
 
     yield from runtime.wait_action_settle(0.4)
-    verified = read_positive_integer_count(
-        runtime,
-        assets,
-        count_label=count_label,
-    )
+    verified = read_current(runtime, assets)
     if verified != desired:
         raise RuntimeError(
             f"{count_label}稳定读回失败：目标 {desired}，实际 {verified}"

@@ -17,13 +17,16 @@ from backend.core.fanxiu.data_annotation.tasks.gameplay_rank_task_rewards import
     claim_gameplay_rank_task_tabs,
 )
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_config import (
+    MASTER_SKILL_ITEM,
+    QUADRUPLE_CHESS_TOKEN_ITEM,
     TIANDI_YIJU_AUTO_CONFIG_OPTIONS,
     plan_tiandi_yiju_auto_challenge_from_runtime,
 )
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count import (
     TIANDI_YIJU_MAX_BATCH_ROUNDS,
     TiandiYijuCountAssets,
-    set_tiandi_yiju_all_funded_rounds,
+    read_tiandi_yiju_round_count,
+    set_tiandi_yiju_funded_rounds,
     set_tiandi_yiju_round_count,
 )
 from backend.core.fanxiu.instrumentation.tiandi_yiju import (
@@ -45,15 +48,19 @@ TIANDI_YIJU_BOARD_SCENE = 678
 TIANDI_YIJU_PIECE_INFO_SCENE = 679
 TIANDI_YIJU_AUTO_DIALOG_SCENE = 680
 TIANDI_YIJU_RESULT_SCENE = 681
-# The live batch result is a click-anywhere close page, not legacy #681.
-TIANDI_YIJU_RESULT_OVERLAY_SCENE: int | None = 688
-TIANDI_YIJU_RESULT_CONFIRM_SHAPE = "点击屏幕继续"
+# The live result page closes only from its bottom safe area.
+TIANDI_YIJU_RESULT_OVERLAY_SCENE: int | None = 692
+TIANDI_YIJU_RESULT_CONFIRM_SHAPE = "点击屏幕关闭"
 TIANDI_YIJU_TASK_SCORE_SCENE = 683
 TIANDI_YIJU_TASK_CULTIVATION_SCENE = 684
 TIANDI_YIJU_POINT_LIST_SCENE = 686
 TIANDI_YIJU_ALLY_CONFIRM_SCENE = 687
+TIANDI_YIJU_AUTO_RUNNING_SCENE = 690
+TIANDI_YIJU_AUTO_COMPLETED_SCENE = 691
 TIANDI_YIJU_ALLY_NO_REMINDER_SHAPE = "不再提醒"
 TIANDI_YIJU_ALLY_CONFIRM_SHAPE = "仍要对弈"
+TIANDI_YIJU_MASTER_SKILL_ITEM_ID = 100000008
+TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID = 100000002
 
 RuntimeReader = Callable[[], dict[str, Any]]
 
@@ -66,6 +73,28 @@ def _plan_shared_exchange_batch(**kwargs: Any) -> Any:
     )
 
     return plan_feedback_batch(**kwargs)
+
+
+def _select_tiandi_yiju_batch_rounds(
+    *,
+    planned_rounds: int,
+    required_currency: int,
+    measured_currency_delta: int | None,
+    measured_rounds: int | None,
+    available_rounds: int,
+) -> int:
+    """Apply the one game-specific tail rule to the shared estimate."""
+
+    available = int(available_rounds)
+    if available <= 0:
+        raise ValueError("天地弈局可用对弈次数必须为正整数")
+    delta = int(measured_currency_delta or 0)
+    rounds = int(measured_rounds or 0)
+    if delta > 0 and rounds > 0:
+        estimated = (int(required_currency) * rounds + delta - 1) // delta
+        if estimated <= TIANDI_YIJU_MAX_BATCH_ROUNDS:
+            return min(TIANDI_YIJU_MAX_BATCH_ROUNDS, available)
+    return min(max(1, int(planned_rounds)), max(1, available // 2))
 
 
 TIANDI_YIJU_TASK_ASSETS = GameplayRankTaskAssets(
@@ -206,6 +235,21 @@ def _assert_tiandi_yiju_production_asset_contract(runtime: Any) -> None:
         )
 
 
+def _wait_tiandi_yiju_auto_dialog_ready(runtime: Any, *, timeout: float = 20.0):
+    """Accept #680 by its tightly cropped count, not the changing score bars."""
+
+    deadline = time.monotonic() + float(timeout)
+    while True:
+        try:
+            if read_tiandi_yiju_round_count(runtime, TiandiYijuCountAssets()) > 0:
+                return TIANDI_YIJU_AUTO_DIALOG_SCENE
+        except RuntimeError:
+            pass
+        if time.monotonic() >= deadline:
+            raise TimeoutError("天地弈局挑战配置页未读到合法次数")
+        yield from runtime.wait_action_settle(0.5)
+
+
 def open_tiandi_yiju_recommended_target(
     runtime: Any,
     *,
@@ -259,6 +303,7 @@ def configure_tiandi_yiju_auto_dialog(
     *,
     cross_count: int,
     reader: RuntimeReader | None = None,
+    feature_item_available: Mapping[str, bool] | None = None,
 ):
     """Apply only Runtime-proven switch differences and verify the result."""
 
@@ -267,6 +312,7 @@ def configure_tiandi_yiju_auto_dialog(
     plan = plan_tiandi_yiju_auto_challenge_from_runtime(
         before,
         cross_count=int(cross_count),
+        feature_item_available=feature_item_available,
     )
     _assert_dialog_shape_assets(
         runtime,
@@ -282,6 +328,7 @@ def configure_tiandi_yiju_auto_dialog(
     verified = plan_tiandi_yiju_auto_challenge_from_runtime(
         after,
         cross_count=int(cross_count),
+        feature_item_available=feature_item_available,
     )
     if not verified["already_configured"]:
         pending = ", ".join(str(item["label"]) for item in verified["actions"])
@@ -297,19 +344,20 @@ def run_tiandi_yiju_bounded_batch(
     snapshot_reader: RuntimeReader | None = None,
     target_reader: RuntimeReader | None = None,
     recommendation_override: Mapping[str, Any] | None = None,
-    verified_funded_rounds: int | None = None,
+    verified_available_rounds: int | None = None,
+    feature_item_available: Mapping[str, bool] | None = None,
 ):
     """Execute one bounded batch and return to #678 for re-planning."""
 
     requested = int(requested_rounds)
-    exhaustive = verified_funded_rounds is not None
+    available = int(verified_available_rounds or 0)
     if requested <= 0 or (
         requested > TIANDI_YIJU_MAX_BATCH_ROUNDS
-        and (not exhaustive or requested != int(verified_funded_rounds))
+        and (available <= 0 or requested > available)
     ):
         raise ValueError(
             f"天地弈局普通单批必须为 1..{TIANDI_YIJU_MAX_BATCH_ROUNDS} 次；"
-            "超出上限只允许执行 Runtime 精确证明的全部可用次数"
+            "更大批次必须位于 Runtime 精确证明的可用次数内"
         )
     _assert_tiandi_yiju_production_asset_contract(runtime)
     opened = yield from open_tiandi_yiju_recommended_target(
@@ -322,25 +370,27 @@ def run_tiandi_yiju_bounded_batch(
     if int(target.get("total_score") or 0) == 0:
         requested = 1
 
-    landed = yield from runtime.wait_click_then_view(
-        TIANDI_YIJU_PIECE_INFO_SCENE,
-        "对弈",
-        TIANDI_YIJU_AUTO_DIALOG_SCENE,
-        timeout=20.0,
-        label="天地弈局：打开自动对弈设置",
-    )
+    yield from runtime.wait_click(TIANDI_YIJU_PIECE_INFO_SCENE, "对弈")
+    yield from runtime.wait_action_settle(0.8)
+    landed = yield from _wait_tiandi_yiju_auto_dialog_ready(runtime)
     if _scene_id(landed) != TIANDI_YIJU_AUTO_DIALOG_SCENE:
         raise RuntimeError("天地弈局未进入自动对弈设置")
     configured = yield from configure_tiandi_yiju_auto_dialog(
         runtime,
         cross_count=int(cross_count),
         reader=snapshot_reader,
+        feature_item_available=feature_item_available,
     )
-    count_result = (
-        yield from set_tiandi_yiju_all_funded_rounds(runtime, requested)
-        if exhaustive
-        else (yield from set_tiandi_yiju_round_count(runtime, requested))
-    )
+    # Every normal batch already carries a Runtime-proven resource ceiling.
+    # Use one proportional drag even for the final 100 rounds; the live OCR
+    # readback, rather than the requested number, is the consumed batch size.
+    if available > 0:
+        count_result = yield from set_tiandi_yiju_funded_rounds(
+            runtime, requested, available
+        )
+    else:
+        count_result = yield from set_tiandi_yiju_round_count(runtime, requested)
+    requested = int(count_result["after"])
     result = yield from _start_one_tiandi_yiju_round_and_wait_result(
         runtime,
         timeout=max(120.0, float(requested) * 3.0),
@@ -372,24 +422,46 @@ def run_tiandi_yiju_bounded_batch(
         )
     if not direct_board:
         yield from runtime.wait_action_settle(1.0)
-        landed = yield from runtime.wait_scene(
+        post_result_scenes = [
             TIANDI_YIJU_AUTO_DIALOG_SCENE,
             TIANDI_YIJU_BOARD_SCENE,
+        ]
+        # After closing #692, do not accept the same stale frame as progress.
+        # Legacy #681 may legitimately advance straight to the total #692.
+        if (
+            terminal_kind == "legacy_scene"
+            and TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None
+        ):
+            post_result_scenes.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
+        landed = yield from runtime.wait_scene(
+            *post_result_scenes,
             timeout=20.0,
             label="天地弈局：关闭批战结果",
         )
     scene_id = _scene_id(landed)
     if scene_id == TIANDI_YIJU_AUTO_DIALOG_SCENE:
-        landed = yield from runtime.wait_click_then_view(
-            TIANDI_YIJU_AUTO_DIALOG_SCENE,
-            "关闭",
+        yield from runtime.wait_click(TIANDI_YIJU_AUTO_DIALOG_SCENE, "关闭")
+        yield from runtime.wait_action_settle(0.8)
+        landed = yield from runtime.wait_scene(
             TIANDI_YIJU_BOARD_SCENE,
+            TIANDI_YIJU_RESULT_OVERLAY_SCENE,
             timeout=20.0,
             label="天地弈局：批次后返回棋盘",
         )
-        if _scene_id(landed) != TIANDI_YIJU_BOARD_SCENE:
-            raise RuntimeError("天地弈局批次后未返回棋盘")
-    elif scene_id != TIANDI_YIJU_BOARD_SCENE:
+        scene_id = _scene_id(landed)
+    if scene_id == TIANDI_YIJU_RESULT_OVERLAY_SCENE:
+        yield from runtime.wait_click(
+            TIANDI_YIJU_RESULT_OVERLAY_SCENE,
+            TIANDI_YIJU_RESULT_CONFIRM_SHAPE,
+        )
+        yield from runtime.wait_action_settle(0.8)
+        landed = yield from runtime.wait_scene(
+            TIANDI_YIJU_BOARD_SCENE,
+            timeout=20.0,
+            label="天地弈局：关闭总结果",
+        )
+        scene_id = _scene_id(landed)
+    if scene_id != TIANDI_YIJU_BOARD_SCENE:
         raise RuntimeError("天地弈局关闭批战结果后未返回设置页或棋盘")
     return {
         "requested_rounds": requested,
@@ -460,6 +532,9 @@ def run_tiandi_yiju_exchange_target_loop(
     from backend.core.fanxiu.activity.tiandi_yiju import (
         collect_and_store_tiandi_yiju_activity,
     )
+    from backend.core.fanxiu.instrumentation.backpack import (
+        read_backpack_item_counts,
+    )
     from backend.core.fanxiu.instrumentation.wallet import (
         read_wallet_currency_snapshot,
     )
@@ -496,23 +571,46 @@ def run_tiandi_yiju_exchange_target_loop(
     previous_rounds: int | None = None
     total_rounds = 0
     batches: list[dict[str, Any]] = []
-    locked_tianyuan_recommendation: dict[str, Any] | None = None
+    locked_recommendation: dict[str, Any] | None = None
 
     for _batch_index in range(max(1, int(max_batches))):
         if required_new_currency == 0:
             break
         if stop_event.is_set():
             raise InterruptedError()
+        board = read_tiandi_yiju_runtime_snapshot()
+        strength_item_id = int(board.get("strength_item_id") or 0)
+        if strength_item_id <= 0:
+            raise RuntimeError("天地弈局 Runtime 缺少仙弈盒物品 ID")
+        item_counts, _ = read_backpack_item_counts(
+            [
+                strength_item_id,
+                TIANDI_YIJU_MASTER_SKILL_ITEM_ID,
+                TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID,
+            ],
+            manager_key="tiandi-yiju-batch-items",
+        )
+        available_rounds = int(board.get("natural_play_budget") or 0) + int(
+            item_counts.get(strength_item_id, 0)
+        )
+        if available_rounds <= 0:
+            raise RuntimeError("天地弈局没有可用对弈次数")
+        maximum_batch = max(1, available_rounds // 2)
         shared_plan = _plan_shared_exchange_batch(
             required_new_currency=required_new_currency,
             measured_currency_delta=measured_delta,
             measured_challenges=measured_rounds,
             previous_currency_delta=previous_delta,
             previous_challenges=previous_rounds,
+            probe_challenges=min(maximum_batch, max(10, available_rounds // 10)),
+            maximum_batch_challenges=maximum_batch,
         )
-        requested = min(
-            int(shared_plan.requested_challenges),
-            TIANDI_YIJU_MAX_BATCH_ROUNDS,
+        requested = _select_tiandi_yiju_batch_rounds(
+            planned_rounds=int(shared_plan.requested_challenges),
+            required_currency=required_new_currency,
+            measured_currency_delta=measured_delta,
+            measured_rounds=measured_rounds,
+            available_rounds=available_rounds,
         )
         if requested <= 0:
             raise RuntimeError("天地弈局统一分批规划器返回了无效次数")
@@ -520,17 +618,21 @@ def run_tiandi_yiju_exchange_target_loop(
             runtime,
             requested_rounds=requested,
             cross_count=int(occurrence.cross_count),
-            recommendation_override=locked_tianyuan_recommendation,
+            recommendation_override=locked_recommendation,
+            verified_available_rounds=available_rounds,
+            feature_item_available={
+                MASTER_SKILL_ITEM: item_counts[TIANDI_YIJU_MASTER_SKILL_ITEM_ID] > 0,
+                QUADRUPLE_CHESS_TOKEN_ITEM: item_counts[
+                    TIANDI_YIJU_QUADRUPLE_TOKEN_ITEM_ID
+                ] > 0,
+            },
         )
         actual_rounds = int(batch["requested_rounds"])
         batch_target = dict(batch["target"])
-        if (
-            int(batch_target.get("piece_id") or 0) == 1
-            and locked_tianyuan_recommendation is None
-        ):
+        if locked_recommendation is None:
             recommendation = dict(batch.get("recommendation") or {})
             if recommendation:
-                locked_tianyuan_recommendation = recommendation
+                locked_recommendation = recommendation
 
         wallet_after = read_wallet_currency_snapshot(
             currency_type,
@@ -705,12 +807,15 @@ def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float
     deadline = time.monotonic() + float(timeout)
     last_text = ""
     ally_confirmation_handled = False
+    running_seen = False
     board_seen_at: float | None = None
     while True:
         candidates = [
             TIANDI_YIJU_BOARD_SCENE,
             TIANDI_YIJU_ALLY_CONFIRM_SCENE,
             TIANDI_YIJU_RESULT_SCENE,
+            TIANDI_YIJU_AUTO_RUNNING_SCENE,
+            TIANDI_YIJU_AUTO_COMPLETED_SCENE,
         ]
         if TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None:
             candidates.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
@@ -734,6 +839,13 @@ def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float
             ally_confirmation_handled = True
             yield from runtime.wait_action_settle(1.0)
             continue
+        if scene_id == TIANDI_YIJU_AUTO_COMPLETED_SCENE:
+            running_seen = True
+            yield from runtime.wait_click(TIANDI_YIJU_AUTO_COMPLETED_SCENE, "确认")
+            yield from runtime.wait_action_settle(0.8)
+            continue
+        if scene_id == TIANDI_YIJU_AUTO_RUNNING_SCENE:
+            running_seen = True
         if scene_id == TIANDI_YIJU_RESULT_SCENE:
             return {
                 "terminal_kind": "legacy_scene",
@@ -741,7 +853,7 @@ def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float
                 "score": score,
                 "ocr": last_text,
             }
-        if scene_id == TIANDI_YIJU_BOARD_SCENE:
+        if running_seen and scene_id == TIANDI_YIJU_BOARD_SCENE:
             if board_seen_at is None:
                 board_seen_at = time.monotonic()
             elif time.monotonic() - board_seen_at >= 5.0:

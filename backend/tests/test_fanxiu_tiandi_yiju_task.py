@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import threading
 
+import pytest
+
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju as tiandi_task
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju import (
@@ -38,6 +40,12 @@ def _occurrence() -> RankingOccurrence:
         close_at=now,
         cross_count=8,
     )
+
+
+FEATURE_ITEMS_AVAILABLE = {
+    "master_skill_item": True,
+    "quadruple_chess_token_item": True,
+}
 
 
 def _auto_snapshot(*, enabled: bool) -> dict:
@@ -79,8 +87,8 @@ class _View:
                 _Shape("妙手珠开关"),
                 _Shape("四倍棋符开关"),
             ]
-        if self.scene in {688, 999}:
-            return [_Shape("点击屏幕继续")]
+        if self.scene in {688, 692, 999}:
+            return [_Shape("点击屏幕继续"), _Shape("点击屏幕关闭")]
         if self.scene == 687:
             return [_Shape("不再提醒"), _Shape("仍要对弈")]
         return [_Shape("棋点001-天元"), _Shape("棋点002-中腹·四")]
@@ -103,6 +111,9 @@ class _Runtime:
         if False:
             yield None
         return None
+
+    def ocr_numbers_in_shapes(self, _scene, _shapes, **_options):
+        return [1], "次数：1"
 
     def wait_click(self, source, shape, **_options):
         self.clicks.append((source, shape, None))
@@ -140,7 +151,7 @@ class _DelayedCountRuntime:
         self.values = iter([1, 1, 2, 2])
         self.clicks = []
 
-    def ocr_numbers_in_shapes(self, _scene, _shapes):
+    def ocr_numbers_in_shapes(self, _scene, _shapes, **_options):
         value = next(self.values)
         return [value], str(value)
 
@@ -214,6 +225,7 @@ def test_auto_configuration_clicks_runtime_differences_then_rechecks() -> None:
             runtime,
             cross_count=8,
             reader=lambda: next(snapshots),
+            feature_item_available=FEATURE_ITEMS_AVAILABLE,
         )
     )
 
@@ -276,7 +288,7 @@ def test_batch_fails_before_any_click_when_result_confirm_shape_is_missing(
 
     runtime = _Runtime()
     monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", 998)
-    with pytest.raises(RuntimeError, match="缺少正式『点击屏幕继续』Shape"):
+    with pytest.raises(RuntimeError, match="缺少正式『点击屏幕关闭』Shape"):
         _run(
             run_tiandi_yiju_bounded_batch(
                 runtime,
@@ -304,7 +316,7 @@ def test_new_result_overlay_is_distinct_from_legacy_scene() -> None:
     )
 
     assert result["terminal_kind"] == "new_result_overlay"
-    assert result["scene_id"] == 688
+    assert result["scene_id"] == 692
 
 
 def test_ally_point_confirmation_is_handled_before_result() -> None:
@@ -341,6 +353,65 @@ def test_ally_point_confirmation_is_handled_before_result() -> None:
     ]
 
 
+def test_running_scene_can_transition_to_result() -> None:
+    class _RunningRuntime(_Runtime):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def current_scene(self, candidates, **_options):
+            self.polls += 1
+            if self.polls == 1:
+                return None, 0.0, "config"
+            if self.polls == 2:
+                return 690, 100.0, "running"
+            return 681, 100.0, "result"
+
+    result = _run(
+        tiandi_task._start_one_tiandi_yiju_round_and_wait_result(
+            _RunningRuntime(), timeout=1
+        )
+    )
+
+    assert result["terminal_kind"] == "legacy_scene"
+
+
+def test_board_without_running_evidence_is_not_a_success() -> None:
+    class _UnstartedRuntime(_Runtime):
+        def current_scene(self, _candidates, **_options):
+            return 678, 100.0, "board"
+
+    with pytest.raises(TimeoutError, match="未出现结果终态"):
+        _run(
+            tiandi_task._start_one_tiandi_yiju_round_and_wait_result(
+                _UnstartedRuntime(), timeout=0
+            )
+        )
+
+
+def test_completed_prompt_is_confirmed_before_result() -> None:
+    class _CompletedRuntime(_Runtime):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def current_scene(self, candidates, **_options):
+            self.polls += 1
+            if self.polls == 1:
+                return None, 0.0, "config"
+            if self.polls == 2:
+                return 691, 100.0, "completed"
+            return 681, 100.0, "result"
+
+    runtime = _CompletedRuntime()
+    result = _run(
+        tiandi_task._start_one_tiandi_yiju_round_and_wait_result(runtime, timeout=1)
+    )
+
+    assert result["terminal_kind"] == "legacy_scene"
+    assert (691, "确认", None) in runtime.clicks
+
+
 def test_formal_new_result_scene_uses_its_own_confirm_transaction(monkeypatch) -> None:
     class _FormalOverlayRuntime(_Runtime):
         def current_scene(self, candidates, **_options):
@@ -348,10 +419,22 @@ def test_formal_new_result_scene_uses_its_own_confirm_transaction(monkeypatch) -
                 return 999, 100.0, "overlay-frame"
             return super().current_scene(candidates, **_options)
 
-    def fake_set_count(_runtime, target):
+        def wait_scene(self, target, *targets, **_options):
+            candidates = (target, *targets)
+            if 680 in candidates and 678 in candidates:
+                result = 680
+            elif 999 in candidates:
+                result = 999
+            else:
+                result = target
+            if False:
+                yield None
+            return result
+
+    def fake_set_count(_runtime, target, available):
         if False:
             yield None
-        return {"target": target, "after": target}
+        return {"target": target, "after": target, "available": available}
 
     runtime = _FormalOverlayRuntime()
     snapshots = iter([_auto_snapshot(enabled=True), _auto_snapshot(enabled=True)])
@@ -361,7 +444,7 @@ def test_formal_new_result_scene_uses_its_own_confirm_transaction(monkeypatch) -
         "target": {"piece_id": 1, "total_score": 100},
     }
     monkeypatch.setattr(tiandi_task, "TIANDI_YIJU_RESULT_OVERLAY_SCENE", 999)
-    monkeypatch.setattr(tiandi_task, "set_tiandi_yiju_round_count", fake_set_count)
+    monkeypatch.setattr(tiandi_task, "set_tiandi_yiju_funded_rounds", fake_set_count)
 
     result = _run(
         run_tiandi_yiju_bounded_batch(
@@ -370,11 +453,16 @@ def test_formal_new_result_scene_uses_its_own_confirm_transaction(monkeypatch) -
             cross_count=8,
             snapshot_reader=lambda: next(snapshots),
             target_reader=lambda: target,
+            verified_available_rounds=100,
+            feature_item_available=FEATURE_ITEMS_AVAILABLE,
         )
     )
 
     assert result["result"]["terminal_kind"] == "new_result_overlay"
-    assert (999, "点击屏幕继续", None) in runtime.clicks
+    assert runtime.clicks.count(
+        (999, tiandi_task.TIANDI_YIJU_RESULT_CONFIRM_SHAPE, None)
+    ) == 2
+    assert (680, "关闭", None) in runtime.clicks
     assert (681, "点击屏幕继续", None) not in runtime.clicks
 
 
@@ -412,6 +500,7 @@ def test_empty_point_forces_one_round_and_reuses_public_count_setter(monkeypatch
             runtime,
             requested_rounds=100,
             cross_count=8,
+            feature_item_available=FEATURE_ITEMS_AVAILABLE,
         )
     )
 
@@ -419,7 +508,7 @@ def test_empty_point_forces_one_round_and_reuses_public_count_setter(monkeypatch
     assert count_calls == [1]
     assert runtime.clicks[-2:] == [
         (681, "点击屏幕继续", None),
-        (680, "关闭", 678),
+        (680, "关闭", None),
     ]
 
 
@@ -487,7 +576,7 @@ def test_wallet_identity_rejects_non_runtime_source() -> None:
         )
 
 
-def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_tianyuan(
+def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_target(
     monkeypatch,
 ) -> None:
     activity = SimpleNamespace(id="activity-1")
@@ -612,7 +701,7 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_tianyuan(
         return SimpleNamespace(requested_challenges=500)
 
     batch_calls = []
-    tianyuan_recommendation = {
+    locked_recommendation = {
         "ok": True,
         "complete": True,
         "target": {"piece_id": 1, "total_score": 20},
@@ -625,15 +714,29 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_tianyuan(
         return {
             "requested_rounds": kwargs["requested_rounds"],
             "target": {"piece_id": 1},
-            "recommendation": tianyuan_recommendation,
+            "recommendation": locked_recommendation,
         }
 
     import sqlmodel
     from backend.core.fanxiu.activity import tiandi_yiju as activity_module
+    from backend.core.fanxiu.instrumentation import backpack as backpack_module
     from backend.core.fanxiu.instrumentation import wallet as wallet_module
 
     monkeypatch.setattr(sqlmodel, "Session", _Session)
     monkeypatch.setattr(activity_module, "collect_and_store_tiandi_yiju_activity", collect)
+    monkeypatch.setattr(
+        tiandi_task,
+        "read_tiandi_yiju_runtime_snapshot",
+        lambda: {"strength_item_id": 100000004, "natural_play_budget": 0},
+    )
+    monkeypatch.setattr(
+        backpack_module,
+        "read_backpack_item_counts",
+        lambda _ids, *, manager_key: (
+            {100000004: 1000, 100000008: 0, 100000002: 0},
+            {},
+        ),
+    )
     monkeypatch.setattr(wallet_module, "read_wallet_currency_snapshot", wallet)
     monkeypatch.setattr(tiandi_task, "_plan_shared_exchange_batch", planner)
     monkeypatch.setattr(tiandi_task, "run_tiandi_yiju_bounded_batch", batch)
@@ -647,12 +750,17 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_tianyuan(
     )
 
     assert result["status"] == "completed"
-    assert result["rounds"] == 300
+    assert result["rounds"] == 1500
     assert len(planner_calls) == 3
-    assert [call["requested_rounds"] for call in batch_calls] == [100, 100, 100]
+    assert [call["requested_rounds"] for call in batch_calls] == [500, 500, 500]
+    assert all(call["verified_available_rounds"] == 1000 for call in batch_calls)
     assert batch_calls[0]["recommendation_override"] is None
-    assert batch_calls[1]["recommendation_override"] == tianyuan_recommendation
-    assert batch_calls[2]["recommendation_override"] == tianyuan_recommendation
+    assert batch_calls[0]["feature_item_available"] == {
+        "master_skill_item": False,
+        "quadruple_chess_token_item": False,
+    }
+    assert batch_calls[1]["recommendation_override"] == locked_recommendation
+    assert batch_calls[2]["recommendation_override"] == locked_recommendation
     assert planner_calls == [
         {
             "required_new_currency": 50_000,
@@ -660,24 +768,47 @@ def test_exchange_loop_reuses_public_plan_caps_recollects_and_locks_tianyuan(
             "measured_challenges": None,
             "previous_currency_delta": None,
             "previous_challenges": None,
+            "probe_challenges": 100,
+            "maximum_batch_challenges": 500,
         },
         {
             "required_new_currency": 10_000,
             "measured_currency_delta": 100,
-            "measured_challenges": 100,
+            "measured_challenges": 500,
             "previous_currency_delta": None,
             "previous_challenges": None,
+            "probe_challenges": 100,
+            "maximum_batch_challenges": 500,
         },
         {
             "required_new_currency": 5_000,
             "measured_currency_delta": 100,
-            "measured_challenges": 100,
+            "measured_challenges": 500,
             "previous_currency_delta": 100,
-            "previous_challenges": 100,
+            "previous_challenges": 500,
+            "probe_challenges": 100,
+            "maximum_batch_challenges": 500,
         },
     ]
     assert collect_calls == ["activity-1"] * 4
     assert wallet_calls == [(13, True), (13, False), (13, False), (13, False)]
+
+
+def test_batch_policy_closes_estimated_tail_with_one_hundred_rounds() -> None:
+    assert tiandi_task._select_tiandi_yiju_batch_rounds(
+        planned_rounds=40,
+        required_currency=99,
+        measured_currency_delta=100,
+        measured_rounds=100,
+        available_rounds=500,
+    ) == 100
+    assert tiandi_task._select_tiandi_yiju_batch_rounds(
+        planned_rounds=40,
+        required_currency=99,
+        measured_currency_delta=100,
+        measured_rounds=100,
+        available_rounds=60,
+    ) == 60
 
 
 def test_production_checkpoint_refreshes_exchange_before_challenge_asset_gate(

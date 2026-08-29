@@ -255,22 +255,28 @@ def _derive_cross_own_alliance_id(
     player_lane_owners = owners - ({int(ally_alliance_id)} if ally_alliance_id > 0 else set())
     if len(player_lane_owners) == 1:
         candidates.append(int(next(iter(player_lane_owners))))
-    elif len(player_lane_owners) > 1:
-        raise FanxiuRuntimeMemoryError(
-            "天地弈局跨服棋路排除盟友后仍有多个本人候选："
-            f"owners={sorted(owners)}, ally={ally_alliance_id}"
-        )
 
     expected_score = _long(reader, play_info.get("allianceScore"))
     score_matches = [
         row for row in rank_rows.get(1, []) if int(row["score"]) == int(expected_score)
     ]
     if len(score_matches) == 1:
-        candidates.append(int(score_matches[0]["id"]))
+        score_owner = int(score_matches[0]["id"])
+        if player_lane_owners and score_owner not in player_lane_owners:
+            raise FanxiuRuntimeMemoryError(
+                "天地弈局本人积分与当前棋路归属冲突："
+                f"score_owner={score_owner}, lane_owners={sorted(player_lane_owners)}"
+            )
+        candidates.append(score_owner)
 
     if not candidates and len(owners) == 1:
         candidates.append(int(next(iter(owners))))
     if not candidates:
+        if len(player_lane_owners) > 1:
+            raise FanxiuRuntimeMemoryError(
+                "天地弈局跨服棋路存在多个本人候选且积分无法消歧："
+                f"owners={sorted(owners)}, ally={ally_alliance_id}"
+            )
         raise FanxiuRuntimeMemoryError(
             "天地弈局跨服身份缺少本人积分或排除盟友后的棋路证据"
         )

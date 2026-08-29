@@ -129,9 +129,25 @@ def test_cross_snapshot_fails_closed_when_connected_lane_has_two_owners() -> Non
     data["_IsCross"] = 1
     data["_ChessConnectListL"] = [1]
     data["_ChessConnectListR"] = [2]
+    instance["playChessInfo"]["allianceScore"] = 123
 
     with pytest.raises(FanxiuRuntimeMemoryError, match="多个本人候选"):
         tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+
+def test_cross_snapshot_uses_unique_exact_score_to_disambiguate_lane_owners() -> None:
+    instance, model, data = _state()
+    data["_IsCross"] = 1
+    data["_ChessConnectListL"] = [1]
+    data["_ChessConnectListR"] = [2]
+    instance["playChessInfo"]["allianceScore"] = 924143
+
+    result = tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
+
+    assert result["own_alliance_id"] == 1004
+    assert result["owned_piece_ids"] == [2]
+    assert result["entry_alliance_score"] == 924143
+    assert result["alliance_score"] == 924143
 
 
 def test_auto_dialog_projection_does_not_require_board_identity() -> None:
