@@ -623,6 +623,11 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "storage_bag_operation",
         "储物袋_操作",
+        scheduler_supported=True,
+        standard_job=True,
+        standard_job_id="storage-bag-operation",
+        standard_job_description="每日",
+        standard_job_payload={"max_rounds": 3},
     )
     def _run_data_annotation_storage_bag_operation_task_cell(
         runner: Any,
@@ -631,15 +636,22 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import (
+            STANDARD_JOB_ID,
             execute_storage_bag_operation_task,
+            next_storage_bag_operation_at,
         )
 
-        return (yield from execute_storage_bag_operation_task(
+        result = yield from execute_storage_bag_operation_task(
             runner,
             ctx,
             payload,
             stop_event,
-        ))
+        )
+        runner._persist_scheduler_task_next_time(
+            STANDARD_JOB_ID,
+            next_storage_bag_operation_at(job_now()).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        return result
 
     @register_fanxiu_data_annotation_task_cell(
         "resource_auto_use",

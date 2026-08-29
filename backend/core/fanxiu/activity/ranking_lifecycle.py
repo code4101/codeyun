@@ -70,6 +70,7 @@ EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "magic-invasion",
     "yunmeng-trial",
     "xianyuan-duokui",
+    "tiandi-yiju",
 })
 
 # Only resource ranks with a real activity page, shared #605 landing and
@@ -363,6 +364,10 @@ def checkpoints_for_occurrence(
     if (
         occurrence.family == "gameplay_rank"
         and occurrence.activity_type in EXCHANGE_TAIL_ACTIVITY_TYPES
+        and not (
+            occurrence.activity_type == "tiandi-yiju"
+            and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
+        )
         and business_day == tail_day
         and occurrence.end_at < tail_at < occurrence.close_at
     ):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import threading
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -24,6 +25,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     completed_ranking_checkpoint_keys,
     record_ranking_checkpoint_result,
 )
+from backend.core.fanxiu.data_annotation.tasks import ranking_lifecycle as lifecycle_task
 
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -222,6 +224,74 @@ def test_tiandi_yiju_active_checkpoint_catches_up_only_while_board_is_open() -> 
 
     assert TIANDI_YIJU_ACTIVE_KIND in {item.checkpoint_kind for item in active}
     assert TIANDI_YIJU_ACTIVE_KIND not in {item.checkpoint_kind for item in expired}
+
+
+def test_tiandi_yiju_exchange_tail_is_due_during_post_end_grace_period() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="tiandi-yiju",
+        family="gameplay_rank",
+        runtime_id="8090001400004",
+        activity_id=8090001,
+        start_at=datetime(2026, 8, 27, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 27, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 26, 10, tzinfo=TZ),
+        close_at=datetime(2026, 8, 30, 23, 59, 59, tzinfo=TZ),
+        cross_count=1,
+    )
+
+    due = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 28, 0, 31, tzinfo=TZ)
+    )
+
+    assert EXCHANGE_TAIL_KIND in {item.checkpoint_kind for item in due}
+
+
+def test_tiandi_yiju_exchange_tail_blocks_before_any_runtime_action() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="tiandi-yiju",
+        family="gameplay_rank",
+        runtime_id="8090001400004",
+        activity_id=8090001,
+        start_at=datetime(2026, 8, 27, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 27, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 26, 10, tzinfo=TZ),
+        close_at=datetime(2026, 8, 30, 23, 59, 59, tzinfo=TZ),
+        cross_count=1,
+    )
+    generator = lifecycle_task._execute_exchange_tail_checkpoint(
+        object(), {}, {}, threading.Event(), occurrence=occurrence
+    )
+
+    with pytest.raises(StopIteration) as stopped:
+        next(generator)
+
+    result = stopped.value.value
+    assert result["status"] == "blocked"
+    assert result["block_reason"] == "missing_exchange_shop_asset_contract"
+    assert result["required_new_assets"] == [
+        "天地弈局兑换宝阁列表 scene（含返回、商品行1-5）",
+        "天地弈局兑换购买框 scene（含价格、+、+10、购买）",
+    ]
+
+
+def test_tiandi_yiju_group_selection_never_gets_exchange_tail() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="tiandi-yiju",
+        family="gameplay_rank",
+        runtime_id="8090002400004",
+        activity_id=8090002,
+        start_at=datetime(2026, 8, 28, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 29, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 27, 10, tzinfo=TZ),
+        close_at=datetime(2026, 8, 30, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    rows = checkpoints_for_occurrence(
+        occurrence, business_day=datetime(2026, 8, 30, tzinfo=TZ).date()
+    )
+
+    assert EXCHANGE_TAIL_KIND not in {item.checkpoint_kind for item in rows}
 
 
 @pytest.mark.parametrize(

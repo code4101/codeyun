@@ -34,8 +34,6 @@ _CONSOLIDATED_ARENA_SCHEDULER_IDS = {
 _RETIRED_SCHEDULER_TASK_IDS = {
     # 日常_助手的一键执行已经包含供奉，不再保留独立调度实例。
     "legacy-daily-gongfeng",
-    # 资源_自动使用聚合已接管储物袋；旧实例必须显式迁移删除。
-    "storage-bag-operation",
     # 三段式气泡链路已合并为一个闭环 Job。
     "bubble-weekly-restart",
     "bubble-claim-pills",
@@ -410,6 +408,14 @@ def default_data_annotation_scheduler_tasks(
             initial_times=("00:30",),
             initial_weekdays=(1,),
             payload={"max_source_level": 8},
+        ),
+        job(
+            "storage-bag-operation",
+            "storage_bag_operation",
+            "储物袋_操作",
+            description="每日",
+            initial_times=("01:00",),
+            payload={"max_rounds": 3},
         ),
         job(
             "resource-auto-use",

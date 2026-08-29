@@ -72,15 +72,14 @@ TIANDI_YIJU_TASK_ASSETS = GameplayRankTaskAssets(
         GameplayRankTaskTab("修炼", 6, TIANDI_YIJU_TASK_CULTIVATION_SCENE, "修炼页签"),
         GameplayRankTaskTab("夺分", 7, TIANDI_YIJU_TASK_SCORE_SCENE, "夺分页签"),
     ),
+    home_ocr_all=("进入弈局", "对弈体力"),
 )
 
 
 def claim_tiandi_yiju_task_rewards(runtime: Any, *, activity_id: int):
-    snapshot = read_tiandi_yiju_task_reward_snapshot(activity_id)
     return (
         yield from claim_gameplay_rank_task_tabs(
             runtime,
-            snapshot,
             assets=TIANDI_YIJU_TASK_ASSETS,
             reader=lambda **options: read_tiandi_yiju_task_reward_snapshot(
                 activity_id, **options

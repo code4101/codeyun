@@ -96,6 +96,7 @@ def _observe_known_scene(
 def _finish_reward_chain(runtime: Any, *, deadline: float):
     stable_since: float | None = None
     stable_polls = 0
+    stable_scene: int | None = None
     while time.monotonic() < deadline:
         frame = runtime.cur_frame(update=True)
         text = _compact_text(runtime.ocr_text(frame))
@@ -105,20 +106,28 @@ def _finish_reward_chain(runtime: Any, *, deadline: float):
             (REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
             frame_data_url=frame,
         )
-        if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE):
+        if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE):
             break
-        if landed == QUICK_OPERATION_SCENE:
+        if landed in (STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE):
             now = time.monotonic()
-            stable_since = now if stable_since is None else stable_since
+            if stable_scene != landed:
+                stable_scene = int(landed)
+                stable_since = now
+                stable_polls = 0
             stable_polls += 1
             if (
                 stable_polls >= NO_REWARD_STABLE_POLLS
                 and now - stable_since >= NO_REWARD_STABLE_SECONDS
             ):
-                return "empty_fixed_point"
+                return (
+                    "empty_fixed_point"
+                    if landed == QUICK_OPERATION_SCENE
+                    else "storage_fixed_point"
+                )
         else:
             # Unknown/toast-obscured frames do not count toward the fixed-point
             # window and never cause a click.
+            stable_scene = None
             stable_since = None
             stable_polls = 0
         yield from runtime.wait_action_settle(0.25)
@@ -203,6 +212,12 @@ def execute_storage_bag_operation_task(
         # reward, exact empty toast, and a stable no-result fixed point.
         result_deadline = time.monotonic() + result_timeout_seconds
         outcome = yield from _finish_reward_chain(runtime, deadline=result_deadline)
+        if outcome == "storage_fixed_point":
+            # The underlying bag can be recognizable before a delayed reward
+            # overlay appears.  Only a fresh, stable #525 may count as the
+            # direct post-action landing and advance to the next batch.
+            completed_rounds += 1
+            continue
         if outcome in {"empty_toast", "empty_fixed_point"}:
             # The toast can temporarily obscure scene identity.  Observe until
             # #526 is recognizable again, then close through its formal shape.

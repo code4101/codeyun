@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Shared multi-tab reward transaction for gameplay-ranking activities."""
 
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +26,7 @@ class GameplayRankTaskAssets:
     task_entry_shape: str = "任务"
     first_row_claim_shape: str = "首条任务领取区"
     home_shape: str = "天地弈局"
+    home_ocr_all: Sequence[str] = ()
 
 
 def _view_id(view: Any) -> int:
@@ -35,32 +36,49 @@ def _view_id(view: Any) -> int:
     return int(value)
 
 
+def _return_home(
+    runtime: Any,
+    current_scene_id: int,
+    *,
+    assets: GameplayRankTaskAssets,
+    label: str,
+) -> Generator[Any, None, None]:
+    if assets.home_ocr_all:
+        runtime.click_shape_center(current_scene_id, assets.home_shape)
+        yield from runtime.wait_action_settle(0.8)
+        yield from runtime.wait_any(
+            {
+                "活动主页场景": runtime.view_visible(int(assets.home_scene_id)),
+                "活动主页文字": runtime.ocr_contains(all_of=assets.home_ocr_all),
+            },
+            timeout=20.0,
+            label=label,
+        )
+        return
+    home_view = yield from runtime.wait_click_then_view(
+        current_scene_id,
+        assets.home_shape,
+        [int(assets.home_scene_id)],
+        settle_seconds=0.8,
+        timeout=20.0,
+        label=label,
+    )
+    if _view_id(home_view) != int(assets.home_scene_id):
+        raise RuntimeError(f"{assets.activity_label}未返回活动主页")
+
+
 def claim_gameplay_rank_task_tabs(
     runtime: Any,
-    snapshot: Mapping[str, Any],
     *,
     assets: GameplayRankTaskAssets,
     reader: TaskRewardReader,
     settle_seconds: float = 1.2,
 ) -> Generator[Any, None, dict[str, Any]]:
-    """Visit every reward tab and claim each Runtime-authorized task exactly once."""
+    """Load task facts through the real page, then claim authorized rewards once."""
 
-    if not snapshot.get("ok") or not snapshot.get("available") or not snapshot.get("complete"):
-        raise RuntimeError(f"{assets.activity_label}任务奖励 Runtime 事实不完整")
     tabs = tuple(assets.tabs)
     if not tabs:
         raise RuntimeError(f"{assets.activity_label}没有配置任务奖励页签")
-    subtype_by_id = {
-        int(task_id): int(subtype)
-        for task_id, subtype in dict(snapshot.get("task_subtypes") or {}).items()
-    }
-    authorized = [int(value) for value in snapshot.get("authorized_claim_task_ids") or []]
-    known_subtypes = {int(tab.subtype) for tab in tabs}
-    unknown = [task_id for task_id in authorized if subtype_by_id.get(task_id) not in known_subtypes]
-    if unknown:
-        raise RuntimeError(
-            f"{assets.activity_label} taskId={unknown[0]} 未映射到已验证奖励页签"
-        )
 
     target_scenes = list(dict.fromkeys(int(tab.scene_id) for tab in tabs))
     current_view = yield from runtime.wait_click_then_view(
@@ -72,7 +90,78 @@ def claim_gameplay_rank_task_tabs(
         label=f"{assets.activity_label}：进入任务奖励页",
     )
     current_scene_id = _view_id(current_view)
-    current_snapshot = dict(snapshot)
+
+    # QuestMgr lazily materializes each task subtype only after its tab opens.
+    # Load every tab without touching reward rows, then take one full snapshot.
+    loaded_tabs: list[str] = []
+    for tab in tabs:
+        target_scene_id = int(tab.scene_id)
+        if current_scene_id != target_scene_id:
+            current_view = yield from runtime.wait_click_then_view(
+                current_scene_id,
+                tab.tab_shape,
+                [target_scene_id],
+                settle_seconds=0.8,
+                timeout=20.0,
+                label=f"{assets.activity_label}：加载{tab.key}任务事实",
+            )
+            current_scene_id = _view_id(current_view)
+        loaded_tabs.append(str(tab.key))
+
+    current_snapshot = dict(reader())
+    if (
+        not current_snapshot.get("ok")
+        or not current_snapshot.get("available")
+        or not current_snapshot.get("complete")
+    ):
+        yield from _return_home(
+            runtime,
+            current_scene_id,
+            assets=assets,
+            label=f"{assets.activity_label}：任务事实不完整，返回活动主页",
+        )
+        raise RuntimeError(f"{assets.activity_label}任务奖励 Runtime 事实不完整")
+
+    subtype_by_id = {
+        int(task_id): int(subtype)
+        for task_id, subtype in dict(current_snapshot.get("task_subtypes") or {}).items()
+    }
+    authorized = [
+        int(value) for value in current_snapshot.get("authorized_claim_task_ids") or []
+    ]
+    known_subtypes = {int(tab.subtype) for tab in tabs}
+    unknown = [
+        task_id
+        for task_id in authorized
+        if subtype_by_id.get(task_id) not in known_subtypes
+    ]
+    if unknown:
+        yield from _return_home(
+            runtime,
+            current_scene_id,
+            assets=assets,
+            label=f"{assets.activity_label}：任务类型未知，返回活动主页",
+        )
+        raise RuntimeError(
+            f"{assets.activity_label} taskId={unknown[0]} 未映射到已验证奖励页签"
+        )
+
+    if not authorized:
+        yield from _return_home(
+            runtime,
+            current_scene_id,
+            assets=assets,
+            label=f"{assets.activity_label}：任务奖励已幂等完成，返回活动主页",
+        )
+        return {
+            "ok": True,
+            "idempotent": True,
+            "loaded_tabs": loaded_tabs,
+            "visited_tabs": [],
+            "claimed_task_ids": [],
+            "after_snapshot": current_snapshot,
+        }
+
     claimed_now: list[int] = []
     visited_tabs: list[str] = []
 
@@ -126,18 +215,16 @@ def claim_gameplay_rank_task_tabs(
             claimed_now.append(expected)
             current_snapshot = dict(after)
 
-    home_view = yield from runtime.wait_click_then_view(
+    yield from _return_home(
+        runtime,
         current_scene_id,
-        assets.home_shape,
-        [int(assets.home_scene_id)],
-        settle_seconds=0.8,
-        timeout=20.0,
+        assets=assets,
         label=f"{assets.activity_label}：任务领取后返回活动主页",
     )
-    if _view_id(home_view) != int(assets.home_scene_id):
-        raise RuntimeError(f"{assets.activity_label}任务领取后未返回活动主页")
     return {
         "ok": True,
+        "idempotent": False,
+        "loaded_tabs": loaded_tabs,
         "visited_tabs": visited_tabs,
         "claimed_task_ids": claimed_now,
         "after_snapshot": current_snapshot,

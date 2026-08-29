@@ -166,6 +166,41 @@ def test_reconcile_projects_static_tiers_without_live_rank(monkeypatch) -> None:
     assert result["collect_error"] == ""
 
 
+def test_reconcile_does_not_complete_when_live_collection_failed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "materialize_registered_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "collect_registered_exchange_activity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("兑换页当前未打开")
+        ),
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "list_exchange_rankings",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            reward_tiers=[object()],
+            loaded_entry_count=0,
+            declared_rank_count=0,
+            complete=False,
+        ),
+    )
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _tiandi_occurrence(8090001, 1),
+            captured_at="2026-08-28T00:30:00+08:00",
+        )
+
+    assert result["status"] == "blocked"
+    assert result["collect_error"] == "兑换页当前未打开"
+    assert "Runtime 采集未完成" in result["message"]
+
+
 def test_snapshot_kind_marks_close_day_0030_as_reachable_final() -> None:
     occurrence = replace(
         _magic_occurrence(cross_count=8),

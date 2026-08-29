@@ -65,6 +65,23 @@ def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occur
         return (yield from execute_xianyuan_duokui_tail_checkpoint(
             runner, ctx, payload, stop_event, occurrence=occurrence
         ))
+    if occurrence.activity_type == "tiandi-yiju":
+        # The lifecycle must retain this due side effect instead of silently
+        # omitting it.  The current asset tree has only #677-#686 and no
+        # production exchange-list or purchase-dialog contract, so fail
+        # closed before creating a Runtime or issuing any GUI action.
+        return {
+            "status": "blocked",
+            "message": (
+                "天地弈局兑换收尾已触发，但缺少正式兑换宝阁资产契约，"
+                "已在任何 GUI 动作前失败关闭"
+            ),
+            "block_reason": "missing_exchange_shop_asset_contract",
+            "required_new_assets": [
+                "天地弈局兑换宝阁列表 scene（含返回、商品行1-5）",
+                "天地弈局兑换购买框 scene（含价格、+、+10、购买）",
+            ],
+        }
     raise RuntimeError(f"{occurrence.activity_type} 尚无兑换收尾执行适配器")
 
 
@@ -279,12 +296,16 @@ def _execute_family_job(
             retry_times=ranking_checkpoint_retry_times(session, family=family),
         )
     runner._persist_scheduler_task_next_time(scheduler_task_id, next_time)
-    errors = [item for item in results if item["result"].get("status") == "error"]
+    pending = [
+        item
+        for item in results
+        if item["result"].get("status") in {"error", "blocked", "pending"}
+    ]
     message = (
-        f"{label}：处理 {len(results)} 个 checkpoint，成功 {len(results) - len(errors)}，"
-        f"待重试 {len(errors)}；下次 {next_time:%Y-%m-%d %H:%M:%S}"
+        f"{label}：处理 {len(results)} 个 checkpoint，成功 {len(results) - len(pending)}，"
+        f"待重试 {len(pending)}；下次 {next_time:%Y-%m-%d %H:%M:%S}"
     )
-    runner._log("warning" if errors else "success", message)
+    runner._log("warning" if pending else "success", message)
     return {
         "result": "success",
         "message": message,

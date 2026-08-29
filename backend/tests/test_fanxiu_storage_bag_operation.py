@@ -318,6 +318,37 @@ def test_delayed_reward_after_short_fresh_526_is_not_closed_as_empty(monkeypatch
     )
 
 
+def test_delayed_reward_after_transient_storage_background_is_not_skipped(monkeypatch):
+    runtime = _PostExecuteSequenceRuntime([525, 525, 351])
+    clock = {"value": 0.0}
+
+    def monotonic():
+        clock["value"] += 1.0
+        return clock["value"]
+
+    monkeypatch.setattr(storage_bag_operation.time, "monotonic", monotonic)
+    outcome = _consume(_finish_reward_chain(runtime, deadline=100.0))
+
+    assert outcome == "reward_complete"
+    assert ("click", 351, "继续") in runtime.calls
+
+
+def test_stable_storage_landing_requires_full_post_action_window(monkeypatch):
+    runtime = _PostExecuteSequenceRuntime([525])
+    clock = {"value": 0.0}
+
+    def monotonic():
+        clock["value"] += 1.0
+        return clock["value"]
+
+    monkeypatch.setattr(storage_bag_operation.time, "monotonic", monotonic)
+    outcome = _consume(_finish_reward_chain(runtime, deadline=100.0))
+
+    assert outcome == "storage_fixed_point"
+    assert runtime.observed_scenes.count(525) >= 6
+    assert not [call for call in runtime.calls if call[0] == "click"]
+
+
 def test_unknown_between_526_windows_resets_fixed_point_clock(monkeypatch):
     runtime = _PostExecuteSequenceRuntime([526, 526, 999, 526])
     clock = {"value": 0.0}
@@ -354,15 +385,52 @@ def test_next_time_is_following_day_at_0100():
     ) == datetime(2026, 8, 12, 1, 0)
 
 
-def test_storage_bag_cell_is_legacy_non_scheduler_primitive_after_aggregate_takeover():
+def test_storage_bag_cell_is_independent_daily_standard_job():
     default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "storage_bag_operation"
     )
     assert definition is not None
-    assert definition.scheduler_supported is False
-    assert definition.standard_job is False
-    assert definition.standard_job_id == ""
+    assert definition.scheduler_supported is True
+    assert definition.standard_job is True
+    assert definition.standard_job_id == "storage-bag-operation"
+    assert definition.standard_job_description == "每日"
     tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 11, 0, 0))
     matches = [task for task in tasks if task["id"] == "storage-bag-operation"]
-    assert matches == []
+    assert len(matches) == 1
+    assert matches[0]["task_type"] == "storage_bag_operation"
+    assert matches[0]["trigger_description"] == "每日"
+    assert matches[0]["next_time"] == "2026-08-11 01:00:00"
+    assert matches[0]["payload"] == {"max_rounds": 3}
+
+
+def test_storage_bag_success_persists_following_daily_trigger(monkeypatch):
+    default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    definition = get_fanxiu_data_annotation_task_cell_definition(
+        "storage_bag_operation"
+    )
+    writes = []
+
+    class Runner:
+        def _persist_scheduler_task_next_time(self, task_id, next_time):
+            writes.append((task_id, next_time))
+
+    def execute(*_args, **_kwargs):
+        yield None
+        return {"ok": True, "outcome": "complete"}
+
+    monkeypatch.setattr(
+        storage_bag_operation,
+        "execute_storage_bag_operation_task",
+        execute,
+    )
+    monkeypatch.setattr(default_jobs, "job_now", lambda: datetime(2026, 8, 11, 1, 0))
+    result = _consume(definition.handler(
+        Runner(),
+        {},
+        {},
+        threading.Event(),
+    ))
+
+    assert result["ok"] is True
+    assert writes == [("storage-bag-operation", "2026-08-12 01:00:00")]
