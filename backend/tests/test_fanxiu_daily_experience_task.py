@@ -1148,6 +1148,84 @@ def test_daily_experience_waits_until_boss_and_activity_both_complete(monkeypatc
     assert triggered == [("日常_经验", datetime(2026, 8, 8, 12, 0))]
 
 
+def test_daily_experience_uses_current_prerequisite_completion_before_scheduler_terminal_write(monkeypatch):
+    triggered: list[tuple[str, object]] = []
+    tasks = [
+        {
+            "id": "daily-boss",
+            "task_type": "daily_boss",
+            "label": "日常_首领",
+            "last_result": "success",
+            "finished_at": "2026-08-29 09:39:48",
+            "next_time": "2026-08-30 05:00:00",
+        },
+        {
+            "id": "legacy-daily-activity",
+            "task_type": "daily_activity",
+            "label": "日常_活跃度",
+            # The callback runs before the Scheduler replaces this stale
+            # terminal timestamp with the current attempt's terminal time.
+            "last_result": "success",
+            "finished_at": "2026-08-28 12:00:00",
+            "next_time": "2026-08-30 07:00:00",
+        },
+        {
+            "id": "daily-experience",
+            "task_type": "daily_experience",
+            "label": "日常_经验",
+            "last_result": "success",
+            "finished_at": "2026-08-28 21:21:33",
+            "next_time": None,
+        },
+    ]
+    monkeypatch.setattr(daily_foundation_module, "_read_data_annotation_scheduler_tasks", lambda: tasks)
+    monkeypatch.setattr(
+        behavior_tree_runtime_module,
+        "set_data_annotation_scheduler_task_trigger_time",
+        lambda name, when: triggered.append((name, when)) or "2026-08-29 11:07:49",
+    )
+
+    runner = _BossRunner("success")
+    completed_at = datetime(2026, 8, 29, 11, 7, 49)
+    assert runner._trigger_daily_experience_after_prerequisites(
+        completed_task_type="daily_activity",
+        completed_at=completed_at,
+    ) == "2026-08-29 11:07:49"
+    assert triggered == [("日常_经验", completed_at)]
+
+
+def test_daily_experience_does_not_treat_current_activity_retry_as_completion(monkeypatch):
+    triggered: list[tuple[str, object]] = []
+    tasks = [
+        {
+            "id": "daily-boss",
+            "task_type": "daily_boss",
+            "finished_at": "2026-08-29 09:39:48",
+            "next_time": "2026-08-30 05:00:00",
+        },
+        {
+            "id": "legacy-daily-activity",
+            "task_type": "daily_activity",
+            "finished_at": "2026-08-28 12:00:00",
+            "next_time": "2026-08-29 12:07:49",
+        },
+        {"id": "daily-experience", "task_type": "daily_experience", "next_time": None},
+    ]
+    monkeypatch.setattr(daily_foundation_module, "_read_data_annotation_scheduler_tasks", lambda: tasks)
+    monkeypatch.setattr(
+        behavior_tree_runtime_module,
+        "set_data_annotation_scheduler_task_trigger_time",
+        lambda name, when: triggered.append((name, when)),
+    )
+
+    runner = _BossRunner("success")
+    assert runner._trigger_daily_experience_after_prerequisites(
+        completed_task_type="daily_activity",
+        completed_at=datetime(2026, 8, 29, 11, 7, 49),
+    ) is None
+    assert triggered == []
+
+
 def test_daily_activity_can_be_the_last_prerequisite_and_does_not_retrigger_after_experience(monkeypatch):
     triggered: list[tuple[str, object]] = []
     tasks = [

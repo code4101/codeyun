@@ -11,6 +11,7 @@ independent Xianyuan lifecycle.
 
 import threading
 from collections.abc import Callable, Generator, Mapping
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -59,6 +60,8 @@ SUPPORTED_PRODUCTION_TEMPLATES = frozenset({
 # until the final #584 click and its exact bag/wallet delta have been verified
 # in one real Runtime transaction.  Research Cells may opt in explicitly.
 SPIRIT_STONE_DIRECT_USE_PRODUCTION_ENABLED = False
+
+QUICK_OPERATION_UNSAFE_TEMPLATES = frozenset({"direct_use", "special_use"})
 
 SnapshotReader = Callable[[], Mapping[str, Any]]
 CatalogReader = Callable[[], Mapping[str, Mapping[str, Any]]]
@@ -135,6 +138,62 @@ def _validate_production_batch(
         raise StorageBagAutoClaimBlocked("储物袋勾选计划包含未知外部业务路由")
 
 
+def _defer_unadapted_production_entries(
+    plan,
+    *,
+    spirit_stone_direct_use_enabled: bool,
+):
+    """Keep unsupported selected items untouched without blocking safe adapters."""
+
+    executable = []
+    deferred = list(plan.deferred)
+    for entry in plan.action_queue:
+        if entry.template in SUPPORTED_PRODUCTION_TEMPLATES or (
+            _is_enabled_spirit_stone_entry(
+                entry,
+                spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
+            )
+        ):
+            executable.append(entry)
+            continue
+        deferred.append(replace(
+            entry,
+            disposition="deferred",
+            reason=(
+                "尚无已完成真实验收的正式生产适配器；"
+                "本轮失败关闭并保持物品未消费"
+            ),
+        ))
+    return replace(
+        plan,
+        action_queue=tuple(executable),
+        deferred=tuple(deferred),
+    )
+
+
+def _quick_operation_blockers(plan) -> tuple[StorageBagAutoClaimEntry, ...]:
+    """Return present deferred items that broad ``Use=ON`` could consume."""
+
+    return tuple(
+        entry
+        for entry in plan.deferred
+        if entry.quantity > 0 and entry.template in QUICK_OPERATION_UNSAFE_TEMPLATES
+    )
+
+
+def _blocker_records(plan) -> list[dict[str, Any]]:
+    return [
+        {
+            "base_id": entry.base_id,
+            "name": entry.name,
+            "template": entry.template,
+            "quantity": entry.quantity,
+            "reason": entry.reason,
+        }
+        for entry in _quick_operation_blockers(plan)
+    ]
+
+
 def _random_request(entry: StorageBagAutoClaimEntry) -> StorageBagRandomBoxRequest:
     if entry.instance_id is None:
         raise StorageBagAutoClaimBlocked(f"储物袋物品 {entry.base_id} 缺少 Runtime instance_id")
@@ -196,6 +255,10 @@ def _build_validated_production_plan(
         session.commit()
         projected = apply_storage_bag_item_settings(session, atlas)
     plan = build_storage_bag_auto_claim_plan(projected, before)
+    plan = _defer_unadapted_production_entries(
+        plan,
+        spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
+    )
     _validate_production_batch(
         plan,
         spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
@@ -251,6 +314,8 @@ def preflight_storage_bag_auto_claim_task(
         "action_count": len(plan.action_queue),
         "routed_count": len(plan.routed),
         "deferred_count": len(plan.deferred),
+        "quick_operation_allowed": not _quick_operation_blockers(plan),
+        "quick_operation_blockers": _blocker_records(plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
     }
 
@@ -358,6 +423,7 @@ def execute_storage_bag_auto_claim_task(
         "executed_count": len(executions),
         "routed_count": len(plan.routed),
         "deferred_count": len(plan.deferred),
+        "quick_operation_blockers": _blocker_records(plan),
         "runtime_fingerprint": plan.runtime_fingerprint,
         "executions": executions,
     }

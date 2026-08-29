@@ -28,6 +28,11 @@ EXPECTED_QUICK_SETTING_VALUES = {
     "4": 1,  # Use ON
 }
 
+QUICK_OPERATION_PANEL_SHAPES = (
+    "四项快捷标签",
+    "执行快捷操作（高风险）",
+)
+
 
 def next_storage_bag_operation_at(now: datetime | None = None) -> datetime:
     """Schedule the next completed run for 01:00 on the following day."""
@@ -43,6 +48,26 @@ def next_storage_bag_operation_at(now: datetime | None = None) -> datetime:
 
 def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
+
+
+def _quick_operation_panel_visible(runtime: Any, scene_id: Any, frame: str) -> bool:
+    if scene_id == QUICK_OPERATION_SCENE:
+        return True
+    shape_matches = getattr(runtime, "shape_matches", None)
+    if not callable(shape_matches):
+        return False
+    try:
+        return all(
+            shape_matches(
+                QUICK_OPERATION_SCENE,
+                title,
+                frame_data_url=frame,
+            )
+            is not None
+            for title in QUICK_OPERATION_PANEL_SHAPES
+        )
+    except (KeyError, RuntimeError, ValueError):
+        return False
 
 
 def _verify_quick_options_read_only() -> dict[str, Any]:
@@ -62,6 +87,36 @@ def _verify_quick_options_read_only() -> dict[str, Any]:
             f"observed={values}"
         )
     return snapshot
+
+
+def _wait_quick_operation_panel(runtime: Any, *, timeout: float):
+    """Wait for #526 without depending solely on its decorative title.
+
+    Some live frames render the four operation rows before (or without) the
+    faint top title.  The four row labels are the stable panel contract; the
+    subsequent Runtime snapshot remains the authority for checkbox values.
+    """
+
+    # Keep this entrance wait independent from the post-action monotonic clock,
+    # whose tests deliberately advance in large steps to prove fixed points.
+    deadline = time.perf_counter() + timeout
+    last_text = ""
+    while time.perf_counter() < deadline:
+        frame = runtime.cur_frame(update=True)
+        last_text = _compact_text(runtime.ocr_text(frame))
+        scene_id, _score, _matched_frame = runtime.current_scene(
+            (QUICK_OPERATION_SCENE,),
+            frame_data_url=frame,
+        )
+        if scene_id == QUICK_OPERATION_SCENE:
+            return {"evidence": "scene_526", "frame": frame}
+        if _quick_operation_panel_visible(runtime, scene_id, frame):
+            return {"evidence": "panel_shape_contract", "frame": frame}
+        yield from runtime.wait_action_settle(0.25)
+    raise TimeoutError(
+        "储物袋_操作：等待快捷操作面板超时；"
+        f"未命中 #526 或四项完整面板契约，last_ocr={last_text!r}"
+    )
 
 
 def _observe_known_scene(
@@ -85,6 +140,11 @@ def _observe_known_scene(
             list(scene_ids),
             frame_data_url=frame,
         )
+        if (
+            QUICK_OPERATION_SCENE in scene_ids
+            and _quick_operation_panel_visible(runtime, scene_id, frame)
+        ):
+            scene_id = QUICK_OPERATION_SCENE
         if scene_id in scene_ids:
             return int(scene_id), frame
         yield from runtime.wait_action_settle(0.25)
@@ -106,6 +166,8 @@ def _finish_reward_chain(runtime: Any, *, deadline: float):
             (REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
             frame_data_url=frame,
         )
+        if _quick_operation_panel_visible(runtime, landed, frame):
+            landed = QUICK_OPERATION_SCENE
         if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE):
             break
         if landed in (STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE):
@@ -192,11 +254,7 @@ def execute_storage_bag_operation_task(
             "快捷操作",
             timeout=8.0,
         )
-        yield from runtime.wait_scene(
-            QUICK_OPERATION_SCENE,
-            timeout=8.0,
-            label="储物袋_操作：等待快捷操作面板",
-        )
+        yield from _wait_quick_operation_panel(runtime, timeout=8.0)
         _verify_quick_options_read_only()
         yield from runtime.wait_click(
             QUICK_OPERATION_SCENE,

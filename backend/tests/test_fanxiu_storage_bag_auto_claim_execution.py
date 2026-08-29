@@ -132,7 +132,7 @@ def test_production_bridge_dispatches_a_selected_random_box_via_shared_adapter(m
     assert runtime.clicks == [(34, "右侧菜单/储物袋"), (525, "返回")]
 
 
-def test_unsupported_selected_template_blocks_before_any_item_action(monkeypatch):
+def test_unsupported_selected_template_is_deferred_without_any_item_action(monkeypatch):
     db_engine = _db()
     with Session(db_engine) as session:
         set_storage_bag_auto_claim(session, base_id=20, auto_claim=True)
@@ -142,23 +142,56 @@ def test_unsupported_selected_template_blocks_before_any_item_action(monkeypatch
     atlas["items"][0]["item"]["type_name"] = "消耗品"
     monkeypatch.setattr(execution, "sync_storage_bag_atlas", lambda *_args, **_kwargs: atlas)
     runtime = _Runtime()
-    with pytest.raises(
-        StorageBagAutoClaimBlocked,
-        match=r"尚无正式生产适配器：direct_use\[20 直接使用物 ×2\]",
-    ):
-        _consume(execution.execute_storage_bag_auto_claim_task(
-            _Runner(runtime),
-            {},
-            {},
-            threading.Event(),
-            snapshot_reader=lambda: _runtime_item(20),
-            catalog_reader=lambda: {},
-            session_factory=lambda: Session(db_engine),
-        ))
+    result = _consume(execution.execute_storage_bag_auto_claim_task(
+        _Runner(runtime),
+        {},
+        {},
+        threading.Event(),
+        snapshot_reader=lambda: _runtime_item(20),
+        catalog_reader=lambda: {},
+        session_factory=lambda: Session(db_engine),
+    ))
 
-    # Opening the bag is a reversible observation.  No #525 item action and no
-    # return/cleanup click occurs after the unsupported batch is discovered.
-    assert runtime.clicks == [(34, "右侧菜单/储物袋")]
+    assert result["ok"] is True
+    assert result["executed_count"] == 0
+    assert result["deferred_count"] == 1
+    assert result["quick_operation_blockers"] == [{
+        "base_id": 20,
+        "name": "直接使用物",
+        "template": "direct_use",
+        "quantity": 2,
+        "reason": "尚无已完成真实验收的正式生产适配器；本轮失败关闭并保持物品未消费",
+    }]
+    assert runtime.clicks == [(34, "右侧菜单/储物袋"), (525, "返回")]
+
+
+def test_special_use_is_deferred_and_blocks_broad_use_quick_operation(monkeypatch):
+    db_engine = _db()
+    with Session(db_engine) as session:
+        set_storage_bag_auto_claim(session, base_id=30, auto_claim=True)
+        session.commit()
+
+    atlas = _atlas_row(base_id=30, name="宗门拜师函", effect="", can_use=1)
+    atlas["items"][0]["item"]["type_name"] = "消耗品"
+    monkeypatch.setattr(execution, "sync_storage_bag_atlas", lambda *_args, **_kwargs: atlas)
+    runtime = _Runtime()
+
+    result = _consume(execution.preflight_storage_bag_auto_claim_task(
+        _Runner(runtime),
+        {},
+        {},
+        threading.Event(),
+        snapshot_reader=lambda: _runtime_item(30),
+        catalog_reader=lambda: {},
+        session_factory=lambda: Session(db_engine),
+    ))
+
+    assert result["ok"] is True
+    assert result["action_count"] == 0
+    assert result["deferred_count"] == 1
+    assert result["quick_operation_allowed"] is False
+    assert result["quick_operation_blockers"][0]["template"] == "special_use"
+    assert runtime.clicks == [(34, "右侧菜单/储物袋"), (525, "返回")]
 
 
 def test_spirit_stone_direct_use_is_wired_only_behind_explicit_research_gate(
@@ -207,7 +240,7 @@ def test_spirit_stone_direct_use_is_wired_only_behind_explicit_research_gate(
     assert observed[0].instance_id == "1001"
 
 
-def test_spirit_stone_direct_use_stays_disabled_for_standard_job(monkeypatch):
+def test_spirit_stone_direct_use_stays_unconsumed_for_standard_job(monkeypatch):
     db_engine = _db()
     with Session(db_engine) as session:
         set_storage_bag_auto_claim(session, base_id=1001, auto_claim=True)
@@ -218,21 +251,22 @@ def test_spirit_stone_direct_use_stays_disabled_for_standard_job(monkeypatch):
     monkeypatch.setattr(execution, "sync_storage_bag_atlas", lambda *_args, **_kwargs: atlas)
     runtime = _Runtime()
 
-    with pytest.raises(StorageBagAutoClaimBlocked, match="direct_use.*1001 灵石"):
-        _consume(execution.execute_storage_bag_auto_claim_task(
-            _Runner(runtime),
-            {},
-            {},
-            threading.Event(),
-            snapshot_reader=lambda: _runtime_item(1001),
-            catalog_reader=lambda: {},
-            session_factory=lambda: Session(db_engine),
-        ))
+    result = _consume(execution.execute_storage_bag_auto_claim_task(
+        _Runner(runtime),
+        {},
+        {},
+        threading.Event(),
+        snapshot_reader=lambda: _runtime_item(1001),
+        catalog_reader=lambda: {},
+        session_factory=lambda: Session(db_engine),
+    ))
 
-    assert runtime.clicks == [(34, "右侧菜单/储物袋")]
+    assert result["executed_count"] == 0
+    assert result["quick_operation_blockers"][0]["base_id"] == 1001
+    assert runtime.clicks == [(34, "右侧菜单/储物袋"), (525, "返回")]
 
 
-def test_direct_use_gate_does_not_authorize_vip_experience(monkeypatch):
+def test_direct_use_gate_does_not_authorize_or_consume_vip_experience(monkeypatch):
     db_engine = _db()
     with Session(db_engine) as session:
         set_storage_bag_auto_claim(session, base_id=1010, auto_claim=True)
@@ -243,19 +277,21 @@ def test_direct_use_gate_does_not_authorize_vip_experience(monkeypatch):
     monkeypatch.setattr(execution, "sync_storage_bag_atlas", lambda *_args, **_kwargs: atlas)
     runtime = _Runtime()
 
-    with pytest.raises(StorageBagAutoClaimBlocked, match="direct_use.*1010 VIP经验"):
-        _consume(execution.preflight_storage_bag_auto_claim_task(
-            _Runner(runtime),
-            {},
-            {},
-            threading.Event(),
-            snapshot_reader=lambda: _runtime_item(1010),
-            catalog_reader=lambda: {},
-            session_factory=lambda: Session(db_engine),
-            spirit_stone_direct_use_enabled=True,
-        ))
+    result = _consume(execution.preflight_storage_bag_auto_claim_task(
+        _Runner(runtime),
+        {},
+        {},
+        threading.Event(),
+        snapshot_reader=lambda: _runtime_item(1010),
+        catalog_reader=lambda: {},
+        session_factory=lambda: Session(db_engine),
+        spirit_stone_direct_use_enabled=True,
+    ))
 
-    assert runtime.clicks == [(34, "右侧菜单/储物袋")]
+    assert result["action_count"] == 0
+    assert result["quick_operation_allowed"] is False
+    assert result["quick_operation_blockers"][0]["base_id"] == 1010
+    assert runtime.clicks == [(34, "右侧菜单/储物袋"), (525, "返回")]
 
 
 def test_preflight_validates_supported_batch_without_item_action(monkeypatch):

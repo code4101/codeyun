@@ -20,6 +20,9 @@ from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
     run_resource_rank_daily_gift_flow,
     validate_one_free_gift_increment,
 )
+from backend.core.fanxiu.activity.ranking_lifecycle import (
+    RESOURCE_FREE_GIFT_ACTIVITY_TYPES,
+)
 from backend.core.fanxiu.runtime_gui.alignment import RuntimeEntity
 import pytest
 
@@ -53,6 +56,18 @@ def test_trigger_uses_safe_post_open_time() -> None:
     )
     assert next_resource_rank_daily_gift_time(after) == datetime(
         2026, 8, 20, 5, 10, tzinfo=ZONE
+    )
+
+
+def test_every_enabled_resource_rank_gift_uses_the_shared_adapter_policy() -> None:
+    adapter_keys = {
+        adapter.key
+        for adapter in resource_rank_daily_gift.RESOURCE_RANK_GIFT_ADAPTERS
+    }
+
+    assert adapter_keys == set(RESOURCE_FREE_GIFT_ACTIVITY_TYPES)
+    assert len(adapter_keys) == len(
+        resource_rank_daily_gift.RESOURCE_RANK_GIFT_ADAPTERS
     )
 
 
@@ -109,6 +124,77 @@ def test_lingzhuang_cross_eight_occurrence_uses_proven_page_adapter() -> None:
     assert (adapter.key, activity_id) == ("lingzhuang-huadao", 8044301)
     assert adapter.intro_scene_id == 675
     assert adapter.page_scene_ids == (676,)
+
+
+def test_yaochi_occurrence_uses_proven_shared_gift_tab_adapter() -> None:
+    snapshot = {
+        "occurrences": [
+            _occurrence(
+                2042801,
+                start="2026-08-29T05:00:05+08:00",
+                end="2026-08-30T22:00:00+08:00",
+            )
+        ]
+    }
+
+    selected = active_resource_rank_gift_adapters(
+        snapshot,
+        now=datetime(2026, 8, 29, 12, 0, tzinfo=ZONE),
+    )
+
+    assert len(selected) == 1
+    adapter, activity_id = selected[0]
+    assert (adapter.key, activity_id) == ("yaochi-flower-festival", 2042801)
+    assert adapter.intro_scene_id == 457
+    assert adapter.page_scene_ids == (458, 459)
+    assert adapter.gift_shape_scene_id == 676
+
+
+def test_yaochi_opens_shared_gift_page_with_proven_family_shape(monkeypatch) -> None:
+    adapter = next(
+        item
+        for item in resource_rank_daily_gift.RESOURCE_RANK_GIFT_ADAPTERS
+        if item.key == "yaochi-flower-festival"
+    )
+
+    class Runtime:
+        def __init__(self):
+            self.clicks = []
+
+        def current_scene(self, _scene_ids, *, update):
+            return 458, 100.0, "frame"
+
+        def click_shape_center(self, scene_id, title):
+            self.clicks.append((scene_id, title))
+
+        def wait_view(self, scene_id, **_kwargs):
+            if False:
+                yield None
+            return scene_id
+
+    def open_page(*_args, **_kwargs):
+        if False:
+            yield None
+        return 458
+
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "open_resource_rank_activity_page",
+        open_page,
+    )
+    runtime = Runtime()
+
+    result = _drain(
+        resource_rank_daily_gift._open_adapter_gift_page(
+            runtime,
+            adapter,
+            activity_id=2042801,
+            now=datetime(2026, 8, 29, 12, 0, tzinfo=ZONE),
+        )
+    )
+
+    assert result is True
+    assert runtime.clicks == [(676, "礼包")]
 
 
 def test_same_multi_day_resource_rank_occurrence_is_active_on_each_open_day() -> None:
@@ -475,13 +561,14 @@ def test_resource_gift_is_internal_and_resource_parent_is_the_only_job() -> None
     assert jobs[0]["task_type"] == "resource_ranking"
 
 
-def test_gift_list_uses_free_prefix_and_stops_at_first_stone_price() -> None:
+def test_gift_list_recognizes_free_and_stone_actions_without_left_quantities() -> None:
     actions = project_resource_rank_gift_list_actions(
         [
             {"text": "3", "x": 280, "y": 520, "w": 12, "h": 20},
             {"text": "免费", "x": 670, "y": 600, "w": 90, "h": 42},
             {"text": "免费", "x": 670, "y": 900, "w": 90, "h": 42},
             {"text": "488", "x": 695, "y": 1200, "w": 65, "h": 38},
+            {"text": "免费", "x": 670, "y": 1300, "w": 90, "h": 42},
             {"text": "￥6", "x": 690, "y": 1400, "w": 70, "h": 38},
         ]
     )
@@ -490,6 +577,7 @@ def test_gift_list_uses_free_prefix_and_stops_at_first_stone_price() -> None:
         ("free", "免费"),
         ("free", "免费"),
         ("spirit_stone", "488"),
+        ("free", "免费"),
     ]
 
 
