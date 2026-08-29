@@ -59,16 +59,21 @@ def _positive_cross_count(value: Any) -> int:
 
 def desired_tiandi_yiju_auto_challenge_choices(
     cross_count: int,
+    *,
+    feature_item_available: Mapping[str, bool] | None = None,
 ) -> dict[str, bool]:
     """Return the five desired switches for a Runtime-proven occurrence."""
 
     use_cross_server_items = _positive_cross_count(cross_count) > 1
+    availability = feature_item_available or {}
     return {
         AUTO_USE_STRENGTH_ITEM: True,
         CONTINUE_AFTER_DEFEAT: True,
         SKIP_ANIMATION: True,
-        MASTER_SKILL_ITEM: use_cross_server_items,
-        QUADRUPLE_CHESS_TOKEN_ITEM: use_cross_server_items,
+        MASTER_SKILL_ITEM: use_cross_server_items
+        and bool(availability.get(MASTER_SKILL_ITEM, False)),
+        QUADRUPLE_CHESS_TOKEN_ITEM: use_cross_server_items
+        and bool(availability.get(QUADRUPLE_CHESS_TOKEN_ITEM, False)),
     }
 
 
@@ -76,12 +81,16 @@ def plan_tiandi_yiju_auto_challenge_configuration(
     current_choices: Mapping[str, Any],
     *,
     cross_count: int,
+    feature_item_available: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic click plan without performing GUI operations."""
 
     if not isinstance(current_choices, Mapping):
         raise RuntimeError("天地弈局 Runtime 缺少自动挑战配置状态")
-    desired = desired_tiandi_yiju_auto_challenge_choices(cross_count)
+    desired = desired_tiandi_yiju_auto_challenge_choices(
+        cross_count,
+        feature_item_available=feature_item_available,
+    )
     missing = [key for key in desired if key not in current_choices]
     if missing:
         raise RuntimeError(
@@ -121,6 +130,7 @@ def plan_tiandi_yiju_auto_challenge_from_runtime(
     snapshot: Mapping[str, Any],
     *,
     cross_count: int | None = None,
+    feature_item_available: Mapping[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Validate a Runtime projection and build its GUI-only difference plan.
 
@@ -147,6 +157,7 @@ def plan_tiandi_yiju_auto_challenge_from_runtime(
     return plan_tiandi_yiju_auto_challenge_configuration(
         snapshot.get("auto_challenge_choices"),
         cross_count=resolved_cross_count,
+        feature_item_available=feature_item_available,
     )
 
 

@@ -16,6 +16,10 @@ LOCAL_CHOICES = {
     "master_skill_item": False,
     "quadruple_chess_token_item": False,
 }
+CROSS_FEATURES_AVAILABLE = {
+    "master_skill_item": True,
+    "quadruple_chess_token_item": True,
+}
 
 
 def test_local_server_target_enables_top_three_and_disables_bottom_two() -> None:
@@ -24,9 +28,22 @@ def test_local_server_target_enables_top_three_and_disables_bottom_two() -> None
 
 @pytest.mark.parametrize("cross_count", [2, 8])
 def test_cross_server_target_enables_all_five(cross_count: int) -> None:
-    assert desired_tiandi_yiju_auto_challenge_choices(cross_count) == {
-        key: True for key in LOCAL_CHOICES
-    }
+    assert desired_tiandi_yiju_auto_challenge_choices(
+        cross_count,
+        feature_item_available=CROSS_FEATURES_AVAILABLE,
+    ) == {key: True for key in LOCAL_CHOICES}
+
+
+def test_cross_server_items_stay_off_when_inventory_is_empty() -> None:
+    desired = desired_tiandi_yiju_auto_challenge_choices(
+        8,
+        feature_item_available={
+            "master_skill_item": False,
+            "quadruple_chess_token_item": False,
+        },
+    )
+
+    assert desired == LOCAL_CHOICES
 
 
 def test_plan_contains_only_differences_in_dialog_order() -> None:
@@ -39,6 +56,7 @@ def test_plan_contains_only_differences_in_dialog_order() -> None:
             "quadruple_chess_token_item": False,
         },
         cross_count=8,
+        feature_item_available=CROSS_FEATURES_AVAILABLE,
     )
 
     assert [action["key"] for action in plan["actions"]] == [
@@ -69,7 +87,8 @@ def test_runtime_plan_uses_authoritative_cross_count_and_choices() -> None:
             "complete": True,
             "cross_count": 8,
             "auto_challenge_choices": {key: False for key in LOCAL_CHOICES},
-        }
+        },
+        feature_item_available=CROSS_FEATURES_AVAILABLE,
     )
     assert plan["mode"] == "cross_server"
     assert len(plan["actions"]) == 5

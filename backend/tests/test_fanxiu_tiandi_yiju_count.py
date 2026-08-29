@@ -5,6 +5,7 @@ import pytest
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count import (
     TiandiYijuCountAssets,
     read_tiandi_yiju_round_count,
+    set_tiandi_yiju_funded_rounds,
     set_tiandi_yiju_round_count,
 )
 
@@ -23,7 +24,8 @@ class _Runtime:
         self.drags = []
         self.clicks = []
 
-    def ocr_numbers_in_shapes(self, scene_id, shapes):
+    def ocr_numbers_in_shapes(self, scene_id, shapes, **options):
+        assert options == {"padding": 0, "crop": True}
         value = next(self.readings)
         return ([value] if value is not None else [], f"次数：{value}")
 
@@ -42,6 +44,26 @@ class _Runtime:
 def test_read_count_requires_one_positive_ocr_value() -> None:
     runtime = _Runtime([12])
     assert read_tiandi_yiju_round_count(runtime, TiandiYijuCountAssets()) == 12
+
+
+def test_funded_rounds_uses_one_fraction_drag_and_returns_live_count() -> None:
+    class _FundedRuntime(_Runtime):
+        def shape_center(self, _scene, shape):
+            return (207.0, 1048.0) if shape == "对弈次数_滑块" else (780.0, 1048.0)
+
+        def shape_box(self, _scene, _shape):
+            return {"w": 45.0}
+
+        def drag_frame_point(self, *args, **kwargs):
+            self.drags.append((args, kwargs))
+
+    runtime = _FundedRuntime([1, 1485])
+    result = _drain(set_tiandi_yiju_funded_rounds(runtime, 1500, 4325))
+
+    assert result["after"] == 1485
+    assert result["available"] == 4325
+    assert result["drag_count"] == 1
+    assert len(runtime.drags) == 1
 
 
 def test_read_count_fails_closed_when_ocr_is_empty() -> None:

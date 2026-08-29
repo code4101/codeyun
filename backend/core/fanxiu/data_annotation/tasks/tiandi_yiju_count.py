@@ -1,20 +1,11 @@
 from __future__ import annotations
 
-"""Verified round-count control for the 天地弈局 #680 dialog.
-
-The adapter reuses the activity-neutral integer-slider transaction established
-by Yunmeng.  It only supplies #680's semantic Shape names and adds a bounded
-hard safety ceiling of 100 rounds.  All values are read back from the current
-OCR region; neither saved screenshots nor slider pixel positions are treated
-as values.  Deliberately setting the native maximum is not a supported
-operation: the live control can expose several thousand irreversible rounds.
-"""
+"""Runtime-verified count control for the 天地弈局 #680 dialog."""
 
 from dataclasses import dataclass
 from typing import Any, Iterator
 
 from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
-    read_positive_integer_count,
     set_minimum_then_increment_count,
 )
 
@@ -37,7 +28,6 @@ class TiandiYijuCountAssets:
     count_minimum_marker: str | None = None
     count_slider_left_anchor: str | None = None
     count_slider_right_anchor: str | None = None
-
     def __post_init__(self) -> None:
         if int(self.settings_scene_id) <= 0:
             raise ValueError("天地弈局次数配置缺少场景编号")
@@ -59,11 +49,16 @@ def read_tiandi_yiju_round_count(
 ) -> int:
     """Read one positive round count from #680's current OCR region."""
 
-    return read_positive_integer_count(
-        runtime,
-        assets,
-        count_label="天地弈局对弈次数",
+    values, text = runtime.ocr_numbers_in_shapes(
+        assets.settings_scene_id,
+        [assets.count_region],
+        padding=0,
+        crop=True,
     )
+    unique = sorted({int(value) for value in values if int(value) > 0})
+    if len(unique) != 1:
+        raise RuntimeError(f"天地弈局对弈次数无法唯一读回：{text!r}")
+    return unique[0]
 
 
 def set_tiandi_yiju_round_count(
@@ -74,16 +69,7 @@ def set_tiandi_yiju_round_count(
     max_adjustments: int = TIANDI_YIJU_MAX_BATCH_ROUNDS,
     force_bound_probe: bool = False,
 ) -> Iterator[Any]:
-    """Set an exact, bounded batch count and verify its live readback.
-
-    :param runtime: The behavior-tree Runtime that owns OCR and GUI actions.
-    :param target: A positive integer no larger than 100.
-    :param assets: Named #680 controls; defaults never imply pixel positions.
-    :param max_adjustments: Maximum verified ``+`` actions after resetting to 1.
-    :param force_bound_probe: Unsupported.  天地弈局 must never probe the native
-        right bound because the live maximum can be several thousand rounds.
-    :return dict: OCR-verified adjustment evidence.
-    """
+    """Set an exact 1..100 count for the exceptional one-round path."""
 
     if force_bound_probe:
         raise ValueError("天地弈局禁止向右探测原生滑杆上限")
@@ -95,27 +81,24 @@ def set_tiandi_yiju_round_count(
             maximum=TIANDI_YIJU_MAX_BATCH_ROUNDS,
             max_adjustments=max_adjustments,
             count_label="天地弈局单批次数",
+            count_reader=read_tiandi_yiju_round_count,
         )
     )
 
 
-def set_tiandi_yiju_all_funded_rounds(
+def set_tiandi_yiju_funded_rounds(
     runtime: Any,
-    expected_maximum: int,
+    desired: int,
+    available: int,
     *,
     assets: TiandiYijuCountAssets | None = None,
 ) -> Iterator[Any]:
-    """Select the Runtime-proven funded maximum with coarse slider gestures.
+    """Move once by the Runtime-proven funded fraction and read the real count."""
 
-    This is the explicit exhaust-resources path.  It is allowed only when the
-    caller has already read the exact natural-strength plus strength-item
-    budget and supplies that value as ``expected_maximum``.  The GUI's live
-    right bound must read back to the same integer before 对弈 is permitted.
-    """
-
-    expected = int(expected_maximum)
-    if expected <= 0:
-        raise ValueError("天地弈局可用挑战次数必须为正整数")
+    target = int(desired)
+    maximum = int(available)
+    if target <= 0 or maximum <= 0 or target > maximum:
+        raise ValueError("天地弈局目标次数必须位于 Runtime 可用次数内")
     source = assets or TiandiYijuCountAssets()
     before = read_tiandi_yiju_round_count(runtime, source)
     left_x, thumb_y = runtime.shape_center(
@@ -133,40 +116,30 @@ def set_tiandi_yiju_all_funded_rounds(
     right_x = right_button_x - float(thumb_box.get("w") or 0.0) * 0.5
     if right_x <= left_x:
         raise RuntimeError("天地弈局次数滑轨几何无效")
-    safe_right_x = right_button_x + (right_x - left_x) * 0.15
-    current = before
-    drag_count = 0
-    while current != expected and drag_count < 4:
-        fraction = (current - 1) / max(1, expected - 1)
-        estimated_thumb_x = left_x + (right_x - left_x) * fraction
-        runtime.drag_frame_point(
-            source.settings_scene_id,
-            estimated_thumb_x,
-            thumb_y,
-            safe_right_x,
-            thumb_y,
-            duration_ms=650,
-        )
-        drag_count += 1
-        yield from runtime.wait_action_settle(0.8)
-        updated = read_tiandi_yiju_round_count(runtime, source)
-        if updated <= current:
-            raise RuntimeError(
-                f"天地弈局滚动条未向目标推进：调整前={current}，调整后={updated}"
-            )
-        current = updated
-    after = current
-    if after != expected:
+    span = right_x - left_x
+    start_x = left_x + span * ((before - 1) / max(1, maximum - 1))
+    target_x = left_x + span * ((target - 1) / max(1, maximum - 1))
+    runtime.drag_frame_point(
+        source.settings_scene_id,
+        start_x,
+        thumb_y,
+        target_x,
+        thumb_y,
+        duration_ms=600,
+    )
+    yield from runtime.wait_action_settle(0.8)
+    after = read_tiandi_yiju_round_count(runtime, source)
+    if not 1 <= after <= maximum:
         raise RuntimeError(
-            "天地弈局滑杆上限与 Runtime 可用资源不一致："
-            f"Runtime={expected}，GUI读回={after}"
+            f"天地弈局比例拖动读回超出资源上限：after={after}, available={maximum}"
         )
     return {
         "before": before,
         "after": after,
-        "target": expected,
-        "slider_fraction": 1.0,
-        "drag_count": drag_count,
+        "target": target,
+        "available": maximum,
+        "slider_fraction": (target - 1) / max(1, maximum - 1),
+        "drag_count": 1,
         "fine_adjustment_actions": 0,
     }
 
@@ -177,5 +150,5 @@ __all__ = [
     "TiandiYijuCountAssets",
     "read_tiandi_yiju_round_count",
     "set_tiandi_yiju_round_count",
-    "set_tiandi_yiju_all_funded_rounds",
+    "set_tiandi_yiju_funded_rounds",
 ]
