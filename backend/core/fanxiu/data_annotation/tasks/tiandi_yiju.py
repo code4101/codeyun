@@ -23,10 +23,12 @@ from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_config import (
 from backend.core.fanxiu.data_annotation.tasks.tiandi_yiju_count import (
     TIANDI_YIJU_MAX_BATCH_ROUNDS,
     TiandiYijuCountAssets,
+    set_tiandi_yiju_all_funded_rounds,
     set_tiandi_yiju_round_count,
 )
 from backend.core.fanxiu.instrumentation.tiandi_yiju import (
     PLAYABLE_ACTIVITY_IDS,
+    read_tiandi_yiju_auto_dialog_snapshot,
     read_tiandi_yiju_recommended_target,
     read_tiandi_yiju_runtime_snapshot,
 )
@@ -43,14 +45,15 @@ TIANDI_YIJU_BOARD_SCENE = 678
 TIANDI_YIJU_PIECE_INFO_SCENE = 679
 TIANDI_YIJU_AUTO_DIALOG_SCENE = 680
 TIANDI_YIJU_RESULT_SCENE = 681
-# The live result overlay is not legacy #681. Keep the contract unresolved
-# until the asset owner assigns its real scene id; production must not spend a
-# round merely to rediscover an already-known missing asset.
-TIANDI_YIJU_RESULT_OVERLAY_SCENE: int | None = None
-TIANDI_YIJU_RESULT_CONFIRM_SHAPE = "确认"
+# The live batch result is a click-anywhere close page, not legacy #681.
+TIANDI_YIJU_RESULT_OVERLAY_SCENE: int | None = 688
+TIANDI_YIJU_RESULT_CONFIRM_SHAPE = "点击屏幕继续"
 TIANDI_YIJU_TASK_SCORE_SCENE = 683
 TIANDI_YIJU_TASK_CULTIVATION_SCENE = 684
 TIANDI_YIJU_POINT_LIST_SCENE = 686
+TIANDI_YIJU_ALLY_CONFIRM_SCENE = 687
+TIANDI_YIJU_ALLY_NO_REMINDER_SHAPE = "不再提醒"
+TIANDI_YIJU_ALLY_CONFIRM_SHAPE = "仍要对弈"
 
 RuntimeReader = Callable[[], dict[str, Any]]
 
@@ -72,7 +75,6 @@ TIANDI_YIJU_TASK_ASSETS = GameplayRankTaskAssets(
         GameplayRankTaskTab("修炼", 6, TIANDI_YIJU_TASK_CULTIVATION_SCENE, "修炼页签"),
         GameplayRankTaskTab("夺分", 7, TIANDI_YIJU_TASK_SCORE_SCENE, "夺分页签"),
     ),
-    home_ocr_all=("进入弈局", "对弈体力"),
 )
 
 
@@ -105,6 +107,20 @@ def _assert_safe_snapshot(snapshot: Mapping[str, Any], *, label: str) -> None:
 
 def _compact_ocr(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
+
+
+def _full_frame_compact_ocr(runtime: Any, frame: Any) -> str:
+    """Join authoritative Paddle lines when the legacy OCR string is empty."""
+
+    reader = getattr(runtime, "full_frame_ocr_tokens", None)
+    if not callable(reader):
+        return ""
+    return _compact_ocr(
+        "".join(
+            str(line.get("text") or "")
+            for line in group_ocr_tokens(reader(frame))
+        )
+    )
 
 
 def _recommended_piece_shape(runtime: Any, piece_id: int) -> Any:
@@ -156,10 +172,27 @@ def _assert_tiandi_yiju_production_asset_contract(runtime: Any) -> None:
             ],
         ],
     )
+    ally_confirm_shapes = {
+        str(getattr(shape, "title", "") or "")
+        for shape in runtime.view(TIANDI_YIJU_ALLY_CONFIRM_SCENE).get_shapes()
+    }
+    missing_ally_shapes = [
+        title
+        for title in (
+            TIANDI_YIJU_ALLY_NO_REMINDER_SHAPE,
+            TIANDI_YIJU_ALLY_CONFIRM_SHAPE,
+        )
+        if title not in ally_confirm_shapes
+    ]
+    if missing_ally_shapes:
+        raise RuntimeError(
+            "天地弈局 #687 盟友确认弹窗缺少正式 Shape："
+            + ", ".join(missing_ally_shapes)
+        )
     result_scene = TIANDI_YIJU_RESULT_OVERLAY_SCENE
     if result_scene is None:
         raise RuntimeError(
-            "天地弈局新版『对弈/确认』结果浮层尚未接入正式 scene，"
+            "天地弈局『批战结束』结果浮层尚未接入正式 scene，"
             "拒绝在生产 checkpoint 中开始对弈"
         )
     available = {
@@ -229,7 +262,7 @@ def configure_tiandi_yiju_auto_dialog(
 ):
     """Apply only Runtime-proven switch differences and verify the result."""
 
-    resolved_reader = reader or read_tiandi_yiju_runtime_snapshot
+    resolved_reader = reader or read_tiandi_yiju_auto_dialog_snapshot
     before = resolved_reader()
     plan = plan_tiandi_yiju_auto_challenge_from_runtime(
         before,
@@ -264,13 +297,19 @@ def run_tiandi_yiju_bounded_batch(
     snapshot_reader: RuntimeReader | None = None,
     target_reader: RuntimeReader | None = None,
     recommendation_override: Mapping[str, Any] | None = None,
+    verified_funded_rounds: int | None = None,
 ):
     """Execute one bounded batch and return to #678 for re-planning."""
 
     requested = int(requested_rounds)
-    if requested <= 0 or requested > TIANDI_YIJU_MAX_BATCH_ROUNDS:
+    exhaustive = verified_funded_rounds is not None
+    if requested <= 0 or (
+        requested > TIANDI_YIJU_MAX_BATCH_ROUNDS
+        and (not exhaustive or requested != int(verified_funded_rounds))
+    ):
         raise ValueError(
-            f"天地弈局单批必须为 1..{TIANDI_YIJU_MAX_BATCH_ROUNDS} 次"
+            f"天地弈局普通单批必须为 1..{TIANDI_YIJU_MAX_BATCH_ROUNDS} 次；"
+            "超出上限只允许执行 Runtime 精确证明的全部可用次数"
         )
     _assert_tiandi_yiju_production_asset_contract(runtime)
     opened = yield from open_tiandi_yiju_recommended_target(
@@ -297,12 +336,25 @@ def run_tiandi_yiju_bounded_batch(
         cross_count=int(cross_count),
         reader=snapshot_reader,
     )
-    count_result = yield from set_tiandi_yiju_round_count(runtime, requested)
-    result = yield from _start_one_tiandi_yiju_round_and_wait_result(runtime)
+    count_result = (
+        yield from set_tiandi_yiju_all_funded_rounds(runtime, requested)
+        if exhaustive
+        else (yield from set_tiandi_yiju_round_count(runtime, requested))
+    )
+    result = yield from _start_one_tiandi_yiju_round_and_wait_result(
+        runtime,
+        timeout=max(120.0, float(requested) * 3.0),
+    )
 
     terminal_kind = str(result.get("terminal_kind") or "")
     result_scene = result.get("scene_id")
-    if terminal_kind == "legacy_scene":
+    direct_board = (
+        terminal_kind == "direct_board"
+        and result_scene == TIANDI_YIJU_BOARD_SCENE
+    )
+    if direct_board:
+        landed = TIANDI_YIJU_BOARD_SCENE
+    elif terminal_kind == "legacy_scene":
         runtime.click_shape_center(TIANDI_YIJU_RESULT_SCENE, "点击屏幕继续")
     elif (
         terminal_kind == "new_result_overlay"
@@ -315,26 +367,30 @@ def run_tiandi_yiju_bounded_batch(
         )
     else:
         raise RuntimeError(
-            "天地弈局新版『对弈/确认』结果浮层缺少正式 scene/shape；"
+            "天地弈局『批战结束』结果浮层缺少正式 scene/shape；"
             "已确认业务结果但保留现场，禁止按旧 #681 继续点击"
         )
-    yield from runtime.wait_action_settle(1.0)
-    landed = yield from runtime.wait_scene(
-        TIANDI_YIJU_AUTO_DIALOG_SCENE,
-        timeout=20.0,
-        label="天地弈局：批次结果返回设置",
-    )
-    if _scene_id(landed) != TIANDI_YIJU_AUTO_DIALOG_SCENE:
-        raise RuntimeError("天地弈局批次结果未返回设置页")
-    landed = yield from runtime.wait_click_then_view(
-        TIANDI_YIJU_AUTO_DIALOG_SCENE,
-        "关闭",
-        TIANDI_YIJU_BOARD_SCENE,
-        timeout=20.0,
-        label="天地弈局：批次后返回棋盘",
-    )
-    if _scene_id(landed) != TIANDI_YIJU_BOARD_SCENE:
-        raise RuntimeError("天地弈局批次后未返回棋盘")
+    if not direct_board:
+        yield from runtime.wait_action_settle(1.0)
+        landed = yield from runtime.wait_scene(
+            TIANDI_YIJU_AUTO_DIALOG_SCENE,
+            TIANDI_YIJU_BOARD_SCENE,
+            timeout=20.0,
+            label="天地弈局：关闭批战结果",
+        )
+    scene_id = _scene_id(landed)
+    if scene_id == TIANDI_YIJU_AUTO_DIALOG_SCENE:
+        landed = yield from runtime.wait_click_then_view(
+            TIANDI_YIJU_AUTO_DIALOG_SCENE,
+            "关闭",
+            TIANDI_YIJU_BOARD_SCENE,
+            timeout=20.0,
+            label="天地弈局：批次后返回棋盘",
+        )
+        if _scene_id(landed) != TIANDI_YIJU_BOARD_SCENE:
+            raise RuntimeError("天地弈局批次后未返回棋盘")
+    elif scene_id != TIANDI_YIJU_BOARD_SCENE:
+        raise RuntimeError("天地弈局关闭批战结果后未返回设置页或棋盘")
     return {
         "requested_rounds": requested,
         "recommendation": dict(opened["recommendation"]),
@@ -638,19 +694,46 @@ def _refresh_tiandi_yiju_exchange_facts(
 
 
 def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float = 120.0):
-    """Click once and accept either legacy #681 or the live 对弈/确认 terminal."""
+    """Click once and accept a result overlay or the live direct-board terminal."""
 
-    yield from runtime.wait_click(TIANDI_YIJU_AUTO_DIALOG_SCENE, "对弈")
-    yield from runtime.wait_action_settle(1.0)
+    scene_id, _score, _frame = runtime.current_scene(
+        [TIANDI_YIJU_ALLY_CONFIRM_SCENE], update=True
+    )
+    if scene_id != TIANDI_YIJU_ALLY_CONFIRM_SCENE:
+        yield from runtime.wait_click(TIANDI_YIJU_AUTO_DIALOG_SCENE, "对弈")
+        yield from runtime.wait_action_settle(1.0)
     deadline = time.monotonic() + float(timeout)
     last_text = ""
+    ally_confirmation_handled = False
+    board_seen_at: float | None = None
     while True:
-        candidates = [TIANDI_YIJU_RESULT_SCENE]
+        candidates = [
+            TIANDI_YIJU_BOARD_SCENE,
+            TIANDI_YIJU_ALLY_CONFIRM_SCENE,
+            TIANDI_YIJU_RESULT_SCENE,
+        ]
         if TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None:
             candidates.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
         scene_id, score, frame = runtime.current_scene(candidates, update=True)
         last_text = runtime.ocr_text(frame)
         compact = _compact_ocr(last_text)
+        if "批战结束" not in compact:
+            compact = _full_frame_compact_ocr(runtime, frame)
+        if scene_id == TIANDI_YIJU_ALLY_CONFIRM_SCENE:
+            if ally_confirmation_handled:
+                raise RuntimeError("天地弈局盟友棋点确认后弹窗仍未关闭")
+            yield from runtime.wait_click(
+                TIANDI_YIJU_ALLY_CONFIRM_SCENE,
+                TIANDI_YIJU_ALLY_NO_REMINDER_SHAPE,
+            )
+            yield from runtime.wait_action_settle(0.4)
+            yield from runtime.wait_click(
+                TIANDI_YIJU_ALLY_CONFIRM_SCENE,
+                TIANDI_YIJU_ALLY_CONFIRM_SHAPE,
+            )
+            ally_confirmation_handled = True
+            yield from runtime.wait_action_settle(1.0)
+            continue
         if scene_id == TIANDI_YIJU_RESULT_SCENE:
             return {
                 "terminal_kind": "legacy_scene",
@@ -658,6 +741,18 @@ def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float
                 "score": score,
                 "ocr": last_text,
             }
+        if scene_id == TIANDI_YIJU_BOARD_SCENE:
+            if board_seen_at is None:
+                board_seen_at = time.monotonic()
+            elif time.monotonic() - board_seen_at >= 5.0:
+                return {
+                    "terminal_kind": "direct_board",
+                    "scene_id": scene_id,
+                    "score": score,
+                    "ocr": last_text,
+                }
+        else:
+            board_seen_at = None
         if (
             TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None
             and scene_id == TIANDI_YIJU_RESULT_OVERLAY_SCENE
@@ -668,12 +763,12 @@ def _start_one_tiandi_yiju_round_and_wait_result(runtime: Any, *, timeout: float
                 "score": score,
                 "ocr": last_text,
             }
-        if "体力消耗" in compact and "确认" in compact:
+        if "批战结束" in compact and "体力消耗" in compact:
             return {
                 "terminal_kind": "new_result_overlay",
-                "scene_id": None,
+                "scene_id": TIANDI_YIJU_RESULT_OVERLAY_SCENE,
                 "score": score,
-                "ocr": last_text,
+                "ocr": compact,
             }
         if time.monotonic() >= deadline:
             raise TimeoutError(f"天地弈局唯一一局未出现结果终态：{last_text[:500]!r}")

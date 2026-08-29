@@ -134,6 +134,20 @@ def test_cross_snapshot_fails_closed_when_connected_lane_has_two_owners() -> Non
         tiandi_yiju._decode_snapshot(_Reader(), instance, model, data)
 
 
+def test_auto_dialog_projection_does_not_require_board_identity() -> None:
+    _instance, _model, data = _state()
+
+    result = tiandi_yiju._decode_auto_challenge_choices(_Reader(), data)
+
+    assert result == {
+        "auto_use_strength_item": False,
+        "continue_after_defeat": True,
+        "skip_animation": False,
+        "master_skill_item": True,
+        "quadruple_chess_token_item": False,
+    }
+
+
 def test_cross_snapshot_excludes_explicit_ally_from_shared_lane() -> None:
     instance, model, data = _state()
     data["_IsCross"] = 1

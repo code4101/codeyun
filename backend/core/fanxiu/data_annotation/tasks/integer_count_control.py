@@ -84,11 +84,12 @@ def set_minimum_then_increment_count(
     max_adjustments: int,
     count_label: str,
 ) -> Iterator[Any]:
-    """Set a bounded count without ever probing or passing through the maximum.
+    """Converge a bounded count with exact verified +/- steps.
 
-    This policy is for irreversible controls whose native upper bound may be
-    dangerous.  It resets only toward the known minimum, then verifies every
-    single increment before allowing the next action.
+    The historical function name is retained for callers.  The control no
+    longer depends on a slider reset: it reads the current value, takes one
+    step toward the target, waits for delayed repaint, and verifies an exact
+    unit change before permitting another click.
     """
 
     if (
@@ -101,49 +102,55 @@ def set_minimum_then_increment_count(
             f"{count_label}必须为 1..{int(maximum)} 的整数；禁止使用原生最大值"
         )
     adjustment_budget = int(max_adjustments)
-    if adjustment_budget < desired - 1:
-        raise ValueError(
-            f"{count_label}调整预算不足：目标 {desired}，"
-            f"至少需要 {desired - 1} 次，预算 {adjustment_budget} 次"
-        )
+    if adjustment_budget < 0:
+        raise ValueError(f"{count_label}调整预算不得为负数")
 
     before = read_positive_integer_count(
         runtime,
         assets,
         count_label=count_label,
     )
-    if before != 1:
-        runtime.drag_shape_to_frame_edge(
-            assets.settings_scene_id,
-            assets.count_slider_thumb,
-            direction="left",
-            duration=0.6,
+    required_actions = abs(int(desired) - before)
+    if required_actions > adjustment_budget:
+        raise ValueError(
+            f"{count_label}调整预算不足：当前 {before}，目标 {desired}，"
+            f"需要 {required_actions} 次，预算 {adjustment_budget} 次"
         )
-        yield from runtime.wait_action_settle(0.5)
-    current = read_positive_integer_count(
-        runtime,
-        assets,
-        count_label=count_label,
-    )
-    if current != 1:
-        raise RuntimeError(f"{count_label}滑杆向左归一失败：期望 1，实际 {current}")
 
-    actions = 0
-    while current < desired:
+    current = before
+    increase_actions = 0
+    decrease_actions = 0
+    while current != desired:
+        increasing = current < desired
+        shape = assets.count_increase if increasing else assets.count_decrease
+        action_label = "加号" if increasing else "减号"
+        expected = current + (1 if increasing else -1)
         runtime.click_shape_center(
             assets.settings_scene_id,
-            assets.count_increase,
+            shape,
         )
-        actions += 1
+        if increasing:
+            increase_actions += 1
+        else:
+            decrease_actions += 1
         yield from runtime.wait_action_settle(0.12)
-        updated = read_positive_integer_count(
-            runtime,
-            assets,
-            count_label=count_label,
-        )
-        if updated != current + 1:
+        updated = current
+        for observation_attempt in range(4):
+            updated = read_positive_integer_count(
+                runtime,
+                assets,
+                count_label=count_label,
+            )
+            if updated != current:
+                break
+            if observation_attempt < 3:
+                # #680 can publish the Runtime count before its text repaint.
+                # Treat an unchanged OCR frame as pending feedback, never as
+                # permission to click again.
+                yield from runtime.wait_action_settle(0.25)
+        if updated != expected:
             raise RuntimeError(
-                f"{count_label}加号没有按单步递增，已停止："
+                f"{count_label}{action_label}没有按单步变化，已停止："
                 f"调整前 {current}，调整后 {updated}"
             )
         current = updated
@@ -162,8 +169,9 @@ def set_minimum_then_increment_count(
         "before": before,
         "after": verified,
         "target": desired,
-        "reset_to_minimum": before != 1,
-        "increase_actions": actions,
+        "reset_to_minimum": False,
+        "increase_actions": increase_actions,
+        "decrease_actions": decrease_actions,
         "native_maximum_probed": False,
     }
 

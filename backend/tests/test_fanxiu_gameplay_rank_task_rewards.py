@@ -90,17 +90,15 @@ def test_visits_every_tab_and_verifies_each_exact_task_migration() -> None:
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
         (11, "修炼页签", [12]),
-        (12, "夺分页签", [11]),
-        (11, "修炼页签", [12]),
         (12, "首条任务领取区", None),
         (12, "首条任务领取区", None),
         (12, "夺分页签", [11]),
         (11, "首条任务领取区", None),
-        (11, "玩法主页", [10]),
+        (11, "玩法主页", None),
     ]
 
 
-def test_no_claimable_rewards_loads_tabs_then_passes_idempotently() -> None:
+def test_no_claimable_rewards_passes_idempotently_without_switching_tabs() -> None:
     runtime = _Runtime(entry_scene=12)
     result = _run(
         claim_gameplay_rank_task_tabs(
@@ -111,13 +109,11 @@ def test_no_claimable_rewards_loads_tabs_then_passes_idempotently() -> None:
     )
 
     assert result["idempotent"] is True
-    assert result["loaded_tabs"] == ["修炼", "夺分"]
     assert result["visited_tabs"] == []
     assert result["claimed_task_ids"] == []
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
-        (12, "夺分页签", [11]),
-        (11, "玩法主页", [10]),
+        (12, "玩法主页", None),
     ]
 
 
@@ -137,8 +133,7 @@ def test_incomplete_runtime_facts_are_checked_after_page_load_and_before_claim()
 
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
-        (12, "夺分页签", [11]),
-        (11, "玩法主页", [10]),
+        (12, "玩法主页", None),
     ]
 
 
@@ -158,8 +153,7 @@ def test_unknown_task_subtype_fails_before_any_gui_action() -> None:
 
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
-        (12, "夺分页签", [11]),
-        (11, "玩法主页", [10]),
+        (12, "玩法主页", None),
     ]
 
 
@@ -181,7 +175,5 @@ def test_failed_exact_migration_stops_before_next_row_or_tab() -> None:
 
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
-        (12, "夺分页签", [11]),
-        (11, "修炼页签", [12]),
         (12, "首条任务领取区", None),
     ]

@@ -26,7 +26,6 @@ class GameplayRankTaskAssets:
     task_entry_shape: str = "任务"
     first_row_claim_shape: str = "首条任务领取区"
     home_shape: str = "天地弈局"
-    home_ocr_all: Sequence[str] = ()
 
 
 def _view_id(view: Any) -> int:
@@ -43,28 +42,8 @@ def _return_home(
     assets: GameplayRankTaskAssets,
     label: str,
 ) -> Generator[Any, None, None]:
-    if assets.home_ocr_all:
-        runtime.click_shape_center(current_scene_id, assets.home_shape)
-        yield from runtime.wait_action_settle(0.8)
-        yield from runtime.wait_any(
-            {
-                "活动主页场景": runtime.view_visible(int(assets.home_scene_id)),
-                "活动主页文字": runtime.ocr_contains(all_of=assets.home_ocr_all),
-            },
-            timeout=20.0,
-            label=label,
-        )
-        return
-    home_view = yield from runtime.wait_click_then_view(
-        current_scene_id,
-        assets.home_shape,
-        [int(assets.home_scene_id)],
-        settle_seconds=0.8,
-        timeout=20.0,
-        label=label,
-    )
-    if _view_id(home_view) != int(assets.home_scene_id):
-        raise RuntimeError(f"{assets.activity_label}未返回活动主页")
+    runtime.click_shape_center(current_scene_id, assets.home_shape)
+    yield from runtime.wait_action_settle(0.8)
 
 
 def claim_gameplay_rank_task_tabs(
@@ -91,23 +70,8 @@ def claim_gameplay_rank_task_tabs(
     )
     current_scene_id = _view_id(current_view)
 
-    # QuestMgr lazily materializes each task subtype only after its tab opens.
-    # Load every tab without touching reward rows, then take one full snapshot.
-    loaded_tabs: list[str] = []
-    for tab in tabs:
-        target_scene_id = int(tab.scene_id)
-        if current_scene_id != target_scene_id:
-            current_view = yield from runtime.wait_click_then_view(
-                current_scene_id,
-                tab.tab_shape,
-                [target_scene_id],
-                settle_seconds=0.8,
-                timeout=20.0,
-                label=f"{assets.activity_label}：加载{tab.key}任务事实",
-            )
-            current_scene_id = _view_id(current_view)
-        loaded_tabs.append(str(tab.key))
-
+    # Opening the task page naturally loads QuestMgr's activity rows.  Runtime
+    # is the sole claim authority; no row click occurs before this full read.
     current_snapshot = dict(reader())
     if (
         not current_snapshot.get("ok")
@@ -156,7 +120,6 @@ def claim_gameplay_rank_task_tabs(
         return {
             "ok": True,
             "idempotent": True,
-            "loaded_tabs": loaded_tabs,
             "visited_tabs": [],
             "claimed_task_ids": [],
             "after_snapshot": current_snapshot,
@@ -224,7 +187,6 @@ def claim_gameplay_rank_task_tabs(
     return {
         "ok": True,
         "idempotent": False,
-        "loaded_tabs": loaded_tabs,
         "visited_tabs": visited_tabs,
         "claimed_task_ids": claimed_now,
         "after_snapshot": current_snapshot,
