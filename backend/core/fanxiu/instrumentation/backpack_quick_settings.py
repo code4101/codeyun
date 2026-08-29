@@ -15,6 +15,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     acquire_ui_runtime_context,
+    clear_ui_runtime_context_cache,
 )
 
 
@@ -83,7 +84,7 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
     panel_field_seconds = 0.0
     raw_windows = [*table["array"], *table["fields"].values()]
 
-    def decode_window(raw_window: Any, *, diagnostics_enabled: bool) -> None:
+    def decode_window_unchecked(raw_window: Any, *, diagnostics_enabled: bool) -> None:
         global _quick_view_cache
         nonlocal panel_field_seconds
         window = table_ref(raw_window)
@@ -143,6 +144,24 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
                 component.address,
                 panel.address,
             )
+
+    def decode_window(raw_window: Any, *, diagnostics_enabled: bool) -> None:
+        """Skip stale closed-view entries and continue scanning active views."""
+
+        window = table_ref(raw_window)
+        try:
+            decode_window_unchecked(
+                raw_window,
+                diagnostics_enabled=diagnostics_enabled,
+            )
+        except FanxiuRuntimeMemoryError as exc:
+            if diagnostics_enabled:
+                diagnostics.append({
+                    "window_address": (
+                        f"0x{window.address:x}" if window is not None else None
+                    ),
+                    "error": str(exc),
+                })
 
     with _QUICK_CACHE_LOCK:
         cached_view = _quick_view_cache
@@ -205,37 +224,52 @@ def _snapshot(context: UiRuntimeContext) -> dict[str, Any]:
 def read_backpack_quick_settings_snapshot() -> dict[str, Any]:
     started = time.perf_counter()
     context: UiRuntimeContext | None = None
-    try:
-        context = acquire_ui_runtime_context(_QUICK_KEYS)
-        result = _snapshot(context)
-        serialization_started = time.perf_counter()
-        json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        context.timings["serialization"] = time.perf_counter() - serialization_started
-        result["performance"]["stages_seconds"] = dict(context.timings)
-        result["elapsed_seconds"] = time.perf_counter() - started
-        return result
-    except Exception as exc:
-        reason = (
-            str(exc)
-            if isinstance(exc, FanxiuRuntimeMemoryError)
-            else f"{type(exc).__name__}: {exc}"
-        )
-        return {
-            "ok": False,
-            "available": False,
-            "complete": False,
-            "source": "active_backpack_quick_view",
-            "reason": reason,
-            "values": {},
-            "elapsed_seconds": time.perf_counter() - started,
-            "evidence": {
-                "pid": context.memory.pid if context else None,
-                "process_start_ticks": (
-                    context.memory.process_start_ticks if context else None
-                ),
-                "read_only": True,
-            },
-        }
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            context = acquire_ui_runtime_context(_QUICK_KEYS)
+            result = _snapshot(context)
+            serialization_started = time.perf_counter()
+            json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            context.timings["serialization"] = time.perf_counter() - serialization_started
+            result["performance"]["stages_seconds"] = dict(context.timings)
+            if attempt:
+                result["performance"]["recovery_mode"] = "cold_after_stale_view"
+            result["elapsed_seconds"] = time.perf_counter() - started
+            return result
+        except FanxiuRuntimeMemoryError as exc:
+            last_exc = exc
+            if attempt == 0:
+                clear_backpack_quick_view_cache()
+                clear_ui_runtime_context_cache()
+                context = None
+                continue
+            break
+        except Exception as exc:
+            last_exc = exc
+            break
+
+    reason = (
+        str(last_exc)
+        if isinstance(last_exc, FanxiuRuntimeMemoryError)
+        else f"{type(last_exc).__name__}: {last_exc}"
+    )
+    return {
+        "ok": False,
+        "available": False,
+        "complete": False,
+        "source": "active_backpack_quick_view",
+        "reason": reason,
+        "values": {},
+        "elapsed_seconds": time.perf_counter() - started,
+        "evidence": {
+            "pid": context.memory.pid if context else None,
+            "process_start_ticks": (
+                context.memory.process_start_ticks if context else None
+            ),
+            "read_only": True,
+        },
+    }
 
 
 def clear_backpack_quick_view_cache() -> None:

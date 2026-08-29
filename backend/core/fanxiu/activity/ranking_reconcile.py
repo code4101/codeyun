@@ -344,8 +344,18 @@ def reconcile_ranking_occurrence(
         payload=observation_payload,
         snapshot_kind=snapshot_kind,
     )
+    status = (
+        "blocked"
+        if collect_error
+        else ("completed" if reward_tier_total else "retained")
+    )
     return {
-        "status": "completed" if reward_tier_total else "retained",
+        "status": status,
+        "message": (
+            f"{occurrence.activity_type} Runtime 采集未完成：{collect_error}"
+            if collect_error
+            else ""
+        ),
         "activity_id": activity.id,
         "activity_type": occurrence.activity_type,
         "family": occurrence.family,

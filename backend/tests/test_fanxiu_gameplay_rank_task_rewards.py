@@ -63,20 +63,23 @@ def _snapshot(authorized, claimed=()):
 def test_visits_every_tab_and_verifies_each_exact_task_migration() -> None:
     runtime = _Runtime(entry_scene=11)
     states = iter([
+        _snapshot([101, 102, 201]),
         _snapshot([102, 201], [101]),
         _snapshot([201], [101, 102]),
         _snapshot([], [101, 102, 201]),
     ])
 
-    def reader(*, expected_claimed_task_id):
+    def reader(*, expected_claimed_task_id=None):
         state = next(states)
-        state["expected_task_claimed"] = expected_claimed_task_id in state["claimed_task_ids"]
+        if expected_claimed_task_id is not None:
+            state["expected_task_claimed"] = (
+                expected_claimed_task_id in state["claimed_task_ids"]
+            )
         return state
 
     result = _run(
         claim_gameplay_rank_task_tabs(
             runtime,
-            _snapshot([101, 102, 201]),
             assets=ASSETS,
             reader=reader,
         )
@@ -87,6 +90,8 @@ def test_visits_every_tab_and_verifies_each_exact_task_migration() -> None:
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
         (11, "修炼页签", [12]),
+        (12, "夺分页签", [11]),
+        (11, "修炼页签", [12]),
         (12, "首条任务领取区", None),
         (12, "首条任务领取区", None),
         (12, "夺分页签", [11]),
@@ -95,18 +100,19 @@ def test_visits_every_tab_and_verifies_each_exact_task_migration() -> None:
     ]
 
 
-def test_no_claimable_rewards_still_inspects_every_configured_tab() -> None:
+def test_no_claimable_rewards_loads_tabs_then_passes_idempotently() -> None:
     runtime = _Runtime(entry_scene=12)
     result = _run(
         claim_gameplay_rank_task_tabs(
             runtime,
-            _snapshot([], [101, 102, 201]),
             assets=ASSETS,
-            reader=lambda **_options: {},
+            reader=lambda **_options: _snapshot([], [101, 102, 201]),
         )
     )
 
-    assert result["visited_tabs"] == ["修炼", "夺分"]
+    assert result["idempotent"] is True
+    assert result["loaded_tabs"] == ["修炼", "夺分"]
+    assert result["visited_tabs"] == []
     assert result["claimed_task_ids"] == []
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
@@ -115,7 +121,7 @@ def test_no_claimable_rewards_still_inspects_every_configured_tab() -> None:
     ]
 
 
-def test_incomplete_runtime_facts_fail_before_any_gui_action() -> None:
+def test_incomplete_runtime_facts_are_checked_after_page_load_and_before_claim() -> None:
     runtime = _Runtime(entry_scene=12)
     snapshot = _snapshot([101])
     snapshot["complete"] = False
@@ -124,13 +130,16 @@ def test_incomplete_runtime_facts_fail_before_any_gui_action() -> None:
         _run(
             claim_gameplay_rank_task_tabs(
                 runtime,
-                snapshot,
                 assets=ASSETS,
-                reader=lambda **_options: {},
+                reader=lambda **_options: snapshot,
             )
         )
 
-    assert runtime.clicks == []
+    assert runtime.clicks == [
+        (10, "任务", [12, 11]),
+        (12, "夺分页签", [11]),
+        (11, "玩法主页", [10]),
+    ]
 
 
 def test_unknown_task_subtype_fails_before_any_gui_action() -> None:
@@ -142,13 +151,16 @@ def test_unknown_task_subtype_fails_before_any_gui_action() -> None:
         _run(
             claim_gameplay_rank_task_tabs(
                 runtime,
-                snapshot,
                 assets=ASSETS,
-                reader=lambda **_options: {},
+                reader=lambda **_options: snapshot,
             )
         )
 
-    assert runtime.clicks == []
+    assert runtime.clicks == [
+        (10, "任务", [12, 11]),
+        (12, "夺分页签", [11]),
+        (11, "玩法主页", [10]),
+    ]
 
 
 def test_failed_exact_migration_stops_before_next_row_or_tab() -> None:
@@ -160,13 +172,16 @@ def test_failed_exact_migration_stops_before_next_row_or_tab() -> None:
         _run(
             claim_gameplay_rank_task_tabs(
                 runtime,
-                _snapshot([101, 102, 201]),
                 assets=ASSETS,
-                reader=lambda **_options: unchanged,
+                reader=lambda **options: (
+                    _snapshot([101, 102, 201]) if not options else unchanged
+                ),
             )
         )
 
     assert runtime.clicks == [
         (10, "任务", [12, 11]),
+        (12, "夺分页签", [11]),
+        (11, "修炼页签", [12]),
         (12, "首条任务领取区", None),
     ]

@@ -320,7 +320,7 @@ def test_resource_auto_use_is_single_manual_standard_job():
     assert matches[0]["next_time"] is None
     assert matches[0]["error_retry_delay_seconds"] == 0
     assert matches[0]["payload"] == {"max_rounds": 3}
-    assert not [task for task in tasks if task["id"] == "storage-bag-operation"]
+    assert len([task for task in tasks if task["id"] == "storage-bag-operation"]) == 1
 
 
 def test_resource_auto_use_failure_does_not_install_an_automatic_retry():
@@ -366,7 +366,7 @@ def test_successful_manual_job_explicitly_restores_none_next_time(monkeypatch):
     assert writes == [("resource-auto-use", None)]
 
 
-def test_scheduler_migration_explicitly_retires_storage_bag_instance():
+def test_scheduler_migration_preserves_independent_storage_bag_instance():
     migrated, changed = consolidate_arena_scheduler_instances([
         {
             "id": "storage-bag-operation",
@@ -380,5 +380,8 @@ def test_scheduler_migration_explicitly_retires_storage_bag_instance():
         },
     ])
 
-    assert changed is True
-    assert [task["id"] for task in migrated] == ["resource-auto-use"]
+    assert changed is False
+    assert [task["id"] for task in migrated] == [
+        "storage-bag-operation",
+        "resource-auto-use",
+    ]
