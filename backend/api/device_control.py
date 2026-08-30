@@ -155,18 +155,20 @@ class ExecCmdRequest(BaseModel):
 
 
 class PythonRunRequest(BaseModel):
+    """Submit one trusted Python script or public module callable."""
+
     model_config = ConfigDict(populate_by_name=True)
 
-    mode: Literal["script", "module_call"] = "script"
-    script: str = ""
-    module: str = ""
-    callable_name: str = Field(default="", alias="callable")
-    args: List[Any] = Field(default_factory=list)
-    kwargs: Dict[str, Any] = Field(default_factory=dict)
-    cwd: Optional[str] = None
-    env: Optional[Dict[str, str]] = None
-    async_run: bool = Field(default=False, alias="async")
-    timeout: int = Field(default=3600, ge=1, le=86400)
+    mode: Literal["script", "module_call"] = Field(default="script", description="执行脚本或调用模块公开函数")
+    script: str = Field(default="", description="script 模式的 Python 源码")
+    module: str = Field(default="", description="module_call 模式的可导入模块名")
+    callable_name: str = Field(default="", alias="callable", description="module_call 模式的公开函数名")
+    args: List[Any] = Field(default_factory=list, description="传给公开函数的位置参数")
+    kwargs: Dict[str, Any] = Field(default_factory=dict, description="传给公开函数的关键字参数")
+    cwd: Optional[str] = Field(default=None, description="可选工作目录")
+    env: Optional[Dict[str, str]] = Field(default=None, description="本次运行附加的环境变量")
+    async_run: bool = Field(default=False, alias="async", description="是否立即返回 run_id 并在后台执行")
+    timeout: int = Field(default=3600, ge=1, le=86400, description="运行超时秒数")
 
 
 @router.post("/exec_cmd")
@@ -202,6 +204,8 @@ def execute_command(req: ExecCmdRequest):
 
 @router.post("/python-runs")
 def create_python_run(req: PythonRunRequest):
+    """Start one trusted Python run; environment setup and run records are service-owned."""
+
     try:
         return start_trusted_python_run(
             mode=req.mode,
@@ -269,17 +273,17 @@ def update_device_control_config(req: ConfigRequest):
 
 
 class AttendanceOrderExecuteRequest(BaseModel):
-    action: Literal["inspect", "refund"]
-    rows: List[dict[str, Any]] = Field(default_factory=list)
-    login_users: List[str] = Field(default_factory=list)
-    lookup_mode: Literal["hybrid", "db_only", "browser_only"] = "browser_only"
-    operation_password: Optional[str] = None
+    action: Literal["inspect", "refund"] = Field(description="核验订单或执行退款")
+    rows: List[dict[str, Any]] = Field(default_factory=list, description="包含业务订单标识的输入行")
+    login_users: List[str] = Field(default_factory=list, description="可选的支付登录账号候选")
+    lookup_mode: Literal["hybrid", "db_only", "browser_only"] = Field(default="browser_only", description="订单事实来源")
+    operation_password: Optional[str] = Field(default=None, description="退款动作所需的一次性操作密码")
 
 
 class AttendanceOrderRefundDetailRequest(BaseModel):
-    order_id: str
-    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"] = "auto"
-    login_users: List[str] = Field(default_factory=list)
+    order_id: str = Field(description="支付订单、商户订单或退款单标识")
+    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"] = Field(default="auto", description="order_id 的业务类型")
+    login_users: List[str] = Field(default_factory=list, description="可选的支付登录账号候选")
 
 
 class AttendanceUserMatchLookupItem(BaseModel):

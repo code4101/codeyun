@@ -890,8 +890,10 @@ export interface FanxiuDataAnnotationRecognitionOpsResponse {
 export interface FanxiuDataAnnotationSaveFramePayload {
   entry_id: string;
   current_frame_data_url?: string;
-  filename?: string;
   fresh_capture?: boolean;
+  title?: string;
+  same_level_as_scene_id?: number;
+  filename?: string;
   asset_node?: Record<string, unknown>;
   parent_id?: string;
   after_node_id?: string;

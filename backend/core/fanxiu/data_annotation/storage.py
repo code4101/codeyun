@@ -511,6 +511,34 @@ def read_data_annotation_asset_tree_snapshot(path: Path) -> FanxiuDataAnnotation
         return _read_asset_tree_unlocked(path)
 
 
+def resolve_data_annotation_scene_node_id(
+    tree: list[dict[str, Any]],
+    scene_id: int,
+) -> str:
+    """Resolve a numeric scene ID to the asset tree's stable node ID."""
+
+    matches: list[str] = []
+
+    def walk(nodes: Any) -> None:
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            if node.get("type") == "image" and _filename_number(str(node.get("filename") or "")) == scene_id:
+                node_id = str(node.get("id") or "").strip()
+                if node_id:
+                    matches.append(node_id)
+            walk(node.get("children"))
+
+    walk(tree)
+    if not matches:
+        raise ValueError(f"未找到场景 #{scene_id}")
+    if len(matches) > 1:
+        raise ValueError(f"场景 #{scene_id} 在资产树中不唯一")
+    return matches[0]
+
+
 def save_data_annotation_asset_tree_snapshot(
     path: Path,
     tree: list[dict[str, Any]],

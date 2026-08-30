@@ -261,21 +261,25 @@ class AttendanceAccountUpdateRequest(BaseModel):
 
 
 class AttendanceOrderExecuteRequest(BaseModel):
-    action: Literal["inspect", "refund"]
-    rows: list[dict[str, Any]] = Field(default_factory=list)
-    execution_device_entry_id: Optional[str] = None
-    login_users: list[str] = Field(default_factory=list)
-    order_lookup_mode: Optional[Literal["hybrid", "db_only", "browser_only"]] = None
-    persist_global_selection: bool = True
-    operation_password: Optional[str] = None
+    """High-level order inspection/refund request; device and browser workflow stay internal."""
+
+    action: Literal["inspect", "refund"] = Field(description="核验订单或执行退款")
+    rows: list[dict[str, Any]] = Field(default_factory=list, description="包含业务订单标识和可选金额的输入行")
+    execution_device_entry_id: Optional[str] = Field(default=None, description="可选执行设备；默认使用考勤全局配置")
+    login_users: list[str] = Field(default_factory=list, description="可选支付登录账号候选")
+    order_lookup_mode: Optional[Literal["hybrid", "db_only", "browser_only"]] = Field(default=None, description="可选订单事实来源")
+    persist_global_selection: bool = Field(default=True, description="管理员是否保存本次执行设备选择")
+    operation_password: Optional[str] = Field(default=None, description="退款动作所需的一次性操作密码")
 
 
 class AttendanceOrderRefundDetailRequest(BaseModel):
-    order_id: str
-    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"] = "auto"
-    execution_device_entry_id: Optional[str] = None
-    login_users: list[str] = Field(default_factory=list)
-    persist_global_selection: bool = True
+    """Query normalized refund details for one business order identifier."""
+
+    order_id: str = Field(description="支付订单、商户订单或退款单标识")
+    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"] = Field(default="auto", description="order_id 的业务类型")
+    execution_device_entry_id: Optional[str] = Field(default=None, description="可选执行设备；默认使用考勤全局配置")
+    login_users: list[str] = Field(default_factory=list, description="可选支付登录账号候选")
+    persist_global_selection: bool = Field(default=True, description="管理员是否保存本次执行设备选择")
 
 
 class AttendanceOrderRefundDetailItem(BaseModel):
@@ -5061,6 +5065,13 @@ def execute_attendance_order(
     current_user: User = Depends(get_current_user_from_token),
     _: User | None = Depends(require_feature_access_dependency("attendance.orders")),
 ):
+    """Inspect orders or execute refunds as one high-level, auditable operation.
+
+    The service owns runtime configuration, device selection, browser state,
+    payment-side confirmation and history persistence. Callers submit business
+    order rows and consume the normalized result.
+    """
+
     config = get_or_create_attendance_service_config(session)
     extra_config = get_attendance_service_extra_config(session)
     order_operation_password = ""
@@ -5243,6 +5254,8 @@ def query_attendance_order_refund_details(
     current_user: User = Depends(get_current_user_from_token),
     _: User | None = Depends(require_feature_access_dependency("attendance.orders")),
 ):
+    """Return normalized refund facts without exposing payment-browser internals."""
+
     config = get_or_create_attendance_service_config(session)
     extra_config = get_attendance_service_extra_config(session)
     entry = _resolve_run_device(

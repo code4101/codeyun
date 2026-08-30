@@ -6,6 +6,7 @@ import pytest
 from backend.core.fanxiu.data_annotation.storage import (
     FanxiuDataAnnotationAssetTreeConflict,
     read_data_annotation_asset_tree_snapshot,
+    resolve_data_annotation_scene_node_id,
     save_data_annotation_asset_tree_bundle,
     save_data_annotation_asset_tree_snapshot,
     save_data_annotation_frame_tree_node,
@@ -22,6 +23,28 @@ _PNG_1X1 = base64.b64decode(
 
 def _png_data_url() -> str:
     return "data:image/png;base64," + base64.b64encode(_PNG_1X1).decode("ascii")
+
+
+def test_resolve_scene_node_id_uses_numeric_asset_identity():
+    tree = [{
+        "id": "folder-login-popups",
+        "type": "folder",
+        "title": "登录弹窗",
+        "children": [{
+            "id": "image-recharge-gift",
+            "type": "image",
+            "title": "充值豪礼",
+            "filename": "0022.png",
+            "shapes": [],
+        }],
+    }]
+
+    assert resolve_data_annotation_scene_node_id(tree, 22) == "image-recharge-gift"
+
+
+def test_resolve_scene_node_id_rejects_missing_scene():
+    with pytest.raises(ValueError, match="未找到场景 #22"):
+        resolve_data_annotation_scene_node_id([], 22)
 
 
 def test_save_asset_tree_bundle_materializes_image_data_url(tmp_path, monkeypatch):

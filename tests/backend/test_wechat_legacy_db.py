@@ -352,6 +352,33 @@ def test_wechat_archive_db_devices_select_device(monkeypatch, tmp_path):
     assert messages["total"] == 2
 
 
+def test_wechat_message_api_merges_live_fragments_into_public_items():
+    payload = {
+        "total": 1,
+        "items": [
+            {
+                "local_id": 1,
+                "message_text": "已归档",
+                "message_content": "已归档",
+                "resource": None,
+            }
+        ],
+        "live_wal_fragments": [
+            {"source_db": "MSG0.db-wal", "frame_index": 2, "page_no": 3, "message_text": "实时消息"},
+            {"source_db": "MSG0.db-wal", "frame_index": 4, "page_no": 5, "message_text": "已归档"},
+        ],
+    }
+
+    merged = wechat_archive._merge_wechat_live_fragments(payload, order="desc")
+
+    assert [item["message_text"] for item in merged["items"]] == ["实时消息", "已归档"]
+    assert merged["items"][0]["provisional"] is True
+    assert merged["items"][0]["local_id"] < 0
+    assert merged["provisional_count"] == 1
+    assert merged["item_count"] == 2
+    assert "live_wal_fragments" not in merged
+
+
 def test_wechat_archive_db_devices_include_extra_roots(monkeypatch, tmp_path):
     current_root = tmp_path / "codepc_current"
     extra_root = tmp_path / "archives" / "codepc_extra"

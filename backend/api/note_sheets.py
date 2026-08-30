@@ -623,25 +623,29 @@ class NoteSheetTableResponse(BaseModel):
 
 
 class NoteSheetTablePatchOperation(BaseModel):
-    type: Literal["write_fields", "write_range", "set_cell", "set_note_cell"] = "write_fields"
-    rows: list[dict[str, Any]] = Field(default_factory=list)
-    values: list[list[Any]] = Field(default_factory=list)
-    fields: list[str] = Field(default_factory=list)
-    key_field: str = ""
-    append_missing: bool = False
-    start_row_index: int | None = Field(default=None, ge=0)
-    start_sheet_row: int | None = Field(default=None, ge=1)
-    row_index: int | None = Field(default=None, ge=0)
-    sheet_row: int | None = Field(default=None, ge=1)
-    column: str | int | None = None
-    field: str = ""
-    cell: str = ""
-    value: Any = None
+    """One declarative table mutation inside an atomic patch request."""
+
+    type: Literal["write_fields", "write_range", "set_cell", "set_note_cell"] = Field(default="write_fields", description="结构化写入方式")
+    rows: list[dict[str, Any]] = Field(default_factory=list, description="write_fields 的字段行")
+    values: list[list[Any]] = Field(default_factory=list, description="write_range 的二维值")
+    fields: list[str] = Field(default_factory=list, description="write_fields 允许更新的字段")
+    key_field: str = Field(default="", description="write_fields 匹配现有行的业务键")
+    append_missing: bool = Field(default=False, description="write_fields 未匹配时是否追加")
+    start_row_index: int | None = Field(default=None, ge=0, description="数据区起始行下标")
+    start_sheet_row: int | None = Field(default=None, ge=1, description="可见表格起始行号")
+    row_index: int | None = Field(default=None, ge=0, description="set_cell 的数据区行下标")
+    sheet_row: int | None = Field(default=None, ge=1, description="set_cell/set_note_cell 的可见行号")
+    column: str | int | None = Field(default=None, description="列名、A1 列字母或列下标")
+    field: str = Field(default="", description="业务字段名")
+    cell: str = Field(default="", description="write_range 的 A1 起点")
+    value: Any = Field(default=None, description="set_cell/set_note_cell 的值")
 
 
 class NoteSheetTablePatchRequest(BaseModel):
-    expected_version: int | None = Field(default=None, ge=1)
-    operations: list[NoteSheetTablePatchOperation] = Field(default_factory=list)
+    """Apply one or more table operations against one optimistic version."""
+
+    expected_version: int | None = Field(default=None, ge=1, description="可选并发版本；不一致返回 409")
+    operations: list[NoteSheetTablePatchOperation] = Field(default_factory=list, description="按顺序在一个保存事务中执行的操作")
 
 
 class NoteSheetTablePatchResponse(BaseModel):
@@ -19050,6 +19054,8 @@ def get_note_sheet_table(
     current_user: User | None = Depends(get_optional_current_user_from_token),
     trusted_device: Any | None = Depends(_get_optional_trusted_device),
 ):
+    """Read a structured sheet table; storage layout and formulas stay internal."""
+
     document, _access, workbook = _get_note_sheet_for_table_or_404(
         session,
         current_user,
@@ -19266,6 +19272,8 @@ def patch_note_sheet_table(
     current_user: User | None = Depends(get_optional_current_user_from_token),
     trusted_device: Any | None = Depends(_get_optional_trusted_device),
 ):
+    """Atomically validate, apply and persist a structured table mutation batch."""
+
     document, access, workbook = _get_note_sheet_for_table_or_404(
         session,
         current_user,

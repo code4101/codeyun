@@ -479,6 +479,7 @@ from backend.core.fanxiu.data_annotation.storage import (
     FanxiuDataAnnotationAssetTreeConflict,
     decode_data_annotation_image_data_url,
     read_data_annotation_asset_tree_snapshot,
+    resolve_data_annotation_scene_node_id,
     resolve_data_annotation_image_asset,
     save_data_annotation_asset_tree_snapshot,
     save_data_annotation_frame_tree_node,
@@ -5034,8 +5035,34 @@ def save_fanxiu_data_annotation_frame(
         pass
     tree_snapshot = None
     try:
-        if req.asset_node is not None:
+        semantic_insert = req.same_level_as_scene_id is not None
+        if semantic_insert and any((req.asset_node is not None, req.parent_id, req.after_node_id, req.filename)):
+            raise ValueError(
+                "same_level_as_scene_id 不能与 asset_node、parent_id、after_node_id 或 filename 同时使用"
+            )
+        if req.title is not None and not semantic_insert:
+            raise ValueError("title 仅与 same_level_as_scene_id 配合使用")
+
+        node = None
+        after_node_id = req.after_node_id
+        if semantic_insert:
+            current = read_data_annotation_asset_tree_snapshot(
+                _data_annotation_asset_tree_path(req.entry_id)
+            )
+            after_node_id = resolve_data_annotation_scene_node_id(
+                current.tree,
+                int(req.same_level_as_scene_id),
+            )
+            node = {
+                "id": f"image-{uuid.uuid4().hex}",
+                "type": "image",
+                "title": str(req.title or "").strip(),
+                "shapes": [],
+            }
+        elif req.asset_node is not None:
             node = dict(req.asset_node)
+
+        if node is not None:
             if width:
                 node["width"] = width
             if height:
@@ -5046,7 +5073,7 @@ def save_fanxiu_data_annotation_frame(
                 node,
                 entry_id=req.entry_id,
                 parent_id=req.parent_id,
-                after_node_id=req.after_node_id,
+                after_node_id=after_node_id,
                 expected_revision=req.base_revision,
                 before_write=lambda: _backup_data_annotation_asset_tree_before_save(
                     _data_annotation_asset_tree_path(req.entry_id)
@@ -7447,6 +7474,14 @@ def get_fanxiu_exchange_activity_snapshot(
     activity_id: str | None = Query(default=None),
     session: Session = Depends(get_session),
 ):
+    """Capture/save a frame and optionally create one scene node atomically.
+
+    Ordinary callers provide image data (or ``fresh_capture``), a title and a
+    numeric sibling scene. The service owns node IDs, sequential filenames,
+    backups, optimistic concurrency and the asset-tree transaction. Raw node
+    placement fields remain only for the interactive asset-tree editor.
+    """
+
     materialize_registered_exchange_activity(
         session,
         activity_type=activity_type,

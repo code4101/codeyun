@@ -11621,6 +11621,7 @@ class BehaviorTreeRuntimeRunner(
             raw_click_y = (float(shape.get("y") or 0) + float(shape.get("h") or 0) * y_ratio) * height
         click_x, click_y = raw_click_x, raw_click_y
         resolved_click = None
+        click_bounds = self._box(shape, image)
         if shape.get("clickResolvedBox") is not False:
             if x_ratio == 0.5 and y_ratio == 0.5:
                 resolved_click = self._shape_match_resolved_click_point(image, shape, action_match_result)
@@ -11634,6 +11635,10 @@ class BehaviorTreeRuntimeRunner(
                 )
         if resolved_click is not None and not self._shape_should_keep_raw_click_for_ocr_navigation(shape, action_match_result):
             click_x, click_y = resolved_click
+            if isinstance(action_match_result, dict):
+                resolved_box = action_match_result.get("resolved_box") or action_match_result.get("fixed_box")
+                if isinstance(resolved_box, dict):
+                    click_bounds = resolved_box
         if action_match_result is not None:
             self._log(
                 "detail",
@@ -11658,6 +11663,7 @@ class BehaviorTreeRuntimeRunner(
                 click_x,
                 click_y,
                 radius=jitter_radius,
+                bounds=click_bounds,
             )
             payload["x"] = click_x
             payload["y"] = click_y
@@ -11703,8 +11709,9 @@ class BehaviorTreeRuntimeRunner(
         y: float,
         *,
         radius: int,
+        bounds: Mapping[str, Any] | None = None,
     ) -> tuple[float, float]:
-        """Apply simple bounded random jitter inside the game frame."""
+        """Apply random jitter inside both the game frame and target bounds."""
 
         width, height = self._frame_size(image)
         radius = max(0, int(radius or 0))
@@ -11712,9 +11719,24 @@ class BehaviorTreeRuntimeRunner(
             return float(x), float(y)
         jittered_x = float(x) + random.randint(-radius, radius)
         jittered_y = float(y) + random.randint(-radius, radius)
+        min_x, min_y = 0.0, 0.0
+        max_x, max_y = max(0.0, float(width) - 1.0), max(0.0, float(height) - 1.0)
+        if isinstance(bounds, Mapping):
+            bound_x = float(bounds.get("x") or 0)
+            bound_y = float(bounds.get("y") or 0)
+            bound_w = float(bounds.get("w") or 0)
+            bound_h = float(bounds.get("h") or 0)
+            if bound_w > 0 and bound_h > 0:
+                min_x = max(min_x, bound_x)
+                min_y = max(min_y, bound_y)
+                # Match the frame's ``width - 1`` pixel convention so a
+                # rounded ADB coordinate cannot land just beyond the Shape's
+                # right or bottom edge.
+                max_x = min(max_x, bound_x + max(0.0, bound_w - 1.0))
+                max_y = min(max_y, bound_y + max(0.0, bound_h - 1.0))
         return (
-            min(max(jittered_x, 0.0), max(0.0, float(width) - 1.0)),
-            min(max(jittered_y, 0.0), max(0.0, float(height) - 1.0)),
+            min(max(jittered_x, min_x), max_x),
+            min(max(jittered_y, min_y), max_y),
         )
 
     def _guard_xuanhuang_forward_click(
@@ -11855,6 +11877,7 @@ class BehaviorTreeRuntimeRunner(
                 x,
                 y,
                 radius=jitter_radius,
+                bounds=self._box(shape, image),
             )
         self._click_frame_point(ctx, image, x, y)
 

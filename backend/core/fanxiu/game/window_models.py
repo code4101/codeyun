@@ -184,14 +184,35 @@ class FanxiuDataAnnotationAssetTreeRequest(BaseModel):
 
 
 class FanxiuDataAnnotationSaveFrameRequest(BaseModel):
-    entry_id: str
-    current_frame_data_url: Optional[str] = None
-    filename: Optional[str] = None
-    fresh_capture: bool = False
-    asset_node: Optional[dict[str, Any]] = None
-    parent_id: Optional[str] = None
-    after_node_id: Optional[str] = None
-    base_revision: Optional[str] = None
+    entry_id: str = Field(description="凡修设备入口 ID")
+    current_frame_data_url: Optional[str] = Field(
+        default=None,
+        description="要保存的现场图 data URL；与 fresh_capture 至少提供一个",
+    )
+    fresh_capture: bool = Field(
+        default=False,
+        description="是否由服务端只读采集当前帧",
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="新场景标题；与 same_level_as_scene_id 配合时创建无 Shape 的场景节点",
+    )
+    same_level_as_scene_id: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="把新场景插入指定数字场景 ID 的同级位置，例如 22",
+    )
+    filename: Optional[str] = Field(
+        default=None,
+        description="仅保存图片时可指定文件名；创建场景节点时通常留空并自动编号",
+    )
+    asset_node: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="前端资产树编辑器兼容字段；普通调用优先使用 title + same_level_as_scene_id",
+    )
+    parent_id: Optional[str] = Field(default=None, description="前端资产树编辑器兼容的目录节点 ID")
+    after_node_id: Optional[str] = Field(default=None, description="前端资产树编辑器兼容的同级锚点节点 ID")
+    base_revision: Optional[str] = Field(default=None, description="可选的资产树并发版本")
 
 
 class FanxiuGameWindow2BurstListRequest(BaseModel):

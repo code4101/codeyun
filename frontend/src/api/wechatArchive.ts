@@ -295,6 +295,7 @@ export interface WeChatDbMessage {
   source_text: string | null
   appmsg?: WeChatDbAppMessage | null
   packed_info_size: number | null
+  provisional?: boolean
   resource: {
     resource_count: number
     total_size: number
@@ -306,6 +307,8 @@ export interface WeChatDbMessage {
 
 export interface WeChatDbMessagePage {
   total: number
+  item_count?: number
+  provisional_count?: number
   items: WeChatDbMessage[]
   table_name: string
   db_storage_path: string

@@ -1479,20 +1479,89 @@ def list_wechat_db_chats(
         raise HTTPException(status_code=502, detail=f"微信数据库会话读取失败：{exc}") from exc
 
 
+def _merge_wechat_live_fragments(payload: dict[str, Any], *, order: str) -> dict[str, Any]:
+    """Return one public message list, hiding persisted/WAL storage boundaries.
+
+    Legacy WeChat may expose not-yet-checkpointed messages as provisional WAL
+    fragments.  Callers should not understand or merge that storage detail, so
+    this adapter normalizes fragments to the regular message shape, removes
+    obvious duplicates, and marks provisional records explicitly.
+    """
+
+    result = dict(payload)
+    items = [dict(item) for item in result.get("items") or [] if isinstance(item, dict)]
+    fragments = [item for item in result.pop("live_wal_fragments", []) if isinstance(item, dict)]
+    existing_text = {str(item.get("message_text") or item.get("message_content") or "").strip() for item in items}
+    provisional: list[dict[str, Any]] = []
+    for fragment in fragments:
+        message_text = str(fragment.get("message_text") or "").strip()
+        if not message_text or message_text in existing_text:
+            continue
+        existing_text.add(message_text)
+        identity = "\x1f".join(
+            str(fragment.get(key) or "")
+            for key in ("source_db", "frame_index", "page_no", "message_text", "media_path_hint")
+        )
+        local_id = -int(hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12], 16)
+        provisional.append(
+            {
+                "local_id": local_id,
+                "raw_local_id": None,
+                "source_db": fragment.get("source_db"),
+                "server_id": None,
+                "local_type": None,
+                "local_type_normalized": None,
+                "sort_seq": None,
+                "sender_username": fragment.get("sender_username_hint"),
+                "sender_name": fragment.get("sender_name_hint"),
+                "sender_avatar_data_url": None,
+                "create_time": None,
+                "create_time_text": "实时增量（待归档）",
+                "status": None,
+                "upload_status": None,
+                "download_status": None,
+                "server_seq": None,
+                "origin_source": None,
+                "source": fragment.get("source"),
+                "message_content": message_text,
+                "message_text": message_text,
+                "compress_content": None,
+                "source_text": None,
+                "appmsg": None,
+                "packed_info_size": None,
+                "resource": fragment.get("resource"),
+                "provisional": True,
+            }
+        )
+    result["items"] = provisional + items if order == "desc" else items + provisional
+    result["provisional_count"] = len(provisional)
+    result["item_count"] = len(result["items"])
+    return result
+
+
 @router.get("/db-messages")
 def list_wechat_db_messages(
-    chat_username: Annotated[str, Query(min_length=1, max_length=200)],
-    device_id: Annotated[str | None, Query(max_length=200)] = None,
-    q: Annotated[str | None, Query(max_length=200)] = None,
-    message_type: Annotated[str | None, Query(max_length=40)] = None,
-    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
-    offset: Annotated[int, Query(ge=0)] = 0,
-    order: Annotated[Literal["asc", "desc"], Query()] = "desc",
-    include_resources: bool = True,
-    known_total: Annotated[int | None, Query(ge=0)] = None,
+    chat_username: Annotated[str, Query(min_length=1, max_length=200, description="唯一微信会话 ID")],
+    device_id: Annotated[str | None, Query(max_length=200, description="可选的 CodeYun 微信设备 ID")] = None,
+    q: Annotated[str | None, Query(max_length=200, description="可选的消息正文搜索词")] = None,
+    message_type: Annotated[str | None, Query(max_length=40, description="可选的规范化消息类型")] = None,
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE, description="本页最多返回的消息数")] = DEFAULT_PAGE_SIZE,
+    offset: Annotated[int, Query(ge=0, description="持久化消息分页偏移")] = 0,
+    order: Annotated[Literal["asc", "desc"], Query(description="消息顺序")] = "desc",
+    include_resources: Annotated[bool, Query(description="是否解析并导出图片、文件等可读资源")] = True,
+    known_total: Annotated[int | None, Query(ge=0, description="调用方已知总数，用于跳过重复计数")] = None,
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
+    """Read one normalized message page including provisional live messages.
+
+    The endpoint owns archive/WAL merging, duplicate suppression, sender names,
+    and media export.  Callers consume ``items`` and must not inspect storage
+    files or merge ``live_wal_fragments`` themselves. ``total`` remains the
+    persisted-message total; ``item_count`` and ``provisional_count`` describe
+    the returned page.
+    """
+
     remote = _resolve_remote_wechat_device(device_id, session, current_user)
     if remote:
         payload = _remote_wechat_json(
@@ -1511,6 +1580,7 @@ def list_wechat_db_messages(
             timeout=30,
         )
         if isinstance(payload, dict):
+            payload = _merge_wechat_live_fragments(payload, order=order)
             payload["device_id"] = remote.public_device_id
             payload["remote_device_id"] = remote.remote_device_id
             payload["entry_id"] = remote.entry.entry_id
@@ -1529,7 +1599,7 @@ def list_wechat_db_messages(
         }
         if known_total is not None and "known_total" in inspect.signature(storage.list_messages).parameters:
             kwargs["known_total"] = known_total
-        payload = storage.list_messages(**kwargs)
+        payload = _merge_wechat_live_fragments(storage.list_messages(**kwargs), order=order)
         return {
             **payload,
             "db_storage_path": os.fspath(storage.root),

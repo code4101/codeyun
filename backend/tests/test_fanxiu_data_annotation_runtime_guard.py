@@ -2855,6 +2855,61 @@ def test_navigation_retry_jitter_stays_inside_game_frame(monkeypatch):
     assert point == (899.0, 1599.0)
 
 
+def test_navigation_retry_jitter_stays_inside_target_shape(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    shape = {
+        "id": "daily",
+        "kind": "rect",
+        "title": "日常",
+        "x": 0.03944444444444445,
+        "y": 0.2070833333333333,
+        "w": 0.08666666666666667,
+        "h": 0.07708333333333334,
+    }
+    image34 = _image("世界", "0034.png", [shape])
+    bounds = runner._box(shape, image34)
+    monkeypatch.setattr(behavior_tree_runtime_core.random, "randint", lambda _low, high: high)
+
+    point = runner._randomly_perturb_click_point(
+        image34,
+        74.5,
+        393.0,
+        radius=164,
+        bounds=bounds,
+    )
+
+    assert point == pytest.approx((bounds["x"] + bounds["w"] - 1, bounds["y"] + bounds["h"] - 1))
+
+
+def test_shape_click_retry_jitter_uses_target_shape_bounds(monkeypatch):
+    runner = create_behavior_tree_runtime_runner()
+    shape = {
+        "id": "daily",
+        "kind": "rect",
+        "title": "日常",
+        "x": 0.03944444444444445,
+        "y": 0.2070833333333333,
+        "w": 0.08666666666666667,
+        "h": 0.07708333333333334,
+    }
+    image34 = _image("世界", "0034.png", [shape])
+    bounds = runner._box(shape, image34)
+    clicked: list[dict] = []
+    ctx = {"entry": type("Entry", (), {"mode": "local"})()}
+    monkeypatch.setattr(behavior_tree_runtime_core.random, "randint", lambda _low, high: high)
+    monkeypatch.setattr(runner, "_save_action_trace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        behavior_tree_runtime_core,
+        "_click_game_window2_service",
+        lambda payload: clicked.append(dict(payload)) or {"ok": True},
+    )
+
+    runner._click_shape(ctx, image34, shape, jitter_radius=164)
+
+    assert clicked[0]["x"] == pytest.approx(bounds["x"] + bounds["w"] - 1)
+    assert clicked[0]["y"] == pytest.approx(bounds["y"] + bounds["h"] - 1)
+
+
 def test_scene_route_click_forwards_retry_jitter_to_shape_click(monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     shape = {
@@ -2999,6 +3054,14 @@ def test_runtime_local_shape_click_overrides_action_planner_input_backend(monkey
     class FakeActionPlanner:
         def shape_center(self, _image, _shape):
             return (450.0, 880.0)
+
+        def shape_box(self, image, shape):
+            return {
+                "x": float(shape["x"]) * float(image["width"]),
+                "y": float(shape["y"]) * float(image["height"]),
+                "w": float(shape["w"]) * float(image["width"]),
+                "h": float(shape["h"]) * float(image["height"]),
+            }
 
         def click_shape_payload(self, _image, _shape):
             return {"x": 450.0, "y": 880.0, "input_backend": "desktop"}
@@ -18889,7 +18952,7 @@ class _FakeSignupRuntime:
         return view_id
 
     def wait_click_then_view(self, view_id: int, shape: str, *target_views: int, **_kwargs):
-        target_view = int(target_views[0]) if target_views else 69
+        target_view = int(target_views[0]) if target_views else -1
         self.actions.append(("wait_click_then_view", view_id, shape, target_view))
         self.scene_id = target_view
         if False:

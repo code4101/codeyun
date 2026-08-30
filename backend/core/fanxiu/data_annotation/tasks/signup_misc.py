@@ -45,7 +45,7 @@ class SignupMiscTaskMixin:
         if scene_id == 69:
             return "日常页"
         if scene_id == 34:
-            yield from runtime.wait_click_then_view(34, "日常", label="日常_报名：从世界进入日常 #69")
+            yield from runtime.wait_click_then_view(34, "日常", 69, label="日常_报名：从世界进入日常 #69")
             return "日常页"
         yield from runtime.goto_view(69)
         return "日常页"
