@@ -136,6 +136,135 @@ def test_daily_boss_cleanup_waits_for_world_after_goto_unknown_timeout(monkeypat
     assert waits == [(34, 120.0)]
 
 
+def test_daily_boss_cleanup_recovers_boss_list_after_scene_336_misidentification(monkeypatch) -> None:
+    runner = create_behavior_tree_runtime_runner()
+    scenes = iter(
+        [
+            (336, 100.0, "event-like-title", "首领"),
+            (
+                336,
+                100.0,
+                "boss-list",
+                "首领 人界 灵界 仙界 首领境界 剩余奖励次数 1 掉落记录",
+            ),
+        ]
+    )
+    events: list[str] = []
+
+    class Runtime:
+        def clear_frame(self):
+            events.append("clear")
+
+        def goto_view(self, _scene_id):
+            if False:
+                yield None
+            raise RuntimeError("cannot route from #336")
+
+        def wait_view(self, scene_id, **_kwargs):
+            events.append(f"wait-{scene_id}")
+            if events.count("wait-34") == 1:
+                if False:
+                    yield None
+                raise TimeoutError("world did not settle")
+            if False:
+                yield None
+            return 34
+
+        def click_frame_point(self, _image, _x, _y):
+            events.append("click-back")
+
+    def no_overlay(*_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    image178 = {
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "title": "返回",
+                "x": 0.02,
+                "y": 0.9,
+                "w": 0.12,
+                "h": 0.08,
+            }
+        ],
+    }
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: Runtime())
+    monkeypatch.setattr(runner, "_fanxiu_runtime_scene_text", lambda *_args, **_kwargs: next(scenes))
+    monkeypatch.setattr(runner, "_close_daily_boss_item_detail_if_present", no_overlay)
+    monkeypatch.setattr(runner, "_close_daily_boss_storage_bag_if_present", no_overlay)
+
+    result = _drain(
+        runner._return_daily_boss_to_world(
+            {
+                "asset_tree_path": Path("asset-tree.json"),
+                "images": {178: image178},
+            },
+            threading.Event(),
+        )
+    )
+
+    assert result == "success"
+    assert events == ["clear", "wait-34", "click-back", "wait-34"]
+    assert runner.status()["phase"] == "daily_boss_recover_list_after_transition"
+
+
+def test_daily_boss_flow_prefers_list_ocr_over_scene_336_misidentification(monkeypatch) -> None:
+    runner = create_behavior_tree_runtime_runner()
+    calls: list[str] = []
+
+    class Runtime:
+        def current_scene(self, **_kwargs):
+            return 336, 100.0, "boss-list"
+
+        def ocr_text(self, _frame):
+            return "首领 人界 灵界 仙界 首领境界 剩余奖励次数 1 掉落记录"
+
+    def no_overlay(*_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    def open_detail(*_args, **_kwargs):
+        calls.append("open-detail")
+        if False:
+            yield None
+        return "done"
+
+    def return_world(*_args, **_kwargs):
+        calls.append("return-world")
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_daily_boss_runtime_snapshot", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: Runtime())
+    monkeypatch.setattr(runner, "_close_daily_boss_item_detail_if_present", no_overlay)
+    monkeypatch.setattr(runner, "_close_daily_boss_storage_bag_if_present", no_overlay)
+    monkeypatch.setattr(runner, "_open_watched_daily_boss_detail", open_detail)
+    monkeypatch.setattr(runner, "_return_daily_boss_to_world", return_world)
+    monkeypatch.setattr(
+        runner,
+        "_enter_daily_from_world_like",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("proven boss list must not enter generic navigation")
+        ),
+    )
+
+    result = _drain(
+        runner._execute_daily_boss_task_flow(
+            {"asset_tree_path": Path("asset-tree.json")},
+            threading.Event(),
+            {},
+        )
+    )
+
+    assert result == "success"
+    assert calls == ["open-detail", "return-world"]
+
+
 def _ocr_line(text: str, *, x: float, y: float, w: float = 100, h: float = 40, line: str) -> list[dict]:
     width = w / max(1, len(text))
     return [

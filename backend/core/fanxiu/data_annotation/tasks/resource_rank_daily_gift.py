@@ -38,8 +38,9 @@ class ResourceRankGiftAdapter:
     """Navigation identity only; every adapter uses the shared claim policy.
 
     Resource-rank families may vary in schedule identity and entry scenes, but
-    they cannot override list scanning, free-only authorization, Runtime
-    increment validation, full scrolling, re-entry refresh, or completion.
+    they cannot override the leading-free-prefix policy, free-only
+    authorization, Runtime increment validation, re-entry refresh, or
+    completion.
     """
 
     key: str
@@ -61,7 +62,7 @@ class ResourceRankGiftListAction:
 
 # Each resource-rank family enters the shared #605 gift page only after its own
 # real scene and negative-sample proof.  Adapters contain navigation facts only;
-# the complete scrolling/re-entry policy and ChargeMgr idempotency validation
+# the complete leading-prefix/re-entry policy and ChargeMgr idempotency validation
 # stay shared and deliberately cannot be customized per family.
 RESOURCE_RANK_GIFT_ADAPTERS = (
     ResourceRankGiftAdapter(
@@ -188,10 +189,10 @@ def project_resource_rank_gift_list_actions(
 ) -> tuple[ResourceRankGiftListAction, ...]:
     """Project only the fixed right-hand action column of visible gift rows.
 
-    Reward quantities live to the left and are ignored.  Numeric prices are
-    returned only as explicit non-clickable evidence; they are not a list-end
-    boundary because additional free rows can appear after scrolling or after
-    re-entering the page refreshes claimed rows to the back.
+    Reward quantities live to the left and are ignored.  The game sorts every
+    claimable free row into one contiguous prefix.  Therefore the first paid
+    action is an authoritative visual boundary: rows below it must not be
+    scanned or scrolled into view.
     """
 
     minimum_x = float(frame_width) * 0.62
@@ -208,6 +209,8 @@ def project_resource_rank_gift_list_actions(
             kind = "free"
         elif re.fullmatch(r"\d+", text):
             kind = "spirit_stone"
+        elif re.fullmatch(r"(?:[¥￥])?\d+(?:\.\d+)?元?", text):
+            kind = "paid"
         else:
             continue
         actions.append(
@@ -218,7 +221,14 @@ def project_resource_rank_gift_list_actions(
                 y=y + height / 2.0,
             )
         )
-    return tuple(sorted(actions, key=lambda item: (item.y, item.x)))
+    ordered = sorted(actions, key=lambda item: (item.y, item.x))
+    first_paid_index = next(
+        (index for index, item in enumerate(ordered) if item.kind != "free"),
+        None,
+    )
+    if first_paid_index is not None:
+        ordered = ordered[: first_paid_index + 1]
+    return tuple(ordered)
 
 
 def validate_one_free_gift_increment(
@@ -623,8 +633,7 @@ def run_resource_rank_daily_gift_flow(
     claimed_count = 0
     claimed_ids: list[int] = []
     refresh_count = 0
-    scroll_steps = 0
-    empty_after_refresh = False
+    empty_action_count = 0
     boundary = ""
     while claimed_count < 20:
         remaining_free_ids = _claimable_free_gift_ids(runtime_snapshot)
@@ -639,9 +648,12 @@ def run_resource_rank_daily_gift_flow(
             605, ["礼包列表窗口"], frame_data_url=frame
         )
         actions = project_resource_rank_gift_list_actions(lines)
-        free_action = next((item for item in actions if item.kind == "free"), None)
+        if actions and actions[0].kind != "free":
+            boundary = "visual_first_non_free"
+            break
+        free_action = actions[0] if actions else None
         if free_action is not None:
-            empty_after_refresh = False
+            empty_action_count = 0
             before = runtime_snapshot
             runtime.runner._raise_if_stopped(runtime.stop_event)
             runtime.runner._click_frame_point(
@@ -673,25 +685,27 @@ def run_resource_rank_daily_gift_flow(
             claimed_ids.append(validate_one_free_gift_increment(before, after))
             claimed_count += 1
             runtime_snapshot = after
-            continue
-        changed = yield from runtime.scroll_shape_content(
-            605,
-            "礼包列表窗口",
-            direction="down",
-        )
-        if changed:
-            scroll_steps += 1
-            if scroll_steps >= 40:
+            if bool(
+                runtime_snapshot.get("active_filter_applied")
+            ) and not _claimable_free_gift_ids(runtime_snapshot):
+                boundary = "runtime_all_free_claimed"
+                break
+            if refresh_count >= 20:
                 raise RuntimeError(
-                    f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：40 次滚动内未完成礼包列表扫描"
+                    f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：刷新礼包页 20 次仍未见付费边界"
                 )
+            yield from _reenter_adapter_gift_page(
+                runtime,
+                adapter,
+                activity_id=activity_id,
+                now=current,
+            )
+            refresh_count += 1
             continue
-        if empty_after_refresh:
-            boundary = "visual_no_free_after_refresh"
-            break
-        if refresh_count >= 12:
+        empty_action_count += 1
+        if empty_action_count >= 2:
             raise RuntimeError(
-                f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：刷新礼包页 12 次仍未收敛"
+                f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：连续两次未识别到顶部免费或付费动作，拒绝假完成"
             )
         yield from _reenter_adapter_gift_page(
             runtime,
@@ -700,8 +714,6 @@ def run_resource_rank_daily_gift_flow(
             now=current,
         )
         refresh_count += 1
-        scroll_steps = 0
-        empty_after_refresh = True
     if not boundary:
         raise RuntimeError(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：免费领取达到安全上限但未见付费边界"
@@ -741,7 +753,7 @@ def run_resource_rank_daily_gift_flow(
             + (
                 "Runtime 已确认无可领免费礼包；"
                 if boundary == "runtime_all_free_claimed"
-                else "重进刷新后页面已无免费项，且每次领取均经 Runtime 增量确认；"
+                else "重进刷新后首个礼包已为非免费，免费前缀已结束；"
             )
             + f"下次 {next_time}"
         ),

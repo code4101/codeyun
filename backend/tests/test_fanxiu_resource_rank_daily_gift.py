@@ -577,8 +577,87 @@ def test_gift_list_recognizes_free_and_stone_actions_without_left_quantities() -
         ("free", "免费"),
         ("free", "免费"),
         ("spirit_stone", "488"),
-        ("free", "免费"),
     ]
+
+
+def test_gift_list_stops_at_first_paid_action_for_every_price_kind() -> None:
+    actions = project_resource_rank_gift_list_actions(
+        [
+            {"text": "免费", "x": 670, "y": 500, "w": 90, "h": 42},
+            {"text": "6元", "x": 690, "y": 800, "w": 70, "h": 38},
+            {"text": "免费", "x": 670, "y": 1100, "w": 90, "h": 42},
+            {"text": "￥18", "x": 690, "y": 1400, "w": 70, "h": 38},
+        ]
+    )
+
+    assert [(item.kind, item.text) for item in actions] == [
+        ("free", "免费"),
+        ("paid", "6元"),
+    ]
+
+
+def test_flow_does_not_scroll_after_first_non_free_action(monkeypatch) -> None:
+    adapter = ResourceRankGiftAdapter(
+        key="first-rank",
+        label="甲榜",
+        schedule_pattern="甲榜",
+        activity_ids=(111,),
+        page_scene_ids=(597,),
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "active_resource_rank_gift_adapters",
+        lambda _snapshot, *, now: [(adapter, 111)],
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "load_worldline_activity_schedule_snapshot",
+        lambda: {"occurrences": []},
+    )
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "read_activity_gift_runtime_snapshot",
+        lambda _activity_ids: {
+            "ok": True,
+            "complete": True,
+            "active_filter_applied": False,
+            "items": [],
+        },
+    )
+
+    def open_page(*_args, **_kwargs):
+        if False:
+            yield None
+        return True
+
+    monkeypatch.setattr(
+        resource_rank_daily_gift,
+        "_open_adapter_gift_page",
+        open_page,
+    )
+
+    class Runtime:
+        def cur_frame(self, *, update):
+            return "frame"
+
+        def ocr_fragments_in_shapes(self, *_args, **_kwargs):
+            return [
+                {"text": "988", "x": 690, "y": 500, "w": 70, "h": 38},
+                {"text": "免费", "x": 670, "y": 900, "w": 90, "h": 42},
+            ]
+
+        def go_scene(self, _scene_id):
+            return None
+
+    result = _drain(
+        run_resource_rank_daily_gift_flow(
+            Runtime(),
+            now=datetime(2026, 8, 19, 12, 0, tzinfo=ZONE),
+        )
+    )
+
+    assert result["boundary"] == "visual_first_non_free"
+    assert result["claimed_count"] == 0
 
 
 def test_runtime_readback_requires_exactly_one_free_increment() -> None:

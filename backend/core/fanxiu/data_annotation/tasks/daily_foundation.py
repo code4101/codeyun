@@ -956,17 +956,21 @@ class DailyFoundationTaskMixin:
             return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
         if self._daily_boss_combat_in_progress_text(current_text):
             return (yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload))
-        if scene_id is not None:
+        # Boss-list/detail business OCR is stronger than an unrelated scene
+        # identity.  The live boss list can be falsely classified as #336
+        # because both pages contain a similar top-level ``首领`` image.  Do
+        # not hand that proven boss page to generic scene navigation.
+        if self._daily_boss_text_is_detail(current_text):
+            scene_id = 179
+        elif self._daily_boss_text_is_list(current_text):
+            scene_id = 178
+        elif scene_id is not None:
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
             if scene_id == 180:
                 return (yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload))
             if scene_id == 181:
                 return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
-        elif self._daily_boss_text_is_detail(current_text):
-            scene_id = 179
-        elif self._daily_boss_text_is_list(current_text):
-            scene_id = 178
 
         if scene_id != 179:
             if scene_id != 178:
@@ -1950,6 +1954,43 @@ class DailyFoundationTaskMixin:
             except Exception as settle_exc:
                 with self._lock:
                     self._log_locked("warning", f"日常_首领：继续等待长加载仍未回世界：{settle_exc}")
+                # The long transition can settle on the boss list while its
+                # weak top-title image is misidentified as the event card
+                # #336.  Re-read business semantics after the wait: the boss
+                # list OCR plus its existing #178 Return shape is stronger
+                # evidence than that conflicting scene identity.  This is a
+                # safe exit from the current page, not a scene-graph repair.
+                scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
+                    ctx, runtime, update=True
+                )
+                if (
+                    self._daily_boss_text_is_list(_text)
+                    and isinstance(image178, dict)
+                    and back_shape is not None
+                ):
+                    box = self._box(back_shape, image178)
+                    x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
+                    y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
+                    with self._lock:
+                        self._set_status_locked(
+                            "running",
+                            "日常_首领：长等待后 OCR 确认为首领列表，使用 #178「返回」回世界",
+                            phase="daily_boss_recover_list_after_transition",
+                            current_scene=178,
+                        )
+                        self._log_locked("action", self._status["message"])
+                    runtime.click_frame_point(image178, x, y)
+                    landing = yield from runtime.wait_view(
+                        34,
+                        timeout=30.0,
+                        label="日常_首领：从长等待后的首领列表返回世界 #34",
+                    )
+                    if getattr(landing, "id", landing) == 34:
+                        with self._lock:
+                            self._status.update(
+                                {"current_scene": 34, "updated_at": time.time()}
+                            )
+                        return "success"
             raise
         return "success"
 
