@@ -4,6 +4,7 @@ import json
 import time
 import re
 import csv
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -229,6 +230,38 @@ def _mutate_independent_attendance_wjx_sheet(mutator) -> SimpleNamespace:
             updated_at=float(payload.get("updated_at") or 0.0),
         )
     raise HTTPException(status_code=409, detail="问卷数据刚被其他操作更新，请重试")
+
+
+def reconcile_independent_attendance_wjx_course_fields() -> SimpleNamespace:
+    """Align questionnaire course links and owners with the current course sheet.
+
+    Questionnaire course metadata is derived from workbook 2 / sheet 4.  Keep
+    the reconciliation in the attendance provider so every consumer updates the
+    attendance-owned document instead of reviving the retired CodeYun copy.
+    Courses no longer present in the current source sheet retain their stored
+    historical owner.
+    """
+    source_sheet = _load_independent_attendance_sheet(
+        FEEDBACK_COURSE_SOURCE_SHEET_ID,
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+    )
+    source_document = dict(source_sheet.document_json or {})
+    course_link_map = _extract_feedback_course_link_map_from_sheet(source_document)
+    course_owner_map = _extract_feedback_course_owner_map_from_sheet(source_document)
+
+    def reconcile(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        current_document = dict(document_json or {})
+        next_document, _changed = _apply_attendance_wjx_sheet_course_links(
+            current_document,
+            course_link_map,
+            course_owner_map,
+        )
+        # Rebuild grid/entity projections after changing row values so every
+        # table representation exposes the same owner.
+        next_document = _normalize_attendance_wjx_sheet_document(next_document)
+        return next_document, next_document != current_document
+
+    return _mutate_independent_attendance_wjx_sheet(reconcile)
 ORDER_HISTORY_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"(?P<year>\d{4})[/-](?P<month>\d{1,2})[/-](?P<day>\d{1,2})\s+"
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
@@ -922,6 +955,86 @@ def _normalize_attendance_wjx_sheet_data_start_row(document_json: dict[str, Any]
         return 0
 
 
+def _rebuild_attendance_wjx_sheet_entity_model(document_json: dict[str, Any]) -> dict[str, Any]:
+    """Bind questionnaire row identities and entity cells to the stable sequence field."""
+    document = dict(document_json)
+    columns = list(document.get("columns") or [])
+    rows = list(document.get("rows") or [])
+    data_start_row = _normalize_attendance_wjx_sheet_data_start_row(document)
+    try:
+        field_row_index = int(document.get("field_row_index") or 0)
+    except (TypeError, ValueError):
+        field_row_index = 0
+
+    source_column_ids = document.get("column_ids")
+    column_ids: list[str] = []
+    seen_column_ids: set[str] = set()
+    for index, header in enumerate(columns):
+        candidate = ""
+        if isinstance(source_column_ids, list) and index < len(source_column_ids):
+            candidate = str(source_column_ids[index] or "").strip()
+        if not candidate or candidate in seen_column_ids:
+            digest = hashlib.sha1(str(header).encode("utf-8")).hexdigest()[:12]
+            candidate = f"col_wjx_{digest}"
+        seen_column_ids.add(candidate)
+        column_ids.append(candidate)
+
+    row_ids: list[str] = []
+    seen_row_ids: set[str] = set()
+    for index, row in enumerate(rows):
+        seq = _parse_attendance_wjx_sheet_seq_text(row[0] if isinstance(row, list) and row else "")
+        if seq is not None:
+            candidate = f"row_wjx_{seq}"
+        else:
+            payload = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+            digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+            candidate = f"row_wjx_unkeyed_{digest}"
+        if candidate in seen_row_ids:
+            candidate = f"{candidate}_{index + 1}"
+        seen_row_ids.add(candidate)
+        row_ids.append(candidate)
+
+    header_row_ids = [
+        "field_wjx" if index == field_row_index else f"header_wjx_{index + 1}"
+        for index in range(data_start_row)
+    ]
+    entity_rows = [
+        {
+            "id": row_id,
+            "kind": "field" if index == field_row_index else "header_group",
+        }
+        for index, row_id in enumerate(header_row_ids)
+    ] + [{"id": row_id, "kind": "data"} for row_id in row_ids]
+    entity_columns = [
+        {"id": column_id, "header": header}
+        for column_id, header in zip(column_ids, columns)
+    ]
+
+    grid_rows = document.get("grid_rows")
+    prefix_rows = list(grid_rows[:data_start_row]) if isinstance(grid_rows, list) else []
+    while len(prefix_rows) < data_start_row:
+        prefix_rows.append(columns if len(prefix_rows) == field_row_index else [""] * len(columns))
+    entity_cells: dict[str, dict[str, dict[str, Any]]] = {}
+    for row_id, row in zip([*header_row_ids, *row_ids], [*prefix_rows, *rows]):
+        source_row = list(row) if isinstance(row, list) else []
+        row_cells: dict[str, dict[str, Any]] = {}
+        for column_index, column_id in enumerate(column_ids):
+            value = _extract_inline_cell_text(
+                source_row[column_index] if column_index < len(source_row) else ""
+            )
+            if value:
+                row_cells[column_id] = {"value": value}
+        if row_cells:
+            entity_cells[row_id] = row_cells
+
+    document["column_ids"] = column_ids
+    document["row_ids"] = row_ids
+    document["entity_columns"] = entity_columns
+    document["entity_rows"] = entity_rows
+    document["entity_cells"] = entity_cells
+    return document
+
+
 def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     source = dict(value) if isinstance(value, dict) else {}
     source_columns = _normalize_attendance_wjx_sheet_source_columns(source.get("columns"))
@@ -1020,7 +1133,7 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     if isinstance(normalized.get("grid_rows"), list):
         data_start_row = _normalize_attendance_wjx_sheet_data_start_row(normalized)
         normalized["grid_rows"] = [*normalized["grid_rows"][:data_start_row], *rows]
-    return normalized
+    return _rebuild_attendance_wjx_sheet_entity_model(normalized)
 
 
 def _get_attendance_wjx_sheet_column_index(columns: list[str], header: str) -> int:

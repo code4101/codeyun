@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import inspect
+from types import SimpleNamespace
 
 from sqlmodel import Session
 
@@ -47,6 +49,126 @@ def test_questionnaire_mutation_uses_independent_attendance_database(monkeypatch
     assert result.version == 2
     assert document["rows"][0][0] == "733"
     assert document["rows"][0][6] == "测试学员"
+
+
+def test_questionnaire_normalization_rebuilds_row_entities_from_sequence():
+    columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
+    status_index = columns.index("处理状态")
+    stale_status = "已处理：属于739的备注"
+    document = {
+        "columns": columns,
+        "rows": [
+            ["740"] + [""] * (len(columns) - 1),
+            ["739"] + [""] * (len(columns) - 1),
+        ],
+        "grid_rows": [
+            columns,
+            ["740"] + [""] * (len(columns) - 1),
+            ["739"] + [""] * (status_index - 1) + [stale_status] + [""] * (len(columns) - status_index - 1),
+        ],
+        "data_start_row": 1,
+        "field_row_index": 0,
+        "row_ids": ["row_stale_739"],
+        "column_ids": [f"column_{index}" for index in range(len(columns))],
+        "entity_columns": [
+            {"id": f"column_{index}", "header": header}
+            for index, header in enumerate(columns)
+        ],
+        "entity_rows": [
+            {"id": "field_stale", "kind": "field"},
+            {"id": "row_stale_739", "kind": "data"},
+        ],
+        "entity_cells": {
+            "row_stale_739": {
+                f"column_{status_index}": {"value": stale_status},
+            },
+        },
+    }
+    document["rows"][1][status_index] = stale_status
+
+    normalized = attendance._normalize_attendance_wjx_sheet_document(document)
+
+    assert normalized["row_ids"] == ["row_wjx_740", "row_wjx_739"]
+    assert [row["id"] for row in normalized["entity_rows"][1:]] == normalized["row_ids"]
+    status_column_id = normalized["column_ids"][status_index]
+    assert status_column_id not in normalized["entity_cells"].get("row_wjx_740", {})
+    assert normalized["entity_cells"]["row_wjx_739"][status_column_id]["value"] == stale_status
+
+
+def test_questionnaire_top_insert_keeps_status_bound_to_sequence():
+    columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
+    status_index = columns.index("处理状态")
+    existing_status = "已处理：739"
+    document = attendance._normalize_attendance_wjx_sheet_document({
+        "columns": columns,
+        "rows": [
+            ["739"] + [""] * (status_index - 1) + [existing_status] + [""] * (len(columns) - status_index - 1),
+        ],
+    })
+
+    inserted, was_inserted, changed = attendance._upsert_attendance_wjx_sheet_values(
+        document,
+        {"序号": 740, "姓名": "纪文淅"},
+        preserve_process_status=False,
+    )
+    normalized = attendance._normalize_attendance_wjx_sheet_document(inserted)
+
+    assert was_inserted is True
+    assert changed is True
+    assert normalized["row_ids"] == ["row_wjx_740", "row_wjx_739"]
+    assert attendance._get_attendance_wjx_sheet_cell(normalized["rows"][0], columns, "处理状态") == ""
+    assert attendance._get_attendance_wjx_sheet_cell(normalized["rows"][1], columns, "处理状态") == existing_status
+
+
+def test_questionnaire_course_field_reconciliation_updates_current_courses_only(monkeypatch):
+    course_document = {
+        "columns": ["课程类型", "课程名称", "在线考勤表", "考勤负责人"],
+        "rows": [
+            ["修道班", "修道班8期5阶", "修道班8期5阶", "陈坤泽, 敏兮"],
+        ],
+    }
+    questionnaire_document = {
+        "columns": list(attendance.ATTENDANCE_WJX_DATA_COLUMNS),
+        "rows": [
+            ["740", "", "", "修道班8期5阶", "王仁"],
+            ["739", "", "", "已下架课程", "历史负责人"],
+        ],
+    }
+    state = {"document": questionnaire_document, "version": 1}
+
+    def load_sheet(sheet_id, *, workbook_id=None):
+        assert workbook_id == attendance.ATTENDANCE_WJX_DATA_WORKBOOK_ID
+        document = course_document if sheet_id == attendance.FEEDBACK_COURSE_SOURCE_SHEET_ID else state["document"]
+        return SimpleNamespace(
+            numeric_id=sheet_id,
+            document_json=deepcopy(document),
+            version=state["version"],
+            updated_at=1.0,
+        )
+
+    def mutate(mutator):
+        next_document, changed = mutator(deepcopy(state["document"]))
+        assert changed is True
+        state["document"] = next_document
+        state["version"] += 1
+        return SimpleNamespace(
+            numeric_id=attendance.ATTENDANCE_WJX_DATA_SHEET_ID,
+            document_json=deepcopy(next_document),
+            version=state["version"],
+            updated_at=2.0,
+        )
+
+    monkeypatch.setattr(attendance, "_load_independent_attendance_sheet", load_sheet)
+    monkeypatch.setattr(attendance, "_mutate_independent_attendance_wjx_sheet", mutate)
+
+    result = attendance.reconcile_independent_attendance_wjx_course_fields()
+    normalized = attendance._normalize_attendance_wjx_sheet_document(result.document_json)
+    columns = list(normalized["columns"])
+
+    assert attendance._get_attendance_wjx_sheet_cell(normalized["rows"][0], columns, "考勤负责人") == "敏兮"
+    assert attendance._get_attendance_wjx_sheet_cell(normalized["rows"][1], columns, "考勤负责人") == "历史负责人"
+    owner_column_id = normalized["column_ids"][columns.index("考勤负责人")]
+    assert normalized["entity_cells"]["row_wjx_740"][owner_column_id]["value"] == "敏兮"
 
 
 def test_questionnaire_routes_do_not_write_codeyun_sheet_copy():

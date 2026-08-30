@@ -12219,14 +12219,11 @@ class DailyFoundationTaskMixin:
             self._log_locked("success", f"日常_绿瓶拜谒：已点击 #{rank_scene_id}「境界排行」")
             self._log_locked("action", "日常_绿瓶拜谒：确认天道魁首拜谒状态")
         worship_scene_id, _worship_score, _worship_frame = runtime.current_scene([baiye_scene_id], update=True)
-        remaining_text = runtime.ocr_text_in_shapes(
-            baiye_scene_id,
-            ["剩余次数"],
-            padding=8,
+        remaining_numbers, remaining_text = yield from self._read_green_bottle_baiye_remaining(
+            runtime,
+            payload,
+            scene_id=baiye_scene_id,
         )
-        remaining_numbers = parse_ocr_values(_sanitize_ocr_text(remaining_text).translate(FULLWIDTH_DIGIT_TRANSLATION))
-        if remaining_numbers is None:
-            raise RuntimeError(f"日常_绿瓶拜谒：未能从 #283[剩余次数] 读取剩余次数，OCR={remaining_text[:80]}")
         remaining = remaining_numbers[0]
         if remaining == 0:
             with self._lock:
@@ -12264,6 +12261,41 @@ class DailyFoundationTaskMixin:
             self._set_status_locked("success", message, phase="daily_green_bottle_baiye_done", current_scene=final_scene_id)
             self._log_locked("success", "日常_绿瓶拜谒完成")
         return "success"
+
+    def _read_green_bottle_baiye_remaining(
+        self,
+        runtime: Any,
+        payload: dict[str, Any],
+        *,
+        scene_id: int = 283,
+    ):
+        """有界复核 #283 剩余次数，容忍页面刚落地时的单帧 OCR 空结果。"""
+
+        max_attempts = max(1, int(payload.get("green_bottle_remaining_read_attempts") or 3))
+        settle_seconds = max(0.1, float(payload.get("green_bottle_remaining_read_settle_seconds") or 0.8))
+        last_text = ""
+        for attempt in range(1, max_attempts + 1):
+            last_text = runtime.ocr_text_in_shapes(
+                scene_id,
+                ["剩余次数"],
+                padding=8,
+            )
+            numbers = parse_ocr_values(
+                _sanitize_ocr_text(last_text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+            )
+            if numbers is not None:
+                return numbers, last_text
+            if attempt < max_attempts:
+                with self._lock:
+                    self._log_locked(
+                        "warning",
+                        f"日常_绿瓶拜谒：#283[剩余次数] 第 {attempt}/{max_attempts} 帧 OCR 为空，等待新帧复核",
+                    )
+                yield from runtime.wait_action_settle(settle_seconds)
+        raise RuntimeError(
+            f"日常_绿瓶拜谒：连续 {max_attempts} 帧未能从 #283[剩余次数] 读取剩余次数，"
+            f"最后 OCR={last_text[:80]}"
+        )
 
     def _open_baiye_cross_rule(
         self,

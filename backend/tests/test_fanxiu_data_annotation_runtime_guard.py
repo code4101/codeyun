@@ -2626,6 +2626,29 @@ def test_ocr_row_clicks_in_shape_uses_shape_center_x_and_filters_text():
         (250.0, 540.0, "立即报名"),
     ]
 
+    text_center_matches = runner._ocr_row_clicks_in_shape(
+        lines,
+        image,
+        "报名列",
+        include=("报名",),
+        exclude=("已报名",),
+        click_target="text_center",
+    )
+    assert text_center_matches == [
+        (400.0, 315.0, "报名"),
+        (390.0, 540.0, "立即报名"),
+    ]
+
+    unoccluded_matches = runner._ocr_row_clicks_in_shape(
+        [{"text": "报名", "x": 320, "y": 300, "w": 80, "h": 30}],
+        image,
+        "报名列",
+        include=("报名",),
+        click_target="unoccluded_text",
+        occlusion_boxes=({"x": 100, "y": 280, "w": 280, "h": 70},),
+    )
+    assert unoccluded_matches == [(392.0, 315.0, "报名")]
+
 
 def test_daily_dungeon_purchase_remaining_count_parses_ocr_variants():
     runner = create_behavior_tree_runtime_runner()
@@ -13582,6 +13605,34 @@ def test_daily_green_bottle_baiye_zero_remaining_stays_done_when_cleanup_scene_i
     assert ("ocr_text_in_shapes", (283, ("剩余次数",))) in calls
 
 
+def test_daily_green_bottle_baiye_remaining_retries_transient_empty_ocr():
+    runner = create_behavior_tree_runtime_runner()
+    texts = iter(["", "剩余次数：1/1"])
+    calls: list[tuple[str, object]] = []
+
+    class FakeRuntime:
+        def ocr_text_in_shapes(self, scene_id, shape_titles, **_kwargs):
+            calls.append(("ocr", (scene_id, tuple(shape_titles))))
+            return next(texts)
+
+        def wait_action_settle(self, seconds):
+            calls.append(("settle", seconds))
+            if False:
+                yield None
+
+    numbers, text = _drain_generator(
+        runner._read_green_bottle_baiye_remaining(FakeRuntime(), {}, scene_id=283)
+    )
+
+    assert numbers == (1, 1)
+    assert text == "剩余次数：1/1"
+    assert calls == [
+        ("ocr", (283, ("剩余次数",))),
+        ("settle", 0.8),
+        ("ocr", (283, ("剩余次数",))),
+    ]
+
+
 def test_daily_lingta_green_bottle_returns_by_left_bottom_world_without_back(monkeypatch):
     runner = create_behavior_tree_runtime_runner()
     image20 = _image("绿瓶", "0020.png", [
@@ -18867,6 +18918,7 @@ class _FakeSignupRuntime:
         self.activity_page = activity_page
         self.actions: list[tuple[Any, ...]] = []
         self.next_times: list[str] = []
+        self.payload: dict[str, Any] = {}
 
     def set_next_time(self, value: str):
         self.next_times.append(value)
@@ -19091,6 +19143,21 @@ def test_daily_signup_list_scrolls_after_click_without_reward_page():
     assert runtime.actions.count(("wait_view", 24)) == 2
     assert runtime.actions.count(("wait_click", 24, "领取")) == 1
     assert runtime.actions.count(("scroll", 23, "报名列")) == 3
+
+
+def test_daily_signup_same_row_open_failure_is_bounded():
+    runner = create_behavior_tree_runtime_runner()
+    runtime = _FakeSignupRuntime(
+        row_batches=[[(720.0, 415.0, "圣祖报名")]] * 3,
+        fail_first_reward_view=True,
+    )
+    runtime.payload["signup_claim_open_attempts"] = 1
+
+    with pytest.raises(RuntimeError, match="同一报名项连续 1 次未打开领取页"):
+        _drain_generator(runner._日常报名处理报名列(runtime))
+
+    assert runtime.actions.count(("point", 23, 720.0, 415.0)) == 1
+    assert runtime.actions.count(("wait_view", 24)) == 1
 
 
 def test_daily_signup_flow_without_claims_returns_success_with_business_message():

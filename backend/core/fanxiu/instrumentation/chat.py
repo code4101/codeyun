@@ -191,9 +191,15 @@ def read_chat_channel_route(channel: int) -> dict[str, Any]:
 def select_chat_row_anchors(message: Mapping[str, Any]) -> list[str]:
     """Build visible OCR anchors from one authoritative Runtime list preview."""
 
-    raw_content = str(message.get("content") or message.get("chat_href") or "")
-    visible_content = re.sub(r"<[^>]*>|\{[^}]*\}", " ", raw_content)
-    pieces = re.findall(r"[\u3400-\u9fffA-Za-z0-9]{4,}", visible_content)
+    # ``content`` can be a pure face payload such as ``{0;0:1018_1;}`` while
+    # the chat list actually renders ``light_chat_href`` as ``[谢谢老板]``.
+    # Inspect every rendered-text projection instead of letting a non-empty
+    # machine payload suppress the visible preview text.
+    pieces: list[str] = []
+    for field in ("content", "chat_href", "light_chat_href"):
+        raw_content = str(message.get(field) or "")
+        visible_content = re.sub(r"<[^>]*>|\{[^}]*\}", " ", raw_content)
+        pieces.extend(re.findall(r"[\u3400-\u9fffA-Za-z0-9]{4,}", visible_content))
     sender = re.sub(r"\s+", "", str(message.get("sender_name") or ""))
     candidates = [
         *(piece[:14] for piece in pieces if len(piece) >= 4),

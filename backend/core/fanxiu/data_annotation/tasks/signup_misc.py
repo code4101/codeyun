@@ -84,7 +84,12 @@ class SignupMiscTaskMixin:
         领取数量 = 0
         无变化确认次数 = 0
         看到已报名项 = False
-        底部确认轮数 = int(getattr(runtime, "payload", {}).get("signup_bottom_confirmations", 2) or 2)
+        payload = getattr(runtime, "payload", {})
+        payload = payload if isinstance(payload, dict) else {}
+        底部确认轮数 = int(payload.get("signup_bottom_confirmations", 2) or 2)
+        同项打开上限 = max(1, int(payload.get("signup_claim_open_attempts", 3) or 3))
+        上次报名项: tuple[int, str] | None = None
+        同项打开次数 = 0
         while True:
             已报名项 = runtime.ocr_row_clicks_in_shape(
                 23,
@@ -97,15 +102,31 @@ class SignupMiscTaskMixin:
                 "报名列",
                 include=("报名",),
                 exclude=("已报名",),
+                click_target="unoccluded_text",
             )
             if matches:
-                x, y, _text = matches[0]
+                x, y, text = matches[0]
+                当前报名项 = (round(y), str(text or "").strip())
+                if 当前报名项 == 上次报名项:
+                    同项打开次数 += 1
+                else:
+                    上次报名项 = 当前报名项
+                    同项打开次数 = 1
                 runtime.click_frame_point(23, x, y)
                 if not (yield from self._日常报名等待领取页(runtime)):
+                    if 同项打开次数 >= 同项打开上限:
+                        raise RuntimeError(
+                            f"日常_报名：同一报名项连续 {同项打开次数} 次未打开领取页 #24："
+                            f"{text!r}；可能存在公告遮挡或入口状态异常"
+                        )
+                    if hasattr(runtime, "wait_action_settle"):
+                        yield from runtime.wait_action_settle(1.0)
                     continue
                 yield from runtime.wait_click(24, "领取")
                 领取数量 += 1
                 无变化确认次数 = 0
+                上次报名项 = None
+                同项打开次数 = 0
                 领取后落点 = yield from self._日常报名等待领取后落点(runtime)
                 if 领取后落点 != "报名页":
                     return {

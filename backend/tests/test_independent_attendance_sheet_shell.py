@@ -46,6 +46,51 @@ def test_codeyun_sheet_shell_binds_attendance_owned_document(monkeypatch):
     assert document.document_json["rows"] == [["当堂完成"]]
 
 
+def test_codeyun_sheet_shell_reconciles_independent_questionnaire_before_read(monkeypatch):
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+    calls = []
+    monkeypatch.setattr(
+        attendance,
+        "reconcile_independent_attendance_wjx_course_fields",
+        lambda: calls.append("reconciled"),
+    )
+    monkeypatch.setattr(
+        LocalAttendanceSheetClient,
+        "get_document",
+        lambda self, sheet: {
+            "id": sheet.sheet_id,
+            "title": "问卷数据",
+            "engine": "handsontable",
+            "version": 28,
+            "updated_at": 124.0,
+            "document_json": {"columns": ["考勤负责人"], "rows": [["敏兮"]]},
+            "workbook_id": 2,
+            "workbook_title": "武陵禅寺网课考勤汇总",
+            "defined_names_context": None,
+        },
+    )
+    document = note_sheets.SheetDocument(
+        numeric_id=5,
+        scope="notes",
+        title="旧副本",
+        engine="handsontable",
+        version=9,
+        document_json={},
+    )
+
+    result = note_sheets._bind_independent_attendance_document(
+        document,
+        sheet_id=5,
+        workbook_id=2,
+    )
+
+    assert result is not None
+    assert calls == ["reconciled"]
+    assert document.document_json["rows"] == [["敏兮"]]
+
+
 def test_codeyun_sheet_shell_does_not_fallback_on_attendance_engine_failure(monkeypatch):
     ensure_attendance_engine_importable()
     from xlsln.kq5034.engine.client import LocalAttendanceSheetClient

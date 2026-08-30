@@ -18,6 +18,7 @@ from backend.models import AttendanceWjxDataEntry, SheetDocument
 
 
 REFUND_RECONCILIATION_SKILL = "refund_total_reconciliation_v1"
+IDENTITY_CORRECTION_SKILL = "identity_correction_v1"
 GENERAL_TRIAGE_SKILL = "general_readonly_triage_v1"
 ATTENDANCE_PRECHECK_DEEPSEEK_PROVIDER_ID = "deepseek"
 ATTENDANCE_PRECHECK_DEEPSEEK_MODEL = "deepseek-v4-pro"
@@ -145,6 +146,8 @@ def _classify_skill(entry: AttendanceWjxDataEntry) -> str:
     text = " ".join([entry.correction_request or "", entry.extra_note or ""])
     if any(keyword in text for keyword in ("返款", "退款", "收到", "金额", "元")):
         return REFUND_RECONCILIATION_SKILL
+    if any(keyword in text for keyword in ("姓名", "名字", "昵称", "微信名")):
+        return IDENTITY_CORRECTION_SKILL
     return GENERAL_TRIAGE_SKILL
 
 
@@ -211,8 +214,19 @@ def _course_script_stem(course_name: str, course_summary: dict[str, Any] | None 
 def _import_course_class(course_name: str, course_summary: dict[str, Any] | None, warnings: list[str]) -> Any | None:
     stem = _course_script_stem(course_name, course_summary)
     if not stem:
-        warnings.append("未能从课程名称推断考勤课程脚本")
-        return None
+        courses_dir = ROOT_DIR.parent / "xlproject" / "src" / "xlsln" / "kq5034" / "courses"
+        normalized_name = _text(course_name)
+        matches = [
+            path.stem
+            for directory in (courses_dir, courses_dir / "已完结")
+            if directory.exists()
+            for path in directory.glob(f"d??????{normalized_name}.py")
+        ]
+        if len(matches) == 1:
+            stem = matches[0]
+        else:
+            warnings.append("未能从课程名称唯一匹配考勤课程脚本")
+            return None
 
     for module_name in (
         f"xlsln.kq5034.courses.{stem}",
@@ -264,7 +278,9 @@ def _collect_online_attendance_row(
 
     try:
         course = course_class()
-        dataframe = course.wb.sql_select("考勤表", ATTENDANCE_FACT_FIELDS, 4)
+        dataframe = course.get_sheet_df(course.sheets.attendance)
+        available_fields = [field for field in ATTENDANCE_FACT_FIELDS if field in dataframe.columns]
+        dataframe = dataframe.loc[:, available_fields]
         records = [
             {str(key): _json_safe(value) for key, value in record.items()}
             for record in dataframe.to_dict("records")
@@ -278,6 +294,191 @@ def _collect_online_attendance_row(
         warnings.append("在线考勤表中未匹配到该学员")
         return None
     return matched
+
+
+def _match_identity_record(
+    records: list[dict[str, Any]],
+    entry: AttendanceWjxDataEntry,
+    *,
+    student_number_fields: tuple[str, ...],
+) -> dict[str, Any] | None:
+    student_number = _normalize_student_number(entry.student_id_text)
+    if student_number:
+        for record in records:
+            if any(
+                _normalize_student_number(record.get(field)) == student_number
+                for field in student_number_fields
+            ):
+                return record
+
+    student_name = _text(entry.student_name)
+    if student_name:
+        matches = [record for record in records if _text(record.get("姓名")) == student_name]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def _collect_course_identity_rows(
+    entry: AttendanceWjxDataEntry,
+    course_summary: dict[str, Any] | None,
+    warnings: list[str],
+) -> dict[str, dict[str, Any] | None]:
+    _ensure_xlproject_env_loaded(warnings)
+    course_class = _import_course_class(entry.course_name, course_summary, warnings)
+    if course_class is None:
+        return {"registration": None, "attendance": None}
+
+    try:
+        course = course_class()
+        registration_table = course.get_sheet_table(course.sheets.registration)
+        attendance_table = course.get_sheet_table(course.sheets.attendance)
+    except Exception as exc:
+        warnings.append(f"读取报名表/考勤表身份数据失败：{exc}")
+        return {"registration": None, "attendance": None}
+
+    registration_records = list(registration_table.get("rows") or [])
+    attendance_records = list(attendance_table.get("rows") or [])
+    registration = _match_identity_record(
+        registration_records,
+        entry,
+        student_number_fields=("序号", "学号"),
+    )
+    attendance = _match_identity_record(
+        attendance_records,
+        entry,
+        student_number_fields=("学号", "序号"),
+    )
+    if registration is None:
+        warnings.append("报名表中未匹配到该学员")
+    if attendance is None:
+        warnings.append("考勤表中未匹配到该学员")
+    return {
+        "registration": _json_safe(registration) if registration else None,
+        "attendance": _json_safe(attendance) if attendance else None,
+    }
+
+
+def _extract_requested_identity(text: str, *, submitted_name: str = "") -> dict[str, str]:
+    normalized = _text(text).replace("：", ":")
+    result: dict[str, str] = {}
+    patterns = {
+        "姓名": r"(?:姓名|名字)\s*(?:是|为|改为|改成|更正为|:)\s*[“\"']?([^，,；;。\s”\"']+)",
+        "昵称": r"(?:微信昵称|昵称|微信名)\s*(?:是|为|改为|改成|更正为|:)\s*[“\"']?([^，,；;。\s”\"']+)",
+    }
+    for field, pattern in patterns.items():
+        match = re.search(pattern, normalized)
+        if match:
+            result[field] = match.group(1).strip()
+    if "姓名" not in result and submitted_name:
+        surname_match = re.search(
+            r"(?:我)?姓\s*[“\"']?([^，,；;。\s”\"']+)[”\"']?\s*[，,；;]?\s*(?:而)?不是\s*[“\"']?([^，,；;。\s”\"']+)",
+            normalized,
+        )
+        requested_surname = surname_match.group(1) if surname_match else ""
+        rejected_surname = surname_match.group(2) if surname_match else ""
+        normalized_submitted_name = _text(submitted_name)
+        if (
+            requested_surname
+            and rejected_surname
+            and normalized_submitted_name.startswith(requested_surname)
+            and not normalized_submitted_name.startswith(rejected_surname)
+        ):
+            result["姓名"] = normalized_submitted_name
+    return result
+
+
+def _extract_processed_identity_changes(text: str) -> dict[str, dict[str, str]]:
+    changes: dict[str, dict[str, str]] = {}
+    for field in ("姓名", "昵称"):
+        match = re.search(
+            rf"{field}由[“\"]([^”\"]+)[”\"]更正为[“\"]([^”\"]+)[”\"]",
+            _text(text),
+        )
+        if match:
+            changes[field] = {"before": match.group(1), "after": match.group(2)}
+    return changes
+
+
+def _identity_value(row: dict[str, Any] | None, field: str, *, registration: bool = False) -> str:
+    if not row:
+        return ""
+    if field == "昵称" and registration:
+        return _text(row.get("微信昵称") or row.get("昵称"))
+    return _text(row.get(field))
+
+
+def _build_identity_correction_report(
+    entry: AttendanceWjxDataEntry,
+    facts: dict[str, Any],
+) -> tuple[str, str, str, float]:
+    requested = dict(facts.get("requested_identity") or {})
+    identity_rows = dict(facts.get("identity_rows") or {})
+    registration = identity_rows.get("registration")
+    attendance = identity_rows.get("attendance")
+    processed_changes = dict(facts.get("processed_identity_changes") or {})
+
+    original_name = (
+        (processed_changes.get("姓名") or {}).get("before")
+        or _identity_value(registration, "姓名", registration=True)
+        or _identity_value(attendance, "姓名")
+    )
+    original_nickname = (
+        (processed_changes.get("昵称") or {}).get("before")
+        or _identity_value(registration, "昵称", registration=True)
+        or _identity_value(attendance, "昵称")
+    )
+    target_name = requested.get("姓名") or (processed_changes.get("姓名") or {}).get("after", "")
+    target_nickname = requested.get("昵称") or (processed_changes.get("昵称") or {}).get("after", "")
+
+    differences: list[str] = []
+    if target_name and target_name != original_name:
+        differences.append(f"姓名由“{original_name or '空'}”改为“{target_name}”")
+    if target_nickname and target_nickname != original_nickname:
+        differences.append(f"昵称由“{original_nickname or '空'}”改为“{target_nickname}”")
+    facts["identity_comparison"] = {
+        "姓名": {"before": original_name, "after": target_name, "changed": bool(target_name and target_name != original_name)},
+        "昵称": {"before": original_nickname, "after": target_nickname, "changed": bool(target_nickname and target_nickname != original_nickname)},
+    }
+
+    registration_name = _identity_value(registration, "姓名", registration=True)
+    registration_nickname = _identity_value(registration, "昵称", registration=True)
+    attendance_name = _identity_value(attendance, "姓名")
+    attendance_nickname = _identity_value(attendance, "昵称")
+    source_label = "处理前原始数据（依据处理状态留痕）" if processed_changes else "原始数据核查"
+    lines = [
+        "1、问卷反馈：",
+        f"课程：{entry.course_name}；学号：{entry.student_id_text}；问卷姓名：{entry.student_name}。",
+        f"修正需求：{entry.correction_request or entry.extra_note}。",
+        "",
+        f"2、{source_label}：",
+        f"报名表：姓名“{original_name or registration_name or '未读取到'}”，微信昵称“{original_nickname or registration_nickname or '未读取到'}”。",
+        f"考勤表：姓名“{original_name or attendance_name or '未读取到'}”，昵称“{original_nickname or attendance_nickname or '未读取到'}”。",
+        "",
+        "3、对比与需求判断：",
+    ]
+    if differences:
+        lines.append("问卷给出的姓名/昵称与原始数据不一致：" + "，".join(differences) + "。")
+        lines.append("因此，这条反馈应理解为修改姓名/昵称，不是普通补充说明。")
+        status = "identity_change_confirmed"
+        summary = "已核对原始姓名和昵称，确认是身份信息更正"
+        confidence = 0.96 if registration and attendance else 0.82
+    else:
+        lines.append("当前未发现问卷目标值与表内身份信息存在明确差异，需要人工复核原话。")
+        status = "needs_review"
+        summary = "姓名/昵称反馈仍需人工复核"
+        confidence = 0.55
+    lines.extend(["", "4、处理结果："])
+    current_matches = (
+        (not target_name or (registration_name == target_name and attendance_name == target_name))
+        and (not target_nickname or (registration_nickname == target_nickname and attendance_nickname == target_nickname))
+    )
+    if entry.process_status and current_matches:
+        lines.append("报名表和考勤表当前值均已与问卷目标值一致。")
+        lines.append(f"问卷处理备注：{entry.process_status}")
+    else:
+        lines.append("AI 初判只记录证据和需求判断；应从报名表权威数据更正，并同步考勤表后备注处理结果。")
+    return status, summary, "\n".join(lines), confidence
 
 
 def _collect_order_refunds(merchant_order_id: str, warnings: list[str]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
@@ -651,6 +852,14 @@ def build_attendance_wjx_ai_precheck(
         calculation = _build_refund_calculation(attendance_row)
         facts["calculation"] = calculation
         status, summary, report, confidence = _build_refund_reconciliation_report(entry, facts, calculation)
+    elif skill == IDENTITY_CORRECTION_SKILL:
+        facts["requested_identity"] = _extract_requested_identity(
+            " ".join([entry.correction_request or "", entry.extra_note or ""]),
+            submitted_name=entry.student_name,
+        )
+        facts["processed_identity_changes"] = _extract_processed_identity_changes(entry.process_status)
+        facts["identity_rows"] = _collect_course_identity_rows(entry, course_summary, warnings)
+        status, summary, report, confidence = _build_identity_correction_report(entry, facts)
     else:
         status, summary, report, confidence = _build_general_triage_report(entry, facts)
 

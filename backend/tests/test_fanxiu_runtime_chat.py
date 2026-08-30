@@ -48,6 +48,19 @@ def test_select_chat_row_anchors_uses_rendered_runtime_preview_text():
     assert all("color" not in item for item in anchors)
 
 
+def test_select_chat_row_anchors_uses_light_preview_for_face_only_message():
+    anchors = select_chat_row_anchors(
+        {
+            "content": "{0;0:1018_1;}",
+            "chat_href": "<#face&f10118|200x200>",
+            "light_chat_href": "[谢谢老板]",
+            "sender_name": "浮黎",
+        }
+    )
+
+    assert anchors == ["谢谢老板"]
+
+
 def test_select_repeated_chat_phrase_requires_dominant_consensus():
     phrase = "吉签启鸿运，佳奖落君身！祝贺道友抽得大奖"
     result = select_repeated_chat_phrase(

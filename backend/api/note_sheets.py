@@ -18637,6 +18637,10 @@ def _bind_independent_attendance_document(
     from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
 
     try:
+        if sheet_id == 5 and workbook_id == 2:
+            from backend.api.attendance import reconcile_independent_attendance_wjx_course_fields
+
+            reconcile_independent_attendance_wjx_course_fields()
         payload = LocalAttendanceSheetClient().get_document(
             SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id)
         )

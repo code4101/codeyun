@@ -2374,6 +2374,7 @@ class BehaviorTreeRuntime(Runtime):
         *,
         include: tuple[str, ...],
         exclude: tuple[str, ...] = (),
+        click_target: str = "shape_center",
         frame_data_url: str | None = None,
     ) -> list[tuple[float, float, str]]:
         target_view = self.view(view)
@@ -2392,6 +2393,12 @@ class BehaviorTreeRuntime(Runtime):
             shape_title,
             include=include,
             exclude=exclude,
+            click_target=click_target,
+            occlusion_boxes=(
+                self.runner._occlusion_marker_boxes(self.ctx, source_view.raw)
+                if click_target == "unoccluded_text"
+                else ()
+            ),
         )
 
     def ocr_centers_in_shape(
@@ -12583,6 +12590,8 @@ class BehaviorTreeRuntimeRunner(
         *,
         include: tuple[str, ...],
         exclude: tuple[str, ...] = (),
+        click_target: str = "shape_center",
+        occlusion_boxes: Iterable[Mapping[str, Any]] = (),
     ) -> list[tuple[float, float, str]]:
         shape = self._find_shape(image, shape_title) if image else None
         if not shape or not image:
@@ -12592,7 +12601,7 @@ class BehaviorTreeRuntimeRunner(
         top = float(box.get("y") or 0)
         width = float(box.get("w") or 0)
         bottom = top + float(box.get("h") or 0)
-        click_x = left + width / 2
+        default_click_x = left + width / 2
         matches: list[tuple[float, float, str]] = []
         for line in lines:
             text = _sanitize_ocr_text(line.get("text"))
@@ -12606,6 +12615,33 @@ class BehaviorTreeRuntimeRunner(
             h = float(line.get("h") or 0)
             cy = y + h / 2
             if top <= cy <= bottom:
+                click_x = default_click_x
+                if click_target in {"text_center", "unoccluded_text"}:
+                    text_x = float(line.get("x") or 0)
+                    text_w = float(line.get("w") or 0)
+                    click_x = max(left, min(left + width, text_x + text_w / 2))
+                    if click_target == "unoccluded_text":
+                        text_left = max(left, text_x)
+                        text_right = min(left + width, text_x + text_w)
+                        inset = min(8.0, max(2.0, text_w * 0.1))
+                        candidates = (click_x, text_right - inset, text_left + inset)
+
+                        def blocked(candidate_x: float) -> bool:
+                            return any(
+                                float(box.get("x") or 0) <= candidate_x
+                                <= float(box.get("x") or 0) + float(box.get("w") or 0)
+                                and float(box.get("y") or 0) <= cy
+                                <= float(box.get("y") or 0) + float(box.get("h") or 0)
+                                for box in occlusion_boxes
+                            )
+
+                        safe_x = next(
+                            (candidate_x for candidate_x in candidates if text_left <= candidate_x <= text_right and not blocked(candidate_x)),
+                            None,
+                        )
+                        if safe_x is None:
+                            continue
+                        click_x = safe_x
                 matches.append((click_x, cy, text))
         return sorted(matches, key=lambda item: (item[1], item[0]))
 
