@@ -210,8 +210,8 @@ def parse_option_rows(tokens: Iterable[dict[str, Any]]) -> tuple[list[str], int 
     return options, correct_position
 
 
-def _ocr_tokens(runtime: Any, scene_id: int, shapes: tuple[str, ...], frame: str) -> list[dict[str, Any]]:
-    return runtime.ocr_tokens_in_shapes(
+def _ocr_tokens(context: Any, scene_id: int, shapes: tuple[str, ...], frame: str) -> list[dict[str, Any]]:
+    return context.ocr_tokens_in_shapes(
         scene_id,
         shapes,
         padding=8,
@@ -220,18 +220,18 @@ def _ocr_tokens(runtime: Any, scene_id: int, shapes: tuple[str, ...], frame: str
     )
 
 
-def _read_question(runtime: Any, frame: str) -> tuple[int, int, str] | None:
-    number_text = _token_text(_ocr_tokens(runtime, QUESTION_SCENE_ID, ("编号",), frame))
+def _read_question(context: Any, frame: str) -> tuple[int, int, str] | None:
+    number_text = _token_text(_ocr_tokens(context, QUESTION_SCENE_ID, ("编号",), frame))
     number = parse_question_number(number_text)
     if number is None:
         return None
-    prompt = _token_text(_ocr_tokens(runtime, QUESTION_SCENE_ID, ("题目",), frame))
+    prompt = _token_text(_ocr_tokens(context, QUESTION_SCENE_ID, ("题目",), frame))
     prompt = re.sub(r"^(题目|阅读题目)[:：]?", "", prompt).strip()
     return number[0], number[1], prompt
 
 
-def _start_button_visible(runtime: Any, frame: str) -> bool:
-    text = _token_text(_ocr_tokens(runtime, START_SCENE_ID, ("开始",), frame))
+def _start_button_visible(context: Any, frame: str) -> bool:
+    text = _token_text(_ocr_tokens(context, START_SCENE_ID, ("开始",), frame))
     return "开始" in text
 
 
@@ -427,10 +427,10 @@ def execute_activity_quiz_task(
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("活动_答题：缺少资产树路径")
-    runtime = runner._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+    context = runner._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
     state = ActivityQuizRunState()
     pending_results: list[ActivityQuizQuestionState] = []
-    deadline = time.monotonic() + float(payload.get("max_runtime_seconds") or 240.0)
+    deadline = time.monotonic() + float(payload.get("max_execution_seconds") or 240.0)
     match_threshold = float(payload.get("match_score_threshold") or 82.0)
     native_max_age = float(payload.get("native_snapshot_max_age_seconds", 2.0))
     native_prompt_threshold = float(
@@ -452,7 +452,7 @@ def execute_activity_quiz_task(
             fanxiu_instrumentation_service.camp_answer_snapshot(
                 max_age_seconds=native_max_age
             )
-        frame = runtime.cur_frame(update=True)
+        frame = context.cur_frame(update=True)
 
         # After a click, the only latency-sensitive fact is the marked result.
         # Do not spend another two OCR calls rereading the same number/prompt.
@@ -463,7 +463,7 @@ def execute_activity_quiz_task(
             and not current.settled
             and option_panel_visible(frame)
         ):
-            option_tokens = _ocr_tokens(runtime, OPTION_SCENE_ID, ("选项",), frame)
+            option_tokens = _ocr_tokens(context, OPTION_SCENE_ID, ("选项",), frame)
             options, correct_position = parse_option_rows(option_tokens)
             if any(options):
                 current.observed_options = options
@@ -513,18 +513,18 @@ def execute_activity_quiz_task(
                     current.number,
                     current.target_source or "knowledge",
                 ):
-                    width = int(runtime.view(OPTION_SCENE_ID).raw.get("width") or 900)
-                    height = int(runtime.view(OPTION_SCENE_ID).raw.get("height") or 1600)
+                    width = int(context.view(OPTION_SCENE_ID).raw.get("width") or 900)
+                    height = int(context.view(OPTION_SCENE_ID).raw.get("height") or 1600)
                     x, y = fixed_option_click_point(
                         current.target_position,
                         width=width,
                         height=height,
                     )
-                    runtime.click_frame_point_fast(OPTION_SCENE_ID, x, y)
+                    context.click_frame_point_fast(OPTION_SCENE_ID, x, y)
                 continue
 
             if not all(current.observed_options):
-                option_tokens = _ocr_tokens(runtime, OPTION_SCENE_ID, ("选项",), frame)
+                option_tokens = _ocr_tokens(context, OPTION_SCENE_ID, ("选项",), frame)
                 options, correct_position = parse_option_rows(option_tokens)
                 if any(options):
                     current.observed_options = options
@@ -545,10 +545,10 @@ def execute_activity_quiz_task(
             if matched is not None and float(score) >= match_threshold:
                 target = resolve_activity_quiz_target(matched, current.observed_options)
                 if target is not None and state.mark_clicked(current.number, "knowledge"):
-                    width = int(runtime.view(OPTION_SCENE_ID).raw.get("width") or 900)
-                    height = int(runtime.view(OPTION_SCENE_ID).raw.get("height") or 1600)
+                    width = int(context.view(OPTION_SCENE_ID).raw.get("width") or 900)
+                    height = int(context.view(OPTION_SCENE_ID).raw.get("height") or 1600)
                     x, y = fixed_option_click_point(target.position, width=width, height=height)
-                    runtime.click_frame_point_fast(OPTION_SCENE_ID, x, y)
+                    context.click_frame_point_fast(OPTION_SCENE_ID, x, y)
                     continue
 
             # Reading time is used only to decide whether the local bank knows
@@ -568,21 +568,21 @@ def execute_activity_quiz_task(
 
             ai_decision = _claim_ai_decision(current)
             if ai_decision is not None and state.mark_clicked(current.number, "ai"):
-                width = int(runtime.view(OPTION_SCENE_ID).raw.get("width") or 900)
-                height = int(runtime.view(OPTION_SCENE_ID).raw.get("height") or 1600)
+                width = int(context.view(OPTION_SCENE_ID).raw.get("width") or 900)
+                height = int(context.view(OPTION_SCENE_ID).raw.get("height") or 1600)
                 x, y = fixed_option_click_point(
                     ai_decision.position,
                     width=width,
                     height=height,
                 )
-                runtime.click_frame_point_fast(OPTION_SCENE_ID, x, y)
+                context.click_frame_point_fast(OPTION_SCENE_ID, x, y)
                 log(
                     "action",
                     f"活动_答题：第{current.number}题采用 AI 暂定选项 {ai_decision.position + 1}",
                 )
             continue
 
-        question_data = _read_question(runtime, frame)
+        question_data = _read_question(context, frame)
         if question_data is not None:
             number, total, prompt = question_data
             question = state.observe_question(number, total, prompt)
@@ -630,10 +630,10 @@ def execute_activity_quiz_task(
             and state.current.number % BATCH_SIZE == 0
             and state.current.number < TOTAL_QUESTIONS
         )
-        if (start_needed or missed_batch_transition) and _start_button_visible(runtime, frame):
+        if (start_needed or missed_batch_transition) and _start_button_visible(context, frame):
             state.close_batch_without_result()
             _persist_results(pending_results)
-            runtime.click_shape_center(START_SCENE_ID, "开始")
+            context.click_shape_center(START_SCENE_ID, "开始")
             start_needed = False
             continue
 

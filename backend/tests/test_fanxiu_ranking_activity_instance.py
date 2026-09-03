@@ -11,8 +11,15 @@ from backend.core.fanxiu.activity.exchange_event import (
     upsert_exchange_activity_snapshot,
 )
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
-from backend.migrations.manager import v108_unify_fanxiu_ranking_activity_instances
-from backend.models import FanxiuExchangeActivity, FanxiuExchangeShopItem
+from backend.migrations.manager import (
+    v108_unify_fanxiu_ranking_activity_instances,
+    v109_merge_split_xutian_occurrence_roots,
+)
+from backend.models import (
+    FanxiuExchangeActivity,
+    FanxiuExchangeActivityObservation,
+    FanxiuExchangeShopItem,
+)
 
 
 def _engine():
@@ -70,8 +77,8 @@ def test_same_day_occurrences_are_distinct_aggregate_instances() -> None:
     }
     assert snapshot.selected_activity is not None
     assert snapshot.selected_activity.instance_key == "runtime:b:activity:8090001:second"
-    assert snapshot.selected_activity.instance_data["rank_scope_activity_ids"] == {
-        "personal": 90101
+    assert snapshot.selected_activity.instance_data["rank_scope_identities"] == {
+        "personal": {"runtime_rank_activity_id": 90101, "reward_activity_id": 90101}
     }
     assert [item.goods_id for item in snapshot.selected_activity.shop_items] == [2]
 
@@ -110,7 +117,10 @@ def test_schedule_seed_promotes_occurrence_identity_to_root_columns(monkeypatch)
     assert activity.instance_data == {
         "base_id": 90000,
         "world_level": 190,
-        "rank_scope_activity_ids": {"personal": 90101, "alliance": 90102},
+        "rank_scope_identities": {
+            "personal": {"runtime_rank_activity_id": 90101, "reward_activity_id": 90101},
+            "alliance": {"runtime_rank_activity_id": 90102, "reward_activity_id": 90102},
+        },
     }
 
 
@@ -183,3 +193,62 @@ def test_v108_removes_date_identity_constraint_and_preserves_children() -> None:
     assert ("instance_key",) in unique_indexes
     assert ("activity_type", "cross_count", "start_date", "end_date") not in unique_indexes
     assert "fanxiuexchangeactivity" in child_targets
+
+
+def test_v109_merges_xutian_runtime_identity_split_without_losing_children() -> None:
+    engine = _engine()
+    stable_key = (
+        "activity:xutian-palace:4080001:"
+        "2026-08-31T10:00:00+08:00:2026-09-01T22:00:00+08:00"
+    )
+    common = {
+        "family": "gameplay_rank",
+        "activity_type": "xutian-palace",
+        "game_activity_id": 4080001,
+        "cross_count": 4,
+        "prepare_at": "2026-08-31T00:00:00+08:00",
+        "start_at": "2026-08-31T10:00:00+08:00",
+        "end_at": "2026-09-01T22:00:00+08:00",
+        "close_at": "2026-09-02T23:59:59+08:00",
+        "start_date": "2026-08-31",
+        "end_date": "2026-09-01",
+        "game_rank_activity_id": 80451,
+        "currency_name": "纳元晶",
+    }
+    with Session(engine) as session:
+        legacy_id = upsert_exchange_activity_snapshot(session, {
+            **common,
+            "instance_key": "runtime:4080001400020:activity:4080001:old",
+            "runtime_id": "4080001400020",
+        })
+        stable_id = upsert_exchange_activity_snapshot(session, {
+            **common,
+            "instance_key": stable_key,
+            "runtime_id": "4080001400004",
+            "shop_items": [{
+                "goods_id": 7,
+                "item_id": 107,
+                "name": "商品7",
+                "token_cost": 10,
+                "purchase_limit": 1,
+            }],
+        })
+        session.add(FanxiuExchangeActivityObservation(
+            activity_id=legacy_id,
+            fingerprint="legacy-fact",
+            payload={"source": "legacy"},
+        ))
+        session.commit()
+
+        v109_merge_split_xutian_occurrence_roots(session)
+
+        activities = list(session.exec(select(FanxiuExchangeActivity)).all())
+        shops = list(session.exec(select(FanxiuExchangeShopItem)).all())
+        observations = list(session.exec(select(FanxiuExchangeActivityObservation)).all())
+
+    assert [(row.id, row.instance_key) for row in activities] == [(stable_id, stable_key)]
+    assert [(row.activity_id, row.goods_id) for row in shops] == [(stable_id, 7)]
+    assert [(row.activity_id, row.fingerprint) for row in observations] == [
+        (stable_id, "legacy-fact")
+    ]
+    assert activities[0].evidence["merged_instance_roots"][0]["id"] == legacy_id

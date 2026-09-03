@@ -52,7 +52,7 @@ class _Runner:
         self.invalidations.append(path)
 
     @staticmethod
-    def _fanxiu_runtime(ctx, _path, stop_event=None):
+    def _behavior_tree_context(ctx, _path, stop_event=None):
         return SimpleNamespace(
             ctx=ctx,
             stop_event=stop_event,
@@ -90,7 +90,7 @@ def _binding(monkeypatch, tmp_path: Path):
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
     from backend.core.fanxiu.data_annotation import debug_eval
 
-    monkeypatch.setattr(debug_eval, "BehaviorTreeRuntimeDebugContext", _DebugContext)
+    monkeypatch.setattr(debug_eval, "BehaviorTreeDebugContext", _DebugContext)
     asset_tree_path = tmp_path / "asset-tree.json"
     _write_tree(asset_tree_path, title="云梦旧场景", shape_title="旧标题")
     runner = _Runner()
@@ -102,8 +102,8 @@ def test_asset_refresh_uses_one_loader_for_incremental_and_force(monkeypatch, tm
     binding, runner, asset_tree_path = _binding(monkeypatch, tmp_path)
 
     assert runner.load_count == 1
-    assert binding.runtime.scene_titles == {558: "云梦旧场景"}
-    assert binding.runtime_ctx["asset_tree_generation"] == 1
+    assert binding.context.scene_titles == {558: "云梦旧场景"}
+    assert binding.execution_ctx["asset_tree_generation"] == 1
 
     unchanged = binding.refresh_assets()
     assert unchanged["reloaded"] is False
@@ -116,8 +116,8 @@ def test_asset_refresh_uses_one_loader_for_incremental_and_force(monkeypatch, tm
     incremental = binding.refresh_assets()
     assert incremental["reloaded"] is True
     assert runner.load_count == 2
-    assert binding.runtime.scene_titles == {558: "云梦新场景（增量）"}
-    assert binding.runtime_ctx["images"][558]["shapes"][0]["title"] == "试剑"
+    assert binding.context.scene_titles == {558: "云梦新场景（增量）"}
+    assert binding.execution_ctx["images"][558]["shapes"][0]["title"] == "试剑"
 
     forced = binding.refresh_assets(force=True)
     assert forced["reloaded"] is True
@@ -132,24 +132,24 @@ def test_asset_refresh_requested_inside_cell_is_applied_at_next_boundary(monkeyp
     info = SimpleNamespace(raw_cell="print('business cell')")
 
     binding.begin_cell(info, shell)
-    old_runtime = binding.runtime
-    old_generation = binding.runtime_ctx["asset_tree_generation"]
+    old_context = binding.context
+    old_generation = binding.execution_ctx["asset_tree_generation"]
     _write_tree(asset_tree_path, title="云梦下一代", shape_title="试剑")
 
     queued = binding.refresh_assets(force=True)
     assert queued["reloaded"] is False
     assert queued["pending"] is True
-    assert binding.runtime is old_runtime
-    assert binding.runtime.scene_titles == {558: "云梦旧场景"}
-    assert binding.runtime_ctx["asset_tree_generation"] == old_generation
+    assert binding.context is old_context
+    assert binding.context.scene_titles == {558: "云梦旧场景"}
+    assert binding.execution_ctx["asset_tree_generation"] == old_generation
 
     binding.end_cell(SimpleNamespace(error_in_exec=None, error_before_exec=None))
-    binding.begin_cell(SimpleNamespace(raw_cell="runtime.scene_titles"), shell)
+    binding.begin_cell(SimpleNamespace(raw_cell="context.scene_titles"), shell)
     try:
         assert runner.load_count == 2
-        assert binding.runtime.scene_titles == {558: "云梦下一代"}
-        assert binding.runtime_ctx["asset_tree_generation"] == old_generation + 1
-        assert shell.user_ns["runtime"] is binding.runtime
+        assert binding.context.scene_titles == {558: "云梦下一代"}
+        assert binding.execution_ctx["asset_tree_generation"] == old_generation + 1
+        assert shell.user_ns["context"] is binding.context
         assert shell.user_ns["ctx"] is binding.ctx
         assert shell.user_ns["refresh_assets"] == binding.refresh_assets
         assert shell.user_ns["refresh"] == binding.refresh
@@ -158,9 +158,9 @@ def test_asset_refresh_requested_inside_cell_is_applied_at_next_boundary(monkeyp
 
 
 def test_scene_relation_cache_key_tracks_asset_generation() -> None:
-    from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
-    runner = object.__new__(BehaviorTreeRuntimeRunner)
+    runner = object.__new__(BehaviorTreeExecutor)
     runner.scene_threshold = 80
     runner.scene_thresholds = {}
     first = runner._scene_match_cache_key(
@@ -179,22 +179,22 @@ def test_scene_relation_cache_key_tracks_asset_generation() -> None:
 
 def test_failed_force_refresh_keeps_old_snapshot_and_stays_pending(monkeypatch, tmp_path) -> None:
     binding, runner, asset_tree_path = _binding(monkeypatch, tmp_path)
-    old_runtime = binding.runtime
+    old_context = binding.context
     asset_tree_path.write_text("{invalid", encoding="utf-8")
 
     with pytest.raises(json.JSONDecodeError):
         binding.refresh_assets(force=True)
 
-    assert binding.runtime is old_runtime
-    assert binding.runtime.scene_titles == {558: "云梦旧场景"}
+    assert binding.context is old_context
+    assert binding.context.scene_titles == {558: "云梦旧场景"}
     assert binding._asset_reload_requested is True
     assert runner.load_count == 2
 
 
 def test_in_place_asset_mutation_advances_ctx_and_clears_derived_caches(tmp_path) -> None:
-    from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     shape = {"id": "back", "title": "返回", "sceneJumpTarget": "34"}
     tree = [
         {

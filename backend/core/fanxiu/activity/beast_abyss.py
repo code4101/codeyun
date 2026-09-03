@@ -30,6 +30,7 @@ BEAST_ABYSS_ACTIVITY_TYPE = "beast-abyss"
 BEAST_ABYSS_SHOP_BASE_ID = 150000
 BEAST_ABYSS_CURRENCY_TYPE = 14
 BEAST_ABYSS_CURRENCY_NAME = "兽元"
+BEAST_ABYSS_INITIALIZATION_STATE_KEY = "beast_abyss_initialization"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -106,6 +107,8 @@ def _runtime_period(
     *,
     cross_count: int | None = None,
     target_date: date | None = None,
+    expected_runtime_id: str | None = None,
+    expected_game_activity_id: int | None = None,
 ) -> dict[str, Any]:
     effective_date = target_date or date.today()
     # The compact Runtime snapshot is the current game truth. Missing state
@@ -114,9 +117,42 @@ def _runtime_period(
         get_cached_fanxiu_activity_runtime_schedule,
     )
 
+    def select_unique_period(
+        candidates: list[dict[str, Any]],
+        *,
+        source_label: str,
+    ) -> dict[str, Any] | None:
+        filtered = [
+            period
+            for period in candidates
+            if (
+                expected_runtime_id is None
+                or str(period.get("runtime_id") or "") == str(expected_runtime_id)
+            )
+            and (
+                expected_game_activity_id is None
+                or int(period.get("game_activity_id") or 0)
+                == int(expected_game_activity_id)
+            )
+        ]
+        unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for period in filtered:
+            identity = (
+                str(period.get("runtime_id") or ""),
+                int(period.get("game_activity_id") or 0),
+                int(period.get("cross_count") or 0),
+                int(period.get("start_time_ms") or 0),
+                int(period.get("end_time_ms") or 0),
+            )
+            unique.setdefault(identity, period)
+        if len(unique) > 1:
+            raise ValueError(f"兽渊探秘{source_label}命中多个运行时实例")
+        return next(iter(unique.values()), None)
+
     schedule = get_cached_fanxiu_activity_runtime_schedule(
         max_runtime_age_seconds=6 * 60 * 60
     )
+    runtime_candidates: list[dict[str, Any]] = []
     for item in schedule.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -130,7 +166,10 @@ def _runtime_period(
             source_kind=str(schedule.get("source_kind") or "runtime_cache"),
         )
         if period is not None:
-            return period
+            runtime_candidates.append(period)
+    selected = select_unique_period(runtime_candidates, source_label="当前日程")
+    if selected is not None:
+        return selected
 
     # Saved packets remain authoritative historical facts, but only an
     # occurrence covering the requested date may represent the current page.
@@ -139,6 +178,7 @@ def _runtime_period(
         .where(FanxiuPacketBusinessRecord.domain == "worldline_activity")
         .order_by(col(FanxiuPacketBusinessRecord.captured_at).desc())
     ).all()
+    packet_candidates: list[dict[str, Any]] = []
     for row in rows:
         payload = dict(row.payload or {})
         item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
@@ -152,7 +192,10 @@ def _runtime_period(
             source_kind="activity_packet_business_record",
         )
         if period is not None:
-            return period
+            packet_candidates.append(period)
+    selected = select_unique_period(packet_candidates, source_label="历史记录")
+    if selected is not None:
+        return selected
     raise ValueError("未找到兽渊探秘运行时活动实例")
 
 
@@ -189,8 +232,13 @@ def collect_and_store_beast_abyss_activity(
     *,
     activity_id: str | None = None,
     collect_runtime_shop: bool = True,
+    collect_runtime_rank: bool | None = None,
+    collect_related_runtime_ranks: bool = False,
 ) -> Any:
     """Materialize one Beast Abyss occurrence in the generic activity model."""
+
+    if collect_runtime_rank is None:
+        collect_runtime_rank = collect_runtime_shop
 
     collection_started_at = time.perf_counter()
     phase_started_at = collection_started_at
@@ -220,7 +268,7 @@ def collect_and_store_beast_abyss_activity(
         raise ValueError("兽渊探秘活动实例不存在")
     if existing is not None and existing.activity_type != BEAST_ABYSS_ACTIVITY_TYPE:
         raise ValueError("兽渊探秘活动实例不存在")
-    if collect_runtime_shop:
+    if collect_runtime_shop or collect_runtime_rank:
         # Explicit collection is allowed to refresh the strictly read-only
         # compact Runtime cache before any ranking/shop materialization.  A
         # failed refresh never overwrites the last complete cache.
@@ -243,12 +291,29 @@ def collect_and_store_beast_abyss_activity(
             if existing is not None
             else None
         ),
+        expected_runtime_id=(
+            str(existing.runtime_id) if existing is not None and existing.runtime_id else None
+        ),
+        expected_game_activity_id=(
+            int(existing.game_activity_id)
+            if existing is not None and existing.game_activity_id is not None
+            else None
+        ),
     )
     finish_phase("period")
     occurrence_runtime_id = str(period.get("runtime_id") or "")
     if existing is not None and (
         existing.start_date != period["start_date"]
         or existing.end_date != period["end_date"]
+        or (
+            bool(existing.runtime_id)
+            and str(existing.runtime_id) != str(period.get("runtime_id") or "")
+        )
+        or (
+            existing.game_activity_id is not None
+            and int(existing.game_activity_id)
+            != int(period.get("game_activity_id") or 0)
+        )
     ):
         raise ValueError("兽渊探秘活动实例与当前运行时周期不一致")
     definition = _activity_definition(period["game_activity_id"])
@@ -259,7 +324,7 @@ def collect_and_store_beast_abyss_activity(
     resolved_scopes: list[tuple[Any, int]] = []
     for scope_spec in activity_spec.rank_scopes:
         try:
-            rank_id = scope_spec.activity_id.resolve(activity_follow=tuple(follow))
+            rank_id = scope_spec.runtime_rank_activity_id.resolve(activity_follow=tuple(follow))
         except ValueError:
             if scope_spec.required:
                 raise
@@ -277,33 +342,49 @@ def collect_and_store_beast_abyss_activity(
         (scope.scope, rank_id) for scope, rank_id in resolved_scopes
         if scope.effective_role == "comparative"
     )
-    if collect_runtime_shop:
+    refreshed_rank_scopes: list[str] = []
+    if collect_runtime_rank:
         from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
             prepare_activity_rank_runtime,
             read_activity_rank_runtime_snapshot,
         )
 
-        runtime_rank = read_activity_rank_runtime_snapshot(personal_rank_id)
-        if (
-            not runtime_rank.get("ok")
-            and runtime_rank.get("error_code")
+        rank_targets = [
+            (scope.scope, rank_id)
+            for scope, rank_id in resolved_scopes
+            if scope is primary_scope_spec or collect_related_runtime_ranks
+        ]
+        runtime_ranks = {
+            rank_id: read_activity_rank_runtime_snapshot(rank_id)
+            for _scope, rank_id in rank_targets
+        }
+        missing_ids = [
+            rank_id
+            for _scope, rank_id in rank_targets
+            if not runtime_ranks[rank_id].get("ok")
+            and runtime_ranks[rank_id].get("error_code")
             in {"process_cache_miss", "root_cache_miss"}
-        ):
-            recovery = prepare_activity_rank_runtime([personal_rank_id])
+        ]
+        if missing_ids:
+            recovery = prepare_activity_rank_runtime(missing_ids)
             if not recovery.get("ok"):
                 raise ActivityObservationUnavailable(
                     str(recovery.get("reason") or "兽渊探秘榜单 Runtime 恢复失败")
                 )
-            runtime_rank = read_activity_rank_runtime_snapshot(personal_rank_id)
-        if not runtime_rank.get("ok") or not runtime_rank.get("complete"):
-            raise ActivityObservationUnavailable(
-                str(runtime_rank.get("reason") or "兽渊探秘榜单 Runtime 尚未加载")
+            for rank_id in missing_ids:
+                runtime_ranks[rank_id] = read_activity_rank_runtime_snapshot(rank_id)
+        for scope, rank_id in rank_targets:
+            runtime_rank = runtime_ranks[rank_id]
+            if not runtime_rank.get("ok") or not runtime_rank.get("complete"):
+                raise ActivityObservationUnavailable(
+                    str(runtime_rank.get("reason") or f"兽渊探秘{scope}榜 Runtime 尚未加载")
+                )
+            store_runtime_activity_rank_fact(
+                session,
+                runtime_rank,
+                occurrence_runtime_id=occurrence_runtime_id,
             )
-        store_runtime_activity_rank_fact(
-            session,
-            runtime_rank,
-            occurrence_runtime_id=occurrence_runtime_id,
-        )
+            refreshed_rank_scopes.append(scope)
         finish_phase("rank")
     previous_evidence = dict(existing.evidence or {}) if existing is not None else {}
     previous_refresh_status = previous_evidence.get("refresh_status")
@@ -368,6 +449,7 @@ def collect_and_store_beast_abyss_activity(
     finish_phase("rankings")
 
     shop: dict[str, Any] | None = None
+    shop_snapshot_captured_at = ""
     has_shop = bool(existing) and session.exec(
         select(FanxiuExchangeShopItem.id)
         .where(FanxiuExchangeShopItem.activity_id == existing.id)
@@ -382,6 +464,9 @@ def collect_and_store_beast_abyss_activity(
             # was stored; if the game has not loaded it, retain the last complete
             # snapshot instead of replacing it with an empty list.
             shop = _shop_snapshot(cross_count=period["cross_count"])
+            shop_snapshot_captured_at = (
+                datetime.now().astimezone().isoformat(timespec="seconds")
+            )
         except FanxiuActivityShopNotLoadedError as exc:
             if not has_shop:
                 raise ValueError(f"兽渊探秘兑换宝阁尚未加载：{exc}") from exc
@@ -414,7 +499,8 @@ def collect_and_store_beast_abyss_activity(
         "currency_captured_at": str(
             observation.get("evidence", {}).get("currency_captured_at") or ""
         ),
-        "rankings": "updated",
+        "rankings": "updated" if collect_runtime_rank else "retained",
+        "ranking_scopes": refreshed_rank_scopes,
     })
     evidence.update({
         "game_activity_id": period["game_activity_id"],
@@ -427,8 +513,12 @@ def collect_and_store_beast_abyss_activity(
         "period_packet_id": period["packet_id"],
         "world_level": period["world_level"],
         "rank_activity_ids": follow,
-        "rank_scope_activity_ids": {
-            scope.scope: rank_id for scope, rank_id in resolved_scopes
+        "rank_scope_identities": {
+            scope.scope: {
+                "runtime_rank_activity_id": rank_id,
+                "reward_activity_id": rank_id if scope.reward_tiers_enabled else None,
+            }
+            for scope, rank_id in resolved_scopes
         },
         "current_related_ranking_scopes": sorted(ranking_merge.current_related_scopes),
         "retained_related_ranking_scopes": sorted(ranking_merge.retained_related_scopes),
@@ -443,6 +533,25 @@ def collect_and_store_beast_abyss_activity(
         evidence["currency_runtime"] = currency_runtime_evidence
     if shop is not None:
         evidence["shop"] = dict(shop.get("evidence") or {})
+        evidence["shop_snapshot_captured_at"] = shop_snapshot_captured_at
+    instance_data = dict(existing.instance_data or {}) if existing is not None else {}
+    initialization_state = instance_data.setdefault(
+        BEAST_ABYSS_INITIALIZATION_STATE_KEY,
+        {
+            "status": "not_started",
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    )
+    if shop is not None and initialization_state.get("status") == "not_started":
+        # A later successful #536 collection supersedes an earlier collection
+        # failure, but it does not prove gameplay initialization. Keep the
+        # state not_started while removing only the obsolete diagnostic.
+        initialization_state = dict(initialization_state)
+        initialization_state.pop("reason", None)
+        initialization_state["updated_at"] = (
+            datetime.now().astimezone().isoformat(timespec="seconds")
+        )
+        instance_data[BEAST_ABYSS_INITIALIZATION_STATE_KEY] = initialization_state
     payload: dict[str, Any] = {
         "activity_type": BEAST_ABYSS_ACTIVITY_TYPE,
         "cross_count": period["cross_count"],
@@ -459,6 +568,7 @@ def collect_and_store_beast_abyss_activity(
         "resource_strategy": {
             "活动方式": "探索兽渊并积累兽元",
         },
+        "instance_data": instance_data,
         "evidence": evidence,
     }
     if shop is not None:

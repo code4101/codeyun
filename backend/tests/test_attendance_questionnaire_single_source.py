@@ -123,9 +123,7 @@ def test_questionnaire_top_insert_keeps_status_bound_to_sequence():
 def test_questionnaire_course_field_reconciliation_updates_current_courses_only(monkeypatch):
     course_document = {
         "columns": ["课程类型", "课程名称", "在线考勤表", "考勤负责人"],
-        "rows": [
-            ["修道班", "修道班8期5阶", "修道班8期5阶", "陈坤泽, 敏兮"],
-        ],
+        "rows": [["修道班", "修道班8期5阶", "修道班8期5阶", "陈坤泽, 敏兮"]],
     }
     questionnaire_document = {
         "columns": list(attendance.ATTENDANCE_WJX_DATA_COLUMNS),
@@ -205,3 +203,92 @@ def test_explicit_feedback_course_wins_over_conflicting_page_context():
         "修道班9,10期4阶",
         "/workbook/19?sheet=62169",
     )
+
+
+def test_unique_enrollment_identity_overrides_stale_explicit_course(monkeypatch):
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+    workbooks = {
+        15: {"sheets": [{"id": 60340, "title": "报名表"}]},
+        22: {"sheets": [{"id": 62624, "title": "报名表"}]},
+    }
+    registration_rows = {
+        15: [{"序号": "2_05", "姓名": "纪文淅"}],
+        22: [{"序号": "2", "姓名": "孟鑫"}],
+    }
+    monkeypatch.setattr(
+        LocalAttendanceSheetClient,
+        "get_workbook_document",
+        lambda _self, workbook_id: deepcopy(workbooks[int(workbook_id)]),
+    )
+    monkeypatch.setattr(
+        LocalAttendanceSheetClient,
+        "get_table",
+        lambda _self, ref: {"rows": deepcopy(registration_rows[int(ref.workbook_id)])},
+    )
+
+    resolved = attendance.resolve_feedback_course_from_current_enrollment(
+        [
+            attendance.AttendanceFeedbackCourseOption(
+                name="修道班8期5阶",
+                attendance_sheet_url="/workbook/22?sheet=62623",
+            ),
+            attendance.AttendanceFeedbackCourseOption(
+                name="修道班11期3阶",
+                attendance_sheet_url="/workbook/15?sheet=60339",
+            ),
+        ],
+        student_id_text="2-05",
+        student_name="纪文淅",
+    )
+
+    assert resolved.identity_confirmed is True
+    assert attendance._select_feedback_course_name("修道班8期5阶", resolved) == (
+        "修道班11期3阶",
+        "/workbook/15?sheet=60339",
+    )
+
+
+def test_course_correction_rebuilds_owner_and_link(monkeypatch):
+    columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
+    state = {
+        "document": {
+            "columns": columns,
+            "rows": [["740", "", "", "修道班8期5阶", "敏兮"]],
+        },
+        "version": 1,
+    }
+    monkeypatch.setattr(
+        attendance,
+        "_get_feedback_course_maps_from_summary_sheet",
+        lambda _session: (
+            {"修道班11期3阶": "/workbook/15?sheet=60339"},
+            {"修道班11期3阶": "王仁"},
+        ),
+    )
+
+    def mutate(mutator):
+        next_document, changed = mutator(deepcopy(state["document"]))
+        assert changed is True
+        state["document"] = next_document
+        state["version"] += 1
+        return SimpleNamespace(
+            numeric_id=attendance.ATTENDANCE_WJX_DATA_SHEET_ID,
+            document_json=deepcopy(next_document),
+            version=state["version"],
+            updated_at=2.0,
+        )
+
+    monkeypatch.setattr(attendance, "_mutate_independent_attendance_wjx_sheet", mutate)
+
+    result = attendance.correct_independent_attendance_wjx_course(
+        seq=740,
+        course_name="修道班11期3阶",
+    )
+    document = attendance._normalize_attendance_wjx_sheet_document(result.document_json)
+    row = document["rows"][0]
+
+    assert attendance._get_attendance_wjx_sheet_cell(row, columns, "课程") == "修道班11期3阶"
+    assert attendance._get_attendance_wjx_sheet_cell(row, columns, "考勤负责人") == "王仁"
+    assert attendance._extract_inline_cell_link_url(row[columns.index("课程")]) == "/workbook/15?sheet=60339"

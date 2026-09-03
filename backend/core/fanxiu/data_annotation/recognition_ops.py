@@ -226,7 +226,7 @@ def build_recognition_ops_report(
                 "current_scene_id": incident.get("current_scene_id"),
                 "fallback_used": bool(incident.get("fallback_used")),
                 "trigger": incident.get("trigger") if isinstance(incident.get("trigger"), Mapping) else {},
-                "runtime": incident.get("runtime") if isinstance(incident.get("runtime"), Mapping) else {},
+                "context": incident.get("context") if isinstance(incident.get("context"), Mapping) else {},
                 "resolution": incident.get("resolution") if isinstance(incident.get("resolution"), Mapping) else None,
                 "timeline_count": len(timeline),
             },

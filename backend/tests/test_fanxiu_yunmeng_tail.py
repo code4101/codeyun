@@ -48,7 +48,7 @@ def test_expired_legacy_scheduler_instance_retires_without_gui_actions(
             return QueryResult()
 
     class Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs):
+        def _behavior_tree_context(self, *_args, **_kwargs):
             raise AssertionError("expired legacy instance must not create GUI runtime")
 
         def _persist_scheduler_task_next_time(self, task_id, next_time):

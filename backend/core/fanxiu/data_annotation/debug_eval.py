@@ -18,7 +18,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 
 
-class BehaviorTreeRuntimeDebugContext:
+class BehaviorTreeDebugContext:
     """Stable facade injected as ``ctx`` for ``debug_eval`` code cells."""
 
     def __init__(
@@ -41,7 +41,7 @@ class BehaviorTreeRuntimeDebugContext:
         stop_event: threading.Event,
         *,
         readonly: bool | None = None,
-    ) -> "BehaviorTreeRuntimeDebugContext":
+    ) -> "BehaviorTreeDebugContext":
         """Keep the public Jupyter ``ctx`` identity stable across cells."""
         self._ctx = ctx
         self._stop_event = stop_event
@@ -50,21 +50,21 @@ class BehaviorTreeRuntimeDebugContext:
         self.output.clear()
         return self
 
-    def _bound_runtime(self) -> Any:
+    def _bound_context(self) -> Any:
         asset_tree_path = self._ctx.get("asset_tree_path")
         if isinstance(asset_tree_path, Path):
-            return self._runner._fanxiu_runtime(
+            return self._runner._behavior_tree_context(
                 self._ctx,
                 asset_tree_path,
                 stop_event=self._stop_event,
             )
-        return self._runner._fanxiu_runtime(self._ctx, stop_event=self._stop_event)
+        return self._runner._behavior_tree_context(self._ctx, stop_event=self._stop_event)
 
     @property
-    def runtime(self) -> Any:
-        """Return the Runtime already bound to this cell's entry and assets."""
+    def context(self) -> Any:
+        """Return the behavior-tree context bound to this Cell's entry and assets."""
         self._require_act()
-        return self._bound_runtime()
+        return self._bound_context()
 
     @property
     def raw(self) -> dict[str, Any]:
@@ -123,7 +123,7 @@ class BehaviorTreeRuntimeDebugContext:
         crop: bool = False,
     ) -> list[dict[str, Any]]:
         self.check_stop()
-        runtime = self._bound_runtime()
+        context = self._bound_context()
         kwargs = {
             "frame_data_url": frame_data_url or frame or self.frame(),
             "padding": padding,
@@ -131,7 +131,7 @@ class BehaviorTreeRuntimeDebugContext:
         }
         if crop:
             kwargs["crop"] = True
-        return runtime.ocr_tokens_in_shapes(scene, tuple(shape_titles), **kwargs)
+        return context.ocr_tokens_in_shapes(scene, tuple(shape_titles), **kwargs)
 
     def image(self, scene: int | str) -> dict[str, Any] | None:
         images: dict[int, dict[str, Any]] = self._ctx.get("images") or {}
@@ -151,11 +151,11 @@ class BehaviorTreeRuntimeDebugContext:
         image = self.image(scene)
         if not image:
             return None
-        if contains or not hasattr(self._runner, "_fanxiu_runtime"):
+        if contains or not hasattr(self._runner, "_behavior_tree_context"):
             return self._runner._find_shape(image, title, contains=contains)
-        runtime = self._bound_runtime()
+        context = self._bound_context()
         try:
-            return runtime.shape(image, title).raw
+            return context.shape(image, title).raw
         except RuntimeError:
             return None
 
@@ -279,13 +279,13 @@ class BehaviorTreeRuntimeDebugContext:
 
     def click_shape_center(self, scene: int | str, title: str, *, contains: bool = False) -> None:
         self._require_act()
-        runtime = self._bound_runtime()
+        context = self._bound_context()
         shape: str | dict[str, Any] | None = title
         if contains:
             shape = self.shape(scene, title, contains=True)
             if not shape:
                 raise RuntimeError(f"找不到标注：scene={scene} shape~={title}")
-        runtime.click_shape_center(scene, shape)
+        context.click_shape_center(scene, shape)
 
     def long_press_shape(
         self,
@@ -296,43 +296,38 @@ class BehaviorTreeRuntimeDebugContext:
         contains: bool = False,
     ) -> None:
         self._require_act()
-        runtime = self._bound_runtime()
+        context = self._bound_context()
         shape: str | dict[str, Any] | None = title
         if contains:
             shape = self.shape(scene, title, contains=True)
             if not shape:
                 raise RuntimeError(f"找不到标注：scene={scene} shape~={title}")
-        runtime.long_press_shape(scene, shape, duration=duration)
+        context.long_press_shape(scene, shape, duration=duration)
 
     def wait_action_settle(self, seconds: float = 1.0):
         self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.wait_action_settle(seconds))
+        context = self._bound_context()
+        return (yield from context.wait_action_settle(seconds))
 
     def advance_dialogue(self, scene: int | str, shape: str, **options: Any):
         self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.advance_dialogue(scene, shape, **options))
+        context = self._bound_context()
+        return (yield from context.advance_dialogue(scene, shape, **options))
 
     def wait_click(self, frame: int | str | None, shape: str, **options: Any):
         self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.wait_click(frame, shape, **options))
+        context = self._bound_context()
+        return (yield from context.wait_click(frame, shape, **options))
 
-    def wait_click_then_view(self, frame: int | str, shape: str, *targets: int | str | Sequence[int | str], **options: Any):
+    def wait_click_then_scene(self, frame: int | str, shape: str, *targets: int | str | Sequence[int | str], **options: Any):
         self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.wait_click_then_view(frame, shape, *targets, **options))
+        context = self._bound_context()
+        return (yield from context.wait_click_then_scene(frame, shape, *targets, **options))
 
-    def wait_scene(self, *scenes: int | str, **options: Any):
+    def wait_scene(self, *scenes: int | str, wait: float = 5.0, **options: Any):
         self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.wait_scene(*scenes, **options))
-
-    def wait_view(self, *views: int | str, **options: Any):
-        self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.wait_view(*views, **options))
+        context = self._bound_context()
+        return (yield from context.wait_scene(*scenes, wait=wait, **options))
 
     def world_realm(self) -> dict[str, Any]:
         """Read the current #425 人/灵/魔/仙 realm by first character."""
@@ -341,7 +336,7 @@ class BehaviorTreeRuntimeDebugContext:
             read_world_realm,
         )
 
-        return read_world_realm(self._bound_runtime())
+        return read_world_realm(self._bound_context())
 
     def ensure_world_realm(
         self,
@@ -358,7 +353,7 @@ class BehaviorTreeRuntimeDebugContext:
 
         return (
             yield from ensure_world_realm(
-                self._bound_runtime(),
+                self._bound_context(),
                 target,
                 max_attempts=max_attempts,
             )
@@ -366,8 +361,8 @@ class BehaviorTreeRuntimeDebugContext:
 
     def go_scene(self, scene: int | str, **options: Any):
         self._require_act()
-        runtime = self._bound_runtime()
-        return (yield from runtime.go_scene(scene, **options))
+        context = self._bound_context()
+        return (yield from context.go_scene(scene, **options))
 
     def run(
         self,
@@ -375,23 +370,23 @@ class BehaviorTreeRuntimeDebugContext:
         *,
         label: str = "Jupyter cell",
         tick_seconds: float = 0.2,
-        max_runtime_seconds: float = 21600.0,
+        max_execution_seconds: float = 21600.0,
         guard_override: bool | None = None,
     ) -> Any:
-        """Drive one Runtime generator from the human-facing cell context."""
+        """Drive one behavior-tree generator from the human-facing Cell context."""
         self._require_act()
         if callable(value) and not isinstance(value, GeneratorType):
             value = value()
         if not isinstance(value, GeneratorType):
             return value
-        return self._runner._run_runtime_behavior_tree(
-            runtime_ctx=self._ctx,
+        return self._runner._run_behavior_tree(
+            execution_ctx=self._ctx,
             asset_tree_path=self._ctx.get("asset_tree_path"),
             stop_event=self._stop_event,
             action=lambda: value,
             label=label,
             tick_seconds=tick_seconds,
-            max_runtime_seconds=max_runtime_seconds,
+            max_execution_seconds=max_execution_seconds,
             guard_override=guard_override,
         )
 
@@ -409,8 +404,8 @@ class BehaviorTreeRuntimeDebugContext:
             value,
             label=definition.label,
             tick_seconds=max(0.1, float(normalized.get("__tick_seconds") or 1.0)),
-            max_runtime_seconds=self._runner._task_timeout_seconds(normalized),
-            guard_override=self._runner._runtime_guard_override_from_payload(normalized),
+            max_execution_seconds=self._runner._task_timeout_seconds(normalized),
+            guard_override=self._runner._guard_override_from_payload(normalized),
         )
 
     run_task = task
@@ -445,7 +440,7 @@ def run_data_annotation_debug_eval(
     stop_event: threading.Event,
 ) -> Any:
     payload = normalize_data_annotation_debug_eval_payload(payload)
-    debug_ctx = BehaviorTreeRuntimeDebugContext(runner, ctx, stop_event, readonly=payload["mode"] != "act")
+    debug_ctx = BehaviorTreeDebugContext(runner, ctx, stop_event, readonly=payload["mode"] != "act")
     namespace: dict[str, Any] = {
         "ctx": debug_ctx,
         "payload": payload,
@@ -454,7 +449,7 @@ def run_data_annotation_debug_eval(
         "time": time,
     }
     if payload["mode"] == "act":
-        namespace["runtime"] = debug_ctx.runtime
+        namespace["context"] = debug_ctx.context
     stdout = io.StringIO()
     with runner._lock:
         runner._set_status_locked("running", f"debug_eval 执行中：{payload['mode']}", phase="debug_eval")

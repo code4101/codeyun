@@ -428,3 +428,10 @@ def test_apply_fanbei_step3_syncs_styles_to_entity_cells(session):
     assert entity_cells["col-5"]["style"]["background_color"] == "#80FF80"
     assert entity_cells["col-5"]["style"]["text_color"] == schedule.FANBEI_FULL_ATTENDANCE_TEXT_COLOR
     assert entity_cells["col-0"]["style"]["text_color"] == schedule.FANBEI_FULL_ATTENDANCE_TEXT_COLOR
+
+
+def test_parse_fanbei_course_start_date_accepts_module_and_summary_names():
+    from backend.core.attendance.fanbei_schedule import _parse_fanbei_course_start_date
+
+    assert _parse_fanbei_course_start_date("d260809梵呗初阶") == date(2026, 8, 9)
+    assert _parse_fanbei_course_start_date("20260809梵呗初阶") == date(2026, 8, 9)

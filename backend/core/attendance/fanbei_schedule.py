@@ -180,11 +180,14 @@ def _run_fanbei_attendance_step2_local() -> str:
 
 
 def _parse_fanbei_course_start_date(course_name: str) -> date:
-    match = re.search(r"d(\d{2})(\d{2})(\d{2})", course_name)
+    match = re.search(r"(?:d(?P<short>\d{6})|(?P<full>20\d{6}))", str(course_name or ""))
     if match is None:
         raise RuntimeError(f"无法从课程名解析开课日期：{course_name}")
-    year, month, day = (int(part) for part in match.groups())
-    return date(2000 + year, month, day)
+    digits = match.group("full") or f"20{match.group('short')}"
+    try:
+        return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+    except ValueError as exc:
+        raise RuntimeError(f"无法从课程名解析开课日期：{course_name}") from exc
 
 
 def _fanbei_attendance_day_index(course_name: str, today: date | None = None) -> int:
@@ -348,6 +351,7 @@ def _apply_fanbei_attendance_step3_to_sheet(
     sheet_id: int,
     course_name: str,
     today: date | None = None,
+    commit: bool = True,
 ) -> dict[str, Any]:
     from backend.api.note_sheets import _insert_document_column, _replace_document_data_rows
 
@@ -513,8 +517,11 @@ def _apply_fanbei_attendance_step3_to_sheet(
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_at = time.time()
         session.add(document)
-        session.commit()
-        session.refresh(document)
+        if commit:
+            session.commit()
+            session.refresh(document)
+        else:
+            session.flush()
 
     return {
         "updated_rows": updated_rows,

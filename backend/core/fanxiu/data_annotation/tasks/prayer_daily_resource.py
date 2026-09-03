@@ -248,11 +248,11 @@ def prayer_page_state(
     return "unknown"
 
 
-def _click_fragment_center(runtime: Any, scene_id: int, fragment: dict[str, Any]) -> None:
-    runtime.click_frame_point(scene_id, *fragment_center(fragment))
+def _click_fragment_center(context: Any, scene_id: int, fragment: dict[str, Any]) -> None:
+    context.click_frame_point(scene_id, *fragment_center(fragment))
 
 
-def _prayer_task_fragments(runtime: Any, frame: str) -> list[dict[str, Any]]:
+def _prayer_task_fragments(context: Any, frame: str) -> list[dict[str, Any]]:
     """Run fresh crop OCR only over #455's task business regions.
 
     The caller has already entered the task page, so the animated vertical tab
@@ -260,7 +260,7 @@ def _prayer_task_fragments(runtime: Any, frame: str) -> list[dict[str, Any]]:
     stable than the actual reward rows and one-key action.
     """
 
-    return runtime.ocr_fragments_in_shapes(
+    return context.ocr_fragments_in_shapes(
         PRAYER_MAIN_SCENE_ID,
         ("任务奖励", "一键领取"),
         padding=0,
@@ -269,10 +269,10 @@ def _prayer_task_fragments(runtime: Any, frame: str) -> list[dict[str, Any]]:
     )
 
 
-def _prayer_store_fragments(runtime: Any, frame: str) -> list[dict[str, Any]]:
+def _prayer_store_fragments(context: Any, frame: str) -> list[dict[str, Any]]:
     """Run fresh crop OCR over #456's goods/actions, not the full-frame cache."""
 
-    return runtime.ocr_fragments_in_shapes(
+    return context.ocr_fragments_in_shapes(
         PRAYER_STORE_SCENE_ID,
         ("免费祈愿礼包", "免费", "商品列表"),
         padding=0,
@@ -386,7 +386,7 @@ class PrayerDailyResourceTaskMixin:
 
     def _wait_prayer_store_tab(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         timeout_seconds: float,
@@ -395,20 +395,20 @@ class PrayerDailyResourceTaskMixin:
         last_text = ""
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            fragments = runtime.ocr_fragments(frame)
+            frame = context.cur_frame(update=True)
+            fragments = context.ocr_fragments(frame)
             match = prayer_store_tab_fragment(fragments)
             if match is not None:
                 return frame, fragments, match
-            last_text = runtime.ocr_text(frame)
-            yield from runtime.wait_action_settle(0.15)
+            last_text = context.ocr_text(frame)
+            yield from context.wait_action_settle(0.15)
         raise RuntimeError(
             f"祈愿_每日资源：等待右下角完整“祈愿商店”页签超时，拒绝点击左上祈愿，末帧={last_text[:160]}"
         )
 
     def _enter_prayer_from_world(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         timeout_seconds: float,
@@ -420,20 +420,20 @@ class PrayerDailyResourceTaskMixin:
         last_text = ""
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            fragments = runtime.ocr_fragments(frame)
+            frame = context.cur_frame(update=True)
+            fragments = context.ocr_fragments(frame)
             store_tab = prayer_store_tab_fragment(fragments)
             if store_tab is not None:
                 return frame, fragments, store_tab
             if not enter_clicked:
                 enter = prayer_enter_fragment(fragments)
                 if enter is not None:
-                    _click_fragment_center(runtime, 34, enter)
+                    _click_fragment_center(context, 34, enter)
                     enter_clicked = True
-                    yield from runtime.wait_action_settle(0.35)
+                    yield from context.wait_action_settle(0.35)
                     continue
-            last_text = runtime.ocr_text(frame)
-            yield from runtime.wait_action_settle(0.15)
+            last_text = context.ocr_text(frame)
+            yield from context.wait_action_settle(0.15)
         step = "已点击‘进入’" if enter_clicked else "未唯一识别到‘进入’"
         raise RuntimeError(
             f"祈愿_每日资源：选中祈愿活动后{step}，仍未进入祈愿主页，末帧={last_text[:160]}"
@@ -441,7 +441,7 @@ class PrayerDailyResourceTaskMixin:
 
     def _claim_prayer_task_rewards(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         fragments: Iterable[dict[str, Any]],
         *,
@@ -450,15 +450,15 @@ class PrayerDailyResourceTaskMixin:
         task_tab = prayer_task_tab_fragment(fragments)
         if task_tab is None:
             raise RuntimeError("祈愿_每日资源：祈愿主页未唯一识别到右下角“祈愿任务”页签")
-        _click_fragment_center(runtime, PRAYER_MAIN_SCENE_ID, task_tab)
+        _click_fragment_center(context, PRAYER_MAIN_SCENE_ID, task_tab)
 
         tracker = _PrayerStabilityWindow(timeout_seconds)
         one_key: dict[str, Any] | None = None
         while tracker.should_sample():
             self._raise_if_stopped(stop_event)
             sample_started_at = time.monotonic()
-            frame = runtime.cur_frame(update=True)
-            items = _prayer_task_fragments(runtime, frame)
+            frame = context.cur_frame(update=True)
+            items = _prayer_task_fragments(context, frame)
             state = prayer_task_state(items, task_context_confirmed=True)
             tracker.observe(state)
             _log_prayer_observation(
@@ -473,7 +473,7 @@ class PrayerDailyResourceTaskMixin:
             if tracker.stable:
                 one_key = prayer_task_one_key_fragment(items)
                 break
-            yield from runtime.wait_action_settle(0.35)
+            yield from context.wait_action_settle(0.35)
         if not tracker.stable:
             raise RuntimeError("祈愿_每日资源：祈愿任务页未形成连续两帧稳定业务状态")
         if tracker.stable_state == "settled":
@@ -485,7 +485,7 @@ class PrayerDailyResourceTaskMixin:
         while one_key is not None and claim_batches < PRAYER_MAX_TASK_CLAIM_BATCHES:
             before_text = _prayer_task_content_text(items)
             claim_batches += 1
-            _click_fragment_center(runtime, PRAYER_MAIN_SCENE_ID, one_key)
+            _click_fragment_center(context, PRAYER_MAIN_SCENE_ID, one_key)
             tracker = _PrayerStabilityWindow(
                 timeout_seconds,
                 accepted_states=frozenset({"claimable", "settled"}),
@@ -495,14 +495,14 @@ class PrayerDailyResourceTaskMixin:
             while tracker.should_sample():
                 self._raise_if_stopped(stop_event)
                 sample_started_at = time.monotonic()
-                frame = runtime.cur_frame(update=True)
-                items = _prayer_task_fragments(runtime, frame)
+                frame = context.cur_frame(update=True)
+                items = _prayer_task_fragments(context, frame)
                 if prayer_new_round_confirm_visible(items):
                     if new_round_confirmed:
                         raise RuntimeError("祈愿_每日资源：确认开启新一轮后弹窗仍未关闭")
                     self._log("action", "祈愿_每日资源：本轮奖励已领完，确认开启新一轮奖励任务")
-                    yield from runtime.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
-                    yield from runtime.wait_action_settle(0.8)
+                    yield from context.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
+                    yield from context.wait_action_settle(0.8)
                     new_round_confirmed = True
                     continue
                 raw_state = prayer_task_state(items, task_context_confirmed=True)
@@ -529,7 +529,7 @@ class PrayerDailyResourceTaskMixin:
                         return "claimed"
                     next_one_key = prayer_task_one_key_fragment(items)
                     break
-                yield from runtime.wait_action_settle(0.35)
+                yield from context.wait_action_settle(0.35)
             if not tracker.stable:
                 raise RuntimeError(
                     "祈愿_每日资源：点击“一键领取”后未观察到结算或新的可领取批次"
@@ -551,7 +551,7 @@ class PrayerDailyResourceTaskMixin:
         payload: dict[str, Any] | None = None,
     ):
         payload = dict(payload or {})
-        runtime = self._fanxiu_runtime(
+        context = self._behavior_tree_context(
             ctx,
             ctx["asset_tree_path"],
             stop_event=stop_event,
@@ -559,7 +559,7 @@ class PrayerDailyResourceTaskMixin:
         entry_timeout = float(payload.get("entry_timeout_seconds") or 60.0)
         page_timeout = float(payload.get("page_timeout_seconds") or 12.0)
 
-        current_scene, _score, current_frame = runtime.current_scene(
+        current_scene, _score, current_frame = context.current_scene(
             [34, 69, 194, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
             update=True,
         )
@@ -570,8 +570,8 @@ class PrayerDailyResourceTaskMixin:
         # identity is occluded.  Take one explicit fresh frame for overlay
         # recovery so the prompt check is about the current screen.
         if current_scene is None:
-            current_frame = runtime.cur_frame(update=True)
-        current_fragments = runtime.ocr_fragments(current_frame)
+            current_frame = context.cur_frame(update=True)
+        current_fragments = context.ocr_fragments(current_frame)
         overlay_fragments = current_fragments
         if current_scene is None and not overlay_fragments:
             # Full-frame OCR is intentionally scene-cache based and can be
@@ -579,33 +579,33 @@ class PrayerDailyResourceTaskMixin:
             # cover both this prompt sentence and its confirm action and can be
             # evaluated directly against the fresh frame without asserting the
             # obscured scene identity.
-            overlay_fragments = _prayer_task_fragments(runtime, current_frame)
+            overlay_fragments = _prayer_task_fragments(context, current_frame)
         if current_scene is None and prayer_new_round_confirm_visible(overlay_fragments):
             self._log("action", "祈愿_每日资源：任务入口检测到新一轮确认弹窗，先恢复 #455")
-            yield from runtime.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
-            yield from runtime.wait_view(
+            yield from context.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
+            yield from context.wait_scene(
                 PRAYER_MAIN_SCENE_ID,
-                timeout=page_timeout,
+                wait=page_timeout,
                 label="祈愿_每日资源：确认新一轮后恢复祈愿主页 #455",
             )
-            current_scene, _score, current_frame = runtime.current_scene(
+            current_scene, _score, current_frame = context.current_scene(
                 [PRAYER_MAIN_SCENE_ID],
                 update=True,
             )
-            current_fragments = runtime.ocr_fragments(current_frame)
+            current_fragments = context.ocr_fragments(current_frame)
         if current_scene in {69, 194}:
             # #194 can be left behind by an older, incorrect world-side
             # ``进入`` click.  Both scenes have proven graph routes back to the
             # stable world anchor, so recover before opening the daily entry.
-            yield from runtime.goto_view(34)
-            current_scene, _score, current_frame = runtime.current_scene(
+            yield from context.go_scene(34)
+            current_scene, _score, current_frame = context.current_scene(
                 [34, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
                 update=True,
             )
         page_state = prayer_page_state(
             current_scene,
             current_fragments,
-            runtime.ocr_text(current_frame),
+            context.ocr_text(current_frame),
         )
         if page_state == "unknown":
             raise RuntimeError(
@@ -619,33 +619,33 @@ class PrayerDailyResourceTaskMixin:
             entry: dict[str, Any] | None = None
             while time.monotonic() < entry_deadline:
                 self._raise_if_stopped(stop_event)
-                world_frame = runtime.cur_frame(update=True)
-                entry = prayer_entry_fragment(runtime.ocr_fragments(world_frame))
+                world_frame = context.cur_frame(update=True)
+                entry = prayer_entry_fragment(context.ocr_fragments(world_frame))
                 if entry is not None:
                     break
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
             if entry is None:
                 raise RuntimeError("祈愿_每日资源：可靠 #34 左侧菜单未唯一识别到祈愿活动")
 
             entry_error: Exception | None = None
             for point in prayer_entry_action_points(entry):
-                runtime.click_frame_point(34, *point)
+                context.click_frame_point(34, *point)
                 try:
                     _frame, main_fragments, store_tab = yield from self._wait_prayer_store_tab(
-                        runtime,
+                        context,
                         stop_event,
                         timeout_seconds=min(5.0, page_timeout),
                     )
                     break
                 except RuntimeError as exc:
                     entry_error = exc
-                    scene_id, _score, _frame = runtime.current_scene(
+                    scene_id, _score, _frame = context.current_scene(
                         [34, 194, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
                         update=True,
                     )
                     if scene_id in {PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID}:
                         _frame, main_fragments, store_tab = yield from self._wait_prayer_store_tab(
-                            runtime,
+                            context,
                             stop_event,
                             timeout_seconds=page_timeout,
                         )
@@ -664,32 +664,32 @@ class PrayerDailyResourceTaskMixin:
             store_tab = prayer_store_tab_fragment(current_fragments)
             if store_tab is None:
                 _frame, main_fragments, store_tab = yield from self._wait_prayer_store_tab(
-                    runtime,
+                    context,
                     stop_event,
                     timeout_seconds=page_timeout,
                 )
 
         if page_state == "main":
             task_result = yield from self._claim_prayer_task_rewards(
-                runtime,
+                context,
                 stop_event,
                 main_fragments,
                 timeout_seconds=page_timeout,
             )
             _frame, _fragments, store_tab = yield from self._wait_prayer_store_tab(
-                runtime,
+                context,
                 stop_event,
                 timeout_seconds=page_timeout,
             )
-            _click_fragment_center(runtime, PRAYER_MAIN_SCENE_ID, store_tab)
+            _click_fragment_center(context, PRAYER_MAIN_SCENE_ID, store_tab)
 
         tracker = _PrayerStabilityWindow(page_timeout)
         free: dict[str, Any] | None = None
         while tracker.should_sample():
             self._raise_if_stopped(stop_event)
             sample_started_at = time.monotonic()
-            store_frame = runtime.cur_frame(update=True)
-            store_fragments = _prayer_store_fragments(runtime, store_frame)
+            store_frame = context.cur_frame(update=True)
+            store_fragments = _prayer_store_fragments(context, store_frame)
             # 进入此循环前已经由 scene #456 或“祈愿商店”身份确认了事务
             # 上下文；竖排页签 OCR 不应成为商品区“每日限购/售罄”的重复门禁。
             state = prayer_store_state(
@@ -710,13 +710,13 @@ class PrayerDailyResourceTaskMixin:
             if tracker.stable:
                 free = exact_ocr_fragment(store_fragments, "免费")
                 break
-            yield from runtime.wait_action_settle(0.35)
+            yield from context.wait_action_settle(0.35)
         if not tracker.stable:
             raise RuntimeError("祈愿_每日资源：祈愿商店未形成连续两帧稳定业务状态")
 
         if tracker.stable_state == "claimed":
-            runtime.click_shape_center(PRAYER_STORE_SCENE_ID, "返回")
-            yield from runtime.wait_view(34, timeout=page_timeout, label="祈愿_每日资源：返回世界 #34")
+            context.click_shape_center(PRAYER_STORE_SCENE_ID, "返回")
+            yield from context.wait_scene(34, wait=page_timeout, label="祈愿_每日资源：返回世界 #34")
             return self._prayer_daily_result(
                 payload,
                 outcome=("task_claimed" if task_result == "claimed" else "already_claimed"),
@@ -731,7 +731,7 @@ class PrayerDailyResourceTaskMixin:
                 "祈愿_每日资源：商店已确认，但既无唯一“免费”按钮，也未显示每日限购 0"
             )
 
-        _click_fragment_center(runtime, PRAYER_STORE_SCENE_ID, free)
+        _click_fragment_center(context, PRAYER_STORE_SCENE_ID, free)
 
         reward_seen = False
         claimed = False
@@ -742,17 +742,17 @@ class PrayerDailyResourceTaskMixin:
         while tracker.should_sample():
             self._raise_if_stopped(stop_event)
             sample_started_at = time.monotonic()
-            frame = runtime.cur_frame(update=True)
-            fragments = runtime.ocr_fragments(frame)
-            text = _normalized_ocr_text(runtime.ocr_text(frame))
+            frame = context.cur_frame(update=True)
+            fragments = context.ocr_fragments(frame)
+            text = _normalized_ocr_text(context.ocr_text(frame))
             if "恭喜获得" in text:
                 reward_seen = True
                 continue_button = exact_ocr_fragment(fragments, "点击屏幕继续")
                 if continue_button is not None:
-                    _click_fragment_center(runtime, PRAYER_STORE_SCENE_ID, continue_button)
-                    yield from runtime.wait_action_settle(0.8)
+                    _click_fragment_center(context, PRAYER_STORE_SCENE_ID, continue_button)
+                    yield from context.wait_action_settle(0.8)
                 else:
-                    yield from runtime.wait_action_settle(0.4)
+                    yield from context.wait_action_settle(0.4)
                 continue
             if prayer_reward_overlay_dismissed(text, reward_seen=reward_seen):
                 # “恭喜获得”是本次点击后的直接收货凭证。奖励层关闭时，
@@ -760,7 +760,7 @@ class PrayerDailyResourceTaskMixin:
                 # 强求底层仍是商店商品区，否则会把炼体/天魂文案误判为加载中。
                 claimed = True
                 break
-            store_fragments = _prayer_store_fragments(runtime, frame)
+            store_fragments = _prayer_store_fragments(context, frame)
             state = prayer_store_state(
                 store_fragments,
                 _fragment_text(store_fragments),
@@ -779,14 +779,14 @@ class PrayerDailyResourceTaskMixin:
             if tracker.stable:
                 claimed = True
                 break
-            yield from runtime.wait_action_settle(0.35)
+            yield from context.wait_action_settle(0.35)
         if not claimed:
             raise RuntimeError(
                 "祈愿_每日资源：点击免费礼包后未连续确认商品区已加载且免费动作消失"
             )
 
-        runtime.click_shape_center(PRAYER_STORE_SCENE_ID, "返回")
-        yield from runtime.wait_view(34, timeout=page_timeout, label="祈愿_每日资源：领取后返回世界 #34")
+        context.click_shape_center(PRAYER_STORE_SCENE_ID, "返回")
+        yield from context.wait_scene(34, wait=page_timeout, label="祈愿_每日资源：领取后返回世界 #34")
         return self._prayer_daily_result(
             payload,
             outcome="claimed",

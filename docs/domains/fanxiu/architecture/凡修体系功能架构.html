@@ -4881,7 +4881,7 @@
       </div>
     </div>
 
-    <script id="archify-guided-views-data" type="application/json">[{"id":"primary-runtime-path","label":"一次作业如何运行","focus":["runtime-ui","control-api","scheduler","jupyter-kernel","behavior-runtime","adb-control","mumu-game"],"note":"从 Runtime 控制台或工程调度出发，最终只有普通 Python Cell 能进入唯一 Kernel 并驱动游戏。"},{"id":"recognition-and-action","label":"识别与动作闭环","focus":["behavior-runtime","asset-tree","adb-control","mumu-game"],"note":"行为树用场景与 Shape 理解画面，经 ADB 操作 MuMu，再重新截图验证真实落点。"},{"id":"readonly-runtime-facts","label":"只读运行态事实","focus":["mumu-game","readonly-instrumentation","job-library","behavior-runtime","scheduler"],"note":"动态插桩只读取游戏进程与内存；业务事实供行为树决策，轻量巡检只负责更新作业 next_time。"}]</script>
+    <script id="archify-guided-views-data" type="application/json">[{"id":"primary-scheduler-path","label":"一次作业如何运行","focus":["kernel-scheduler-ui","control-api","scheduler","jupyter-kernel","behavior-tree-executor","adb-control","mumu-game"],"note":"从 Kernel 调度器或工程调度出发，最终只有普通 Python Cell 能进入唯一 Kernel 并驱动游戏。"},{"id":"recognition-and-action","label":"识别与动作闭环","focus":["behavior-tree-executor","asset-tree","adb-control","mumu-game"],"note":"行为树用场景与 Shape 理解画面，经 ADB 操作 MuMu，再重新截图验证真实落点。"},{"id":"readonly-game-runtime-facts","label":"只读游戏 Runtime 事实","focus":["mumu-game","readonly-instrumentation","job-library","behavior-tree-executor","scheduler"],"note":"动态插桩只读取游戏进程与内存；业务事实供行为树决策，轻量巡检只负责更新作业 next_time。"}]</script>
 
     <div class="guided-views no-print" id="guided-views" hidden aria-label="Guided diagram views">
       <button id="guided-view-prev" type="button" aria-label="Previous guided view" title="Previous guided view ([)" data-i18n-aria-label="guided.previousAria" data-i18n-title="guided.previousTitle">&#8592;</button>
@@ -4963,23 +4963,23 @@
         <text x="1166" y="566" class="t-security" font-size="9" font-weight="600">严格只读观测</text>
 
         <!-- Connection paths (before components for correct z-order) -->
-        <path data-edge-from="runtime-ui" data-edge-to="control-api" data-edge-label="查看状态 / 提交控制" data-edge-key="0" data-edge-id="ui-to-api" data-composition-points="220,156;340,156" d="M 220 156 L 340 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="kernel-scheduler-ui" data-edge-to="control-api" data-edge-label="查看状态 / 提交控制" data-edge-key="0" data-edge-id="ui-to-api" data-composition-points="220,156;340,156" d="M 220 156 L 340 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="control-api" data-edge-to="scheduler" data-edge-label="工程 / AI 运行权" data-edge-key="1" data-edge-id="api-to-scheduler" data-composition-points="520,149;650,149" d="M 520 149 L 650 149" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="scheduler" data-edge-to="jupyter-kernel" data-edge-label="提交 run_task(...) Cell" data-edge-key="2" data-edge-id="scheduler-to-kernel" data-composition-points="840,156;980,156" d="M 840 156 L 980 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="jupyter-kernel" data-edge-to="behavior-runtime" data-edge-label="执行普通 Python Cell" data-edge-key="3" data-edge-id="kernel-to-runtime" data-composition-points="1160,156;1310,156" d="M 1160 156 L 1310 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="behavior-runtime" data-edge-to="adb-control" data-edge-label="识别后执行原子动作" data-edge-key="4" data-edge-id="runtime-to-adb" data-composition-points="1500,156;1620,156" d="M 1500 156 L 1620 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="jupyter-kernel" data-edge-to="behavior-tree-executor" data-edge-label="执行普通 Python Cell" data-edge-key="3" data-edge-id="kernel-to-executor" data-composition-points="1160,156;1310,156" d="M 1160 156 L 1310 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="behavior-tree-executor" data-edge-to="adb-control" data-edge-label="识别后执行原子动作" data-edge-key="4" data-edge-id="executor-to-adb" data-composition-points="1500,156;1620,156" d="M 1500 156 L 1620 156" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="adb-control" data-edge-to="mumu-game" data-edge-label="截图 / 输入" data-edge-key="5" data-edge-id="adb-to-game" data-composition-points="1710,192;1710,370" d="M 1710 192 L 1710 370" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="control-api" data-edge-to="scheduler-state" data-edge-label="读取状态与日志" data-edge-key="6" data-edge-id="api-to-state" data-composition-points="520,163;585,163;585,406;650,406" d="M 520 163 L 577 163 Q 585 163 585 171 L 585 398 Q 585 406 593 406 L 650 406" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="scheduler-state" data-edge-to="scheduler" data-edge-label="next_time 与 attempt" data-edge-key="7" data-edge-id="state-to-scheduler" data-composition-points="745,370;745,192" d="M 745 370 L 745 192" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="job-library" data-edge-to="jupyter-kernel" data-edge-label="注册并 bootstrap" data-edge-key="8" data-edge-id="jobs-to-kernel" data-composition-points="1070,370;1070,192" d="M 1070 370 L 1070 192" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="asset-tree" data-edge-to="behavior-runtime" data-edge-label="场景识别与导航先验" data-edge-key="9" data-edge-id="assets-to-runtime" data-composition-points="1405,370;1405,192" d="M 1405 370 L 1405 192" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <path data-edge-from="asset-tree" data-edge-to="behavior-tree-executor" data-edge-label="场景识别与导航先验" data-edge-key="9" data-edge-id="assets-to-executor" data-composition-points="1405,370;1405,192" d="M 1405 370 L 1405 192" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="mumu-game" data-edge-to="readonly-instrumentation" data-edge-label="只读进程内存" data-edge-key="10" data-edge-id="game-to-instrumentation" data-composition-points="1620,406;1596,406;1596,606;1370,606" d="M 1620 406 L 1604 406 Q 1596 406 1596 414 L 1596 598 Q 1596 606 1588 606 L 1370 606" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
         <path data-edge-from="readonly-instrumentation" data-edge-to="job-library" data-edge-label="权威业务状态快照" data-edge-key="11" data-edge-id="instrumentation-to-jobs" data-composition-points="1180,599;1170,599;1170,406;1160,406" d="M 1180 599 L 1175 599 Q 1170 599 1170 594 L 1170 411 Q 1170 406 1165 406 L 1160 406" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
         <path data-edge-from="readonly-instrumentation" data-edge-to="scheduler-state" data-edge-label="轻量巡检更新 next_time" data-edge-key="12" data-edge-id="instrumentation-to-scheduler-state" data-composition-points="1180,613;864,613;864,406;840,406" d="M 1180 613 L 872 613 Q 864 613 864 605 L 864 414 Q 864 406 856 406 L 840 406" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
 
         <!-- Components -->
-        <g id="node-runtime-ui" data-node-id="runtime-ui" data-node-label="凡修 Runtime 控制台" tabindex="0" role="button" aria-label="Focus 凡修 Runtime 控制台, 工程 / AI、作业、Cell、日志与巡检, CodeYun 控制平面" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="工程 / AI、作业、Cell、日志与巡检" data-node-context="CodeYun 控制平面">
-          <title>凡修 Runtime 控制台 · 工程 / AI、作业、Cell、日志与巡检 · CodeYun 控制平面</title>
+        <g id="node-kernel-scheduler-ui" data-node-id="kernel-scheduler-ui" data-node-label="Kernel 调度器" tabindex="0" role="button" aria-label="Focus Kernel 调度器, 工程 / AI、作业、Cell、日志与巡检, CodeYun 控制平面" aria-pressed="false" data-node-kind="frontend" data-node-sublabel="工程 / AI、作业、Cell、日志与巡检" data-node-context="CodeYun 控制平面">
+          <title>Kernel 调度器 · 工程 / AI、作业、Cell、日志与巡检 · CodeYun 控制平面</title>
           <rect x="40" y="120" width="180" height="72" rx="6" class="c-mask"/>
           <rect x="40" y="120" width="180" height="72" rx="6" class="c-frontend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="frontend" class="semantic-sigil s-frontend" transform="translate(46 126) scale(0.6875)">
@@ -4988,7 +4988,7 @@
             <circle cx="4.1" cy="4.8" r=".7" class="sigil-fill"/>
             <circle cx="6.3" cy="4.8" r=".7" class="sigil-fill"/>
           </g>
-          <text data-detail-anchor x="130" y="154" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">凡修 Runtime 控制台</text>
+          <text data-detail-anchor x="130" y="154" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Kernel 调度器</text>
         <text data-detail="context" x="130" y="170" class="t-muted" font-size="8.6" text-anchor="middle">工程 / AI、作业、Cell、日志与巡检</text>
         </g>
 
@@ -5027,14 +5027,14 @@
         <text data-detail="fine" x="1070" y="184" class="t-backend" font-size="7" text-anchor="middle">单实例</text>
         </g>
 
-        <g id="node-behavior-runtime" data-node-id="behavior-runtime" data-node-label="行为树 Runtime" tabindex="0" role="button" aria-label="Focus 行为树 Runtime, task / guard / generator / ctx, Kernel 执行平面" aria-pressed="false" data-node-kind="backend" data-node-sublabel="task / guard / generator / ctx" data-node-context="Kernel 执行平面">
-          <title>行为树 Runtime · task / guard / generator / ctx · Kernel 执行平面</title>
+        <g id="node-behavior-tree-executor" data-node-id="behavior-tree-executor" data-node-label="行为树执行器" tabindex="0" role="button" aria-label="Focus 行为树执行器, task / guard / generator / ctx, Kernel 执行平面" aria-pressed="false" data-node-kind="backend" data-node-sublabel="task / guard / generator / ctx" data-node-context="Kernel 执行平面">
+          <title>行为树执行器 · task / guard / generator / ctx · Kernel 执行平面</title>
           <rect x="1310" y="120" width="190" height="72" rx="6" class="c-mask"/>
           <rect x="1310" y="120" width="190" height="72" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(1316 126) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-detail-anchor x="1405" y="154" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">行为树 Runtime</text>
+          <text data-detail-anchor x="1405" y="154" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">行为树执行器</text>
         <text data-detail="context" x="1405" y="170" class="t-muted" font-size="9" text-anchor="middle">task / guard / generator / ctx</text>
         </g>
 
@@ -5111,7 +5111,7 @@
         </g>
 
         <!-- Connection labels -->
-        <g data-detail="context" data-edge-from="runtime-ui" data-edge-to="control-api" data-edge-label="查看状态 / 提交控制" data-edge-key="0" data-edge-id="ui-to-api">
+        <g data-detail="context" data-edge-from="kernel-scheduler-ui" data-edge-to="control-api" data-edge-label="查看状态 / 提交控制" data-edge-key="0" data-edge-id="ui-to-api">
           <rect x="229.4" y="136" width="101.2" height="14" rx="3" class="c-mask"/>
           <text x="280" y="146" class="t-backend" font-size="8" text-anchor="middle">查看状态 / 提交控制</text>
         </g>
@@ -5123,11 +5123,11 @@
           <rect x="849.8" y="136" width="120.39999999999999" height="14" rx="3" class="c-mask"/>
           <text x="910" y="146" class="t-backend" font-size="8" text-anchor="middle">提交 run_task(...) Cell</text>
         </g>
-        <g data-detail="context" data-edge-from="jupyter-kernel" data-edge-to="behavior-runtime" data-edge-label="执行普通 Python Cell" data-edge-key="3" data-edge-id="kernel-to-runtime">
+        <g data-detail="context" data-edge-from="jupyter-kernel" data-edge-to="behavior-tree-executor" data-edge-label="执行普通 Python Cell" data-edge-key="3" data-edge-id="kernel-to-executor">
           <rect x="1182" y="136" width="106" height="14" rx="3" class="c-mask"/>
           <text x="1235" y="146" class="t-backend" font-size="8" text-anchor="middle">执行普通 Python Cell</text>
         </g>
-        <g data-detail="context" data-edge-from="behavior-runtime" data-edge-to="adb-control" data-edge-label="识别后执行原子动作" data-edge-key="4" data-edge-id="runtime-to-adb">
+        <g data-detail="context" data-edge-from="behavior-tree-executor" data-edge-to="adb-control" data-edge-label="识别后执行原子动作" data-edge-key="4" data-edge-id="executor-to-adb">
           <rect x="1511.8" y="136" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
           <text x="1560" y="146" class="t-backend" font-size="8" text-anchor="middle">识别后执行原子动作</text>
         </g>
@@ -5147,7 +5147,7 @@
           <rect x="1026.6" y="350" width="86.8" height="14" rx="3" class="c-mask"/>
           <text x="1070" y="360" class="t-muted" font-size="8" text-anchor="middle">注册并 bootstrap</text>
         </g>
-        <g data-detail="context" data-edge-from="asset-tree" data-edge-to="behavior-runtime" data-edge-label="场景识别与导航先验" data-edge-key="9" data-edge-id="assets-to-runtime">
+        <g data-detail="context" data-edge-from="asset-tree" data-edge-to="behavior-tree-executor" data-edge-label="场景识别与导航先验" data-edge-key="9" data-edge-id="assets-to-executor">
           <rect x="1356.8" y="350" width="96.39999999999999" height="14" rx="3" class="c-mask"/>
           <text x="1405" y="360" class="t-muted" font-size="8" text-anchor="middle">场景识别与导航先验</text>
         </g>

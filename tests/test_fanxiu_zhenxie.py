@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime as RealDateTime
 
-from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import default_kernel_scheduler_tasks
 from backend.core.fanxiu.data_annotation.tasks import zhenxie as zhenxie_module
 from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 
@@ -19,12 +19,12 @@ class _FakeRuntime:
     def __init__(self):
         self.calls = []
 
-    def goto_view(self, scene_id):
-        self.calls.append(("goto_view", scene_id))
+    def go_scene(self, scene_id):
+        self.calls.append(("go_scene", scene_id))
         yield
 
-    def wait_click_then_view(self, scene_id, shape, target):
-        self.calls.append(("wait_click_then_view", scene_id, shape, target))
+    def wait_click_then_scene(self, scene_id, shape, target):
+        self.calls.append(("wait_click_then_scene", scene_id, shape, target))
         yield
 
     def wait_click(self, scene_id, shape):
@@ -53,10 +53,10 @@ def test_daily_zhenxie_admission_skips_all_actions_outside_window(monkeypatch):
 
 
 def test_daily_zhenxie_scheduler_definition_is_runtime_job():
-    task = next(item for item in default_data_annotation_scheduler_tasks() if item["id"] == "daily-zhenxie")
+    task = next(item for item in default_kernel_scheduler_tasks() if item["id"] == "daily-zhenxie")
 
     assert task["task_type"] == "daily_zhenxie"
-    assert task["source"] == "data_annotation_runtime"
+    assert task["source"] == "kernel_scheduler"
     assert task["trigger_description"] == "每日"
     assert task["next_time"]
     assert task["dispatch_level"] == 1

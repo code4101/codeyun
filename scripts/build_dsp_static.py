@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-DEFAULT_DSP_DIR = r"D:\home\chenkunze\slns+\dsp-calc"
+DEFAULT_DSP_DIR = r"C:\home\chenkunze\slns+\dsp-calc"
 TARGET_DIR_NAME = "dsp-calc"
 SYNC_METADATA_NAME = f"{TARGET_DIR_NAME}.json"
 METADATA_VERSION = 1

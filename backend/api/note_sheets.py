@@ -217,6 +217,7 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_DEVICE_NAME = os.environ.get(
 )
 NOTE_SHEET_DOCUMENT_JSON_CACHE_TTL_SECONDS = 300
 NOTE_SHEET_DOCUMENT_JSON_CACHE_MAX_ITEMS = 3
+NOTE_SHEET_PAGE_SNAPSHOT_MAX_ITEMS_PER_SHEET = 16
 _NOTE_SHEET_DOCUMENT_JSON_CACHE_LOCK = threading.RLock()
 _NOTE_SHEET_DOCUMENT_JSON_CACHE: OrderedDict[str, tuple[int, float, float, dict[str, Any]]] = OrderedDict()
 NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
@@ -335,6 +336,7 @@ ATTENDANCE_TEMPLATE_FANBEI_SOURCE_COURSES = (
     *ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES,
 )
 ATTENDANCE_TEMPLATE_FANBEI_START_DAY = 9
+ATTENDANCE_ZERO_REGISTRATION_FEE_START_DATE = date(2026, 8, 1)
 _note_sheet_perf_log_lock = threading.Lock()
 ATTENDANCE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "course_type": ("课程类型", 0),
@@ -346,12 +348,14 @@ ATTENDANCE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "start_date": ("课程开始日期", 8),
     "end_date": ("课程结束日期", 9),
     "completed_date": ("考勤实际完成结点", 10),
+    "registration_fee": ("报名费", 11),
     "registration_count": ("报名人数", 12),
 }
 ATTENDANCE_FIELD_LEGACY_FALLBACKS: dict[str, int] = {
     "start_date": 6,
     "end_date": 7,
     "completed_date": 8,
+    "registration_fee": 9,
     "registration_count": 10,
 }
 ATTENDANCE_TEMPLATE_COURSE_TEXT_RE = re.compile(
@@ -464,6 +468,9 @@ NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT = """你是 CodeYun 星云表格的 Excel 
 - 如果源表按分组独立编号（每个组都从 1 重新开始，或跨组出现重复序号），必须结合“分组”生成“组号_两位组内号”，例如“一组 + 2”写成 1_02，“二组 + 1”写成 2_01。
 - 如果源表序号本身是全局唯一流水号，并且没有组内重号或重置迹象，才保留全局序号。
 - 无法判断是组内编号还是全局编号时，保持源表可见语义，不要为了凑格式而编造分组前缀；完全缺失序号时再按源记录顺序从 1 开始。
+- 当工作簿同时包含完整总名单、旧分组页、班委页、辅助核对页或统计页时，只能选择完整总名单作为学员身份权威来源；其它页只允许为总名单中已存在的同一人补充字段，禁止把多张表做人员并集。
+- 组长、副组长、班委、助教、老师、日志批阅师等管理人员不等于报名学员。仅出现在管理/辅助页、未出现在权威学员名单中的人员不得导入；即使旧分组页给过学号，也不能据此覆盖最新总名单。
+- 同一工作簿存在新旧名单时，优先采用名称或内容明确表示“最新/有更新”的完整名单；若无法唯一判断权威名单，必须在 warnings 中报告并停止扩张名单，不得把所有候选页合并后猜测。
 
 返回 JSON 形状：
 {
@@ -733,6 +740,9 @@ class NoteSheetExcelImportResponse(BaseModel):
     imported_count: int = 0
     preserved_row_count: int = 0
     skipped_duplicate_count: int = 0
+    matched_existing_row_count: int = 0
+    removed_existing_row_count: int = 0
+    preserved_existing_cell_count: int = 0
     extra_columns: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     mapping_notes: list[str] = Field(default_factory=list)
@@ -1070,6 +1080,17 @@ class WorkbookReorderSheetsRequest(BaseModel):
 class WorkbookSaveAsRequest(BaseModel):
     mode: Literal["template", "duplicate"] = "duplicate"
     title: str = ""
+
+
+class AttendanceCourseWorkbookActivationResponse(BaseModel):
+    created: bool = False
+    ready: bool = False
+    workbook_id: int
+    workbook_title: str = ""
+    sheet_count: int = 0
+    sheet_ids: list[int] = Field(default_factory=list)
+    sheet_titles: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 def _create_default_sheet_document() -> dict[str, Any]:
@@ -2364,6 +2385,142 @@ def _rebase_stale_cell_patch_ops(
         }))
 
     return rebased
+
+
+def _can_apply_note_sheet_cell_patch_fast(
+    document: SheetDocument,
+    document_json: dict[str, Any],
+    ops: list[NoteSheetPatchOperation],
+) -> bool:
+    """Use copy-on-write for ordinary cells in an already identified document."""
+
+    if (
+        not ops
+        or bool(document_json.get("entity_cells"))
+        or _is_registration_sheet(document)
+        or _is_attendance_questionnaire_data_sheet(document)
+        or _normalize_sheet_text(document.sheet_key) == "attendance"
+        or _normalize_sheet_text(document.owner_type) == "course_workbook"
+        or any(operation.op not in {"set-cell-value", "set-cell-meta"} for operation in ops)
+    ):
+        return False
+
+    columns = document_json.get("columns")
+    rows = document_json.get("rows")
+    row_ids = document_json.get("row_ids")
+    column_ids = document_json.get("column_ids")
+    if not all(isinstance(value, list) for value in (columns, rows, row_ids, column_ids)):
+        return False
+    if len(row_ids) != len(rows) or len(column_ids) != len(columns):
+        return False
+    return all(
+        operation.row_index is not None
+        and operation.column_index is not None
+        and 0 <= int(operation.row_index) < len(rows)
+        and 0 <= int(operation.column_index) < len(columns)
+        for operation in ops
+    )
+
+
+def _apply_note_sheet_cell_patch_ops_fast(
+    document_json: dict[str, Any],
+    ops: list[NoteSheetPatchOperation],
+) -> tuple[dict[str, Any], int]:
+    """Apply an identified cell batch without normalizing and copying every cell."""
+
+    columns = _normalize_document_columns(document_json)
+    source_rows = _extract_document_rows(document_json)
+    row_ids = list(document_json.get("row_ids") or [])
+    column_ids = list(document_json.get("column_ids") or [])
+    next_document = dict(document_json)
+    next_rows = list(source_rows)
+    source_grid_rows = document_json.get("grid_rows")
+    next_grid_rows = list(source_grid_rows) if isinstance(source_grid_rows, list) else None
+    cell_meta = _extract_document_cell_meta(document_json)
+    cell_meta_changed = False
+    changed_row_indexes: set[int] = set()
+    updated_cell_count = 0
+
+    for operation in ops:
+        row_index = _sheet_patch_require_int(operation.row_index, "缺少行号")
+        column_index = _sheet_patch_require_int(operation.column_index, "缺少列号")
+        _sheet_patch_validate_data_cell(
+            row_index=row_index,
+            column_index=column_index,
+            rows=source_rows,
+            columns=columns,
+        )
+        if operation.row_id and str(operation.row_id) != str(row_ids[row_index]):
+            raise HTTPException(status_code=409, detail="工作表行身份已变化，请重新读取后再写入")
+        if operation.column_id and str(operation.column_id) != str(column_ids[column_index]):
+            raise HTTPException(status_code=409, detail="工作表列身份已变化，请重新读取后再写入")
+
+        if operation.op == "set-cell-value":
+            current_row = next_rows[row_index]
+            current_cells = _normalize_sheet_row(current_row, len(columns))
+            if _normalize_restricted_cell_value(current_cells[column_index]) == _normalize_restricted_cell_value(operation.value):
+                continue
+            next_rows[row_index] = _set_row_cell_value(current_row, columns, column_index, operation.value)
+            changed_row_indexes.add(row_index)
+            updated_cell_count += 1
+            continue
+
+        key = _sheet_patch_data_row_meta_key(document_json, row_index, column_index)
+        meta = dict(operation.meta or {})
+        current_meta = cell_meta.get(key) if isinstance(cell_meta.get(key), dict) else {}
+        if current_meta == meta:
+            continue
+        if meta:
+            cell_meta[key] = meta
+        else:
+            cell_meta.pop(key, None)
+        cell_meta_changed = True
+
+    if changed_row_indexes:
+        next_document["rows"] = next_rows
+        if next_grid_rows is not None:
+            data_start_row = _normalize_document_data_start_row(document_json)
+            for row_index in changed_row_indexes:
+                grid_index = data_start_row + row_index
+                if grid_index < len(next_grid_rows):
+                    next_grid_rows[grid_index] = next_rows[row_index]
+            next_document["grid_rows"] = next_grid_rows
+
+    if cell_meta_changed:
+        if cell_meta:
+            next_document["cell_meta"] = cell_meta
+        else:
+            next_document.pop("cell_meta", None)
+
+    # Formula cells cannot retain rich-text formatting. Limit the cleanup to
+    # touched targets instead of scanning every cell in a large document.
+    if changed_row_indexes or cell_meta_changed:
+        next_cell_meta = _extract_document_cell_meta(next_document)
+        rich_text_changed = False
+        for operation in ops:
+            row_index = int(operation.row_index or 0)
+            column_index = int(operation.column_index or 0)
+            current_row = next_rows[row_index]
+            current_cells = _normalize_sheet_row(current_row, len(columns))
+            if not _is_formula_expression(current_cells[column_index]):
+                continue
+            key = _sheet_patch_data_row_meta_key(document_json, row_index, column_index)
+            entry = next_cell_meta.get(key)
+            next_entry = _remove_rich_text_from_meta_entry(entry)
+            if next_entry is entry:
+                continue
+            if next_entry is None:
+                next_cell_meta.pop(key, None)
+            else:
+                next_cell_meta[key] = next_entry
+            rich_text_changed = True
+        if rich_text_changed:
+            if next_cell_meta:
+                next_document["cell_meta"] = next_cell_meta
+            else:
+                next_document.pop("cell_meta", None)
+
+    return next_document, updated_cell_count
 
 
 def _apply_note_sheet_patch_ops(document_json: dict[str, Any], ops: list[NoteSheetPatchOperation]) -> tuple[dict[str, Any], int]:
@@ -5632,6 +5789,17 @@ def _format_registration_match_cell(value: Any) -> str:
     return str(value).strip()
 
 
+def _is_valid_registration_user_id(value: Any) -> bool:
+    """Return whether a registration identity is a Xiaoe user id.
+
+    Questionnaire response numbers and other imported source identifiers must
+    not block the standard user matching action merely because the cell is
+    non-empty.
+    """
+
+    return _strip_legacy_text_prefix(_normalize_sheet_text(value)).startswith("u_")
+
+
 def _find_required_registration_column_indexes(columns: list[str], required_columns: list[str]) -> dict[str, int]:
     indexes: dict[str, int] = {}
     missing: list[str] = []
@@ -6893,11 +7061,13 @@ def _update_registration_user_match_document(
 
     for source_row in rows:
         row = list(source_row)
-        if _normalize_sheet_text(row[indexes["用户ID"]]):
+        if _is_valid_registration_user_id(row[indexes["用户ID"]]):
             skipped_count += 1
             already_complete_count += 1
             next_rows.append(row)
             continue
+        row[indexes["用户ID"]] = ""
+        row[indexes["匹配得分"]] = ""
 
         names = [
             _normalize_sheet_text(row[indexes["姓名"]]),
@@ -9758,7 +9928,7 @@ def _count_registration_user_match_targets(document_json: dict[str, Any]) -> int
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     count = 0
     for row in rows:
-        if _normalize_sheet_text(row[indexes["用户ID"]]):
+        if _is_valid_registration_user_id(row[indexes["用户ID"]]):
             continue
         names = [
             _normalize_sheet_text(row[indexes["姓名"]]),
@@ -9966,10 +10136,12 @@ def _run_registration_user_match_background(
                     return
 
                 row = list(source_row)
-                if _normalize_sheet_text(row[indexes["用户ID"]]):
+                if _is_valid_registration_user_id(row[indexes["用户ID"]]):
                     skipped_count += 1
                     _update_registration_match_run(run_id, skipped_count=skipped_count)
                     continue
+                row[indexes["用户ID"]] = ""
+                row[indexes["匹配得分"]] = ""
 
                 names = [
                     _normalize_sheet_text(row[indexes["姓名"]]),
@@ -10761,6 +10933,7 @@ def _build_note_sheet_excel_import_prompt(
     instruction: str,
     action_document_row: int | None = None,
     action_column: int | None = None,
+    mode: Literal["append", "reset", "sync"] = "reset",
 ) -> str:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
@@ -10777,6 +10950,7 @@ def _build_note_sheet_excel_import_prompt(
         "header_rows": grid_rows[:data_start_row],
         "preserved_leading_data_rows": preserved_rows,
         "imported_rows_should_start_after_preserved_count": len(preserved_rows),
+        "import_mode": mode,
         "trigger_action": {
             "type": NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET,
             "document_row": action_document_row,
@@ -11226,6 +11400,76 @@ def _prefer_registration_group_sequences_from_workbook(
     return next_rows, changed_count, source_field_count
 
 
+def _sync_registration_import_rows_with_existing(
+    current_document: dict[str, Any],
+    import_rows: list[list[Any]],
+    columns: list[str],
+) -> tuple[list[list[Any]], int, int, int]:
+    """Use the uploaded roster as membership authority while preserving known fields.
+
+    The source rows decide who remains and provide any non-empty changed values. A
+    uniquely matched existing row supplies only fields that the source left blank.
+    """
+
+    if not import_rows or not _is_registration_append_sheet(columns):
+        return import_rows, 0, len(_extract_document_rows(current_document)), 0
+
+    current_rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(current_document)
+    ]
+    field_indexes = {
+        "phone": _get_column_index(columns, "手机号"),
+        "merchant_order": _get_column_index(columns, "商户订单号"),
+        "payment_order": _get_column_index(columns, "微信支付订单号"),
+        "name": _get_column_index(columns, "姓名"),
+        "nickname": _get_column_index(columns, "微信昵称"),
+    }
+
+    def candidate(row: list[Any]) -> dict[str, str]:
+        return {
+            field: _normalize_sheet_text(row[index]) if 0 <= index < len(row) else ""
+            for field, index in field_indexes.items()
+        }
+
+    grouped_indexes: dict[tuple[str, str], list[int]] = {}
+    for index, row in enumerate(current_rows):
+        for key in _registration_group_sequence_row_keys(candidate(row)):
+            grouped_indexes.setdefault(key, []).append(index)
+    unique_lookup = {
+        key: indexes[0]
+        for key, indexes in grouped_indexes.items()
+        if len(set(indexes)) == 1
+    }
+
+    matched_indexes: set[int] = set()
+    preserved_cell_count = 0
+    merged_rows: list[list[Any]] = []
+    for raw_row in import_rows:
+        row = _normalize_sheet_row(raw_row, len(columns))
+        matched_candidates = {
+            unique_lookup[key]
+            for key in _registration_group_sequence_row_keys(candidate(row))
+            if key in unique_lookup
+        }
+        if len(matched_candidates) == 1:
+            matched_index = next(iter(matched_candidates))
+            existing_row = current_rows[matched_index]
+            matched_indexes.add(matched_index)
+            for column_index, current_value in enumerate(existing_row):
+                if not _normalize_sheet_text(row[column_index]) and _normalize_sheet_text(current_value):
+                    row[column_index] = current_value
+                    preserved_cell_count += 1
+        merged_rows.append(row)
+
+    return (
+        merged_rows,
+        len(matched_indexes),
+        max(0, len(current_rows) - len(matched_indexes)),
+        preserved_cell_count,
+    )
+
+
 def _normalize_import_message_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -11241,6 +11485,7 @@ def _run_note_sheet_excel_import_deepseek(
     current_user: User,
     action_document_row: int | None = None,
     action_column: int | None = None,
+    mode: Literal["append", "reset", "sync"] = "reset",
 ) -> tuple[list[list[Any]], list[str], list[str], list[str]]:
     columns = _normalize_document_columns(document_json)
     prompt = _build_note_sheet_excel_import_prompt(
@@ -11249,6 +11494,7 @@ def _run_note_sheet_excel_import_deepseek(
         instruction=instruction,
         action_document_row=action_document_row,
         action_column=action_column,
+        mode=mode,
     )
     runtime = resolve_ai_app_runtime_config(
         session=session,
@@ -12332,6 +12578,11 @@ def _build_inserted_attendance_template_row(
         "start_date": _format_attendance_date_serial(target_date),
         "completed_date": "",
     }
+    if (
+        _normalize_sheet_text(course_type) in ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES
+        and target_date >= ATTENDANCE_ZERO_REGISTRATION_FEE_START_DATE
+    ):
+        replacements["registration_fee"] = "0"
     end_date_index = _find_attendance_column_index(columns, "end_date")
     if end_date_index is not None and end_date_index < len(source_row) and source_start_date is not None:
         source_end_value = source_row[end_date_index]
@@ -12456,19 +12707,18 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
         if document is None or document.scope != "notes" or not _is_attendance_summary_document(session, document):
             return 0, 0
 
-        current_document = _normalize_document_json(dict(document.document_json or {}))
-        current_document, repaired = _repair_attendance_summary_cell_meta(current_document)
-        current_document, links_repaired = _repair_attendance_summary_online_sheet_links(current_document)
-        if repaired or links_repaired:
-            document.document_json = current_document
-            document.version = max(int(document.version or 1), 1) + 1
-            document.updated_by_user_id = document.owner_user_id
-            document.updated_at = time.time()
-            session.add(document)
-            session.commit()
-            session.refresh(document)
-            _broadcast_sheet_resource_update(document)
-            current_document = _normalize_document_json(dict(document.document_json or {}))
+        independent_attendance = _bind_independent_attendance_document(
+            document,
+            sheet_id=ATTENDANCE_SUMMARY_SHEET_ID,
+            workbook_id=ATTENDANCE_SUMMARY_WORKBOOK_ID,
+        )
+        source_document = _normalize_document_json(dict(
+            independent_attendance["document_json"]
+            if independent_attendance is not None
+            else document.document_json or {}
+        ))
+        current_document, _repaired = _repair_attendance_summary_cell_meta(source_document)
+        current_document, _links_repaired = _repair_attendance_summary_online_sheet_links(current_document)
 
         job_target_date = _get_next_month_first_day()
         skip_course_types = _read_attendance_template_skip_course_types(session, job_target_date)
@@ -12490,14 +12740,30 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
             targets=job_targets,
             owner_user_id=document.owner_user_id,
         )
-        if (generated or materialized_count) and current_document != next_document:
-            document.document_json = next_document
-            document.version = max(int(document.version or 1), 1) + 1
-            document.updated_by_user_id = document.owner_user_id
-            document.updated_at = time.time()
-            session.add(document)
+        if source_document != next_document:
+            if independent_attendance is not None:
+                # Course workbooks and their copied grants live in CodeYun, while
+                # the summary document lives in attendance.sqlite3. Commit the
+                # resource side first so every summary link points at a durable
+                # workbook, then replace the authoritative summary atomically.
+                session.commit()
+                _replace_independent_attendance_summary_document(
+                    document,
+                    independent_attendance,
+                    next_document,
+                    sheet_id=ATTENDANCE_SUMMARY_SHEET_ID,
+                    workbook_id=ATTENDANCE_SUMMARY_WORKBOOK_ID,
+                )
+            else:
+                document.document_json = next_document
+                document.version = max(int(document.version or 1), 1) + 1
+                document.updated_by_user_id = document.owner_user_id
+                document.updated_at = time.time()
+                session.add(document)
+                session.commit()
+                _broadcast_sheet_resource_update(document)
+        elif materialized_count:
             session.commit()
-            _broadcast_sheet_resource_update(document)
 
         if generated or skipped:
             print(
@@ -12638,20 +12904,89 @@ def _get_attendance_course_name_from_row(row: list[Any], columns: list[Any]) -> 
 
 
 def _get_attendance_template_course_run_bucket(text: str) -> tuple[int, int]:
-    # Keep this in sync with kq5034._课程类型排序值 so generated rows keep the same run order.
+    # Active-course canonical order: challenge, Jueguan, Nianzhu, Fanbei,
+    # then Zen/修道班. Completed rows are archived separately and never use
+    # this ordering rule.
     if "念住闯关" in text:
         return (1, 0)
-    if "念住" in text:
-        return (2, 0)
     if "觉观" in text:
+        return (2, 0)
+    if "念住" in text:
         return (2, 1)
-    if "禅宗" in text or "修道班" in text:
-        return (3, 0)
     if "梵呗初阶" in text:
-        return (10, 0)
+        return (2, 2)
     if "梵呗增益" in text:
-        return (10, 1)
+        return (2, 3)
+    if "梵呗" in text:
+        return (2, 4)
+    if "禅宗" in text or "修道班" in text:
+        period_match = re.search(
+            r"(?:禅宗|修道班)\s*(?P<period>\d+)(?:\s*[,，、]\s*\d+)*\s*期",
+            text,
+        )
+        return (3, int(period_match.group("period")) if period_match else 10_000)
     return (10, 0)
+
+
+def _order_active_attendance_summary_rows(document_json: dict[str, Any]) -> dict[str, Any]:
+    """Apply the canonical order only to unfinished rows; keep archive order stable."""
+
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    completed_index = _find_attendance_column_index(columns, "completed_date")
+    if completed_index is None or len(rows) < 2:
+        return normalized
+
+    active_source_indexes = [
+        index
+        for index, row in enumerate(rows)
+        if not _attendance_row_has_completion(row, columns, completed_index)
+    ]
+    active_source_index_set = set(active_source_indexes)
+    ordered_active_indexes = sorted(
+        active_source_indexes,
+        key=lambda index: (_get_attendance_template_row_run_bucket(rows[index], columns), index),
+    )
+    active_indexes_iter = iter(ordered_active_indexes)
+    ordered_source_indexes = [
+        next(active_indexes_iter) if index in active_source_index_set else index
+        for index in range(len(rows))
+    ]
+    if ordered_source_indexes == list(range(len(rows))):
+        return normalized
+
+    row_index_map = {
+        source_index: target_index
+        for target_index, source_index in enumerate(ordered_source_indexes)
+    }
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    next_rows = [
+        _remap_row_formula_cell_references(
+            rows[source_index],
+            columns=columns,
+            row_index_map=row_index_map,
+            row_index_offset=formula_row_offset,
+        )
+        for source_index in ordered_source_indexes
+    ]
+    next_document = _replace_document_data_rows({**normalized, "columns": columns}, next_rows)
+    if isinstance(normalized.get("cell_meta"), dict):
+        next_document["cell_meta"] = _remap_cell_meta_rows(
+            normalized.get("cell_meta"),
+            row_index_map,
+            row_offset=_normalize_document_data_start_row(normalized),
+        )
+    next_document = _remap_document_entity_data_rows(
+        next_document,
+        normalized,
+        row_index_map=row_index_map,
+        data_row_count=len(rows),
+    )
+    row_ids = normalized.get("row_ids")
+    if isinstance(row_ids, list) and len(row_ids) == len(rows):
+        next_document["row_ids"] = [row_ids[source_index] for source_index in ordered_source_indexes]
+    return next_document
 
 
 def _get_attendance_template_row_run_bucket(row: Any, columns: list[Any]) -> tuple[int, int]:
@@ -12771,7 +13106,7 @@ def _generate_attendance_course_templates(
         ))
 
     if not pending_rows:
-        return normalized, generated, skipped
+        return _order_active_attendance_summary_rows(normalized), generated, skipped
 
     pending_rows.sort(key=lambda item: (_get_attendance_template_item_run_bucket(item[4]), item[0]))
     pending_items = [item for *_row_info, item in pending_rows]
@@ -12833,6 +13168,23 @@ def _generate_attendance_course_templates(
             *entity_rows[data_start_row + insert_index:],
         ]
 
+    next_document = _order_active_attendance_summary_rows(next_document)
+    ordered_rows = _extract_document_rows(next_document)
+    type_index = _find_attendance_column_index(columns, "course_type")
+    start_date_index = _find_attendance_column_index(columns, "start_date")
+    for item in generated:
+        item_target_date = _parse_attendance_date_text(item.target_date)
+        if item_target_date is None or type_index is None or start_date_index is None:
+            continue
+        item.row_index = next(
+            (
+                row_index
+                for row_index, row in enumerate(ordered_rows)
+                if _normalize_sheet_text(_extract_row_cell_value(row, type_index, columns)) == item.course_type
+                and _coerce_attendance_date(_extract_row_cell_value(row, start_date_index, columns)) == item_target_date
+            ),
+            item.row_index,
+        )
     return next_document, generated, skipped
 
 
@@ -13856,6 +14208,11 @@ def _maybe_materialize_zen_course_data_sheets(
         attendance_sheet=attendance_sheet,
         owner_key=_normalize_sheet_text(attendance_sheet.owner_key),
     )
+    # The materialized config sheet is reloaded through its numeric route id on
+    # legacy SQLite databases. Persist that numeric-id instance before touching
+    # the cloned attendance instance, whose newly allocated id is still a
+    # numeric string in the current identity map.
+    session.flush()
     attendance_sheet.document_json = _remove_duplicate_plain_lesson_columns(
         dict(attendance_sheet.document_json or {})
     )
@@ -14200,6 +14557,60 @@ def _prune_no_attendance_video_config_rows_for_course_template(
     session.add(video_config)
 
 
+def _activate_attendance_course_workbook(
+    session: Session,
+    workbook: WorkbookDocument,
+) -> dict[str, Any]:
+    """Hand one committed course shell to the attendance-owned runtime."""
+
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    sheet_map = load_sheets_by_refs(session, [link.sheet_id for link in links])
+    sheets = [sheet_map.get(str(link.sheet_id)) for link in links]
+    sheets = [sheet for sheet in sheets if sheet is not None]
+    owner_keys = {str(sheet.owner_key or "").strip() for sheet in sheets if str(sheet.owner_key or "").strip()}
+    snapshot = {
+        "workbook": {
+            "numeric_id": _require_workbook_numeric_id(workbook),
+            "title": workbook.title,
+            "owner_user_id": workbook.owner_user_id,
+            "created_by_user_id": workbook.created_by_user_id,
+            "updated_by_user_id": workbook.updated_by_user_id,
+            "created_at": workbook.created_at,
+            "updated_at": workbook.updated_at,
+        },
+        "owner_key": next(iter(owner_keys)) if len(owner_keys) == 1 else "",
+        "defined_names": _get_workbook_defined_names(session, workbook),
+        "sheets": [
+            {
+                "numeric_id": _require_sheet_numeric_id(sheet),
+                "scope": sheet.scope,
+                "owner_key": sheet.owner_key,
+                "sheet_key": sheet.sheet_key,
+                "title": sheet.title,
+                "engine": sheet.engine,
+                "document_json": dict(sheet.document_json or {}),
+                "version": sheet.version,
+                "owner_user_id": sheet.owner_user_id,
+                "created_by_user_id": sheet.created_by_user_id,
+                "updated_by_user_id": sheet.updated_by_user_id,
+                "created_at": sheet.created_at,
+                "updated_at": sheet.updated_at,
+            }
+            for sheet in sheets
+        ],
+    }
+    return LocalAttendanceSheetClient().activate_course_workbook(snapshot)
+
+
 def _clone_attendance_course_template_workbook(
     session: Session,
     *,
@@ -14210,6 +14621,8 @@ def _clone_attendance_course_template_workbook(
 ) -> tuple[WorkbookDocument, SheetDocument] | None:
     existing = _find_course_template_workbook_by_owner_key(session, owner_key=owner_key)
     if existing is not None:
+        session.flush()
+        _activate_attendance_course_workbook(session, existing[0])
         return existing
 
     source_workbook = session.exec(
@@ -14337,12 +14750,24 @@ def _clone_attendance_course_template_workbook(
     if attendance_sheet is None:
         return None
     _normalize_no_attendance_color_boundary(session, attendance_sheet)
+    # Legacy SQLite instances still expose numeric primary keys as ``int`` even
+    # though newly allocated resource ids are represented as numeric strings.
+    # Flush the cloned attendance document before the materializer reloads the
+    # workbook bundle by numeric id; otherwise the final unit of work can contain
+    # dirty SheetDocument identities of both types and SQLAlchemy cannot sort
+    # them during commit.
+    session.flush()
     _maybe_materialize_zen_course_data_sheets(
         session,
         workbook=workbook,
         attendance_sheet=attendance_sheet,
         course_name=title,
     )
+    # Keep the cloned string-id documents out of the caller's final flush, where
+    # the existing attendance-summary sheet may still carry an integer primary
+    # key from the legacy SQLite schema.
+    session.flush()
+    _activate_attendance_course_workbook(session, workbook)
     return workbook, attendance_sheet
 
 
@@ -15923,6 +16348,53 @@ def _is_sheet_page_snapshot_enabled(document: SheetDocument) -> bool:
     return _normalize_sheet_text(document.sheet_key) != "attendance"
 
 
+def _invalidate_sheet_page_snapshots(session: Session, document: SheetDocument) -> None:
+    """Drop derived page projections after the authoritative sheet changes."""
+
+    if not _is_sheet_page_snapshot_enabled(document):
+        return
+    session.exec(
+        delete(SheetPageSnapshot).where(
+            SheetPageSnapshot.sheet_id == str(document.id),
+        )
+    )
+
+
+def _prune_sheet_page_snapshots(session: Session, document: SheetDocument) -> None:
+    """Keep only bounded snapshots for the sheet's current persisted revision."""
+
+    sheet_id = str(document.id)
+    current_version = int(document.version or 1)
+    current_updated_at = float(document.updated_at or 0.0)
+    session.exec(
+        delete(SheetPageSnapshot).where(
+            SheetPageSnapshot.sheet_id == sheet_id,
+            or_(
+                SheetPageSnapshot.sheet_version != current_version,
+                SheetPageSnapshot.sheet_updated_at != current_updated_at,
+            ),
+        )
+    )
+    current_snapshot_ids = list(
+        session.exec(
+            select(SheetPageSnapshot.id)
+            .where(
+                SheetPageSnapshot.sheet_id == sheet_id,
+                SheetPageSnapshot.sheet_version == current_version,
+                SheetPageSnapshot.sheet_updated_at == current_updated_at,
+            )
+            .order_by(SheetPageSnapshot.updated_at.desc(), SheetPageSnapshot.id.desc())
+        ).all()
+    )
+    overflow_ids = [
+        snapshot_id
+        for snapshot_id in current_snapshot_ids[NOTE_SHEET_PAGE_SNAPSHOT_MAX_ITEMS_PER_SHEET:]
+        if snapshot_id is not None
+    ]
+    if overflow_ids:
+        session.exec(delete(SheetPageSnapshot).where(SheetPageSnapshot.id.in_(overflow_ids)))
+
+
 def _get_sheet_page_snapshot(
     session: Session,
     document: SheetDocument,
@@ -16042,6 +16514,8 @@ def _store_sheet_page_snapshot(
     )
     snapshot.updated_at = now
     session.add(snapshot)
+    session.flush()
+    _prune_sheet_page_snapshots(session, document)
     session.commit()
 
 
@@ -18637,9 +19111,12 @@ def _bind_independent_attendance_document(
     from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
 
     try:
-        if sheet_id == 5 and workbook_id == 2:
-            from backend.api.attendance import reconcile_independent_attendance_wjx_course_fields
+        from backend.api.attendance import (
+            is_independent_attendance_wjx_sheet_reference,
+            reconcile_independent_attendance_wjx_course_fields,
+        )
 
+        if is_independent_attendance_wjx_sheet_reference(sheet_id, workbook_id):
             reconcile_independent_attendance_wjx_course_fields()
         payload = LocalAttendanceSheetClient().get_document(
             SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id)
@@ -18748,6 +19225,52 @@ def _reject_independent_attendance_legacy_mutation(
                 "请使用考勤独立表格 API"
             ),
         )
+
+
+def _replace_independent_attendance_summary_document(
+    document: SheetDocument,
+    source: dict[str, Any],
+    next_document: dict[str, Any],
+    *,
+    sheet_id: int,
+    workbook_id: int | None,
+) -> dict[str, Any]:
+    """Persist a summary mutation to the attendance-owned source of truth."""
+    from types import SimpleNamespace
+
+    from xlsln.kq5034.engine.client import (
+        AttendanceStorageError,
+        AttendanceVersionConflict,
+        LocalAttendanceSheetClient,
+    )
+
+    try:
+        result = LocalAttendanceSheetClient().replace_document(
+            SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id),
+            next_document,
+            expected_version=max(int(source.get("version") or 1), 1),
+        )
+    except AttendanceVersionConflict as exc:
+        raise HTTPException(status_code=409, detail="工作表数据已更新，请刷新后重试") from exc
+    except AttendanceStorageError as exc:
+        raise HTTPException(status_code=503, detail=f"独立考勤工作表不可用：{exc}") from exc
+
+    # ``replace_document`` intentionally returns only the mutable document
+    # fields. Keep immutable display metadata from the authoritative read
+    # payload instead of assuming the write response repeats it.
+    authoritative_result = {
+        **source,
+        **result,
+        "title": result.get("title") or source.get("title") or document.title,
+        "engine": result.get("engine") or source.get("engine") or document.engine,
+    }
+    attributes.set_committed_value(document, "title", authoritative_result["title"])
+    attributes.set_committed_value(document, "engine", authoritative_result["engine"])
+    attributes.set_committed_value(document, "version", int(authoritative_result["version"]))
+    attributes.set_committed_value(document, "updated_at", float(authoritative_result["updated_at"]))
+    attributes.set_committed_value(document, "document_json", authoritative_result["document_json"])
+    _broadcast_sheet_resource_update(document)
+    return authoritative_result
 
 
 def _patch_independent_attendance_document(
@@ -19355,16 +19878,9 @@ def patch_note_sheet_table(
         document.updated_by_user_id = current_user.id if current_user is not None else None
         document.updated_at = time.time()
         session.add(document)
+        _invalidate_sheet_page_snapshots(session, document)
         session.commit()
         session.refresh(document)
-        _prewarm_default_sheet_page_snapshot(
-            session,
-            document,
-            access=access,
-            workbook=workbook,
-            current_user=current_user,
-            document_json=next_document,
-        )
         _broadcast_sheet_resource_update(document)
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
@@ -19495,18 +20011,11 @@ def patch_note_sheet_cells(
         document.updated_by_user_id = current_user.id if current_user is not None else None
         document.updated_at = time.time()
         session.add(document)
+        _invalidate_sheet_page_snapshots(session, document)
         session.commit()
         session.refresh(document)
         if _is_attendance_questionnaire_data_sheet(document):
             _sync_attendance_questionnaire_entry_statuses(session, next_document)
-        _prewarm_default_sheet_page_snapshot(
-            session,
-            document,
-            access=access,
-            workbook=workbook,
-            current_user=current_user,
-            document_json=next_document,
-        )
         _broadcast_sheet_resource_update(document)
 
     if _is_attendance_questionnaire_data_sheet(document):
@@ -19563,12 +20072,12 @@ def patch_note_sheet(
     # writer wins the race between our read and commit.
     for _attempt in range(4):
         current_version = max(int(document.version or 1), 1)
-        normalized = _normalize_document_json(deepcopy(dict(document.document_json or {})))
+        current_document = dict(document.document_json or {})
         operations = list(payload.ops)
         if int(payload.base_version) != current_version:
-            operations = _rebase_stale_cell_patch_ops(normalized, operations)
-        columns = _normalize_document_columns(normalized)
-        rows = _extract_document_rows(normalized)
+            operations = _rebase_stale_cell_patch_ops(current_document, operations)
+        columns = _normalize_document_columns(current_document)
+        rows = _extract_document_rows(current_document)
         _validate_note_sheet_patch_access(
             access=access,
             current_user=current_user,
@@ -19577,16 +20086,23 @@ def patch_note_sheet(
             rows=rows,
         )
 
-        next_document, updated_cell_count = _apply_note_sheet_patch_ops(normalized, operations)
-        next_document = _strip_formula_cell_rich_text(next_document)
-        next_document = _remove_orphan_document_entity_cells(next_document)
-        next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
+        use_cell_fast_path = _can_apply_note_sheet_cell_patch_fast(document, current_document, operations)
+        if use_cell_fast_path:
+            next_document, updated_cell_count = _apply_note_sheet_cell_patch_ops_fast(current_document, operations)
+        else:
+            next_document, updated_cell_count = _apply_note_sheet_patch_ops(current_document, operations)
+            next_document = _strip_formula_cell_rich_text(next_document)
+            next_document = _remove_orphan_document_entity_cells(next_document)
+            next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(
+                next_document,
+                assume_normalized=True,
+            )
         if _is_registration_sheet(document):
             next_document, _registration_header_changed = _normalize_registration_sheet_header_document(next_document)
         if _is_attendance_questionnaire_data_sheet(document):
             next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
 
-        if next_document == normalized:
+        if next_document == current_document:
             break
 
         result = session.exec(
@@ -19601,6 +20117,7 @@ def patch_note_sheet(
             )
         )
         if int(result.rowcount or 0) == 1:
+            _invalidate_sheet_page_snapshots(session, document)
             session.commit()
             session.expire_all()
             refreshed = session.get(SheetDocument, document.id)
@@ -19622,14 +20139,6 @@ def patch_note_sheet(
     if persisted and next_document is not None:
         if _is_attendance_questionnaire_data_sheet(document):
             _sync_attendance_questionnaire_entry_statuses(session, next_document)
-        _prewarm_default_sheet_page_snapshot(
-            session,
-            document,
-            access=access,
-            workbook=workbook,
-            current_user=current_user,
-            document_json=next_document,
-        )
         _broadcast_sheet_resource_update(
             document,
             mutation_id=payload.mutation_id,
@@ -19931,7 +20440,7 @@ async def import_note_sheet_excel_reset(
     sheet_id: int,
     file: UploadFile = File(...),
     instruction: str = Form(default=""),
-    mode: Literal["append", "reset"] = Form(default="reset"),
+    mode: Literal["append", "reset", "sync"] = Form(default="reset"),
     action_document_row: int | None = Form(default=None),
     action_column: int | None = Form(default=None),
     base_version: int | None = Form(default=None, ge=1),
@@ -19972,7 +20481,15 @@ async def import_note_sheet_excel_reset(
         current_user=current_user,
         action_document_row=action_document_row,
         action_column=action_column,
+        mode=mode,
     )
+    # AI normalization can take minutes. Re-read the sheet before committing so
+    # an update that happened during inference cannot be overwritten by a stale
+    # document snapshot.
+    session.refresh(document)
+    if base_version is not None and int(base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="表格数据在导入处理中已更新，请刷新后重试")
+    current_document = _normalize_document_json(dict(document.document_json or {}))
     effective_document, _effective_extra_columns = _append_document_extra_columns_for_excel_import(
         current_document,
         extra_columns,
@@ -19994,6 +20511,9 @@ async def import_note_sheet_excel_reset(
             f"已按源 Excel 补正提交时间、商户订单号、订单金额等字段 {source_field_count} 行",
         ]
     skipped_duplicate_count = 0
+    matched_existing_row_count = 0
+    removed_existing_row_count = 0
+    preserved_existing_cell_count = 0
     if mode == "append":
         import_rows, skipped_duplicate_count = _filter_duplicate_excel_import_payment_order_rows(
             effective_document,
@@ -20013,6 +20533,24 @@ async def import_note_sheet_excel_reset(
             imported_count = 0
             extra_columns = []
     else:
+        if mode == "sync":
+            (
+                import_rows,
+                matched_existing_row_count,
+                removed_existing_row_count,
+                preserved_existing_cell_count,
+            ) = _sync_registration_import_rows_with_existing(
+                effective_document,
+                import_rows,
+                effective_columns,
+            )
+            mapping_notes = [
+                *mapping_notes,
+                (
+                    f"已按上传名单同步：匹配并保留 {matched_existing_row_count} 名现有学员的已知字段，"
+                    f"移除 {removed_existing_row_count} 名未列入上传名单的原表人员"
+                ),
+            ]
         next_document, preserved_row_count = _replace_document_rows_for_excel_import(
             current_document,
             import_rows,
@@ -20061,6 +20599,9 @@ async def import_note_sheet_excel_reset(
         imported_count=imported_count,
         preserved_row_count=preserved_row_count,
         skipped_duplicate_count=skipped_duplicate_count,
+        matched_existing_row_count=matched_existing_row_count,
+        removed_existing_row_count=removed_existing_row_count,
+        preserved_existing_cell_count=preserved_existing_cell_count,
         extra_columns=extra_columns,
         warnings=warnings,
         mapping_notes=mapping_notes,
@@ -20681,6 +21222,11 @@ def generate_attendance_summary_next_month_templates(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -20709,15 +21255,26 @@ def generate_attendance_summary_next_month_templates(
         owner_user_id=current_user.id,
     )
 
-    if (generated or materialized_count) and current_document != next_document:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        _broadcast_sheet_resource_update(document)
+    if current_document != next_document:
+        if independent_attendance is not None:
+            session.commit()
+            result = _replace_independent_attendance_summary_document(
+                document,
+                independent_attendance,
+                next_document,
+                sheet_id=sheet_id,
+                workbook_id=workbook_id,
+            )
+            next_document = _normalize_document_json(dict(result["document_json"] or {}))
+        else:
+            document.document_json = next_document
+            document.version = max(int(document.version or 1), 1) + 1
+            document.updated_by_user_id = current_user.id
+            document.updated_at = time.time()
+            session.add(document)
+            session.commit()
+            session.refresh(document)
+            _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -20752,6 +21309,11 @@ def generate_attendance_summary_course_template(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -20778,15 +21340,26 @@ def generate_attendance_summary_course_template(
         owner_user_id=current_user.id,
     )
 
-    if (generated or materialized_count) and current_document != next_document:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        _broadcast_sheet_resource_update(document)
+    if current_document != next_document:
+        if independent_attendance is not None:
+            session.commit()
+            result = _replace_independent_attendance_summary_document(
+                document,
+                independent_attendance,
+                next_document,
+                sheet_id=sheet_id,
+                workbook_id=workbook_id,
+            )
+            next_document = _normalize_document_json(dict(result["document_json"] or {}))
+        else:
+            document.document_json = next_document
+            document.version = max(int(document.version or 1), 1) + 1
+            document.updated_by_user_id = current_user.id
+            document.updated_at = time.time()
+            session.add(document)
+            session.commit()
+            session.refresh(document)
+            _broadcast_sheet_resource_update(document)
     else:
         next_document = current_document
 
@@ -21309,6 +21882,28 @@ def get_workbook(
     if timings is not None:
         response.headers["Server-Timing"] = _format_note_sheet_server_timing(timings)
     return result
+
+
+@router.post(
+    "/workbooks/{workbook_id}/attendance-activate",
+    response_model=AttendanceCourseWorkbookActivationResponse,
+)
+def activate_attendance_course_workbook(
+    workbook_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Activate a complete six-sheet course workbook in attendance storage."""
+
+    workbook, _access = _get_workbook_or_404(
+        session,
+        current_user,
+        workbook_id,
+        required_role="editor",
+    )
+    session.flush()
+    result = _activate_attendance_course_workbook(session, workbook)
+    return AttendanceCourseWorkbookActivationResponse.model_validate(result)
 
 
 @router.get("/workbooks/{workbook_id}/export")

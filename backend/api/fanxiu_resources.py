@@ -58,7 +58,7 @@ from backend.core.fanxiu.catalog.il2cpp_metadata import (
     build_fanxiu_il2cpp_hot_update_report,
     build_fanxiu_il2cpp_metadata_probe,
 )
-from backend.core.fanxiu.runtime.download_bridge import (
+from backend.core.fanxiu.client.download_bridge import (
     build_fanxiu_il2cpp_download_inventory,
     build_fanxiu_lua_download_bridge_report,
 )

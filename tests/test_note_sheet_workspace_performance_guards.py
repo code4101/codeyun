@@ -167,7 +167,19 @@ def test_public_workbook_routes_preserve_sheet_perf_without_query_spread():
     assert "query.sheetPerf = String(sheetPerfQuery)" in body
 
 
-def test_public_workbook_initial_load_keeps_workbook_and_sheet_requests_parallel():
+def test_independent_attendance_sheet_tab_links_preserve_workbook_context():
+    source = _resource_view_source()
+    start = source.index("function getSheetTabResourceHref()")
+    end = source.index("\nfunction getWorkbookResourceHref()", start)
+    body = source[start:end]
+
+    assert "const currentWorkbook = workbook.value" in body
+    assert "isIndependentAttendanceResource.value && currentWorkbook" in body
+    assert "resolveWorkbookResourceHref(currentWorkbook.id, sheet.id)" in body
+    assert body.index("resolveWorkbookResourceHref") < body.index("resolveSheetResourceHref")
+
+
+def test_public_workbook_initial_load_resolves_standard_resource_before_attendance_fallback():
     source = _resource_view_source()
     start = source.index("async function loadWorkbookResource()")
     end = source.index("\nfunction selectSheet", start)
@@ -175,8 +187,39 @@ def test_public_workbook_initial_load_keeps_workbook_and_sheet_requests_parallel
 
     assert "() => fetchWorkbook(targetWorkbookId)" in body
     assert "resource-view.prefetchSheet" in body
-    assert "Promise.all([workbookRequest, sheetRequest])" in body
+    assert "Promise.all([workbookRequest, requestedSheetRequest])" in body
+    standard_resolve = body.index("() => fetchWorkbook(targetWorkbookId)")
+    standard_batch_end = body.index(
+        "Promise.all([workbookRequest, requestedSheetRequest])",
+        standard_resolve,
+    )
+    attendance_fallback = body.index(
+        "() => fetchIndependentAttendanceWorkbookById(targetWorkbookId)",
+        standard_batch_end,
+    )
+    assert standard_resolve < standard_batch_end < attendance_fallback
+    assert "fetchIndependentAttendanceSheetDocumentById" not in body[
+        standard_resolve:standard_batch_end
+    ]
     assert "active_sheet_detail" not in body
+
+
+def test_public_workbook_access_denial_can_degrade_to_accessible_standalone_sheet():
+    source = _resource_view_source()
+    redirect_start = source.index("async function redirectToStandaloneSheetFromWorkbookQuery()")
+    redirect_end = source.index("\nasync function loadWorkbookResource()", redirect_start)
+    redirect_body = source[redirect_start:redirect_end]
+    load_start = source.index("async function loadWorkbookResource()")
+    load_end = source.index("\nfunction selectSheet", load_start)
+    load_body = source[load_start:load_end]
+
+    assert "await fetchNoteSheet(targetSheetId, { paginate: false })" in redirect_body
+    assert "path: sheetResourcePath(targetSheetId)" in redirect_body
+    assert "query: getCleanWorkbookRouteQuery()" in redirect_body
+    assert "isAccessDeniedStatus(status) && await redirectToStandaloneSheetFromWorkbookQuery()" in load_body
+    assert load_body.index("redirectToStandaloneSheetFromWorkbookQuery()") < load_body.index(
+        "setResourceAccessIssue('workbook'"
+    )
 
 
 def test_note_sheet_get_path_reuses_normalized_document_for_attendance_sheets():
@@ -240,7 +283,7 @@ def test_note_sheet_get_path_uses_page_snapshot_before_large_document_json():
     assert "return _normalize_sheet_text(document.sheet_key) != \"attendance\"" in source
 
 
-def test_note_sheet_write_paths_prewarm_default_page_snapshot_without_touching_internal_repairs():
+def test_note_sheet_write_paths_keep_incremental_patches_lazy_and_prewarm_explicit_replacements():
     source = _note_sheets_api_source()
     prewarm_start = source.index("def _prewarm_default_sheet_page_snapshot(")
     prewarm_end = source.index("\n\ndef _is_superuser_or_user_id", prewarm_start)
@@ -252,15 +295,24 @@ def test_note_sheet_write_paths_prewarm_default_page_snapshot_without_touching_i
     assert "include_workbook_context=False" in prewarm_body
     assert "contextlib.suppress(Exception)" in prewarm_body
 
-    write_paths = [
+    incremental_paths = [
         ("def patch_note_sheet_table(", "\n\n@router.patch(\"/sheets/{sheet_id}/cells\""),
         ("def patch_note_sheet_cells(", "\n\n@router.post(\"/sheets/{sheet_id}/patch\""),
         ("def patch_note_sheet(", "\n\n@router.websocket(\"/ws/resources/sheet/{sheet_id}\""),
+    ]
+    for start_marker, end_marker in incremental_paths:
+        start = source.index(start_marker)
+        end = source.index(end_marker, start)
+        body = source[start:end]
+        assert "_invalidate_sheet_page_snapshots(" in body
+        assert "_prewarm_default_sheet_page_snapshot(" not in body
+
+    replacement_paths = [
         ("def update_sheet_defined_names_endpoint(", "\n\n@router.put(\"/sheets/{sheet_id}/access\""),
         ("def update_note_sheet(", "\n\n@router.post(\"/sheets/{sheet_id}/import-excel-reset\""),
         ("async def import_note_sheet_excel_reset(", "\n\n@router.post(\n    \"/sheets/{sheet_id}/clockin/link-detection-runs\""),
     ]
-    for start_marker, end_marker in write_paths:
+    for start_marker, end_marker in replacement_paths:
         start = source.index(start_marker)
         end = source.index(end_marker, start)
         body = source[start:end]
@@ -275,6 +327,45 @@ def test_note_sheet_write_paths_prewarm_default_page_snapshot_without_touching_i
         end = source.index(end_marker, start)
         body = source[start:end]
         assert "_prewarm_default_sheet_page_snapshot(" not in body
+
+
+def test_note_sheet_immediate_patch_suppresses_duplicate_full_document_save():
+    source = _workspace_source()
+    change_start = source.index("function handleAfterChange(")
+    change_end = source.index("\nfunction readCopyPasteRangeNumber", change_start)
+    change_body = source[change_start:change_end]
+    queue_start = source.index("function queueImmediateSheetPatchSave(")
+    queue_end = source.index("\nfunction queueImmediateCellPatchSave", queue_start)
+    queue_body = source[queue_start:queue_end]
+    watcher_start = source.index("watch(\n  [rows, columnHeaders, headerGroups, cellMeta, columnConfigs, columnWidths]")
+    watcher_end = source.index("\n\nwatch(\n  () => sheetTitle.value", watcher_start)
+    watcher_body = source[watcher_start:watcher_end]
+
+    assert change_body.index("suppressNextRemoteSaveWatcher = true") < change_body.index(
+        "queueImmediateCellPatchSave("
+    )
+    assert "if (suppressNextRemoteSaveWatcher)" in watcher_body
+    assert watcher_body.index("suppressNextRemoteSaveWatcher = false") < watcher_body.index("return")
+    assert "scheduleRemoteSave()" in watcher_body
+
+    # A timer that predates the patch represents an unrelated full-document
+    # change and must resume only after the patch queue finishes.
+    assert "if (saveTimer != null)" in queue_body
+    assert "documentSaveAfterCellPatches = true" in queue_body
+    assert "cellPatchQueue === patchRun && documentSaveAfterCellPatches" in queue_body
+    assert "scheduleRemoteSave(0)" in queue_body
+
+
+def test_note_sheet_drafts_are_tab_scoped_and_cell_conflicts_are_resolved_in_place():
+    source = _workspace_source()
+
+    assert ".client.${encodeURIComponent(getSaveClientInstanceId())}" in source
+    assert "window.localStorage.removeItem(legacyStorageKey.value)" in source
+    assert "function resolveCellValuePatchConflict(" in source
+    assert "合并同时发生的单元格编辑" in source
+    assert "confirmButtonText: '保留我的修改'" in source
+    assert "cancelButtonText: '使用服务器值'" in source
+    assert "await resolveCellValuePatchConflict(sheetId, workbookId, operations, serial)" in source
 
 
 def test_note_sheet_snapshot_backfill_scans_only_safe_paginated_sheets():

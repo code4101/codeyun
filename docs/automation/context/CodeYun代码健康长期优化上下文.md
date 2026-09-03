@@ -62,7 +62,7 @@ docs/automation/context/CodeYun自动化协作交接.md
 | 区域 | 重点对象 | 主要风险/收益 |
 | --- | --- | --- |
 | 后端大 API | `backend/api/filesystem.py`, `backend/api/fanxiu.py`, `backend/api/eastmoney.py`, `backend/api/device_entries.py`, `backend/api/note_sheets.py` | 大文件、长函数、路由和业务逻辑混杂 |
-| 凡修 Runtime | `backend/core/fanxiu/data_annotation/`, `backend/core/fanxiu/runtime/` | 状态流转复杂、真实运行验证要求高 |
+| 凡修 Kernel 调度与行为树 | `backend/core/fanxiu/data_annotation/`, `backend/core/fanxiu/behavior_tree/` | 状态流转复杂、真实运行验证要求高 |
 | Runtime/后台任务 | `backend/core/runtime/`, `backend/api/task_manager.py` | 长驻任务、队列状态、重试和日志路径 |
 | 前端高复杂页面 | `frontend/src/standard/cluster/`, `frontend/src/standard/fanxiu/`, `frontend/src/components/ImageGalleryWorkspace.vue` | 状态重复、请求重复、组件过大 |
 | 数据/文件/扫描链路 | 文件系统扫描、Everything、图片/文档处理、缓存、序列化、数据库查询 | 慢接口、重复 IO、响应体过大 |
@@ -101,7 +101,7 @@ docs/automation/context/CodeYun自动化协作交接.md
 
 当前新增交接候选：
 
-- `UI-HANDOFF-20260623-002`：凡修 Runtime 通用动作接口易被业务层绕过。下一轮适合先做只读审计，盘点 `tasks/*` 中直接使用底层滚动、OCR line、点击和等待的残留，输出“可收敛为通用 helper / 需要真实 Runtime 验证 / 暂停等待人工”的三类清单；不要在拜谒确认态未闭环前做跨任务大重构。
+- `UI-HANDOFF-20260623-002`：凡修行为树通用动作接口易被业务层绕过。下一轮适合先做只读审计，盘点 `tasks/*` 中直接使用底层滚动、OCR line、点击和等待的残留，输出“可收敛为通用 helper / 需要真实游戏验收 / 暂停等待人工”的三类清单；不要在拜谒确认态未闭环前做跨任务大重构。
 
 ## 当前主线：`backend/api/filesystem.py` 重复文件分析瘦身
 
@@ -242,7 +242,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 优先级 1E 已完成：
 
 - `object`: `docs/domains/fanxiu/context/FANXIU_REVERSE_CONTEXT.md` 旧 Fanxiu 扁平 core 模块路径
-- `action`: 已将模块表和高价值 addendum 中的旧路径更新为当前 `backend/core/fanxiu/catalog/...` 或 `backend/core/fanxiu/runtime/download_bridge.py` 路径
+- `action`: 已将模块表和高价值 addendum 中的旧路径更新为当前 `backend/core/fanxiu/catalog/...` 或 `backend/core/fanxiu/client/download_bridge.py` 路径
 - `success_metric`: 13 个旧路径均核验到当前存在文件；旧 Fanxiu 扁平 core 模块路径无剩余匹配；`docs_sync_scan` 中该文档旧扁平模块候选清零
 - `risk`: low
 - `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`11 passed`；只读 `docs_sync_scan` 从 40 条降到 39 条
@@ -310,7 +310,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 优先级 1I 已完成：
 
 - `object`: `docs/domains/fanxiu/runbooks/凡修data-annotation运行设备约定.md` 与 `docs/domains/fanxiu/architecture/凡修抓包服务架构约定.md` 旧 core 路径
-- `action`: 已将 MuMu 控制、窗口捕获、抓包 runtime、tcp flow、洞察 worker、活动同步、业务 store、玩家面板 store 等旧扁平路径更新为当前 `backend/core/fanxiu/runtime/...`、`backend/core/fanxiu/packet/...` 或 `backend/core/devices/...` 路径
+- `action`: 已将 MuMu 控制、窗口捕获、抓包 runtime、tcp flow、洞察 worker、活动同步、业务 store、玩家面板 store 等旧扁平路径更新为当前 `backend/core/fanxiu/client/...`、`backend/core/fanxiu/packet/...` 或 `backend/core/devices/...` 路径
 - `success_metric`: 9 个替换路径均通过 `Test-Path`；两个目标文档旧路径候选清零；`docs_sync_scan` 总候选从 28 降到 19
 - `risk`: low
 - `verification`: `uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`12 passed`；只读 `docs_sync_scan` 为 19 条且两个目标文档无候选

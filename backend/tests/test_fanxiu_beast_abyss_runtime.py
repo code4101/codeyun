@@ -195,8 +195,13 @@ def test_budget_snapshot_combines_current_and_supplement_capacity(
             "explore": {"count": 31},
             "challenge": {"count": 60},
             "current_hierarchy": 2,
-            "current_hierarchy_config": {"consume": 2},
-            "hierarchy_candidates": [2],
+                "current_hierarchy_config": {"consume": 2},
+                "hierarchy_candidates": [2],
+                "hierarchy_configs": {
+                    1: {"consume": 1},
+                    2: {"consume": 2},
+                    3: {"consume": 4},
+                },
             "count_configs": {
                 1: {"supplement_item_id": 30050000, "automatic": 4},
                 2: {"supplement_item_id": 30050001, "automatic": 0},
@@ -220,10 +225,11 @@ def test_budget_snapshot_combines_current_and_supplement_capacity(
     assert result["capacity"] == {
         "current_hierarchy": 2,
         "explore_cost": 2,
+        "max_explore_cost": 4,
         "explore_points_without_items": 31,
         "explore_points_with_items": 5699,
-        "explore_attempts_without_items": 15,
-        "explore_attempts_with_items": 2849,
+        "explore_attempts_without_items": 7,
+        "explore_attempts_with_items": 1424,
         "challenge_without_items": 60,
         "challenge_with_items": 60,
     }

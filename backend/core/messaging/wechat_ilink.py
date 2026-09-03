@@ -1866,7 +1866,7 @@ def send_image_message(
     return sent
 
 
-def get_runtime_status() -> dict[str, Any]:
+def get_execution_status() -> dict[str, Any]:
     with _login_lock:
         _purge_expired_logins()
         active_logins = [

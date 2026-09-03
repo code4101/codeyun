@@ -27,16 +27,16 @@ def test_lingmai_daily_status_preserves_runtime_unknown_without_packet_fallback(
     from backend.core.fanxiu.data_annotation.tasks import lingmai
     from backend.core.fanxiu.instrumentation import lingmai as instrumentation
 
-    runtime_status = {
+    execution_status = {
         "ok": False,
         "available": False,
         "complete": False,
         "reason": "manager_not_loaded",
     }
-    monkeypatch.setattr(instrumentation, "read_lingmai_snapshot", lambda: runtime_status)
+    monkeypatch.setattr(instrumentation, "read_lingmai_snapshot", lambda: execution_status)
 
     result = lingmai.refresh_lingmai_daily_status(wait_seconds=0)
 
-    assert result is runtime_status
+    assert result is execution_status
     assert result["available"] is False
     assert result["reason"] == "manager_not_loaded"

@@ -25,6 +25,10 @@ from backend.core.fanxiu.activity.exchange_shop_planner import (
 from backend.core.fanxiu.activity.exchange_planning import (
     calculate_exchange_currency_gap,
 )
+from backend.core.fanxiu.activity.exchange_activity_spec import (
+    deserialize_rank_scope_identities,
+    serialize_rank_scope_identities,
+)
 from backend.core.fanxiu.catalog.server_mapping import (
     resolve_fanxiu_region_server_by_id,
 )
@@ -858,12 +862,17 @@ def list_exchange_rankings(
         _ranking_view(row, subject_kind=scope_spec.subject)
         for row in rows if row.has_player
     ]
-    rank_activity_ids = dict((activity.evidence or {}).get("rank_scope_activity_ids") or {})
-    rank_activity_id = rank_activity_ids.get(scope)
-    if rank_activity_id is None and scope_spec.effective_role == "primary":
-        rank_activity_id = activity.game_rank_activity_id
+    occurrence_data = dict(activity.instance_data or {})
+    evidence = dict(activity.evidence or {})
+    scope_identities = deserialize_rank_scope_identities(occurrence_data, evidence)
+    scope_identity = scope_identities.get(scope)
+    runtime_rank_activity_id = (
+        scope_identity.runtime_rank_activity_id if scope_identity else None
+    )
+    if runtime_rank_activity_id is None and scope_spec.effective_role == "primary":
+        runtime_rank_activity_id = activity.game_rank_activity_id
     tiers: list[dict[str, Any]] = []
-    if scope_spec.reward_tiers_enabled and rank_activity_id:
+    if scope_spec.reward_tiers_enabled and runtime_rank_activity_id:
         from backend.core.fanxiu.activity.rank_reward_context import (
             resolve_exchange_rank_reward_context,
         )
@@ -873,7 +882,11 @@ def list_exchange_rankings(
 
         reward_context = resolve_exchange_rank_reward_context(session, activity)
         tiers = load_activity_rank_reward_tiers(
-            rank_activity_id=int(rank_activity_id),
+            reward_activity_id=int(
+                scope_identity.reward_activity_id
+                if scope_identity and scope_identity.reward_activity_id
+                else runtime_rank_activity_id
+            ),
             event_date=activity.start_date,
             server_day=reward_context["server_day"],
             world_level=reward_context["world_level"],
@@ -1079,6 +1092,24 @@ def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any])
         ):
             if identity[field] in (None, "") and getattr(activity, field, None) not in (None, ""):
                 identity[field] = getattr(activity, field)
+    identity_sources = [
+        dict(payload.get("instance_data") or {}),
+        dict(payload.get("evidence") or {}),
+    ]
+    if activity is not None:
+        identity_sources.extend((
+            dict(activity.instance_data or {}),
+            dict(activity.evidence or {}),
+        ))
+    rank_scope_identities = deserialize_rank_scope_identities(*identity_sources)
+    if rank_scope_identities:
+        canonical = serialize_rank_scope_identities(rank_scope_identities)
+        for container_name in ("instance_data", "evidence"):
+            container = dict(payload.get(container_name) or {})
+            container["rank_scope_identities"] = canonical
+            container.pop("rank_scope_activity_ids", None)
+            container.pop("reward_scope_activity_ids", None)
+            payload[container_name] = container
     if activity is None:
         base_id = f"{activity_type}-{cross_count}-{start_date}-{end_date}"
         row_id = base_id

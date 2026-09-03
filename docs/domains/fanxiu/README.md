@@ -18,22 +18,28 @@
 ## 调度层
 
 - [Kernel 与运行权](architecture/凡修行为树运行框架约定.md)
-- [Runtime 与 Scheduler API](architecture/凡修data-annotation自动化Runtime与Scheduler.md)
+- [Kernel 调度器](architecture/凡修Kernel调度器契约.md)
 - [Job 状态与时间](architecture/fanxiu-job-scheduling-semantics.md)
 - [行为树公共能力](architecture/凡修行为树业务能力约定.md)
+- [验证分层](architecture/凡修验证分层约定.md)
 
 ## 被源码引用的业务契约
 
 - [红包作业](jobs/凡修红包作业.md)
 - [洞天行动力](jobs/凡修洞天行动力作业.md)
 - [活动答题](jobs/凡修活动答题作业.md)
+- [仙市每周资源](jobs/凡修仙市每周资源作业.md)
+- [邮件选择性领取](jobs/凡修邮件选择性领取作业.md)
 - [兽魂快捷合成](jobs/凡修兽魂研究与自动配置.md)
 
 ## 外部运行与未闭环入口
 
 - [data-annotation 运行设备](runbooks/凡修data-annotation运行设备约定.md)
 - [MuMu 异常恢复](runbooks/凡修MuMu模拟器异常恢复手册.md)
+- [兽渊探秘规划架构](plans/兽渊探秘规划架构.md)
+- [整数滑轨次数配置规划](plans/整数滑轨次数配置规划.md)（按需专项：仅在明确处理滑轨次数配置时读取）
 - [拜谒与行为树遗留验证](plans/凡修拜谒与行为树基础设施任务清单.md)
+- [巅峰赛特殊资源榜研究](research/巅峰赛特殊资源榜研究.md)
 
 ## 权威性
 

@@ -15,7 +15,7 @@ STORAGE_BAG_CATEGORIES = frozenset({"全部", "书籍", "丹药", "礼物", "日
 
 
 def select_storage_bag_category(
-    runtime: Any,
+    context: Any,
     category: str,
     *,
     timeout_seconds: float = 10.0,
@@ -25,19 +25,19 @@ def select_storage_bag_category(
     selected = str(category or "").strip()
     if selected not in STORAGE_BAG_CATEGORIES:
         raise ValueError(f"不支持的储物袋分类：{selected}")
-    match = yield from runtime.wait_click_ocr_text(
+    match = yield from context.wait_click_ocr_text(
         STORAGE_BAG_SCENE,
         selected,
         in_shapes=("分类页签",),
         match_mode="exact",
         timeout_seconds=timeout_seconds,
     )
-    yield from runtime.wait_action_settle(0.35)
+    yield from context.wait_action_settle(0.35)
     return match
 
 
 def select_storage_bag_category_target(
-    runtime: Any,
+    context: Any,
     *,
     category: str,
     target_name: str,
@@ -48,7 +48,7 @@ def select_storage_bag_category_target(
     """Select a category, then resolve an exact target from its fresh Runtime list."""
 
     yield from select_storage_bag_category(
-        runtime,
+        context,
         category,
         timeout_seconds=timeout_seconds,
     )

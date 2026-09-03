@@ -80,7 +80,7 @@ def store_yunmeng_final_rankings(activity_id: str) -> dict[str, Any]:
 
 
 def refresh_yunmeng_final_rankings(
-    runtime: Any,
+    context: Any,
     *,
     activity_id: str,
 ):
@@ -89,10 +89,10 @@ def refresh_yunmeng_final_rankings(
     # Entering #565 loads the personal tab.  Click it explicitly so this
     # reusable step also works when the page restores the previously selected
     # plane tab, then open plane once before consuming the packet facts.
-    runtime.click_shape_center(565, "个人")
-    yield from runtime.wait_action_settle(1.0)
-    runtime.click_shape_center(565, "位面")
-    yield from runtime.wait_action_settle(1.0)
+    context.click_shape_center(565, "个人")
+    yield from context.wait_action_settle(1.0)
+    context.click_shape_center(565, "位面")
+    yield from context.wait_action_settle(1.0)
     return store_yunmeng_final_rankings(activity_id)
 
 
@@ -148,51 +148,51 @@ def execute_yunmeng_tail_job(
                 }
             raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-    initial_scene, _score, _frame = runtime.current_scene((565, 566), update=True)
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    initial_scene, _score, _frame = context.current_scene((565, 566), update=True)
     if initial_scene == 565:
-        runtime.click_shape_center(565, "云梦试剑")
-        yield from runtime.wait_action_settle(1.0)
+        context.click_shape_center(565, "云梦试剑")
+        yield from context.wait_action_settle(1.0)
     elif initial_scene == 566:
-        runtime.click_shape_center(566, "关闭详情")
-        yield from runtime.wait_action_settle(1.0)
+        context.click_shape_center(566, "关闭详情")
+        yield from context.wait_action_settle(1.0)
 
     # Always normalize through the world anchor before selecting the dated occurrence.
-    yield from runtime.goto_view(34)
-    yield from runtime.goto_view(66)
+    yield from context.go_scene(34)
+    yield from context.go_scene(66)
     anchor = datetime.now().astimezone().replace(
         year=end_date.year, month=end_date.month, day=end_date.day, hour=12, minute=0, second=0
     )
     yield from select_schedule_activity(
-        runtime,
+        context,
         r"云梦试剑",
         enter=True,
         require_runtime_alignment=True,
         now=anchor,
     )
-    yield from runtime.wait_view_or_ocr(
+    yield from context.wait_scene_or_ocr(
         YUNMENG_HOME_SCENE,
         lambda text: "云梦试剑" in text and "挑战次数" in text,
         timeout=30.0,
         label=f"{label}：等待云梦结束态主页",
     )
 
-    runtime.click_shape_center(YUNMENG_HOME_SCENE, "榜单")
-    yield from runtime.wait_view(565, timeout=20.0, label=f"{label}：等待最终榜单")
+    context.click_shape_center(YUNMENG_HOME_SCENE, "榜单")
+    yield from context.wait_scene(565, wait=20.0, label=f"{label}：等待最终榜单")
     ranking_summary = yield from refresh_yunmeng_final_rankings(
-        runtime,
+        context,
         activity_id=activity_id,
     )
-    runtime.click_shape_center(565, "云梦试剑")
-    yield from runtime.wait_view_or_ocr(
+    context.click_shape_center(565, "云梦试剑")
+    yield from context.wait_scene_or_ocr(
         YUNMENG_HOME_SCENE,
         lambda text: "挑战次数" in text,
         timeout=20.0,
         label=f"{label}：榜单刷新后返回云梦主页",
     )
 
-    runtime.click_shape_center(YUNMENG_HOME_SCENE, "兑换宝阁")
-    yield from runtime.wait_view(YUNMENG_SHOP_SCENE, timeout=20.0, label=f"{label}：进入兑换宝阁")
+    context.click_shape_center(YUNMENG_HOME_SCENE, "兑换宝阁")
+    yield from context.wait_scene(YUNMENG_SHOP_SCENE, wait=20.0, label=f"{label}：进入兑换宝阁")
 
     with Session(engine) as session:
         detail = collect_and_store_yunmeng_exchange_activity(
@@ -227,15 +227,15 @@ def execute_yunmeng_tail_job(
         if stop_event.is_set():
             raise InterruptedError()
         for _ in range(action.scroll_rows):
-            runtime.drag_frame_point(
+            context.drag_frame_point(
                 YUNMENG_SHOP_SCENE, 450, 900, 450, 810, duration_ms=800
             )
-            yield from runtime.wait_action_settle(0.25)
+            yield from context.wait_action_settle(0.25)
 
-        runtime.click_shape_center(YUNMENG_SHOP_SCENE, f"商品行{action.slot}")
-        yield from runtime.wait_view(566, timeout=15.0, label=f"{label}：等待商品详情")
+        context.click_shape_center(YUNMENG_SHOP_SCENE, f"商品行{action.slot}")
+        yield from context.wait_scene(566, wait=15.0, label=f"{label}：等待商品详情")
         _detail_matches(
-            runtime,
+            context,
             expected_name=action.name,
             expected_price=action.unit_price,
         )
@@ -244,26 +244,26 @@ def execute_yunmeng_tail_job(
             buying_to_cap=action.clears_row,
         )
         for index in range(plus_ten_count):
-            runtime.click_shape_center_fast(566, "+10")
+            context.click_shape_center_fast(566, "+10")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
+                yield from context.wait_action_settle(0.05)
         for index in range(plus_one_count):
-            runtime.click_shape_center_fast(566, "+")
+            context.click_shape_center_fast(566, "+")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
-        yield from runtime.wait_action_settle(0.4)
+                yield from context.wait_action_settle(0.05)
+        yield from context.wait_action_settle(0.4)
 
         expected_total = action.quantity * action.unit_price
         if expected_wallet - expected_total < reserved_tokens:
             raise RuntimeError(
                 f"{label}：{action.name} 将突破锁定资源保留额 {reserved_tokens}"
             )
-        totals, total_text = runtime.ocr_numbers_in_shapes(566, ("价格",), padding=8)
+        totals, total_text = context.ocr_numbers_in_shapes(566, ("价格",), padding=8)
         if not _ocr_contains_amount(totals, total_text, expected_total):
             raise RuntimeError(
                 f"{label}：{action.name} 数量调整后总价未闭环为 {expected_total}"
             )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             566, "购买", YUNMENG_SHOP_SCENE, timeout=15.0,
             label=f"{label}：购买 {action.name} 后返回宝阁",
         )

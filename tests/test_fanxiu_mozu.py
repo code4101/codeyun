@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.scheduler_defaults import default_data_annotation_scheduler_tasks
-from backend.core.fanxiu.data_annotation.scheduler import repair_data_annotation_scheduler_tasks
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import default_kernel_scheduler_tasks
+from backend.core.fanxiu.data_annotation.kernel_scheduler_plan import repair_kernel_scheduler_tasks
 from backend.core.fanxiu.data_annotation.tasks import mozu as mozu_module
 from backend.core.fanxiu.data_annotation.tasks.mozu import MozuTaskMixin
 
@@ -28,8 +28,8 @@ class _FakeRuntime:
         self.calls.append(("go_scene", scene_id))
         yield
 
-    def wait_click_then_view(self, scene_id, shape, target):
-        self.calls.append(("wait_click_then_view", scene_id, shape, target))
+    def wait_click_then_scene(self, scene_id, shape, target):
+        self.calls.append(("wait_click_then_scene", scene_id, shape, target))
         yield
         if scene_id == 337:
             return SimpleNamespace(id=self.completed_scene_id)
@@ -57,11 +57,11 @@ def test_daily_mozu_flow_completes_immediately_on_world_or_auction(monkeypatch, 
 
     assert runtime.calls == [
         ("go_scene", 34),
-        ("wait_click_then_view", 34, "日程", 66),
+        ("wait_click_then_scene", 34, "日程", 66),
         ("wait_action_settle", 3.0),
-        ("wait_click_then_view", 66, "前往", 336),
-        ("wait_click_then_view", 336, "前往", 337),
-        ("wait_click_then_view", 337, "前往", [338, 34, 339]),
+        ("wait_click_then_scene", 66, "前往", 336),
+        ("wait_click_then_scene", 336, "前往", 337),
+        ("wait_click_then_scene", 337, "前往", [338, 34, 339]),
     ]
     assert result == {
         "result": "success",
@@ -79,7 +79,7 @@ def test_daily_mozu_flow_waits_30_seconds_after_battle_scene(monkeypatch):
     result = _finish(MozuTaskMixin().daily_mozu_flow(runtime))
 
     assert runtime.calls[-2:] == [
-        ("wait_click_then_view", 337, "前往", [338, 34, 339]),
+        ("wait_click_then_scene", 337, "前往", [338, 34, 339]),
         ("wait_action_settle", 30.0),
     ]
     assert result["result"] == "success"
@@ -107,10 +107,10 @@ def test_daily_mozu_admission_skips_before_window_and_keeps_today_trigger(monkey
 
 
 def test_daily_mozu_scheduler_definition_is_enabled_runtime_job():
-    task = next(item for item in default_data_annotation_scheduler_tasks() if item["id"] == "legacy-daily-mozu")
+    task = next(item for item in default_kernel_scheduler_tasks() if item["id"] == "legacy-daily-mozu")
 
     assert task["task_type"] == "daily_mozu"
-    assert task["source"] == "data_annotation_runtime"
+    assert task["source"] == "kernel_scheduler"
     assert task["trigger_description"] == "每日"
     assert task["next_time"]
     assert task["dispatch_level"] == 1
@@ -118,7 +118,7 @@ def test_daily_mozu_scheduler_definition_is_enabled_runtime_job():
 
 
 def test_daily_mozu_scheduler_discards_old_placeholder_fields():
-    tasks, changed = repair_data_annotation_scheduler_tasks(
+    tasks, changed = repair_kernel_scheduler_tasks(
         [
             {
                 "id": "legacy-daily-mozu",
@@ -133,7 +133,7 @@ def test_daily_mozu_scheduler_discards_old_placeholder_fields():
                 "payload": {"legacy_name": "日常_魔祖"},
             }
         ],
-        default_data_annotation_scheduler_tasks(),
+        default_kernel_scheduler_tasks(),
         {},
         task_supported=lambda task: task.get("task_type") == "daily_mozu",
         now=RealDateTime(2026, 7, 13, 12, 48, 0),
@@ -142,7 +142,7 @@ def test_daily_mozu_scheduler_discards_old_placeholder_fields():
 
     assert changed is True
     assert task["task_type"] == "daily_mozu"
-    assert task["source"] == "data_annotation_runtime"
+    assert task["source"] == "kernel_scheduler"
     assert "schedule_kind" not in task
     assert "schedule_times" not in task
     assert task["trigger_description"] == "每日"

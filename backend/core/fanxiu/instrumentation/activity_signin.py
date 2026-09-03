@@ -16,7 +16,8 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     table_ref,
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
-    acquire_ui_runtime_context_fast,
+    UiRuntimeContext,
+    read_ui_runtime_snapshot,
 )
 
 
@@ -83,10 +84,7 @@ def _locate_panel(ctx: Any) -> LuaRef:
     return candidates[0]
 
 
-def read_activity_signin_snapshot() -> ActivitySigninSnapshot:
-    """Read milestone eligibility without calling Lua or changing game state."""
-
-    ctx = acquire_ui_runtime_context_fast(frozenset())
+def _read_activity_signin_snapshot_from_context(ctx: UiRuntimeContext) -> ActivitySigninSnapshot:
     panel = _fields(ctx.reader, _locate_panel(ctx))
     activity_id = as_int(panel.get("activityId"))
     turn = _fields(ctx.reader, panel.get("curSelectTurn"))
@@ -182,6 +180,21 @@ def read_activity_signin_snapshot() -> ActivitySigninSnapshot:
         captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
         pid=ctx.binding.pid,
         process_start_ticks=ctx.binding.process_start_ticks,
+    )
+
+
+def read_activity_signin_snapshot() -> ActivitySigninSnapshot:
+    """Read milestone eligibility without calling Lua or changing game state.
+
+    The activity panel can be pooled immediately after #404 becomes visible.
+    Rebuild the complete UI context once when a child address goes stale,
+    while keeping the second failure explicit and fail-closed.
+    """
+
+    return read_ui_runtime_snapshot(
+        frozenset(),
+        _read_activity_signin_snapshot_from_context,
+        fast=True,
     )
 
 

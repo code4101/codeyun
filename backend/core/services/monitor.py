@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -41,10 +42,82 @@ def _find_running_service_by_executable(command: str) -> dict[str, Any] | None:
     return None
 
 
+def _network_service_root_override(
+    task: TaskModel,
+    host_network_dir: str | os.PathLike[str],
+) -> tuple[str, str] | None:
+    """Resolve a persisted network service command against this host's configured root."""
+    name = str(task.name or "").strip().lower()
+    if name not in CRITICAL_LOCAL_COMMAND_SERVICE_NAMES or not task.cwd:
+        return None
+    try:
+        args = process_runtime.parse_cmdline(task.command)
+    except Exception:
+        return None
+    if not args:
+        return None
+
+    old_cwd = Path(task.cwd).expanduser()
+    target_cwd = Path(host_network_dir).expanduser()
+    executable = Path(str(args[0]).strip('"')).expanduser()
+    if not old_cwd.is_absolute() or not target_cwd.is_absolute() or not executable.is_absolute():
+        return None
+
+    target_service_cwd = target_cwd
+    if name == "nginx" and old_cwd.name.lower().startswith("nginx"):
+        target_service_cwd = target_cwd / old_cwd.name
+
+    if executable.is_relative_to(old_cwd):
+        target_executable = target_service_cwd / executable.relative_to(old_cwd)
+    elif executable.is_relative_to(old_cwd.parent):
+        target_executable = target_cwd.parent / executable.relative_to(old_cwd.parent)
+    else:
+        return None
+    if not target_executable.is_file():
+        return None
+
+    args[0] = os.fspath(target_executable)
+    command = subprocess.list2cmdline([str(part) for part in args])
+    cwd = os.fspath(target_service_cwd)
+    if os.path.normcase(command) == os.path.normcase(task.command) and os.path.normcase(cwd) == os.path.normcase(task.cwd):
+        return None
+    return command, cwd
+
+
+def rebind_configured_network_services() -> list[dict[str, Any]]:
+    """Persist HOST_NETWORK_DIR overrides before the monitor recovers services."""
+    host_network_dir = (os.getenv("HOST_NETWORK_DIR") or "").strip()
+    if not host_network_dir:
+        return []
+
+    local_device_id = get_device_id()
+    rebound: list[dict[str, Any]] = []
+    with Session(engine) as session:
+        services = session.exec(
+            select(TaskModel).where(TaskModel.device_id == local_device_id)
+        ).all()
+        for service in services:
+            resolved = _network_service_root_override(service, host_network_dir)
+            if resolved is None:
+                continue
+            command, cwd = resolved
+            status = task_manager.get_task_status(service.id)
+            if status.running:
+                task_manager.stop_task(service.id)
+            service.command = command
+            service.cwd = cwd
+            session.add(service)
+            rebound.append({"id": service.id, "name": service.name, "command": command, "cwd": cwd})
+        if rebound:
+            session.commit()
+    return rebound
+
+
 def ensure_local_critical_command_services() -> dict[str, Any]:
     """Recover explicitly configured always-on services outside the job queue."""
 
     local_device_id = get_device_id()
+    rebound = rebind_configured_network_services()
     started: list[dict[str, Any]] = []
     already_running: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -92,6 +165,7 @@ def ensure_local_critical_command_services() -> dict[str, Any]:
         "started": started,
         "already_running": already_running,
         "errors": errors,
+        "rebound": rebound,
     }
 
 

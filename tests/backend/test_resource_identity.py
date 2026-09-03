@@ -312,6 +312,48 @@ def test_note_doc_update_rebases_stale_change_when_edited_field_is_unchanged(
     assert same_field_conflict.json()["detail"]["conflicting_fields"] == ["content"]
 
 
+def test_note_doc_update_checks_expected_fields_even_when_base_version_is_current(
+    client,
+    session: Session,
+    auth_user: User,
+):
+    note = NoteNode(
+        id="note-doc-current-version-stale-baseline",
+        numeric_id=15,
+        user_id=auth_user.id,
+        title="Original title",
+        content="<p>original content</p>",
+        note_form="document",
+        version=1,
+    )
+    session.add(note)
+    session.commit()
+
+    remote_update = client.put(
+        "/api/note-docs/15",
+        json={"base_version": 1, "content": "<p>remote content</p>"},
+    )
+    assert remote_update.status_code == 200, remote_update.text
+    assert remote_update.json()["version"] == 2
+
+    conflict = client.put(
+        "/api/note-docs/15",
+        json={
+            # A notification may refresh the transport version while the editor's
+            # field baseline remains old. Expected values must still guard writes.
+            "base_version": 2,
+            "content": "<p>local content</p>",
+            "expected_fields": {"content": "<p>original content</p>"},
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["conflicting_fields"] == ["content"]
+
+    session.refresh(note)
+    assert note.content == "<p>remote content</p>"
+    assert note.version == 2
+
+
 def test_note_doc_resource_websocket_receives_update_event(client, session: Session, auth_user: User):
     session.add(
         NoteNode(

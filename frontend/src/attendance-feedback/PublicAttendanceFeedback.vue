@@ -18,7 +18,7 @@ type FeedbackDraft = {
   extraNote: string
 }
 
-type PersistedFeedbackDraft = Pick<FeedbackDraft, 'course' | 'studentId' | 'studentName'>
+type PersistedFeedbackDraft = Pick<FeedbackDraft, 'studentId' | 'studentName'>
 
 const FEEDBACK_FORM_STORAGE_KEY = 'codeyun-attendance-feedback-draft'
 const CODEYUN_PUBLIC_HOST = 'code4101.com'
@@ -276,7 +276,6 @@ function persistFormToLocalStorage() {
   window.localStorage.setItem(
     FEEDBACK_FORM_STORAGE_KEY,
     JSON.stringify({
-      course: form.course,
       studentId: form.studentId,
       studentName: form.studentName,
     } satisfies PersistedFeedbackDraft),
@@ -295,7 +294,6 @@ function hydrateFormFromLocalStorage() {
       return
     }
 
-    form.course = normalizeStoredCourse(parsed.course)
     form.studentId = normalizeStoredText(parsed.studentId)
     form.studentName = normalizeStoredText(parsed.studentName)
   } catch {

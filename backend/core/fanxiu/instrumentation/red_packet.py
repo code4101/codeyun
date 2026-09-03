@@ -53,18 +53,19 @@ _CHANNEL_CONTEXTS = {
     },
 }
 # Current-version RedBag_RedBag rows proven from the shipped config bundle.
-# These event packets have dedicated activity semantics, but a live #34 frame
-# can still expose the ordinary orange chat red-packet marker for them.  They
-# therefore authorize only the GUI Job's layered visual deep-check, never a
-# claim action or a direct choice of group/card/control.
+# IDs 5014-5022 are all eventType=9033 (QMCHReward).  ChatOnlineView excludes
+# that event type from its ordinary #30 red-packet locator, so an unsupported
+# member of the family must never fall through to the ordinary chat Job.
 _SPECIAL_EVENT_CONFIGS: dict[int, dict[str, Any]] = {
-    5022: {
+    bag_id: {
         "event_type": 9033,
         "event_key": "qmch_reward",
+        "daily_chat_route_supported": bag_id == 5022,
         "daily_num_type": 1,
         "daily_num": -1,
         "receive_condition": "CL|10",
-    },
+    }
+    for bag_id in range(5014, 5023)
 }
 _UNAVAILABLE_CACHE_TTL_SECONDS = 120.0
 _unavailable_until: dict[tuple[str, int, int], float] = {}
@@ -582,6 +583,9 @@ def _snapshot(
         if special_config is not None:
             end_time = item["end_time_epoch_ms"]
             item["config_loaded"] = True
+            route_supported = bool(
+                special_config.get("daily_chat_route_supported")
+            )
             expired = end_time is not None and end_time <= int(time.time() * 1000)
             # A dedicated activity packet still obeys authoritative server
             # and detail terminals.  Those facts are stronger than the
@@ -594,6 +598,16 @@ def _snapshot(
             elif expired:
                 item["claimability"] = "definitively_excluded"
                 item["exclusion_reasons"].append("special_event_expired")
+            elif not route_supported:
+                # This remains a faithful structural Runtime fact, but its
+                # dedicated activity surface is not implemented by the daily
+                # chat-redpacket Job.  In particular it has no ordinary #30
+                # numeric locator, so treating it as a generic trigger causes
+                # an endless false-positive patrol loop.
+                item["claimability"] = "dedicated_event_not_supported"
+                item["exclusion_reasons"].append(
+                    "special_event_not_daily_chat_route"
+                )
             else:
                 item["trigger_candidate"] = True
                 item["claimability"] = "visual_deep_check_required"
@@ -610,12 +624,16 @@ def _snapshot(
                     else (
                         "special_event_expired"
                         if expired
-                        else "special_event_gui_deep_check_candidate"
+                        else (
+                            "special_event_gui_deep_check_candidate"
+                            if route_supported
+                            else "special_event_not_daily_chat_route"
+                        )
                     )
                 ),
             }
             special_event_items.append(special_item)
-            if not terminally_excluded and not expired:
+            if not terminally_excluded and not expired and route_supported:
                 pending.append(special_item)
                 claimability_unknown_reasons.append(
                     "special_event_visual_state_required"

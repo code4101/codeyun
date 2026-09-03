@@ -100,7 +100,7 @@ def resolve_shape_inheritance(nodes: list[dict[str, Any]]) -> ShapeInheritanceRe
     """Resolve multiple scene parents into host-scene effective Shape trees.
 
     The input tree remains the raw annotation fact.  The returned tree is a
-    derived runtime projection: inherited Shape configuration is copied into
+    derived context projection: inherited Shape configuration is copied into
     each child scene, while the child scene's filename, dimensions and image
     context remain the effective host for matching, crops, masks and clicks.
     """

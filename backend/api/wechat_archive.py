@@ -123,7 +123,7 @@ def _settings_wechat_db_storage_path() -> Path:
     env_path = (os.environ.get("CODEYUN_WECHAT_DB_STORAGE") or "").strip()
     if env_path:
         return Path(env_path).expanduser()
-    legacy_codepc_mf_path = Path(r"D:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
+    legacy_codepc_mf_path = Path(r"C:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
     if legacy_codepc_mf_path.exists():
         return legacy_codepc_mf_path
     return get_settings().data_dir / "wechat_db" / "decrypted" / "db_storage"
@@ -789,7 +789,7 @@ def _dedupe_existing_paths(paths: list[Path]) -> list[Path]:
 def _wechat_reverse_data_roots() -> list[Path]:
     env_path = (os.environ.get("CODEYUN_WECHAT_REVERSE_ROOT") or "").strip()
     candidates = [Path(env_path).expanduser()] if env_path else []
-    legacy_root = Path(r"D:\home\chenkunze\data\d2605微信逆向")
+    legacy_root = Path(r"C:\home\chenkunze\data\d2605微信逆向")
     candidates.append(legacy_root)
     db_storage_root = _settings_wechat_db_storage_path()
     candidates.append(db_storage_root.parents[1] if len(db_storage_root.parents) > 1 else db_storage_root.parent)

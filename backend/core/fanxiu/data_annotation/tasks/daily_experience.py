@@ -231,11 +231,11 @@ class DailyExperienceTaskMixin:
             float(line.get("y") or 0) + float(line.get("h") or 0) + 17.0,
         )
 
-    def _daily_experience_open_books(self, runtime: Any, *, timeout: float):
+    def _daily_experience_open_books(self, context: Any, *, timeout: float):
         """Open #406 through a bounded, same-attempt local transition loop."""
 
         for recovery_index in range(_EXPERIENCE_OPEN_RECOVERY_LIMIT):
-            landed = yield from runtime.wait_click_then_view(
+            landed = yield from context.wait_click_then_scene(
                 _EXPERIENCE_TRAINING_SCENE,
                 "提升",
                 _EXPERIENCE_OPEN_BOOK_LANDINGS,
@@ -251,7 +251,7 @@ class DailyExperienceTaskMixin:
             if landed_id != _EXPERIENCE_RESULT_SCENE:
                 raise RuntimeError(f"日常_经验：打开经验书落到非法场景 #{landed_id}")
             yield from self._daily_experience_close_result_to_training(
-                runtime,
+                context,
                 timeout=timeout,
             )
         raise RuntimeError(
@@ -261,7 +261,7 @@ class DailyExperienceTaskMixin:
 
     @staticmethod
     def _daily_experience_observe_scene(
-        runtime: Any,
+        context: Any,
         frame: Any,
         allowed_scene_ids: set[int] | frozenset[int],
     ) -> int | None:
@@ -270,22 +270,22 @@ class DailyExperienceTaskMixin:
         for scene_id in _EXPERIENCE_OBSERVATION_PRIORITY:
             if scene_id not in allowed_scene_ids:
                 continue
-            matched, _score, _ = runtime.match_view(scene_id, frame_data_url=frame)
+            matched, _score, _ = context.match_view(scene_id, frame_data_url=frame)
             if matched:
                 return scene_id
         return None
 
-    def _daily_experience_enter(self, runtime: Any, *, timeout: float):
-        yield from runtime.wait_click(34, "进入绿瓶")
-        yield from runtime.wait_view(20, timeout=timeout, label="日常_经验：等待绿瓶 #20")
+    def _daily_experience_enter(self, context: Any, *, timeout: float):
+        yield from context.wait_click(34, "进入绿瓶")
+        yield from context.wait_scene(20, wait=timeout, label="日常_经验：等待绿瓶 #20")
         # #20 底部菜单会保留上次横向滚动位置；「修炼」固定在最左端。
         # 每轮从稳定事实重新归位，不能从遗留的后段菜单直接查找。
         for _ in range(30):
-            changed = yield from runtime.scroll_shape_content(20, "菜单", direction="left")
+            changed = yield from context.scroll_shape_content(20, "菜单", direction="left")
             if not changed:
                 break
-        frame = runtime.cur_frame(update=True)
-        runtime.click_ocr_text(
+        frame = context.cur_frame(update=True)
+        context.click_ocr_text(
             20,
             "修炼",
             in_shapes=["菜单"],
@@ -294,43 +294,43 @@ class DailyExperienceTaskMixin:
             offset=(0.0, -1.0),
             offset_unit="height",
         )
-        yield from runtime.wait_view(405, timeout=timeout, label="日常_经验：等待修炼页 #405")
-        yield from self._daily_experience_open_books(runtime, timeout=timeout)
+        yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待修炼页 #405")
+        yield from self._daily_experience_open_books(context, timeout=timeout)
 
-    def _daily_experience_reopen_books(self, runtime: Any, *, timeout: float):
-        matched_405, _score, _frame = runtime.match_view(405, update=True)
+    def _daily_experience_reopen_books(self, context: Any, *, timeout: float):
+        matched_405, _score, _frame = context.match_view(405, update=True)
         if not matched_405:
-            yield from runtime.wait_view(405, timeout=timeout, label="日常_经验：等待返回修炼页 #405")
-        yield from self._daily_experience_open_books(runtime, timeout=timeout)
+            yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待返回修炼页 #405")
+        yield from self._daily_experience_open_books(context, timeout=timeout)
 
-    def _daily_experience_close_bugged_result(self, runtime: Any, *, timeout: float):
+    def _daily_experience_close_bugged_result(self, context: Any, *, timeout: float):
         yield from self._daily_experience_close_result_to_training(
-            runtime,
+            context,
             timeout=timeout,
         )
-        yield from self._daily_experience_reopen_books(runtime, timeout=timeout)
+        yield from self._daily_experience_reopen_books(context, timeout=timeout)
 
-    def _daily_experience_close_result_to_training(self, runtime: Any, *, timeout: float):
+    def _daily_experience_close_result_to_training(self, context: Any, *, timeout: float):
         """Close the known #413 overlay and stop on the proven #405 page."""
 
         # 游戏会显示“点击屏幕继续”，但该热区会反复生成同一结算页。
         # 被结算层覆盖的 #406「返回」固定位置只能先关闭
         # #413：真实运行中可以直接落 #405，也可以落普通 #406。
-        runtime.click_shape_center(_EXPERIENCE_BOOKS_SCENE, "返回")
+        context.click_shape_center(_EXPERIENCE_BOOKS_SCENE, "返回")
         landed = yield from self._daily_experience_wait_bugged_result_landing(
-            runtime,
+            context,
             timeout=timeout,
         )
         if landed == _EXPERIENCE_BOOKS_SCENE:
-            yield from runtime.wait_click(_EXPERIENCE_BOOKS_SCENE, "返回")
+            yield from context.wait_click(_EXPERIENCE_BOOKS_SCENE, "返回")
         yield from self._daily_experience_wait_training_without_books(
-            runtime,
+            context,
             timeout=timeout,
         )
 
     def _daily_experience_wait_bugged_result_landing(
         self,
-        runtime: Any,
+        context: Any,
         *,
         timeout: float,
     ):
@@ -338,9 +338,9 @@ class DailyExperienceTaskMixin:
 
         attempts = max(2, int(max(1.0, float(timeout)) / 0.5))
         for _attempt in range(attempts):
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             scene_id = self._daily_experience_observe_scene(
-                runtime,
+                context,
                 frame,
                 frozenset(
                     {
@@ -352,26 +352,26 @@ class DailyExperienceTaskMixin:
             )
             if scene_id in _EXPERIENCE_RESULT_CLOSE_LANDINGS:
                 return scene_id
-            yield from runtime.wait_action_settle(0.5)
+            yield from context.wait_action_settle(0.5)
         raise TimeoutError(
             "日常_经验：#413 结算层关闭后未落到 "
             f"{list(_EXPERIENCE_RESULT_CLOSE_LANDINGS)}"
         )
 
-    def _daily_experience_run_breakthrough(self, runtime: Any, *, timeout: float):
-        yield from runtime.wait_click(408, "提升")
-        yield from runtime.wait_view(409, timeout=timeout, label="日常_经验：等待第一段升阶 #409")
-        yield from runtime.wait_click(409, "升阶")
-        yield from runtime.wait_view(410, timeout=timeout, label="日常_经验：等待第二段升阶 #410")
-        yield from runtime.wait_click(410, "升阶")
-        yield from runtime.wait_view(411, timeout=timeout, label="日常_经验：等待升阶结果 #411")
-        yield from runtime.wait_click(411, "继续")
-        yield from runtime.wait_view(412, timeout=timeout, label="日常_经验：等待升阶收尾 #412")
-        yield from runtime.wait_click(412, "返回")
-        yield from runtime.wait_view(405, timeout=timeout, label="日常_经验：等待升阶返回 #405")
-        yield from self._daily_experience_open_books(runtime, timeout=timeout)
+    def _daily_experience_run_breakthrough(self, context: Any, *, timeout: float):
+        yield from context.wait_click(408, "提升")
+        yield from context.wait_scene(409, wait=timeout, label="日常_经验：等待第一段升阶 #409")
+        yield from context.wait_click(409, "升阶")
+        yield from context.wait_scene(410, wait=timeout, label="日常_经验：等待第二段升阶 #410")
+        yield from context.wait_click(410, "升阶")
+        yield from context.wait_scene(411, wait=timeout, label="日常_经验：等待升阶结果 #411")
+        yield from context.wait_click(411, "继续")
+        yield from context.wait_scene(412, wait=timeout, label="日常_经验：等待升阶收尾 #412")
+        yield from context.wait_click(412, "返回")
+        yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待升阶返回 #405")
+        yield from self._daily_experience_open_books(context, timeout=timeout)
 
-    def _daily_experience_replace_full_book(self, runtime: Any, *, timeout: float):
+    def _daily_experience_replace_full_book(self, context: Any, *, timeout: float):
         """Recompute the live book plan and replace the currently full book."""
 
         snapshot = self._daily_experience_book_plan_snapshot()
@@ -380,8 +380,8 @@ class DailyExperienceTaskMixin:
                 "日常_经验：实时功法书清单不完整，拒绝猜测换书；"
                 f"error={snapshot.get('error')!r}，evidence={snapshot.get('evidence')!r}"
             )
-        yield from runtime.wait_click(405, "更换")
-        yield from runtime.wait_view(439, timeout=timeout, label="日常_经验：等待选择功法书 #439")
+        yield from context.wait_click(405, "更换")
+        yield from context.wait_scene(439, wait=timeout, label="日常_经验：等待选择功法书 #439")
         target = snapshot.get("next_upgradable_book")
         if not isinstance(target, dict):
             if snapshot.get("all_books_full") is True:
@@ -395,8 +395,8 @@ class DailyExperienceTaskMixin:
         if not target_name or not target_category:
             raise RuntimeError(f"日常_经验：下一本功法缺少名称或筛选分类：{target!r}")
 
-        frame = runtime.cur_frame(update=True)
-        option_tokens = runtime.ocr_tokens_in_shapes(
+        frame = context.cur_frame(update=True)
+        option_tokens = context.ocr_tokens_in_shapes(
             439,
             ["选项"],
             frame_data_url=frame,
@@ -406,10 +406,10 @@ class DailyExperienceTaskMixin:
             option_tokens,
             target_category,
         )
-        runtime.click_frame_point(439, category_x, category_y)
-        yield from runtime.wait_action_settle(1.0)
+        context.click_frame_point(439, category_x, category_y)
+        yield from context.wait_action_settle(1.0)
 
-        match = yield from runtime.wait_ocr_text(
+        match = yield from context.wait_ocr_text(
             439,
             target_name,
             in_shapes=("窗口",),
@@ -420,11 +420,11 @@ class DailyExperienceTaskMixin:
                 f"日常_经验：#439「窗口」遍历后仍未找到目标功法「{target_name}」"
             )
         book_x, book_y = match.point()
-        runtime.click_frame_point(439, book_x, book_y)
-        yield from runtime.wait_view(440, timeout=max(timeout, 30.0), label="日常_经验：等待功法详情 #440")
-        yield from runtime.wait_click(440, "修炼")
-        yield from runtime.wait_view(405, timeout=timeout, label="日常_经验：等待更换功法返回 #405")
-        yield from self._daily_experience_open_books(runtime, timeout=timeout)
+        context.click_frame_point(439, book_x, book_y)
+        yield from context.wait_scene(440, wait=max(timeout, 30.0), label="日常_经验：等待功法详情 #440")
+        yield from context.wait_click(440, "修炼")
+        yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待更换功法返回 #405")
+        yield from self._daily_experience_open_books(context, timeout=timeout)
         return {
             "book_id": target.get("book_id"),
             "name": target_name,
@@ -432,136 +432,136 @@ class DailyExperienceTaskMixin:
             "selection_pool": target.get("selection_pool"),
         }
 
-    def _daily_experience_route_full_role_exp(self, runtime: Any, *, timeout: float):
+    def _daily_experience_route_full_role_exp(self, context: Any, *, timeout: float):
         """Leave the book list and preserve every already-known progression branch."""
 
         # 「空白」是经验书浮层自身的安全关闭热区；不能用系统返回键。
-        yield from runtime.wait_click(406, "空白")
-        yield from runtime.wait_action_settle(1.0)
+        yield from context.wait_click(406, "空白")
+        yield from context.wait_action_settle(1.0)
         for _attempt in range(8):
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             scene_id = self._daily_experience_observe_scene(
-                runtime,
+                context,
                 frame,
                 frozenset({413, 408, 406, 405}),
             )
             if scene_id == 413:
                 yield from self._daily_experience_close_bugged_result(
-                    runtime,
+                    context,
                     timeout=timeout,
                 )
                 return
             if scene_id == 408:
                 yield from self._daily_experience_run_breakthrough(
-                    runtime,
+                    context,
                     timeout=timeout,
                 )
                 return
             if scene_id == 406:
                 # #405 is the background of the #406 overlay and can also
                 # score highly.  The overlay identity is authoritative.
-                runtime.click_shape_center(406, "空白")
-                yield from runtime.wait_action_settle(0.5)
+                context.click_shape_center(406, "空白")
+                yield from context.wait_action_settle(0.5)
                 continue
             if scene_id == 405:
                 yield from self._daily_experience_replace_full_book(
-                    runtime,
+                    context,
                     timeout=timeout,
                 )
                 return
-            yield from runtime.wait_action_settle(0.5)
+            yield from context.wait_action_settle(0.5)
         raise RuntimeError(
             "日常_经验：角色修为已满；返回经验书页后未识别到已有 #408 升阶分支，"
             "需要配置整套功法全满后的突破境界场景"
         )
 
-    def _daily_experience_settle_after_long_press(self, runtime: Any, *, timeout: float):
-        yield from runtime.wait_action_settle(1.0)
+    def _daily_experience_settle_after_long_press(self, context: Any, *, timeout: float):
+        yield from context.wait_action_settle(1.0)
         for _attempt in range(12):
-            frame = runtime.cur_frame(update=True)
-            text = re.sub(r"\s+", "", runtime.ocr_text(frame))
+            frame = context.cur_frame(update=True)
+            text = re.sub(r"\s+", "", context.ocr_text(frame))
             if "服用丹药" in text and "增加属性" in text and "确认" in text:
-                runtime.click_ocr_text(
+                context.click_ocr_text(
                     406,
                     "确认",
                     frame_data_url=frame,
                 )
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_action_settle(1.0)
                 continue
             scene_id = self._daily_experience_observe_scene(
-                runtime,
+                context,
                 frame,
                 frozenset({413, 408, 407, 406, 405}),
             )
             if scene_id == 413:
                 yield from self._daily_experience_close_bugged_result(
-                    runtime,
+                    context,
                     timeout=timeout,
                 )
                 return False
             if scene_id == 408:
-                yield from self._daily_experience_run_breakthrough(runtime, timeout=timeout)
+                yield from self._daily_experience_run_breakthrough(context, timeout=timeout)
                 return True
             if scene_id == 407:
-                yield from runtime.wait_click(407, "确认")
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_click(407, "确认")
+                yield from context.wait_action_settle(1.0)
                 continue
             if scene_id == 406:
                 return False
             if scene_id == 405:
-                yield from self._daily_experience_open_books(runtime, timeout=timeout)
+                yield from self._daily_experience_open_books(context, timeout=timeout)
                 return False
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_action_settle(1.0)
         raise RuntimeError("日常_经验：吃经验后未回到 #406，且未识别到 #407/#408 分支")
 
     def _daily_experience_buy_true_insight(
         self,
-        runtime: Any,
+        context: Any,
         group: ExperienceBookGroup,
         *,
         timeout: float,
         max_purchases: int,
     ):
         x, y = self._daily_experience_item_point(group)
-        runtime.click_frame_point(406, x, y)
-        landed = yield from runtime.wait_view(
+        context.click_frame_point(406, x, y)
+        landed = yield from context.wait_scene(
             414,
             413,
-            timeout=timeout,
+            wait=timeout,
             label="日常_经验：等待潜修真悟购买 #414 或直接使用 #413",
         )
         if landed.id == 413:
-            yield from self._daily_experience_close_bugged_result(runtime, timeout=timeout)
+            yield from self._daily_experience_close_bugged_result(context, timeout=timeout)
             return
         for _attempt in range(max_purchases):
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             scene_id = self._daily_experience_observe_scene(
-                runtime,
+                context,
                 frame,
                 frozenset({413, 414}),
             )
             if scene_id == 413:
-                yield from self._daily_experience_close_bugged_result(runtime, timeout=timeout)
+                yield from self._daily_experience_close_bugged_result(context, timeout=timeout)
                 return
             if scene_id != 414:
                 break
-            before_purchase = _compact_text(runtime.ocr_text(frame))
-            yield from runtime.wait_click(414, "购买")
-            yield from runtime.wait_action_settle(1.0)
-            after_frame = runtime.cur_frame(update=True)
+            before_purchase = _compact_text(context.ocr_text(frame))
+            yield from context.wait_click(414, "购买")
+            yield from context.wait_action_settle(1.0)
+            after_frame = context.cur_frame(update=True)
             after_scene_id = self._daily_experience_observe_scene(
-                runtime,
+                context,
                 after_frame,
                 frozenset({413, 414}),
             )
             if after_scene_id == 413:
                 yield from self._daily_experience_close_bugged_result(
-                    runtime,
+                    context,
                     timeout=timeout,
                 )
                 return
             if after_scene_id == 414:
-                after_purchase = _compact_text(runtime.ocr_text(after_frame))
+                after_purchase = _compact_text(context.ocr_text(after_frame))
                 if not before_purchase or after_purchase == before_purchase:
                     # The purchase sheet is an overlay on #406.  A successful
                     # purchase can leave its OCR text unchanged, while closing
@@ -570,24 +570,24 @@ class DailyExperienceTaskMixin:
                     # #406 return control before deciding whether the purchase
                     # was ineffective; never click ``购买`` a second time from
                     # an unconfirmed postcondition.
-                    runtime.click_shape_center(_EXPERIENCE_BOOKS_SCENE, "返回")
-                    closed = yield from runtime.wait_view(
+                    context.click_shape_center(_EXPERIENCE_BOOKS_SCENE, "返回")
+                    closed = yield from context.wait_scene(
                         _EXPERIENCE_RESULT_SCENE,
                         _EXPERIENCE_BOOKS_SCENE,
                         _EXPERIENCE_TRAINING_SCENE,
-                        timeout=timeout,
+                        wait=timeout,
                         label="日常_经验：购买文本未变化，关闭 #414 后核验落点",
                     )
                     closed_id = int(getattr(closed, "id", closed))
                     if closed_id == _EXPERIENCE_RESULT_SCENE:
                         yield from self._daily_experience_close_bugged_result(
-                            runtime,
+                            context,
                             timeout=timeout,
                         )
                         return
                     if closed_id == _EXPERIENCE_TRAINING_SCENE:
                         yield from self._daily_experience_reopen_books(
-                            runtime,
+                            context,
                             timeout=timeout,
                         )
                         return
@@ -595,42 +595,42 @@ class DailyExperienceTaskMixin:
                         "日常_经验：购买潜修真悟后未观察到业务文本变化；"
                         "关闭购买层仅返回 #406，拒绝再次购买"
                     )
-        frame = runtime.cur_frame(update=True)
+        frame = context.cur_frame(update=True)
         scene_id = self._daily_experience_observe_scene(
-            runtime,
+            context,
             frame,
             frozenset({413, 414}),
         )
         if scene_id == 413:
-            yield from self._daily_experience_close_bugged_result(runtime, timeout=timeout)
+            yield from self._daily_experience_close_bugged_result(context, timeout=timeout)
             return
         if scene_id == 414:
             raise RuntimeError(f"日常_经验：购买潜修真悟超过 {max_purchases} 次仍停留在 #414")
-        yield from self._daily_experience_reopen_books(runtime, timeout=timeout)
+        yield from self._daily_experience_reopen_books(context, timeout=timeout)
 
     def _daily_experience_use_green_aura(
         self,
-        runtime: Any,
+        context: Any,
         group: ExperienceBookGroup,
         *,
         timeout: float,
     ):
         x, y = self._daily_experience_item_point(group)
-        runtime.click_frame_point(406, x, y)
-        landed = yield from runtime.wait_view(
+        context.click_frame_point(406, x, y)
+        landed = yield from context.wait_scene(
             413,
             405,
-            timeout=max(timeout, _EXPERIENCE_ANIMATION_TIMEOUT_SECONDS),
+            wait=max(timeout, _EXPERIENCE_ANIMATION_TIMEOUT_SECONDS),
             label="日常_经验：等待绿瓶灵气动画 #413 或直接返回 #405",
         )
         if landed.id == 405:
-            yield from self._daily_experience_open_books(runtime, timeout=timeout)
+            yield from self._daily_experience_open_books(context, timeout=timeout)
             return
-        yield from self._daily_experience_close_bugged_result(runtime, timeout=timeout)
+        yield from self._daily_experience_close_bugged_result(context, timeout=timeout)
 
     def _daily_experience_wait_training_without_books(
         self,
-        runtime: Any,
+        context: Any,
         *,
         timeout: float,
     ):
@@ -638,28 +638,28 @@ class DailyExperienceTaskMixin:
 
         attempts = max(2, int(max(1.0, float(timeout)) / 0.5))
         for _attempt in range(attempts):
-            frame = runtime.cur_frame(update=True)
-            matched_406, _score_406, _ = runtime.match_view(406, frame_data_url=frame)
-            matched_405, _score_405, _ = runtime.match_view(405, frame_data_url=frame)
+            frame = context.cur_frame(update=True)
+            matched_406, _score_406, _ = context.match_view(406, frame_data_url=frame)
+            matched_405, _score_405, _ = context.match_view(405, frame_data_url=frame)
             if matched_405 and not matched_406:
                 return
-            yield from runtime.wait_action_settle(0.5)
+            yield from context.wait_action_settle(0.5)
         raise TimeoutError("日常_经验：#406 经验书层未关闭，拒绝点击背景 #405")
 
-    def _daily_experience_return_world(self, runtime: Any, *, timeout: float):
-        yield from runtime.wait_click(406, "返回")
+    def _daily_experience_return_world(self, context: Any, *, timeout: float):
+        yield from context.wait_click(406, "返回")
         yield from self._daily_experience_wait_training_without_books(
-            runtime,
+            context,
             timeout=timeout,
         )
-        yield from runtime.wait_click(405, "返回")
-        yield from runtime.wait_view(20, timeout=timeout, label="日常_经验：等待返回绿瓶 #20")
-        yield from runtime.wait_click(20, "回到世界")
-        yield from runtime.wait_view(34, timeout=timeout, label="日常_经验：等待返回世界 #34")
+        yield from context.wait_click(405, "返回")
+        yield from context.wait_scene(20, wait=timeout, label="日常_经验：等待返回绿瓶 #20")
+        yield from context.wait_click(20, "回到世界")
+        yield from context.wait_scene(34, wait=timeout, label="日常_经验：等待返回世界 #34")
 
     def _daily_experience_finish_consumables_exhausted(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         timeout: float,
@@ -671,7 +671,7 @@ class DailyExperienceTaskMixin:
         cleanup_warning = ""
         current_scene: int | None = _EXPERIENCE_WORLD_SCENE
         try:
-            yield from self._daily_experience_return_world(runtime, timeout=timeout)
+            yield from self._daily_experience_return_world(context, timeout=timeout)
         except (InterruptedError, GeneratorExit):
             raise
         except Exception as exc:
@@ -702,7 +702,7 @@ class DailyExperienceTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_经验资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         timeout = float(
             payload.get("view_timeout")
             or _EXPERIENCE_DEFAULT_VIEW_TIMEOUT_SECONDS
@@ -714,7 +714,7 @@ class DailyExperienceTaskMixin:
             min(10, int(payload.get("completion_confirmation_scans") or 3)),
         )
 
-        yield from self._daily_experience_enter(runtime, timeout=timeout)
+        yield from self._daily_experience_enter(context, timeout=timeout)
         needs_progression_check = False
         completion_streak = 0
         uncertain_streak = 0
@@ -733,12 +733,12 @@ class DailyExperienceTaskMixin:
                 needs_progression_check = False
                 if progression.get("current_book_full") is True:
                     yield from self._daily_experience_route_full_role_exp(
-                        runtime,
+                        context,
                         timeout=timeout,
                     )
                     continue
-            frame = runtime.cur_frame(update=True)
-            lines = runtime.ocr_lines_in_shapes(
+            frame = context.cur_frame(update=True)
+            lines = context.ocr_lines_in_shapes(
                 406,
                 ["经验书"],
                 frame_data_url=frame,
@@ -748,7 +748,7 @@ class DailyExperienceTaskMixin:
             action = select_daily_experience_action(groups)
             cropped_groups: list[ExperienceBookGroup] = []
             if action is None:
-                cropped_lines = runtime.ocr_lines_in_shapes(
+                cropped_lines = context.ocr_lines_in_shapes(
                     406,
                     ["经验书"],
                     frame_data_url=frame,
@@ -768,7 +768,7 @@ class DailyExperienceTaskMixin:
                         continue
                     return (
                         yield from self._daily_experience_finish_consumables_exhausted(
-                            runtime,
+                            context,
                             payload,
                             timeout=timeout,
                         )
@@ -794,9 +794,9 @@ class DailyExperienceTaskMixin:
             action_kind, target = action
             if action_kind in {"ordinary_book", "training_experience"}:
                 x, y = self._daily_experience_item_point(target)
-                runtime.long_press_frame_point(406, x, y, duration=1.2)
+                context.long_press_frame_point(406, x, y, duration=1.2)
                 handled_full = yield from self._daily_experience_settle_after_long_press(
-                    runtime,
+                    context,
                     timeout=timeout,
                 )
                 needs_progression_check = not handled_full
@@ -804,7 +804,7 @@ class DailyExperienceTaskMixin:
 
             if action_kind == "true_insight":
                 yield from self._daily_experience_buy_true_insight(
-                    runtime,
+                    context,
                     target,
                     timeout=timeout,
                     max_purchases=max_purchases,
@@ -813,7 +813,7 @@ class DailyExperienceTaskMixin:
                 continue
 
             if action_kind == "green_aura":
-                yield from self._daily_experience_use_green_aura(runtime, target, timeout=timeout)
+                yield from self._daily_experience_use_green_aura(context, target, timeout=timeout)
                 needs_progression_check = True
                 continue
         raise RuntimeError(f"日常_经验：连续处理 {max_actions} 次仍未清空可处理项")

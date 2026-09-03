@@ -550,7 +550,7 @@ def collect_and_store_yaochi_flower_festival_activity(
     plane_rank_activity_id = references.get("plane_rank_activity_id")
     runtime_context = _yaochi_runtime_context(session, activity)
     reward_tiers = load_activity_rank_reward_tiers(
-        rank_activity_id=personal_rank_activity_id,
+        reward_activity_id=personal_rank_activity_id,
         event_date=activity.start_date,
         server_day=runtime_context["server_day"] or None,
         world_level=runtime_context["world_level"] or None,

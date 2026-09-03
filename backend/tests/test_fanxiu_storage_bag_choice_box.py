@@ -75,7 +75,7 @@ class _Runtime:
     def click_frame_point(self, scene, x, y):
         self.events.append(("point", scene, x, y))
 
-    def wait_view(self, *scenes, **_options):
+    def wait_scene(self, *scenes, **_options):
         self.events.append(("view", scenes))
         if False:
             yield None

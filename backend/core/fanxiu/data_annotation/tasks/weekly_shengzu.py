@@ -49,15 +49,15 @@ class WeeklyShengzuTaskMixin:
 
     def _open_weekly_shengzu_from_daily(
         self,
-        runtime: Any,
+        context: Any,
         *,
         max_scrolls: int,
         transition_timeout: float,
     ):
-        yield from runtime.goto_view(69)
+        yield from context.go_scene(69)
         for scroll_index in range(max(0, int(max_scrolls)) + 1):
-            frame = runtime.cur_frame(update=True)
-            items = runtime.find_floating_items_by_anchor_text(
+            frame = context.cur_frame(update=True)
+            items = context.find_floating_items_by_anchor_text(
                 69,
                 "任务块模板",
                 "标题",
@@ -70,51 +70,51 @@ class WeeklyShengzuTaskMixin:
                 raise RuntimeError("周常_圣祖：#69 中“圣祖”任务块不唯一，停止点击")
             if len(items) == 1:
                 item = items[0]
-                if not runtime.floating_item_is_fully_inside(item, "滚动窗口"):
+                if not context.floating_item_is_fully_inside(item, "滚动窗口"):
                     raise RuntimeError("周常_圣祖：#69“圣祖”任务块位于滚动窗口边缘，停止点击")
-                if not runtime.floating_item_field_is_inside(item, "任务状态", "滚动窗口"):
+                if not context.floating_item_field_is_inside(item, "任务状态", "滚动窗口"):
                     raise RuntimeError("周常_圣祖：#69“圣祖”任务块的前往按钮不在滚动窗口内，停止点击")
-                status_text = runtime.read_floating_item_field(
+                status_text = context.read_floating_item_field(
                     item,
                     "任务状态",
                     frame_data_url=frame,
                 )
                 if "前往" not in status_text:
                     raise RuntimeError(f"周常_圣祖：#69“圣祖”任务状态不是前往：{status_text!r}")
-                runtime.click_floating_item_field(item, "任务状态")
-                yield from runtime.wait_view(
+                context.click_floating_item_field(item, "任务状态")
+                yield from context.wait_scene(
                     384,
-                    timeout=transition_timeout,
+                    wait=transition_timeout,
                     label="周常_圣祖：等待入口页 #384",
                 )
                 return
             if scroll_index >= max_scrolls:
                 break
-            changed = yield from runtime.scroll_shape_content(69, "滚动窗口")
+            changed = yield from context.scroll_shape_content(69, "滚动窗口")
             if not changed:
                 break
         raise RuntimeError("周常_圣祖：滚动 #69 后仍未找到“圣祖”任务块")
 
     def _goto_weekly_shengzu(
         self,
-        runtime: Any,
+        context: Any,
         *,
         max_scrolls: int,
         transition_timeout: float,
     ):
-        scene_id, _score, _frame = runtime.current_scene([383, 384, 385, 69, 34], update=True)
+        scene_id, _score, _frame = context.current_scene([383, 384, 385, 69, 34], update=True)
         if scene_id == 385:
             return
         if scene_id == 383:
-            yield from runtime.goto_view(385)
+            yield from context.go_scene(385)
             return
         if scene_id != 384:
             yield from self._open_weekly_shengzu_from_daily(
-                runtime,
+                context,
                 max_scrolls=max_scrolls,
                 transition_timeout=transition_timeout,
             )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             384,
             "前往",
             385,
@@ -135,17 +135,17 @@ class WeeklyShengzuTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少周常_圣祖资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         transition_timeout = float(payload.get("transition_timeout_seconds") or 20.0)
         max_scrolls = max(0, int(payload.get("max_daily_scrolls") or 30))
         challenge_wait_seconds = max(30.0, float(payload.get("challenge_wait_seconds") or 30.0))
 
         yield from self._goto_weekly_shengzu(
-            runtime,
+            context,
             max_scrolls=max_scrolls,
             transition_timeout=transition_timeout,
         )
-        completed_view = yield from runtime.wait_click_then_view(
+        completed_view = yield from context.wait_click_then_scene(
             385,
             "前往挑战",
             [338, 34, 339],
@@ -153,19 +153,19 @@ class WeeklyShengzuTaskMixin:
             label="周常_圣祖：等待挑战落点",
         )
         completed_scene_id = getattr(completed_view, "id", completed_view)
-        yield from runtime.wait_action_settle(challenge_wait_seconds)
+        yield from context.wait_action_settle(challenge_wait_seconds)
         if completed_scene_id == 338:
-            frame = runtime.cur_frame(update=True)
-            leave_match = runtime.click_ocr_text(
+            frame = context.cur_frame(update=True)
+            leave_match = context.click_ocr_text(
                 338,
                 "离开",
                 frame_data_url=frame,
             )
             self._log("action", f"周常_圣祖：运行至少 {challenge_wait_seconds:.0f} 秒后点击共用进行中页面 OCR「{leave_match.text}」")
-            yield from runtime.wait_action_settle(1.0)
-        yield from runtime.goto_view(34)
+            yield from context.wait_action_settle(1.0)
+        yield from context.go_scene(34)
         message = f"周常_圣祖：已参战并运行至少 {challenge_wait_seconds:.0f} 秒，离开后返回世界 #34"
-        runtime.set_next_time(next_time)
+        context.set_next_time(next_time)
         self._log("success", message)
         return {
             "result": "success",

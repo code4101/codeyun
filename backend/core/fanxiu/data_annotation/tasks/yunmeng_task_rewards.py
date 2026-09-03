@@ -51,7 +51,7 @@ def _view_id(view: Any) -> int:
 
 
 def claim_yunmeng_task_rewards_with_runtime(
-    runtime: Any,
+    context: Any,
     snapshot: Mapping[str, Any],
     plan: Mapping[str, Any],
     *,
@@ -86,7 +86,7 @@ def claim_yunmeng_task_rewards_with_runtime(
         return {"ok": False, "reason": "云梦 GUI 事务缺少严格授权"}
 
     target_scene_ids = list(dict.fromkeys(int(value) for value in assets.task_scene_ids.values()))
-    current_view = yield from runtime.wait_click_then_view(
+    current_view = yield from context.wait_click_then_scene(
         assets.home_scene_id,
         assets.task_entry_shape,
         target_scene_ids,
@@ -101,7 +101,7 @@ def claim_yunmeng_task_rewards_with_runtime(
     for tab_key in active_tabs:
         target_scene_id = int(assets.task_scene_ids[tab_key])
         if current_scene_id != target_scene_id:
-            current_view = yield from runtime.wait_click_then_view(
+            current_view = yield from context.wait_click_then_scene(
                 current_scene_id,
                 assets.tab_shape_names[tab_key],
                 [target_scene_id],
@@ -120,8 +120,8 @@ def claim_yunmeng_task_rewards_with_runtime(
             ]
             if expected not in before_authorized:
                 return {"ok": False, "reason": f"taskId={expected} 已失去领取授权"}
-            runtime.click_shape_center(current_scene_id, assets.first_row_claim_shape)
-            yield from runtime.wait_action_settle(settle_seconds)
+            context.click_shape_center(current_scene_id, assets.first_row_claim_shape)
+            yield from context.wait_action_settle(settle_seconds)
             after = fast_reader(
                 selected_domain,
                 expected_claimed_task_id=expected,
@@ -148,7 +148,7 @@ def claim_yunmeng_task_rewards_with_runtime(
             remaining_in_tab.pop(0)
             current_snapshot = dict(after)
 
-    home_view = yield from runtime.wait_click_then_view(
+    home_view = yield from context.wait_click_then_scene(
         current_scene_id,
         assets.home_tab_shape,
         [assets.home_scene_id],

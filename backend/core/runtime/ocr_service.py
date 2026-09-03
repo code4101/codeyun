@@ -415,7 +415,7 @@ def _infer_ocr_request_caller() -> str:
         os.fspath((root / "backend" / "core" / "runtime" / "ocr_service.py").resolve(strict=False)).lower(),
         os.fspath((root / "backend" / "core" / "ocr" / "preview.py").resolve(strict=False)).lower(),
         os.fspath((root / "backend" / "core" / "fanxiu" / "game" / "macro_annotation.py").resolve(strict=False)).lower(),
-        os.fspath((root / "backend" / "core" / "fanxiu" / "data_annotation" / "behavior_tree_runtime.py").resolve(strict=False)).lower(),
+        os.fspath((root / "backend" / "core" / "fanxiu" / "data_annotation" / "behavior_tree_executor.py").resolve(strict=False)).lower(),
     }
     for frame in inspect.stack(context=0)[1:]:
         filename = os.fspath(Path(frame.filename).resolve(strict=False))

@@ -14,6 +14,16 @@ type ActivityOption = {
   value: TopActivityType
 }
 
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  initialActivityType?: TopActivityType | null
+  initialSnapshot?: FanxiuExchangeActivitySnapshot | null
+}>(), {
+  embedded: false,
+  initialActivityType: null,
+  initialSnapshot: null,
+})
+
 const activityOptions: ActivityOption[] = [
   {
     label: '云梦试剑',
@@ -47,7 +57,8 @@ const XutianPalacePage = defineAsyncComponent(() => import('../xutian-palace/pag
 const MagicInvasionPage = defineAsyncComponent(() => import('../magic-invasion/page.vue'))
 const BeastAbyssPage = defineAsyncComponent(() => import('../beast-abyss/page.vue'))
 const resolvedDefaultType = ref<TopActivityType | null>(null)
-const initialSnapshot = ref<FanxiuExchangeActivitySnapshot | null>(null)
+const resolvedInitialSnapshot = ref<FanxiuExchangeActivitySnapshot | null>(null)
+const embeddedType = ref<TopActivityType | null>(null)
 
 function isActivityType(value: unknown): value is TopActivityType {
   return activityTypes.has(String(value || '') as TopActivityType)
@@ -55,10 +66,17 @@ function isActivityType(value: unknown): value is TopActivityType {
 
 const selectedType = computed<TopActivityType>({
   get() {
+    if (props.embedded) {
+      return embeddedType.value ?? props.initialActivityType ?? activityOptions[0].value
+    }
     const value = String(route.query.activity || '') as TopActivityType
     return isActivityType(value) ? value : (resolvedDefaultType.value ?? activityOptions[0].value)
   },
   set(value) {
+    if (props.embedded) {
+      embeddedType.value = value
+      return
+    }
     void router.replace({
       query: {
         ...route.query,
@@ -68,7 +86,8 @@ const selectedType = computed<TopActivityType>({
   },
 })
 const activePage = computed(() => {
-  if (!isActivityType(route.query.activity) && !resolvedDefaultType.value) return null
+  if (props.embedded && !isActivityType(selectedType.value)) return null
+  if (!props.embedded && !isActivityType(route.query.activity) && !resolvedDefaultType.value) return null
   if (selectedType.value === 'magic-invasion') return MagicInvasionPage
   if (selectedType.value === 'beast-abyss') return BeastAbyssPage
   return XutianPalacePage
@@ -76,16 +95,43 @@ const activePage = computed(() => {
 const selectedActivityName = computed(() => (
   activityOptions.find(item => item.value === selectedType.value)?.label ?? '玩法榜'
 ))
+const activePageProps = computed(() => {
+  if (selectedType.value === 'magic-invasion' || selectedType.value === 'beast-abyss') {
+    return {}
+  }
+  return {
+    activityType: selectedType.value,
+    activityName: selectedActivityName.value,
+    ...(selectedType.value === 'tiandi-yiju'
+      ? {
+          comparativeRankingScope: 'alliance',
+          comparativeRankingTitle: '宗门/位面排名',
+          comparativeRankingSubjectLabel: '宗门/位面',
+        }
+      : {}),
+  }
+})
 const selectedInitialSnapshot = computed(() => (
-  !isActivityType(route.query.activity)
+  props.embedded
+    ? (selectedType.value === props.initialActivityType ? (props.initialSnapshot ?? undefined) : undefined)
+    : (!isActivityType(route.query.activity)
   && resolvedDefaultType.value === selectedType.value
-    ? (initialSnapshot.value ?? undefined)
-    : undefined
+      ? (resolvedInitialSnapshot.value ?? undefined)
+      : undefined)
 ))
+
+watch(
+  () => props.initialActivityType,
+  value => {
+    if (props.embedded && isActivityType(value)) embeddedType.value = value
+  },
+  { immediate: true },
+)
 
 watch(
   () => route.query.activity,
   async value => {
+    if (props.embedded) return
     if (isActivityType(value)) return
     const latest = await getLatestFanxiuExchangeActivitySnapshot(
       activityOptions.map(item => item.value),
@@ -95,7 +141,7 @@ watch(
       ? latest.activity_type
       : activityOptions[0].value
     resolvedDefaultType.value = latestType
-    initialSnapshot.value = latest.activity_type === latestType
+    resolvedInitialSnapshot.value = latest.activity_type === latestType
       ? (latest.snapshot ?? null)
       : null
   },
@@ -104,8 +150,8 @@ watch(
 </script>
 
 <template>
-  <div class="top-activity-page">
-    <header class="page-header">
+  <div class="top-activity-page" :class="{ 'is-embedded': embedded }">
+    <header v-if="!embedded" class="page-header">
       <h2>玩法榜</h2>
     </header>
 
@@ -113,13 +159,9 @@ watch(
       :is="activePage"
       v-if="activePage"
       :key="selectedType"
+      v-bind="activePageProps"
       embedded
       :initial-snapshot="selectedInitialSnapshot"
-      :activity-type="['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedType : undefined"
-      :activity-name="['yunmeng-trial', 'xianyuan-duokui', 'tiandi-yiju'].includes(selectedType) ? selectedActivityName : undefined"
-      :comparative-ranking-scope="selectedType === 'tiandi-yiju' ? 'alliance' : undefined"
-      :comparative-ranking-title="selectedType === 'tiandi-yiju' ? '宗门/位面排名' : undefined"
-      :comparative-ranking-subject-label="selectedType === 'tiandi-yiju' ? '宗门/位面' : undefined"
     >
       <template #activity-type-control>
         <el-select v-model="selectedType" class="activity-type-select" aria-label="选择活动类型">
@@ -141,6 +183,11 @@ watch(
   flex-direction: column;
   gap: 12px;
   padding: 20px;
+}
+
+.top-activity-page.is-embedded {
+  gap: 0;
+  padding: 0;
 }
 
 .page-header h2 {

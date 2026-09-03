@@ -7,7 +7,7 @@ from typing import Any, Literal
 from fastapi import HTTPException
 
 CATALOG_VERSION = 9
-DEFAULT_ANALYSIS_ROOT = Path(r"D:\home\chenkunze\data\m2606东方夜雀食堂逆向\mystia_analysis_exports")
+DEFAULT_ANALYSIS_ROOT = Path(r"C:\home\chenkunze\data\m2606东方夜雀食堂逆向\mystia_analysis_exports")
 CATALOG_PATH = DEFAULT_ANALYSIS_ROOT / "mystia_catalog.json"
 
 MystiaKind = Literal[

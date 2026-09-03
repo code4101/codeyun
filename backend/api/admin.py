@@ -30,20 +30,24 @@ from backend.core.jobs.scheduler import (
     set_background_task_enabled,
 )
 from backend.core.jobs.executor import background_task_queue
-from backend.core.jobs.local_runtime import find_active_local_job_run, submit_local_job
+from backend.core.jobs.local_runtime import (
+    find_active_local_job_run,
+    serialize_local_job_run,
+    submit_local_job,
+)
 from backend.core.devices.device import get_device_id
 from backend.core.resources.attachments import index_attachment_file_resource
 from backend.core.notes.metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
     get_note_metadata_feedback_status,
 )
-from backend.core.fanxiu.runtime.slimming import FANXIU_SLIMMING_TASK_KEY, get_fanxiu_slimming_status
+from backend.core.fanxiu.client.slimming import FANXIU_SLIMMING_TASK_KEY, get_fanxiu_slimming_status
 from backend.core.fanxiu_wechat_reminder import (
     FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY,
     FANXIU_WECHAT_SHENGZU_REMINDER_TASK_KEY,
     get_fanxiu_wechat_reminder_status,
 )
-from backend.models import AppSetting, DeviceFile, User, NoteNode
+from backend.models import AppSetting, DeviceFile, LocalJobRun, User, NoteNode
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.resources.storage import (
     ATTACHMENT_URL_PATTERN,
@@ -757,6 +761,16 @@ def get_background_task_status(session: Session = Depends(get_session)):
     fanxiu_shengzu_reminder_latest = (
         fanxiu_shengzu_reminder_status.get("latest_run") if isinstance(fanxiu_shengzu_reminder_status, dict) else None
     )
+    attendance_summary_local_run = session.exec(
+        select(LocalJobRun)
+        .where(LocalJobRun.job_type == "attendance.summary-templates")
+        .order_by(LocalJobRun.queued_at.desc())
+    ).first()
+    attendance_summary_local_payload = (
+        serialize_local_job_run(attendance_summary_local_run)
+        if attendance_summary_local_run is not None
+        else None
+    )
 
     def _is_task_enabled(task_key: str) -> bool:
         row = session.get(AppSetting, f"background_task.{task_key}.enabled")
@@ -772,7 +786,10 @@ def get_background_task_status(session: Session = Depends(get_session)):
         "auto_git_commit": auto_git_latest if isinstance(auto_git_latest, dict) else None,
         "note_metadata_feedback_optimization": metadata_latest if isinstance(metadata_latest, dict) else None,
         CODEX_DIARY_AUTO_IMPORT_TASK_NAME: codex_diary_latest if isinstance(codex_diary_latest, dict) else None,
-        "attendance_summary_monthly_templates": _queue_run_payload(queue, "attendance_summary_monthly_templates"),
+        "attendance_summary_monthly_templates": (
+            attendance_summary_local_payload
+            or _queue_run_payload(queue, "attendance_summary_monthly_templates")
+        ),
         "storage_analysis": _queue_run_payload(queue, "storage_analysis"),
         FANXIU_SLIMMING_TASK_KEY: fanxiu_slimming_latest if isinstance(fanxiu_slimming_latest, dict) else _queue_run_payload(queue, FANXIU_SLIMMING_TASK_KEY),
         FANXIU_WECHAT_BOSS_REMINDER_TASK_KEY: (
@@ -797,7 +814,10 @@ def get_background_task_status(session: Session = Depends(get_session)):
         or _queue_task_is_active(queue, "note_metadata_feedback_optimization"),
         CODEX_DIARY_AUTO_IMPORT_TASK_NAME: _run_is_active(codex_diary_status.get("active_run") if isinstance(codex_diary_status, dict) else None)
         or _queue_task_is_active(queue, CODEX_DIARY_AUTO_IMPORT_TASK_NAME),
-        "attendance_summary_monthly_templates": _queue_task_is_active(queue, "attendance_summary_monthly_templates"),
+        "attendance_summary_monthly_templates": bool(
+            attendance_summary_local_payload
+            and attendance_summary_local_payload.get("running")
+        ) or _queue_task_is_active(queue, "attendance_summary_monthly_templates"),
         "storage_analysis": _queue_task_is_active(queue, "storage_analysis"),
         FANXIU_SLIMMING_TASK_KEY: _run_is_active(fanxiu_slimming_latest if isinstance(fanxiu_slimming_latest, dict) else None)
         or _queue_task_is_active(queue, FANXIU_SLIMMING_TASK_KEY),

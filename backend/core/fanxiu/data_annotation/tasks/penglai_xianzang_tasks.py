@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
+import re
+import time
 from typing import Any, Sequence
 
 from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
@@ -11,7 +12,6 @@ from backend.core.fanxiu.data_annotation.tasks.penglai_xianzang_navigation impor
     XianzangPageResult,
     open_xianzang_tab,
 )
-from backend.core.fanxiu.instrumentation.bothdraw import read_bothdraw_task_runtime
 
 
 @dataclass(frozen=True)
@@ -61,101 +61,80 @@ def parse_xianzang_task_progress(
 
 
 def complete_xianzang_tasks(
-    runtime: Any,
+    context: Any,
     *,
     progress_shape_title: str = "进度",
-    retry_seconds: float = 1.0,
+    observer_shape_title: str = "第三行任务标题",
+    retry_seconds: float = 3.0,
+    no_change_confirmations: int = 3,
     max_clicks: int = 20,
 ) -> XianzangTaskCompletionResult:
-    """Claim task rewards only when QuestMgr reports a claimable task.
+    """Claim the first-row task reward until the task page becomes stable.
 
-    The game sorts claimable tasks to the first row.  OCR is deliberately not
-    used as completion evidence: an unavailable runtime snapshot is a failure,
-    never an implicit "all claimed" result.
+    Penglai keeps a claimable task at the top of the list.  Clicking the
+    annotated first-row progress region is idempotent when nothing is
+    claimable.  A changed first-row OCR observation proves that the list
+    advanced; three consecutive unchanged observations close the task phase.
+    This deliberately follows the Beast Abyss GUI convergence pattern without
+    depending on QuestMgr Runtime state.
     """
 
-    click_limit = max(1, int(max_clicks))
+    confirmations = max(1, int(no_change_confirmations))
+    click_limit = max(confirmations, int(max_clicks))
     clicked_count = 0
     last_progress: XianzangTaskProgress | None = None
-    snapshot = read_bothdraw_task_runtime()
-    if snapshot.get("complete") and not list(snapshot.get("claimable") or []):
-        # QuestMgr is the authoritative claim ledger.  An all-claimed retry
-        # does not need to open the execution-only task tab, whose first click
-        # can be swallowed while the freshly opened activity is still
-        # settling.  Keep this path zero-click and verify that we remain on
-        # the Xianzang main page for the following workflow phase.
-        final_page = open_xianzang_tab(runtime, "蓬莱仙藏")
-        return XianzangTaskCompletionResult(
-            clicked_count=0,
-            stop_reason="all_claimed",
-            last_progress=None,
-            final_page=final_page,
-        )
-
-    task_page = open_xianzang_tab(runtime, "任务")
+    task_page = open_xianzang_tab(context, "任务")
     if task_page.scene_id != XIANZANG_TASK_SCENE_ID or task_page.score < 80.0:
         raise RuntimeError("未可靠进入 #450 蓬莱仙藏任务页，拒绝识别或点击任务")
-    if not snapshot.get("complete"):
-        # A cold process may only materialize QuestMgr's activity task rows
-        # after the real task page has been opened.  Navigation is allowed to
-        # load that read-only source naturally; it is then re-read strictly.
-        snapshot = read_bothdraw_task_runtime()
-        if not snapshot.get("complete"):
-            raise RuntimeError(
-                str(snapshot.get("reason") or "QuestMgr 活动任务状态不完整")
-            )
 
-    pending_task_id: int | None = None
-    while True:
-        tasks = list(snapshot.get("tasks") or [])
-        if pending_task_id is not None:
-            confirmed = next(
-                (
-                    item
-                    for item in tasks
-                    if int(item.get("task_id") or 0) == pending_task_id
-                ),
-                None,
-            )
-            if confirmed is None or confirmed.get("state") != "claimed":
-                raise RuntimeError(
-                    f"点击任务 {pending_task_id} 后 QuestMgr 未确认已领取"
-                )
-            pending_task_id = None
+    def observe(frame: str) -> str:
+        text = context.ocr_text_in_shapes(
+            XIANZANG_TASK_SCENE_ID,
+            (str(observer_shape_title),),
+            padding=8,
+            frame_data_url=frame,
+            crop=True,
+        )
+        return re.sub(r"\s+", "", str(text or "")).strip() or "<empty>"
 
-        claimable = list(snapshot.get("claimable") or [])
-        if not claimable:
-            stop_reason = "all_claimed"
-            break
+    frame = context.cur_frame(update=True)
+    observer = observe(frame)
+    unchanged = 0
+    while unchanged < confirmations:
         if clicked_count >= click_limit:
             raise RuntimeError(
                 f"蓬莱仙藏任务连续领取超过 {click_limit} 次仍未收敛，拒绝继续点击"
             )
-        scene_id, score, frame = runtime.current_scene(
+        scene_id, score, frame = context.current_scene(
             [XIANZANG_TASK_SCENE_ID],
             update=True,
         )
         if int(scene_id or 0) != XIANZANG_TASK_SCENE_ID or float(score or 0) < 80.0:
             raise RuntimeError("领取前未可靠识别 #450，拒绝点击任务")
-        target = claimable[0]
-        runtime.click_shape(
+        context.click_shape(
             XIANZANG_TASK_SCENE_ID,
             str(progress_shape_title),
             frame_data_url=frame,
         )
         clicked_count += 1
-        pending_task_id = int(target.get("task_id") or 0)
         time.sleep(max(0.0, float(retry_seconds)))
-        snapshot = read_bothdraw_task_runtime()
-        if not snapshot.get("complete"):
-            raise RuntimeError(
-                str(snapshot.get("reason") or "QuestMgr 活动任务状态不完整")
-            )
+        scene_id, score, frame = context.current_scene(
+            [XIANZANG_TASK_SCENE_ID],
+            update=True,
+        )
+        if int(scene_id or 0) != XIANZANG_TASK_SCENE_ID or float(score or 0) < 80.0:
+            raise RuntimeError("领取后未可靠识别 #450，拒绝继续点击任务")
+        next_observer = observe(frame)
+        if next_observer != observer:
+            observer = next_observer
+            unchanged = 0
+        else:
+            unchanged += 1
 
-    final_page = open_xianzang_tab(runtime, "蓬莱仙藏")
+    final_page = open_xianzang_tab(context, "蓬莱仙藏")
     return XianzangTaskCompletionResult(
         clicked_count=clicked_count,
-        stop_reason=stop_reason,
+        stop_reason="stable_no_change",
         last_progress=last_progress,
         final_page=final_page,
     )

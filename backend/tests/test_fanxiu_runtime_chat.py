@@ -1,10 +1,21 @@
+import re
+
 import pytest
 
 from backend.core.fanxiu.instrumentation.chat import (
+    select_chat_channel_title_patterns,
     select_chat_channel_route,
     select_chat_row_anchors,
     select_repeated_chat_phrase,
 )
+
+
+def test_world_channel_has_realm_derived_row_title_pattern():
+    pattern = select_chat_channel_title_patterns(4)
+
+    assert len(pattern) == 1
+    assert re.search(pattern[0], "【仙界】传音群")
+    assert select_chat_channel_title_patterns(104) == []
 
 
 def test_select_chat_channel_route_uses_runtime_group_type_not_gui_badge():

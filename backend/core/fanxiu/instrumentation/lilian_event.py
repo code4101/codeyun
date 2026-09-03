@@ -356,7 +356,7 @@ def read_lilian_event_catalog_snapshot() -> dict[str, Any]:
                     "PartnerTrainReward": len(reward_rows),
                     "PartnerTrainCheck": len(check_rows),
                 },
-                "runtime_loaded_complete": not unloaded_tables,
+                "context_loaded_complete": not unloaded_tables,
                 "unloaded_runtime_tables": unloaded_tables,
                 "parsed_config_signature_match": static_signature_match,
                 "evidence": {

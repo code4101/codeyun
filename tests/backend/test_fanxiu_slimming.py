@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from backend.core.fanxiu.runtime import slimming as fanxiu_slimming
+from backend.core.fanxiu.client import slimming as fanxiu_slimming
 from backend.models import AppSetting
 
 

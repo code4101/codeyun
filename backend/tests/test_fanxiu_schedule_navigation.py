@@ -2,6 +2,8 @@ from datetime import date, datetime
 
 import pytest
 
+from backend.core.fanxiu.runtime_gui import RuntimeEntity
+
 from backend.core.fanxiu.data_annotation.schedule_navigation import (
     activity_card_covers_date,
     activity_card_covers_moment,
@@ -159,6 +161,48 @@ def test_runtime_activity_name_aligns_noisy_calendar_ocr() -> None:
     assert targets[0].matched_text == "魔道人侵"
     assert targets[0].runtime_key.startswith("32080001")
     assert 0.55 <= targets[0].alignment_score < 1.0
+
+
+def test_current_runtime_activity_uses_unique_calendar_title_when_header_is_occluded() -> None:
+    entities = runtime_activity_entities_for_date(
+        {
+            "available": True,
+            "items": [{
+                "activityId": 4080001,
+                "id": 4080001400004,
+                "name": "虚天殿",
+                "startTime": _millis("2026-08-31 10:00:00"),
+                "endTime": _millis("2026-09-01 22:00:00"),
+            }],
+        },
+        r"虚天(殿)?",
+        target_date=date(2026, 8, 31),
+    )
+
+    targets = resolve_schedule_runtime_activity_targets(
+        header_lines=[],
+        calendar_lines=[_line("虚夭殿", 420, y=585, w=134, h=38)],
+        runtime_entities=entities,
+        day_offset=0,
+        anchor_date=date(2026, 8, 31),
+    )
+
+    assert len(targets) == 1
+    assert targets[0].x == pytest.approx(487)
+    assert targets[0].runtime_key.startswith("4080001")
+
+
+def test_occluded_header_still_blocks_noncurrent_runtime_date_offset() -> None:
+    entity = RuntimeEntity(key="xutian", name="虚天殿", payload={"name": "虚天殿"})
+
+    with pytest.raises(RuntimeError, match="无法建立时间坐标系"):
+        resolve_schedule_runtime_activity_targets(
+            header_lines=[],
+            calendar_lines=[_line("虚天殿", 420, y=585)],
+            runtime_entities=[entity],
+            day_offset=1,
+            anchor_date=date(2026, 8, 31),
+        )
 
 
 def test_runtime_activity_qualifier_disambiguates_duplicate_magic_invasion_rows() -> None:

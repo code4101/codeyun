@@ -5,10 +5,10 @@ import importlib
 
 def test_fanxiu_behavior_tree_legacy_module_aliases_canonical_module():
     legacy = importlib.import_module("backend.core.fanxiu_behavior_tree")
-    canonical = importlib.import_module("backend.core.fanxiu.behavior_tree.runtime")
+    canonical = importlib.import_module("backend.core.fanxiu.behavior_tree.kernel_scheduler")
 
     assert legacy is canonical
-    assert hasattr(legacy, "ensure_fanxiu_behavior_tree_service")
+    assert hasattr(legacy, "ensure_fanxiu_kernel_scheduler_service")
 
 
 def test_fanxiu_data_annotation_legacy_modules_alias_canonical_modules():
@@ -18,10 +18,10 @@ def test_fanxiu_data_annotation_legacy_modules_alias_canonical_modules():
         ("backend.core.fanxiu_data_annotation_jobs", "backend.core.fanxiu.data_annotation.jobs"),
         ("backend.core.fanxiu_data_annotation_default_jobs", "backend.core.fanxiu.data_annotation.default_jobs"),
         ("backend.core.fanxiu_data_annotation_debug_eval", "backend.core.fanxiu.data_annotation.debug_eval"),
-        ("backend.core.fanxiu_data_annotation_scheduler", "backend.core.fanxiu.data_annotation.scheduler"),
+        ("backend.core.fanxiu_kernel_scheduler_plan", "backend.core.fanxiu.data_annotation.kernel_scheduler_plan"),
         (
-            "backend.core.fanxiu_data_annotation_scheduler_defaults",
-            "backend.core.fanxiu.data_annotation.scheduler_defaults",
+            "backend.core.fanxiu_kernel_scheduler_defaults",
+            "backend.core.fanxiu.data_annotation.kernel_scheduler_defaults",
         ),
     ]
 
@@ -88,7 +88,7 @@ def test_fanxiu_legacy_external_service_module_is_removed():
     import pytest
 
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("backend.core.fanxiu_behavior_tree_service")
+        importlib.import_module("backend.core.fanxiu_kernel_scheduler_service")
 
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("backend.core.fanxiu.behavior_tree.service")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from backend.core.fanxiu.activity.beast_abyss import (
@@ -19,6 +19,45 @@ BEAST_ABYSS_SHOP_SCENE = 536
 COMMON_SHOP_DETAIL_SCENE = 566
 
 
+def _validate_fresh_exchange_snapshot(
+    detail: Any,
+    evidence: dict[str, Any],
+    *,
+    attempt_started_at: datetime,
+    label: str,
+) -> None:
+    """Reject retained or cross-process facts before/after physical purchases."""
+
+    refresh = dict(evidence.get("refresh_status") or {})
+    if (
+        not bool(detail.currency_fact_fresh)
+        or not bool(detail.shop_fact_fresh)
+        or refresh.get("currency") != "updated"
+        or refresh.get("shop") != "updated"
+    ):
+        raise RuntimeError(f"{label}：钱包或兑换宝阁不是本次刷新事实")
+    try:
+        currency_at = datetime.fromisoformat(str(detail.currency_captured_at or ""))
+        shop_at = datetime.fromisoformat(str(detail.shop_snapshot_captured_at or ""))
+    except ValueError as exc:
+        raise RuntimeError(f"{label}：本次刷新时间水位无效") from exc
+    watermark = attempt_started_at.replace(microsecond=0)
+    if currency_at < watermark or shop_at < watermark:
+        raise RuntimeError(f"{label}：钱包或兑换宝阁仍是本 attempt 之前的快照")
+    currency_process = dict(evidence.get("currency_runtime") or {})
+    shop_process = dict(evidence.get("shop") or {})
+    currency_identity = (
+        int(currency_process.get("pid") or 0),
+        int(currency_process.get("process_start_ticks") or 0),
+    )
+    shop_identity = (
+        int(shop_process.get("pid") or 0),
+        int(shop_process.get("process_start_ticks") or 0),
+    )
+    if 0 in currency_identity or currency_identity != shop_identity:
+        raise RuntimeError(f"{label}：钱包与兑换宝阁不来自同一游戏进程")
+
+
 def execute_beast_abyss_exchange(
     runner: Any,
     ctx: dict[str, Any],
@@ -34,31 +73,46 @@ def execute_beast_abyss_exchange(
         read_wallet_currency_snapshot,
     )
     from backend.db import engine
+    from backend.models import FanxiuExchangeActivity
 
     label = "兽渊_兑换"
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-    scene_id, _score, _frame = runtime.current_scene(
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    scene_id, _score, _frame = context.current_scene(
         (BEAST_ABYSS_SHOP_SCENE, COMMON_SHOP_DETAIL_SCENE),
         update=True,
     )
     if scene_id == COMMON_SHOP_DETAIL_SCENE:
-        runtime.click_shape_center(COMMON_SHOP_DETAIL_SCENE, "关闭详情")
-        yield from runtime.wait_view(
+        context.click_shape_center(COMMON_SHOP_DETAIL_SCENE, "关闭详情")
+        yield from context.wait_scene(
             BEAST_ABYSS_SHOP_SCENE,
-            timeout=15.0,
+            wait=15.0,
             label=f"{label}：关闭遗留商品详情",
         )
     elif scene_id != BEAST_ABYSS_SHOP_SCENE:
         raise RuntimeError(f"{label}：要求从 #536 兑换宝阁开始")
 
+    collection_started_at = datetime.now().astimezone()
     with Session(engine) as session:
         detail = collect_and_store_beast_abyss_activity(
             session,
             activity_id=activity_id,
             collect_runtime_shop=True,
+            collect_runtime_rank=False,
         )
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        if activity is None:
+            raise RuntimeError(f"{label}：刷新后失去本期实例")
+        collection_evidence = dict(activity.evidence or {})
         session.commit()
+    _validate_fresh_exchange_snapshot(
+        detail,
+        collection_evidence,
+        attempt_started_at=collection_started_at,
+        label=label,
+    )
     wallet = read_wallet_currency_snapshot(14, allow_discovery=False)
+    if wallet.get("source") != "runtime_memory":
+        raise RuntimeError(f"{label}：钱包没有提供 Runtime 实时事实")
     expected_wallet = int(wallet["exchange_currency"])
     if int(detail.current_currency) != expected_wallet:
         raise RuntimeError(
@@ -82,23 +136,23 @@ def execute_beast_abyss_exchange(
         if stop_event.is_set():
             raise InterruptedError()
         for _ in range(action.scroll_rows):
-            yield from runtime.scroll_shape_content(
+            yield from context.scroll_shape_content(
                 BEAST_ABYSS_SHOP_SCENE,
                 "商品列表",
                 direction="down",
             )
 
-        runtime.click_shape_center(
+        context.click_shape_center(
             BEAST_ABYSS_SHOP_SCENE,
             f"商品行{action.slot}",
         )
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             COMMON_SHOP_DETAIL_SCENE,
-            timeout=15.0,
+            wait=15.0,
             label=f"{label}：等待 {action.name} 商品详情",
         )
         _detail_matches(
-            runtime,
+            context,
             expected_name=action.name,
             expected_price=action.unit_price,
         )
@@ -107,14 +161,14 @@ def execute_beast_abyss_exchange(
             buying_to_cap=action.clears_row,
         )
         for index in range(plus_ten_count):
-            runtime.click_shape_center_fast(COMMON_SHOP_DETAIL_SCENE, "+10")
+            context.click_shape_center_fast(COMMON_SHOP_DETAIL_SCENE, "+10")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
+                yield from context.wait_action_settle(0.05)
         for index in range(plus_one_count):
-            runtime.click_shape_center_fast(COMMON_SHOP_DETAIL_SCENE, "+")
+            context.click_shape_center_fast(COMMON_SHOP_DETAIL_SCENE, "+")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
-        yield from runtime.wait_action_settle(0.4)
+                yield from context.wait_action_settle(0.05)
+        yield from context.wait_action_settle(0.4)
 
         expected_total = int(action.quantity) * int(action.unit_price)
         if expected_wallet - expected_total < reserved_tokens:
@@ -124,8 +178,8 @@ def execute_beast_abyss_exchange(
         totals: list[int] = []
         total_text = ""
         for _ in range(3):
-            price_frame = runtime.cur_frame(update=True)
-            totals, total_text = runtime.ocr_numbers_in_shapes(
+            price_frame = context.cur_frame(update=True)
+            totals, total_text = context.ocr_numbers_in_shapes(
                 COMMON_SHOP_DETAIL_SCENE,
                 ("价格",),
                 # Beast Abyss renders the total one token row below the common
@@ -136,12 +190,12 @@ def execute_beast_abyss_exchange(
             )
             if _ocr_contains_amount(totals, total_text, expected_total):
                 break
-            yield from runtime.wait_action_settle(0.4)
+            yield from context.wait_action_settle(0.4)
         if not _ocr_contains_amount(totals, total_text, expected_total):
             raise RuntimeError(
                 f"{label}：{action.name} 数量调整后总价未闭环为 {expected_total}"
             )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             COMMON_SHOP_DETAIL_SCENE,
             "购买",
             BEAST_ABYSS_SHOP_SCENE,
@@ -159,13 +213,25 @@ def execute_beast_abyss_exchange(
     if expected_wallet != int(planning["planned_remaining_tokens"]):
         raise RuntimeError(f"{label}：物理动作没有完整核销理论预算")
 
+    verification_started_at = datetime.now().astimezone()
     with Session(engine) as session:
         final_detail = collect_and_store_beast_abyss_activity(
             session,
             activity_id=activity_id,
             collect_runtime_shop=True,
+            collect_runtime_rank=False,
         )
+        final_activity = session.get(FanxiuExchangeActivity, activity_id)
+        if final_activity is None:
+            raise RuntimeError(f"{label}：购买后失去本期实例")
+        final_evidence = dict(final_activity.evidence or {})
         session.commit()
+    _validate_fresh_exchange_snapshot(
+        final_detail,
+        final_evidence,
+        attempt_started_at=verification_started_at,
+        label=label,
+    )
     final_rows = {int(row.goods_id): row for row in final_detail.shop_items}
     for purchase in purchases:
         original = next(
@@ -182,7 +248,8 @@ def execute_beast_abyss_exchange(
             )
     final_wallet = read_wallet_currency_snapshot(14, allow_discovery=False)
     if (
-        int(final_detail.current_currency) != expected_wallet
+        final_wallet.get("source") != "runtime_memory"
+        or int(final_detail.current_currency) != expected_wallet
         or int(final_wallet["exchange_currency"]) != expected_wallet
     ):
         raise RuntimeError(

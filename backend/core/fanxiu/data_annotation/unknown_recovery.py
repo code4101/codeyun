@@ -2,18 +2,22 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from backend.core.temp_paths import codeyun_temp_root
+from backend.core.temp_paths import codeyun_temp_root, prune_temp_files
 from pyxllib.autogui import View
 
 
 _EXIT_SHAPE_KEYWORDS = ("返回", "关闭", "离开", "取消", "空白")
 _UNKNOWN_CANDIDATE_MIN_SCENE_SCORE = 50.0
 _UNKNOWN_CANDIDATE_MIN_FRAME_SIMILARITY = 65.0
+_UNKNOWN_EVIDENCE_DEFAULT_MAX_BYTES = 1 * 1024 * 1024 * 1024
+_UNKNOWN_EVIDENCE_DEFAULT_MAX_FILES = 2000
+_UNKNOWN_EVIDENCE_DEFAULT_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,32 @@ def _save_frame_if_possible(runner: Any, frame_data_url: str, *, label: str) -> 
     return str(frame_path), root / f"{stem}.json"
 
 
+def _retention_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _prune_unknown_evidence(root: Path) -> dict[str, int]:
+    max_bytes = _retention_int("CODEYUN_FANXIU_UNKNOWN_MAX_BYTES", _UNKNOWN_EVIDENCE_DEFAULT_MAX_BYTES)
+    max_files = _retention_int("CODEYUN_FANXIU_UNKNOWN_MAX_FILES", _UNKNOWN_EVIDENCE_DEFAULT_MAX_FILES)
+    max_age_seconds = _retention_int(
+        "CODEYUN_FANXIU_UNKNOWN_MAX_AGE_SECONDS",
+        _UNKNOWN_EVIDENCE_DEFAULT_MAX_AGE_SECONDS,
+    )
+    return prune_temp_files(
+        root,
+        patterns=("*.png", "*.json"),
+        recursive=True,
+        max_files=max_files,
+        target_files=max(0, int(max_files * 0.9)),
+        max_bytes=max_bytes,
+        target_bytes=max(0, int(max_bytes * 0.9)),
+        max_age_seconds=max_age_seconds,
+    )
+
+
 def _image_similarity_percent(runner: Any, left_frame_data_url: str | None, right_frame_data_url: str | None) -> float | None:
     if not (
         isinstance(left_frame_data_url, str)
@@ -127,7 +157,7 @@ def _reference_frame_bytes(image: dict[str, Any]) -> bytes | None:
         return None
     for resolver_name in ("get_fanxiu_match_frame_path", "get_fanxiu_screenshot_path"):
         try:
-            from backend.core.fanxiu.runtime import mumu_control
+            from backend.core.fanxiu.client import mumu_control
 
             resolver = getattr(mumu_control, resolver_name)
             path = resolver(filename)
@@ -181,7 +211,7 @@ def _candidate_scene_ids(runner: Any, ctx: dict[str, Any], expected_scene_ids: l
         if scene_id not in ids:
             ids.append(scene_id)
     try:
-        for scene_id in runner._runtime_scene_candidate_ids(ctx):
+        for scene_id in runner._scene_candidate_ids(ctx):
             scene_id = int(scene_id)
             if scene_id not in ids:
                 ids.append(scene_id)
@@ -377,4 +407,5 @@ def build_unknown_evidence(
     )
     if report_path is not None:
         report_path.write_text(json.dumps(evidence.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        _prune_unknown_evidence(report_path.parent.parent)
     return evidence

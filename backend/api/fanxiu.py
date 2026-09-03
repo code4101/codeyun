@@ -45,16 +45,16 @@ from backend.core.runtime.game_window_service import (
     open_game_window_service_stream,
     start_game_window_service,
 )
-from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL, require_service_scope
+from backend.core.access.service_tokens import SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL, require_service_scope
 from backend.core.settings import get_settings
 from backend.core.temp_paths import codeyun_temp_root
-from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeRuntimeError
+from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeExecutionError
 from backend.core.notes.identity import allocate_new_note_identity
 from backend.core.notes.refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import engine, get_session
 from backend.models import FanxiuChoiceKnowledge, FanxiuMailRecord, FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
-from backend.core.fanxiu.runtime.mumu_control import (
+from backend.core.fanxiu.client.mumu_control import (
     activate_mumu_window,
     capture_fresh_mumu_adb_stream_frame,
     capture_mumu_window_frame,
@@ -103,9 +103,9 @@ from backend.core.fanxiu.game.window_actions import (
     text_game_window2_service as _core_text_game_window2_service,
     text_remote_game_window2 as _core_text_remote_game_window2,
 )
-from backend.core.fanxiu.game.pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
-from backend.core.fanxiu.game.visual_macro_runtime import (
-    VisualMacroRuntimeCallbacks,
+from backend.core.fanxiu.game.pseudocode_executor import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
+from backend.core.fanxiu.game.visual_macro_executor import (
+    VisualMacroCallbacks,
     begin_visual_macro_run,
     end_visual_macro_run,
     run_fanxiu_visual_script,
@@ -201,7 +201,7 @@ from backend.core.fanxiu.activity.lingzhuang_relationship import (
     list_lingzhuang_relationship_samples,
     record_lingzhuang_relationship_sample,
 )
-from backend.core.fanxiu.runtime.processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
+from backend.core.fanxiu.client.processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
 from backend.core.fanxiu.activity.runtime_schedule import (
     read_fanxiu_activity_runtime_schedule,
 )
@@ -310,6 +310,10 @@ from backend.core.fanxiu.game.ocr_utils import (
     _join_ocr_line_entries,
     _sanitize_ocr_text,
 )
+from backend.core.fanxiu.activity.schedule_page import (
+    FanxiuScheduleRankingSnapshot,
+    load_fanxiu_schedule_ranking_snapshot,
+)
 from backend.core.fanxiu.catalog.formation_ocr import (
     _build_formation_effect_details_from_ocr_document,
     _build_formation_requirements_from_ocr_document,
@@ -372,98 +376,98 @@ from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
     register_fanxiu_data_annotation_task_cell,
 )
-from backend.core.fanxiu.data_annotation import behavior_tree_control as _behavior_tree_control
+from backend.core.fanxiu.data_annotation import kernel_scheduler_control as _kernel_scheduler_control
 from backend.core.fanxiu.data_annotation import behavior_tree_framework as _behavior_tree_framework
 from backend.core.fanxiu.data_annotation.models import (
     FanxiuDataAnnotationDoctorWatchEnsureResponse,
     FanxiuDataAnnotationDoctorWatchLatestResponse,
-    FanxiuBehaviorTreeRuntimeCellLog,
-    FanxiuBehaviorTreeRuntimeCellLogResponse,
-    FanxiuBehaviorTreeRuntimeCodeCellRequest,
-    FanxiuBehaviorTreeRuntimeLogEntry,
-    FanxiuBehaviorTreeRuntimeLogResponse,
-    FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
-    FanxiuBehaviorTreeRuntimeDeviceRestartRequest,
-    FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
-    FanxiuBehaviorTreeRuntimeKernelRestartRequest,
-    FanxiuBehaviorTreeRuntimeStatus,
-    FanxiuBehaviorTreeRuntimeTaskCellRequest,
-    FanxiuBehaviorTreeRuntimeStopRequest,
-    FanxiuBehaviorTreeRuntimeGuardGroupRequest,
-    FanxiuBehaviorTreeRuntimeGuardRequest,
-    FanxiuBehaviorTreeRuntimeIsolationRequest,
+    FanxiuKernelSchedulerCellLog,
+    FanxiuKernelSchedulerCellLogResponse,
+    FanxiuKernelSchedulerCodeCellRequest,
+    FanxiuKernelSchedulerLogEntry,
+    FanxiuKernelSchedulerLogResponse,
+    FanxiuKernelSchedulerBehaviorTreeRequest,
+    FanxiuKernelSchedulerDeviceRestartRequest,
+    FanxiuKernelSchedulerDeviceRestartResponse,
+    FanxiuKernelSchedulerKernelRestartRequest,
+    FanxiuKernelSchedulerStatus,
+    FanxiuKernelSchedulerTaskCellRequest,
+    FanxiuKernelSchedulerStopRequest,
+    FanxiuKernelSchedulerGuardGroupRequest,
+    FanxiuKernelSchedulerGuardRequest,
+    FanxiuKernelSchedulerIsolationRequest,
     FanxiuInfoWindowControlStatus,
     FanxiuInfoWindowSettingsRequest,
-    FanxiuDataAnnotationSchedulerTaskItem,
-    FanxiuDataAnnotationSchedulerTaskUpdate,
-    FanxiuDataAnnotationSchedulerTasksResponse,
+    FanxiuKernelSchedulerTaskItem,
+    FanxiuKernelSchedulerTaskUpdate,
+    FanxiuKernelSchedulerTasksResponse,
     FanxiuGameStateInspectionStatus,
-    FanxiuDataAnnotationSchedulerTimeSequenceResponse,
-    FanxiuDataAnnotationSchedulerTimeSequenceUpdateRequest,
-    FanxiuDataAnnotationSchedulerPlanItem,
-    FanxiuDataAnnotationSchedulerPlanResponse,
-    FanxiuDataAnnotationSchedulerRunDueRequest,
-    FanxiuDataAnnotationSchedulerRunNowRequest,
-    FanxiuDataAnnotationSchedulerNextTimeRequest,
-    FanxiuDataAnnotationSchedulerNextTimeResponse,
-    FanxiuDataAnnotationSchedulerTriggerOnceRequest,
-    FanxiuDataAnnotationSchedulerTriggerOnceResponse,
-    FanxiuDataAnnotationSchedulerSettingsRequest,
+    FanxiuKernelSchedulerTimeSequenceResponse,
+    FanxiuKernelSchedulerTimeSequenceUpdateRequest,
+    FanxiuKernelSchedulerPlanItem,
+    FanxiuKernelSchedulerPlanResponse,
+    FanxiuKernelSchedulerRunDueRequest,
+    FanxiuKernelSchedulerRunNowRequest,
+    FanxiuKernelSchedulerNextTimeRequest,
+    FanxiuKernelSchedulerNextTimeResponse,
+    FanxiuKernelSchedulerTriggerOnceRequest,
+    FanxiuKernelSchedulerTriggerOnceResponse,
+    FanxiuKernelSchedulerSettingsRequest,
     FanxiuDataAnnotationWorldFactsResponse,
 )
 from backend.core.fanxiu.data_annotation.game_state_inspection import (
     read_game_state_inspection_status,
 )
 from backend.core.fanxiu.data_annotation.state import (
-    append_behavior_tree_runtime_log_once,
-    append_behavior_tree_runtime_status_log,
-    data_annotation_scheduler_task_state as _data_annotation_scheduler_task_state,
+    append_kernel_scheduler_log_once,
+    append_kernel_scheduler_status_log,
+    kernel_scheduler_task_state as _kernel_scheduler_task_state,
     data_annotation_task_due as _data_annotation_task_due,
-    initial_behavior_tree_runtime_status,
+    initial_kernel_scheduler_status,
     initial_data_annotation_world_facts as _initial_data_annotation_world_facts,
-    is_behavior_tree_runtime_live_empty,
-    normalize_behavior_tree_runtime_guard_items,
+    is_kernel_scheduler_live_empty,
+    normalize_kernel_scheduler_guard_items,
     parse_data_annotation_task_time,
-    persist_behavior_tree_runtime_status,
-    read_behavior_tree_runtime_status,
+    persist_kernel_scheduler_status,
+    read_kernel_scheduler_status,
     read_data_annotation_json as _read_data_annotation_json,
     read_data_annotation_world_facts,
-    record_data_annotation_scheduler_task_fact,
+    record_kernel_scheduler_task_fact,
     write_data_annotation_json as _write_data_annotation_json,
     write_data_annotation_world_facts,
 )
-from backend.core.fanxiu.data_annotation.scheduler import (
-    build_data_annotation_scheduler_plan,
-    data_annotation_scheduler_run_now_task as _core_data_annotation_scheduler_run_now_task,
-    data_annotation_scheduler_order_key,
-    data_annotation_scheduler_task_plan_reason,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_plan import (
+    build_kernel_scheduler_plan,
+    kernel_scheduler_run_now_task as _core_kernel_scheduler_run_now_task,
+    kernel_scheduler_order_key,
+    kernel_scheduler_task_plan_reason,
     data_annotation_world_facts_summary,
-    merge_data_annotation_scheduler_task_updates,
-    repair_data_annotation_scheduler_tasks,
+    merge_kernel_scheduler_task_updates,
+    repair_kernel_scheduler_tasks,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks as _default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks as _default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.behavior_tree_container import (
-    BehaviorTreeRuntimeContainer as _BehaviorTreeRuntimeContainer,
-    BehaviorTreeRuntimeGroupSpec as _BehaviorTreeRuntimeGroupSpec,
-    BehaviorTreeRuntimeNodeSpec as _BehaviorTreeRuntimeNodeSpec,
+    BehaviorTreeContainer as _BehaviorTreeContainer,
+    BehaviorTreeGroupSpec as _BehaviorTreeGroupSpec,
+    BehaviorTreeNodeSpec as _BehaviorTreeNodeSpec,
 )
-from backend.core.fanxiu.behavior_tree.runtime import (
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
     DEFAULT_FANXIU_ENTRY_ID,
-    create_behavior_tree_runtime_runner,
+    create_behavior_tree_executor,
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir as _core_data_annotation_dir,
     fanxiu_data_annotation_mail_scan_state_path as _core_mail_scan_state_path,
-    fanxiu_behavior_tree_runtime_dir as _core_behavior_tree_runtime_dir,
-    fanxiu_behavior_tree_runtime_logs as _core_behavior_tree_runtime_logs,
-    fanxiu_behavior_tree_runtime_status as _core_behavior_tree_runtime_status,
-    fanxiu_behavior_tree_runtime_state_path as _core_runtime_state_path,
-    fanxiu_data_annotation_scheduler_settings_path as _core_scheduler_settings_path,
-    fanxiu_data_annotation_scheduler_state_path as _core_scheduler_state_path,
+    fanxiu_kernel_scheduler_dir as _core_behavior_tree_executor_dir,
+    fanxiu_kernel_scheduler_logs as _core_kernel_scheduler_logs,
+    fanxiu_kernel_scheduler_status as _core_kernel_scheduler_status,
+    fanxiu_kernel_execution_state_path as _core_execution_state_path,
+    fanxiu_kernel_scheduler_settings_path as _core_scheduler_settings_path,
+    fanxiu_kernel_scheduler_state_path as _core_scheduler_state_path,
     fanxiu_data_annotation_world_facts_path as _core_world_facts_path,
-    clear_fanxiu_behavior_tree_runtime_logs as _core_clear_behavior_tree_runtime_logs,
-    register_behavior_tree_runtime_runner,
+    clear_fanxiu_kernel_scheduler_logs as _core_clear_kernel_scheduler_logs,
+    register_behavior_tree_executor,
     resolve_fanxiu_entry,
 )
 from backend.core.fanxiu.data_annotation.recognition_ops import build_recognition_ops_report
@@ -2605,7 +2609,7 @@ def _fanxiu_mail_record_dump_for_response(row: FanxiuMailRecord) -> dict[str, An
         "create_time_ms": row.create_time_ms,
         "source": row.source,
         "status": row.status,
-        "runtime_status": row.runtime_status,
+        "execution_status": row.execution_status,
         "desired_status": row.desired_status,
         "present_in_runtime": row.present_in_runtime,
         "reward_getted": row.reward_getted,
@@ -3563,27 +3567,27 @@ def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Respon
     )
 
 
-class _BehaviorTreeRuntimeRunnerProxy:
+class _BehaviorTreeExecutorProxy:
     def __init__(self) -> None:
         self._runner: Any | None = None
 
     def resolve(self) -> Any:
         if self._runner is None:
-            self._runner = create_behavior_tree_runtime_runner()
+            self._runner = create_behavior_tree_executor()
         return self._runner
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.resolve(), name)
 
 
-_BEHAVIOR_TREE_RUNTIME_RUNNER: Any = _BehaviorTreeRuntimeRunnerProxy()
+_BEHAVIOR_TREE_EXECUTOR: Any = _BehaviorTreeExecutorProxy()
 _RECOGNITION_OPS_RECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fanxiu-recognition-ops")
 _RECOGNITION_OPS_RECOMPUTE_LOCK = threading.Lock()
 _RECOGNITION_OPS_RECOMPUTE_RUNNING: set[str] = set()
 
 
 def _recognition_ops_recompute_state_path(cache_key: str) -> Path:
-    return _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.recompute.json"
+    return _BEHAVIOR_TREE_EXECUTOR._scene_match_cache_dir() / f"{cache_key}.recompute.json"
 
 
 def _read_recognition_ops_recompute_state(cache_key: str) -> dict[str, Any] | None:
@@ -3641,7 +3645,7 @@ def _submit_recognition_ops_recompute(
 
     def run() -> None:
         try:
-            matrix = _BEHAVIOR_TREE_RUNTIME_RUNNER.match_scene_matrix(ctx, scene_ids=scene_ids, layer=int(layer), use_cache=False)
+            matrix = _BEHAVIOR_TREE_EXECUTOR.match_scene_matrix(ctx, scene_ids=scene_ids, layer=int(layer), use_cache=False)
             if isinstance(matrix, dict) and matrix.get("cache_path"):
                 cache_path = Path(str(matrix["cache_path"]))
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3741,18 +3745,18 @@ def _derive_recognition_ops_matrix_subset(
 
 
 def __getattr__(name: str) -> Any:
-    if name == "_BehaviorTreeRuntimeRunner":
-        from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+    if name == "_BehaviorTreeExecutor":
+        from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
-        return BehaviorTreeRuntimeRunner
+        return BehaviorTreeExecutor
     raise AttributeError(name)
 
 
-def _sync_behavior_tree_runtime_runner_to_core() -> None:
-    register_behavior_tree_runtime_runner(_BEHAVIOR_TREE_RUNTIME_RUNNER)
+def _sync_behavior_tree_executor_to_core() -> None:
+    register_behavior_tree_executor(_BEHAVIOR_TREE_EXECUTOR)
 
 
-def _raise_fanxiu_runtime_http_error(exc: BehaviorTreeRuntimeError) -> None:
+def _raise_behavior_tree_execution_http_error(exc: BehaviorTreeExecutionError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
@@ -3760,23 +3764,23 @@ def _data_annotation_dir() -> Path:
     return _core_data_annotation_dir()
 
 
-def _behavior_tree_runtime_dir() -> Path:
-    return _core_behavior_tree_runtime_dir()
+def _behavior_tree_executor_dir() -> Path:
+    return _core_behavior_tree_executor_dir()
 
 
-def _behavior_tree_runtime_state_path() -> Path:
-    return _core_runtime_state_path()
+def _kernel_execution_state_path() -> Path:
+    return _core_execution_state_path()
 
 
 def _data_annotation_world_facts_path() -> Path:
     return _core_world_facts_path()
 
 
-def _data_annotation_scheduler_state_path() -> Path:
+def _kernel_scheduler_state_path() -> Path:
     return _core_scheduler_state_path()
 
 
-def _data_annotation_scheduler_settings_path() -> Path:
+def _kernel_scheduler_settings_path() -> Path:
     return _core_scheduler_settings_path()
 
 
@@ -3785,51 +3789,51 @@ def _data_annotation_mail_scan_state_path() -> Path:
 
 
 def _read_data_annotation_world_facts() -> dict[str, Any]:
-    return _behavior_tree_control.read_world_facts(_data_annotation_world_facts_path())
+    return _kernel_scheduler_control.read_world_facts(_data_annotation_world_facts_path())
 
 
 def _write_data_annotation_world_facts(facts: dict[str, Any]) -> None:
-    _behavior_tree_control.write_world_facts(facts, _data_annotation_world_facts_path())
+    _kernel_scheduler_control.write_world_facts(facts, _data_annotation_world_facts_path())
 
 
-def _record_data_annotation_scheduler_task_fact(task: dict[str, Any], result: str) -> None:
-    _behavior_tree_control.record_scheduler_task_fact(task, result, world_facts_path=_data_annotation_world_facts_path())
+def _record_kernel_scheduler_task_fact(task: dict[str, Any], result: str) -> None:
+    _kernel_scheduler_control.record_scheduler_task_fact(task, result, world_facts_path=_data_annotation_world_facts_path())
 
 
-def _persist_behavior_tree_runtime_status(status: dict[str, Any]) -> None:
-    _behavior_tree_control.persist_behavior_tree_runtime_status(
+def _persist_kernel_scheduler_status(status: dict[str, Any]) -> None:
+    _kernel_scheduler_control.persist_kernel_scheduler_status(
         status,
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
 
-def _read_behavior_tree_runtime_status() -> dict[str, Any]:
-    return _behavior_tree_control.read_behavior_tree_runtime_status(_behavior_tree_runtime_state_path())
+def _read_kernel_scheduler_status() -> dict[str, Any]:
+    return _kernel_scheduler_control.read_kernel_scheduler_status(_kernel_execution_state_path())
 
 
-def _is_behavior_tree_runtime_live_empty(status: dict[str, Any]) -> bool:
-    return is_behavior_tree_runtime_live_empty(status)
+def _is_kernel_scheduler_live_empty(status: dict[str, Any]) -> bool:
+    return is_kernel_scheduler_live_empty(status)
 
 
-def _append_behavior_tree_runtime_log_once(status: dict[str, Any], kind: str, message: str) -> None:
-    _behavior_tree_control.append_runtime_log_once(status, kind, message)
+def _append_kernel_scheduler_log_once(status: dict[str, Any], kind: str, message: str) -> None:
+    _kernel_scheduler_control.append_scheduler_log_once(status, kind, message)
 
 
-def _normalize_behavior_tree_runtime_guard_items(status: dict[str, Any]) -> None:
-    _sync_behavior_tree_runtime_runner_to_core()
-    _behavior_tree_control.normalize_runtime_guard_items(status)
+def _normalize_kernel_scheduler_guard_items(status: dict[str, Any]) -> None:
+    _sync_behavior_tree_executor_to_core()
+    _kernel_scheduler_control.normalize_scheduler_guard_items(status)
 
 
-def _behavior_tree_runtime_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
-    _sync_behavior_tree_runtime_runner_to_core()
-    status = _core_behavior_tree_runtime_status(
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+def _kernel_scheduler_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
+    _sync_behavior_tree_executor_to_core()
+    status = _core_kernel_scheduler_status(
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         include_cell_logs=include_cell_logs,
     )
-    settings = _behavior_tree_control.read_scheduler_settings(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    settings = _kernel_scheduler_control.read_scheduler_settings(
+        scheduler_settings_path=_kernel_scheduler_settings_path()
     )
     behavior_enabled = bool(settings.get("behavior_tree_enabled", True))
     status["behavior_tree_enabled"] = behavior_enabled
@@ -3844,60 +3848,60 @@ def _behavior_tree_runtime_status(*, include_cell_logs: bool = True) -> dict[str
     return status
 
 
-def _read_data_annotation_scheduler_tasks() -> list[dict[str, Any]]:
-    return _behavior_tree_control.read_scheduler_tasks(
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
+def _read_kernel_scheduler_tasks() -> list[dict[str, Any]]:
+    return _kernel_scheduler_control.read_scheduler_tasks(
+        scheduler_state_path=_kernel_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         now=datetime.now(),
     )
 
 
-def _write_data_annotation_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
-    _behavior_tree_control.write_scheduler_tasks(tasks, scheduler_state_path=_data_annotation_scheduler_state_path())
+def _write_kernel_scheduler_tasks(tasks: list[dict[str, Any]]) -> None:
+    _kernel_scheduler_control.write_scheduler_tasks(tasks, scheduler_state_path=_kernel_scheduler_state_path())
 
 
 def _data_annotation_task_supported(task: dict[str, Any]) -> bool:
-    return _behavior_tree_control.task_supported(task)
+    return _kernel_scheduler_control.task_supported(task)
 
 
-def _data_annotation_scheduler_task_views(
+def _kernel_scheduler_task_views(
     tasks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return _behavior_tree_control.scheduler_task_views(
+    return _kernel_scheduler_control.scheduler_task_views(
         tasks,
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
     )
 
 
-def _data_annotation_scheduler_task_plan_reason(task: dict[str, Any], due: bool) -> str:
-    return _behavior_tree_control.scheduler_task_plan_reason(task, due)
+def _kernel_scheduler_task_plan_reason(task: dict[str, Any], due: bool) -> str:
+    return _kernel_scheduler_control.scheduler_task_plan_reason(task, due)
 
 
 def _data_annotation_world_facts_summary(facts: dict[str, Any]) -> dict[str, Any]:
-    return _behavior_tree_control.world_facts_summary(facts)
+    return _kernel_scheduler_control.world_facts_summary(facts)
 
 
-def _build_data_annotation_scheduler_plan() -> dict[str, Any]:
-    _sync_behavior_tree_runtime_runner_to_core()
+def _build_kernel_scheduler_plan() -> dict[str, Any]:
+    _sync_behavior_tree_executor_to_core()
     entry_id = DEFAULT_FANXIU_ENTRY_ID
     try:
         entry = resolve_fanxiu_entry(entry_id)
     except Exception:
         entry = None
     _ensure_engineering_scheduler_kernel(entry, entry_id)
-    return _behavior_tree_control.build_scheduler_plan(
+    return _kernel_scheduler_control.build_scheduler_plan(
         entry=entry,
         entry_id=entry_id,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        scheduler_state_path=_kernel_scheduler_state_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
 
 def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> None:
-    settings = _behavior_tree_control.read_scheduler_settings(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    settings = _kernel_scheduler_control.read_scheduler_settings(
+        scheduler_settings_path=_kernel_scheduler_settings_path()
     )
     if not (bool(settings.get("job_group_enabled", True)) and bool(settings.get("behavior_tree_enabled", True))):
         return
@@ -3908,29 +3912,29 @@ def _ensure_engineering_scheduler_kernel(entry: Any | None, entry_id: str) -> No
         entry=entry,
         entry_id=resolved_entry_id,
         asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 def _data_annotation_task_payload_with_meta(task: dict[str, Any]) -> dict[str, Any]:
-    return _behavior_tree_control.task_payload_with_meta(task)
+    return _kernel_scheduler_control.task_payload_with_meta(task)
 
 
-def _data_annotation_scheduler_run_now_task(
+def _kernel_scheduler_run_now_task(
     tasks: list[dict[str, Any]],
     task_id: str,
     payload_override: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    return _core_data_annotation_scheduler_run_now_task(tasks, task_id, payload_override)
+    return _core_kernel_scheduler_run_now_task(tasks, task_id, payload_override)
 
 
-def _prepare_behavior_tree_runtime_for_scheduler_task(task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
-    _sync_behavior_tree_runtime_runner_to_core()
-    return _behavior_tree_control.prepare_runtime_for_scheduler_task(
+def _prepare_behavior_tree_executor_for_scheduler_task(task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
+    _sync_behavior_tree_executor_to_core()
+    return _kernel_scheduler_control.prepare_kernel_scheduler_for_task(
         task,
         tasks,
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        scheduler_state_path=_kernel_scheduler_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
@@ -3944,12 +3948,12 @@ def _submit_data_annotation_task_cell(
     timeout_seconds: float | None = None,
     source: str = "",
 ) -> dict[str, Any]:
-    _sync_behavior_tree_runtime_runner_to_core()
+    _sync_behavior_tree_executor_to_core()
     cell_payload = dict(payload or {})
     if timeout_seconds is not None:
         cell_payload.setdefault("timeout_seconds", float(timeout_seconds))
-        cell_payload.setdefault("max_runtime_seconds", float(timeout_seconds))
-    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
+        cell_payload.setdefault("max_execution_seconds", float(timeout_seconds))
+    before_keys = {_scheduler_log_item_key(item) for item in _scheduler_log_items_for_cell()}
     try:
         status = _behavior_tree_framework.submit_task_cell(
             entry=entry,
@@ -3957,14 +3961,14 @@ def _submit_data_annotation_task_cell(
             task_type=task_type,
             payload=cell_payload,
         )
-    except BehaviorTreeRuntimeError as exc:
-        _raise_fanxiu_runtime_http_error(exc)
+    except BehaviorTreeExecutionError as exc:
+        _raise_behavior_tree_execution_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log_source = {"code": f"run_task_cell({task_type!r}, {cell_payload!r})"}
     if source:
         log_source["source"] = source
-    return _record_runtime_cell_log(
+    return _record_cell_log(
         status,
         title=f"任务 cell：{task_type}",
         source=log_source,
@@ -3975,12 +3979,12 @@ def _submit_data_annotation_task_cell(
 def _submit_data_annotation_code_cell(
     entry: UserDevice,
     entry_id: str,
-    req: FanxiuBehaviorTreeRuntimeCodeCellRequest,
+    req: FanxiuKernelSchedulerCodeCellRequest,
     *,
     source: str = "",
 ) -> dict[str, Any]:
-    _sync_behavior_tree_runtime_runner_to_core()
-    before_keys = {_runtime_log_item_key(item) for item in _runtime_log_items_for_cell()}
+    _sync_behavior_tree_executor_to_core()
+    before_keys = {_scheduler_log_item_key(item) for item in _scheduler_log_items_for_cell()}
     try:
         status = _behavior_tree_framework.submit_code_cell(
             entry=entry,
@@ -3989,8 +3993,8 @@ def _submit_data_annotation_code_cell(
             timeout_seconds=req.timeout_seconds,
             max_output_chars=req.max_output_chars,
         )
-    except BehaviorTreeRuntimeError as exc:
-        _raise_fanxiu_runtime_http_error(exc)
+    except BehaviorTreeExecutionError as exc:
+        _raise_behavior_tree_execution_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log_source = {
@@ -4002,7 +4006,7 @@ def _submit_data_annotation_code_cell(
     }
     if source:
         log_source["source"] = source
-    return _record_runtime_cell_log(
+    return _record_cell_log(
         status,
         title="代码 cell",
         source=log_source,
@@ -4342,7 +4346,7 @@ def run_fanxiu_game_window2_visual_script(
                 cards,
                 selected_card_id=req.card_id,
                 base_payload=base_payload,
-                callbacks=VisualMacroRuntimeCallbacks(match=run_match, click=run_click, drag=run_drag),
+                callbacks=VisualMacroCallbacks(match=run_match, click=run_click, drag=run_drag),
                 timeout=req.timeout,
                 tick_interval=req.tick_interval,
                 stop_event=stop_event,
@@ -4741,7 +4745,7 @@ def get_fanxiu_data_annotation_recognition_ops(
         allow_derive_subset: bool,
     ) -> dict[str, Any] | None:
         scene_set = {int(scene_id) for scene_id in scene_ids}
-        cache_dir = _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_dir()
+        cache_dir = _BEHAVIOR_TREE_EXECUTOR._scene_match_cache_dir()
         candidates: list[tuple[float, int, dict[str, Any]]] = []
         for candidate_path in cache_dir.glob("*.json"):
             try:
@@ -4794,8 +4798,8 @@ def get_fanxiu_data_annotation_recognition_ops(
         return candidates[0][2]
 
     try:
-        tree = _BEHAVIOR_TREE_RUNTIME_RUNNER._load_asset_tree(path)
-        images = _BEHAVIOR_TREE_RUNTIME_RUNNER._index_images(tree)
+        tree = _BEHAVIOR_TREE_EXECUTOR._load_asset_tree(path)
+        images = _BEHAVIOR_TREE_EXECUTOR._index_images(tree)
         ctx = {
             "entry_id": entry_id,
             "asset_tree_path": path,
@@ -4816,8 +4820,8 @@ def get_fanxiu_data_annotation_recognition_ops(
         ]
         computable_scene_id_set = set(computable_scene_ids)
         skipped_scene_ids = [int(scene_id) for scene_id in scene_ids if int(scene_id) not in computable_scene_id_set]
-        cache_key = _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_key(ctx, computable_scene_ids, threshold=None)
-        cache_path = _BEHAVIOR_TREE_RUNTIME_RUNNER._scene_match_cache_dir() / f"{cache_key}.json"
+        cache_key = _BEHAVIOR_TREE_EXECUTOR._scene_match_cache_key(ctx, computable_scene_ids, threshold=None)
+        cache_path = _BEHAVIOR_TREE_EXECUTOR._scene_match_cache_dir() / f"{cache_key}.json"
         recompute_state: dict[str, Any] | None = None
         if bool(recompute):
             recompute_state = _submit_recognition_ops_recompute(cache_key=cache_key, ctx=ctx, layer=int(layer), scene_ids=computable_scene_ids)
@@ -4922,17 +4926,17 @@ def get_fanxiu_data_annotation_recognition_ambiguity(
         if not frame_url or len(tied_scene_ids) < 2:
             raise HTTPException(status_code=409, detail="识别并列事件没有可重算的代表原帧")
         path = _data_annotation_asset_tree_path(entry_id)
-        tree = _BEHAVIOR_TREE_RUNTIME_RUNNER._load_asset_tree(path)
+        tree = _BEHAVIOR_TREE_EXECUTOR._load_asset_tree(path)
         ctx = {
             "entry_id": entry_id,
             "asset_tree_path": path,
             "asset_tree": tree,
-            "images": _BEHAVIOR_TREE_RUNTIME_RUNNER._index_images(tree),
+            "images": _BEHAVIOR_TREE_EXECUTOR._index_images(tree),
             "asset_tree_revision": hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "",
             "_disable_recognition_ambiguity_recording": True,
         }
         trace: list[dict[str, Any]] = []
-        scene_id, score, status = _BEHAVIOR_TREE_RUNTIME_RUNNER._identify_scene_number_in_graph_candidates(
+        scene_id, score, status = _BEHAVIOR_TREE_EXECUTOR._identify_scene_number_in_graph_candidates(
             ctx,
             frame_url,
             tied_scene_ids,
@@ -5300,8 +5304,8 @@ def get_fanxiu_game_window2_match_image_service(
     return _match_game_window2_service_image(filename)
 
 
-@status_router.get("/data-annotation/runtime/status", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def get_fanxiu_behavior_tree_runtime_status(
+@status_router.get("/kernel-scheduler/status", response_model=FanxiuKernelSchedulerStatus)
+def get_fanxiu_kernel_scheduler_status(
     entry_id: str = Query("", max_length=128),
     include_cell_logs: bool = Query(True),
     include_logs: bool = Query(True),
@@ -5312,25 +5316,25 @@ def get_fanxiu_behavior_tree_runtime_status(
     if entry_id:
         entry = _get_user_device_or_404(session, current_user, entry_id)
         resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        _sync_behavior_tree_runtime_runner_to_core()
+        _sync_behavior_tree_executor_to_core()
         _behavior_tree_framework.ensure_kernel(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_behavior_tree_runtime_state_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    payload = dict(_behavior_tree_runtime_status(include_cell_logs=include_cell_logs))
+    payload = dict(_kernel_scheduler_status(include_cell_logs=include_cell_logs))
     if not include_cell_logs:
         payload.pop("cell_logs", None)
     if not include_logs:
         payload.pop("logs", None)
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(payload)
+    return FanxiuKernelSchedulerStatus.model_validate(payload)
 
 
 @status_router.get(
-    "/data-annotation/runtime/info-window",
+    "/kernel-scheduler/info-window",
     response_model=FanxiuInfoWindowControlStatus,
 )
 def get_fanxiu_data_annotation_info_window(
@@ -5349,7 +5353,7 @@ def get_fanxiu_data_annotation_info_window(
 
 
 @status_router.post(
-    "/data-annotation/runtime/info-window/settings",
+    "/kernel-scheduler/info-window/settings",
     response_model=FanxiuInfoWindowControlStatus,
 )
 def set_fanxiu_data_annotation_info_window(
@@ -5371,11 +5375,11 @@ def set_fanxiu_data_annotation_info_window(
 
 
 @service_router.get(
-    "/data-annotation/runtime/service/status",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/status",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def get_fanxiu_behavior_tree_runtime_service_status(
+def get_fanxiu_kernel_scheduler_service_status(
     entry_id: str = Query("", max_length=128),
     include_logs: bool = Query(True),
     session: Session = Depends(get_session),
@@ -5383,80 +5387,80 @@ def get_fanxiu_behavior_tree_runtime_service_status(
     if entry_id:
         entry = _get_service_user_device_or_404(session, entry_id)
         resolved_entry_id = str(getattr(entry, "entry_id", None) or entry_id)
-        _sync_behavior_tree_runtime_runner_to_core()
+        _sync_behavior_tree_executor_to_core()
         _behavior_tree_framework.ensure_kernel(
             entry=entry,
             entry_id=resolved_entry_id,
             asset_tree_path=_data_annotation_asset_tree_path(resolved_entry_id),
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_behavior_tree_runtime_state_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
-    payload = dict(_behavior_tree_runtime_status())
+    payload = dict(_kernel_scheduler_status())
     # Cell logs have their own endpoint; omitting them here avoids shipping the same
-    # large history twice during runtime page bootstrap.
+    # large history twice during Kernel scheduler page bootstrap.
     payload.pop("cell_logs", None)
     if not include_logs:
         payload.pop("logs", None)
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(payload)
+    return FanxiuKernelSchedulerStatus.model_validate(payload)
 
 
-def _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(
+def _set_fanxiu_kernel_scheduler_behavior_tree_enabled(
     entry: Any,
     entry_id: str,
-    req: FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
+    req: FanxiuKernelSchedulerBehaviorTreeRequest,
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
     status = _behavior_tree_framework.set_kernel_enabled(
         entry=entry,
         entry_id=entry_id,
         enabled=req.enabled,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-def _restart_fanxiu_behavior_tree_runtime_kernel(
+def _restart_fanxiu_kernel_scheduler_kernel(
     entry: Any,
     entry_id: str,
-    req: FanxiuBehaviorTreeRuntimeKernelRestartRequest,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
+    req: FanxiuKernelSchedulerKernelRestartRequest,
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
     status = _behavior_tree_framework.restart_kernel(
         entry=entry,
         entry_id=entry_id,
         timeout_seconds=req.timeout_seconds,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-def _restart_fanxiu_behavior_tree_runtime_device(
+def _restart_fanxiu_kernel_scheduler_device(
     entry_id: str,
-) -> FanxiuBehaviorTreeRuntimeDeviceRestartResponse:
+) -> FanxiuKernelSchedulerDeviceRestartResponse:
     """Interrupt the current Cell and force-restart the shared MuMu device.
 
     The resident Kernel and Scheduler ownership are deliberately left intact.
     """
-    _sync_behavior_tree_runtime_runner_to_core()
-    before = dict(_behavior_tree_runtime_status(include_cell_logs=False))
+    _sync_behavior_tree_executor_to_core()
+    before = dict(_kernel_scheduler_status(include_cell_logs=False))
     if bool(before.get("running")):
         _behavior_tree_framework.interrupt_current_cell(
             entry_id,
-            runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
 
     device = dict(
         recover_mumu_device(
             vmindex="1",
-            reason="manual_runtime_page_request",
+            reason="manual_kernel_scheduler_page_request",
             force_restart=True,
         )
     )
@@ -5466,103 +5470,103 @@ def _restart_fanxiu_behavior_tree_runtime_device(
         detail = str(device.get("last_error") or device.get("recovery_skipped") or device_status)
         raise HTTPException(status_code=503, detail=f"模拟器重启失败：{detail}")
 
-    runtime = FanxiuBehaviorTreeRuntimeStatus.model_validate(
-        _behavior_tree_runtime_status(include_cell_logs=False)
+    scheduler = FanxiuKernelSchedulerStatus.model_validate(
+        _kernel_scheduler_status(include_cell_logs=False)
     )
-    return FanxiuBehaviorTreeRuntimeDeviceRestartResponse(
+    return FanxiuKernelSchedulerDeviceRestartResponse(
         ok=True,
         recovered=True,
         status=device_status,
         message="模拟器已重启，游戏画面可用",
         device=device,
-        runtime=runtime,
+        scheduler=scheduler,
     )
 
 
-@status_router.post("/data-annotation/runtime/behavior-tree/set", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def set_fanxiu_behavior_tree_runtime_behavior_tree(
-    req: FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
+@status_router.post("/kernel-scheduler/behavior-tree/set", response_model=FanxiuKernelSchedulerStatus)
+def set_fanxiu_kernel_scheduler_behavior_tree(
+    req: FanxiuKernelSchedulerBehaviorTreeRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(entry, entry_id, req)
+    return _set_fanxiu_kernel_scheduler_behavior_tree_enabled(entry, entry_id, req)
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/behavior-tree/set",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/behavior-tree/set",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def set_fanxiu_behavior_tree_runtime_service_behavior_tree(
-    req: FanxiuBehaviorTreeRuntimeBehaviorTreeRequest,
+def set_fanxiu_kernel_scheduler_service_behavior_tree(
+    req: FanxiuKernelSchedulerBehaviorTreeRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_behavior_tree_runtime_behavior_tree_enabled(entry, entry_id, req)
+    return _set_fanxiu_kernel_scheduler_behavior_tree_enabled(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/kernel/restart", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def restart_fanxiu_behavior_tree_runtime_kernel(
-    req: FanxiuBehaviorTreeRuntimeKernelRestartRequest,
+@status_router.post("/kernel-scheduler/kernel/restart", response_model=FanxiuKernelSchedulerStatus)
+def restart_fanxiu_kernel_scheduler_kernel(
+    req: FanxiuKernelSchedulerKernelRestartRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _restart_fanxiu_behavior_tree_runtime_kernel(entry, entry_id, req)
+    return _restart_fanxiu_kernel_scheduler_kernel(entry, entry_id, req)
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/kernel/restart",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/kernel/restart",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def restart_fanxiu_behavior_tree_runtime_service_kernel(
-    req: FanxiuBehaviorTreeRuntimeKernelRestartRequest,
+def restart_fanxiu_kernel_scheduler_service_kernel(
+    req: FanxiuKernelSchedulerKernelRestartRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _restart_fanxiu_behavior_tree_runtime_kernel(entry, entry_id, req)
+    return _restart_fanxiu_kernel_scheduler_kernel(entry, entry_id, req)
 
 
 @status_router.post(
-    "/data-annotation/runtime/device/restart",
-    response_model=FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
+    "/kernel-scheduler/device/restart",
+    response_model=FanxiuKernelSchedulerDeviceRestartResponse,
 )
-def restart_fanxiu_behavior_tree_runtime_device(
-    req: FanxiuBehaviorTreeRuntimeDeviceRestartRequest,
+def restart_fanxiu_kernel_scheduler_device(
+    req: FanxiuKernelSchedulerDeviceRestartRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _restart_fanxiu_behavior_tree_runtime_device(entry_id)
+    return _restart_fanxiu_kernel_scheduler_device(entry_id)
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/device/restart",
-    response_model=FanxiuBehaviorTreeRuntimeDeviceRestartResponse,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/device/restart",
+    response_model=FanxiuKernelSchedulerDeviceRestartResponse,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def restart_fanxiu_behavior_tree_runtime_service_device(
-    req: FanxiuBehaviorTreeRuntimeDeviceRestartRequest,
+def restart_fanxiu_kernel_scheduler_service_device(
+    req: FanxiuKernelSchedulerDeviceRestartRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _restart_fanxiu_behavior_tree_runtime_device(entry_id)
+    return _restart_fanxiu_kernel_scheduler_device(entry_id)
 
 
-@status_router.post("/data-annotation/runtime/cells/task", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def submit_fanxiu_behavior_tree_runtime_task_cell(
-    req: FanxiuBehaviorTreeRuntimeTaskCellRequest,
+@status_router.post("/kernel-scheduler/cells/task", response_model=FanxiuKernelSchedulerStatus)
+def submit_fanxiu_kernel_scheduler_task_cell(
+    req: FanxiuKernelSchedulerTaskCellRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -5572,7 +5576,7 @@ def submit_fanxiu_behavior_tree_runtime_task_cell(
     payload = dict(req.payload)
     if req.effective_now is not None:
         payload["effective_now"] = req.effective_now.isoformat(sep=" ")
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(
+    return FanxiuKernelSchedulerStatus.model_validate(
         _submit_data_annotation_task_cell(
             entry,
             entry_id,
@@ -5584,12 +5588,12 @@ def submit_fanxiu_behavior_tree_runtime_task_cell(
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/cells/task",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/cells/task",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def submit_fanxiu_behavior_tree_runtime_service_task_cell(
-    req: FanxiuBehaviorTreeRuntimeTaskCellRequest,
+def submit_fanxiu_kernel_scheduler_service_task_cell(
+    req: FanxiuKernelSchedulerTaskCellRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
@@ -5597,7 +5601,7 @@ def submit_fanxiu_behavior_tree_runtime_service_task_cell(
     payload = dict(req.payload)
     if req.effective_now is not None:
         payload["effective_now"] = req.effective_now.isoformat(sep=" ")
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(
+    return FanxiuKernelSchedulerStatus.model_validate(
         _submit_data_annotation_task_cell(
             entry,
             entry_id,
@@ -5609,37 +5613,37 @@ def submit_fanxiu_behavior_tree_runtime_service_task_cell(
     )
 
 
-@status_router.post("/data-annotation/runtime/cells/code", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def submit_fanxiu_behavior_tree_runtime_code_cell(
-    req: FanxiuBehaviorTreeRuntimeCodeCellRequest,
+@status_router.post("/kernel-scheduler/cells/code", response_model=FanxiuKernelSchedulerStatus)
+def submit_fanxiu_kernel_scheduler_code_cell(
+    req: FanxiuKernelSchedulerCodeCellRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(_submit_data_annotation_code_cell(entry, entry_id, req))
+    return FanxiuKernelSchedulerStatus.model_validate(_submit_data_annotation_code_cell(entry, entry_id, req))
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/cells/code",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/cells/code",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def submit_fanxiu_behavior_tree_runtime_service_code_cell(
-    req: FanxiuBehaviorTreeRuntimeCodeCellRequest,
+def submit_fanxiu_kernel_scheduler_service_code_cell(
+    req: FanxiuKernelSchedulerCodeCellRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(
+    return FanxiuKernelSchedulerStatus.model_validate(
         _submit_data_annotation_code_cell(entry, entry_id, req, source="service")
     )
 
 
-@status_router.post("/data-annotation/runtime/task/stop", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def stop_fanxiu_behavior_tree_runtime_task(
-    req: FanxiuBehaviorTreeRuntimeStopRequest,
+@status_router.post("/kernel-scheduler/task/stop", response_model=FanxiuKernelSchedulerStatus)
+def stop_fanxiu_kernel_scheduler_task(
+    req: FanxiuKernelSchedulerStopRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -5648,41 +5652,41 @@ def stop_fanxiu_behavior_tree_runtime_task(
     This endpoint must not be treated as resident behavior-tree service shutdown.
     """
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    return _stop_behavior_tree_runtime_task(req)
+    return _stop_behavior_tree_executor_task(req)
 
 
-def _stop_behavior_tree_runtime_task(
-    req: FanxiuBehaviorTreeRuntimeStopRequest,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
-    status = _behavior_tree_framework.take_runtime_control(
+def _stop_behavior_tree_executor_task(
+    req: FanxiuKernelSchedulerStopRequest,
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
+    status = _behavior_tree_framework.take_ai_control(
         req.entry_id or "",
         interrupt_any_cell=True,
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        scheduler_state_path=_kernel_scheduler_state_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/task/stop",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/task/stop",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def stop_fanxiu_behavior_tree_runtime_service_task(
-    req: FanxiuBehaviorTreeRuntimeStopRequest,
+def stop_fanxiu_kernel_scheduler_service_task(
+    req: FanxiuKernelSchedulerStopRequest,
 ):
-    return _stop_behavior_tree_runtime_task(req)
+    return _stop_behavior_tree_executor_task(req)
 
 
-def _set_fanxiu_behavior_tree_runtime_guard_item(
+def _set_fanxiu_kernel_scheduler_guard_item(
     entry: Any,
     entry_id: str,
-    req: FanxiuBehaviorTreeRuntimeGuardRequest,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
+    req: FanxiuKernelSchedulerGuardRequest,
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
     status = _behavior_tree_framework.set_guard_item_enabled(
         entry=entry,
         entry_id=entry_id,
@@ -5690,83 +5694,83 @@ def _set_fanxiu_behavior_tree_runtime_guard_item(
         enabled=req.enabled,
         interval_seconds=req.interval_seconds,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-def _set_fanxiu_behavior_tree_runtime_guard_group(
+def _set_fanxiu_kernel_scheduler_guard_group(
     entry: Any,
     entry_id: str,
-    req: FanxiuBehaviorTreeRuntimeGuardGroupRequest,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
+    req: FanxiuKernelSchedulerGuardGroupRequest,
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
     status = _behavior_tree_framework.set_guard_group_enabled(
         entry=entry,
         entry_id=entry_id,
         enabled=req.enabled,
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-@status_router.post("/data-annotation/runtime/guard/set", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def set_fanxiu_behavior_tree_runtime_guard(
-    req: FanxiuBehaviorTreeRuntimeGuardRequest,
+@status_router.post("/kernel-scheduler/guard/set", response_model=FanxiuKernelSchedulerStatus)
+def set_fanxiu_kernel_scheduler_guard(
+    req: FanxiuKernelSchedulerGuardRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_behavior_tree_runtime_guard_item(entry, entry_id, req)
+    return _set_fanxiu_kernel_scheduler_guard_item(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/runtime/guard/group/set", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def set_fanxiu_behavior_tree_runtime_guard_group(
-    req: FanxiuBehaviorTreeRuntimeGuardGroupRequest,
+@status_router.post("/kernel-scheduler/guard/group/set", response_model=FanxiuKernelSchedulerStatus)
+def set_fanxiu_kernel_scheduler_guard_group(
+    req: FanxiuKernelSchedulerGuardGroupRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_behavior_tree_runtime_guard_group(entry, entry_id, req)
+    return _set_fanxiu_kernel_scheduler_guard_group(entry, entry_id, req)
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/guard/set",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/guard/set",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def set_fanxiu_behavior_tree_runtime_service_guard(
-    req: FanxiuBehaviorTreeRuntimeGuardRequest,
+def set_fanxiu_kernel_scheduler_service_guard(
+    req: FanxiuKernelSchedulerGuardRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_behavior_tree_runtime_guard_item(entry, entry_id, req)
+    return _set_fanxiu_kernel_scheduler_guard_item(entry, entry_id, req)
 
 
 @service_router.post(
-    "/data-annotation/runtime/service/guard/group/set",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/guard/group/set",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def set_fanxiu_behavior_tree_runtime_service_guard_group(
-    req: FanxiuBehaviorTreeRuntimeGuardGroupRequest,
+def set_fanxiu_kernel_scheduler_service_guard_group(
+    req: FanxiuKernelSchedulerGuardGroupRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _set_fanxiu_behavior_tree_runtime_guard_group(entry, entry_id, req)
+    return _set_fanxiu_kernel_scheduler_guard_group(entry, entry_id, req)
 
 
-@status_router.get("/data-annotation/runtime/logs", response_model=FanxiuBehaviorTreeRuntimeLogResponse)
-def get_fanxiu_behavior_tree_runtime_logs(
+@status_router.get("/kernel-scheduler/logs", response_model=FanxiuKernelSchedulerLogResponse)
+def get_fanxiu_kernel_scheduler_logs(
     limit: int = Query(80, ge=1, le=2000),
     scope: str = Query("", max_length=64),
     item_id: str = Query("", max_length=128),
@@ -5774,25 +5778,25 @@ def get_fanxiu_behavior_tree_runtime_logs(
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_behavior_tree_runtime_runner_to_core()
-    log_items = _core_behavior_tree_runtime_logs(
+    _sync_behavior_tree_executor_to_core()
+    log_items = _core_kernel_scheduler_logs(
         limit=limit,
         scope=scope,
         item_id=item_id,
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
     seen_ids: dict[str, int] = {}
     entries = []
     for item in log_items:
-        base_id = _runtime_log_entry_base_id(item)
+        base_id = _scheduler_log_entry_base_id(item)
         occurrence = seen_ids.get(base_id, 0)
         seen_ids[base_id] = occurrence + 1
-        entries.append(_runtime_log_entry_from_item(item, f"runtime-{base_id}-{occurrence}"))
-    return FanxiuBehaviorTreeRuntimeLogResponse(entries=entries, path=str(_behavior_tree_runtime_state_path()))
+        entries.append(_scheduler_log_entry_from_item(item, f"scheduler-{base_id}-{occurrence}"))
+    return FanxiuKernelSchedulerLogResponse(entries=entries, path=str(_kernel_execution_state_path()))
 
 
-def _runtime_log_entry_base_id(item: dict[str, Any]) -> str:
+def _scheduler_log_entry_base_id(item: dict[str, Any]) -> str:
     return hashlib.sha1(
         json.dumps(
             {
@@ -5814,8 +5818,8 @@ def _runtime_log_entry_base_id(item: dict[str, Any]) -> str:
     ).hexdigest()[:16]
 
 
-def _runtime_log_entry_from_item(item: dict[str, Any], entry_id: str) -> FanxiuBehaviorTreeRuntimeLogEntry:
-    return FanxiuBehaviorTreeRuntimeLogEntry(
+def _scheduler_log_entry_from_item(item: dict[str, Any], entry_id: str) -> FanxiuKernelSchedulerLogEntry:
+    return FanxiuKernelSchedulerLogEntry(
         id=entry_id,
         time=str(item.get("time") or ""),
         kind=str(item.get("kind") or ""),
@@ -5831,29 +5835,29 @@ def _runtime_log_entry_from_item(item: dict[str, Any], entry_id: str) -> FanxiuB
     )
 
 
-def _runtime_log_item_key(item: dict[str, Any]) -> str:
-    return _runtime_log_entry_base_id(item)
+def _scheduler_log_item_key(item: dict[str, Any]) -> str:
+    return _scheduler_log_entry_base_id(item)
 
 
-def _runtime_log_items_for_cell(limit: int = 5000) -> list[dict[str, Any]]:
-    return _core_behavior_tree_runtime_logs(
+def _scheduler_log_items_for_cell(limit: int = 5000) -> list[dict[str, Any]]:
+    return _core_kernel_scheduler_logs(
         limit=limit,
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
 
 
-def _runtime_cell_py_literal(value: Any) -> str:
+def _scheduler_cell_py_literal(value: Any) -> str:
     return repr(value)
 
 
-def _runtime_cell_source(payload: dict[str, Any]) -> str:
+def _scheduler_cell_source(payload: dict[str, Any]) -> str:
     if isinstance(payload.get("code"), str) and payload["code"].strip():
         return payload["code"].strip()
-    return f"cell_meta = {_runtime_cell_py_literal(payload)}"
+    return f"cell_meta = {_scheduler_cell_py_literal(payload)}"
 
 
-def _runtime_cell_display_source(source: str) -> str:
+def _scheduler_cell_display_source(source: str) -> str:
     stripped = source.strip()
     if not stripped.startswith("{"):
         return source
@@ -5863,18 +5867,18 @@ def _runtime_cell_display_source(source: str) -> str:
         return source
     if not isinstance(payload, dict):
         return source
-    return _runtime_cell_source(payload)
+    return _scheduler_cell_source(payload)
 
 
-def _record_runtime_cell_log(
+def _record_cell_log(
     status: dict[str, Any],
     *,
     title: str,
     source: dict[str, Any],
     before_keys: set[str],
 ) -> dict[str, Any]:
-    after_items = _runtime_log_items_for_cell()
-    new_items = [item for item in after_items if _runtime_log_item_key(item) not in before_keys]
+    after_items = _scheduler_log_items_for_cell()
+    new_items = [item for item in after_items if _scheduler_log_item_key(item) not in before_keys]
     new_items = sorted(new_items, key=lambda item: float(item.get("ts") or 0))
     if not new_items:
         new_items = [
@@ -5890,42 +5894,42 @@ def _record_runtime_cell_log(
     seen_ids: dict[str, int] = {}
     entries: list[dict[str, Any]] = []
     for item in new_items:
-        base_id = _runtime_log_entry_base_id(item)
+        base_id = _scheduler_log_entry_base_id(item)
         occurrence = seen_ids.get(base_id, 0)
         seen_ids[base_id] = occurrence + 1
-        entries.append(_runtime_log_entry_from_item(item, f"runtime-{base_id}-{occurrence}").model_dump())
-    cell_id = f"cell-{hashlib.sha1((title + _runtime_cell_source(source) + str(time.time())).encode('utf-8')).hexdigest()[:16]}"
+        entries.append(_scheduler_log_entry_from_item(item, f"scheduler-{base_id}-{occurrence}").model_dump())
+    cell_id = f"cell-{hashlib.sha1((title + _scheduler_cell_source(source) + str(time.time())).encode('utf-8')).hexdigest()[:16]}"
     cell = {
         "id": cell_id,
         "title": title,
         "source_kind": "command",
-        "source": _runtime_cell_source(source),
+        "source": _scheduler_cell_source(source),
         "started_at": entries[0].get("time", ""),
         "ended_at": entries[-1].get("time", ""),
         "entries": entries,
     }
-    persisted_status = _read_behavior_tree_runtime_status()
+    persisted_status = _read_kernel_scheduler_status()
     existing = persisted_status.get("cell_logs") if isinstance(persisted_status.get("cell_logs"), list) else []
     merged_status = {**persisted_status, **status}
     merged_status["cell_logs"] = [cell, *[item for item in existing if isinstance(item, dict) and item.get("id") != cell_id]][:100]
-    _behavior_tree_control.persist_behavior_tree_runtime_status(
+    _kernel_scheduler_control.persist_kernel_scheduler_status(
         merged_status,
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
     return merged_status
 
 
-def _runtime_cell_log_source(title: str, entries: list[FanxiuBehaviorTreeRuntimeLogEntry]) -> str:
-    first = entries[0] if entries else FanxiuBehaviorTreeRuntimeLogEntry()
+def _cell_log_source(title: str, entries: list[FanxiuKernelSchedulerLogEntry]) -> str:
+    first = entries[0] if entries else FanxiuKernelSchedulerLogEntry()
     return (
         "# 历史运行日志回放\n"
         "# 这条 cell 来自旧运行日志，当时没有保存提交源码。\n"
-        f"查看日志(scope={_runtime_cell_py_literal(first.scope)}, item_id={_runtime_cell_py_literal(first.item_id)})"
+        f"查看日志(scope={_scheduler_cell_py_literal(first.scope)}, item_id={_scheduler_cell_py_literal(first.item_id)})"
     )
 
 
-def _runtime_cell_log_title(entry: FanxiuBehaviorTreeRuntimeLogEntry) -> str:
+def _cell_log_title(entry: FanxiuKernelSchedulerLogEntry) -> str:
     message = entry.message.strip()
     if "启动" in message and "任务" in message:
         return message
@@ -5936,30 +5940,30 @@ def _runtime_cell_log_title(entry: FanxiuBehaviorTreeRuntimeLogEntry) -> str:
     return "运行日志 cell"
 
 
-def _runtime_cell_log_boundary(entry: FanxiuBehaviorTreeRuntimeLogEntry) -> bool:
+def _cell_log_boundary(entry: FanxiuKernelSchedulerLogEntry) -> bool:
     message = entry.message
     return ("启动" in message and "任务" in message) or "作业已启动" in message or "task cell 已启动" in message or "Scheduler：启动" in message
 
 
-@status_router.get("/data-annotation/runtime/cell-logs", response_model=FanxiuBehaviorTreeRuntimeCellLogResponse)
-def get_fanxiu_behavior_tree_runtime_cell_logs(
+@status_router.get("/kernel-scheduler/cell-logs", response_model=FanxiuKernelSchedulerCellLogResponse)
+def get_fanxiu_kernel_scheduler_cell_logs(
     limit: int = Query(20, ge=1, le=200),
     log_limit: int = Query(1000, ge=1, le=5000),
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_behavior_tree_runtime_runner_to_core()
-    status = _read_behavior_tree_runtime_status()
-    response_cells: list[FanxiuBehaviorTreeRuntimeCellLog] = []
+    _sync_behavior_tree_executor_to_core()
+    status = _read_kernel_scheduler_status()
+    response_cells: list[FanxiuKernelSchedulerCellLog] = []
     seen_cell_ids: set[str] = set()
     persisted_cells = status.get("cell_logs") if isinstance(status.get("cell_logs"), list) else []
     for item in persisted_cells:
         if not isinstance(item, dict):
             continue
-        item = {**item, "source": _runtime_cell_display_source(str(item.get("source") or ""))}
+        item = {**item, "source": _scheduler_cell_display_source(str(item.get("source") or ""))}
         try:
-            cell = FanxiuBehaviorTreeRuntimeCellLog.model_validate(item)
+            cell = FanxiuKernelSchedulerCellLog.model_validate(item)
         except Exception:
             continue
         if cell.id in seen_cell_ids:
@@ -5967,25 +5971,25 @@ def get_fanxiu_behavior_tree_runtime_cell_logs(
         seen_cell_ids.add(cell.id)
         response_cells.append(cell)
         if len(response_cells) >= limit:
-            return FanxiuBehaviorTreeRuntimeCellLogResponse(cells=response_cells, path=str(_behavior_tree_runtime_state_path()))
+            return FanxiuKernelSchedulerCellLogResponse(cells=response_cells, path=str(_kernel_execution_state_path()))
 
-    log_items = _core_behavior_tree_runtime_logs(
+    log_items = _core_kernel_scheduler_logs(
         limit=log_limit,
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
     seen_ids: dict[str, int] = {}
-    entries: list[FanxiuBehaviorTreeRuntimeLogEntry] = []
+    entries: list[FanxiuKernelSchedulerLogEntry] = []
     for item in log_items:
-        base_id = _runtime_log_entry_base_id(item)
+        base_id = _scheduler_log_entry_base_id(item)
         occurrence = seen_ids.get(base_id, 0)
         seen_ids[base_id] = occurrence + 1
-        entries.append(_runtime_log_entry_from_item(item, f"runtime-{base_id}-{occurrence}"))
+        entries.append(_scheduler_log_entry_from_item(item, f"scheduler-{base_id}-{occurrence}"))
 
-    cells: list[list[FanxiuBehaviorTreeRuntimeLogEntry]] = []
-    current: list[FanxiuBehaviorTreeRuntimeLogEntry] = []
+    cells: list[list[FanxiuKernelSchedulerLogEntry]] = []
+    current: list[FanxiuKernelSchedulerLogEntry] = []
     for entry in entries:
-        if current and _runtime_cell_log_boundary(entry):
+        if current and _cell_log_boundary(entry):
             cells.append(current)
             current = []
         current.append(entry)
@@ -5995,18 +5999,18 @@ def get_fanxiu_behavior_tree_runtime_cell_logs(
     for group in cells[:limit]:
         first = group[0]
         last = group[-1]
-        title = _runtime_cell_log_title(first)
+        title = _cell_log_title(first)
         cell_id = hashlib.sha1("|".join(item.id for item in group).encode("utf-8")).hexdigest()[:16]
         full_cell_id = f"cell-{cell_id}"
         if full_cell_id in seen_cell_ids:
             continue
         seen_cell_ids.add(full_cell_id)
         response_cells.append(
-            FanxiuBehaviorTreeRuntimeCellLog(
+            FanxiuKernelSchedulerCellLog(
                 id=full_cell_id,
                 title=title,
                 source_kind="command",
-                source=_runtime_cell_log_source(title, group),
+                source=_cell_log_source(title, group),
                 started_at=first.time,
                 ended_at=last.time,
                 entries=group,
@@ -6014,10 +6018,10 @@ def get_fanxiu_behavior_tree_runtime_cell_logs(
         )
         if len(response_cells) >= limit:
             break
-    return FanxiuBehaviorTreeRuntimeCellLogResponse(cells=response_cells, path=str(_behavior_tree_runtime_state_path()))
+    return FanxiuKernelSchedulerCellLogResponse(cells=response_cells, path=str(_kernel_execution_state_path()))
 
 
-@status_router.get("/data-annotation/runtime/world-facts", response_model=FanxiuDataAnnotationWorldFactsResponse)
+@status_router.get("/kernel-scheduler/world-facts", response_model=FanxiuDataAnnotationWorldFactsResponse)
 def get_fanxiu_data_annotation_world_facts(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -6030,11 +6034,11 @@ def get_fanxiu_data_annotation_world_facts(
 
 
 def _doctor_watch_latest_payload_for_frontend() -> dict[str, Any]:
-    payload = _behavior_tree_control.read_doctor_watch_latest()
+    payload = _kernel_scheduler_control.read_doctor_watch_latest()
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict) or "auto_run_due" not in snapshot:
         return payload
-    # The runtime page only consumes the summary fields, not the full auto-run trace.
+    # The Kernel scheduler page only consumes the summary fields, not the full auto-run trace.
     return {
         **payload,
         "snapshot": {
@@ -6044,7 +6048,7 @@ def _doctor_watch_latest_payload_for_frontend() -> dict[str, Any]:
     }
 
 
-@status_router.get("/data-annotation/runtime/doctor-watch/latest", response_model=FanxiuDataAnnotationDoctorWatchLatestResponse)
+@status_router.get("/kernel-scheduler/doctor-watch/latest", response_model=FanxiuDataAnnotationDoctorWatchLatestResponse)
 def get_fanxiu_data_annotation_doctor_watch_latest(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -6053,58 +6057,58 @@ def get_fanxiu_data_annotation_doctor_watch_latest(
     return FanxiuDataAnnotationDoctorWatchLatestResponse.model_validate(_doctor_watch_latest_payload_for_frontend())
 
 
-@status_router.post("/data-annotation/runtime/doctor-watch/ensure", response_model=FanxiuDataAnnotationDoctorWatchEnsureResponse)
+@status_router.post("/kernel-scheduler/doctor-watch/ensure", response_model=FanxiuDataAnnotationDoctorWatchEnsureResponse)
 def ensure_fanxiu_data_annotation_doctor_watch(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    return FanxiuDataAnnotationDoctorWatchEnsureResponse.model_validate(_behavior_tree_control.ensure_doctor_watch_background())
+    return FanxiuDataAnnotationDoctorWatchEnsureResponse.model_validate(_kernel_scheduler_control.ensure_doctor_watch_background())
 
 
-@status_router.delete("/data-annotation/runtime/logs", response_model=FanxiuBehaviorTreeRuntimeLogResponse)
-def clear_fanxiu_behavior_tree_runtime_logs(
+@status_router.delete("/kernel-scheduler/logs", response_model=FanxiuKernelSchedulerLogResponse)
+def clear_fanxiu_kernel_scheduler_logs(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_behavior_tree_runtime_runner_to_core()
-    _core_clear_behavior_tree_runtime_logs(
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+    _sync_behavior_tree_executor_to_core()
+    _core_clear_kernel_scheduler_logs(
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    status = _read_behavior_tree_runtime_status()
+    status = _read_kernel_scheduler_status()
     status["cell_logs"] = []
-    _behavior_tree_control.persist_behavior_tree_runtime_status(
+    _kernel_scheduler_control.persist_kernel_scheduler_status(
         status,
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    return FanxiuBehaviorTreeRuntimeLogResponse(entries=[], path=str(_behavior_tree_runtime_state_path()))
+    return FanxiuKernelSchedulerLogResponse(entries=[], path=str(_kernel_execution_state_path()))
 
 
-@status_router.get("/data-annotation/scheduler/tasks", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
-def get_fanxiu_data_annotation_scheduler_tasks(
+@status_router.get("/kernel-scheduler/tasks", response_model=FanxiuKernelSchedulerTasksResponse)
+def get_fanxiu_kernel_scheduler_tasks(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    settings = _behavior_tree_control.read_scheduler_settings(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    settings = _kernel_scheduler_control.read_scheduler_settings(
+        scheduler_settings_path=_kernel_scheduler_settings_path()
     )
-    tasks = _read_data_annotation_scheduler_tasks()
-    return FanxiuDataAnnotationSchedulerTasksResponse(
+    tasks = _read_kernel_scheduler_tasks()
+    return FanxiuKernelSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
-            for item in _data_annotation_scheduler_task_views(tasks)
+            FanxiuKernelSchedulerTaskItem.model_validate(item)
+            for item in _kernel_scheduler_task_views(tasks)
         ],
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
-        path=str(_data_annotation_scheduler_state_path()),
+        path=str(_kernel_scheduler_state_path()),
     )
 
 
 @status_router.get(
-    "/data-annotation/scheduler/state-inspection",
+    "/kernel-scheduler/state-inspection",
     response_model=FanxiuGameStateInspectionStatus,
 )
 def get_fanxiu_game_state_inspection_status(
@@ -6115,126 +6119,126 @@ def get_fanxiu_game_state_inspection_status(
     return FanxiuGameStateInspectionStatus.model_validate(read_game_state_inspection_status())
 
 
-@status_router.get("/data-annotation/scheduler/plan", response_model=FanxiuDataAnnotationSchedulerPlanResponse)
-def get_fanxiu_data_annotation_scheduler_plan(
+@status_router.get("/kernel-scheduler/plan", response_model=FanxiuKernelSchedulerPlanResponse)
+def get_fanxiu_kernel_scheduler_plan(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    return FanxiuDataAnnotationSchedulerPlanResponse.model_validate(_build_data_annotation_scheduler_plan())
+    return FanxiuKernelSchedulerPlanResponse.model_validate(_build_kernel_scheduler_plan())
 
 
 @status_router.get(
-    "/data-annotation/scheduler/time-sequence",
-    response_model=FanxiuDataAnnotationSchedulerTimeSequenceResponse,
+    "/kernel-scheduler/time-sequence",
+    response_model=FanxiuKernelSchedulerTimeSequenceResponse,
 )
-def get_fanxiu_data_annotation_scheduler_time_sequence(
+def get_fanxiu_kernel_scheduler_time_sequence(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    tasks = _read_data_annotation_scheduler_tasks()
-    return FanxiuDataAnnotationSchedulerTimeSequenceResponse(
-        groups=_behavior_tree_control.scheduler_time_sequence_groups(
+    tasks = _read_kernel_scheduler_tasks()
+    return FanxiuKernelSchedulerTimeSequenceResponse(
+        groups=_kernel_scheduler_control.scheduler_time_sequence_groups(
             tasks,
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
         )
     )
 
 
 @status_router.put(
-    "/data-annotation/scheduler/time-sequence",
-    response_model=FanxiuDataAnnotationSchedulerTimeSequenceResponse,
+    "/kernel-scheduler/time-sequence",
+    response_model=FanxiuKernelSchedulerTimeSequenceResponse,
 )
-def put_fanxiu_data_annotation_scheduler_time_sequence(
-    request: FanxiuDataAnnotationSchedulerTimeSequenceUpdateRequest,
+def put_fanxiu_kernel_scheduler_time_sequence(
+    request: FanxiuKernelSchedulerTimeSequenceUpdateRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _behavior_tree_control.update_scheduler_time_sequence(
+    _kernel_scheduler_control.update_scheduler_time_sequence(
         [group.model_dump() for group in request.groups],
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
     )
-    _sync_behavior_tree_runtime_runner_to_core()
-    tasks = _read_data_annotation_scheduler_tasks()
-    return FanxiuDataAnnotationSchedulerTimeSequenceResponse(
-        groups=_behavior_tree_control.scheduler_time_sequence_groups(
+    _sync_behavior_tree_executor_to_core()
+    tasks = _read_kernel_scheduler_tasks()
+    return FanxiuKernelSchedulerTimeSequenceResponse(
+        groups=_kernel_scheduler_control.scheduler_time_sequence_groups(
             tasks,
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
         )
     )
 
 
-@status_router.put("/data-annotation/scheduler/tasks", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
-def put_fanxiu_data_annotation_scheduler_tasks(
-    tasks: list[FanxiuDataAnnotationSchedulerTaskUpdate],
+@status_router.put("/kernel-scheduler/tasks", response_model=FanxiuKernelSchedulerTasksResponse)
+def put_fanxiu_kernel_scheduler_tasks(
+    tasks: list[FanxiuKernelSchedulerTaskUpdate],
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    payload = _behavior_tree_control.update_scheduler_tasks(
+    payload = _kernel_scheduler_control.update_scheduler_tasks(
         [item.model_dump(exclude_none=True) for item in tasks],
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
+        scheduler_state_path=_kernel_scheduler_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         now=datetime.now(),
     )
-    _sync_behavior_tree_runtime_runner_to_core()
-    return FanxiuDataAnnotationSchedulerTasksResponse(
+    _sync_behavior_tree_executor_to_core()
+    return FanxiuKernelSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
-            for item in _data_annotation_scheduler_task_views(payload)
+            FanxiuKernelSchedulerTaskItem.model_validate(item)
+            for item in _kernel_scheduler_task_views(payload)
         ],
-        job_group_enabled=bool(_behavior_tree_control.read_scheduler_settings(
-            scheduler_settings_path=_data_annotation_scheduler_settings_path()
+        job_group_enabled=bool(_kernel_scheduler_control.read_scheduler_settings(
+            scheduler_settings_path=_kernel_scheduler_settings_path()
         ).get("job_group_enabled", True)),
-        path=str(_data_annotation_scheduler_state_path()),
+        path=str(_kernel_scheduler_state_path()),
     )
 
 
-@status_router.get("/data-annotation/scheduler/settings", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
-def get_fanxiu_data_annotation_scheduler_settings(
+@status_router.get("/kernel-scheduler/settings", response_model=FanxiuKernelSchedulerTasksResponse)
+def get_fanxiu_kernel_scheduler_settings(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    settings = _behavior_tree_control.read_scheduler_settings(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path()
+    settings = _kernel_scheduler_control.read_scheduler_settings(
+        scheduler_settings_path=_kernel_scheduler_settings_path()
     )
-    tasks = _read_data_annotation_scheduler_tasks()
-    return FanxiuDataAnnotationSchedulerTasksResponse(
+    tasks = _read_kernel_scheduler_tasks()
+    return FanxiuKernelSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
-            for item in _data_annotation_scheduler_task_views(tasks)
+            FanxiuKernelSchedulerTaskItem.model_validate(item)
+            for item in _kernel_scheduler_task_views(tasks)
         ],
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
-        path=str(_data_annotation_scheduler_state_path()),
+        path=str(_kernel_scheduler_state_path()),
     )
 
 
-@status_router.put("/data-annotation/scheduler/settings", response_model=FanxiuDataAnnotationSchedulerTasksResponse)
-def put_fanxiu_data_annotation_scheduler_settings(
-    req: FanxiuDataAnnotationSchedulerSettingsRequest,
+@status_router.put("/kernel-scheduler/settings", response_model=FanxiuKernelSchedulerTasksResponse)
+def put_fanxiu_kernel_scheduler_settings(
+    req: FanxiuKernelSchedulerSettingsRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
-    _sync_behavior_tree_runtime_runner_to_core()
+    _sync_behavior_tree_executor_to_core()
     if req.entry_id and not req.job_group_enabled:
         entry = _get_user_device_or_404(session, current_user, req.entry_id)
         entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-        control = _behavior_tree_framework.take_runtime_control(
+        control = _behavior_tree_framework.take_ai_control(
             entry_id,
-            scheduler_state_path=_data_annotation_scheduler_state_path(),
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_behavior_tree_runtime_state_path(),
+            scheduler_state_path=_kernel_scheduler_state_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
         settings = {"job_group_enabled": bool(control.get("job_group_enabled", False))}
     else:
-        settings = _behavior_tree_control.set_scheduler_job_group_enabled(
+        settings = _kernel_scheduler_control.set_scheduler_job_group_enabled(
             req.job_group_enabled,
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
         )
         if req.entry_id:
             entry = _get_user_device_or_404(session, current_user, req.entry_id)
@@ -6244,41 +6248,41 @@ def put_fanxiu_data_annotation_scheduler_settings(
                 entry_id=entry_id,
                 enabled=True,
                 asset_tree_path=_data_annotation_asset_tree_path(entry_id),
-                scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-                runtime_state_path=_behavior_tree_runtime_state_path(),
+                scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
                 world_facts_path=_data_annotation_world_facts_path(),
             )
-    tasks = _read_data_annotation_scheduler_tasks()
-    return FanxiuDataAnnotationSchedulerTasksResponse(
+    tasks = _read_kernel_scheduler_tasks()
+    return FanxiuKernelSchedulerTasksResponse(
         tasks=[
-            FanxiuDataAnnotationSchedulerTaskItem.model_validate(item)
-            for item in _data_annotation_scheduler_task_views(tasks)
+            FanxiuKernelSchedulerTaskItem.model_validate(item)
+            for item in _kernel_scheduler_task_views(tasks)
         ],
         job_group_enabled=bool(settings.get("job_group_enabled", True)),
-        path=str(_data_annotation_scheduler_state_path()),
+        path=str(_kernel_scheduler_state_path()),
     )
 
 
-def _run_now_fanxiu_data_annotation_scheduler_task(
+def _run_now_fanxiu_kernel_scheduler_task(
     entry: Any,
     entry_id: str,
-    req: FanxiuDataAnnotationSchedulerRunNowRequest,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
+    req: FanxiuKernelSchedulerRunNowRequest,
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
     try:
         payload = dict(req.payload)
         if req.effective_now is not None:
             payload["effective_now"] = req.effective_now.isoformat(sep=" ")
-        status = _behavior_tree_control.run_now_scheduler_task(
+        status = _kernel_scheduler_control.run_now_scheduler_task(
             entry=entry,
             entry_id=entry_id,
             task_id=req.task_id,
             payload_override=payload,
             business_time_mode=req.business_time_mode,
             interrupt_same_group=req.interrupt_same_group,
-            scheduler_state_path=_data_annotation_scheduler_state_path(),
-            scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-            runtime_state_path=_behavior_tree_runtime_state_path(),
+            scheduler_state_path=_kernel_scheduler_state_path(),
+            scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
             asset_tree_path=_data_annotation_asset_tree_path(entry_id),
         )
@@ -6286,67 +6290,67 @@ def _run_now_fanxiu_data_annotation_scheduler_task(
         raise HTTPException(status_code=404, detail="任务不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-def _trigger_once_fanxiu_data_annotation_scheduler_task(
-    req: FanxiuDataAnnotationSchedulerTriggerOnceRequest,
-) -> FanxiuDataAnnotationSchedulerTriggerOnceResponse:
+def _trigger_once_fanxiu_kernel_scheduler_task(
+    req: FanxiuKernelSchedulerTriggerOnceRequest,
+) -> FanxiuKernelSchedulerTriggerOnceResponse:
     try:
-        next_time = _behavior_tree_control.trigger_scheduler_task_once(
+        next_time = _kernel_scheduler_control.trigger_scheduler_task_once(
             req.task_id,
-            scheduler_state_path=_data_annotation_scheduler_state_path(),
+            scheduler_state_path=_kernel_scheduler_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FanxiuDataAnnotationSchedulerTriggerOnceResponse(
+    return FanxiuKernelSchedulerTriggerOnceResponse(
         task_id=req.task_id,
         next_time=next_time,
     )
 
 
-def _set_fanxiu_data_annotation_scheduler_task_next_time(
-    req: FanxiuDataAnnotationSchedulerNextTimeRequest,
-) -> FanxiuDataAnnotationSchedulerNextTimeResponse:
+def _set_fanxiu_kernel_scheduler_task_next_time(
+    req: FanxiuKernelSchedulerNextTimeRequest,
+) -> FanxiuKernelSchedulerNextTimeResponse:
     try:
-        next_time = _behavior_tree_control.set_scheduler_task_next_time(
+        next_time = _kernel_scheduler_control.set_scheduler_task_next_time(
             req.task_id,
             req.next_time,
-            scheduler_state_path=_data_annotation_scheduler_state_path(),
+            scheduler_state_path=_kernel_scheduler_state_path(),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return FanxiuDataAnnotationSchedulerNextTimeResponse(
+    return FanxiuKernelSchedulerNextTimeResponse(
         task_id=req.task_id,
         next_time=next_time,
     )
 
 
-def _run_due_fanxiu_data_annotation_scheduler_tasks(
+def _run_due_fanxiu_kernel_scheduler_tasks(
     entry: Any,
     entry_id: str,
-) -> FanxiuBehaviorTreeRuntimeStatus:
-    _sync_behavior_tree_runtime_runner_to_core()
-    status = _behavior_tree_control.run_due_scheduler_tasks(
+) -> FanxiuKernelSchedulerStatus:
+    _sync_behavior_tree_executor_to_core()
+    status = _kernel_scheduler_control.run_due_scheduler_tasks(
         entry=entry,
         entry_id=entry_id,
-        scheduler_state_path=_data_annotation_scheduler_state_path(),
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+        scheduler_state_path=_kernel_scheduler_state_path(),
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
         asset_tree_path=_data_annotation_asset_tree_path(entry_id),
     )
-    return FanxiuBehaviorTreeRuntimeStatus.model_validate(status)
+    return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-@status_router.post("/data-annotation/scheduler/task/run-now", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def run_now_fanxiu_data_annotation_scheduler_task(
-    req: FanxiuDataAnnotationSchedulerRunNowRequest,
+@status_router.post("/kernel-scheduler/task/run-now", response_model=FanxiuKernelSchedulerStatus)
+def run_now_fanxiu_kernel_scheduler_task(
+    req: FanxiuKernelSchedulerRunNowRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -6359,15 +6363,15 @@ def run_now_fanxiu_data_annotation_scheduler_task(
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
+    return _run_now_fanxiu_kernel_scheduler_task(entry, entry_id, req)
 
 
 @status_router.post(
-    "/data-annotation/scheduler/task/trigger-once",
-    response_model=FanxiuDataAnnotationSchedulerTriggerOnceResponse,
+    "/kernel-scheduler/task/trigger-once",
+    response_model=FanxiuKernelSchedulerTriggerOnceResponse,
 )
-def trigger_once_fanxiu_data_annotation_scheduler_task(
-    req: FanxiuDataAnnotationSchedulerTriggerOnceRequest,
+def trigger_once_fanxiu_kernel_scheduler_task(
+    req: FanxiuKernelSchedulerTriggerOnceRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -6375,15 +6379,15 @@ def trigger_once_fanxiu_data_annotation_scheduler_task(
 
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
-    return _trigger_once_fanxiu_data_annotation_scheduler_task(req)
+    return _trigger_once_fanxiu_kernel_scheduler_task(req)
 
 
 @status_router.put(
-    "/data-annotation/scheduler/task/next-time",
-    response_model=FanxiuDataAnnotationSchedulerNextTimeResponse,
+    "/kernel-scheduler/task/next-time",
+    response_model=FanxiuKernelSchedulerNextTimeResponse,
 )
-def set_fanxiu_data_annotation_scheduler_task_next_time(
-    req: FanxiuDataAnnotationSchedulerNextTimeRequest,
+def set_fanxiu_kernel_scheduler_task_next_time(
+    req: FanxiuKernelSchedulerNextTimeRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -6391,47 +6395,47 @@ def set_fanxiu_data_annotation_scheduler_task_next_time(
 
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     _get_user_device_or_404(session, current_user, req.entry_id)
-    return _set_fanxiu_data_annotation_scheduler_task_next_time(req)
+    return _set_fanxiu_kernel_scheduler_task_next_time(req)
 
 
 @status_router.post(
-    "/data-annotation/scheduler/service/task/run-now",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/task/run-now",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def run_now_fanxiu_data_annotation_scheduler_service_task(
-    req: FanxiuDataAnnotationSchedulerRunNowRequest,
+def run_now_fanxiu_kernel_scheduler_service_task(
+    req: FanxiuKernelSchedulerRunNowRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _run_now_fanxiu_data_annotation_scheduler_task(entry, entry_id, req)
+    return _run_now_fanxiu_kernel_scheduler_task(entry, entry_id, req)
 
 
-@status_router.post("/data-annotation/scheduler/run-due", response_model=FanxiuBehaviorTreeRuntimeStatus)
-def run_due_fanxiu_data_annotation_scheduler_tasks(
-    req: FanxiuDataAnnotationSchedulerRunDueRequest,
+@status_router.post("/kernel-scheduler/run-due", response_model=FanxiuKernelSchedulerStatus)
+def run_due_fanxiu_kernel_scheduler_tasks(
+    req: FanxiuKernelSchedulerRunDueRequest,
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
     ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
     entry = _get_user_device_or_404(session, current_user, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _run_due_fanxiu_data_annotation_scheduler_tasks(entry, entry_id)
+    return _run_due_fanxiu_kernel_scheduler_tasks(entry, entry_id)
 
 
 @status_router.post(
-    "/data-annotation/scheduler/service/run-due",
-    response_model=FanxiuBehaviorTreeRuntimeStatus,
-    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_RUNTIME_CONTROL))],
+    "/kernel-scheduler/service/run-due",
+    response_model=FanxiuKernelSchedulerStatus,
+    dependencies=[Depends(require_service_scope(SERVICE_SCOPE_FANXIU_KERNEL_SCHEDULER_CONTROL))],
 )
-def run_due_fanxiu_data_annotation_scheduler_service_tasks(
-    req: FanxiuDataAnnotationSchedulerRunDueRequest,
+def run_due_fanxiu_kernel_scheduler_service_tasks(
+    req: FanxiuKernelSchedulerRunDueRequest,
     session: Session = Depends(get_session),
 ):
     entry = _get_service_user_device_or_404(session, req.entry_id)
     entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
-    return _run_due_fanxiu_data_annotation_scheduler_tasks(entry, entry_id)
+    return _run_due_fanxiu_kernel_scheduler_tasks(entry, entry_id)
 
 
 @status_router.post("/data-annotation/ocr-frame", response_model=FanxiuDataAnnotationOcrFrameResponse)
@@ -6910,24 +6914,24 @@ def collect_fanxiu_wardrobe_hall(
     """Run one ordinary read-only Cell and return the persisted wardrobe snapshot."""
 
     ensure_fanxiu_write_permission(current_user, session)
-    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    if runtime_status.get("running"):
-        current_task = str(runtime_status.get("task_type") or "当前 Cell")
-        message = str(runtime_status.get("message") or "行为树 Runtime 正在执行其它任务")
+    if execution_status.get("running"):
+        current_task = str(execution_status.get("task_type") or "当前 Cell")
+        message = str(execution_status.get("message") or "Kernel 调度器 正在执行其它任务")
         raise HTTPException(
             status_code=409,
-            detail=f"Runtime 忙碌（{current_task}）：{message}，请稍后再从游戏更新",
+            detail=f"Kernel 调度器忙碌（{current_task}）：{message}，请稍后再从游戏更新",
         )
     entry_id = DEFAULT_FANXIU_ENTRY_ID
     try:
         entry = resolve_fanxiu_entry(entry_id)
     except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"行为树 Runtime 入口不可用：{exc}") from exc
-    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+        raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
+    request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
         code=(
             "import importlib\n"
@@ -7073,16 +7077,16 @@ def collect_fanxiu_xianyuan_atlas(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    if runtime_status.get("running"):
-        raise HTTPException(status_code=409, detail="行为树 Runtime 正在执行其它 Cell，请稍后更新仙缘图鉴")
+    if execution_status.get("running"):
+        raise HTTPException(status_code=409, detail="Kernel 调度器 正在执行其它 Cell，请稍后更新仙缘图鉴")
     entry_id = DEFAULT_FANXIU_ENTRY_ID
     entry = resolve_fanxiu_entry(entry_id)
-    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+    request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
         code=(
             "import importlib\n"
@@ -7135,16 +7139,16 @@ def collect_fanxiu_gongfa_atlas(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    if runtime_status.get("running"):
-        raise HTTPException(status_code=409, detail="行为树 Runtime 正在执行其它 Cell，请稍后更新个人功法")
+    if execution_status.get("running"):
+        raise HTTPException(status_code=409, detail="Kernel 调度器 正在执行其它 Cell，请稍后更新个人功法")
     entry_id = DEFAULT_FANXIU_ENTRY_ID
     entry = resolve_fanxiu_entry(entry_id)
-    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+    request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
         code=(
             "import importlib\n"
@@ -7211,24 +7215,24 @@ def collect_fanxiu_magic_treasure_hall(
     """Run one ordinary read-only Cell and return its persisted DB snapshot."""
 
     ensure_fanxiu_write_permission(current_user, session)
-    runtime_status = _behavior_tree_control.behavior_tree_runtime_status(
-        scheduler_settings_path=_data_annotation_scheduler_settings_path(),
-        runtime_state_path=_behavior_tree_runtime_state_path(),
+    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
         world_facts_path=_data_annotation_world_facts_path(),
     )
-    if runtime_status.get("running"):
-        current_task = str(runtime_status.get("task_type") or "当前 Cell")
-        message = str(runtime_status.get("message") or "行为树 Runtime 正在执行其它任务")
+    if execution_status.get("running"):
+        current_task = str(execution_status.get("task_type") or "当前 Cell")
+        message = str(execution_status.get("message") or "Kernel 调度器 正在执行其它任务")
         raise HTTPException(
             status_code=409,
-            detail=f"Runtime 忙碌（{current_task}）：{message}，请稍后再从游戏更新",
+            detail=f"Kernel 调度器忙碌（{current_task}）：{message}，请稍后再从游戏更新",
         )
     entry_id = DEFAULT_FANXIU_ENTRY_ID
     try:
         entry = resolve_fanxiu_entry(entry_id)
     except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"行为树 Runtime 入口不可用：{exc}") from exc
-    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(
+        raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
+    request = FanxiuKernelSchedulerCodeCellRequest(
         entry_id=entry_id,
         code=(
             "import importlib\n"
@@ -7482,13 +7486,25 @@ def get_fanxiu_exchange_activity_snapshot(
     placement fields remain only for the interactive asset-tree editor.
     """
 
-    materialize_registered_exchange_activity(
+    materialized_activity_id = materialize_registered_exchange_activity(
         session,
         activity_type=activity_type,
     )
     return list_exchange_activity_snapshot(
-        session, activity_type=activity_type, activity_id=activity_id
+        session,
+        activity_type=activity_type,
+        activity_id=activity_id or materialized_activity_id,
     )
+
+
+@inventory_router.get(
+    "/schedule/rankings",
+    response_model=FanxiuScheduleRankingSnapshot,
+)
+def get_fanxiu_schedule_rankings(
+    session: Session = Depends(get_session),
+):
+    return load_fanxiu_schedule_ranking_snapshot(session)
 
 
 @inventory_router.get(

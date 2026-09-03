@@ -22,12 +22,14 @@ from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_desired_status_for_rewards,
     fanxiu_mail_prayer_target,
     fanxiu_mail_prayer_values_by_category,
+    fanxiu_mail_reward_name_known,
     fanxiu_mail_reward_prayer_value,
     fanxiu_mail_rewards_unresolved,
     fanxiu_mail_title_force_claim_allowed,
     fanxiu_mail_title_is_always_claim,
     fanxiu_mail_visible_group_action_policy,
 )
+from backend.core.fanxiu.mail.runtime_sync import _runtime_rewards
 from backend.core.fanxiu.history_museum.packet_capture import mail_sync as fanxiu_mail_packet_sync
 from backend.core.fanxiu.history_museum.packet_capture import insight_worker as fanxiu_packet_insight_worker
 from backend.api import fanxiu as fanxiu_api
@@ -825,6 +827,10 @@ def test_mail_policy_claims_four_ke_before_protected_resources_but_after_faze():
         {"item_id": "3080008", "item_name": "潜修心得·四刻", "item_type": "潜修道具"},
         {"item_id": "10080012", "item_name": "魔道法则", "item_type": "法则"},
     ]) == ""
+    assert fanxiu_mail_action_policy_for_rewards([
+        {"item_id": "3080008", "item_name": "潜修心得·四刻", "item_type": "潜修道具"},
+        {"item_id": "400013004", "item_name": "未知道具 #400013004", "item_type": "类型未知"},
+    ]) == "claim"
 
 
 def test_mail_visible_group_holds_ambiguous_same_title_time_candidates():
@@ -852,6 +858,59 @@ def test_mail_policy_keeps_unknown_rewards_without_locking_or_claiming():
 
     assert fanxiu_mail_desired_status_for_rewards(rewards) == "留存"
     assert fanxiu_mail_action_policy_for_rewards(rewards) == ""
+
+
+def test_mail_policy_accepts_runtime_proven_temporary_activity_material():
+    reward = {
+        "item_id": "400013004",
+        "item_name": "",
+        "item_type": "材料",
+        "item_type_id": 5,
+        "item_sub_type_id": 49,
+        "use_condition": "ActivitybaseId|8400001_2;ActivitybaseId|8400001_3",
+        "item_resolved": True,
+        "policy_resolution": "temporary_activity_material",
+        "name_source": "runtime_config",
+    }
+
+    assert fanxiu_mail_reward_name_known(reward)
+    assert fanxiu_mail_action_policy_for_rewards([reward]) == "claim"
+
+
+def test_runtime_mail_rewards_preserve_live_item_policy_metadata():
+    rewards = _runtime_rewards(
+        [
+            {
+                "type": 0,
+                "code": 400013004,
+                "amount": 1,
+                "item_type": "材料",
+                "item_type_id": 5,
+                "item_sub_type_id": 49,
+                "item_resolved": True,
+                "policy_resolution": "temporary_activity_material",
+                "name_source": "runtime_config",
+            }
+        ],
+        [],
+        {},
+    )
+
+    assert rewards == [
+        {
+            "item_id": "400013004",
+            "item_name": "",
+            "amount": 1,
+            "text": "道具 #400013004 x1",
+            "type": 0,
+            "item_type": "材料",
+            "item_type_id": 5,
+            "item_sub_type_id": 49,
+            "item_resolved": True,
+            "policy_resolution": "temporary_activity_material",
+            "name_source": "runtime_config",
+        }
+    ]
 
 
 def test_mail_policy_exposes_prayer_values_for_downstream_flows():

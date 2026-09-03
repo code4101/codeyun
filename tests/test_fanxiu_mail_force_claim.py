@@ -1,10 +1,10 @@
 from types import SimpleNamespace
 
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
 
 def _runner_without_runtime_match():
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._find_runtime_mail_records_for_visible_row = lambda *_args, **_kwargs: []
     runner._mail_row_runtime_missing_reason = lambda *_args, **_kwargs: "no_runtime_fact"
     return runner
@@ -23,13 +23,13 @@ def test_activity_mail_titles_fail_closed_without_runtime_fact():
 
 
 def test_activity_mail_title_never_overrides_faze_runtime_fact():
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._find_runtime_mail_records_for_visible_row = lambda *_args, **_kwargs: [
         SimpleNamespace(
             mail_key="faze-whitelist-mail",
             create_time_text="2026年08月05日21:05",
             status="可领",
-            runtime_status="unclaimed",
+            execution_status="unclaimed",
             action_policy="",
             payload={
                 "mail_rewards": [

@@ -145,15 +145,15 @@ def _pending_research_result(
     }
 
 
-def _runtime(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
+def _behavior_tree_context(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("昆仑秘藏作业缺少资产树路径")
-    return runner._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+    return runner._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
 
 
 def _select_optional_reward(
-    runtime: Any,
+    context: Any,
     *,
     inputs_reader: Callable[[], KunlunFirstRowInputs] | None = None,
     selector: KunlunFirstRowSelector | None = None,
@@ -180,10 +180,10 @@ def _select_optional_reward(
         )
     # Reading and deciding happen before opening #541.  Consequently an
     # incomplete reader or selector cannot leave a half-edited form onscreen.
-    current = read_kunlun_page(runtime, update=True)
+    current = read_kunlun_page(context, update=True)
     if current is None or current.page != "自选":
-        open_kunlun_optional_reward(runtime)
-    result = complete_kunlun_optional_reward_selection(runtime, decision)
+        open_kunlun_optional_reward(context)
+    result = complete_kunlun_optional_reward_selection(context, decision)
     return {
         "outcome": "configured",
         "column": int(decision.column),
@@ -193,20 +193,20 @@ def _select_optional_reward(
 
 
 def _run_kunlun_config_workflow(
-    runtime: Any,
+    context: Any,
     *,
     inputs_reader: Callable[[], KunlunFirstRowInputs] | None = None,
     selector: KunlunFirstRowSelector | None = None,
 ) -> dict[str, Any]:
     optional = _select_optional_reward(
-        runtime,
+        context,
         inputs_reader=inputs_reader,
         selector=selector if selector is not None else KUNLUN_FIRST_ROW_SELECTOR,
     )
-    open_kunlun_tab(runtime, "商店")
-    store = complete_kunlun_store(runtime)
-    tasks = complete_kunlun_tasks(runtime)
-    lottery = complete_kunlun_lottery(runtime, allow_single_draws=False)
+    open_kunlun_tab(context, "商店")
+    store = complete_kunlun_store(context)
+    tasks = complete_kunlun_tasks(context)
+    lottery = complete_kunlun_lottery(context, allow_single_draws=False)
     return {
         "optional": optional,
         "store_clicked_values": list(store.clicked_values),
@@ -216,9 +216,9 @@ def _run_kunlun_config_workflow(
     }
 
 
-def _run_kunlun_lottery_workflow(runtime: Any) -> dict[str, Any]:
-    tasks = complete_kunlun_tasks(runtime)
-    lottery = complete_kunlun_lottery(runtime, allow_single_draws=True)
+def _run_kunlun_lottery_workflow(context: Any) -> dict[str, Any]:
+    tasks = complete_kunlun_tasks(context)
+    lottery = complete_kunlun_lottery(context, allow_single_draws=True)
     return {
         "task_clicked_count": tasks.clicked_count,
         "task_stop_reason": tasks.stop_reason,
@@ -233,9 +233,9 @@ def execute_kunlun_config_job(
     stop_event: threading.Event,
 ) -> dict[str, Any]:
     del payload
-    runtime = _runtime(runner, ctx, stop_event)
+    context = _behavior_tree_context(runner, ctx, stop_event)
     try:
-        enter_kunlun(runtime)
+        enter_kunlun(context)
     except KunlunActivityUnavailable as exc:
         runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
         message = (
@@ -251,8 +251,8 @@ def execute_kunlun_config_job(
             "final_scene": 34,
         }
 
-    details = _run_kunlun_config_workflow(runtime)
-    final_scene, final_score = leave_kunlun(runtime)
+    details = _run_kunlun_config_workflow(context)
+    final_scene, final_score = leave_kunlun(context)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError("昆仑秘藏_配置收尾未可靠回到 #34")
     runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
@@ -277,9 +277,9 @@ def execute_kunlun_lottery_job(
     stop_event: threading.Event,
 ) -> dict[str, Any]:
     del payload
-    runtime = _runtime(runner, ctx, stop_event)
+    context = _behavior_tree_context(runner, ctx, stop_event)
     try:
-        enter_kunlun(runtime)
+        enter_kunlun(context)
     except KunlunActivityUnavailable as exc:
         runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
         message = (
@@ -296,8 +296,8 @@ def execute_kunlun_lottery_job(
             "final_scene": 34,
         }
 
-    details = _run_kunlun_lottery_workflow(runtime)
-    final_scene, final_score = leave_kunlun(runtime)
+    details = _run_kunlun_lottery_workflow(context)
+    final_scene, final_score = leave_kunlun(context)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError("昆仑秘藏_抽奖收尾未可靠回到 #34")
     runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)

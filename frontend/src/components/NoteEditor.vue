@@ -357,6 +357,14 @@ const suppressInitialEditorChange = () => {
     }, 250)
 }
 
+const releaseModelDrivenChangeSuppression = () => {
+    suppressModelDrivenChange.value = false
+    if (releaseModelDrivenChangeTimer != null) {
+        window.clearTimeout(releaseModelDrivenChangeTimer)
+        releaseModelDrivenChangeTimer = null
+    }
+}
+
 // 模拟 ajax 异步获取内容
 onMounted(() => {
     suppressInitialEditorChange()
@@ -678,8 +686,14 @@ const handleContainerClick = (e: MouseEvent) => {
 }
 
 const handleChange = (editor: any) => {
-    if (suppressModelDrivenChange.value) return
     const nextHtml = editor.getHtml()
+    if (suppressModelDrivenChange.value) {
+        // wangEditor also emits change while applying modelValue. Ignore only
+        // that exact echo; a different value is real user input and must never
+        // be dropped just because it happened during the short sync window.
+        if (nextHtml === normalizeEditorInputHtml(props.modelValue)) return
+        releaseModelDrivenChangeSuppression()
+    }
     emit('update:modelValue', nextHtml)
     emit('change', nextHtml)
 }

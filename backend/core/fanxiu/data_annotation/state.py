@@ -25,11 +25,11 @@ from pyxllib.prog import (
     trim_fact_events,
     write_json_state,
 )
-from backend.core.fanxiu.data_annotation.scheduler_time import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_time import (
     normalize_time_sequence,
 )
 
-_RUNTIME_PHASE_LABELS = {
+_EXECUTION_PHASE_LABELS = {
     "idle": "空闲",
     "waiting_context": "等待运行环境",
     "starting": "启动中",
@@ -38,32 +38,32 @@ _RUNTIME_PHASE_LABELS = {
 }
 
 
-def behavior_tree_runtime_phase_label(phase: Any) -> str:
+def kernel_scheduler_phase_label(phase: Any) -> str:
     key = str(phase or "").strip()
-    return _RUNTIME_PHASE_LABELS.get(key, key)
+    return _EXECUTION_PHASE_LABELS.get(key, key)
 
 
-def behavior_tree_runtime_display_message(message: Any) -> str:
+def kernel_scheduler_display_message(message: Any) -> str:
     text = str(message or "")
     if not text:
         return text
-    for key, label in sorted(_RUNTIME_PHASE_LABELS.items(), key=lambda item: len(item[0]), reverse=True):
+    for key, label in sorted(_EXECUTION_PHASE_LABELS.items(), key=lambda item: len(item[0]), reverse=True):
         text = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", label, text)
     return text
 
 
-def normalize_behavior_tree_runtime_display(status: dict[str, Any]) -> None:
-    status["message"] = behavior_tree_runtime_display_message(status.get("message") or "")
+def normalize_kernel_scheduler_display(status: dict[str, Any]) -> None:
+    status["message"] = kernel_scheduler_display_message(status.get("message") or "")
     logs = status.get("logs")
     if isinstance(logs, list):
-        status["logs"] = normalize_behavior_tree_runtime_logs_for_display([item for item in logs if isinstance(item, dict)])
+        status["logs"] = normalize_kernel_scheduler_logs_for_display([item for item in logs if isinstance(item, dict)])
     status.pop("framework_status", None)
     status.pop("engine_status", None)
     status.pop("framework_tick", None)
     status.pop("engine_tick", None)
 
 
-def select_behavior_tree_runtime_status(
+def select_kernel_scheduler_status(
     live_status: dict[str, Any],
     persisted_status: dict[str, Any],
 ) -> dict[str, Any]:
@@ -72,7 +72,7 @@ def select_behavior_tree_runtime_status(
     persisted = dict(persisted_status or {})
     if not persisted:
         return live
-    if is_behavior_tree_runtime_live_empty(live):
+    if is_kernel_scheduler_live_empty(live):
         return persisted
     try:
         live_updated_at = float(live.get("updated_at") or 0.0)
@@ -89,13 +89,13 @@ def select_behavior_tree_runtime_status(
 
 
 
-def normalize_behavior_tree_runtime_logs_for_display(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalize_kernel_scheduler_logs_for_display(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in logs:
         if not isinstance(item, dict):
             continue
         next_item = dict(item)
-        next_item["message"] = behavior_tree_runtime_display_message(next_item.get("message") or "")
+        next_item["message"] = kernel_scheduler_display_message(next_item.get("message") or "")
         normalized.append(next_item)
     return normalized
 
@@ -112,7 +112,7 @@ def initial_data_annotation_world_facts() -> dict[str, Any]:
     return {
         "version": 1,
         "updated_at": time.time(),
-        "runtime": {
+        "context": {
             "entry_id": "",
             "current_scene": None,
             "current_task": "",
@@ -159,7 +159,7 @@ def read_data_annotation_world_facts(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return facts
     for key, value in raw.items():
-        if key in {"runtime", "guard", "availability", "discoveries"} and isinstance(value, dict):
+        if key in {"context", "guard", "availability", "discoveries"} and isinstance(value, dict):
             target = facts[key]
             if isinstance(target, dict):
                 for sub_key, sub_value in value.items():
@@ -175,8 +175,8 @@ def read_data_annotation_world_facts(path: Path) -> dict[str, Any]:
             facts[key] = value
 
     # Backward compatibility for the previous flat mirror file.
-    if "current_scene" in raw and not facts["runtime"].get("current_scene"):
-        facts["runtime"].update({
+    if "current_scene" in raw and not facts["context"].get("current_scene"):
+        facts["context"].update({
             "entry_id": raw.get("entry_id") or "",
             "current_scene": raw.get("current_scene"),
             "current_task": raw.get("current_task") or "",
@@ -212,8 +212,8 @@ def _merge_existing_scheduler_task_facts(path: Path, facts: dict[str, Any]) -> N
         ):
             task_facts[task_id] = dict(existing_fact)
 
-    # Bubble lifecycle is a transaction token, not disposable Runtime
-    # telemetry. Preserve the newer side when a stale Runtime snapshot is
+    # Bubble lifecycle is a transaction token, not disposable behavior-tree
+    # telemetry. Preserve the newer side when a stale execution snapshot is
     # persisted after a restart/claim/hide fact.
     existing_bubble = existing_discoveries.get("bubble_lifecycle")
     incoming_bubble = (
@@ -259,7 +259,7 @@ def append_data_annotation_world_fact_event(facts: dict[str, Any], kind: str, pa
     append_fact_event(facts, kind, payload)
 
 
-def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any], result: str) -> None:
+def record_kernel_scheduler_task_fact(path: Path, task: dict[str, Any], result: str) -> None:
     task_id = str(task.get("id") or "").strip()
     if not task_id:
         return
@@ -296,16 +296,16 @@ def record_data_annotation_scheduler_task_fact(path: Path, task: dict[str, Any],
     write_data_annotation_world_facts(path, facts)
 
 
-def persist_behavior_tree_runtime_status(
-    runtime_state_path: Path,
+def persist_kernel_scheduler_status(
+    execution_state_path: Path,
     world_facts_path: Path,
     status: dict[str, Any],
 ) -> None:
-    write_data_annotation_json(runtime_state_path, status)
+    write_data_annotation_json(execution_state_path, status)
     now = time.time()
     facts = read_data_annotation_world_facts(world_facts_path)
-    runtime = ensure_mapping_bucket(facts, "runtime")
-    runtime.update({
+    context = ensure_mapping_bucket(facts, "context")
+    context.update({
         "entry_id": status.get("entry_id") or "",
         "current_scene": status.get("current_scene"),
         "current_task": status.get("current_task") or "",
@@ -361,13 +361,13 @@ def persist_behavior_tree_runtime_status(
     write_data_annotation_world_facts(world_facts_path, facts)
 
 
-def read_behavior_tree_runtime_status(path: Path) -> dict[str, Any]:
+def read_kernel_scheduler_status(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     return read_json_state_dict(path)
 
 
-def initial_behavior_tree_runtime_status() -> dict[str, Any]:
+def initial_kernel_scheduler_status() -> dict[str, Any]:
     return {
         "ok": True,
         "running": False,
@@ -400,11 +400,11 @@ def initial_behavior_tree_runtime_status() -> dict[str, Any]:
     }
 
 
-def is_behavior_tree_runtime_live_empty(status: dict[str, Any]) -> bool:
+def is_kernel_scheduler_live_empty(status: dict[str, Any]) -> bool:
     return status_live_empty(status)
 
 
-def append_behavior_tree_runtime_status_log(
+def append_kernel_scheduler_status_log(
     status: dict[str, Any],
     kind: str,
     message: str,
@@ -429,7 +429,7 @@ def append_behavior_tree_runtime_status_log(
     return item
 
 
-def append_behavior_tree_runtime_log_once(
+def append_kernel_scheduler_log_once(
     status: dict[str, Any],
     kind: str,
     message: str,
@@ -439,7 +439,7 @@ def append_behavior_tree_runtime_log_once(
     append_status_log_once(status, kind, message, time_text=time_text)
 
 
-def normalize_behavior_tree_runtime_guard_items(
+def normalize_kernel_scheduler_guard_items(
     status: dict[str, Any],
     guard_definitions: dict[str, dict[str, Any]],
 ) -> None:
@@ -460,7 +460,7 @@ def normalize_behavior_tree_runtime_guard_items(
     status["guard_items"] = normalize_guard_items(guard_definitions, guard_items)
 
 
-def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None:
+def normalize_kernel_scheduler_task(item: Any) -> dict[str, Any] | None:
     if not isinstance(item, dict):
         return None
     task_id = str(item.get("id") or "").strip()
@@ -485,8 +485,8 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
         retry_delay = 600
     label = str(item.get("label") or task_id)
     # Keep the historical serialized source value readable across upgrades;
-    # the owning subsystem is named Behavior Tree Runtime in current code.
-    source = str(item.get("source") or "data_annotation_runtime")
+    # the owning subsystem is named Kernel Scheduler in current code.
+    source = str(item.get("source") or "kernel_scheduler")
     scheduler_meta = (
         dict(item["scheduler_meta"])
         if isinstance(item.get("scheduler_meta"), dict)
@@ -538,11 +538,11 @@ def normalize_data_annotation_scheduler_task(item: Any) -> dict[str, Any] | None
     return task
 
 
-def data_annotation_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
-    return normalize_data_annotation_scheduler_task(task) or {}
+def kernel_scheduler_task_state(task: dict[str, Any]) -> dict[str, Any]:
+    return normalize_kernel_scheduler_task(task) or {}
 
 
-def normalize_data_annotation_scheduler_settings(raw: Any) -> dict[str, Any]:
+def normalize_kernel_scheduler_settings(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     return {
         "job_group_enabled": bool(source.get("job_group_enabled", True)),

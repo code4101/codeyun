@@ -102,24 +102,24 @@ def _is_completed_receipt(
     )
 
 
-def _click_planned_product(runtime: Any, *, name: str, unit_price: int) -> None:
-    view = runtime.view(SHOP_GEOMETRY_SCENE)
+def _click_planned_product(context: Any, *, name: str, unit_price: int) -> None:
+    view = context.view(SHOP_GEOMETRY_SCENE)
     product_list = view.get_shape("商品列表")
     rows = [view.get_shape(f"商品行{slot}") for slot in range(1, 6)]
     if product_list is None or any(row is None for row in rows):
         raise RuntimeError("天地弈局兑换收尾缺少 #559 商品列表几何")
     target = resolve_exchange_shop_item(
-        group_ocr_tokens(runtime.full_frame_ocr_tokens(update=True)),
+        group_ocr_tokens(context.full_frame_ocr_tokens(update=True)),
         product_list_box=product_list.box(),
         product_row_boxes=[row.box() for row in rows],
         expected_name=name,
         expected_unit_price=unit_price,
     )
-    runtime.click_frame_point(SHOP_GEOMETRY_SCENE, target.x, target.y)
+    context.click_frame_point(SHOP_GEOMETRY_SCENE, target.x, target.y)
 
 
 def _wait_purchase_persisted(
-    runtime: Any,
+    context: Any,
     *,
     activity_id: str,
     expected_wallet: int,
@@ -149,7 +149,7 @@ def _wait_purchase_persisted(
             last = str(exc)
         if time.monotonic() >= deadline:
             raise TimeoutError(f"天地弈局购买后持久化闭环超时：{last}")
-        yield from runtime.wait_action_settle(0.8)
+        yield from context.wait_action_settle(0.8)
 
 
 def execute_tiandi_yiju_exchange_tail(
@@ -158,7 +158,7 @@ def execute_tiandi_yiju_exchange_tail(
     *,
     occurrence: RankingOccurrence,
     stop_event: Any,
-    runtime: Any | None = None,
+    context: Any | None = None,
     start: Literal["home", "shop"] = "home",
     return_to_world: bool = False,
 ):
@@ -185,8 +185,8 @@ def execute_tiandi_yiju_exchange_tail(
             "retained_locked_goods_ids": sorted(retained_locked),
         }
 
-    if runtime is None:
-        runtime = runner._fanxiu_runtime(
+    if context is None:
+        context = runner._behavior_tree_context(
             ctx,
             ctx.get("asset_tree_path"),
             stop_event=stop_event,
@@ -195,11 +195,11 @@ def execute_tiandi_yiju_exchange_tail(
             enter_tiandi_yiju_occurrence_home,
         )
 
-        yield from enter_tiandi_yiju_occurrence_home(runtime, occurrence=occurrence)
+        yield from enter_tiandi_yiju_occurrence_home(context, occurrence=occurrence)
         start = "home"
     if start == "home":
-        runtime.click_shape_center(TIANDI_YIJU_HOME_SCENE, "兑换宝阁")
-        yield from runtime.wait_action_settle(0.8)
+        context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "兑换宝阁")
+        yield from context.wait_action_settle(0.8)
     elif start != "shop":
         raise ValueError(f"天地弈局兑换收尾不支持起点 {start!r}")
 
@@ -221,30 +221,30 @@ def execute_tiandi_yiju_exchange_tail(
 
     if actions:
         for _ in range(8):
-            runtime.drag_frame_point(
+            context.drag_frame_point(
                 SHOP_GEOMETRY_SCENE, 450, 520, 450, 1100, duration_ms=1000
             )
-            yield from runtime.wait_action_settle(0.2)
+            yield from context.wait_action_settle(0.2)
     for action in actions:
         if stop_event.is_set():
             raise InterruptedError()
         for _ in range(action.scroll_rows):
-            runtime.drag_frame_point(
+            context.drag_frame_point(
                 SHOP_GEOMETRY_SCENE, 450, 900, 450, 720, duration_ms=1000
             )
-            yield from runtime.wait_action_settle(0.25)
+            yield from context.wait_action_settle(0.25)
         _click_planned_product(
-            runtime,
+            context,
             name=action.name,
             unit_price=action.unit_price,
         )
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             COMMON_PURCHASE_DIALOG_SCENE,
-            timeout=15.0,
+            wait=15.0,
             label=f"{label}：等待 {action.name} 购买框",
         )
         verify_exchange_detail(
-            runtime,
+            context,
             expected_name=action.name,
             expected_price=action.unit_price,
             label=label,
@@ -254,14 +254,14 @@ def execute_tiandi_yiju_exchange_tail(
             buying_to_cap=action.clears_row,
         )
         for index in range(plus_ten):
-            runtime.click_shape_center_fast(COMMON_PURCHASE_DIALOG_SCENE, "+10")
+            context.click_shape_center_fast(COMMON_PURCHASE_DIALOG_SCENE, "+10")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
+                yield from context.wait_action_settle(0.05)
         for index in range(plus_one):
-            runtime.click_shape_center_fast(COMMON_PURCHASE_DIALOG_SCENE, "+")
+            context.click_shape_center_fast(COMMON_PURCHASE_DIALOG_SCENE, "+")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
-        yield from runtime.wait_action_settle(0.35)
+                yield from context.wait_action_settle(0.05)
+        yield from context.wait_action_settle(0.35)
         cost, remaining_wallet = authorize_exchange_purchase(
             current_wallet=expected_wallet,
             quantity=action.quantity,
@@ -270,18 +270,18 @@ def execute_tiandi_yiju_exchange_tail(
             name=action.name,
             label=label,
         )
-        totals, total_text = runtime.ocr_numbers_in_shapes(
+        totals, total_text = context.ocr_numbers_in_shapes(
             COMMON_PURCHASE_DIALOG_SCENE,
             ("价格",),
             padding=8,
         )
         if not ocr_contains_amount(totals, total_text, cost):
             raise RuntimeError(f"{label}：{action.name} 总价未闭环为 {cost}")
-        runtime.click_shape_center(COMMON_PURCHASE_DIALOG_SCENE, "购买")
+        context.click_shape_center(COMMON_PURCHASE_DIALOG_SCENE, "购买")
         expected_wallet = remaining_wallet
         executed_actions = [*actions[:len(executed)], action]
         detail = yield from _wait_purchase_persisted(
-            runtime,
+            context,
             activity_id=str(detail.id),
             expected_wallet=expected_wallet,
             initial_shop_items=initial_shop_items,
@@ -320,10 +320,10 @@ def execute_tiandi_yiju_exchange_tail(
         current_currency=int(detail.current_currency),
     )
     try:
-        runtime.click_shape_center(SHOP_GEOMETRY_SCENE, "返回")
-        yield from runtime.wait_action_settle(0.8)
+        context.click_shape_center(SHOP_GEOMETRY_SCENE, "返回")
+        yield from context.wait_action_settle(0.8)
         if return_to_world:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
     except Exception as exc:  # pragma: no cover - live navigation safeguard
         if runner is not None:
             runner._log("warning", f"{label}已核销，但离开兑换宝阁失败：{exc}")

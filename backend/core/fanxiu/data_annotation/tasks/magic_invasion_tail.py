@@ -35,15 +35,15 @@ def _compact(value: Any) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(value or ""))
 
 
-def _open_exchange_tab(runtime: Any, scene: int) -> None:
-    tokens = runtime.full_frame_ocr_tokens(update=True)
+def _open_exchange_tab(context: Any, scene: int) -> None:
+    tokens = context.full_frame_ocr_tokens(update=True)
     target = resolve_magic_invasion_bottom_tab(
         _group_ocr_tokens(tokens),
         tab_name="兑换宝阁",
         frame_width=900,
         frame_height=1600,
     )
-    runtime.click_frame_point(scene, target.x, target.y)
+    context.click_frame_point(scene, target.x, target.y)
 
 
 def _exchange_shop_business_ready(lines: list[dict[str, Any]]) -> bool:
@@ -76,7 +76,7 @@ def _exchange_shop_business_ready(lines: list[dict[str, Any]]) -> bool:
 
 
 def _wait_exchange_shop_ready(
-    runtime: Any,
+    context: Any,
     *,
     label: str,
     attempts: int = 20,
@@ -86,12 +86,12 @@ def _wait_exchange_shop_ready(
 
     last_visible = ""
     for _attempt in range(max(1, int(attempts))):
-        lines = _group_ocr_tokens(runtime.full_frame_ocr_tokens(update=True))
+        lines = _group_ocr_tokens(context.full_frame_ocr_tokens(update=True))
         visible = [_compact(line.get("text")) for line in lines]
         last_visible = " | ".join(text for text in visible if text)
         if _exchange_shop_business_ready(lines):
             return True
-        yield from runtime.wait_action_settle(1.0)
+        yield from context.wait_action_settle(1.0)
     if not fail_if_missing:
         return False
     raise RuntimeError(
@@ -171,15 +171,15 @@ def _resolve_exact_magic_calendar_fallback(
     )
 
 
-def _verify_dialog(runtime: Any, *, name: str, unit_price: int) -> None:
-    title = runtime.ocr_text_in_shapes(
+def _verify_dialog(context: Any, *, name: str, unit_price: int) -> None:
+    title = context.ocr_text_in_shapes(
         COMMON_SHOP_DIALOG_SCENE,
         ("商品标题",),
         padding=10,
     )
     if ocr_name_similarity(_compact(name), _compact(title)) < 0.78:
         raise RuntimeError(f"魔道_兑换收尾：购买框商品未对齐 {name}：{title}")
-    values, text = runtime.ocr_numbers_in_shapes(
+    values, text = context.ocr_numbers_in_shapes(
         COMMON_SHOP_DIALOG_SCENE,
         ("价格",),
         padding=8,
@@ -245,20 +245,19 @@ def execute_magic_invasion_tail_checkpoint(
         activity_id = str(activity.id)
         session.commit()
 
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-    dialog_scene, _dialog_score, _dialog_frame = runtime.current_scene(
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    dialog_scene, _dialog_score, _dialog_frame = context.current_scene(
         (COMMON_SHOP_DIALOG_SCENE,),
         update=True,
-        handle_interruptions=False,
     )
     if dialog_scene == COMMON_SHOP_DIALOG_SCENE:
-        runtime.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "关闭详情")
+        context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "关闭详情")
         yield from _wait_exchange_shop_ready(
-            runtime,
+            context,
             label=f"{label}：关闭上次安全拦截的购买框",
         )
     initial_shop_ready = yield from _wait_exchange_shop_ready(
-        runtime,
+        context,
         label=f"{label}：识别补跑起点",
         attempts=3,
         fail_if_missing=False,
@@ -269,28 +268,27 @@ def execute_magic_invasion_tail_checkpoint(
         # activity return before asking the global navigator for #34/#66;
         # otherwise the intentionally OCR-heavy shop can be confused with an
         # unrelated full-frame candidate and safe navigation will refuse it.
-        runtime.click_shape_center(MAGIC_SHOP_SCENE, "返回")
-        yield from runtime.wait_scene(
+        context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
+        yield from context.wait_scene(
             34,
             509,
             MAGIC_ENDED_HOME_SCENE,
-            timeout=20.0,
+            wait=20.0,
             label=f"{label}：从本期兑换宝阁返回活动主页",
         )
-    current_scene, _score, _frame = runtime.current_scene(
+    current_scene, _score, _frame = context.current_scene(
         (34, 66),
         update=True,
-        handle_interruptions=False,
     )
     if current_scene == 34:
-        yield from runtime.goto_view(66)
+        yield from context.go_scene(66)
     elif current_scene != 66:
         # Only fall back to the standard bounded navigation chain when the
         # task did not start on either of its two known safe entry scenes.
         # In particular, do not leave #66 for the world and immediately enter
         # it again: that needlessly crosses the HUD readiness boundary.
-        yield from runtime.goto_view(34)
-        yield from runtime.goto_view(66)
+        yield from context.go_scene(34)
+        yield from context.go_scene(66)
     # Settlement cards may have left the rotating promo carousel even though
     # their dated calendar cell and shop are still open.  Resolve the exact
     # historical cell from Runtime identity + visible date axis, then click
@@ -301,13 +299,13 @@ def execute_magic_invasion_tail_checkpoint(
     header_lines: list[dict[str, Any]] = []
     calendar_lines: list[dict[str, Any]] = []
     for _attempt in range(3):
-        full_lines = _group_ocr_tokens(runtime.full_frame_ocr_tokens(update=True))
+        full_lines = _group_ocr_tokens(context.full_frame_ocr_tokens(update=True))
         header_lines = [line for line in full_lines if 200 <= float(line["y"]) < 340]
         calendar_lines = [line for line in full_lines if 295 <= float(line["y"]) < 750]
         if header_lines and calendar_lines:
             break
-        yield from runtime.wait_action_settle(1.0)
-        yield from runtime.wait_view(66, timeout=10.0, label=f"{label}：等待日程稳定")
+        yield from context.wait_action_settle(1.0)
+        yield from context.wait_scene(66, wait=10.0, label=f"{label}：等待日程稳定")
     entities = runtime_activity_entities_for_date(
         schedule,
         r"魔道入侵",
@@ -363,25 +361,25 @@ def execute_magic_invasion_tail_checkpoint(
         raise RuntimeError(
             f"{label}：历史日程单元格未唯一对齐 occurrence {occurrence.runtime_id}"
         )
-    runtime.click_frame_point(66, exact[0].x, exact[0].y)
-    yield from runtime.wait_scene(
+    context.click_frame_point(66, exact[0].x, exact[0].y)
+    yield from context.wait_scene(
         509,
         519,
         520,
         521,
         MAGIC_ENDED_HOME_SCENE,
-        timeout=30.0,
+        wait=30.0,
         label=f"{label}：等待结束态活动页",
     )
-    scene, _score, _frame = runtime.current_scene(
+    scene, _score, _frame = context.current_scene(
         (509, 519, 520, 521, MAGIC_ENDED_HOME_SCENE),
         update=True,
     )
     if scene != MAGIC_SHOP_SCENE:
         if scene not in {509, 520, 521, MAGIC_ENDED_HOME_SCENE}:
             raise RuntimeError(f"{label}：活动页场景无法对齐：{scene}")
-        _open_exchange_tab(runtime, int(scene))
-    yield from _wait_exchange_shop_ready(runtime, label=label)
+        _open_exchange_tab(context, int(scene))
+    yield from _wait_exchange_shop_ready(context, label=label)
 
     with Session(engine) as session:
         runtime_period_override = {
@@ -390,8 +388,8 @@ def execute_magic_invasion_tail_checkpoint(
             "start_date": occurrence.start_at.date().isoformat(),
             "end_date": occurrence.end_at.date().isoformat(),
             "captured_at": business_now.isoformat(timespec="seconds"),
-            "record_id": f"runtime:{occurrence.runtime_id}",
-            "packet_id": f"runtime:{occurrence.runtime_id}",
+            "record_id": f"context:{occurrence.runtime_id}",
+            "packet_id": f"context:{occurrence.runtime_id}",
             "world_level": int(occurrence.world_level),
             "runtime_id": occurrence.runtime_id,
         }
@@ -432,33 +430,33 @@ def execute_magic_invasion_tail_checkpoint(
         if stop_event.is_set():
             raise InterruptedError()
         for _ in range(action.scroll_rows):
-            runtime.drag_frame_point(MAGIC_SHOP_SCENE, 450, 900, 450, 775, duration_ms=800)
-            yield from runtime.wait_action_settle(0.25)
+            context.drag_frame_point(MAGIC_SHOP_SCENE, 450, 900, 450, 775, duration_ms=800)
+            yield from context.wait_action_settle(0.25)
         # Reuse the proven exchange-tail alignment: Runtime source order and
         # purchase limits determine ``slot``; completed finite rows disappear
         # from the active prefix, so the next item shifts into that same
         # annotated row.  Product-name OCR is only a post-click dialog guard,
         # never the row locator.
-        runtime.click_shape_center(MAGIC_SHOP_SCENE, f"商品行{action.slot}")
-        yield from runtime.wait_view(
+        context.click_shape_center(MAGIC_SHOP_SCENE, f"商品行{action.slot}")
+        yield from context.wait_scene(
             COMMON_SHOP_DIALOG_SCENE,
-            timeout=15.0,
+            wait=15.0,
             label=f"{label}：等待 {action.name} 购买框",
         )
-        _verify_dialog(runtime, name=action.name, unit_price=action.unit_price)
+        _verify_dialog(context, name=action.name, unit_price=action.unit_price)
         plus_ten, plus_one = exchange_quantity_clicks(
             action.quantity,
             buying_to_cap=action.clears_row,
         )
         for index in range(plus_ten):
-            runtime.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+10")
+            context.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+10")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
+                yield from context.wait_action_settle(0.05)
         for index in range(plus_one):
-            runtime.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+")
+            context.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+")
             if (index + 1) % 25 == 0:
-                yield from runtime.wait_action_settle(0.05)
-        yield from runtime.wait_action_settle(0.35)
+                yield from context.wait_action_settle(0.05)
+        yield from context.wait_action_settle(0.35)
         _cost, remaining_wallet = authorize_exchange_purchase(
             current_wallet=expected_wallet,
             quantity=action.quantity,
@@ -467,9 +465,9 @@ def execute_magic_invasion_tail_checkpoint(
             name=action.name,
             label=label,
         )
-        runtime.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
+        context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
         yield from _wait_exchange_shop_ready(
-            runtime,
+            context,
             label=f"{label}：购买 {action.name} 后返回宝阁",
         )
         expected_wallet = remaining_wallet
@@ -511,20 +509,20 @@ def execute_magic_invasion_tail_checkpoint(
     # currency label differs from the old required identity anchor. Leave via
     # its annotated return first; asking the global navigator to start from an
     # 82% unknown candidate would correctly fail closed.
-    runtime.click_shape_center(MAGIC_SHOP_SCENE, "返回")
-    yield from runtime.wait_scene(
+    context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
+    yield from context.wait_scene(
         34,
         509,
         MAGIC_ENDED_HOME_SCENE,
-        timeout=20.0,
+        wait=20.0,
         label=f"{label}：离开兑换宝阁",
     )
-    landed, _score, _frame = runtime.current_scene(
+    landed, _score, _frame = context.current_scene(
         (34, 509, MAGIC_ENDED_HOME_SCENE),
         update=True,
     )
     if landed != 34:
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
     return {
         "status": "completed",
         "message": (

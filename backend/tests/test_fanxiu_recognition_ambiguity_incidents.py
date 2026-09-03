@@ -4,8 +4,8 @@ import io
 from PIL import Image
 
 from backend.core.fanxiu.data_annotation import recognition_ambiguity_incidents as incidents
-from backend.core.fanxiu.data_annotation import behavior_tree_runtime as runtime_module
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+from backend.core.fanxiu.data_annotation import behavior_tree_executor as runtime_module
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
 
 def _frame_data_url(color: tuple[int, int, int]) -> str:
@@ -65,7 +65,7 @@ def test_recognition_ambiguity_deduplicates_same_frame_and_aggregates_distinct_f
 
 
 def test_unified_graph_matcher_records_real_similarity_tiebreak(monkeypatch):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     monkeypatch.setattr(runner, "_scene_candidate_scores_parallel", lambda *_args: [100.0, 100.0])
     monkeypatch.setattr(runner, "_scene_match_threshold", lambda _scene_id: 80.0)
     monkeypatch.setattr(runner, "_scene_match_edges_for_candidates", lambda *_args, **_kwargs: [])

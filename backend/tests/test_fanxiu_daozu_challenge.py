@@ -7,14 +7,14 @@ from pathlib import Path
 import pytest
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks.daozu_challenge import (
     next_daozu_challenge_time,
@@ -78,7 +78,7 @@ class _FakeRuntime:
     def click_ocr_text(self, scene_id, title, **kwargs):
         self.actions.append(("click_ocr", scene_id, title, kwargs.get("match_mode")))
 
-    def goto_view(self, scene_id):
+    def go_scene(self, scene_id):
         self.actions.append(("goto", scene_id))
         if False:
             yield None
@@ -88,8 +88,8 @@ class _FakeRuntime:
         if False:
             yield None
 
-    def wait_view(self, scene_id, **_kwargs):
-        self.actions.append(("wait_view", scene_id))
+    def wait_scene(self, scene_id, **_kwargs):
+        self.actions.append(("wait_scene", scene_id))
         if False:
             yield None
         return scene_id
@@ -137,7 +137,7 @@ def test_daozu_state_fuses_fresh_runtime_pass_count_with_configured_limit(
             "daily_remaining": None,
         },
     )
-    state = create_behavior_tree_runtime_runner()._read_daozu_challenge_state()
+    state = create_behavior_tree_executor()._read_daozu_challenge_state()
 
     assert state["ok"] is True
     assert state["passCount"] == pass_count
@@ -162,7 +162,7 @@ def test_daozu_state_refuses_packet_fallback_for_unusable_runtime_pass_count(
             "daily_pass_count": pass_count,
         },
     )
-    state = create_behavior_tree_runtime_runner()._read_daozu_challenge_state()
+    state = create_behavior_tree_executor()._read_daozu_challenge_state()
 
     assert state["ok"] is False
     assert state["source"] == "runtime_memory"
@@ -182,7 +182,7 @@ def test_daozu_state_reports_runtime_failure_without_packet_fallback(monkeypatch
             "daily_pass_count": None,
         },
     )
-    state = create_behavior_tree_runtime_runner()._read_daozu_challenge_state()
+    state = create_behavior_tree_executor()._read_daozu_challenge_state()
 
     assert state["ok"] is False
     assert state["source"] == "runtime_memory"
@@ -190,7 +190,7 @@ def test_daozu_state_reports_runtime_failure_without_packet_fallback(monkeypatch
 
 
 def test_daozu_flow_refuses_action_without_fresh_state():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeRuntime()
     runner._read_daozu_challenge_state = lambda: {"ok": False}
 
@@ -201,7 +201,7 @@ def test_daozu_flow_refuses_action_without_fresh_state():
 
 
 def test_daozu_flow_reconciles_start_mark_on_route_before_reporting_missing_fact():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeRuntime(
         (34, 251),
         payload={"daozu_auto_chain_started_at": "2026-08-15T07:00:00"},
@@ -221,12 +221,12 @@ def test_daozu_flow_reconciles_start_mark_on_route_before_reporting_missing_fact
         ("wait_click", 34, "任务"),
         ("settle", 0.8),
         ("wait_click", 34, "主线"),
-        ("wait_view", 251),
+        ("wait_scene", 251),
     ]
 
 
 def test_daozu_flow_expands_collapsed_task_panel_before_opening_route():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeRuntime(
         (34, 251),
         payload={"daozu_auto_chain_started_at": "2026-08-15T07:00:00"},
@@ -247,19 +247,19 @@ def test_daozu_flow_expands_collapsed_task_panel_before_opening_route():
         ("wait_click", 34, "任务"),
         ("settle", 0.8),
         ("wait_click", 34, "主线"),
-        ("wait_view", 251),
+        ("wait_scene", 251),
     ]
 
 
 def test_daozu_flow_treats_realm_locked_as_idempotent_success_and_clears_bad_mark(monkeypatch):
-    from backend.core.fanxiu.data_annotation import behavior_tree_runtime
+    from backend.core.fanxiu.data_annotation import behavior_tree_executor
 
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 8, 15, 7, 1),
     )
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeRuntime(
         (34, 251),
@@ -278,14 +278,14 @@ def test_daozu_flow_treats_realm_locked_as_idempotent_success_and_clears_bad_mar
     assert runtime.payload.get("daozu_auto_chain_started_at") is None
     assert runtime.actions == [
         ("wait_click", 34, "主线"),
-        ("wait_view", 251),
+        ("wait_scene", 251),
         ("goto", 34),
     ]
     assert "境界未达到解锁要求" in runtime.completion_message
 
 
 def test_daozu_flow_missing_fact_error_includes_source_and_reason():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeRuntime((34,))
     runner._read_daozu_challenge_state = lambda: {
         "ok": False,
@@ -302,7 +302,7 @@ def test_daozu_flow_missing_fact_error_includes_source_and_reason():
 
 
 def test_daozu_flow_finishes_without_action_when_daily_limit_reached():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeRuntime()
     runner._read_daozu_challenge_state = lambda: _state(pass_count=20)
@@ -314,7 +314,7 @@ def test_daozu_flow_finishes_without_action_when_daily_limit_reached():
 
 
 def test_daozu_flow_does_not_let_unscoped_full_frame_text_override_runtime_state():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeRuntime((251,), ocr_texts=("已达今日层数挑战上限 (20/20)",))
     runner._read_daozu_challenge_state = lambda: _state(pass_count=3)
@@ -334,7 +334,7 @@ def test_daozu_flow_does_not_let_unscoped_full_frame_text_override_runtime_state
 
 
 def test_daozu_flow_start_mark_attaches_from_unknown_battle_without_reclick():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeRuntime(
         (None, None, 548, None, 533),
@@ -353,7 +353,7 @@ def test_daozu_flow_start_mark_attaches_from_unknown_battle_without_reclick():
 
 
 def test_daozu_flow_start_mark_blocks_second_start_click():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeRuntime(
         (251, 251),
         payload={"daozu_auto_chain_started_at": "2026-08-11T03:50:00"},
@@ -368,7 +368,7 @@ def test_daozu_flow_start_mark_blocks_second_start_click():
 
 
 def test_daozu_flow_clicks_once_and_accelerates_only_countdown_next_layer():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeRuntime(
         (251, 251, None, 548, None, 533),
@@ -394,14 +394,14 @@ def test_daozu_flow_clicks_once_and_accelerates_only_countdown_next_layer():
     ]
     assert runtime.actions.count(("wait_click", 548, "下一层")) == 1
     assert runtime.actions.count(("wait_click", 533, "点击退出")) == 1
-    assert runtime.actions.count(("wait_view", 251)) == 1
+    assert runtime.actions.count(("wait_scene", 251)) == 1
     assert [action for action in runtime.actions if action[0] == "goto"] == [("goto", 34)]
     assert [item[0] for item in start_marks] == ["set", "clear"]
     assert "每日20层" in runtime.completion_message
 
 
 def test_daozu_flow_attaches_to_ordinary_result_then_closes_daily_limit_result():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeRuntime(
         (548, 548, 533),
@@ -419,7 +419,7 @@ def test_daozu_flow_attaches_to_ordinary_result_then_closes_daily_limit_result()
 
 
 def test_daozu_flow_refuses_click_when_start_mark_persistence_fails():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeRuntime((251, 251), ocr_texts=("挑战", "挑战"))
     runner._read_daozu_challenge_state = lambda: _state(pass_count=3)
     runner._set_scheduler_task_payload_flag = lambda *_args: False
@@ -431,14 +431,14 @@ def test_daozu_flow_refuses_click_when_start_mark_persistence_fails():
 
 
 def test_scheduler_payload_flag_reports_missing_task_and_write_failure(monkeypatch):
-    from backend.core.fanxiu.data_annotation import behavior_tree_control
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 
-    runner = create_behavior_tree_runtime_runner()
-    monkeypatch.setattr(behavior_tree_control, "read_scheduler_tasks", lambda **_kwargs: [])
+    runner = create_behavior_tree_executor()
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda **_kwargs: [])
     assert runner._set_scheduler_task_payload_flag("missing", "start_mark", "value") is False
 
     monkeypatch.setattr(
-        behavior_tree_control,
+        kernel_scheduler_control,
         "read_scheduler_tasks",
         lambda **_kwargs: [{"id": "daozu-challenge", "payload": {}}],
     )
@@ -446,7 +446,7 @@ def test_scheduler_payload_flag_reports_missing_task_and_write_failure(monkeypat
     def fail_write(*_args, **_kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(behavior_tree_control, "update_scheduler_tasks", fail_write)
+    monkeypatch.setattr(kernel_scheduler_control, "update_scheduler_tasks", fail_write)
     assert (
         runner._set_scheduler_task_payload_flag("daozu-challenge", "start_mark", "value")
         is False
@@ -454,7 +454,7 @@ def test_scheduler_payload_flag_reports_missing_task_and_write_failure(monkeypat
 
 
 def test_daozu_job_is_single_daily_standard_scheduler_instance():
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("daozu_challenge")
     assert definition is not None
     assert definition.label == "道祖_挑战"
@@ -462,15 +462,15 @@ def test_daozu_job_is_single_daily_standard_scheduler_instance():
     assert definition.standard_job is True
     assert definition.standard_job_id == "daozu-challenge"
     assert definition.standard_job_description == "每日"
-    assert definition.standard_job_payload == {"max_runtime_seconds": 1800}
+    assert definition.standard_job_payload == {"max_execution_seconds": 1800}
 
-    tasks = default_data_annotation_scheduler_tasks(now=None)
+    tasks = default_kernel_scheduler_tasks(now=None)
     matches = [task for task in tasks if task.get("task_type") == "daozu_challenge"]
     assert len(matches) == 1
     assert matches[0]["id"] == "daozu-challenge"
     assert matches[0]["trigger_description"] == "每日"
     assert str(matches[0]["next_time"]).endswith("07:00:00")
-    assert matches[0]["payload"] == {"max_runtime_seconds": 1800}
+    assert matches[0]["payload"] == {"max_execution_seconds": 1800}
 
 
 def test_daozu_handler_delegates_next_time_ownership_to_business():
@@ -485,7 +485,7 @@ def test_daozu_handler_delegates_next_time_ownership_to_business():
         def _persist_scheduler_task_next_time(self, task_id, next_time):
             calls.append(("next_time", task_id, next_time))
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("daozu_challenge")
     assert definition is not None
     stop_event = threading.Event()
@@ -499,14 +499,14 @@ def test_daozu_handler_delegates_next_time_ownership_to_business():
 
 
 def test_daozu_executor_does_not_delegate_scheduling_to_runtime_wrapper():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     captured = {}
 
     def fake_execute(*_args, **kwargs):
         captured.update(kwargs)
         return "operation"
 
-    runner._execute_daily_runtime_task = fake_execute
+    runner._execute_daily_task = fake_execute
 
     assert runner._execute_daozu_challenge_task({}, threading.Event(), {}) == "operation"
     assert "schedule_next" not in captured
@@ -518,7 +518,7 @@ def test_next_daozu_challenge_time_is_absolute_next_0700() -> None:
 
 
 def test_daily_runtime_finish_only_records_status_and_never_schedules():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = []
     runner._persist_scheduler_task_next_time = lambda task_id, next_time: updates.append(
         (task_id, next_time)
@@ -535,18 +535,18 @@ def test_daily_runtime_finish_only_records_status_and_never_schedules():
 
 
 def test_daily_runtime_wrapper_does_not_interpret_business_result_as_run_error():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     class Runtime:
         attrs = {}
 
     runtime = Runtime()
-    runner._fanxiu_runtime = lambda *_args, **_kwargs: runtime
+    runner._behavior_tree_context = lambda *_args, **_kwargs: runtime
     runner._wait_runtime_action_settle = lambda *_args, **_kwargs: iter(())
     updates = []
     runner._persist_scheduler_task_next_time = lambda *args: updates.append(args)
 
-    result = _drain(runner._execute_daily_runtime_task(
+    result = _drain(runner._execute_daily_task(
         {"asset_tree_path": Path("asset-tree.json")},
         threading.Event(),
         {"__scheduler_task_id": "probe"},
@@ -561,16 +561,16 @@ def test_daily_runtime_wrapper_does_not_interpret_business_result_as_run_error()
 
 
 def test_daily_runtime_wrapper_rejects_returned_next_time():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     class Runtime:
         attrs = {}
 
-    runner._fanxiu_runtime = lambda *_args, **_kwargs: Runtime()
+    runner._behavior_tree_context = lambda *_args, **_kwargs: Runtime()
     runner._wait_runtime_action_settle = lambda *_args, **_kwargs: iter(())
 
     with pytest.raises(RuntimeError, match="正式 flow 不得返回 next_time"):
-        _drain(runner._execute_daily_runtime_task(
+        _drain(runner._execute_daily_task(
             {"asset_tree_path": Path("asset-tree.json")},
             threading.Event(),
             {"__scheduler_task_id": "probe"},

@@ -51,20 +51,20 @@ def _page_from_observation(
     return None
 
 
-def read_kunlun_page(runtime: Any, *, update: bool = True) -> KunlunPageResult | None:
-    scene_id, score, frame = runtime.current_scene(
+def read_kunlun_page(context: Any, *, update: bool = True) -> KunlunPageResult | None:
+    scene_id, score, frame = context.current_scene(
         list(KUNLUN_KNOWN_SCENE_IDS), update=bool(update)
     )
-    return _page_from_observation(scene_id, float(score or 0), runtime.ocr_text(frame))
+    return _page_from_observation(scene_id, float(score or 0), context.ocr_text(frame))
 
 
 def _wait_kunlun_page(
-    runtime: Any, page: str, *, timeout_seconds: float, poll_seconds: float
+    context: Any, page: str, *, timeout_seconds: float, poll_seconds: float
 ) -> KunlunPageResult:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     result = None
     while True:
-        result = read_kunlun_page(runtime, update=True)
+        result = read_kunlun_page(context, update=True)
         if result is not None and result.page == page:
             return result
         if time.monotonic() >= deadline:
@@ -74,7 +74,7 @@ def _wait_kunlun_page(
 
 
 def enter_kunlun(
-    runtime: Any,
+    context: Any,
     *,
     source_scene_id: int = 34,
     timeout_seconds: float = KUNLUN_PAGE_WAIT_TIMEOUT_SECONDS,
@@ -82,7 +82,7 @@ def enter_kunlun(
     availability_timeout_seconds: float = 60.0,
     availability_poll_seconds: float = 1.0,
 ) -> KunlunPageResult:
-    current = read_kunlun_page(runtime, update=True)
+    current = read_kunlun_page(context, update=True)
     if current is not None:
         # A failed/interrupted configuration may legitimately leave #541 open.
         # Let the idempotent workflow continue from the currently visible form
@@ -92,13 +92,13 @@ def enter_kunlun(
 
     deadline = time.monotonic() + max(0.5, float(availability_timeout_seconds))
     while True:
-        scene_id, score, frame = runtime.current_scene([int(source_scene_id)], update=True)
+        scene_id, score, frame = context.current_scene([int(source_scene_id)], update=True)
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
                 f"进入昆仑秘藏要求从可靠 #{source_scene_id} 开始："
                 f"scene={scene_id}, score={float(score or 0):.1f}"
             )
-        if "昆仑秘藏" in re.sub(r"\s+", "", runtime.ocr_text(frame)):
+        if "昆仑秘藏" in re.sub(r"\s+", "", context.ocr_text(frame)):
             break
         if time.monotonic() >= deadline:
             raise KunlunActivityUnavailable(
@@ -106,7 +106,7 @@ def enter_kunlun(
                 "未识别到昆仑秘藏"
             )
         time.sleep(max(0.05, float(availability_poll_seconds)))
-    runtime.click_ocr_text(
+    context.click_ocr_text(
         int(source_scene_id),
         "昆仑秘藏",
         frame_data_url=frame,
@@ -115,12 +115,12 @@ def enter_kunlun(
         ambiguity_margin=5.0,
     )
     return _wait_kunlun_page(
-        runtime, "昆仑秘藏", timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
+        context, "昆仑秘藏", timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
     )
 
 
 def open_kunlun_tab(
-    runtime: Any,
+    context: Any,
     tab: KunlunTab,
     *,
     timeout_seconds: float = KUNLUN_PAGE_WAIT_TIMEOUT_SECONDS,
@@ -129,52 +129,52 @@ def open_kunlun_tab(
     target = str(tab or "").strip()
     if target not in {"昆仑秘藏", "任务", "商店"}:
         raise ValueError(f"尚未实现的昆仑秘藏页签：{tab!r}")
-    current = read_kunlun_page(runtime, update=True)
+    current = read_kunlun_page(context, update=True)
     if current is None:
         raise RuntimeError("当前不在可靠的昆仑秘藏系列页面，拒绝切换页签")
     if current.page == target:
         return current
-    frame = runtime.cur_frame(update=True)
+    frame = context.cur_frame(update=True)
     click_scene_id = current.scene_id or KUNLUN_MAIN_SCENE_ID
     click_shape_title = target
     if target == "昆仑秘藏" and current.scene_id == KUNLUN_TASK_SCENE_ID:
         click_shape_title = "kunlun昆仑秘藏"
-    runtime.click_shape(int(click_scene_id), click_shape_title, frame_data_url=frame)
+    context.click_shape(int(click_scene_id), click_shape_title, frame_data_url=frame)
     return _wait_kunlun_page(
-        runtime, target, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
+        context, target, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
     )
 
 
 def open_kunlun_optional_reward(
-    runtime: Any,
+    context: Any,
     *,
     timeout_seconds: float = KUNLUN_PAGE_WAIT_TIMEOUT_SECONDS,
     poll_seconds: float = 0.25,
 ) -> KunlunPageResult:
-    open_kunlun_tab(runtime, "昆仑秘藏", timeout_seconds=timeout_seconds)
-    frame = runtime.cur_frame(update=True)
-    runtime.click_shape(
+    open_kunlun_tab(context, "昆仑秘藏", timeout_seconds=timeout_seconds)
+    frame = context.cur_frame(update=True)
+    context.click_shape(
         KUNLUN_MAIN_SCENE_ID,
         "自选未配置入口",
         frame_data_url=frame,
     )
     return _wait_kunlun_page(
-        runtime, "自选", timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
+        context, "自选", timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
     )
 
 
 def leave_kunlun(
-    runtime: Any,
+    context: Any,
     *,
     timeout_seconds: float = KUNLUN_PAGE_WAIT_TIMEOUT_SECONDS,
     poll_seconds: float = 0.25,
 ) -> tuple[int, float]:
-    open_kunlun_tab(runtime, "昆仑秘藏", timeout_seconds=timeout_seconds)
-    frame = runtime.cur_frame(update=True)
-    runtime.click_shape(KUNLUN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
+    open_kunlun_tab(context, "昆仑秘藏", timeout_seconds=timeout_seconds)
+    frame = context.cur_frame(update=True)
+    context.click_shape(KUNLUN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        scene_id, score, _ = runtime.current_scene([34, KUNLUN_MAIN_SCENE_ID], update=True)
+        scene_id, score, _ = context.current_scene([34, KUNLUN_MAIN_SCENE_ID], update=True)
         if int(scene_id or 0) == 34 and float(score or 0) >= 90.0:
             return 34, float(score)
         if time.monotonic() >= deadline:

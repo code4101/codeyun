@@ -17,16 +17,36 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     build_exchange_activity_registry,
     collect_registered_exchange_activity,
     get_exchange_activity_spec,
-    resolve_registered_occurrence_rank_activity_ids,
+    resolve_registered_occurrence_rank_identities,
     resolve_registered_occurrence_shop,
 )
 from backend.core.fanxiu.activity.exchange_activity_spec import (
     ExchangeActivityAdapter,
     PageContract,
     RankActivityIdBinding,
+    deserialize_rank_scope_identities,
     RankScopeSpec,
     ShopSpec,
 )
+
+
+def test_rank_scope_identity_deserializer_merges_partial_canonical_and_legacy_maps() -> None:
+    identities = deserialize_rank_scope_identities(
+        {
+            "rank_scope_identities": {
+                "personal": {
+                    "runtime_rank_activity_id": 83291,
+                    "reward_activity_id": 83291,
+                }
+            }
+        },
+        {
+            "rank_scope_activity_ids": {"personal": 83291, "plane": 83271},
+            "reward_scope_activity_ids": {"personal": 83291, "plane": 83271},
+        },
+    )
+    assert identities["personal"].runtime_rank_activity_id == 83291
+    assert identities["plane"].runtime_rank_activity_id == 83271
 
 
 def test_public_exchange_activity_types_are_uniquely_registered() -> None:
@@ -126,7 +146,7 @@ def test_registered_exchange_activity_contracts_are_conformant(
     ]
 
 
-def test_rank_scope_keeps_old_constructor_and_supports_team_subject() -> None:
+def test_rank_scope_supports_typed_runtime_binding_and_team_subject() -> None:
     legacy = RankScopeSpec(
         "personal",
         True,
@@ -137,7 +157,7 @@ def test_rank_scope_keeps_old_constructor_and_supports_team_subject() -> None:
         scope="team",
         required=False,
         accepted_vo_types=("ActivityRankTeamVO",),
-        activity_id=RankActivityIdBinding(source="activity_follow", follow_index=1),
+        runtime_rank_activity_id=RankActivityIdBinding(source="activity_follow", follow_index=1),
         label="队伍榜",
         role="comparative",
         subject="team",
@@ -161,24 +181,24 @@ def test_rank_activity_id_bindings_resolve_authoritative_ids() -> None:
     beast_scopes = {scope.scope: scope for scope in BEAST_ABYSS_SPEC.rank_scopes}
     yunmeng_scopes = {scope.scope: scope for scope in YUNMENG_TRIAL_SPEC.rank_scopes}
 
-    assert xutian_scopes["personal"].activity_id.resolve(cross_count=8) == 80891
-    assert xutian_scopes["plane"].activity_id.resolve(cross_count=8) == 80871
-    assert magic_scopes["personal"].activity_id.resolve(
+    assert xutian_scopes["personal"].runtime_rank_activity_id.resolve(cross_count=8) == 80891
+    assert xutian_scopes["plane"].runtime_rank_activity_id.resolve(cross_count=8) == 80871
+    assert magic_scopes["personal"].runtime_rank_activity_id.resolve(
         activity_follow=(70841, 70842)
     ) == 70841
-    assert magic_scopes["plane"].activity_id.resolve(
+    assert magic_scopes["plane"].runtime_rank_activity_id.resolve(
         activity_follow=(70841, 70842)
     ) == 70842
-    assert beast_scopes["personal"].activity_id.resolve(
+    assert beast_scopes["personal"].runtime_rank_activity_id.resolve(
         activity_follow=(110108, 110208)
     ) == 110108
-    assert beast_scopes["team"].activity_id.resolve(
+    assert beast_scopes["team"].runtime_rank_activity_id.resolve(
         activity_follow=(110108, 110208)
     ) == 110208
-    assert yunmeng_scopes["personal"].activity_id.resolve(
+    assert yunmeng_scopes["personal"].runtime_rank_activity_id.resolve(
         activity_follow=(210203, 210204)
     ) == 210203
-    assert yunmeng_scopes["plane"].activity_id.resolve(
+    assert yunmeng_scopes["plane"].runtime_rank_activity_id.resolve(
         activity_follow=(210203, 210204)
     ) == 210204
 
@@ -186,24 +206,40 @@ def test_rank_activity_id_bindings_resolve_authoritative_ids() -> None:
         scope.scope: scope
         for scope in get_exchange_activity_spec("dandao-wending").rank_scopes
     }
-    assert dandao_scopes["personal"].activity_id.resolve(
+    assert dandao_scopes["personal"].runtime_rank_activity_id.resolve(
         activity_id=1043111,
     ) == 1043111
-    assert dandao_scopes["personal"].activity_id.resolve(
+    assert dandao_scopes["personal"].runtime_rank_activity_id.resolve(
         activity_id=4043101,
         activity_follow=(43103, 43104),
     ) == 43103
-    assert dandao_scopes["plane"].activity_id.resolve(
+    assert dandao_scopes["plane"].runtime_rank_activity_id.resolve(
         activity_id=4043101,
         activity_follow=(43103, 43104),
     ) == 43104
 
-    assert resolve_registered_occurrence_rank_activity_ids(
-        activity_type="tiandi-yiju", activity_id=8090001
-    ) == {"personal": 90101, "alliance": 90102}
-    assert resolve_registered_occurrence_rank_activity_ids(
-        activity_type="tiandi-yiju", activity_id=8090004
-    ) == {"personal": 90808, "alliance": 90813}
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type="tiandi-yiju", game_activity_id=8090001, cross_count=1
+    )
+    assert {scope: item.runtime_rank_activity_id for scope, item in identities.items()} == {
+        "personal": 90101, "alliance": 90102
+    }
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type="tiandi-yiju", game_activity_id=8090004, cross_count=8
+    )
+    assert {scope: item.runtime_rank_activity_id for scope, item in identities.items()} == {
+        "personal": 90808, "alliance": 90813
+    }
+
+    xutian_identities = resolve_registered_occurrence_rank_identities(
+        activity_type="xutian-palace",
+        game_activity_id=4080001,
+        cross_count=4,
+    )
+    assert xutian_identities["personal"].runtime_rank_activity_id == 80491
+    assert xutian_identities["personal"].reward_activity_id == 80452
+    assert xutian_identities["plane"].runtime_rank_activity_id == 80471
+    assert xutian_identities["plane"].reward_activity_id == 80472
     assert resolve_registered_occurrence_shop(
         activity_type="tiandi-yiju", cross_count=1
     ) == ShopSpec(base_id=90000, currency_type=11)
@@ -273,8 +309,8 @@ def test_registered_adapter_delegates_to_existing_collector(
     monkeypatch.setattr(
         module,
         function_name,
-        lambda session, *, activity_id: (
-            calls.append((session, activity_id)) or activity_type
+        lambda session, *, activity_id, **kwargs: (
+            calls.append((session, activity_id, kwargs)) or activity_type
         ),
     )
     session = object()
@@ -286,4 +322,9 @@ def test_registered_adapter_delegates_to_existing_collector(
     )
 
     assert result == activity_type
-    assert calls == [(session, "activity-1")]
+    expected_options = (
+        {"collect_runtime_rank": False}
+        if activity_type == "beast-abyss"
+        else {}
+    )
+    assert calls == [(session, "activity-1", expected_options)]

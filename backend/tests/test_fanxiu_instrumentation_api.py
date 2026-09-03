@@ -78,6 +78,46 @@ def test_generic_activity_rank_route_uses_activity_id_and_authorization(monkeypa
     assert authorized == [(user, session)]
 
 
+def test_peakrace_snapshot_route_uses_standard_fanxiu_authorization(monkeypatch):
+    authorized = []
+    monkeypatch.setattr(
+        api, "_authorize", lambda user, session: authorized.append((user, session))
+    )
+    monkeypatch.setattr(
+        api.fanxiu_instrumentation_service,
+        "peakrace_snapshot",
+        lambda: {"kind": "peakrace"},
+    )
+    user = object()
+    session = object()
+
+    assert api.get_fanxiu_peakrace_snapshot(
+        current_user=user,
+        session=session,
+    ) == {"kind": "peakrace"}
+    assert authorized == [(user, session)]
+
+
+def test_peakrace_business_state_route_uses_standard_fanxiu_authorization(monkeypatch):
+    authorized = []
+    monkeypatch.setattr(
+        api, "_authorize", lambda user, session: authorized.append((user, session))
+    )
+    monkeypatch.setattr(
+        api.fanxiu_instrumentation_service,
+        "peakrace_business_state_snapshot",
+        lambda: {"kind": "peakrace-business-state"},
+    )
+    user = object()
+    session = object()
+
+    assert api.get_fanxiu_peakrace_business_state_snapshot(
+        current_user=user,
+        session=session,
+    ) == {"kind": "peakrace-business-state"}
+    assert authorized == [(user, session)]
+
+
 def test_beast_spirit_route_uses_standard_authorization_and_optimize_flag(monkeypatch):
     authorized = []
     calls = []

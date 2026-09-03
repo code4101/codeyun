@@ -33,12 +33,12 @@ class SceneInterruptionMixin:
     """Popup candidate indexing and actions used by unified scene recognition."""
     _LEAVE_CONFIRM_VIEW_IDS = (289, 86)
 
-    def _handle_disconnect_reconnect_popup(self, _runtime: Any) -> bool:
+    def _handle_disconnect_reconnect_popup(self, _context: Any) -> bool:
         """Retired compatibility hook; disconnects require a formal popup scene."""
 
         return False
 
-    def _skip_popup_guard_on_login_or_maintenance(self, _runtime: Any) -> bool:
+    def _skip_popup_guard_on_login_or_maintenance(self, _context: Any) -> bool:
         """Retired compatibility hook; startup pages are recognized by the graph."""
 
         return False
@@ -92,7 +92,7 @@ class SceneInterruptionMixin:
             # #546 is an actionless login maintenance prompt.  It must join
             # the global interruption graph so ordinary business jobs can
             # promote it into the maintenance domain before #47's generic
-            # close action runs.  BehaviorTreeRuntime handles #546 by raising
+            # close action runs.  BehaviorTreeContext handles #546 by raising
             # FanxiuMaintenanceDetected and never consumes its confirm button.
             546,
             *self._LEAVE_CONFIRM_VIEW_IDS,
@@ -106,7 +106,7 @@ class SceneInterruptionMixin:
         """Flatten executable identity-bearing global interruption scenes.
 
         The regular source is every ``弹窗`` folder. A business scene can also
-        opt in explicitly with ``runtimeInterruption=true`` when the game may
+        opt in explicitly with ``behaviorTreeInterruption=true`` when the game may
         surface it over unrelated jobs. This keeps its business grouping and
         avoids unsafe heuristics such as treating every scene with a Return
         button as a popup. An actionless scene is never indexed.
@@ -150,10 +150,10 @@ class SceneInterruptionMixin:
                 children = item.get("children")
                 if (
                     str(item.get("type") or "") == "image"
-                    and item.get("runtimeInterruption") is True
+                    and item.get("behaviorTreeInterruption") is True
                     and self._scene_identity_shapes(item)
                 ):
-                    action_title = str(item.get("runtimeInterruptionAction") or "").strip()
+                    action_title = str(item.get("behaviorTreeInterruptionAction") or "").strip()
                     action_shape = next(
                         (
                             shape
@@ -180,7 +180,7 @@ class SceneInterruptionMixin:
 
     def _handle_auto_close_popup_84(
         self,
-        runtime: Any,
+        context: Any,
         view: View,
         event: dict[str, Any],
         *,
@@ -188,8 +188,8 @@ class SceneInterruptionMixin:
         allow_confirm_actions: bool = True,
     ) -> bool:
         no_more_prompt = view.get_shape("不再提示")
-        if no_more_prompt is not None and not no_more_prompt.is_match(runtime):
-            runtime.click_shape(view, no_more_prompt, frame_data_url=runtime.cur_frame())
+        if no_more_prompt is not None and not no_more_prompt.is_match(context):
+            context.click_shape(view, no_more_prompt, frame_data_url=context.cur_frame())
             self._record_popup_guard_click(84, f"场景识别处理：#84 点击「不再提示」 {score:.0f}%", event, "不再提示")
             return True
 
@@ -198,14 +198,14 @@ class SceneInterruptionMixin:
             self._record_popup_guard_missing(84, f"场景识别命中：#84 {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
         if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, view, event)
-        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+            return self._close_popup_view_without_confirm(context, view, event)
+        context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(84, f"场景识别处理：#84 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
     def _handle_auto_close_leave_confirm_popup(
         self,
-        runtime: Any,
+        context: Any,
         view: View,
         event: dict[str, Any],
         *,
@@ -217,13 +217,13 @@ class SceneInterruptionMixin:
         if not confirm_shape:
             self._record_popup_guard_missing(view_id or None, f"场景识别命中：{view_label} {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
-        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+        context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(view_id or None, f"场景识别处理：{view_label} 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
     def _handle_auto_close_popup_287(
         self,
-        runtime: Any,
+        context: Any,
         view: View,
         event: dict[str, Any],
         *,
@@ -235,14 +235,14 @@ class SceneInterruptionMixin:
             self._record_popup_guard_missing(287, f"场景识别命中：#287 {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
         if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, view, event)
-        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+            return self._close_popup_view_without_confirm(context, view, event)
+        context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(287, f"场景识别处理：#287 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
     def _handle_auto_close_popup_355(
         self,
-        runtime: Any,
+        context: Any,
         view: View,
         event: dict[str, Any],
         *,
@@ -252,13 +252,13 @@ class SceneInterruptionMixin:
         if not cancel_shape:
             self._record_popup_guard_missing(355, f"场景识别命中：#355 {score:.0f}%，缺少「取消」标注", event, "missing_cancel")
             return True
-        runtime.click_shape(view, cancel_shape, frame_data_url=runtime.cur_frame())
+        context.click_shape(view, cancel_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(355, f"场景识别处理：#355 点击「取消」 {score:.0f}%", event, "取消")
         return True
 
     def _handle_auto_close_popup_393(
         self,
-        runtime: Any,
+        context: Any,
         view: View,
         event: dict[str, Any],
         *,
@@ -275,13 +275,13 @@ class SceneInterruptionMixin:
                 "missing_avatar",
             )
             return True
-        runtime.click_shape(view, avatar_shape, frame_data_url=runtime.cur_frame())
+        context.click_shape(view, avatar_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(393, f"场景识别处理：#393 点击「分身」 {score:.0f}%", event, "分身")
         return True
 
     def _handle_auto_close_confirm_popup(
         self,
-        runtime: Any,
+        context: Any,
         view: View,
         event: dict[str, Any],
         *,
@@ -295,8 +295,8 @@ class SceneInterruptionMixin:
             self._record_popup_guard_missing(view_id or None, f"场景识别命中：{view_label} {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
             return True
         if not allow_confirm_actions:
-            return self._close_popup_view_without_confirm(runtime, view, event)
-        runtime.click_shape(view, confirm_shape, frame_data_url=runtime.cur_frame())
+            return self._close_popup_view_without_confirm(context, view, event)
+        context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(view_id or None, f"场景识别处理：{view_label} 点击「确认」 {score:.0f}%", event, "确认")
         return True
 
@@ -320,15 +320,15 @@ class SceneInterruptionMixin:
             })
             self._log_locked("guardClick", self._status["message"])
 
-    def _close_popup_view_without_confirm(self, runtime: Any, view: View, event: dict[str, Any]) -> bool:
-        action_shape = runtime.matched_view.action_shape if runtime.matched_view is not None else None
+    def _close_popup_view_without_confirm(self, context: Any, view: View, event: dict[str, Any]) -> bool:
+        action_shape = context.matched_view.action_shape if context.matched_view is not None else None
         if (
             not isinstance(action_shape, dict)
             or str(action_shape.get("title") or "").strip() in {"确定", "确认"}
         ):
             return False
         shape = Shape(action_shape, parent_view=view)
-        runtime.click_shape(view, shape)
+        context.click_shape(view, shape)
         scene_id = view.id
         image_label = f"#{scene_id}" if scene_id is not None else view.title or view.filename or "unknown"
         action_title = shape.title or "shape"
@@ -342,7 +342,7 @@ class SceneInterruptionMixin:
 
     def _handle_recognized_popup_candidate(
         self,
-        runtime: Any,
+        context: Any,
         candidate: dict[str, Any],
         *,
         score: float,
@@ -372,7 +372,7 @@ class SceneInterruptionMixin:
 
         if view.id == 84:
             return self._handle_auto_close_popup_84(
-                runtime,
+                context,
                 view,
                 event,
                 score=score,
@@ -380,14 +380,14 @@ class SceneInterruptionMixin:
             )
         if view.id in self._LEAVE_CONFIRM_VIEW_IDS:
             return self._handle_auto_close_leave_confirm_popup(
-                runtime,
+                context,
                 view,
                 event,
                 score=score,
             )
         if view.id == 287:
             return self._handle_auto_close_popup_287(
-                runtime,
+                context,
                 view,
                 event,
                 score=score,
@@ -395,7 +395,7 @@ class SceneInterruptionMixin:
             )
         if view.id == 300:
             return self._handle_auto_close_confirm_popup(
-                runtime,
+                context,
                 view,
                 event,
                 score=score,
@@ -403,14 +403,14 @@ class SceneInterruptionMixin:
             )
         if view.id == 355:
             return self._handle_auto_close_popup_355(
-                runtime,
+                context,
                 view,
                 event,
                 score=score,
             )
         if view.id == 393:
             return self._handle_auto_close_popup_393(
-                runtime,
+                context,
                 view,
                 event,
                 score=score,
@@ -429,7 +429,7 @@ class SceneInterruptionMixin:
             # potentially different close-action planner and could miss a
             # perfectly valid ``确认`` annotation.
             shape = Shape(action_shape, parent_view=view)
-            runtime.click_shape(view, shape, frame_data_url=runtime.cur_frame())
+            context.click_shape(view, shape, frame_data_url=context.cur_frame())
         except RuntimeError:
             self._record_popup_guard_missing(
                 view.id,

@@ -65,7 +65,7 @@ def read_xianyuan_duokui_status_snapshot(
         allow_discovery=False,
     )
     tiers = load_activity_rank_reward_tiers(
-        rank_activity_id=int(rank_activity_id),
+        reward_activity_id=int(rank_activity_id),
         event_date=event_date,
     )
     rank = _rank_data(

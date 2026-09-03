@@ -142,7 +142,14 @@ def fanxiu_mail_reward_is_always_claim(reward: dict[str, Any]) -> bool:
 
 def fanxiu_mail_reward_name_known(reward: dict[str, Any]) -> bool:
     item_name = _mail_reward_text(reward, "item_name")
-    return bool(item_name and not item_name.startswith("未知道具"))
+    if item_name and not item_name.startswith("未知道具"):
+        return True
+    # Hot-update items can exist in the live Item.Item table before the static
+    # localization/catalog export catches up.  Only a narrow, structurally
+    # proven policy class may stand in for the missing display name.
+    return _mail_reward_text(reward, "policy_resolution") in {
+        "temporary_activity_material",
+    }
 
 
 def fanxiu_mail_desired_status_for_rewards(
@@ -152,13 +159,19 @@ def fanxiu_mail_desired_status_for_rewards(
 ) -> str:
     if not rewards:
         return "可领"
+    # 法则是最高优先级的保护资源；只要同封邮件中已经明确识别到
+    # 法则，就不能被任何“必领”附件放行。
+    for reward in rewards:
+        if fanxiu_mail_reward_is_faze(reward):
+            return "锁定"
+    # “潜修心得”等资源表达的是整封邮件的必领业务语义。同封邮件
+    # 常混有尚未进入图鉴的活动道具，未知的陪同附件不能抢先把这封
+    # 已有明确必领事实的邮件降级为留存。
+    if any(fanxiu_mail_reward_is_always_claim(reward) for reward in rewards):
+        return "可领"
     for reward in rewards:
         if not fanxiu_mail_reward_name_known(reward):
             return "留存"
-        if fanxiu_mail_reward_is_faze(reward):
-            return "锁定"
-    if any(fanxiu_mail_reward_is_always_claim(reward) for reward in rewards):
-        return "可领"
     target_category, max_value = fanxiu_mail_prayer_target(rewards)
     if max_value <= MAIL_PRAYER_AUTO_CLAIM_MAX_VALUE:
         return "可领"
@@ -192,10 +205,10 @@ def fanxiu_mail_desired_status_for_record(record: Any | None) -> str:
 def fanxiu_mail_action_policy_for_record(record: Any | None) -> str:
     if record is None:
         return ""
-    runtime_status = str(getattr(record, "runtime_status", "") or "").strip()
-    if runtime_status:
+    execution_status = str(getattr(record, "execution_status", "") or "").strip()
+    if execution_status:
         if (
-            runtime_status != "unclaimed"
+            execution_status != "unclaimed"
             or not bool(getattr(record, "present_in_runtime", False))
             or bool(getattr(record, "locked", False))
         ):

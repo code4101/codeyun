@@ -25,8 +25,7 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "fanxiu.lottery-model",
     "fanxiu.activity-list",
     "fanxiu.activity-list.kunlun-secret",
-    "fanxiu.activity-list.yunmeng-trial",
-    "fanxiu.activity-list.resource-ranking",
+    "fanxiu.schedule",
     "fanxiu.activity-list.divine-resource",
     "fanxiu.activity-list.qiji-zhumo",
     "fanxiu.activity-list.xianzhou-marathon",
@@ -304,7 +303,7 @@ def test_feature_access_denied_fanxiu_api_returns_403(client):
 
     assert update_response.status_code == 200
 
-    response = client.get("/api/fanxiu/data-annotation/runtime/status")
+    response = client.get("/api/fanxiu/kernel-scheduler/status")
 
     assert response.status_code == 403
     assert response.json()["detail"] == "当前账号无权访问该功能"

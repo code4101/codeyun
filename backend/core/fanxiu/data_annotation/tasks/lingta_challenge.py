@@ -150,7 +150,7 @@ class LingtaChallengeTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -164,12 +164,12 @@ class LingtaChallengeTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         from backend.core.fanxiu.data_annotation import (
-            behavior_tree_runtime as _behavior_tree_runtime,
+            behavior_tree_executor as _behavior_tree_executor,
         )
 
         return self._persist_admission_decision(
             dict(payload or {}),
-            lingta_challenge_admission(_behavior_tree_runtime._now()),
+            lingta_challenge_admission(_behavior_tree_executor._now()),
         )
 
     def _read_lingta_challenge_snapshot(self) -> dict[str, Any]:
@@ -233,21 +233,21 @@ class LingtaChallengeTaskMixin:
 
     def _lingta_terminal_result(
         self,
-        runtime: Any,
+        context: Any,
         *,
         outcome: str,
         message: str,
     ) -> dict[str, Any]:
         from backend.core.fanxiu.data_annotation import (
-            behavior_tree_runtime as _behavior_tree_runtime,
+            behavior_tree_executor as _behavior_tree_executor,
         )
 
-        task_id = str(runtime.payload.get("__scheduler_task_id") or "lingta-challenge")
+        task_id = str(context.payload.get("__scheduler_task_id") or "lingta-challenge")
         self._persist_scheduler_task_next_time(
             task_id,
-            _tomorrow_lingta_trigger(_behavior_tree_runtime._now()),
+            _tomorrow_lingta_trigger(_behavior_tree_executor._now()),
         )
-        runtime.set_completion_message(message)
+        context.set_completion_message(message)
         return {
             "result": "success",
             "outcome": outcome,
@@ -255,11 +255,11 @@ class LingtaChallengeTaskMixin:
             "current_scene": 34,
         }
 
-    def _leave_lingta_failure_to_world(self, runtime: Any):
+    def _leave_lingta_failure_to_world(self, context: Any):
         """Leave the failure result through either observed stable landing."""
 
         try:
-            landing = yield from runtime.wait_click_then_view(
+            landing = yield from context.wait_click_then_scene(
                 LINGTA_FAILURE_SCENE_ID,
                 "退出",
                 [34, LINGTA_CURRENT_FLOOR_SCENE_ID],
@@ -274,18 +274,18 @@ class LingtaChallengeTaskMixin:
             # proves Lingta is loaded and the formal #532 Challenge OCR anchor
             # agrees with the GUI; neither source authorizes the click alone.
             if not all(
-                hasattr(runtime, name)
+                hasattr(context, name)
                 for name in (
                     "cur_frame",
                     "ocr_text_in_shapes",
                     "click_frame_point",
-                    "wait_view",
+                    "wait_scene",
                 )
             ):
                 raise
             snapshot = self._read_lingta_challenge_snapshot()
-            frame = runtime.cur_frame(update=True)
-            challenge_text = runtime.ocr_text_in_shapes(
+            frame = context.cur_frame(update=True)
+            challenge_text = context.ocr_text_in_shapes(
                 LINGTA_CURRENT_FLOOR_SCENE_ID,
                 ("挑战文字",),
                 padding=12,
@@ -299,26 +299,26 @@ class LingtaChallengeTaskMixin:
                 "warning",
                 "灵塔_挑战：失败退出后由 Runtime 数据与 #532「挑战文字」OCR 联合确认当前层详情",
             )
-            runtime.click_frame_point(LINGTA_CURRENT_FLOOR_SCENE_ID, 80, 1480)
-            landing = yield from runtime.wait_view(
+            context.click_frame_point(LINGTA_CURRENT_FLOOR_SCENE_ID, 80, 1480)
+            landing = yield from context.wait_scene(
                 LINGTA_LIST_SCENE_ID,
                 34,
-                timeout=30.0,
+                wait=30.0,
                 label="灵塔_挑战：动态 #532 返回后等待列表或世界",
             )
         landing_id = getattr(landing, "id", landing)
         if landing_id == LINGTA_LIST_SCENE_ID:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return
         if landing_id == LINGTA_CURRENT_FLOOR_SCENE_ID:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return
         if landing_id == 34:
             return
         # Lightweight test runtimes return the requested candidate list
-        # instead of a concrete View.  Production wait_click_then_view always
+        # instead of a concrete View.  Production wait_click_then_scene always
         # returns one matched View; keep that test seam without accepting any
-        # unrelated runtime landing.
+        # unrelated context landing.
         if isinstance(landing_id, (list, tuple)) and 34 in landing_id:
             return
         raise RuntimeError(
@@ -327,7 +327,7 @@ class LingtaChallengeTaskMixin:
 
     def _preserve_lingta_settlement_evidence(
         self,
-        runtime: Any,
+        context: Any,
         frame: str | None,
         *,
         label: str,
@@ -339,8 +339,8 @@ class LingtaChallengeTaskMixin:
         runtime_snapshot: dict[str, Any] = {}
         try:
             evidence = build_unknown_evidence(
-                runtime.runner,
-                runtime.ctx,
+                context.runner,
+                context.ctx,
                 frame,
                 label=label,
                 expected_scene_ids=[
@@ -364,16 +364,16 @@ class LingtaChallengeTaskMixin:
             parts.append(f"证据={evidence.report_path}")
         return f"；{'，'.join(parts)}" if parts else "；现场帧未落盘"
 
-    def _open_lingta_current_floor_detail(self, runtime: Any):
-        payload = runtime.payload
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_click_then_view(
+    def _open_lingta_current_floor_detail(self, context: Any):
+        payload = context.payload
+        yield from context.go_scene(34)
+        yield from context.wait_click_then_scene(
             34,
             "日常",
             69,
             label="灵塔_挑战：进入日常 #69",
         )
-        opened = yield from runtime.open_daily_entry(
+        opened = yield from context.open_daily_entry(
             label="灵塔_挑战",
             title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
             # 日常完成只表示扫荡已经结束，不能阻止挑战新层。
@@ -382,18 +382,18 @@ class LingtaChallengeTaskMixin:
         )
         if opened != "open":
             raise RuntimeError(f"灵塔_挑战：#69 灵塔行未能打开：{opened}")
-        landing = yield from runtime.wait_view(
+        landing = yield from context.wait_scene(
             193,
             LINGTA_LIST_SCENE_ID,
             # 日常入口后的跨场景加载在真实设备上可超过 30 秒；加载期
             # Layer 0 应保持 unknown，不能因短超时把动画补成业务场景。
-            timeout=float(payload.get("lingta_entry_wait_timeout") or 60.0),
+            wait=float(payload.get("lingta_entry_wait_timeout") or 60.0),
             label="灵塔_挑战：等待 #193/#194",
         )
         if getattr(landing, "id", landing) == 193:
             yield from self._open_daily_lingta_main_from_entry(
-                runtime.ctx,
-                runtime.stop_event or threading.Event(),
+                context.ctx,
+                context.stop_event or threading.Event(),
             )
 
         # The entry wait can first match #194 while its card contents are still
@@ -403,7 +403,7 @@ class LingtaChallengeTaskMixin:
         # transition animation.
         stable_deadline = time.monotonic() + 15.0
         while True:
-            scene_id, _score, frame = runtime.current_scene(
+            scene_id, _score, frame = context.current_scene(
                 [LINGTA_LIST_SCENE_ID],
                 update=True,
             )
@@ -411,8 +411,8 @@ class LingtaChallengeTaskMixin:
                 break
             if time.monotonic() >= stable_deadline:
                 raise RuntimeError("灵塔_挑战：等待列表 #194 稳定超时")
-            yield from runtime.wait_action_settle(1.0)
-        fragments = runtime.ocr_fragments_in_shapes(
+            yield from context.wait_action_settle(1.0)
+        fragments = context.ocr_fragments_in_shapes(
             LINGTA_LIST_SCENE_ID,
             ("当前灵塔信息区",),
             frame_data_url=frame,
@@ -423,16 +423,16 @@ class LingtaChallengeTaskMixin:
         if evidence is None:
             raise RuntimeError("灵塔_挑战：#194 未唯一识别当前塔进度")
         fragment, progress = evidence
-        runtime.click_frame_point(
+        context.click_frame_point(
             LINGTA_LIST_SCENE_ID,
             *lingta_current_card_point(fragment),
         )
         runtime_snapshot: dict[str, Any] = {}
         try:
-            landing = yield from runtime.wait_view(
+            landing = yield from context.wait_scene(
                 LINGTA_OVERVIEW_SCENE_ID,
                 LINGTA_CURRENT_FLOOR_SCENE_ID,
-                timeout=15,
+                wait=15,
                 label="灵塔_挑战：等待总览 #531 或当前层 #532",
             )
         except TimeoutError:
@@ -453,8 +453,8 @@ class LingtaChallengeTaskMixin:
             landing = LINGTA_OVERVIEW_SCENE_ID
         if getattr(landing, "id", landing) == LINGTA_OVERVIEW_SCENE_ID:
             if runtime_snapshot.get("complete") is True:
-                challenge_frame = runtime.cur_frame(update=True)
-                challenge_text = runtime.ocr_text_in_shapes(
+                challenge_frame = context.cur_frame(update=True)
+                challenge_text = context.ocr_text_in_shapes(
                     LINGTA_CURRENT_FLOOR_SCENE_ID,
                     ("挑战文字",),
                     padding=12,
@@ -467,10 +467,10 @@ class LingtaChallengeTaskMixin:
                         "确认已在当前层详情",
                     )
                     return progress
-            overview_result = yield from runtime.wait_any(
+            overview_result = yield from context.wait_any(
                 {
-                    "current_floor": runtime.view_visible(LINGTA_CURRENT_FLOOR_SCENE_ID),
-                    "jump": runtime.shape_visible(
+                    "current_floor": context.scene_visible(LINGTA_CURRENT_FLOOR_SCENE_ID),
+                    "jump": context.shape_visible(
                         LINGTA_OVERVIEW_SCENE_ID,
                         "前往当前层",
                     ),
@@ -479,7 +479,7 @@ class LingtaChallengeTaskMixin:
                 label="灵塔_挑战：等待迟到直达 #532 或前往当前层可点击",
             )
             if overview_result == "jump":
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     LINGTA_OVERVIEW_SCENE_ID,
                     "前往当前层",
                     LINGTA_CURRENT_FLOOR_SCENE_ID,
@@ -488,9 +488,9 @@ class LingtaChallengeTaskMixin:
                 )
         return progress
 
-    def 灵塔挑战流程(self, runtime: Any):
-        stop_event = runtime.stop_event or threading.Event()
-        payload = runtime.payload
+    def 灵塔挑战流程(self, context: Any):
+        stop_event = context.stop_event or threading.Event()
+        payload = context.payload
         task_id = str(payload.get("__scheduler_task_id") or "lingta-challenge")
         start_mark = payload.get(LINGTA_CHAIN_START_MARK)
         if start_mark is None:
@@ -507,7 +507,7 @@ class LingtaChallengeTaskMixin:
             float(payload.get("start_transition_grace_seconds") or 15.0),
         )
 
-        scene_id, _score, frame = runtime.current_scene(
+        scene_id, _score, frame = context.current_scene(
             [
                 34,
                 69,
@@ -528,11 +528,11 @@ class LingtaChallengeTaskMixin:
             and scene_id in {34, LINGTA_LIST_SCENE_ID, LINGTA_CURRENT_FLOOR_SCENE_ID}
         ):
             if scene_id != 34:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
             passed = max(0, int(start_mark.get("max_chain_pass_count") or 0))
             return self._lingta_terminal_result(
-                runtime,
+                context,
                 outcome="power_limit",
                 message=(
                     f"灵塔_挑战：防重复标记已保存上次 #365 失败终态（通过 {passed} 层），"
@@ -549,7 +549,7 @@ class LingtaChallengeTaskMixin:
                 scene_id=LINGTA_DAILY_LIMIT_SCENE_ID,
             )
             payload[LINGTA_CHAIN_START_MARK] = start_mark
-            landing = yield from runtime.wait_click_then_view(
+            landing = yield from context.wait_click_then_scene(
                 LINGTA_DAILY_LIMIT_SCENE_ID,
                 "点击退出",
                 [34, LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID],
@@ -559,7 +559,7 @@ class LingtaChallengeTaskMixin:
                 label="灵塔_挑战：每日上限后退出",
             )
             if getattr(landing, "id", landing) == LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID:
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID,
                     "返回灵塔列表",
                     LINGTA_LIST_SCENE_ID,
@@ -568,10 +568,10 @@ class LingtaChallengeTaskMixin:
                     retry_if_source_remains=False,
                     label="灵塔_挑战：上限详情返回列表",
                 )
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
             return self._lingta_terminal_result(
-                runtime,
+                context,
                 outcome="daily_limit",
                 message="灵塔_挑战：游戏确认今天已挑战 20 层并达到每日上限，已回到世界",
             )
@@ -585,7 +585,7 @@ class LingtaChallengeTaskMixin:
                 scene_id=LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID,
             )
             payload[LINGTA_CHAIN_START_MARK] = start_mark
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID,
                 "返回灵塔列表",
                 LINGTA_LIST_SCENE_ID,
@@ -594,10 +594,10 @@ class LingtaChallengeTaskMixin:
                 retry_if_source_remains=False,
                 label="灵塔_挑战：上限详情返回列表",
             )
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
             return self._lingta_terminal_result(
-                runtime,
+                context,
                 outcome="daily_limit",
                 message="灵塔_挑战：详情页确认今日层数挑战上限 20/20，已回到世界",
             )
@@ -612,13 +612,13 @@ class LingtaChallengeTaskMixin:
                 and start_mark.get("terminal_outcome") == "daily_limit"
             ):
                 if scene_id != 34:
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                 self._clear_scheduler_task_payload_flag(
                     task_id,
                     LINGTA_CHAIN_START_MARK,
                 )
                 return self._lingta_terminal_result(
-                    runtime,
+                    context,
                     outcome="daily_limit",
                     message=(
                         "灵塔_挑战：防重复标记已保存游戏可见的每日 20 层上限终态，"
@@ -640,16 +640,16 @@ class LingtaChallengeTaskMixin:
             # Challenge click.  This proves advancement without authorizing a
             # second click and closes interrupted/late-exit attempts idempotently.
             if start_ui_passed > 0:
-                recovered_progress = yield from self._open_lingta_current_floor_detail(runtime)
+                recovered_progress = yield from self._open_lingta_current_floor_detail(context)
                 if recovered_progress.passed > start_ui_passed:
                     ui_advanced = recovered_progress.passed - start_ui_passed
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                     self._clear_scheduler_task_payload_flag(
                         task_id,
                         LINGTA_CHAIN_START_MARK,
                     )
                     return self._lingta_terminal_result(
-                        runtime,
+                        context,
                         outcome="recovered_auto_chain",
                         message=(
                             "灵塔_挑战：自动链已返回稳定界面，列表进度由 "
@@ -700,13 +700,13 @@ class LingtaChallengeTaskMixin:
                 and recovered_advanced
             ):
                 if scene_id != 34:
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                 self._clear_scheduler_task_payload_flag(
                     task_id,
                     LINGTA_CHAIN_START_MARK,
                 )
                 return self._lingta_terminal_result(
-                    runtime,
+                    context,
                     outcome="no_next_floor",
                     message=(
                         f"灵塔_挑战幂等结束：当前层已从 {start_mark_start_id} 推进到 "
@@ -724,7 +724,7 @@ class LingtaChallengeTaskMixin:
                     "保留防重复标记，拒绝重复点击"
                 )
             if scene_id != 34:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
             outcome = (
                 "daily_limit"
@@ -737,7 +737,7 @@ class LingtaChallengeTaskMixin:
                 "已回到世界且未重复点击挑战"
             )
             return self._lingta_terminal_result(
-                runtime,
+                context,
                 outcome=outcome,
                 message=message,
             )
@@ -755,7 +755,7 @@ class LingtaChallengeTaskMixin:
                 "灵塔_挑战：存在未收口自动链防重复标记，当前又不是已知失败终态；拒绝重复点击"
             )
         if scene_id == LINGTA_FAILURE_SCENE_ID:
-            text = runtime.ocr_text(frame)
+            text = context.ocr_text(frame)
             if "变强" not in text:
                 raise RuntimeError("灵塔_挑战：#365 未确认失败终态文案")
             start_mark = self._persist_lingta_power_limit_mark(
@@ -764,10 +764,10 @@ class LingtaChallengeTaskMixin:
                 passed=0,
             )
             payload[LINGTA_CHAIN_START_MARK] = start_mark
-            yield from self._leave_lingta_failure_to_world(runtime)
+            yield from self._leave_lingta_failure_to_world(context)
             self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
             return self._lingta_terminal_result(
-                runtime,
+                context,
                 outcome="power_limit",
                 message="灵塔_挑战：当前层挑战失败，已达到本日战力极限并回到世界",
             )
@@ -781,7 +781,7 @@ class LingtaChallengeTaskMixin:
         progress = (
             None
             if scene_id == LINGTA_CURRENT_FLOOR_SCENE_ID
-            else (yield from self._open_lingta_current_floor_detail(runtime))
+            else (yield from self._open_lingta_current_floor_detail(context))
         )
         snapshot = self._read_lingta_challenge_snapshot()
         if not snapshot.get("ok") and progress is None:
@@ -807,7 +807,7 @@ class LingtaChallengeTaskMixin:
         ):
             raise RuntimeError("灵塔_挑战：启动防重复标记未确认持久化，拒绝点击挑战")
         payload[LINGTA_CHAIN_START_MARK] = start_mark_value
-        runtime.click_ocr_text(
+        context.click_ocr_text(
             LINGTA_CURRENT_FLOOR_SCENE_ID,
             "挑战",
             in_shapes=("挑战文字",),
@@ -830,7 +830,7 @@ class LingtaChallengeTaskMixin:
         ordinary_result_latched = False
         while time.monotonic() <= deadline:
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = runtime.current_scene(
+            scene_id, _score, frame = context.current_scene(
                 [
                     LINGTA_FAILURE_SCENE_ID,
                     LINGTA_LIST_SCENE_ID,
@@ -874,7 +874,7 @@ class LingtaChallengeTaskMixin:
                         )
                     payload[LINGTA_CHAIN_START_MARK] = start_mark_value
             if scene_id == LINGTA_FAILURE_SCENE_ID:
-                text = runtime.ocr_text(frame)
+                text = context.ocr_text(frame)
                 if "变强" not in text:
                     raise RuntimeError("灵塔_挑战：#365 未确认失败终态文案")
                 final_snapshot = self._read_lingta_challenge_snapshot()
@@ -889,10 +889,10 @@ class LingtaChallengeTaskMixin:
                     passed=passed,
                 )
                 payload[LINGTA_CHAIN_START_MARK] = start_mark_value
-                yield from self._leave_lingta_failure_to_world(runtime)
+                yield from self._leave_lingta_failure_to_world(context)
                 self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
                 return self._lingta_terminal_result(
-                    runtime,
+                    context,
                     outcome="power_limit",
                     message=f"灵塔_挑战：连续通过 {max(0, passed)} 层后挑战失败，已达到本日战力极限并回到世界",
                 )
@@ -903,7 +903,7 @@ class LingtaChallengeTaskMixin:
                     scene_id=LINGTA_DAILY_LIMIT_SCENE_ID,
                 )
                 payload[LINGTA_CHAIN_START_MARK] = start_mark_value
-                landing = yield from runtime.wait_click_then_view(
+                landing = yield from context.wait_click_then_scene(
                     LINGTA_DAILY_LIMIT_SCENE_ID,
                     "点击退出",
                     [34, LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID],
@@ -913,7 +913,7 @@ class LingtaChallengeTaskMixin:
                     label="灵塔_挑战：每日上限后退出",
                 )
                 if getattr(landing, "id", landing) == LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID:
-                    yield from runtime.wait_click_then_view(
+                    yield from context.wait_click_then_scene(
                         LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID,
                         "返回灵塔列表",
                         LINGTA_LIST_SCENE_ID,
@@ -922,10 +922,10 @@ class LingtaChallengeTaskMixin:
                         retry_if_source_remains=False,
                         label="灵塔_挑战：上限详情返回列表",
                     )
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                 self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
                 return self._lingta_terminal_result(
-                    runtime,
+                    context,
                     outcome="daily_limit",
                     message="灵塔_挑战：游戏确认今天已挑战 20 层并达到每日上限，已回到世界",
                 )
@@ -936,7 +936,7 @@ class LingtaChallengeTaskMixin:
                     scene_id=LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID,
                 )
                 payload[LINGTA_CHAIN_START_MARK] = start_mark_value
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     LINGTA_DAILY_LIMIT_DETAIL_SCENE_ID,
                     "返回灵塔列表",
                     LINGTA_LIST_SCENE_ID,
@@ -945,10 +945,10 @@ class LingtaChallengeTaskMixin:
                     retry_if_source_remains=False,
                     label="灵塔_挑战：上限详情返回列表",
                 )
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
                 return self._lingta_terminal_result(
-                    runtime,
+                    context,
                     outcome="daily_limit",
                     message="灵塔_挑战：详情页确认今日层数挑战上限 20/20，已回到世界",
                 )
@@ -970,7 +970,7 @@ class LingtaChallengeTaskMixin:
                         f"灵塔_挑战：自动链返回稳定界面但未确认通关层数（{detail}）；防重复标记保留"
                     )
                 if scene_id != 34:
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                 self._clear_scheduler_task_payload_flag(task_id, LINGTA_CHAIN_START_MARK)
                 outcome = "daily_limit" if passed >= LINGTA_DAILY_LEVEL_LIMIT else "no_next_floor"
                 if outcome == "daily_limit":
@@ -984,7 +984,7 @@ class LingtaChallengeTaskMixin:
                         "当前没有可继续挑战的下一层并回到世界"
                     )
                 return self._lingta_terminal_result(
-                    runtime,
+                    context,
                     outcome=outcome,
                     message=message,
                 )
@@ -996,9 +996,36 @@ class LingtaChallengeTaskMixin:
                     # The first frames after the one permitted click may still
                     # be the detail page.  Wait for the transition without
                     # ever clicking the entry again.
-                    yield from runtime.wait_action_settle(poll_seconds)
+                    yield from context.wait_action_settle(poll_seconds)
                     continue
                 if launch_left_detail:
+                    # Every latched #548 is an authoritative visible victory
+                    # and is persisted in the anti-duplicate marker before the
+                    # next transition.  After one or more such victories the
+                    # native chain may naturally settle back on the current-
+                    # floor detail instead of #194/#34.  This is the same
+                    # positive-progress terminal used by the stable-list path;
+                    # never click Challenge again from here.
+                    if max_chain_pass_count > 0:
+                        yield from context.go_scene(34)
+                        self._clear_scheduler_task_payload_flag(
+                            task_id,
+                            LINGTA_CHAIN_START_MARK,
+                        )
+                        outcome = (
+                            "daily_limit"
+                            if max_chain_pass_count >= LINGTA_DAILY_LEVEL_LIMIT
+                            else "no_next_floor"
+                        )
+                        return self._lingta_terminal_result(
+                            context,
+                            outcome=outcome,
+                            message=(
+                                "灵塔_挑战：自动链返回当前层详情，"
+                                f"已由 #548 胜利页确认本轮通过 {max_chain_pass_count} 层；"
+                                "已回到世界且未重复点击挑战"
+                            ),
+                        )
                     evidence_label = "灵塔_挑战_自动链离开后返回532"
                     error_message = (
                         "灵塔_挑战：已确认挑战离开 #532，随后自动链返回 #532；"
@@ -1011,13 +1038,13 @@ class LingtaChallengeTaskMixin:
                         "防重复标记保留，拒绝重试点击"
                     )
                 evidence_suffix = self._preserve_lingta_settlement_evidence(
-                    runtime,
+                    context,
                     frame,
                     label=evidence_label,
                 )
                 primary_error = RuntimeError(f"{error_message}{evidence_suffix}")
                 try:
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                 except (InterruptedError, GeneratorExit, FanxiuEmulatorRestartRequired):
                     raise
                 except Exception as cleanup_error:
@@ -1035,7 +1062,7 @@ class LingtaChallengeTaskMixin:
             # correct and the monitor keeps observing the automatic chain.
             if scene_id == LINGTA_ORDINARY_RESULT_SCENE_ID:
                 try:
-                    yield from runtime.wait_click(
+                    yield from context.wait_click(
                         LINGTA_ORDINARY_RESULT_SCENE_ID,
                         "下一层",
                         timeout=float(payload.get("next_button_timeout_seconds") or 2.0),
@@ -1132,7 +1159,7 @@ class LingtaChallengeTaskMixin:
                     and current.get("has_current_tower_config") is False
                 ):
                     evidence_suffix = self._preserve_lingta_settlement_evidence(
-                        runtime,
+                        context,
                         frame,
                         label="灵塔_挑战_全塔终态",
                     )
@@ -1142,10 +1169,10 @@ class LingtaChallengeTaskMixin:
                         f"需用本帧验证正式退出资产{evidence_suffix}"
                     )
                 if frame and time.monotonic() <= settlement_probe_until:
-                    settlement = classify_lingta_settlement_text(runtime.ocr_text(frame))
+                    settlement = classify_lingta_settlement_text(context.ocr_text(frame))
                     if settlement == "level_gate":
                         evidence_suffix = self._preserve_lingta_settlement_evidence(
-                            runtime,
+                            context,
                             frame,
                             label="灵塔_挑战_等级门槛结算",
                         )
@@ -1156,7 +1183,7 @@ class LingtaChallengeTaskMixin:
                         )
                     if settlement == "capacity_failure":
                         evidence_suffix = self._preserve_lingta_settlement_evidence(
-                            runtime,
+                            context,
                             frame,
                             label="灵塔_挑战_专用失败汇总",
                         )
@@ -1167,7 +1194,7 @@ class LingtaChallengeTaskMixin:
                         )
                     if settlement == "tower_complete":
                         evidence_suffix = self._preserve_lingta_settlement_evidence(
-                            runtime,
+                            context,
                             frame,
                             label="灵塔_挑战_已通关结算",
                         )
@@ -1175,10 +1202,10 @@ class LingtaChallengeTaskMixin:
                             "灵塔_挑战：胜利后显示‘已通关’，但尚缺该终态的真实退出资产；"
                             f"防重复标记和现场已保留{evidence_suffix}"
                         )
-            yield from runtime.wait_action_settle(poll_seconds)
+            yield from context.wait_action_settle(poll_seconds)
 
         evidence_suffix = self._preserve_lingta_settlement_evidence(
-            runtime,
+            context,
             last_frame,
             label="灵塔_挑战_自动链监控超时",
         )

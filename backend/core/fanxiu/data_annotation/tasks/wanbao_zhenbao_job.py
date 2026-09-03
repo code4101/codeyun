@@ -106,11 +106,11 @@ def defer_wanbao_draws(snapshot: dict[str, Any]) -> WanbaoDrawDecision:
     )
 
 
-def _runtime(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
+def _behavior_tree_context(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("万宝臻宝作业缺少资产树路径")
-    return runner._fanxiu_runtime(
+    return runner._behavior_tree_context(
         ctx,
         asset_tree_path,
         stop_event=stop_event,
@@ -136,10 +136,10 @@ def _landing_scene_id(landing: Any) -> int:
     return int(getattr(landing, "id", landing) or 0)
 
 
-def _open_wanbao_main(runtime: Any):
+def _open_wanbao_main(context: Any):
     """Resume #604 safely, otherwise establish the canonical #600 landing."""
 
-    scene_id, _score, _frame = runtime.current_scene(
+    scene_id, _score, _frame = context.current_scene(
         [
             WANBAO_XIANGZHEN_REWARD_SCENE_ID,
             WANBAO_MAIN_SCENE_ID,
@@ -150,48 +150,48 @@ def _open_wanbao_main(runtime: Any):
         update=True,
     )
     if int(scene_id or 0) == WANBAO_XIANGZHEN_REWARD_SCENE_ID:
-        landing = yield from _settle_wanbao_reward_page(runtime, label="恢复遗留奖励页")
+        landing = yield from _settle_wanbao_reward_page(context, label="恢复遗留奖励页")
         scene_id = _landing_scene_id(landing)
     if int(scene_id or 0) == WANBAO_MAIN_SCENE_ID:
         return WANBAO_MAIN_SCENE_ID
     if int(scene_id or 0) in {WANBAO_TASK_SCENE_ID, WANBAO_STORE_SCENE_ID}:
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             int(scene_id),
             "万宝臻宝",
             timeout=10.0,
             label="万宝臻宝：从活动子页恢复主页",
         )
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             WANBAO_MAIN_SCENE_ID,
-            timeout=15.0,
+            wait=15.0,
             label="万宝臻宝：确认恢复主页",
         )
         return WANBAO_MAIN_SCENE_ID
     if int(scene_id or 0) != 34:
-        yield from runtime.goto_view(34)
-    yield from runtime.wait_click(
+        yield from context.go_scene(34)
+    yield from context.wait_click(
         34,
         "万宝臻宝",
         timeout=10.0,
         label="万宝臻宝：进入活动",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_MAIN_SCENE_ID,
-        timeout=15.0,
+        wait=15.0,
         label="万宝臻宝：确认主页",
     )
     return WANBAO_MAIN_SCENE_ID
 
 
 def apply_wanbao_draw_policy(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
     *,
     policy: WanbaoDrawPolicy = defer_wanbao_draws,
 ) -> dict[str, Any]:
     """Apply one policy decision; a stop is an idempotent proven terminal."""
 
-    del runtime
+    del context
     decision = policy(snapshot)
     if decision.action == "stop" and decision.expected_draws == 0:
         return {
@@ -213,48 +213,48 @@ def apply_wanbao_draw_policy(
     raise AssertionError("unreachable")
 
 
-def _settle_wanbao_reward_page(runtime: Any, *, label: str):
+def _settle_wanbao_reward_page(context: Any, *, label: str):
     """Close manual reward pages but never click through auto-closing pages."""
 
-    scene_id, _score, frame = runtime.current_scene(
+    scene_id, _score, frame = context.current_scene(
         [WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, 34],
         update=True,
     )
     if int(scene_id or 0) != WANBAO_XIANGZHEN_REWARD_SCENE_ID:
         return scene_id
     text = ""
-    if hasattr(runtime, "ocr_text"):
-        text = str(runtime.ocr_text(frame_data_url=frame) or "").replace(" ", "")
+    if hasattr(context, "ocr_text"):
+        text = str(context.ocr_text(frame_data_url=frame) or "").replace(" ", "")
     if "自动关闭" in text:
-        return (yield from runtime.wait_view(
+        return (yield from context.wait_scene(
             WANBAO_MAIN_SCENE_ID,
             34,
-            timeout=8.0,
+            wait=8.0,
             label=f"万宝臻宝：{label}等待自动关闭",
         ))
-    yield from runtime.wait_action_settle(5.0)
-    fresh_id, _score, _fresh = runtime.current_scene(
+    yield from context.wait_action_settle(5.0)
+    fresh_id, _score, _fresh = context.current_scene(
         [WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, 34],
         update=True,
     )
     if int(fresh_id or 0) != WANBAO_XIANGZHEN_REWARD_SCENE_ID:
         return fresh_id
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         WANBAO_XIANGZHEN_REWARD_SCENE_ID,
         "点击屏幕继续",
         timeout=10.0,
         label=f"万宝臻宝：{label}点击继续",
     )
-    return (yield from runtime.wait_view(
+    return (yield from context.wait_scene(
         WANBAO_MAIN_SCENE_ID,
         34,
-        timeout=20.0,
+        wait=20.0,
         label=f"万宝臻宝：{label}确认收尾",
     ))
 
 
 def complete_wanbao_tasks(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     """Claim the removing first row and verify every taskId transition."""
@@ -273,19 +273,19 @@ def complete_wanbao_tasks(
     activity_id = int(snapshot.get("activity_id") or tasks.get("activity_id") or 0)
     if activity_id <= 0:
         raise RuntimeError("万宝臻宝任务缺少 activity_id")
-    return _claim_wanbao_tasks(runtime, activity_id=activity_id)
+    return _claim_wanbao_tasks(context, activity_id=activity_id)
 
 
-def _claim_wanbao_tasks(runtime: Any, *, activity_id: int):
-    yield from runtime.wait_click(
+def _claim_wanbao_tasks(context: Any, *, activity_id: int):
+    yield from context.wait_click(
         WANBAO_MAIN_SCENE_ID,
         "任务",
         timeout=10.0,
         label="万宝臻宝：打开任务",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_TASK_SCENE_ID,
-        timeout=15.0,
+        wait=15.0,
         label="万宝臻宝：确认任务页",
     )
     claimed_now: list[int] = []
@@ -300,8 +300,8 @@ def _claim_wanbao_tasks(runtime: Any, *, activity_id: int):
     initial_authorized = list(authorized)
     while authorized:
         expected = authorized[0]
-        runtime.click_frame_point(WANBAO_TASK_SCENE_ID, 470.0, 245.0)
-        yield from runtime.wait_action_settle(1.2)
+        context.click_frame_point(WANBAO_TASK_SCENE_ID, 470.0, 245.0)
+        yield from context.wait_action_settle(1.2)
         after = read_wanbao_task_runtime(expected_activity_id=int(activity_id))
         if after.get("complete") is not True:
             raise RuntimeError(f"万宝臻宝任务 {expected} 点击后快照不完整")
@@ -321,15 +321,15 @@ def _claim_wanbao_tasks(runtime: Any, *, activity_id: int):
             )
         claimed_now.append(expected)
         authorized = remaining_after
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         WANBAO_TASK_SCENE_ID,
         "万宝臻宝",
         timeout=10.0,
         label="万宝臻宝：任务完成后返回主页",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_MAIN_SCENE_ID,
-        timeout=15.0,
+        wait=15.0,
         label="万宝臻宝：确认任务收尾主页",
     )
     return {
@@ -341,7 +341,7 @@ def _claim_wanbao_tasks(runtime: Any, *, activity_id: int):
 
 
 def complete_wanbao_xiangzhen(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     """Open all authorized 飨珍 once and verify MiningData afterwards."""
@@ -362,38 +362,38 @@ def complete_wanbao_xiangzhen(
             f"万宝臻宝飨珍未获 Runtime 授权：{xiangzhen.get('claim_action_reason') or '未知原因'}"
         )
     return _open_wanbao_xiangzhen(
-        runtime,
+        context,
         before_count=claimable_count,
         before_open_records=int(xiangzhen.get("open_box_record_count") or 0),
     )
 
 
 def _open_wanbao_xiangzhen(
-    runtime: Any,
+    context: Any,
     *,
     before_count: int,
     before_open_records: int,
 ):
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         WANBAO_MAIN_SCENE_ID,
         "飨珍",
         timeout=10.0,
         label="万宝臻宝：打开飨珍",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_XIANGZHEN_SCENE_ID,
-        timeout=15.0,
+        wait=15.0,
         label="万宝臻宝：确认飨珍窗口",
     )
     action_shape = "点击开启" if before_count == 1 else "开启全部"
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         WANBAO_XIANGZHEN_SCENE_ID,
         action_shape,
         timeout=10.0,
         label=f"万宝臻宝：{action_shape}飨珍",
     )
     if before_count == 1:
-        yield from runtime.wait_action_settle(2.0)
+        yield from context.wait_action_settle(2.0)
         after_open = _require_snapshot()
         xiangzhen_open = after_open.get("xiangzhen") or {}
         if (
@@ -403,15 +403,15 @@ def _open_wanbao_xiangzhen(
             != 1
         ):
             raise RuntimeError("万宝臻宝单个飨珍点击后未形成精确 Runtime 迁移")
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             WANBAO_XIANGZHEN_SCENE_ID,
             "关闭",
             timeout=10.0,
             label="万宝臻宝：关闭单个飨珍窗口",
         )
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             WANBAO_MAIN_SCENE_ID,
-            timeout=15.0,
+            wait=15.0,
             label="万宝臻宝：确认单个飨珍收尾主页",
         )
         return {
@@ -420,12 +420,12 @@ def _open_wanbao_xiangzhen(
             "opened_count": 1,
             "final_scene": WANBAO_MAIN_SCENE_ID,
         }
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_XIANGZHEN_REWARD_SCENE_ID,
-        timeout=20.0,
+        wait=20.0,
         label="万宝臻宝：确认飨珍奖励",
     )
-    landing = yield from _settle_wanbao_reward_page(runtime, label="关闭飨珍奖励")
+    landing = yield from _settle_wanbao_reward_page(context, label="关闭飨珍奖励")
     landing_id = _landing_scene_id(landing)
     after = _require_snapshot()
     xiangzhen_after = after.get("xiangzhen") or {}
@@ -445,7 +445,7 @@ def _open_wanbao_xiangzhen(
 
 
 def complete_wanbao_cumulative_rewards(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     """Claim the live-proven first milestone with Runtime read-back."""
@@ -456,7 +456,7 @@ def complete_wanbao_cumulative_rewards(
     claimable_ids = [int(value) for value in cumulative.get("claimable_reward_ids") or []]
     if claimable_ids:
         return _claim_wanbao_cumulative_rewards(
-            runtime, snapshot=snapshot, claimable_ids=claimable_ids
+            context, snapshot=snapshot, claimable_ids=claimable_ids
         )
     return {
         "complete": True,
@@ -466,7 +466,7 @@ def complete_wanbao_cumulative_rewards(
 
 
 def _claim_wanbao_cumulative_rewards(
-    runtime: Any, *, snapshot: dict[str, Any], claimable_ids: list[int]
+    context: Any, *, snapshot: dict[str, Any], claimable_ids: list[int]
 ):
     milestones = list((snapshot.get("cumulative_rewards") or {}).get("milestones") or [])
     proven_ids = [int(row.get("id") or 0) for row in milestones[:1]]
@@ -479,14 +479,14 @@ def _claim_wanbao_cumulative_rewards(
                 f"万宝臻宝累抽奖励 {reward_id} 不在已验收的首档动作范围"
             )
         slot = proven_ids.index(reward_id)
-        runtime.click_frame_point(WANBAO_MAIN_SCENE_ID, *proven_centers[slot])
-        yield from runtime.wait_view(
+        context.click_frame_point(WANBAO_MAIN_SCENE_ID, *proven_centers[slot])
+        yield from context.wait_scene(
             WANBAO_XIANGZHEN_REWARD_SCENE_ID,
             WANBAO_MAIN_SCENE_ID,
-            timeout=12.0,
+            wait=12.0,
             label=f"万宝臻宝：领取累抽奖励 {reward_id}",
         )
-        yield from _settle_wanbao_reward_page(runtime, label=f"累抽奖励 {reward_id}")
+        yield from _settle_wanbao_reward_page(context, label=f"累抽奖励 {reward_id}")
         after = read_wanbao_zhenbao_runtime(expected_activity_id=activity_id)
         cumulative_after = after.get("cumulative_rewards") or {}
         if reward_id not in {
@@ -501,11 +501,11 @@ def _claim_wanbao_cumulative_rewards(
     }
 
 
-def complete_wanbao_store(runtime: Any) -> ActivityStoreOperationResult:
+def complete_wanbao_store(context: Any) -> ActivityStoreOperationResult:
     """Buy only the two explicitly approved gem offers; never click cash."""
 
     return operate_activity_store_region(
-        runtime,
+        context,
         scene_id=WANBAO_STORE_SCENE_ID,
         region_title="购买区",
         stability_timeout_seconds=20.0,
@@ -548,61 +548,61 @@ def execute_wanbao_zhenbao_job(
     """
 
     del payload
-    runtime = _runtime(runner, ctx, stop_event)
-    yield from _open_wanbao_main(runtime)
+    context = _behavior_tree_context(runner, ctx, stop_event)
+    yield from _open_wanbao_main(context)
 
     # Every phase starts from a fresh read-only accounting point.  Never let a
     # successful earlier click authorize a later action from a stale snapshot.
     tasks = yield from _run_step(
         "任务",
-        lambda: complete_wanbao_tasks(runtime, _require_snapshot()),
+        lambda: complete_wanbao_tasks(context, _require_snapshot()),
     )
     cumulative = yield from _run_step(
         "累抽奖励",
-        lambda: complete_wanbao_cumulative_rewards(runtime, _require_snapshot()),
+        lambda: complete_wanbao_cumulative_rewards(context, _require_snapshot()),
     )
 
-    draw = apply_wanbao_draw_policy(runtime, _require_snapshot())
+    draw = apply_wanbao_draw_policy(context, _require_snapshot())
     runner._log("skip", f"万宝臻宝：{draw['reason']}，无需继续启宝")
 
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         WANBAO_MAIN_SCENE_ID,
         "商店",
         timeout=10.0,
         label="万宝臻宝：打开商店",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_STORE_SCENE_ID,
-        timeout=15.0,
+        wait=15.0,
         label="万宝臻宝：确认商店",
     )
     store = yield from _run_step(
         "商店",
-        lambda: complete_wanbao_store(runtime),
+        lambda: complete_wanbao_store(context),
     )
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         WANBAO_STORE_SCENE_ID,
         "万宝臻宝",
         timeout=10.0,
         label="万宝臻宝：从商店返回主页",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         WANBAO_MAIN_SCENE_ID,
-        timeout=15.0,
+        wait=15.0,
         label="万宝臻宝：确认回到主页",
     )
     xiangzhen = yield from _run_step(
         "飨珍",
-        lambda: complete_wanbao_xiangzhen(runtime, _require_snapshot()),
+        lambda: complete_wanbao_xiangzhen(context, _require_snapshot()),
     )
     if int(xiangzhen.get("final_scene") or 0) != 34:
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             WANBAO_MAIN_SCENE_ID,
             "返回",
             timeout=10.0,
             label="万宝臻宝：返回世界",
         )
-        yield from runtime.wait_view(34, timeout=15.0, label="万宝臻宝：确认回到世界")
+        yield from context.wait_scene(34, wait=15.0, label="万宝臻宝：确认回到世界")
 
     message = (
         "万宝臻宝：任务、飨珍、累抽奖励与商店均已形成可证明终态；"

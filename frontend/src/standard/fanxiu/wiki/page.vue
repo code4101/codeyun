@@ -5271,7 +5271,7 @@ function getProtocolRowPreview(row: FanxiuProtocolSemanticRow) {
 const businessSnapshot = computed<Record<string, any>>(() => businessSnapshots.value ?? {})
 function mailStatusKey(row: FanxiuMailRecord) {
   if (row.locked) return 'locked'
-  if (row.runtime_status === 'claimed' || row.runtime_status === 'claimed_absent' || row.reward_getted === true || row.status === '已领') return 'processed'
+  if (row.execution_status === 'claimed' || row.execution_status === 'claimed_absent' || row.reward_getted === true || row.status === '已领') return 'processed'
   return 'seen'
 }
 

@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 
 from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
-from backend.core.fanxiu.runtime.mumu_control import (
+from backend.core.fanxiu.client.mumu_control import (
     capture_mumu_window_frame,
     click_mumu_window_processed_point,
     drag_mumu_window_processed_points,

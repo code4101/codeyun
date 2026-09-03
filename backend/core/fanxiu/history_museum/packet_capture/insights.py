@@ -2653,7 +2653,7 @@ def get_fanxiu_packet_runtime_insights(
 
 
 
-def decode_and_sync_fanxiu_runtime_capture(
+def decode_and_sync_behavior_tree_context_capture(
     pcap_path: str | Path,
     *,
     data_dir: str | Path | None = None,

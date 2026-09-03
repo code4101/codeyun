@@ -88,7 +88,7 @@ def _verify_one_claim(
 
 
 def run_dandao_task_rewards_flow(
-    runtime: Any,
+    context: Any,
     *,
     now: datetime | None = None,
     max_claims: int = 20,
@@ -109,7 +109,7 @@ def run_dandao_task_rewards_flow(
     next_daily = next_dandao_task_reward_time(current).strftime("%Y-%m-%d %H:%M:%S")
     if active is None:
         if manage_schedule:
-            runtime.set_next_time(next_daily)
+            context.set_next_time(next_daily)
         return result_with_optional_schedule_hint({
             "result": "success",
             "claimed_count": 0,
@@ -129,7 +129,7 @@ def run_dandao_task_rewards_flow(
             next_time = _next_pending_check_time(current).strftime("%Y-%m-%d %H:%M:%S")
             boundary = "no_claimable_progress"
         if manage_schedule:
-            runtime.set_next_time(next_time)
+            context.set_next_time(next_time)
         return result_with_optional_schedule_hint({
             "result": "success",
             "claimed_count": 0,
@@ -139,16 +139,16 @@ def run_dandao_task_rewards_flow(
         })
 
     scene = yield from open_resource_rank_activity_page(
-        runtime,
+        context,
         adapter,
         activity_id=activity_id,
         now=current,
     )
     if int(scene) != DANDAO_TASK_REWARDS_SCENE_ID:
-        runtime.click_shape_center(int(scene), "任务")
-        yield from runtime.wait_view(
+        context.click_shape_center(int(scene), "任务")
+        yield from context.wait_scene(
             DANDAO_TASK_REWARDS_SCENE_ID,
-            timeout=20.0,
+            wait=20.0,
             label=f"{DANDAO_TASK_REWARDS_LABEL}：等待任务页",
         )
 
@@ -160,19 +160,19 @@ def run_dandao_task_rewards_flow(
             break
         if len(claimed_ids) >= limit:
             raise RuntimeError(f"{DANDAO_TASK_REWARDS_LABEL}：领取达到安全上限 {limit} 仍未收敛")
-        scene_id, score, frame = runtime.current_scene(
+        scene_id, score, frame = context.current_scene(
             [DANDAO_TASK_REWARDS_SCENE_ID],
             update=True,
         )
         if int(scene_id or 0) != DANDAO_TASK_REWARDS_SCENE_ID or float(score or 0.0) < 80.0:
             raise RuntimeError(f"{DANDAO_TASK_REWARDS_LABEL}：领取前未可靠识别 #598")
         task_id = claimable[0]
-        runtime.click_shape(
+        context.click_shape(
             DANDAO_TASK_REWARDS_SCENE_ID,
             DANDAO_TASK_REWARDS_CLAIM_SHAPE,
             frame_data_url=frame,
         )
-        yield from runtime.wait_action_settle(1.0)
+        yield from context.wait_action_settle(1.0)
         after = read_dandao_task_reward_snapshot(activity_id)
         _verify_one_claim(snapshot, after, task_id=task_id)
         claimed_ids.append(task_id)
@@ -185,9 +185,9 @@ def run_dandao_task_rewards_flow(
         else next_daily
     )
     if manage_schedule:
-        runtime.set_next_time(next_time)
+        context.set_next_time(next_time)
     try:
-        result = runtime.go_scene(34)
+        result = context.go_scene(34)
         if hasattr(result, "send"):
             yield from result
     except (InterruptedError, GeneratorExit):
@@ -226,17 +226,17 @@ class DandaoTaskRewardsTaskMixin:
     ) -> str:
         options = dict(payload or {})
 
-        def flow(runtime: Any):
+        def flow(context: Any):
             return (
                 yield from run_dandao_task_rewards_flow(
-                    runtime,
+                    context,
                     max_claims=int(options.get("max_claims") or 20),
                     manage_schedule=False,
                     include_schedule_hint=False,
                 )
             )
 
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             options,

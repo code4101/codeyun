@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from typing import Any, Iterable
 
-from backend.core.fanxiu.behavior_tree.runtime import fanxiu_data_annotation_world_facts_path
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_data_annotation_world_facts_path
 from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_world_facts,
     write_data_annotation_world_facts,
@@ -59,7 +59,7 @@ def select_oldest_claimable_law_mail(snapshot: dict[str, Any]) -> dict[str, Any]
         if not isinstance(item, dict):
             continue
         if not (
-            str(item.get("runtime_status") or "") == "unclaimed"
+            str(item.get("execution_status") or "") == "unclaimed"
             and bool(item.get("present_in_runtime"))
             and not bool(item.get("locked"))
             and str(item.get("action_policy") or "") == "claim"
@@ -107,10 +107,10 @@ class MailClaimLawTaskMixin:
         end_time_ms = _as_int((fact or {}).get("end_time_ms")) if isinstance(fact, dict) else None
         return dict(fact) if end_time_ms and end_time_ms > int(time.time() * 1000) else None
 
-    def _open_storage_bag(self, runtime: Any):
+    def _open_storage_bag(self, context: Any):
         """#525 has no graph edge: use the named #34 entry, then verify #525."""
-        yield from runtime.wait_click(34, "储物袋", timeout=8.0, label="邮件_领法则：进入储物袋")
-        yield from runtime.wait_view(525, timeout=12.0, label="邮件_领法则：等待储物袋")
+        yield from context.wait_click(34, "储物袋", timeout=8.0, label="邮件_领法则：进入储物袋")
+        yield from context.wait_scene(525, wait=12.0, label="邮件_领法则：等待储物袋")
 
     def _remember_law(self, fact: dict[str, Any]) -> None:
         path = fanxiu_data_annotation_world_facts_path()
@@ -140,60 +140,60 @@ class MailClaimLawTaskMixin:
         visit((view.raw or {}).get("shapes") or [])
         return result
 
-    def _use_claimed_law_from_bag(self, runtime: Any, *, base_id: int, name: str, stop_event: Any) -> dict[str, Any]:
-        yield from self._open_storage_bag(runtime)
-        view = runtime.view(525)
+    def _use_claimed_law_from_bag(self, context: Any, *, base_id: int, name: str, stop_event: Any) -> dict[str, Any]:
+        yield from self._open_storage_bag(context)
+        view = context.view(525)
         grid = StorageBagGrid.from_shapes(self._storage_bag_shape_map(view), frame_width=900, frame_height=1600)
         snapshot = read_backpack_ui_snapshot()
         if not snapshot.get("complete"):
             raise RuntimeError(f"邮件_领法则：储物袋 Runtime 未完整加载：{snapshot.get('reason')}")
-        reference = runtime.ocr_fragments(runtime.cur_frame(update=True))
+        reference = context.ocr_fragments(context.cur_frame(update=True))
         window = view.get_shape("窗口")
         if window is None:
             raise RuntimeError("邮件_领法则：缺少 #525 窗口标注")
         for _ in range(40):
-            frame = runtime.cur_frame(update=True)
-            fragments = runtime.ocr_fragments(frame)
+            frame = context.cur_frame(update=True)
+            fragments = context.ocr_fragments(frame)
             viewport = register_storage_bag_viewport_from_quantity_ocr(reference, fragments, grid=grid)
             if not viewport.aligned:
                 raise RuntimeError(f"邮件_领法则：当前格行定位失败：{viewport.reason}")
             cells = visible_storage_bag_cells(grid, viewport)
             plan = plan_storage_bag_item_click(snapshot, target_base_id=base_id, cells=cells, observations=quantity_observations_from_ocr(cells, fragments))
             if plan.ready:
-                runtime.click_frame_point(525, *plan.point)
-                yield from runtime.wait_view(567, timeout=12.0, label="邮件_领法则：等待法则详情")
-                detail = verify_storage_bag_item_detail(plan, expected_name=name, detail_title_texts=[part.get("text") or "" for part in runtime.ocr_fragments(runtime.cur_frame(update=True))])
+                context.click_frame_point(525, *plan.point)
+                yield from context.wait_scene(567, wait=12.0, label="邮件_领法则：等待法则详情")
+                detail = verify_storage_bag_item_detail(plan, expected_name=name, detail_title_texts=[part.get("text") or "" for part in context.ocr_fragments(context.cur_frame(update=True))])
                 if not detail.confirmed:
                     raise RuntimeError(f"邮件_领法则：详情二次核验失败：{detail.reason}")
                 pre_use = next((item for item in snapshot.get("items") or [] if isinstance(item, dict) and item.get("base_id") == base_id and (_as_int(item.get("end_time")) or 0) > int(time.time() * 1000)), None)
                 if pre_use is None:
                     raise RuntimeError("邮件_领法则：使用前未读取到目标法则的动态 end_time")
-                yield from runtime.wait_click(567, "使用", timeout=8.0, label="邮件_领法则：使用已核验法则")
-                yield from runtime.wait_view(177, timeout=12.0, label="邮件_领法则：等待领取结果")
-                yield from runtime.wait_click(177, "继续", timeout=8.0, label="邮件_领法则：关闭领取结果")
-                yield from runtime.goto_view(34)
-                yield from self._open_storage_bag(runtime)
+                yield from context.wait_click(567, "使用", timeout=8.0, label="邮件_领法则：使用已核验法则")
+                yield from context.wait_scene(177, wait=12.0, label="邮件_领法则：等待领取结果")
+                yield from context.wait_click(177, "继续", timeout=8.0, label="邮件_领法则：关闭领取结果")
+                yield from context.go_scene(34)
+                yield from self._open_storage_bag(context)
                 return {"snapshot": read_backpack_ui_snapshot(), "activated": pre_use}
             if plan.status != "target_not_visible" or plan.viewport_runtime_start is None:
                 raise RuntimeError(f"邮件_领法则：储物袋 Runtime-GUI 对齐失败：{plan.reason}")
             directive = plan_storage_bag_scroll(target_runtime_index=int(plan.runtime_index or -1), viewport_runtime_start=plan.viewport_runtime_start, visible_cell_count=len(cells))
             if directive.direction == "none":
                 raise RuntimeError("邮件_领法则：目标应可见但未生成点击计划")
-            runtime.drag_shape_content(window, direction=directive.direction, ratio=0.60 if directive.mode == "coarse" else 0.28, duration=0.55)
-            yield from runtime.wait_action_settle(1.0)
+            context.drag_shape_content(window, direction=directive.direction, ratio=0.60 if directive.mode == "coarse" else 0.28, duration=0.55)
+            yield from context.wait_action_settle(1.0)
         raise RuntimeError("邮件_领法则：储物袋滚动 40 次仍未定位目标")
 
     def _execute_mail_claim_law_task(self, ctx: dict[str, Any], stop_event: Any, payload: dict[str, Any] | None = None):
         payload = dict(payload or {})
-        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
-        yield from self._open_storage_bag(runtime)
+        context = self._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
+        yield from self._open_storage_bag(context)
         active = active_law_end_time(read_backpack_ui_snapshot()) or self._remembered_law()
         if active is not None:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return self._schedule_active_law(active, payload=payload, source="already_active")
-        yield from runtime.goto_view(34)
-        if not self._refresh_recent_mail_packets_for_runtime_log("法则邮件选择", flush_capture=False):
+        yield from context.go_scene(34)
+        if not self._refresh_runtime_mail_snapshot("法则邮件选择", force_refresh=True):
             raise RuntimeError("邮件_领法则：动态邮件模型不可用")
         from backend.db import engine
         selected = select_oldest_claimable_law_mail(current_runtime_mail_sequence_snapshot(lambda: engine))
@@ -203,7 +203,7 @@ class MailClaimLawTaskMixin:
             return "success"
         claim_payload = {**payload, "target_mail_ids": [selected["mail_id"]]}
         yield from self._execute_mail_selective_claim_task(ctx, stop_event, claim_payload)
-        use_result = yield from self._use_claimed_law_from_bag(runtime, base_id=int(selected["base_id"]), name=str(selected["name"]), stop_event=stop_event)
+        use_result = yield from self._use_claimed_law_from_bag(context, base_id=int(selected["base_id"]), name=str(selected["name"]), stop_event=stop_event)
         active = active_law_end_time(use_result.get("snapshot") or {}) or {
             "instance_id": str((use_result.get("activated") or {}).get("instance_id") or ""),
             "base_id": _as_int((use_result.get("activated") or {}).get("base_id")),

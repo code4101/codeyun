@@ -305,9 +305,9 @@ def classify_yunmeng_auto_terminal(text: str) -> YunmengAutoTerminal:
     return YunmengAutoTerminal.UNKNOWN
 
 
-def _observe(runtime: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
-    scene_id, _score, frame = runtime.current_scene(list(scene_ids), update=True)
-    text = runtime.ocr_text(frame)
+def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
+    scene_id, _score, frame = context.current_scene(list(scene_ids), update=True)
+    text = context.ocr_text(frame)
     if scene_id not in scene_ids or not all(
         _compact(anchor) in _compact(text) for anchor in anchors
     ):
@@ -319,14 +319,14 @@ def _observe(runtime: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...])
 
 
 def _shape_matches(
-    runtime: Any,
+    context: Any,
     scene_id: int,
     title: str,
     *,
     threshold: float = YUNMENG_TOGGLE_STATE_MATCH_THRESHOLD,
 ) -> bool:
-    condition = runtime.shape_visible(scene_id, title, threshold=threshold)
-    result = condition.check(runtime, runtime.cur_frame())
+    condition = context.shape_visible(scene_id, title, threshold=threshold)
+    result = condition.check(context, context.cur_frame())
     return bool(result.matched)
 
 
@@ -335,7 +335,7 @@ def _toggle_reference_scene(assets: YunmengNativeAutoAssets) -> int:
 
 
 def _set_required_toggle(
-    runtime: Any,
+    context: Any,
     assets: YunmengNativeAutoAssets,
     asset: YunmengToggleAsset,
     desired: bool,
@@ -349,30 +349,30 @@ def _set_required_toggle(
 
     reference_title = asset.selected if desired else asset.unselected
     reference_scene = _toggle_reference_scene(assets)
-    if _shape_matches(runtime, reference_scene, reference_title):
+    if _shape_matches(context, reference_scene, reference_title):
         return desired
-    runtime.click_shape_center(assets.settings_scene_id, asset.action)
-    yield from runtime.wait_action_settle(0.5)
-    if _shape_matches(runtime, reference_scene, reference_title):
+    context.click_shape_center(assets.settings_scene_id, asset.action)
+    yield from context.wait_action_settle(0.5)
+    if _shape_matches(context, reference_scene, reference_title):
         return desired
-    runtime.click_shape_center(assets.settings_scene_id, asset.action)
-    yield from runtime.wait_action_settle(0.5)
+    context.click_shape_center(assets.settings_scene_id, asset.action)
+    yield from context.wait_action_settle(0.5)
     raise RuntimeError(f"云梦安全开关「{asset.action}」设置后无法验证，已回滚")
 
 
 def _attempt_optional_boost(
-    runtime: Any,
+    context: Any,
     assets: YunmengNativeAutoAssets,
     asset: YunmengToggleAsset,
 ) -> Iterator[Any]:
     """Best-effort enable without ever toggling a possibly-selected boost off."""
 
     reference_scene = _toggle_reference_scene(assets)
-    if not _shape_matches(runtime, reference_scene, asset.unselected):
+    if not _shape_matches(context, reference_scene, asset.unselected):
         return True
-    runtime.click_shape_center(assets.settings_scene_id, asset.action)
-    yield from runtime.wait_action_settle(0.5)
-    return not _shape_matches(runtime, reference_scene, asset.unselected)
+    context.click_shape_center(assets.settings_scene_id, asset.action)
+    yield from context.wait_action_settle(0.5)
+    return not _shape_matches(context, reference_scene, asset.unselected)
 
 
 # Preserve Yunmeng's established private entry point while exposing the
@@ -381,7 +381,7 @@ _set_count = set_verified_integer_slider_count
 
 
 def run_yunmeng_native_auto(
-    runtime: Any,
+    context: Any,
     assets: YunmengNativeAutoAssets,
     request: YunmengNativeAutoRequest,
     *,
@@ -394,10 +394,10 @@ def run_yunmeng_native_auto(
     # The calligraphic first two characters are frequently obscured by the
     # character model.  The stable suffix is sufficient when Runtime scene
     # identity independently agrees with the expected Yunmeng home scene.
-    _observe(runtime, (assets.home_scene_id,), ("试剑",))
-    runtime.click_shape_center(assets.home_scene_id, assets.open_settings)
-    yield from runtime.wait_action_settle(0.5)
-    _observe(runtime, (assets.settings_scene_id,), ("自动挑战设置", "开启自动"))
+    _observe(context, (assets.home_scene_id,), ("试剑",))
+    context.click_shape_center(assets.home_scene_id, assets.open_settings)
+    yield from context.wait_action_settle(0.5)
+    _observe(context, (assets.settings_scene_id,), ("自动挑战设置", "开启自动"))
 
     desired = {
         "use_high_power_boost": request.use_high_power_boost,
@@ -418,13 +418,13 @@ def run_yunmeng_native_auto(
         for name, value in desired.items():
             if name in best_effort_enable:
                 actual_toggles[name] = yield from _attempt_optional_boost(
-                    runtime,
+                    context,
                     assets,
                     TOGGLES[name],
                 )
             else:
                 actual_toggles[name] = yield from _set_required_toggle(
-                    runtime,
+                    context,
                     assets,
                     TOGGLES[name],
                     value,
@@ -445,39 +445,39 @@ def run_yunmeng_native_auto(
         for name, value in desired.items():
             if name in best_effort_enable:
                 actual_toggles[name] = not _shape_matches(
-                    runtime,
+                    context,
                     _toggle_reference_scene(assets),
                     TOGGLES[name].unselected,
                 )
                 continue
             actual_toggles[name] = yield from _set_required_toggle(
-                runtime,
+                context,
                 assets,
                 TOGGLES[name],
                 value,
             )
     yield from _set_count(
-        runtime,
+        context,
         assets,
         request.requested_challenges,
         max_adjustments=request.max_count_adjustments,
     )
     settings = YunmengNativeAutoSettings(
-        requested_challenges=_read_count(runtime, assets),
+        requested_challenges=_read_count(context, assets),
         **actual_toggles,
     )
-    runtime.click_shape_center(assets.settings_scene_id, assets.start_auto)
+    context.click_shape_center(assets.settings_scene_id, assets.start_auto)
 
     last_scene: int | None = None
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
-        yield from runtime.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = runtime.current_scene(
+        yield from context.wait_action_settle(poll_seconds)
+        scene_id, _score, frame = context.current_scene(
             list(assets.terminal_scene_ids),
             update=True,
         )
         last_scene = int(scene_id) if scene_id in assets.terminal_scene_ids else None
-        last_text = runtime.ocr_text(frame)
+        last_text = context.ocr_text(frame)
         terminal = classify_yunmeng_auto_terminal(last_text)
         if last_scene is not None and terminal is not YunmengAutoTerminal.UNKNOWN:
             return YunmengNativeAutoResult(terminal, last_scene, last_text, settings)
@@ -565,16 +565,16 @@ def execute_yunmeng_native_auto_job(
     if stop_event.is_set():
         raise InterruptedError()
 
-    runtime = runner._fanxiu_runtime(ctx)
-    yield from runtime.goto_view(66)
+    context = runner._behavior_tree_context(ctx)
+    yield from context.go_scene(66)
     yield from select_schedule_activity(
-        runtime,
+        context,
         r"云梦试剑",
         enter=True,
         require_runtime_alignment=True,
         now=datetime.now().astimezone(),
     )
-    yield from runtime.wait_view(558, timeout=30.0, label="云梦试剑：等待活动主页 #558")
+    yield from context.wait_scene(558, wait=30.0, label="云梦试剑：等待活动主页 #558")
     assets = YunmengNativeAutoAssets(
         home_scene_id=558,
         settings_scene_id=560,
@@ -598,7 +598,7 @@ def execute_yunmeng_native_auto_job(
         if remaining_gap.required_new_currency == 0:
             break
         if stop_event.is_set():
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             raise InterruptedError()
 
         batch_plan = plan_yunmeng_native_batch(
@@ -624,7 +624,7 @@ def execute_yunmeng_native_auto_job(
             auto_refill_stamina=False,
         )
         result = yield from run_yunmeng_native_auto(
-            runtime,
+            context,
             assets,
             native_request,
             locked_settings=locked_settings,
@@ -632,7 +632,7 @@ def execute_yunmeng_native_auto_job(
         )
         if result.terminal is not YunmengAutoTerminal.COMPLETED:
             if result.terminal is not YunmengAutoTerminal.UNKNOWN:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             raise RuntimeError(
                 "云梦试剑自动挑战未正常完成："
                 f"{result.terminal.value}；"
@@ -644,18 +644,18 @@ def execute_yunmeng_native_auto_job(
             )
         if locked_settings is None:
             locked_settings = result.settings
-        runtime.click_shape_center(562, "确认")
-        yield from runtime.wait_action_settle(0.5)
-        yield from runtime.wait_view(
+        context.click_shape_center(562, "确认")
+        yield from context.wait_action_settle(0.5)
+        yield from context.wait_scene(
             563,
-            timeout=20.0,
+            wait=20.0,
             label="云梦试剑：等待挑战结算 #563",
         )
-        runtime.click_shape_center(563, "点击屏幕关闭")
-        yield from runtime.wait_action_settle(0.5)
-        yield from runtime.wait_view(
+        context.click_shape_center(563, "点击屏幕关闭")
+        yield from context.wait_action_settle(0.5)
+        yield from context.wait_scene(
             558,
-            timeout=20.0,
+            wait=20.0,
             label="云梦试剑：结算后回到主页 #558",
         )
 
@@ -680,7 +680,7 @@ def execute_yunmeng_native_auto_job(
                     "拒绝继续自动规划"
                 )
         except Exception:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             raise
 
         from backend.core.fanxiu.activity.standard_observation import (
@@ -733,7 +733,7 @@ def execute_yunmeng_native_auto_job(
                 except RuntimeError as exc:
                     incomplete_reason = str(exc).removeprefix("云梦试剑：")
         except Exception:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             raise
 
         batches.append(batch_record)
@@ -752,7 +752,7 @@ def execute_yunmeng_native_auto_job(
             cumulative_currency=int(wallet_after["cumulative_currency"]),
         )
 
-    yield from runtime.goto_view(34)
+    yield from context.go_scene(34)
     reached = remaining_gap.required_new_currency == 0
     if not reached and not incomplete_reason:
         incomplete_reason = f"已达到本次批次数上限 {max_batches}"

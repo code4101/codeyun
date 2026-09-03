@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ENTRY_ROOT = Path(
-    r"D:\home\chenkunze\data\m2603codeyun\codepc_mf\fanxiu\data-annotation"
+    r"C:\home\chenkunze\data\m2603codeyun\codepc_mf\fanxiu\data-annotation"
     r"\entries\30b82d72-8a76-4a74-be4b-4fc1591c6ce2"
 )
 TREE_PATH = ENTRY_ROOT / "asset-tree.json"

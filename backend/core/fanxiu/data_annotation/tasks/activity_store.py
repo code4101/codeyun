@@ -85,7 +85,14 @@ def scan_activity_store_region(tokens: Sequence[dict[str, Any]]) -> ActivityStor
         }
         for match in re.finditer(r"[0-9]+", segment_text):
             value = int(match.group(0))
+            prefix = segment_text[: match.start()].rstrip()
             suffix = segment_text[match.end() :]
+            # The lower-left combat-stat toast overlaps some activity-store
+            # regions (for example ``气血+156兆`` on #449).  Its numeric token
+            # can have an exact OCR box and must therefore be rejected by
+            # business syntax, not mistaken for a clickable icon price.
+            if prefix.endswith(("+", "-")):
+                continue
             is_cash = re.match(r"\s*元", suffix) is not None
             if match.start() not in boundaries or match.end() not in boundaries:
                 continue
@@ -160,7 +167,7 @@ def _scans_stably_equivalent(
 
 
 def _read_stable_store_scan(
-    runtime: Any,
+    context: Any,
     *,
     scene_id: int,
     region_title: str,
@@ -170,9 +177,9 @@ def _read_stable_store_scan(
     deadline = time.monotonic() + max(0.5, float(stability_timeout_seconds))
     previous_scan: ActivityStoreRegionScan | None = None
     while True:
-        current_scene, score, frame = runtime.current_scene([int(scene_id)], update=True)
+        current_scene, score, frame = context.current_scene([int(scene_id)], update=True)
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
-            tokens = runtime.ocr_tokens_in_shapes(
+            tokens = context.ocr_tokens_in_shapes(
                 int(scene_id),
                 [str(region_title)],
                 frame_data_url=frame,
@@ -192,7 +199,7 @@ def _read_stable_store_scan(
 
 
 def _wait_store_after_purchase(
-    runtime: Any,
+    context: Any,
     *,
     scene_id: int,
     timeout_seconds: float,
@@ -200,7 +207,7 @@ def _wait_store_after_purchase(
 ) -> None:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        current_scene, score, _frame = runtime.current_scene([int(scene_id), 227], update=True)
+        current_scene, score, _frame = context.current_scene([int(scene_id), 227], update=True)
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             return
         if time.monotonic() >= deadline:
@@ -209,7 +216,7 @@ def _wait_store_after_purchase(
 
 
 def operate_activity_store_region(
-    runtime: Any,
+    context: Any,
     *,
     scene_id: int,
     select_targets: Callable[
@@ -234,7 +241,7 @@ def operate_activity_store_region(
     click_limit = max(1, int(max_clicks))
     while len(clicked_values) < click_limit:
         _frame, scan = _read_stable_store_scan(
-            runtime,
+            context,
             scene_id=int(scene_id),
             region_title=str(region_title),
             stability_timeout_seconds=stability_timeout_seconds,
@@ -256,11 +263,11 @@ def operate_activity_store_region(
             )
         target = selected[0]
         click_x, click_y = target.center
-        runtime.click_frame_point(int(scene_id), click_x, click_y)
+        context.click_frame_point(int(scene_id), click_x, click_y)
         clicked_values.append(target.value)
         previous_signature = signature
         _wait_store_after_purchase(
-            runtime,
+            context,
             scene_id=int(scene_id),
             timeout_seconds=purchase_timeout_seconds,
             poll_seconds=poll_seconds,

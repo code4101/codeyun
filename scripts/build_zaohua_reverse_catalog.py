@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-DEFAULT_ROOT = Path(r"D:\home\chenkunze\data\m2607造化仙缘")
+DEFAULT_ROOT = Path(r"C:\home\chenkunze\data\m2607造化仙缘")
 BUILD_ID = "24123658"
 CONFIG_BUNDLE = "bundle_466deec76ecdf5fc.unity3d"
 XML_BUNDLE = "bundle_0f635d0e0f3874ff.unity3d"

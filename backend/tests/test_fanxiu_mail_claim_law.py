@@ -1,4 +1,7 @@
+import pytest
+
 from backend.core.fanxiu.data_annotation.tasks.mail_claim_law import (
+    MailClaimLawTaskMixin,
     active_law_end_time,
     law_next_time,
     select_oldest_claimable_law_mail,
@@ -6,7 +9,7 @@ from backend.core.fanxiu.data_annotation.tasks.mail_claim_law import (
 
 
 def _mail(mail_id, created, reward):
-    return {"id": mail_id, "create_time_ms": created, "runtime_status": "unclaimed", "present_in_runtime": True, "locked": False, "action_policy": "claim", "payload": {"mail_rewards": [reward]}}
+    return {"id": mail_id, "create_time_ms": created, "execution_status": "unclaimed", "present_in_runtime": True, "locked": False, "action_policy": "claim", "payload": {"mail_rewards": [reward]}}
 
 
 def test_selects_oldest_unlocked_law_mail_from_runtime_reward_structure():
@@ -25,3 +28,38 @@ def test_future_runtime_end_time_is_the_only_schedule_fact():
 
 def test_multiple_live_end_times_fail_closed():
     assert active_law_end_time({"items": [{"end_time": 200}, {"end_time": 300}]}, now_ms=100) is None
+
+
+def test_claim_law_refreshes_the_current_runtime_mail_snapshot(monkeypatch):
+    refresh_calls = []
+
+    class Runtime:
+        def go_scene(self, _view_id):
+            if False:
+                yield None
+
+    class Runner(MailClaimLawTaskMixin):
+        def _behavior_tree_context(self, *_args, **_kwargs):
+            return Runtime()
+
+        def _open_storage_bag(self, _runtime):
+            if False:
+                yield None
+
+        def _remembered_law(self):
+            return None
+
+        def _refresh_runtime_mail_snapshot(self, label, *, force_refresh):
+            refresh_calls.append((label, force_refresh))
+            return False
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.tasks.mail_claim_law.read_backpack_ui_snapshot",
+        lambda: {},
+    )
+    task = Runner()._execute_mail_claim_law_task({}, object(), {})
+
+    with pytest.raises(RuntimeError, match="动态邮件模型不可用"):
+        list(task)
+
+    assert refresh_calls == [("法则邮件选择", True)]

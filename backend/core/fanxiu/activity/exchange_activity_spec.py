@@ -20,7 +20,7 @@ RankingFamily = Literal["gameplay_rank", "resource_rank"]
 
 @dataclass(frozen=True)
 class RankActivityIdBinding:
-    """Declarative rule for resolving one game ranking activity ID."""
+    """Declarative rule for resolving one Runtime ranking-manager ID."""
 
     source: RankBindingSource
     follow_index: int | None = None
@@ -82,7 +82,7 @@ class RankScopeSpec:
     scope: str
     required: bool
     accepted_vo_types: tuple[str, ...]
-    activity_id: RankActivityIdBinding
+    runtime_rank_activity_id: RankActivityIdBinding
     label: str = ""
     role: RankScopeRole | None = None
     subject: RankSubject = "role"
@@ -110,6 +110,96 @@ class RankScopeSpec:
             raise ValueError(f"榜单 {self.scope} 的 VO 类型不能重复")
         if not self.effective_label:
             raise ValueError(f"榜单 {self.scope} 的展示名称不能为空")
+
+
+@dataclass(frozen=True)
+class RankScopeIdentity:
+    """IDs belonging to one ranking scope, kept in their real namespaces.
+
+    ``runtime_rank_activity_id`` selects the live Runtime ranking manager.
+    ``reward_activity_id`` selects the static ``Activity`` row whose
+    ``rewardGroup`` owns the displayed reward tiers.  They often happen to be
+    equal, but that equality is never part of the domain contract.
+    """
+
+    scope: str
+    runtime_rank_activity_id: int
+    reward_activity_id: int | None
+
+    def __post_init__(self) -> None:
+        if not self.scope.strip():
+            raise ValueError("榜单 scope 不能为空")
+        if int(self.runtime_rank_activity_id) <= 0:
+            raise ValueError(f"榜单 {self.scope} 的 Runtime 榜 ID 必须为正数")
+        if self.reward_activity_id is not None and int(self.reward_activity_id) <= 0:
+            raise ValueError(f"榜单 {self.scope} 的奖励 Activity ID 必须为正数")
+
+    def as_dict(self) -> dict[str, int | None]:
+        return {
+            "runtime_rank_activity_id": int(self.runtime_rank_activity_id),
+            "reward_activity_id": (
+                int(self.reward_activity_id)
+                if self.reward_activity_id is not None
+                else None
+            ),
+        }
+
+
+def deserialize_rank_scope_identities(
+    *sources: Mapping[str, Any],
+) -> dict[str, RankScopeIdentity]:
+    """Read the canonical identity map, with one legacy compatibility gate.
+
+    Older rows stored two parallel maps.  No business caller should interpret
+    those maps itself; migration and snapshot upsert rewrite them to
+    ``rank_scope_identities``.
+    """
+
+    result: dict[str, RankScopeIdentity] = {}
+    for source in sources:
+        canonical = source.get("rank_scope_identities")
+        if not isinstance(canonical, Mapping) or not canonical:
+            continue
+        for scope, raw in canonical.items():
+            scope = str(scope)
+            if scope in result:
+                continue
+            if not isinstance(raw, Mapping):
+                continue
+            runtime_id = int(raw.get("runtime_rank_activity_id") or 0)
+            reward_id = int(raw.get("reward_activity_id") or 0) or None
+            if runtime_id > 0:
+                result[scope] = RankScopeIdentity(
+                    scope=scope,
+                    runtime_rank_activity_id=runtime_id,
+                    reward_activity_id=reward_id,
+                )
+    for source in sources:
+        runtime_ids = source.get("rank_scope_activity_ids")
+        if not isinstance(runtime_ids, Mapping) or not runtime_ids:
+            continue
+        reward_ids = source.get("reward_scope_activity_ids")
+        reward_ids = reward_ids if isinstance(reward_ids, Mapping) else {}
+        for scope, value in runtime_ids.items():
+            scope = str(scope)
+            if scope in result:
+                continue
+            runtime_id = int(value or 0)
+            if runtime_id <= 0:
+                continue
+            reward_id = int(reward_ids.get(scope) or runtime_id)
+            result[scope] = RankScopeIdentity(
+                scope=scope,
+                runtime_rank_activity_id=runtime_id,
+                reward_activity_id=reward_id,
+            )
+    return result
+
+
+def serialize_rank_scope_identities(
+    identities: Mapping[str, RankScopeIdentity],
+) -> dict[str, dict[str, int | None]]:
+    return {scope: identity.as_dict() for scope, identity in identities.items()}
 
 
 @dataclass(frozen=True)
@@ -183,13 +273,14 @@ class ExchangeOccurrenceShopAdapter(Protocol):
 
 @runtime_checkable
 class ExchangeOccurrenceRankAdapter(Protocol):
-    """Optional exact rank binding for activities whose phases use different trees."""
+    """Optional exact scope identities for activities with exceptional trees."""
 
-    def resolve_occurrence_rank_activity_ids(
+    def resolve_occurrence_rank_identities(
         self,
         *,
-        activity_id: int,
-    ) -> Mapping[str, int]: ...
+        game_activity_id: int,
+        cross_count: int,
+    ) -> Mapping[str, RankScopeIdentity]: ...
 
 
 @runtime_checkable

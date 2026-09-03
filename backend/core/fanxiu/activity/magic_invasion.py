@@ -215,7 +215,7 @@ def collect_and_store_magic_invasion_activity(
     resolved_scopes: list[tuple[Any, int]] = []
     for scope_spec in activity_spec.rank_scopes:
         try:
-            rank_id = scope_spec.activity_id.resolve(activity_follow=tuple(follow))
+            rank_id = scope_spec.runtime_rank_activity_id.resolve(activity_follow=tuple(follow))
         except ValueError:
             if scope_spec.required:
                 raise
@@ -358,8 +358,12 @@ def collect_and_store_magic_invasion_activity(
         "period_packet_id": period["packet_id"],
         "world_level": period["world_level"],
         "rank_activity_ids": follow,
-        "rank_scope_activity_ids": {
-            scope.scope: rank_id for scope, rank_id in resolved_scopes
+        "rank_scope_identities": {
+            scope.scope: {
+                "runtime_rank_activity_id": rank_id,
+                "reward_activity_id": rank_id if scope.reward_tiers_enabled else None,
+            }
+            for scope, rank_id in resolved_scopes
         },
         "current_related_ranking_scopes": sorted(ranking_merge.current_related_scopes),
         "retained_related_ranking_scopes": sorted(ranking_merge.retained_related_scopes),

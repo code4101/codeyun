@@ -6,7 +6,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-class FanxiuBehaviorTreeRuntimeLogEntry(BaseModel):
+class FanxiuKernelSchedulerLogEntry(BaseModel):
     id: str = ""
     time: str = ""
     kind: str = ""
@@ -21,23 +21,23 @@ class FanxiuBehaviorTreeRuntimeLogEntry(BaseModel):
     ts: str = ""
 
 
-class FanxiuBehaviorTreeRuntimeLogResponse(BaseModel):
-    entries: list[FanxiuBehaviorTreeRuntimeLogEntry] = Field(default_factory=list)
+class FanxiuKernelSchedulerLogResponse(BaseModel):
+    entries: list[FanxiuKernelSchedulerLogEntry] = Field(default_factory=list)
     path: str = ""
 
 
-class FanxiuBehaviorTreeRuntimeCellLog(BaseModel):
+class FanxiuKernelSchedulerCellLog(BaseModel):
     id: str = ""
     title: str = ""
     source_kind: str = "command"
     source: str = ""
     started_at: str = ""
     ended_at: str = ""
-    entries: list[FanxiuBehaviorTreeRuntimeLogEntry] = Field(default_factory=list)
+    entries: list[FanxiuKernelSchedulerLogEntry] = Field(default_factory=list)
 
 
-class FanxiuBehaviorTreeRuntimeCellLogResponse(BaseModel):
-    cells: list[FanxiuBehaviorTreeRuntimeCellLog] = Field(default_factory=list)
+class FanxiuKernelSchedulerCellLogResponse(BaseModel):
+    cells: list[FanxiuKernelSchedulerCellLog] = Field(default_factory=list)
     path: str = ""
 
 
@@ -89,7 +89,7 @@ class FanxiuInfoWindowControlStatus(BaseModel):
     scene: dict[str, Any] = Field(default_factory=dict)
 
 
-class FanxiuBehaviorTreeRuntimeStatus(BaseModel):
+class FanxiuKernelSchedulerStatus(BaseModel):
     ok: bool = True
     behavior_tree_enabled: bool = True
     running: bool = False
@@ -125,14 +125,14 @@ class FanxiuBehaviorTreeRuntimeStatus(BaseModel):
     cell_logs: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class FanxiuBehaviorTreeRuntimeCodeCellRequest(BaseModel):
+class FanxiuKernelSchedulerCodeCellRequest(BaseModel):
     entry_id: str
     code: str = Field(min_length=1)
     timeout_seconds: float = Field(120.0, ge=1.0, le=21600.0)
     max_output_chars: int = Field(4000, ge=200, le=20000)
 
 
-class FanxiuBehaviorTreeRuntimeTaskCellRequest(BaseModel):
+class FanxiuKernelSchedulerTaskCellRequest(BaseModel):
     entry_id: str
     task_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -140,53 +140,53 @@ class FanxiuBehaviorTreeRuntimeTaskCellRequest(BaseModel):
     effective_now: Optional[datetime] = None
 
 
-class FanxiuBehaviorTreeRuntimeKernelRestartRequest(BaseModel):
+class FanxiuKernelSchedulerKernelRestartRequest(BaseModel):
     entry_id: str
     timeout_seconds: float = Field(5.0, ge=0.1, le=60.0)
 
 
-class FanxiuBehaviorTreeRuntimeDeviceRestartRequest(BaseModel):
+class FanxiuKernelSchedulerDeviceRestartRequest(BaseModel):
     entry_id: str
 
 
-class FanxiuBehaviorTreeRuntimeDeviceRestartResponse(BaseModel):
+class FanxiuKernelSchedulerDeviceRestartResponse(BaseModel):
     ok: bool = True
     recovered: bool = False
     status: str = ""
     message: str = ""
     device: dict[str, Any] = Field(default_factory=dict)
-    runtime: FanxiuBehaviorTreeRuntimeStatus = Field(default_factory=FanxiuBehaviorTreeRuntimeStatus)
+    scheduler: FanxiuKernelSchedulerStatus = Field(default_factory=FanxiuKernelSchedulerStatus)
 
 
-class FanxiuBehaviorTreeRuntimeStopRequest(BaseModel):
+class FanxiuKernelSchedulerStopRequest(BaseModel):
     entry_id: Optional[str] = None
 
 
-class FanxiuBehaviorTreeRuntimeBehaviorTreeRequest(BaseModel):
+class FanxiuKernelSchedulerBehaviorTreeRequest(BaseModel):
     entry_id: str
     enabled: bool
 
 
-class FanxiuBehaviorTreeRuntimeGuardRequest(BaseModel):
+class FanxiuKernelSchedulerGuardRequest(BaseModel):
     entry_id: str
     guard_id: str = "device_health"
     enabled: bool
     interval_seconds: float = Field(2.0, ge=0.5, le=30)
 
 
-class FanxiuBehaviorTreeRuntimeGuardGroupRequest(BaseModel):
+class FanxiuKernelSchedulerGuardGroupRequest(BaseModel):
     entry_id: str
     enabled: bool
 
 
-class FanxiuBehaviorTreeRuntimeIsolationRequest(BaseModel):
+class FanxiuKernelSchedulerIsolationRequest(BaseModel):
     entry_id: str
     enabled: bool
     token: str = ""
     ttl_seconds: float = Field(21600.0, ge=60.0, le=86400.0)
 
 
-class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
+class FanxiuKernelSchedulerTaskItem(BaseModel):
     id: str
     task_type: str
     label: str = ""
@@ -195,9 +195,9 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     template_label: str = ""
     template_source: str = "preset"
     trigger_description: str = ""
-    # Persisted compatibility value.  It predates the Behavior Tree Runtime
+    # Persisted compatibility value.  It predates the Kernel Scheduler
     # terminology and must not be used as a new Python/module name.
-    source: str = "data_annotation_runtime"
+    source: str = "kernel_scheduler"
     legacy_name: str = ""
     interruptible: bool = True
     dispatch_level: int = Field(0, ge=0, le=5)
@@ -218,14 +218,14 @@ class FanxiuDataAnnotationSchedulerTaskItem(BaseModel):
     finished_at: Optional[str] = None
 
 
-class FanxiuDataAnnotationSchedulerTasksResponse(BaseModel):
+class FanxiuKernelSchedulerTasksResponse(BaseModel):
     ok: bool = True
-    tasks: list[FanxiuDataAnnotationSchedulerTaskItem] = Field(default_factory=list)
+    tasks: list[FanxiuKernelSchedulerTaskItem] = Field(default_factory=list)
     job_group_enabled: bool = True
     path: str = ""
 
 
-class FanxiuDataAnnotationSchedulerTaskUpdate(BaseModel):
+class FanxiuKernelSchedulerTaskUpdate(BaseModel):
     id: str
     dispatch_level: Optional[int] = Field(default=None, ge=0, le=5)
     dispatch_order: Optional[int] = Field(default=None, ge=0, le=9999)
@@ -256,7 +256,7 @@ class FanxiuGameStateInspectionStatus(BaseModel):
     updated_at: Optional[float] = None
 
 
-class FanxiuDataAnnotationSchedulerTimeSequenceItem(BaseModel):
+class FanxiuKernelSchedulerTimeSequenceItem(BaseModel):
     task_id: str
     task_label: str
     original_next_time: Optional[str] = None
@@ -264,28 +264,28 @@ class FanxiuDataAnnotationSchedulerTimeSequenceItem(BaseModel):
     bias_minutes: int = 0
 
 
-class FanxiuDataAnnotationSchedulerTimeSequenceGroup(BaseModel):
+class FanxiuKernelSchedulerTimeSequenceGroup(BaseModel):
     key: str
     original_time: str
     task_ids: list[str] = Field(default_factory=list)
-    items: list[FanxiuDataAnnotationSchedulerTimeSequenceItem] = Field(default_factory=list)
+    items: list[FanxiuKernelSchedulerTimeSequenceItem] = Field(default_factory=list)
 
 
-class FanxiuDataAnnotationSchedulerTimeSequenceResponse(BaseModel):
+class FanxiuKernelSchedulerTimeSequenceResponse(BaseModel):
     ok: bool = True
-    groups: list[FanxiuDataAnnotationSchedulerTimeSequenceGroup] = Field(default_factory=list)
+    groups: list[FanxiuKernelSchedulerTimeSequenceGroup] = Field(default_factory=list)
 
 
-class FanxiuDataAnnotationSchedulerTimeSequenceUpdateGroup(BaseModel):
+class FanxiuKernelSchedulerTimeSequenceUpdateGroup(BaseModel):
     key: str
     task_ids: list[str] = Field(default_factory=list)
 
 
-class FanxiuDataAnnotationSchedulerTimeSequenceUpdateRequest(BaseModel):
-    groups: list[FanxiuDataAnnotationSchedulerTimeSequenceUpdateGroup] = Field(default_factory=list)
+class FanxiuKernelSchedulerTimeSequenceUpdateRequest(BaseModel):
+    groups: list[FanxiuKernelSchedulerTimeSequenceUpdateGroup] = Field(default_factory=list)
 
 
-class FanxiuDataAnnotationSchedulerPlanItem(BaseModel):
+class FanxiuKernelSchedulerPlanItem(BaseModel):
     id: str
     task_type: str
     label: str = ""
@@ -304,29 +304,29 @@ class FanxiuDataAnnotationSchedulerPlanItem(BaseModel):
     fact: dict[str, Any] = Field(default_factory=dict)
 
 
-class FanxiuDataAnnotationSchedulerPlanResponse(BaseModel):
+class FanxiuKernelSchedulerPlanResponse(BaseModel):
     ok: bool = True
     next_action: str = "idle"
     message: str = ""
     job_group_enabled: bool = True
     blocking_overlays: list[dict[str, Any]] = Field(default_factory=list)
-    runtime: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
     facts_summary: dict[str, Any] = Field(default_factory=dict)
-    due_tasks: list[FanxiuDataAnnotationSchedulerPlanItem] = Field(default_factory=list)
-    tasks: list[FanxiuDataAnnotationSchedulerPlanItem] = Field(default_factory=list)
+    due_tasks: list[FanxiuKernelSchedulerPlanItem] = Field(default_factory=list)
+    tasks: list[FanxiuKernelSchedulerPlanItem] = Field(default_factory=list)
     path: str = ""
 
 
-class FanxiuDataAnnotationSchedulerRunDueRequest(BaseModel):
+class FanxiuKernelSchedulerRunDueRequest(BaseModel):
     entry_id: str
 
 
-class FanxiuDataAnnotationSchedulerSettingsRequest(BaseModel):
+class FanxiuKernelSchedulerSettingsRequest(BaseModel):
     job_group_enabled: bool
     entry_id: str = ""
 
 
-class FanxiuDataAnnotationSchedulerRunNowRequest(BaseModel):
+class FanxiuKernelSchedulerRunNowRequest(BaseModel):
     entry_id: str
     task_id: str
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -335,24 +335,24 @@ class FanxiuDataAnnotationSchedulerRunNowRequest(BaseModel):
     business_time_mode: Literal["planned", "current"] = "planned"
 
 
-class FanxiuDataAnnotationSchedulerTriggerOnceRequest(BaseModel):
+class FanxiuKernelSchedulerTriggerOnceRequest(BaseModel):
     entry_id: str
     task_id: str
 
 
-class FanxiuDataAnnotationSchedulerTriggerOnceResponse(BaseModel):
+class FanxiuKernelSchedulerTriggerOnceResponse(BaseModel):
     ok: bool = True
     task_id: str
     next_time: str
 
 
-class FanxiuDataAnnotationSchedulerNextTimeRequest(BaseModel):
+class FanxiuKernelSchedulerNextTimeRequest(BaseModel):
     entry_id: str
     task_id: str
     next_time: Optional[str] = None
 
 
-class FanxiuDataAnnotationSchedulerNextTimeResponse(BaseModel):
+class FanxiuKernelSchedulerNextTimeResponse(BaseModel):
     ok: bool = True
     task_id: str
     next_time: Optional[str] = None

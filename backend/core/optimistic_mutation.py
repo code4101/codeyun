@@ -28,10 +28,15 @@ def stale_field_conflicts(
 
     expected = dict(expected_fields or {})
     conflicts: list[str] = []
-    for field_name in updates:
+    for field_name, requested_value in updates.items():
         if field_name not in expected or not hasattr(resource, field_name):
             conflicts.append(field_name)
             continue
-        if getattr(resource, field_name) != expected[field_name]:
+        current_value = getattr(resource, field_name)
+        # A lost response may retry after the first request already committed.
+        # Treat an already-achieved target as an idempotent success.
+        if current_value == requested_value:
+            continue
+        if current_value != expected[field_name]:
             conflicts.append(field_name)
     return conflicts

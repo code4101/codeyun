@@ -29,6 +29,17 @@ _CHAT_GROUP_TAB_LABELS = {
 }
 
 
+def select_chat_channel_title_patterns(channel: int) -> list[str]:
+    """Return stable GUI row-title patterns implied by the channel contract."""
+
+    # ChatType.ChatChannelType.WORLD == 4.  The client renders its row from
+    # ``ChatData:GetChatName`` using the current realm/server name, so the
+    # volatile latest-message preview is not the only safe alignment evidence.
+    if int(channel) == 4:
+        return [r"(?:世界|人界|灵界|仙界).*传音群"]
+    return []
+
+
 def select_chat_channel_route(
     channel: int,
     channel_rows: Iterable[Mapping[str, Any]],
@@ -229,6 +240,7 @@ def read_chat_channel_gui_target(channel: int, sub_channel_id: int) -> dict[str,
         "sub_channel_id": int(sub_channel_id),
         "channel_key": f"{int(channel)}_{int(sub_channel_id)}",
         "anchors": anchors,
+        "title_patterns": select_chat_channel_title_patterns(channel),
         "latest_message": latest,
         "source": (
             "ChatMgr.Model.ChatData._ChatDataDic + "

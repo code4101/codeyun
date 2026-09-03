@@ -128,9 +128,9 @@
                 <el-button
                   size="small"
                   plain
-                  @click="router.push({ path: '/fanxiu/data-annotation/runtime', query: { ...route.query, entry_id: selectedEntryId || route.query.entry_id } })"
+                  @click="router.push({ path: '/fanxiu/kernel-scheduler', query: { ...route.query, entry_id: selectedEntryId || route.query.entry_id } })"
                 >
-                  行为树 Runtime
+                  Kernel 调度器
                 </el-button>
               </div>
             </div>
@@ -415,12 +415,12 @@
                   <span>{{ navigationIncidentStatusLabel(selectedNavigationIncident.status) }}</span>
                   <span>目标 #{{ selectedNavigationIncident.target_scene_id ?? '?' }}</span>
                   <span>{{ selectedNavigationIncident.elapsed_seconds ?? 0 }} 秒</span>
-                  <span v-if="selectedNavigationIncident.runtime?.task">{{ selectedNavigationIncident.runtime.task }}</span>
-                  <span v-if="selectedNavigationIncident.runtime?.cell_id">
-                    {{ selectedNavigationIncident.runtime.cell_id }}
+                  <span v-if="selectedNavigationIncident.context?.task">{{ selectedNavigationIncident.context.task }}</span>
+                  <span v-if="selectedNavigationIncident.context?.cell_id">
+                    {{ selectedNavigationIncident.context.cell_id }}
                   </span>
-                  <span v-if="selectedNavigationIncident.runtime?.kernel_generation !== null && selectedNavigationIncident.runtime?.kernel_generation !== undefined">
-                    Kernel {{ selectedNavigationIncident.runtime.kernel_generation }}
+                  <span v-if="selectedNavigationIncident.context?.kernel_generation !== null && selectedNavigationIncident.context?.kernel_generation !== undefined">
+                    Kernel {{ selectedNavigationIncident.context.kernel_generation }}
                   </span>
                 </div>
                 <div class="navigation-incident-trigger">
@@ -1426,68 +1426,68 @@
       </template>
     </el-dialog>
     <el-dialog
-      v-model="runtimeLogDialogVisible"
-      class="runtime-log-dialog"
+      v-model="schedulerLogDialogVisible"
+      class="scheduler-log-dialog"
       title="任务调试台日志"
       width="720px"
       append-to-body
       top="10vh"
     >
-      <div v-if="runtimeLogs.length" class="runtime-log-list">
+      <div v-if="schedulerLogs.length" class="scheduler-log-list">
         <div
-          v-for="entry in pagedRuntimeLogs"
+          v-for="entry in pagedSchedulerLogs"
           :key="entry.id"
-          class="runtime-log-row"
+          class="scheduler-log-row"
           :class="`is-${entry.kind}`"
         >
-          <span class="runtime-log-time">{{ entry.time }}</span>
-          <span class="runtime-log-kind">{{ runtimeLogKindLabel(entry.kind) }}</span>
-          <span class="runtime-log-message">{{ entry.message }}</span>
+          <span class="scheduler-log-time">{{ entry.time }}</span>
+          <span class="scheduler-log-kind">{{ schedulerLogKindLabel(entry.kind) }}</span>
+          <span class="scheduler-log-message">{{ entry.message }}</span>
         </div>
       </div>
-      <div v-else class="runtime-log-empty">暂无日志</div>
-      <div v-if="runtimeLogs.length" class="runtime-log-pager">
-        <span>{{ runtimeLogPageStart }}-{{ runtimeLogPageEnd }} / {{ runtimeLogs.length }}</span>
+      <div v-else class="scheduler-log-empty">暂无日志</div>
+      <div v-if="schedulerLogs.length" class="scheduler-log-pager">
+        <span>{{ schedulerLogPageStart }}-{{ schedulerLogPageEnd }} / {{ schedulerLogs.length }}</span>
         <StandardPagination
-          v-model:page="runtimeLogPage"
-          :page-size="RUNTIME_LOG_PAGE_SIZE"
-          :total="runtimeLogs.length"
+          v-model:page="schedulerLogPage"
+          :page-size="SCHEDULER_LOG_PAGE_SIZE"
+          :total="schedulerLogs.length"
           :show-page-size="false"
         />
       </div>
       <template #footer>
-        <el-button :disabled="!runtimeLogs.length" @click="clearRuntimeLogs">清空</el-button>
-        <el-button type="primary" @click="runtimeLogDialogVisible = false">关闭</el-button>
+        <el-button :disabled="!schedulerLogs.length" @click="clearSchedulerLogs">清空</el-button>
+        <el-button type="primary" @click="schedulerLogDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
     <el-dialog
-      v-model="runtimeFactsDialogVisible"
-      class="runtime-facts-dialog"
+      v-model="schedulerFactsDialogVisible"
+      class="scheduler-facts-dialog"
       title="任务调试台事实"
       width="780px"
       append-to-body
       top="10vh"
     >
-      <div class="runtime-facts-path">{{ runtimeFactsPath || 'world_facts.json' }}</div>
-      <pre class="runtime-facts-json">{{ runtimeFactsJson }}</pre>
+      <div class="scheduler-facts-path">{{ schedulerFactsPath || 'world_facts.json' }}</div>
+      <pre class="scheduler-facts-json">{{ schedulerFactsJson }}</pre>
       <template #footer>
-        <el-button :loading="runtimeFactsLoading" @click="loadRuntimeFacts">刷新</el-button>
-        <el-button type="primary" @click="runtimeFactsDialogVisible = false">关闭</el-button>
+        <el-button :loading="schedulerFactsLoading" @click="loadSchedulerFacts">刷新</el-button>
+        <el-button type="primary" @click="schedulerFactsDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
     <el-dialog
-      v-model="runtimePlanDialogVisible"
-      class="runtime-facts-dialog"
+      v-model="schedulerPlanDialogVisible"
+      class="scheduler-facts-dialog"
       title="任务调试台计划"
       width="780px"
       append-to-body
       top="10vh"
     >
-      <div class="runtime-facts-path">{{ runtimePlanPath || 'scheduler_tasks.json' }}</div>
-      <pre class="runtime-facts-json">{{ runtimePlanJson }}</pre>
+      <div class="scheduler-facts-path">{{ schedulerPlanPath || 'scheduler_tasks.json' }}</div>
+      <pre class="scheduler-facts-json">{{ schedulerPlanJson }}</pre>
       <template #footer>
-        <el-button :loading="runtimePlanLoading" @click="loadRuntimePlan">刷新</el-button>
-        <el-button type="primary" @click="runtimePlanDialogVisible = false">关闭</el-button>
+        <el-button :loading="schedulerPlanLoading" @click="loadSchedulerPlan">刷新</el-button>
+        <el-button type="primary" @click="schedulerPlanDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -1514,7 +1514,7 @@ import StandardPagination from '@/components/StandardPagination.vue';
 import {
   annotateFanxiuDataAnnotationMacroShape,
   clearFanxiuGameWindow2BurstFrames,
-  clearFanxiuBehaviorTreeRuntimeLogs,
+  clearFanxiuKernelSchedulerLogs,
   clickFanxiuGameWindow2,
   compileFanxiuPseudoCode,
   createFanxiuPseudoCodeCard,
@@ -1530,12 +1530,12 @@ import {
   getFanxiuDataAnnotationNavigationIncident,
   getFanxiuDataAnnotationRecognitionAmbiguity,
   getFanxiuDataAnnotationRecognitionOps,
-  getFanxiuBehaviorTreeRuntimeStatus,
-  getFanxiuBehaviorTreeRuntimeLogs,
+  getFanxiuKernelSchedulerStatus,
+  getFanxiuKernelSchedulerLogs,
   getFanxiuDataAnnotationWorldFacts,
   getFanxiuInfoWindowStatus,
-  getFanxiuDataAnnotationSchedulerPlan,
-  getFanxiuDataAnnotationSchedulerTasks,
+  getFanxiuKernelSchedulerPlan,
+  getFanxiuKernelSchedulerTasks,
   getFanxiuGameWindow2MatchImage,
   getFanxiuGameWindow2Screenshot,
   getFanxiuGameWindow2PreLabel,
@@ -1553,12 +1553,12 @@ import {
   saveFanxiuGameWindow2Frame,
   saveFanxiuGameWindow2PreLabel,
   saveFanxiuDataAnnotationAssetTree,
-  runDueFanxiuDataAnnotationSchedulerTasks,
-  runNowFanxiuDataAnnotationSchedulerTask,
+  runDueFanxiuKernelSchedulerTasks,
+  runNowFanxiuKernelSchedulerTask,
   screencapFanxiuGameWindow2,
   startFanxiuGameWindow2Service,
   startFanxiuPseudoCode,
-  stopFanxiuBehaviorTreeRuntimeCurrentTask,
+  stopFanxiuKernelSchedulerCurrentTask,
   stopFanxiuVisualScript,
   textFanxiuGameWindow2,
   updateFanxiuPseudoCodeCard,
@@ -1572,7 +1572,7 @@ import {
   type FanxiuGameWindow2ScreenshotItem,
   type FanxiuGameWindow2PreLabelBox,
   type FanxiuGameWindow2PreLabelPayload,
-  type FanxiuBehaviorTreeRuntimeStatus,
+  type FanxiuKernelSchedulerStatus,
   type FanxiuDataAnnotationNavigationIncident,
   type FanxiuDataAnnotationRecognitionAmbiguitySummary,
   type FanxiuDataAnnotationSaveFrameResponse,
@@ -1581,8 +1581,8 @@ import {
   type FanxiuDataAnnotationRecognitionOpsResponse,
   type FanxiuDataAnnotationMacroAnnotateResponse,
   type FanxiuDataAnnotationOcrFrameToken,
-  type FanxiuDataAnnotationSchedulerTaskItem,
-  type FanxiuBehaviorTreeRuntimeLogEntry,
+  type FanxiuKernelSchedulerTaskItem,
+  type FanxiuKernelSchedulerLogEntry,
   type FanxiuPseudoCodeCard,
   type FanxiuPseudoCodeCardScope,
   type FanxiuPseudoCodeRunResponse,
@@ -1664,11 +1664,11 @@ type RotateDegrees = '0' | '90' | '180' | '270';
 type WindowViewMode = 'live' | 'control' | 'off';
 type WindowTitleMatch = 'contains' | 'exact';
 type MumuChannel = 'desktop' | 'adb';
-type RuntimeChannelUse = 'frontend' | 'runtime' | 'save';
-type RuntimeChannelPolicyChannel = 'selected' | MumuChannel;
+type SchedulerChannelUse = 'frontend' | 'scheduler' | 'save';
+type SchedulerChannelPolicyChannel = 'selected' | MumuChannel;
 
-interface RuntimeChannelPolicy {
-  mumu: RuntimeChannelPolicyChannel;
+interface SchedulerChannelPolicy {
+  mumu: SchedulerChannelPolicyChannel;
 }
 
 interface WindowSceneDefaults {
@@ -1882,9 +1882,9 @@ const MIN_CONTENT_VISIBLE_AREA_RATIO = 0.2;
 const MIN_CONTENT_VISIBLE_AXIS_RATIO = Math.sqrt(MIN_CONTENT_VISIBLE_AREA_RATIO);
 const VISUAL_ACTION_MARKER_START = '<!-- codeyun-visual-action-v1';
 const VISUAL_ACTION_MARKER_END = '-->';
-const RUNTIME_CHANNEL_POLICIES: Record<RuntimeChannelUse, RuntimeChannelPolicy> = {
+const SCHEDULER_CHANNEL_POLICIES: Record<SchedulerChannelUse, SchedulerChannelPolicy> = {
   frontend: { mumu: 'selected' },
-  runtime: { mumu: 'adb' },
+  scheduler: { mumu: 'adb' },
   save: { mumu: 'adb' },
 };
 const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
@@ -1973,7 +1973,7 @@ watch(activeSceneRelationGraphTab, (tab) => {
 });
 const selectedWindowKey = ref<WindowSceneKey>('mumu');
 const serviceStatus = ref<FanxiuGameWindow2ServiceStatus | null>(null);
-const runtimeLoading = ref(false);
+const schedulerLoading = ref(false);
 const connectionLoading = ref(false);
 
 const trimBorderText = ref('0,0,0,0');
@@ -4187,7 +4187,7 @@ const loadServiceStatus = async (silent = false, options: { force?: boolean } = 
   const entryId = selectedEntryId.value;
   if (!entryId || windowViewMode.value === 'off') {
     serviceStatus.value = null;
-    runtimeLoading.value = false;
+    schedulerLoading.value = false;
     serviceStatusLastLoadedAt = 0;
     return;
   }
@@ -4201,7 +4201,7 @@ const loadServiceStatus = async (silent = false, options: { force?: boolean } = 
     return;
   }
   serviceStatusRequestInFlight = true;
-  runtimeLoading.value = !silent;
+  schedulerLoading.value = !silent;
   try {
     serviceStatus.value = await getFanxiuGameWindow2ServiceStatus();
     serviceStatusLastLoadedAt = Date.now();
@@ -4209,7 +4209,7 @@ const loadServiceStatus = async (silent = false, options: { force?: boolean } = 
     if (!silent) ElMessage.error(getErrorMessage(error));
   } finally {
     serviceStatusRequestInFlight = false;
-    runtimeLoading.value = false;
+    schedulerLoading.value = false;
   }
 };
 
@@ -4242,7 +4242,7 @@ const handleEntryChange = async () => {
   persistEntrySelection(selectedEntryId.value);
   applyWindowConfig();
   if (selectedEntryId.value) await loadEntryAssetTree(selectedEntryId.value);
-  void refreshRuntimeTaskStatus();
+  void refreshSchedulerTaskStatus();
   if (windowViewMode.value !== 'off') {
     await refreshStreamToken();
     if (windowViewMode.value === 'control') void loadServiceStatus(true, { force: true });
@@ -5062,21 +5062,21 @@ const waitForCurrentLiveFrameDataUrl = async (timeoutMs: number, signal?: AbortS
   return captureCurrentLiveFrameDataUrl();
 };
 
-const resolveMumuChannelForUse = (use: RuntimeChannelUse = 'frontend'): MumuChannel => {
-  const policy = RUNTIME_CHANNEL_POLICIES[use] ?? RUNTIME_CHANNEL_POLICIES.frontend;
+const resolveMumuChannelForUse = (use: SchedulerChannelUse = 'frontend'): MumuChannel => {
+  const policy = SCHEDULER_CHANNEL_POLICIES[use] ?? SCHEDULER_CHANNEL_POLICIES.frontend;
   return policy.mumu === 'selected' ? mumuChannel.value : policy.mumu;
 };
 
-const resolveRuntimeInputBackend = (use: RuntimeChannelUse = 'frontend'): MumuChannel => (
+const resolveSchedulerInputBackend = (use: SchedulerChannelUse = 'frontend'): MumuChannel => (
   selectedWindowKey.value === 'mumu' ? resolveMumuChannelForUse(use) : 'desktop'
 );
 
-const shouldCaptureWithAdb = (use: RuntimeChannelUse = 'frontend') => (
+const shouldCaptureWithAdb = (use: SchedulerChannelUse = 'frontend') => (
   selectedWindowKey.value === 'mumu' && resolveMumuChannelForUse(use) === 'adb'
 );
 
 const captureCurrentFrameDataUrl = async (
-  use: RuntimeChannelUse = 'frontend',
+  use: SchedulerChannelUse = 'frontend',
   options: {
     preferLiveFrame?: boolean;
     liveFrameWaitMs?: number;
@@ -6270,7 +6270,7 @@ const normalizeControlPoint = (point: { x: number; y: number }) => ({
   y: Math.round(clamp(point.y, 0, Math.max(0, naturalHeight.value - 1))),
 });
 
-const buildRemoteInputPayloadBase = (use: RuntimeChannelUse = 'frontend') => ({
+const buildRemoteInputPayloadBase = (use: SchedulerChannelUse = 'frontend') => ({
   entry_id: selectedEntryId.value,
   title: targetTitle.value.trim(),
   title_match: titleMatch.value,
@@ -6283,7 +6283,7 @@ const buildRemoteInputPayloadBase = (use: RuntimeChannelUse = 'frontend') => ({
   fixed_height: fixedFrameHeight.value,
   frame_width: naturalWidth.value,
   frame_height: naturalHeight.value,
-  input_backend: resolveRuntimeInputBackend(use),
+  input_backend: resolveSchedulerInputBackend(use),
 });
 
 const sendRemoteClick = async (point: { x: number; y: number }) => {
@@ -7075,7 +7075,7 @@ onBeforeUnmount(() => {
   stopShapeMaskSampling();
   stopShapeToleranceSampling();
   stopShapeDiscriminatorSampling();
-  stopRuntimeTaskPolling();
+  stopSchedulerTaskPolling();
   stopRecognitionOpsPolling();
   cancelShapeDraft();
   finishShapeDrag();
@@ -7170,12 +7170,12 @@ type SceneJumpEntry = {
   count: number;
 };
 
-type RuntimeLogKind = 'start' | 'wait' | 'action' | 'success' | 'stop' | 'error' | 'detail';
+type SchedulerLogKind = 'start' | 'wait' | 'action' | 'success' | 'stop' | 'error' | 'detail';
 
-type RuntimeLogEntry = FanxiuBehaviorTreeRuntimeLogEntry & {
+type SchedulerLogEntry = FanxiuKernelSchedulerLogEntry & {
   id: string;
   time: string;
-  kind: RuntimeLogKind | string;
+  kind: SchedulerLogKind | string;
   message: string;
 };
 
@@ -7275,8 +7275,8 @@ const getDataAnnotationUiStateStorageKey = (entryId = selectedEntryId.value) => 
   entryId ? `${DATA_ANNOTATION_UI_STATE_STORAGE_KEY}.${entryId}` : DATA_ANNOTATION_UI_STATE_STORAGE_KEY
 );
 const GAME_MACRO_FRAME_MATCH_THRESHOLD = 80;
-const RUNTIME_LOG_PAGE_SIZE = 20;
-const RUNTIME_LOG_PREVIEW_LIMIT = 80;
+const SCHEDULER_LOG_PAGE_SIZE = 20;
+const SCHEDULER_LOG_PREVIEW_LIMIT = 80;
 const annotationCanvasRef = ref<HTMLElement | null>(null);
 const selectedAssetId = ref<string | null>(null);
 const selectedShapeId = ref<string | null>(null);
@@ -7341,25 +7341,25 @@ const imageCompareCanvasStyleOf = (size: { width: number; height: number }) => (
 });
 const imageCompareSavedCanvasStyle = computed(() => imageCompareCanvasStyleOf(imageCompareSavedCanvasSize.value));
 const imageCompareLiveCanvasStyle = computed(() => imageCompareCanvasStyleOf(imageCompareLiveCanvasSize.value));
-const runtimeRunning = ref(false);
-const runtimeStopRequested = ref(false);
-const runtimeRunStatus = ref('');
-const runtimeLogDialogVisible = ref(false);
-const runtimeLogs = ref<RuntimeLogEntry[]>([]);
-const runtimeLogPage = ref(1);
-const runtimeLogPageCount = computed(() => Math.max(1, Math.ceil(runtimeLogs.value.length / RUNTIME_LOG_PAGE_SIZE)));
-const runtimeLogPageStart = computed(() => {
-  if (!runtimeLogs.value.length) return 0;
-  return (runtimeLogPage.value - 1) * RUNTIME_LOG_PAGE_SIZE + 1;
+const schedulerRunning = ref(false);
+const schedulerStopRequested = ref(false);
+const schedulerRunStatus = ref('');
+const schedulerLogDialogVisible = ref(false);
+const schedulerLogs = ref<SchedulerLogEntry[]>([]);
+const schedulerLogPage = ref(1);
+const schedulerLogPageCount = computed(() => Math.max(1, Math.ceil(schedulerLogs.value.length / SCHEDULER_LOG_PAGE_SIZE)));
+const schedulerLogPageStart = computed(() => {
+  if (!schedulerLogs.value.length) return 0;
+  return (schedulerLogPage.value - 1) * SCHEDULER_LOG_PAGE_SIZE + 1;
 });
-const runtimeLogPageEnd = computed(() => Math.min(runtimeLogs.value.length, runtimeLogPage.value * RUNTIME_LOG_PAGE_SIZE));
-const pagedRuntimeLogs = computed(() => (
-  runtimeLogs.value.slice((runtimeLogPage.value - 1) * RUNTIME_LOG_PAGE_SIZE, runtimeLogPage.value * RUNTIME_LOG_PAGE_SIZE)
+const schedulerLogPageEnd = computed(() => Math.min(schedulerLogs.value.length, schedulerLogPage.value * SCHEDULER_LOG_PAGE_SIZE));
+const pagedSchedulerLogs = computed(() => (
+  schedulerLogs.value.slice((schedulerLogPage.value - 1) * SCHEDULER_LOG_PAGE_SIZE, schedulerLogPage.value * SCHEDULER_LOG_PAGE_SIZE)
 ));
-const goRuntimeLogFirstPage = () => {
-  runtimeLogPage.value = 1;
+const goSchedulerLogFirstPage = () => {
+  schedulerLogPage.value = 1;
 };
-const runtimeLogKindLabel = (kind: RuntimeLogKind | string) => {
+const schedulerLogKindLabel = (kind: SchedulerLogKind | string) => {
   const labels: Record<string, string> = {
     start: '开始',
     wait: '等待',
@@ -7371,41 +7371,41 @@ const runtimeLogKindLabel = (kind: RuntimeLogKind | string) => {
   };
   return labels[kind] || kind || '日志';
 };
-const runtimeTaskStatus = ref<FanxiuBehaviorTreeRuntimeStatus | null>(null);
-const runtimeFactsDialogVisible = ref(false);
-const runtimeFactsLoading = ref(false);
-const runtimeFactsJson = ref('{}');
-const runtimeFactsPath = ref('');
-const runtimePlanDialogVisible = ref(false);
-const runtimePlanLoading = ref(false);
-const runtimePlanJson = ref('{}');
-const runtimePlanPath = ref('');
-const runtimeSchedulerTasks = ref<FanxiuDataAnnotationSchedulerTaskItem[]>([]);
-const runtimeSchedulerLoading = ref(false);
-const selectedRuntimeTaskType = ref('');
-const selectedRuntimeTaskId = ref('');
-const runtimeGiftCodesText = ref('');
-let runtimeTaskPollTimer: number | null = null;
-const runtimeStateKind = computed(() => {
-  const status = runtimeTaskStatus.value;
+const schedulerTaskStatus = ref<FanxiuKernelSchedulerStatus | null>(null);
+const schedulerFactsDialogVisible = ref(false);
+const schedulerFactsLoading = ref(false);
+const schedulerFactsJson = ref('{}');
+const schedulerFactsPath = ref('');
+const schedulerPlanDialogVisible = ref(false);
+const schedulerPlanLoading = ref(false);
+const schedulerPlanJson = ref('{}');
+const schedulerPlanPath = ref('');
+const kernelSchedulerTasks = ref<FanxiuKernelSchedulerTaskItem[]>([]);
+const kernelSchedulerLoading = ref(false);
+const selectedSchedulerTaskType = ref('');
+const selectedSchedulerTaskId = ref('');
+const schedulerGiftCodesText = ref('');
+let schedulerTaskPollTimer: number | null = null;
+const schedulerStateKind = computed(() => {
+  const status = schedulerTaskStatus.value;
   if (!status) return 'idle';
   if (status.running) return 'running';
   if (status.status === 'stopping') return 'running';
   return 'idle';
 });
-const runtimeStateText = computed(() => {
-  const status = runtimeTaskStatus.value;
+const schedulerStateText = computed(() => {
+  const status = schedulerTaskStatus.value;
   if (!status) return '未连接';
   if (status.running) return '运行中';
   if (status.status === 'stopping') return '停止中';
   return '空转';
 });
-const runtimeSceneText = computed(() => {
-  const scene = runtimeTaskStatus.value?.current_scene;
+const schedulerSceneText = computed(() => {
+  const scene = schedulerTaskStatus.value?.current_scene;
   return typeof scene === 'number' ? `#${scene}` : '';
 });
-const runtimePhaseText = computed(() => runtimeTaskStatus.value?.phase || '');
-const runtimeTaskTypeLabel = (taskType: string) => {
+const schedulerPhaseText = computed(() => schedulerTaskStatus.value?.phase || '');
+const schedulerTaskTypeLabel = (taskType: string) => {
   const labels: Record<string, string> = {
     gift_code_redeem: '兑换礼包码',
     weekly_gift_code: '每周_礼包码',
@@ -7418,10 +7418,10 @@ const runtimeTaskTypeLabel = (taskType: string) => {
   };
   return labels[taskType] || taskType || '任务';
 };
-const runtimeTaskSourceLabel = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+const schedulerTaskSourceLabel = (task: FanxiuKernelSchedulerTaskItem) => {
   return task.trigger_description || '';
 };
-const formatRuntimeScheduleTime = (value: string) => {
+const formatSchedulerScheduleTime = (value: string) => {
   const text = String(value || '').trim();
   if (!text) return '';
   const date = new Date(text.replace(' ', 'T'));
@@ -7436,38 +7436,38 @@ const formatRuntimeScheduleTime = (value: string) => {
   if (date.getFullYear() === now.getFullYear()) return monthDayTime;
   return `${date.getFullYear()}-${monthDayTime}`;
 };
-const runtimeTaskFunctionDefinitions = computed(() => {
+const schedulerTaskFunctionDefinitions = computed(() => {
   const grouped = new Map<string, { id: string; label: string }>();
-  for (const task of runtimeSchedulerTasks.value.filter((item) => item.supported)) {
-    if (!grouped.has(task.task_type)) grouped.set(task.task_type, { id: task.task_type, label: runtimeTaskTypeLabel(task.task_type) });
+  for (const task of kernelSchedulerTasks.value.filter((item) => item.supported)) {
+    if (!grouped.has(task.task_type)) grouped.set(task.task_type, { id: task.task_type, label: schedulerTaskTypeLabel(task.task_type) });
   }
   return Array.from(grouped.values());
 });
-const selectedRuntimeTaskDefinitions = computed(() => (
-  runtimeSchedulerTasks.value.filter((task) => task.task_type === selectedRuntimeTaskType.value && task.supported)
+const selectedSchedulerTaskDefinitions = computed(() => (
+  kernelSchedulerTasks.value.filter((task) => task.task_type === selectedSchedulerTaskType.value && task.supported)
 ));
-const selectedRuntimeTaskDefinition = computed(() => (
-  runtimeSchedulerTasks.value.find((task) => task.id === selectedRuntimeTaskId.value) ?? selectedRuntimeTaskDefinitions.value[0] ?? null
+const selectedSchedulerTaskDefinition = computed(() => (
+  kernelSchedulerTasks.value.find((task) => task.id === selectedSchedulerTaskId.value) ?? selectedSchedulerTaskDefinitions.value[0] ?? null
 ));
-const selectedRuntimeTaskNeedsGiftCodes = computed(() => selectedRuntimeTaskDefinition.value?.task_type === 'gift_code_redeem');
-const parseRuntimeGiftCodes = () => (
-  runtimeGiftCodesText.value
+const selectedSchedulerTaskNeedsGiftCodes = computed(() => selectedSchedulerTaskDefinition.value?.task_type === 'gift_code_redeem');
+const parseSchedulerGiftCodes = () => (
+  schedulerGiftCodesText.value
     .split(/[\s,，;；]+/)
     .map((item) => item.trim())
     .filter(Boolean)
 );
-const buildRuntimeTaskPayloadOverride = (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+const buildSchedulerTaskPayloadOverride = (task: FanxiuKernelSchedulerTaskItem) => {
   if (task.task_type !== 'gift_code_redeem') return {};
-  const codes = parseRuntimeGiftCodes();
+  const codes = parseSchedulerGiftCodes();
   return codes.length ? { codes } : {};
 };
-const selectedRuntimeTaskConfigText = computed(() => {
-  const task = selectedRuntimeTaskDefinition.value;
+const selectedSchedulerTaskConfigText = computed(() => {
+  const task = selectedSchedulerTaskDefinition.value;
   if (!task) return '';
   const parts = [
-    runtimeTaskSourceLabel(task),
+    schedulerTaskSourceLabel(task),
     task.schedule_times?.length ? `时间 ${task.schedule_times.join('/')}` : '',
-    task.next_time ? `下次 ${formatRuntimeScheduleTime(task.next_time)}` : '',
+    task.next_time ? `下次 ${formatSchedulerScheduleTime(task.next_time)}` : '',
     `P${task.priority}`,
     task.interruptible ? '可中断' : '不可中断',
     task.last_result ? `上次 ${task.last_result}` : '',
@@ -10213,7 +10213,7 @@ const buildOcclusionAlphaMaskDataUrl = (
   return canvas.toDataURL('image/png');
 };
 
-const buildRuntimeShapeMatchPayload = (
+const buildSchedulerShapeMatchPayload = (
   image: DataAnnotationAssetNode,
   shape: DataAnnotationShape,
   currentFrameDataUrl?: string,
@@ -10269,14 +10269,14 @@ const buildRuntimeShapeMatchPayload = (
   };
 };
 
-const matchRuntimeShape = async (
+const matchSchedulerShape = async (
   image: DataAnnotationAssetNode,
   shape: DataAnnotationShape,
   currentFrameDataUrl?: string,
   signal?: AbortSignal,
   options: { readOnlyCache?: boolean; saveMatchFrame?: boolean; condition?: 'auto' | 'image' | 'ocr'; timeout?: number; debugMatch?: boolean } = {},
 ) => {
-  const payload = buildRuntimeShapeMatchPayload(image, shape, currentFrameDataUrl, options);
+  const payload = buildSchedulerShapeMatchPayload(image, shape, currentFrameDataUrl, options);
   if (!payload) return null;
   return matchFanxiuGameWindow2Screenshot(payload, { signal, timeout: options.timeout ?? 30000 });
 };
@@ -10292,7 +10292,7 @@ const waitShapeDetectLoopInterval = async (seq: number, shapeId: string, delayMs
   return !shapeDetectStopRequested && shapeDetectSeq.value === seq && selectedShape.value?.id === shapeId;
 };
 
-const bestRuntimeShapeMatchOf = (
+const bestSchedulerShapeMatchOf = (
   shape: DataAnnotationShape,
   response: FanxiuGameWindow2MatchResponse,
   image?: DataAnnotationAssetNode | null,
@@ -10317,9 +10317,9 @@ const bestRuntimeShapeMatchOf = (
   return { box, score };
 };
 
-const RUNTIME_SHAPE_IMAGE_THRESHOLD = 80;
+const SCHEDULER_SHAPE_IMAGE_THRESHOLD = 80;
 
-const shapeImageThreshold = (_shape: DataAnnotationShape) => RUNTIME_SHAPE_IMAGE_THRESHOLD;
+const shapeImageThreshold = (_shape: DataAnnotationShape) => SCHEDULER_SHAPE_IMAGE_THRESHOLD;
 
 const shapeOcrMatched = (response: FanxiuGameWindow2MatchResponse | null | undefined) => (
   Boolean(response?.matches?.length)
@@ -10415,7 +10415,7 @@ const detectSelectedShape = async () => {
         const conditionFrameDataUrl = condition === 'image'
           ? frameDataUrl
           : (matchFrameDataUrl || frameDataUrl);
-        const response = await matchRuntimeShape(
+        const response = await matchSchedulerShape(
           image,
           shape,
           conditionFrameDataUrl,
@@ -10434,7 +10434,7 @@ const detectSelectedShape = async () => {
         conditionResults.push({
           kind: condition,
           response,
-          best: bestRuntimeShapeMatchOf(shape, response, image),
+          best: bestSchedulerShapeMatchOf(shape, response, image),
         });
         if (condition === 'image' && response.match_debug) {
           shapeDetectDebugByShapeId.value = {
@@ -10543,14 +10543,14 @@ watch(selectedEntryId, () => {
   if (assetTreeViewMode.value === 'recognitionOps') void loadRecognitionOps(false);
 });
 
-watch(selectedRuntimeTaskType, (value) => {
-  const sameTypeTasks = runtimeSchedulerTasks.value.filter((task) => task.task_type === value);
+watch(selectedSchedulerTaskType, (value) => {
+  const sameTypeTasks = kernelSchedulerTasks.value.filter((task) => task.task_type === value);
   if (!sameTypeTasks.length) {
-    selectedRuntimeTaskId.value = '';
+    selectedSchedulerTaskId.value = '';
     return;
   }
-  if (!sameTypeTasks.some((task) => task.id === selectedRuntimeTaskId.value)) {
-    selectedRuntimeTaskId.value = sameTypeTasks[0].id;
+  if (!sameTypeTasks.some((task) => task.id === selectedSchedulerTaskId.value)) {
+    selectedSchedulerTaskId.value = sameTypeTasks[0].id;
   }
 });
 
@@ -10625,13 +10625,13 @@ watch(expandedAssetNodeIds, queueAssetTreeExpansionSync, { deep: true });
 
 watch(expandedShapeNodeIds, queueShapeTreeExpansionSync, { deep: true });
 
-watch(runtimeLogs, () => {
-  if (runtimeLogPage.value > runtimeLogPageCount.value) goRuntimeLogFirstPage();
+watch(schedulerLogs, () => {
+  if (schedulerLogPage.value > schedulerLogPageCount.value) goSchedulerLogFirstPage();
 }, { deep: true });
 
-watch(runtimeLogDialogVisible, (visible) => {
-  if (visible && !runtimeLogs.value.length) void loadRuntimeLogs();
-  if (visible) goRuntimeLogFirstPage();
+watch(schedulerLogDialogVisible, (visible) => {
+  if (visible && !schedulerLogs.value.length) void loadSchedulerLogs();
+  if (visible) goSchedulerLogFirstPage();
 });
 
 watch(shapeDiscriminatorNewImageId, () => {
@@ -11985,198 +11985,198 @@ const deleteShapeFromContextMenu = () => {
 
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
-const loadRuntimeLogs = async () => {
+const loadSchedulerLogs = async () => {
   try {
-    const response = await getFanxiuBehaviorTreeRuntimeLogs(RUNTIME_LOG_PREVIEW_LIMIT);
-    runtimeLogs.value = [...response.entries].reverse();
-    goRuntimeLogFirstPage();
+    const response = await getFanxiuKernelSchedulerLogs(SCHEDULER_LOG_PREVIEW_LIMIT);
+    schedulerLogs.value = [...response.entries].reverse();
+    goSchedulerLogFirstPage();
   } catch {
     // 日志读取失败不影响页面主体功能。
   }
 };
 
-const clearRuntimeLogs = async () => {
-  const response = await clearFanxiuBehaviorTreeRuntimeLogs();
-  runtimeLogs.value = [...response.entries].reverse();
-  goRuntimeLogFirstPage();
+const clearSchedulerLogs = async () => {
+  const response = await clearFanxiuKernelSchedulerLogs();
+  schedulerLogs.value = [...response.entries].reverse();
+  goSchedulerLogFirstPage();
 };
 
-const loadRuntimeFacts = async () => {
-  runtimeFactsLoading.value = true;
+const loadSchedulerFacts = async () => {
+  schedulerFactsLoading.value = true;
   try {
     const response = await getFanxiuDataAnnotationWorldFacts();
-    runtimeFactsPath.value = response.path;
-    runtimeFactsJson.value = JSON.stringify(response.facts, null, 2);
+    schedulerFactsPath.value = response.path;
+    schedulerFactsJson.value = JSON.stringify(response.facts, null, 2);
   } catch (error) {
-    runtimeFactsJson.value = JSON.stringify({ error: getErrorMessage(error) }, null, 2);
+    schedulerFactsJson.value = JSON.stringify({ error: getErrorMessage(error) }, null, 2);
   } finally {
-    runtimeFactsLoading.value = false;
+    schedulerFactsLoading.value = false;
   }
 };
 
-const openRuntimeFactsDialog = async () => {
-  runtimeFactsDialogVisible.value = true;
-  await loadRuntimeFacts();
+const openSchedulerFactsDialog = async () => {
+  schedulerFactsDialogVisible.value = true;
+  await loadSchedulerFacts();
 };
 
-const loadRuntimePlan = async () => {
-  runtimePlanLoading.value = true;
+const loadSchedulerPlan = async () => {
+  schedulerPlanLoading.value = true;
   try {
-    const response = await getFanxiuDataAnnotationSchedulerPlan();
-    runtimePlanPath.value = response.path;
-    runtimePlanJson.value = JSON.stringify(response, null, 2);
+    const response = await getFanxiuKernelSchedulerPlan();
+    schedulerPlanPath.value = response.path;
+    schedulerPlanJson.value = JSON.stringify(response, null, 2);
   } catch (error) {
-    runtimePlanJson.value = JSON.stringify({ error: getErrorMessage(error) }, null, 2);
+    schedulerPlanJson.value = JSON.stringify({ error: getErrorMessage(error) }, null, 2);
   } finally {
-    runtimePlanLoading.value = false;
+    schedulerPlanLoading.value = false;
   }
 };
 
-const openRuntimePlanDialog = async () => {
-  runtimePlanDialogVisible.value = true;
-  await loadRuntimePlan();
+const openSchedulerPlanDialog = async () => {
+  schedulerPlanDialogVisible.value = true;
+  await loadSchedulerPlan();
 };
 
-const setRuntimeRunStatus = (message: string, _kind: RuntimeLogKind | 'start' | 'stop' | 'wait' = 'detail') => {
-  runtimeRunStatus.value = message;
+const setSchedulerRunStatus = (message: string, _kind: SchedulerLogKind | 'start' | 'stop' | 'wait' = 'detail') => {
+  schedulerRunStatus.value = message;
 };
 
-const applyRuntimeTaskStatus = (status: FanxiuBehaviorTreeRuntimeStatus) => {
-  runtimeTaskStatus.value = status;
-  runtimeRunStatus.value = status.message || status.status || '';
+const applySchedulerTaskStatus = (status: FanxiuKernelSchedulerStatus) => {
+  schedulerTaskStatus.value = status;
+  schedulerRunStatus.value = status.message || status.status || '';
   if (status.logs?.length) {
-    runtimeLogs.value = status.logs.map((entry, index) => ({
-      id: entry.id || `runtime-${index}`,
+    schedulerLogs.value = status.logs.map((entry, index) => ({
+      id: entry.id || `scheduler-${index}`,
       time: entry.time,
-      kind: entry.kind as RuntimeLogKind,
+      kind: entry.kind as SchedulerLogKind,
       message: entry.message,
       ts: entry.ts || '',
     })).reverse();
-    goRuntimeLogFirstPage();
+    goSchedulerLogFirstPage();
   }
 };
 
-const refreshRuntimeTaskStatus = async () => {
+const refreshSchedulerTaskStatus = async () => {
   try {
-    const status = await getFanxiuBehaviorTreeRuntimeStatus();
-    applyRuntimeTaskStatus(status);
+    const status = await getFanxiuKernelSchedulerStatus();
+    applySchedulerTaskStatus(status);
   } catch {
-    // Runtime 调试状态不是页面主数据，静默等待下一次刷新或用户操作。
+    // Kernel 调度器状态不是数据标注页主数据，静默等待下一次刷新或用户操作。
   }
 };
 
-const loadRuntimeSchedulerTasks = async () => {
-  runtimeSchedulerLoading.value = true;
+const loadKernelSchedulerTasks = async () => {
+  kernelSchedulerLoading.value = true;
   try {
-    const response = await getFanxiuDataAnnotationSchedulerTasks();
-    runtimeSchedulerTasks.value = response.tasks;
-    if (!selectedRuntimeTaskType.value || !response.tasks.some((task) => task.task_type === selectedRuntimeTaskType.value)) {
-      selectedRuntimeTaskType.value = response.tasks[0]?.task_type ?? '';
+    const response = await getFanxiuKernelSchedulerTasks();
+    kernelSchedulerTasks.value = response.tasks;
+    if (!selectedSchedulerTaskType.value || !response.tasks.some((task) => task.task_type === selectedSchedulerTaskType.value)) {
+      selectedSchedulerTaskType.value = response.tasks[0]?.task_type ?? '';
     }
-    if (!selectedRuntimeTaskId.value || !response.tasks.some((task) => task.id === selectedRuntimeTaskId.value && task.task_type === selectedRuntimeTaskType.value)) {
-      selectedRuntimeTaskId.value = response.tasks.find((task) => task.task_type === selectedRuntimeTaskType.value)?.id ?? response.tasks[0]?.id ?? '';
+    if (!selectedSchedulerTaskId.value || !response.tasks.some((task) => task.id === selectedSchedulerTaskId.value && task.task_type === selectedSchedulerTaskType.value)) {
+      selectedSchedulerTaskId.value = response.tasks.find((task) => task.task_type === selectedSchedulerTaskType.value)?.id ?? response.tasks[0]?.id ?? '';
     }
   } catch (error) {
-    setRuntimeRunStatus(`Scheduler 任务读取失败：${getErrorMessage(error)}`, 'error');
+    setSchedulerRunStatus(`Kernel 调度器任务读取失败：${getErrorMessage(error)}`, 'error');
   } finally {
-    runtimeSchedulerLoading.value = false;
+    kernelSchedulerLoading.value = false;
   }
 };
 
-const ensureRuntimeSchedulerTasks = async () => {
-  if (runtimeSchedulerTasks.value.length || runtimeSchedulerLoading.value) return;
-  await loadRuntimeSchedulerTasks();
+const ensureSchedulerSchedulerTasks = async () => {
+  if (kernelSchedulerTasks.value.length || kernelSchedulerLoading.value) return;
+  await loadKernelSchedulerTasks();
 };
 
-const stopRuntimeTaskPolling = () => {
-  if (runtimeTaskPollTimer !== null) {
-    window.clearTimeout(runtimeTaskPollTimer);
-    runtimeTaskPollTimer = null;
+const stopSchedulerTaskPolling = () => {
+  if (schedulerTaskPollTimer !== null) {
+    window.clearTimeout(schedulerTaskPollTimer);
+    schedulerTaskPollTimer = null;
   }
 };
 
-const pollRuntimeTask = async () => {
-  stopRuntimeTaskPolling();
+const pollSchedulerTask = async () => {
+  stopSchedulerTaskPolling();
   try {
-    const status = await getFanxiuBehaviorTreeRuntimeStatus();
-    applyRuntimeTaskStatus(status);
+    const status = await getFanxiuKernelSchedulerStatus();
+    applySchedulerTaskStatus(status);
     if (status.running || status.status === 'stopping') {
-      runtimeTaskPollTimer = window.setTimeout(() => {
-        void pollRuntimeTask();
+      schedulerTaskPollTimer = window.setTimeout(() => {
+        void pollSchedulerTask();
       }, 1000);
       return;
     }
-    runtimeRunning.value = false;
-    runtimeStopRequested.value = false;
+    schedulerRunning.value = false;
+    schedulerStopRequested.value = false;
     if (status.status === 'success') ElMessage.success(status.message || '兑换礼包码任务完成');
     if (status.status === 'error') ElMessage.error(status.message || '兑换礼包码任务失败');
   } catch (error) {
-    runtimeRunning.value = false;
-    runtimeStopRequested.value = false;
-    setRuntimeRunStatus(getErrorMessage(error), 'error');
+    schedulerRunning.value = false;
+    schedulerStopRequested.value = false;
+    setSchedulerRunStatus(getErrorMessage(error), 'error');
   }
 };
 
-const runRuntimeTaskDefinition = async (task: FanxiuDataAnnotationSchedulerTaskItem) => {
+const runSchedulerTaskDefinition = async (task: FanxiuKernelSchedulerTaskItem) => {
   if (!selectedEntryId.value) return;
-  const payloadOverride = buildRuntimeTaskPayloadOverride(task);
-  runtimeRunning.value = true;
-  runtimeStopRequested.value = false;
-  runtimeLogs.value = [];
-  setRuntimeRunStatus(`Scheduler 手动任务：${task.label}`, 'start');
+  const payloadOverride = buildSchedulerTaskPayloadOverride(task);
+  schedulerRunning.value = true;
+  schedulerStopRequested.value = false;
+  schedulerLogs.value = [];
+  setSchedulerRunStatus(`Scheduler 手动任务：${task.label}`, 'start');
   try {
-    const status = await runNowFanxiuDataAnnotationSchedulerTask(
+    const status = await runNowFanxiuKernelSchedulerTask(
       selectedEntryId.value,
       task.id,
       payloadOverride,
       true,
       'current',
     );
-    applyRuntimeTaskStatus(status);
-    await pollRuntimeTask();
-    void loadRuntimeSchedulerTasks();
+    applySchedulerTaskStatus(status);
+    await pollSchedulerTask();
+    void loadKernelSchedulerTasks();
   } catch (error) {
-    runtimeRunning.value = false;
-    runtimeStopRequested.value = false;
-    setRuntimeRunStatus(getErrorMessage(error), 'error');
-    ElMessage.error(runtimeRunStatus.value);
+    schedulerRunning.value = false;
+    schedulerStopRequested.value = false;
+    setSchedulerRunStatus(getErrorMessage(error), 'error');
+    ElMessage.error(schedulerRunStatus.value);
   }
 };
 
-const runRuntimeSelectedTask = async () => {
-  if (!selectedEntryId.value || runtimeRunning.value) return;
-  await ensureRuntimeSchedulerTasks();
-  const taskDefinition = selectedRuntimeTaskDefinition.value;
+const runSchedulerSelectedTask = async () => {
+  if (!selectedEntryId.value || schedulerRunning.value) return;
+  await ensureSchedulerSchedulerTasks();
+  const taskDefinition = selectedSchedulerTaskDefinition.value;
   if (!taskDefinition) return;
-  await runRuntimeTaskDefinition(taskDefinition);
+  await runSchedulerTaskDefinition(taskDefinition);
 };
 
-const runRuntimeDueTasks = async () => {
-  if (!selectedEntryId.value || runtimeRunning.value) return;
-  await ensureRuntimeSchedulerTasks();
-  runtimeRunning.value = true;
-  runtimeStopRequested.value = false;
-  runtimeLogs.value = [];
-  setRuntimeRunStatus('Scheduler：执行全部到期任务', 'start');
+const runSchedulerDueTasks = async () => {
+  if (!selectedEntryId.value || schedulerRunning.value) return;
+  await ensureSchedulerSchedulerTasks();
+  schedulerRunning.value = true;
+  schedulerStopRequested.value = false;
+  schedulerLogs.value = [];
+  setSchedulerRunStatus('Scheduler：执行全部到期任务', 'start');
   try {
-    const status = await runDueFanxiuDataAnnotationSchedulerTasks(selectedEntryId.value);
-    applyRuntimeTaskStatus(status);
-    if (status.running || status.status === 'stopping') await pollRuntimeTask();
-    else runtimeRunning.value = false;
+    const status = await runDueFanxiuKernelSchedulerTasks(selectedEntryId.value);
+    applySchedulerTaskStatus(status);
+    if (status.running || status.status === 'stopping') await pollSchedulerTask();
+    else schedulerRunning.value = false;
   } catch (error) {
-    runtimeRunning.value = false;
-    runtimeStopRequested.value = false;
-    setRuntimeRunStatus(getErrorMessage(error), 'error');
-    ElMessage.error(runtimeRunStatus.value);
+    schedulerRunning.value = false;
+    schedulerStopRequested.value = false;
+    setSchedulerRunStatus(getErrorMessage(error), 'error');
+    ElMessage.error(schedulerRunStatus.value);
   }
 };
 
-const stopRuntimeTask = async () => {
-  runtimeStopRequested.value = true;
-  setRuntimeRunStatus('正在停止当前任务', 'stop');
+const stopSchedulerTask = async () => {
+  schedulerStopRequested.value = true;
+  setSchedulerRunStatus('正在停止当前任务', 'stop');
   try {
-    const status = await stopFanxiuBehaviorTreeRuntimeCurrentTask(selectedEntryId.value);
-    applyRuntimeTaskStatus(status);
+    const status = await stopFanxiuKernelSchedulerCurrentTask(selectedEntryId.value);
+    applySchedulerTaskStatus(status);
   } catch {
     // 停止失败时保留本地停止标记，下一轮轮询会同步真实状态。
   }
@@ -12342,9 +12342,9 @@ const captureLiveShapeImageData = async (width: number, height: number) => {
   const currentFrameDataUrl = captureCurrentLiveFrameDataUrl();
   if (!currentFrameDataUrl) return null;
   if (shape.floating && selectedImage?.filename) {
-    const response = await matchRuntimeShape(selectedImage, shape, currentFrameDataUrl);
+    const response = await matchSchedulerShape(selectedImage, shape, currentFrameDataUrl);
     if (!response) return null;
-    const best = bestRuntimeShapeMatchOf(shape, response, selectedImage);
+    const best = bestSchedulerShapeMatchOf(shape, response, selectedImage);
     return cropImageDataUrlByBox(currentFrameDataUrl, best.box, width, height);
   }
   return cropImageDataUrlByShape(currentFrameDataUrl, shape, width, height);
@@ -13765,7 +13765,7 @@ const showShapeLoadDirectionHelp = () => {
     {
       title: '2. 用法',
       lines: [
-        '例如选择“↓”，表示下方还有内容，Runtime 会执行“向下加载 / 向下滚动”。',
+        '例如选择“↓”，表示下方还有内容，Scheduler 会执行“向下加载 / 向下滚动”。',
         '底层需要采用什么拖拽手势由系统自动换算，业务代码不需要处理相反方向。',
       ],
     },
@@ -13833,12 +13833,12 @@ const showSceneJumpHelp = () => {
   ]);
 };
 
-const showRuntimeHelp = () => {
+const showSchedulerHelp = () => {
   showStructuredHelp('任务调试台说明', [
     {
-      title: '1. Runtime',
+      title: '1. Scheduler',
       lines: [
-        '正式任务由后端 Runtime 执行，前端刷新不会中断任务。',
+        '正式任务由后端 Scheduler 执行，前端刷新不会中断任务。',
         '单步只触发后端识别 tick，用于检查当前场景感知。',
       ],
     },
@@ -13846,20 +13846,20 @@ const showRuntimeHelp = () => {
       title: '2. Scheduler',
       lines: [
         '执行到期会交给后端 Scheduler 选择已记录且到期的下次触发时间。',
-        '手动运行单任务和执行到期任务都会提交 task cell 到同一个 Runtime kernel。',
+        '手动运行单任务和执行到期任务都会提交 task cell 到同一个 Scheduler kernel。',
       ],
     },
     {
       title: '3. 守护',
       lines: [
         '守护开关只控制对应高优先级节点是否参与 tick。',
-        '行为树 Runtime 保持常驻；关闭守护不会关闭行为树 Runtime，也不会影响 task cell 入队。',
+        'Kernel 调度器保持常驻；关闭守护不会关闭 Kernel 调度器，也不会影响 Task Cell 入队。',
       ],
     },
     {
       title: '4. 资产树',
       lines: [
-        'Runtime 优先使用资产树里已有 scene 和 shape 标注事实。',
+        'Scheduler 优先使用资产树里已有 scene 和 shape 标注事实。',
         '已有 shape 可用时不猜坐标；缺标注时任务会报错，方便补标。',
       ],
     },
@@ -13867,7 +13867,7 @@ const showRuntimeHelp = () => {
       title: '5. 任务来源',
       lines: [
         '任务列表来自后端 Scheduler。',
-        '临时任务可以手动触发，到期任务由 Scheduler 批量发送给 Runtime。',
+        '临时任务可以手动触发，到期任务由 Scheduler 批量发送给 Scheduler。',
       ],
     },
   ]);
@@ -14238,7 +14238,7 @@ const finishShapeDrag = () => {
   flex-wrap: wrap;
 }
 
-.runtime-console {
+.scheduler-console {
   width: 100%;
   min-width: 0;
   display: flex;
@@ -14247,7 +14247,7 @@ const finishShapeDrag = () => {
   padding: 2px 0;
 }
 
-.runtime-console-line {
+.scheduler-console-line {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -14256,10 +14256,10 @@ const finishShapeDrag = () => {
   flex-wrap: wrap;
 }
 
-.runtime-console-status,
-.runtime-console-tools,
-.runtime-console-task,
-.runtime-console-actions {
+.scheduler-console-status,
+.scheduler-console-tools,
+.scheduler-console-task,
+.scheduler-console-actions {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -14267,20 +14267,20 @@ const finishShapeDrag = () => {
   flex-wrap: wrap;
 }
 
-.runtime-console-task {
+.scheduler-console-task {
   flex: 1 1 620px;
 }
 
-.runtime-console-actions {
+.scheduler-console-actions {
   flex: 0 0 auto;
   justify-content: flex-end;
 }
 
-.runtime-guard-button {
+.scheduler-guard-button {
   min-width: 62px;
 }
 
-.runtime-state-chip {
+.scheduler-state-chip {
   display: inline-flex;
   align-items: center;
   height: 22px;
@@ -14292,27 +14292,27 @@ const finishShapeDrag = () => {
   background: #f5f7fa;
 }
 
-.runtime-state-chip.is-running,
-.runtime-state-chip.is-guard {
+.scheduler-state-chip.is-running,
+.scheduler-state-chip.is-guard {
   color: #337ecc;
   border-color: #c6e2ff;
   background: #ecf5ff;
 }
 
-.runtime-state-chip.is-error {
+.scheduler-state-chip.is-error {
   color: #c45656;
   border-color: #fcd3d3;
   background: #fef0f0;
 }
 
-.runtime-state-chip.is-success {
+.scheduler-state-chip.is-success {
   color: #529b2e;
   border-color: #d1edc4;
   background: #f0f9eb;
 }
 
-.runtime-status-text,
-.runtime-task-config-summary {
+.scheduler-status-text,
+.scheduler-task-config-summary {
   min-width: 0;
   max-width: 420px;
   overflow: hidden;
@@ -14322,7 +14322,7 @@ const finishShapeDrag = () => {
   white-space: nowrap;
 }
 
-.runtime-meta-chip {
+.scheduler-meta-chip {
   display: inline-flex;
   align-items: center;
   height: 22px;
@@ -14334,11 +14334,11 @@ const finishShapeDrag = () => {
   background: #fff;
 }
 
-.runtime-task-config-summary {
+.scheduler-task-config-summary {
   max-width: 260px;
 }
 
-.runtime-section-label {
+.scheduler-section-label {
   color: #6b7280;
   font-size: 12px;
   white-space: nowrap;
@@ -14352,7 +14352,7 @@ const finishShapeDrag = () => {
   width: 168px;
 }
 
-.runtime-task-codes-input {
+.scheduler-task-codes-input {
   width: 260px;
 }
 
@@ -14365,14 +14365,14 @@ const finishShapeDrag = () => {
   white-space: nowrap;
 }
 
-.runtime-log-list {
+.scheduler-log-list {
   height: 50vh;
   overflow: auto;
   border: 1px solid #e5e7eb;
   background: #fff;
 }
 
-.runtime-log-row {
+.scheduler-log-row {
   display: grid;
   grid-template-columns: 76px 44px minmax(0, 1fr);
   align-items: start;
@@ -14385,34 +14385,34 @@ const finishShapeDrag = () => {
   border-bottom: 1px solid #f1f5f9;
 }
 
-.runtime-log-row:last-child {
+.scheduler-log-row:last-child {
   border-bottom: 0;
 }
 
-.runtime-log-row.is-action {
+.scheduler-log-row.is-action {
   background: #eff6ff;
 }
 
-.runtime-log-row.is-success {
+.scheduler-log-row.is-success {
   background: #f0fdf4;
 }
 
-.runtime-log-row.is-error {
+.scheduler-log-row.is-error {
   background: #fef2f2;
 }
 
-.runtime-log-time,
-.runtime-log-kind {
+.scheduler-log-time,
+.scheduler-log-kind {
   color: #6b7280;
   white-space: nowrap;
 }
 
-.runtime-log-message {
+.scheduler-log-message {
   min-width: 0;
   word-break: break-all;
 }
 
-.runtime-log-pager {
+.scheduler-log-pager {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -14422,7 +14422,7 @@ const finishShapeDrag = () => {
   font-size: 12px;
 }
 
-.runtime-log-empty {
+.scheduler-log-empty {
   display: grid;
   min-height: 180px;
   place-items: center;
@@ -14432,7 +14432,7 @@ const finishShapeDrag = () => {
   background: #fff;
 }
 
-.runtime-facts-path {
+.scheduler-facts-path {
   margin-bottom: 8px;
   overflow: hidden;
   color: #6b7280;
@@ -14441,7 +14441,7 @@ const finishShapeDrag = () => {
   white-space: nowrap;
 }
 
-.runtime-facts-json {
+.scheduler-facts-json {
   height: 56vh;
   margin: 0;
   overflow: auto;

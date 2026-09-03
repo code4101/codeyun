@@ -1,4 +1,4 @@
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from pyxllib.autogui import ShapeMatchPlanner
 
 
@@ -18,7 +18,7 @@ def test_shape_match_planner_normalizes_roles_and_ocr_defaults():
 
 
 def test_shape_match_planner_uses_ocr_without_scan_for_floating_ocr_shape():
-    flags = ShapeMatchPlanner().runtime_match_payload_flags({
+    flags = ShapeMatchPlanner().match_payload_flags({
         "floating": True,
         "imageMatchRole": "off",
         "ocrText": "邮件",
@@ -35,7 +35,7 @@ def test_shape_match_planner_uses_ocr_without_scan_for_floating_ocr_shape():
 
 
 def test_shape_match_planner_scans_floating_image_without_ocr():
-    flags = ShapeMatchPlanner().runtime_match_payload_flags({
+    flags = ShapeMatchPlanner().match_payload_flags({
         "floating": True,
         "imageMatchRole": "required",
         "ocrMatchRole": "off",
@@ -51,13 +51,13 @@ def test_shape_match_planner_scans_floating_image_without_ocr():
 def test_shape_match_planner_uses_auto_for_jitter_and_forced_ocr():
     planner = ShapeMatchPlanner()
 
-    assert planner.runtime_match_payload_flags({"jitterEnabled": True})["match_strategy"] == "auto"
-    assert planner.runtime_match_payload_flags({"ocrText": "邮件", "ocrMatchRole": "required"}, condition="ocr")["match_strategy"] == "auto"
-    assert planner.runtime_match_payload_flags({"ocrText": "邮件", "ocrMatchRole": "required"}, condition="image")["ocr_enabled"] is False
+    assert planner.match_payload_flags({"jitterEnabled": True})["match_strategy"] == "auto"
+    assert planner.match_payload_flags({"ocrText": "邮件", "ocrMatchRole": "required"}, condition="ocr")["match_strategy"] == "auto"
+    assert planner.match_payload_flags({"ocrText": "邮件", "ocrMatchRole": "required"}, condition="image")["ocr_enabled"] is False
 
 
 def test_runner_shape_match_flags_delegate_to_planner():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     shape = {
         "floating": True,
         "imageMatchRole": "off",
@@ -65,6 +65,6 @@ def test_runner_shape_match_flags_delegate_to_planner():
         "ocrMatchRole": "optional",
     }
 
-    assert runner._shape_runtime_match_payload_flags(shape) == ShapeMatchPlanner().runtime_match_payload_flags(shape)
+    assert runner._shape_match_payload_flags(shape) == ShapeMatchPlanner().match_payload_flags(shape)
     assert runner._shape_image_role(shape) == "off"
     assert runner._shape_ocr_role(shape) == "optional"

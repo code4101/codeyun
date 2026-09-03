@@ -7,9 +7,6 @@ from typing import Any
 
 from pyxllib.prog import read_json_state_dict, write_json_state
 
-from backend.core.settings import get_settings
-
-
 FANXIU_WINDOWS_INFO_WINDOW_HEARTBEAT_TTL_SECONDS = 3.0
 FANXIU_INFO_WINDOW_DECISION_SCOPE = "decision"
 FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
@@ -21,30 +18,33 @@ FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
 }
 
 
+def _fanxiu_info_window_dir() -> Path:
+    from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_kernel_scheduler_dir
+
+    return fanxiu_kernel_scheduler_dir()
+
+
 def fanxiu_info_window_state_path() -> Path:
-    path = get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime" / "info_window_state.json"
+    path = _fanxiu_info_window_dir() / "info_window_state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def fanxiu_windows_info_window_heartbeat_path() -> Path:
-    path = get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime" / "windows_info_window.json"
+    path = _fanxiu_info_window_dir() / "windows_info_window.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def fanxiu_info_window_settings_path() -> Path:
-    path = get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime" / "info_window_settings.json"
+    path = _fanxiu_info_window_dir() / "info_window_settings.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def fanxiu_info_window_user_settings_path(user_id: int) -> Path:
     path = (
-        get_settings().data_dir
-        / "fanxiu"
-        / "data-annotation"
-        / "runtime"
+        _fanxiu_info_window_dir()
         / "info-window-users"
         / f"user_{int(user_id)}.json"
     )
@@ -201,7 +201,7 @@ class FanxiuInfoWindowState:
                 ],
                 "frame_width": max(0, int(frame_width or 0)),
                 "frame_height": max(0, int(frame_height or 0)),
-                "source": str(source or "runtime"),
+                "source": str(source or "scheduler"),
                 "scope": normalized_scope,
                 "entry_id": str(entry_id or ""),
                 "asset_generation": max(0, int(asset_generation or 0)),
@@ -259,7 +259,7 @@ def publish_fanxiu_scene_recognition(
     score: float,
     *,
     scope: str = "probe",
-    source: str = "runtime",
+    source: str = "scheduler",
     entry_id: str = "",
     asset_generation: int = 0,
     frame_id: str = "",

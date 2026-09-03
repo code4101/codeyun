@@ -20,7 +20,7 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     collect_registered_resource_ranking_resources,
     get_exchange_activity_spec,
     materialize_registered_exchange_activity,
-    resolve_registered_occurrence_rank_activity_ids,
+    resolve_registered_occurrence_rank_identities,
     resolve_registered_occurrence_shop,
 )
 from backend.core.fanxiu.activity.exchange_activity_spec import (
@@ -53,30 +53,17 @@ def _activity_definition_index() -> dict[int, dict[str, Any]]:
     }
 
 
-def _rank_scope_activity_ids(occurrence: RankingOccurrence) -> dict[str, int]:
-    spec = get_exchange_activity_spec(occurrence.activity_type)
-    resolved = resolve_registered_occurrence_rank_activity_ids(
-        activity_type=occurrence.activity_type,
-        activity_id=occurrence.activity_id,
-    )
-    if resolved is not None:
-        return {str(scope): int(activity_id) for scope, activity_id in resolved.items()}
+def _rank_scope_identities(occurrence: RankingOccurrence):
     definition = _activity_definition_index().get(occurrence.activity_id)
     if definition is None:
         raise ValueError(f"活动静态配置 {occurrence.activity_id} 不存在")
     follow = tuple(int(value) for value in definition.get("follow") or ())
-    result: dict[str, int] = {}
-    for scope in spec.rank_scopes:
-        try:
-            result[scope.scope] = scope.activity_id.resolve(
-                activity_follow=follow,
-                activity_id=occurrence.activity_id,
-                cross_count=occurrence.cross_count,
-            )
-        except ValueError:
-            if scope.required:
-                raise
-    return result
+    return resolve_registered_occurrence_rank_identities(
+        activity_type=occurrence.activity_type,
+        game_activity_id=occurrence.activity_id,
+        cross_count=occurrence.cross_count,
+        activity_follow=follow,
+    )
 
 
 def _proven_server_day_floor(
@@ -122,12 +109,12 @@ def seed_ranking_occurrence(
         cross_count=occurrence.cross_count,
         activity_id=occurrence.activity_id,
     )
-    scope_ids = _rank_scope_activity_ids(occurrence)
+    scope_identities = _rank_scope_identities(occurrence)
     primary = next(
         scope for scope in spec.rank_scopes if scope.effective_role == "primary"
     )
-    primary_id = scope_ids.get(primary.scope)
-    if primary_id is None:
+    primary_identity = scope_identities.get(primary.scope)
+    if primary_identity is None:
         raise ValueError(f"{spec.label} 缺少必需主榜静态绑定")
     existing = session.exec(
         select(FanxiuExchangeActivity).where(
@@ -165,7 +152,10 @@ def seed_ranking_occurrence(
             "period_close_panel_date": occurrence.close_at.date().isoformat(),
             "period_start_time_ms": int(occurrence.start_at.timestamp() * 1000),
             "world_level": occurrence.world_level,
-            "rank_scope_activity_ids": scope_ids,
+            "rank_scope_identities": {
+                scope: identity.as_dict()
+                for scope, identity in scope_identities.items()
+            },
             "refresh_status": refresh_status,
             "lifecycle_seed_source": "worldline_activity_runtime_memory",
         }
@@ -173,6 +163,17 @@ def seed_ranking_occurrence(
     if server_day and not int(evidence.get("server_day") or 0):
         evidence["server_day"] = server_day
         evidence["server_day_evidence"] = server_day_evidence
+    instance_data = dict(existing.instance_data or {}) if existing is not None else {}
+    instance_data.update(
+        {
+            "base_id": occurrence.base_id,
+            "world_level": occurrence.world_level,
+            "rank_scope_identities": {
+                scope: identity.as_dict()
+                for scope, identity in scope_identities.items()
+            },
+        }
+    )
     payload: dict[str, Any] = {
         "instance_key": occurrence.instance_key,
         "family": occurrence.family,
@@ -186,16 +187,22 @@ def seed_ranking_occurrence(
         "close_at": occurrence.close_at.isoformat(timespec="seconds"),
         "start_date": occurrence.start_at.date().isoformat(),
         "end_date": occurrence.end_at.date().isoformat(),
-        "game_rank_activity_id": primary_id,
+        "game_rank_activity_id": primary_identity.runtime_rank_activity_id,
         "currency_type": occurrence_shop.currency_type if occurrence_shop else (spec.currency_type or None),
         "currency_name": spec.currency_name,
-        "captured_at": captured_at,
-        "source_kind": "runtime_schedule_reconcile",
-        "instance_data": {
-            "base_id": occurrence.base_id,
-            "world_level": occurrence.world_level,
-            "rank_scope_activity_ids": scope_ids,
-        },
+        # Seeding an already-known occurrence updates its schedule envelope; it
+        # does not constitute a new observation of the shop, wallet, or ranks.
+        "captured_at": (
+            str(existing.captured_at or captured_at)
+            if existing is not None
+            else captured_at
+        ),
+        "source_kind": (
+            str(existing.source_kind or "runtime_schedule_reconcile")
+            if existing is not None
+            else "runtime_schedule_reconcile"
+        ),
+        "instance_data": instance_data,
         "evidence": evidence,
     }
     if occurrence_shop is not None:
@@ -233,6 +240,7 @@ def reconcile_ranking_occurrence(
     occurrence: RankingOccurrence,
     *,
     captured_at: str,
+    required_fact_watermark: datetime | None = None,
 ) -> dict[str, Any]:
     """Reconcile static tiers and retain current facts for one occurrence."""
 
@@ -253,9 +261,10 @@ def reconcile_ranking_occurrence(
         captured_at=captured_at,
     )
     collect_error = ""
+    collected_activity: Any | None = None
     resource_collect_error = ""
     try:
-        collect_registered_exchange_activity(
+        collected_activity = collect_registered_exchange_activity(
             session,
             activity_type=occurrence.activity_type,
             activity_id=activity.id,
@@ -313,11 +322,54 @@ def reconcile_ranking_occurrence(
         FanxiuExchangeShopItem.activity_id == activity.id,
     )
     rankings_status = "updated" if ranking_count else "retained"
-    shop_status = (
-        "updated"
-        if shop_count
-        else ("retained" if spec.shop is not None else "not_applicable")
+    refresh_status = dict((activity.evidence or {}).get("refresh_status") or {})
+    shop_refresh_status = str(
+        getattr(collected_activity, "shop_refresh_status", "")
+        or refresh_status.get("shop")
+        or ""
     )
+    shop_refresh_reason = str(
+        getattr(collected_activity, "shop_refresh_reason", "")
+        or refresh_status.get("shop_reason")
+        or ""
+    )
+    shop_snapshot_captured_at = str(
+        getattr(collected_activity, "shop_snapshot_captured_at", "")
+        or (activity.evidence or {}).get("shop_snapshot_captured_at")
+        or ""
+    )
+    shop_snapshot_time: datetime | None = None
+    try:
+        shop_snapshot_time = datetime.fromisoformat(shop_snapshot_captured_at)
+    except ValueError:
+        pass
+    required_watermark = required_fact_watermark or datetime.fromisoformat(captured_at)
+    if required_watermark.tzinfo is None:
+        required_watermark = required_watermark.astimezone()
+    if shop_snapshot_time is not None and shop_snapshot_time.tzinfo is None:
+        shop_snapshot_time = shop_snapshot_time.astimezone()
+    shop_watermark_satisfied = bool(
+        shop_count
+        and shop_snapshot_time is not None
+        and shop_snapshot_time >= required_watermark
+    )
+    shop_status = (
+        "not_applicable"
+        if spec.shop is None
+        else (
+            "updated"
+            if shop_refresh_status == "updated" or shop_watermark_satisfied
+            else "retained"
+        )
+    )
+    required_fact_errors: list[str] = []
+    if spec.shop is not None and shop_status != "updated":
+        required_fact_errors.append(
+            "兑换宝阁本次未刷新"
+            + (f"：{shop_refresh_reason}" if shop_refresh_reason else "")
+        )
+    if any(scope.required for scope in spec.rank_scopes) and reward_tier_total <= 0:
+        required_fact_errors.append("榜单奖励档次本次未加载")
     now = datetime.fromisoformat(captured_at)
     snapshot_kind = _ranking_snapshot_kind(now, occurrence)
     observation_payload = {
@@ -328,6 +380,12 @@ def reconcile_ranking_occurrence(
         "reward_tier_count": reward_tier_total,
         "ranking_row_count": ranking_count,
         "shop_item_count": shop_count,
+        "shop_refresh_status": shop_refresh_status,
+        "shop_refresh_reason": shop_refresh_reason,
+        "shop_snapshot_captured_at": shop_snapshot_captured_at,
+        "required_fact_watermark": required_watermark.isoformat(timespec="seconds"),
+        "shop_watermark_satisfied": shop_watermark_satisfied,
+        "required_fact_errors": required_fact_errors,
         "materialize_error": materialize_error,
         "collect_error": collect_error,
         "resource_collect_error": resource_collect_error,
@@ -344,16 +402,20 @@ def reconcile_ranking_occurrence(
         payload=observation_payload,
         snapshot_kind=snapshot_kind,
     )
+    blocked_reasons = [
+        reason for reason in (collect_error, *required_fact_errors) if reason
+    ]
     status = (
         "blocked"
-        if collect_error
+        if blocked_reasons
         else ("completed" if reward_tier_total else "retained")
     )
     return {
         "status": status,
         "message": (
-            f"{occurrence.activity_type} Runtime 采集未完成：{collect_error}"
-            if collect_error
+            f"{occurrence.activity_type} Runtime 采集未完成："
+            + "；".join(blocked_reasons)
+            if blocked_reasons
             else ""
         ),
         "activity_id": activity.id,
@@ -365,6 +427,11 @@ def reconcile_ranking_occurrence(
         "facts": {
             "rankings": rankings_status,
             "shop": shop_status,
+            "shop_refresh_status": shop_refresh_status,
+            "shop_refresh_reason": shop_refresh_reason,
+            "shop_snapshot_captured_at": shop_snapshot_captured_at,
+            "required_fact_watermark": required_watermark.isoformat(timespec="seconds"),
+            "shop_watermark_satisfied": shop_watermark_satisfied,
             "reward_tier_count": reward_tier_total,
             "ranking_row_count": ranking_count,
             "shop_item_count": shop_count,

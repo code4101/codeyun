@@ -32,6 +32,7 @@ class ActivityRankSnapshot:
     declared_rank_count: int
     self_ranking: dict[str, Any]
     rankings: tuple[dict[str, Any], ...]
+    runtime_object_identity: str
 
     @property
     def loaded_rank_count(self) -> int:
@@ -180,6 +181,14 @@ def read_activity_rank_snapshot(
         declared_rank_count=declared_count,
         self_ranking=self_row,
         rankings=rankings,
+        runtime_object_identity=":".join(
+            str(int(getattr(value, "address", 0) or 0))
+            for value in (
+                rank_value,
+                rank_info["selfRankVO"],
+                rank_info["rankVOS"],
+            )
+        ),
     )
 
 
@@ -262,6 +271,10 @@ def read_activity_rank_runtime_snapshot(activity_id: int) -> dict[str, Any]:
             "declared_rank_count": snapshot.declared_rank_count,
             "self_ranking": snapshot.self_ranking,
             "rankings": list(snapshot.rankings),
+            # These addresses identify the live Lua objects.  The game updates
+            # them in place, so this is diagnostic identity, not a response
+            # revision or freshness watermark.
+            "runtime_object_identity": snapshot.runtime_object_identity,
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "elapsed_seconds": time.perf_counter() - started_at,
             "evidence": {

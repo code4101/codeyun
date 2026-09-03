@@ -209,6 +209,42 @@ def test_beast_period_prefers_current_runtime_identity(monkeypatch) -> None:
     assert period["source_kind"] == "worldline_activity_runtime_memory"
 
 
+def test_beast_period_requires_unique_runtime_occurrence(monkeypatch) -> None:
+    base = {
+        "activityId": 4150001,
+        "activityType": 15,
+        "name": "兽渊探秘",
+        "serverCount": 4,
+        "startTime": 1786413600000,
+        "endTime": 1786543200000,
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.activity.runtime_schedule.get_cached_fanxiu_activity_runtime_schedule",
+        lambda **_kwargs: {
+            "available": True,
+            "created_at": "2026-08-12T11:42:38+08:00",
+            "items": [
+                {**base, "id": 4150001400002},
+                {**base, "id": 4150001400003},
+            ],
+        },
+    )
+
+    with _session() as session:
+        with pytest.raises(ValueError, match="多个运行时实例"):
+            beast_abyss._runtime_period(
+                session, target_date=date(2026, 8, 12)
+            )
+        selected = beast_abyss._runtime_period(
+            session,
+            target_date=date(2026, 8, 12),
+            expected_runtime_id="4150001400003",
+            expected_game_activity_id=4150001,
+        )
+
+    assert selected["runtime_id"] == "4150001400003"
+
+
 def test_beast_period_rejects_historical_packet_for_current_date(monkeypatch) -> None:
     monkeypatch.setattr(
         "backend.core.fanxiu.activity.runtime_schedule.get_cached_fanxiu_activity_runtime_schedule",
@@ -307,6 +343,17 @@ def test_collect_materializes_and_refreshes_shop_and_both_rank_scopes(
         )
 
         first = beast_abyss.collect_and_store_beast_abyss_activity(session)
+        row = session.get(FanxiuExchangeActivity, first.id)
+        initialization = dict(
+            row.instance_data[beast_abyss.BEAST_ABYSS_INITIALIZATION_STATE_KEY]
+        )
+        initialization["reason"] = "earlier #536 collection failed"
+        row.instance_data = {
+            **dict(row.instance_data or {}),
+            beast_abyss.BEAST_ABYSS_INITIALIZATION_STATE_KEY: initialization,
+        }
+        session.add(row)
+        session.commit()
         refreshed = beast_abyss.collect_and_store_beast_abyss_activity(
             session,
             activity_id=first.id,
@@ -323,8 +370,18 @@ def test_collect_materializes_and_refreshes_shop_and_both_rank_scopes(
     assert stored is not None
     assert stored.evidence["current_related_ranking_scopes"] == ["team"]
     assert stored.evidence["shop"]["source"] == "test-runtime-shop"
+    assert refreshed.shop_snapshot_captured_at
+    assert stored.evidence["shop_snapshot_captured_at"] == (
+        refreshed.shop_snapshot_captured_at
+    )
     assert stored.evidence["refresh_status"]["currency"] == "retained"
     assert stored.evidence["refresh_status"]["currency_stale"] is True
+    assert stored.instance_data[beast_abyss.BEAST_ABYSS_INITIALIZATION_STATE_KEY][
+        "status"
+    ] == "not_started"
+    assert "reason" not in stored.instance_data[
+        beast_abyss.BEAST_ABYSS_INITIALIZATION_STATE_KEY
+    ]
 
 
 def test_explicit_refresh_resolves_the_persisted_period_after_activity_end(
@@ -496,6 +553,74 @@ def test_ranking_only_refresh_preserves_explicit_wallet_and_shop_freshness(
     assert stored is not None
     assert stored.evidence["refresh_status"]["currency"] == "updated"
     assert stored.evidence["refresh_status"]["shop"] == "updated"
+    assert stored.evidence["refresh_status"]["rankings"] == "retained"
+    assert stored.evidence["refresh_status"]["ranking_scopes"] == []
+
+
+def test_explicit_final_rank_refresh_ingests_personal_and_team_runtime(
+    monkeypatch,
+) -> None:
+    with _session() as session:
+        _seed_collectable_facts(session)
+        _patch_collect_contract(monkeypatch)
+        seen: list[int] = []
+        monkeypatch.setattr(
+            "backend.core.fanxiu.instrumentation.activity_rank_runtime.read_activity_rank_runtime_snapshot",
+            lambda rank_id: (
+                seen.append(int(rank_id))
+                or {"ok": True, "complete": True}
+            ),
+        )
+        detail = beast_abyss.collect_and_store_beast_abyss_activity(
+            session,
+            collect_runtime_shop=False,
+            collect_runtime_rank=True,
+            collect_related_runtime_ranks=True,
+        )
+        stored = session.get(FanxiuExchangeActivity, detail.id)
+
+    assert seen == [110104, 110204]
+    assert stored is not None
+    assert stored.evidence["refresh_status"]["rankings"] == "updated"
+    assert stored.evidence["refresh_status"]["ranking_scopes"] == [
+        "personal",
+        "team",
+    ]
+
+
+def test_refresh_preserves_completed_initialization_state(monkeypatch) -> None:
+    with _session() as session:
+        _seed_collectable_facts(session)
+        _patch_collect_contract(monkeypatch)
+        monkeypatch.setattr(
+            beast_abyss,
+            "_shop_snapshot",
+            lambda **_kwargs: _shop_snapshot(),
+        )
+        first = beast_abyss.collect_and_store_beast_abyss_activity(session)
+        row = session.get(FanxiuExchangeActivity, first.id)
+        row.instance_data = {
+            **dict(row.instance_data or {}),
+            beast_abyss.BEAST_ABYSS_INITIALIZATION_STATE_KEY: {
+                "status": "completed",
+                "model": {"points": [[100, 1000, 2000]]},
+            },
+        }
+        session.add(row)
+        session.commit()
+
+        beast_abyss.collect_and_store_beast_abyss_activity(
+            session,
+            activity_id=first.id,
+            collect_runtime_shop=False,
+        )
+        stored = session.get(FanxiuExchangeActivity, first.id)
+
+    assert stored is not None
+    assert stored.instance_data[beast_abyss.BEAST_ABYSS_INITIALIZATION_STATE_KEY] == {
+        "status": "completed",
+        "model": {"points": [[100, 1000, 2000]]},
+    }
 
 
 def test_collect_rejects_personal_rank_from_another_occurrence(

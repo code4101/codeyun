@@ -76,13 +76,13 @@
 - 状态：accepted
 - 来源自动化：CodeYun 前端设计巡检 / 凡修自动化复盘
 - 来源报告：`docs/domains/fanxiu/plans/凡修拜谒与行为树基础设施任务清单.md`
-- 触发范围：`/fanxiu/data-annotation`、`/fanxiu/data-annotation/runtime`、凡修 Runtime 业务节点
+- 触发范围：`/fanxiu/data-annotation`、`/fanxiu/kernel-scheduler`、凡修行为树业务节点
 - 表层症状：滚动查找、候选复位、点击后等待目标场景、OCR 精细点击这些通用动作已经反复出现，但业务实现仍容易临时覆盖滚动比例、手写等待、或把 OCR line 级结果当成可点击对象。
 - 非前端根因判断：这不是单纯页面提示或文案问题，而是 Runtime/标注数据/API 之间的行为模型还不够正交。业务层需要的其实是“在某识别区滚动查找候选”“点击 shape 并等待声明落点”“按词/字级 OCR 计算动作落点”等通用能力；如果接口只暴露底层滚动、OCR 行和点击原语，前端标注页与业务节点都会重复解释同一套规则。
-- 涉及对象：`backend/core/fanxiu/data_annotation/runtime_runner.py`、`backend/core/fanxiu/data_annotation/tasks/*`、`backend/core/ocr/preview.py`、`frontend/src/standard/fanxiu/data-annotation/page.vue`、`docs/domains/fanxiu/architecture/凡修行为树业务能力约定.md`
+- 涉及对象：`backend/core/fanxiu/data_annotation/behavior_tree_executor.py`、`backend/core/fanxiu/data_annotation/tasks/*`、`backend/core/ocr/preview.py`、`frontend/src/standard/fanxiu/data-annotation/page.vue`、`docs/domains/fanxiu/architecture/凡修行为树业务能力约定.md`
 - 已做前端止血：无前端止血。本轮已在 Runtime 层补默认滚动常量、`wait_click_then_view()` 和 `ocr_words_in_shapes()`，但仍缺少一次面向“业务节点是否还能绕过通用接口”的只读审计。
-- 建议接手动作：只读模型审计，盘点凡修业务节点里直接调用底层滚动/OCR/点击的残留；将可复用模式归并为小型 Runtime helper 或标注协议字段；先产出候选清单，不直接大规模重构。
-- 验证建议：`rg -n "scroll_shape_content\\(|drag|ocr_in_shape|ocr_words_in_shapes|wait_click_then_view|wait_click\\(" backend/core/fanxiu/data_annotation/tasks backend/core/fanxiu/data_annotation/runtime_runner.py -S`，再按候选运行对应 focused pytest；涉及真实动作的修改必须另走凡修 Runtime 真实自检。
+- 建议接手动作：只读模型审计，盘点凡修业务节点里直接调用底层滚动/OCR/点击的残留；将可复用模式归并为小型行为树 helper 或标注协议字段；先产出候选清单，不直接大规模重构。
+- 验证建议：`rg -n "scroll_shape_content\\(|drag|ocr_in_shape|ocr_words_in_shapes|wait_click_then_view|wait_click\\(" backend/core/fanxiu/data_annotation/tasks backend/core/fanxiu/data_annotation/behavior_tree_executor.py -S`，再按候选运行对应 focused pytest；涉及真实动作的修改必须另走凡修真实运行验收。
 - 风险和停手条件：如果候选涉及真实 MuMu/ADB 点击、缺少标注、或需要重新定义拜谒/邮件/日常任务完成态，不在代码健康自动化里直接改；只输出审计和拆分任务，等待人工确认或业务专项继续。
 
 ### UI-HANDOFF-20260623-001
@@ -90,13 +90,13 @@
 - 状态：accepted
 - 来源自动化：CodeYun 前端设计巡检
 - 来源报告：`C:/Users/kzche/AppData/Local/Temp/codeyun/ui-design-audit/2026-06-23-frontend-design-audit-closeout/report.md`
-- 触发范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35` / `/fanxiu/data-annotation/runtime`
+- 触发范围：`bf505b478a6237364bd598c2c2e0359b1c5c472c..19a720628aad19a07a61eb117125a96af4600c35` / `/fanxiu/kernel-scheduler`
 - 表层症状：`作业` 表的一级 `下次触发` 列仍出现 `动态作业未记录下次时间` 这类解释型文案，把时间事实和规则/缺数说明揉进同一单元格。
 - 非前端根因判断：行为树调度接口缺少面向一级状态表的稳定投影。前端当前只能把“没有有效下次时间 / 需要先求值”的后端缺口翻译成解释句，而不是渲染纯状态事实。
-- 涉及对象：`backend/api/fanxiu.py`、`backend/core/fanxiu/data_annotation/*`、`frontend/src/standard/fanxiu/data-annotation-runtime/page.vue`
+- 涉及对象：`backend/api/fanxiu.py`、`backend/core/fanxiu/data_annotation/*`、`frontend/src/standard/fanxiu/kernel-scheduler/page.vue`
 - 已做前端止血：无。未继续扩散到需要调度语义判断的作业表。
 - 建议接手动作：只读模型审计，判断是否应新增稳定状态投影，例如“有效下次时间 / 是否待求值 / 阻塞原因”，再由前端恢复一级列表的纯时间语义。
-- 验证建议：`uv run pytest tests/test_fanxiu_data_annotation_scheduler.py tests/backend/test_fanxiu_runtime_view_model.py`，并打开 `http://127.0.0.1:5173/fanxiu/data-annotation/runtime` 复核动态作业行是否回到稳定状态表。
+- 验证建议：`uv run pytest tests/test_fanxiu_kernel_scheduler_integration.py backend/tests/test_fanxiu_behavior_tree_view_model.py`，并打开 `http://127.0.0.1:5173/fanxiu/kernel-scheduler` 复核动态作业行是否回到稳定状态表。
 - 风险和停手条件：如果 `动态作业未记录下次时间` 背后其实承载多个不同业务阶段，不能只换文案或前端硬编码；需要先由人工或后端明确“缺时间”和“应执行”的正式状态边界。
 
 新增条目模板：
@@ -119,7 +119,7 @@
 
 ## 已接手记录
 
-- `UI-HANDOFF-20260623-002`：已完成 Runtime 通用动作接口残留只读审计，归因为 Runtime action model / 业务节点投影债务；当前通用 helper 已覆盖 `wait_click_then_view`、`scroll_shape_content`、`nudge_shape_content_for_box`、`ocr_words_in_shapes`、`drag_shape_to_shape`，但业务层仍有 `shape.click(runtime)` 21 处、`click_shape_center` 31 处、`scroll_shape_content` 5 处。结论是不要批量替换普通 `wait_click`，下一步只处理明确小切片，例如 `xianfu.py` 的重复直接点击导航或 `daily_foundation.py` 的滚动查找候选，并且涉及真实点击前必须另走真实 Runtime 验收。报告：`%TEMP%\codeyun\idle-maintenance\20260624-000512-runtime_action_helper_residue_audit.json`；验证：`uv run pytest backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_runtime_drag_shape_to_shape_uses_runtime_drag backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_scroll_shape_content_uses_half_page_slow_drag backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_scroll_shape_content_can_limit_signature_to_recognition_shape tests/test_fanxiu_data_annotation_scheduler.py::test_runtime_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offset backend/tests/test_fanxiu_data_annotation_runtime_guard.py::test_debug_eval_context_exposes_wait_click_then_view -q --durations=10`，结果 `5 passed, 1 warning in 2.51s`。
+- `UI-HANDOFF-20260623-002`：已完成 行为树执行上下文通用动作接口残留只读审计，归因为 行为树 action model / 业务节点投影债务；当前通用 helper 已覆盖 `wait_click_then_view`、`scroll_shape_content`、`nudge_shape_content_for_box`、`ocr_words_in_shapes`、`drag_shape_to_shape`，但业务层仍有 `shape.click(context)` 21 处、`click_shape_center` 31 处、`scroll_shape_content` 5 处。结论是不要批量替换普通 `wait_click`，下一步只处理明确小切片，例如 `xianfu.py` 的重复直接点击导航或 `daily_foundation.py` 的滚动查找候选，并且涉及真实点击前必须另走真实 Kernel 调度器验收。报告：`%TEMP%\codeyun\idle-maintenance\20260624-000512-behavior_tree_action_helper_residue_audit.json`；验证：`uv run pytest backend/tests/test_fanxiu_behavior_tree_guard.py::test_behavior_tree_context_drag_shape_to_shape_uses_context_drag backend/tests/test_fanxiu_behavior_tree_guard.py::test_scroll_shape_content_uses_half_page_slow_drag backend/tests/test_fanxiu_behavior_tree_guard.py::test_scroll_shape_content_can_limit_signature_to_recognition_shape tests/test_fanxiu_kernel_scheduler_integration.py::test_behavior_tree_context_ocr_words_in_shapes_requests_word_boxes_and_restores_crop_offset backend/tests/test_fanxiu_behavior_tree_guard.py::test_debug_eval_context_exposes_wait_click_then_view -q --durations=10`，结果 `5 passed, 1 warning in 2.51s`。
 - `UI-HANDOFF-20260623-001`：该历史投影债务已由统一触发模型收口。页面和后端都直接读取唯一的 `next_time`；`schedule_kind` 只描述时间生成规则，不再参与前端推导另一套触发事实。
 
 ## 维护规则
@@ -129,4 +129,3 @@
 - 条目完成后改为 `fixed`，保留验证命令和结果摘要。
 - 如果判断不是模型债务，改为 `wontfix` 并说明依据。
 - 如果需要用户决策，改为 `needs-human-decision`，并把问题压缩成一个明确决策点。
-

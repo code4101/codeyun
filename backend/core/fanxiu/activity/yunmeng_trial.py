@@ -291,7 +291,7 @@ def list_yunmeng_trial_rankings(
     if scope == "personal" and activity.game_rank_activity_id is not None:
         try:
             reward_tiers = load_yunmeng_rank_reward_tiers(
-                rank_activity_id=activity.game_rank_activity_id,
+                reward_activity_id=activity.game_rank_activity_id,
                 event_date=activity.start_date,
             )
         except YunmengRankRewardConfigError:
@@ -395,7 +395,7 @@ def collect_and_store_yunmeng_trial_measurement(
     snapshot = collect_standard_activity_observation(
         session,
         ActivityObservationSpec(
-            rank_activity_id=activity.game_rank_activity_id,
+            reward_activity_id=activity.game_rank_activity_id,
             currency_type=activity.currency_type,
             progress_protocols=(
                 "SM_UpdateYunmengChallenge",
@@ -404,7 +404,7 @@ def collect_and_store_yunmeng_trial_measurement(
             ),
         ),
         reward_tiers=load_yunmeng_rank_reward_tiers(
-            rank_activity_id=activity.game_rank_activity_id,
+            reward_activity_id=activity.game_rank_activity_id,
             event_date=activity.start_date,
         ),
     )

@@ -19,7 +19,7 @@ from .market_data import (
 )
 
 
-QLIB_REPO_PATH = Path(r"D:\home\chenkunze\slns+\qlib")
+QLIB_REPO_PATH = Path(r"C:\home\chenkunze\slns+\qlib")
 QLIB_EXPORT_START_DATE = "1990-01-01"
 QLIB_FACTOR_SCORE_RULES = (
     "基础分 = 50",

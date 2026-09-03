@@ -12,6 +12,7 @@
             :on-save="handleDocSave"
             :on-save-keepalive="handleDocSaveKeepalive"
             @change="handleEditorChange"
+            @dirty-change="handleEditorDirtyChange"
           >
             <template #actions="{ note, readonly: editorReadonly }">
               <NoteTitleActions
@@ -118,7 +119,7 @@ import {
   noteKey,
   useNoteStore,
 } from '@/api/notes'
-import type { EditableNoteExpectedFields, EditableNotePatch } from '@/utils/noteAutoSave'
+import type { EditableNoteExpectedFields, EditableNoteFieldName, EditableNotePatch } from '@/utils/noteAutoSave'
 import { putJsonKeepalive } from '@/utils/keepaliveRequest'
 import { createSaveMutationId, getSaveClientInstanceId } from '@/utils/saveMutationIdentity'
 import DocOutline from './DocOutline.vue'
@@ -161,7 +162,6 @@ let docResourceReconnectAttempt = 0
 let docResourceSocketCloseRequested = false
 let docSaveInFlight = false
 let docLocalDirty = false
-let docRemoteConflictActive = false
 
 const noteId = computed(() => {
   const raw = Array.isArray(route.params.noteId) ? route.params.noteId[0] : route.params.noteId
@@ -340,7 +340,6 @@ async function loadNote(id: string, options: { force?: boolean; reconnectSocket?
     }
 
     currentNote.value = detail
-    docRemoteConflictActive = false
     docLocalDirty = false
     outlineItems.value = buildOutlineItemsFromHtml(detail.content || '')
     document.title = pageTitle.value
@@ -375,8 +374,11 @@ function handleEditorModelUpdate(note: NoteNode) {
 
 function handleEditorChange(note: NoteNode) {
   handleEditorModelUpdate(note)
-  docLocalDirty = true
   scheduleOutlineRefresh()
+}
+
+function handleEditorDirtyChange(dirty: boolean) {
+  docLocalDirty = dirty
 }
 
 async function handleDocSave(
@@ -384,11 +386,6 @@ async function handleDocSave(
   patch: EditableNotePatch = {},
   expectedFields: EditableNoteExpectedFields = {},
 ) {
-  if (docRemoteConflictActive) {
-    docLocalDirty = true
-    ElMessage.warning('文档中本次编辑的字段已发生变化，已保留本地草稿，请刷新后合并')
-    throw new Error('文档同一字段已发生变化')
-  }
   const payload = {
     ...((Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload),
     base_version: Number(note.version || currentNote.value?.version || 1),
@@ -404,15 +401,18 @@ async function handleDocSave(
       ...(currentNote.value ?? updatedNote),
       ...updatedNote,
     }
-    docRemoteConflictActive = false
-    docLocalDirty = false
     scheduleOutlineRefresh()
     return updatedNote
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 409) {
-      docRemoteConflictActive = true
-      docLocalDirty = true
-      ElMessage.warning('文档中本次编辑的字段已发生变化，已保留本地草稿')
+      const latestNote = await noteStore.fetchNoteDocDetail(note.id)
+      if (latestNote) {
+        return {
+          kind: 'conflict' as const,
+          latestNote,
+          conflictingFields: (error.response.data?.detail?.conflicting_fields || []) as EditableNoteFieldName[],
+        }
+      }
     }
     throw error
   } finally {
@@ -425,9 +425,6 @@ function handleDocSaveKeepalive(
   patch: EditableNotePatch = {},
   expectedFields: EditableNoteExpectedFields = {},
 ) {
-  if (docRemoteConflictActive) {
-    return
-  }
   const payload = {
     ...((Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload),
     base_version: Number(note.version || currentNote.value?.version || 1),
@@ -630,7 +627,6 @@ function jumpToOutlineItem(key: string) {
 watch(noteId, (id) => {
   closeDocResourceSocket()
   docLocalDirty = false
-  docRemoteConflictActive = false
   void loadNote(id)
 }, { immediate: true })
 

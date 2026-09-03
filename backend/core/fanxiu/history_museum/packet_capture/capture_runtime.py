@@ -473,7 +473,7 @@ class FanxiuCaptureRuntimeService:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         capture_dir = resolve_fanxiu_tcp_live_capture_dir()
         local_path = capture_dir / f"fanxiu_runtime_{timestamp}.pcap"
-        remote_path = f"{DEFAULT_REMOTE_CAPTURE_DIR}/codeyun_fanxiu_runtime_{timestamp}.pcap"
+        remote_path = f"{DEFAULT_REMOTE_CAPTURE_DIR}/codeyun_behavior_tree_context_{timestamp}.pcap"
         if self._capture_stream_to_local:
             try:
                 self._start_local_stream_tcpdump_locked(local_path)
@@ -716,7 +716,7 @@ class FanxiuCaptureRuntimeService:
             ):
                 continue
             if (
-                "codeyun_fanxiu_runtime_" not in command_line
+                "codeyun_behavior_tree_context_" not in command_line
                 and "tcpdump -U -i wlan0 -s 0 -w - tcp and host" not in command_line
             ):
                 continue
@@ -798,7 +798,7 @@ class FanxiuCaptureRuntimeService:
             return
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         local_path = resolve_fanxiu_tcp_live_capture_dir() / f"fanxiu_runtime_snapshot_{timestamp}_{size}.pcap"
-        remote_snapshot_path = f"{DEFAULT_REMOTE_CAPTURE_DIR}/codeyun_fanxiu_runtime_snapshot_{timestamp}_{size}.pcap"
+        remote_snapshot_path = f"{DEFAULT_REMOTE_CAPTURE_DIR}/codeyun_behavior_tree_context_snapshot_{timestamp}_{size}.pcap"
         try:
             self._run_adb(["-s", self.device_id, "shell", "cp", remote_path, remote_snapshot_path], timeout=10)
             self._run_adb(["-s", self.device_id, "pull", remote_snapshot_path, str(local_path)], timeout=60)

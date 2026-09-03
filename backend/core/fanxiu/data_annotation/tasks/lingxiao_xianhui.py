@@ -74,7 +74,7 @@ class LingxiaoSpecialRechargeDecision:
     reason: str
 
 
-def _normalize_lingxiao_world(runtime: Any, *, label: str):
+def _normalize_lingxiao_world(context: Any, *, label: str):
     """Accept either verified world-root landing, then normalize #20 to #34.
 
     A child-page return can legally take the historical #575→#34 edge or the
@@ -83,21 +83,21 @@ def _normalize_lingxiao_world(runtime: Any, *, label: str):
     shape.  Preserve both branches instead of weakening #34 recognition.
     """
 
-    landing = yield from runtime.wait_view(
+    landing = yield from context.wait_scene(
         34,
         LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID,
-        timeout=12.0,
+        wait=12.0,
         label=label,
     )
     landing_id = int(getattr(landing, "id", landing))
     if landing_id == LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID:
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID,
             "回到世界",
             timeout=8.0,
             label=f"{label}：从绿瓶回到世界",
         )
-        yield from runtime.wait_view(34, timeout=12.0, label=f"{label}：确认世界主页")
+        yield from context.wait_scene(34, wait=12.0, label=f"{label}：确认世界主页")
     elif landing_id != 34:
         raise RuntimeError(f"{label}：世界落点不受支持：#{landing_id}")
     return 34
@@ -504,7 +504,7 @@ def read_lingxiao_cumulative_rewards_runtime() -> dict[str, Any]:
 
 
 def claim_lingxiao_cumulative_rewards(
-    runtime: Any, *, initial_snapshot: dict[str, Any] | None = None
+    context: Any, *, initial_snapshot: dict[str, Any] | None = None
 ):
     """Claim every currently visible Runtime-authorized cumulative reward.
 
@@ -537,13 +537,13 @@ def claim_lingxiao_cumulative_rewards(
         slot = int(target.get("visible_slot") or 0)
         if reward_id <= 0 or slot not in (1, 2, 3, 4):
             raise RuntimeError("灵霄仙会：可领累计奖励缺少已验证 GUI 槽位")
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             LINGXIAO_MAIN_SCENE_ID,
             f"累计寻宝第{slot}档（Runtime slot={slot}）",
             timeout=8.0,
             label=f"灵霄仙会：领取累计寻宝 reward_id={reward_id}",
         )
-        yield from runtime.wait_action_settle(2.0)
+        yield from context.wait_action_settle(2.0)
         after = read_lingxiao_cumulative_rewards_runtime()
         if reward_id not in {int(value) for value in after.get("claimed_ids") or []}:
             raise RuntimeError(f"灵霄仙会：累计 reward_id={reward_id} 点击后未确认已领取")
@@ -622,7 +622,7 @@ def read_lingxiao_special_recharge_runtime() -> dict[str, Any]:
 
 
 def claim_lingxiao_special_recharge_first_free(
-    runtime: Any, *, initial_snapshot: dict[str, Any] | None = None
+    context: Any, *, initial_snapshot: dict[str, Any] | None = None
 ):
     """Claim only the one currently reachable zero-price SpecialOffer pack.
 
@@ -648,26 +648,26 @@ def claim_lingxiao_special_recharge_first_free(
     limit = int(offer.get("personlimit") or 0)
     if offer_id <= 0 or pay_id > 0 or choice_count != 0 or not 0 <= buy_before < limit:
         raise RuntimeError("灵霄仙会：特惠连充首个可达包不满足无付费领取契约")
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         LINGXIAO_SPECIAL_RECHARGE_SCENE_ID,
         "第1轮免费领取",
         timeout=8.0,
         label=f"灵霄仙会：领取特惠连充免费 offer_id={offer_id}",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         LINGXIAO_SPECIAL_RECHARGE_RESULT_SCENE_ID,
-        timeout=12.0,
+        wait=12.0,
         label="灵霄仙会：确认特惠连充免费领取结果",
     )
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         LINGXIAO_SPECIAL_RECHARGE_RESULT_SCENE_ID,
         "继续",
         timeout=8.0,
         label="灵霄仙会：关闭特惠连充免费领取结果",
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         LINGXIAO_SPECIAL_RECHARGE_SCENE_ID,
-        timeout=12.0,
+        wait=12.0,
         label="灵霄仙会：确认回到特惠连充",
     )
     after = read_lingxiao_special_recharge_runtime()
@@ -795,64 +795,63 @@ def execute_lingxiao_xianhui_job(
     live ten-draw toggle and dedicated result-page closure are all available.
     """
 
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     task_id = str(payload.get("__scheduler_task_id") or LINGXIAO_XIANHUI_TASK_ID)
-    scene_id, _score, _frame = runtime.current_scene(
+    scene_id, _score, _frame = context.current_scene(
         [34, LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID, LINGXIAO_COVER_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, LINGXIAO_TASK_SCENE_ID, LINGXIAO_FULING_SCENE_ID], update=True,
-        handle_interruptions=False,
     )
     if scene_id not in {LINGXIAO_COVER_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, LINGXIAO_TASK_SCENE_ID, LINGXIAO_FULING_SCENE_ID}:
         # A popup such as #530 is an optional overlay, not evidence that the
         # underlying business page vanished.  Let the standard interruption
         # loop close it, then resume from whichever verified Lingxiao/world
-        # page is actually revealed.  Forcing ``goto_view(34)`` here would
+        # page is actually revealed.  Forcing ``go_scene(34)`` here would
         # incorrectly require a #574→#34 navigation edge after the popup.
-        revealed = yield from runtime.wait_view(
+        revealed = yield from context.wait_scene(
             34,
             LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID,
             LINGXIAO_COVER_SCENE_ID,
             LINGXIAO_MAIN_SCENE_ID,
             LINGXIAO_TASK_SCENE_ID,
             LINGXIAO_FULING_SCENE_ID,
-            timeout=15.0,
+            wait=15.0,
             label="灵霄仙会：等待中断关闭后的业务页面",
         )
         scene_id = int(getattr(revealed, "id", revealed))
     if scene_id == LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID:
         scene_id = yield from _normalize_lingxiao_world(
-            runtime,
+            context,
             label="灵霄仙会：从绿瓶世界页归一化",
         )
     if scene_id == LINGXIAO_FULING_SCENE_ID:
         # A prior interrupted run or a short AI read-only probe may leave the
         # shared game slot on #571.  Its own verified return lands at #34;
         # never wait for #571 to disappear or reuse #575 coordinates there.
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             LINGXIAO_FULING_SCENE_ID,
             "返回",
             timeout=8.0,
             label="灵霄仙会：从残留仙门福令返回世界",
         )
-        yield from _normalize_lingxiao_world(runtime, label="灵霄仙会：确认残留仙门福令返回世界")
+        yield from _normalize_lingxiao_world(context, label="灵霄仙会：确认残留仙门福令返回世界")
         scene_id = 34
     if scene_id == 34:
-        yield from runtime.wait_click(34, "灵霄仙会", timeout=8.0, label="灵霄仙会：进入活动")
-        yield from runtime.wait_view(LINGXIAO_COVER_SCENE_ID, timeout=12.0, label="灵霄仙会：等待活动封面")
+        yield from context.wait_click(34, "灵霄仙会", timeout=8.0, label="灵霄仙会：进入活动")
+        yield from context.wait_scene(LINGXIAO_COVER_SCENE_ID, wait=12.0, label="灵霄仙会：等待活动封面")
         scene_id = LINGXIAO_COVER_SCENE_ID
     if scene_id == LINGXIAO_COVER_SCENE_ID:
-        yield from runtime.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：打开仙门寻宝")
-        yield from runtime.wait_view(LINGXIAO_MAIN_SCENE_ID, timeout=12.0, label="灵霄仙会：等待寻宝主页")
+        yield from context.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：打开仙门寻宝")
+        yield from context.wait_scene(LINGXIAO_MAIN_SCENE_ID, wait=12.0, label="灵霄仙会：等待寻宝主页")
     elif scene_id == LINGXIAO_TASK_SCENE_ID:
         # A previous attempt may have stopped on #570.  Rejoin its parent
         # explicitly instead of treating a task-page frame as the draw page.
-        yield from runtime.wait_click(LINGXIAO_TASK_SCENE_ID, "切换仙门寻宝", timeout=8.0, label="灵霄仙会：从任务页回到寻宝")
-        yield from runtime.wait_view(LINGXIAO_MAIN_SCENE_ID, timeout=12.0, label="灵霄仙会：确认寻宝主页")
+        yield from context.wait_click(LINGXIAO_TASK_SCENE_ID, "切换仙门寻宝", timeout=8.0, label="灵霄仙会：从任务页回到寻宝")
+        yield from context.wait_scene(LINGXIAO_MAIN_SCENE_ID, wait=12.0, label="灵霄仙会：确认寻宝主页")
     # Read every page-bound Runtime model before leaving #575.  In particular,
     # the cumulative ladder cannot be reconstructed safely once a different
     # activity has become the active Bothdraw instance on #34.
     snapshot = read_lingxiao_runtime_state()
     claimed_cumulative_reward_ids = yield from claim_lingxiao_cumulative_rewards(
-        runtime, initial_snapshot=snapshot.get("cumulative")
+        context, initial_snapshot=snapshot.get("cumulative")
     )
     # The claim above mutates the page-bound Revenue model.  Refresh the
     # joined snapshot before recording or deciding subsequent work.
@@ -860,7 +859,7 @@ def execute_lingxiao_xianhui_job(
     # Scene-bound OCR deliberately excludes the dynamic time strip.  Read the
     # shared full-frame token result instead; only its numeric range is used.
     range_text = _activity_range_from_fragments(
-        runtime.full_frame_ocr_tokens(runtime.cur_frame(update=True))
+        context.full_frame_ocr_tokens(context.cur_frame(update=True))
     )
     end = activity_end_from_text(range_text)
     _record_scatter_snapshot(snapshot, end)
@@ -885,45 +884,45 @@ def execute_lingxiao_xianhui_job(
     # reader joins the active #577 identity with SpecialOffer's synchronized
     # purchases and loaded package chain.  This observation is intentionally
     # before any future click branch exists.
-    yield from runtime.wait_click(LINGXIAO_MAIN_SCENE_ID, "特惠连充（付费，仅观察）", timeout=8.0, label="灵霄仙会：打开特惠连充（只读）")
-    yield from runtime.wait_view(LINGXIAO_SPECIAL_RECHARGE_SCENE_ID, timeout=12.0, label="灵霄仙会：等待特惠连充（只读）")
+    yield from context.wait_click(LINGXIAO_MAIN_SCENE_ID, "特惠连充（付费，仅观察）", timeout=8.0, label="灵霄仙会：打开特惠连充（只读）")
+    yield from context.wait_scene(LINGXIAO_SPECIAL_RECHARGE_SCENE_ID, wait=12.0, label="灵霄仙会：等待特惠连充（只读）")
     special_recharge_snapshot = read_lingxiao_special_recharge_runtime()
     claimed_special_offer_id = yield from claim_lingxiao_special_recharge_first_free(
-        runtime, initial_snapshot=special_recharge_snapshot
+        context, initial_snapshot=special_recharge_snapshot
     )
-    yield from runtime.wait_click(LINGXIAO_SPECIAL_RECHARGE_SCENE_ID, "返回", timeout=8.0, label="灵霄仙会：从特惠连充返回世界")
-    yield from _normalize_lingxiao_world(runtime, label="灵霄仙会：确认连充页返回世界")
+    yield from context.wait_click(LINGXIAO_SPECIAL_RECHARGE_SCENE_ID, "返回", timeout=8.0, label="灵霄仙会：从特惠连充返回世界")
+    yield from _normalize_lingxiao_world(context, label="灵霄仙会：确认连充页返回世界")
     # #577's verified return destination is #34.  Re-enter through the
     # activity cover before using any #575 shape; fixed screen coordinates on
     # the world page are not a valid substitute for scene ownership.
-    yield from runtime.wait_click(34, "灵霄仙会", timeout=8.0, label="灵霄仙会：从连充重新进入活动")
-    yield from runtime.wait_view(LINGXIAO_COVER_SCENE_ID, timeout=12.0, label="灵霄仙会：确认连充后活动封面")
-    yield from runtime.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：从连充重新打开寻宝")
+    yield from context.wait_click(34, "灵霄仙会", timeout=8.0, label="灵霄仙会：从连充重新进入活动")
+    yield from context.wait_scene(LINGXIAO_COVER_SCENE_ID, wait=12.0, label="灵霄仙会：确认连充后活动封面")
+    yield from context.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：从连充重新打开寻宝")
     # The entry can be normal ``#574→#575`` or can briefly show an optional
     # confirm popup that the guard closes back to #574.  Both are valid edges:
     # after the latter, retry the same verified #574 action once instead of
     # declaring the normal path wrong or clicking a #575 coordinate on #574.
-    landing = yield from runtime.wait_view(LINGXIAO_MAIN_SCENE_ID, LINGXIAO_COVER_SCENE_ID, timeout=12.0, label="灵霄仙会：确认连充后寻宝主页或封面")
+    landing = yield from context.wait_scene(LINGXIAO_MAIN_SCENE_ID, LINGXIAO_COVER_SCENE_ID, wait=12.0, label="灵霄仙会：确认连充后寻宝主页或封面")
     landing_id = int(getattr(landing, "id", landing))
     if landing_id == LINGXIAO_COVER_SCENE_ID:
-        yield from runtime.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：关闭可选弹窗后重试寻宝")
-        yield from runtime.wait_view(LINGXIAO_MAIN_SCENE_ID, timeout=12.0, label="灵霄仙会：确认重试后寻宝主页")
+        yield from context.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：关闭可选弹窗后重试寻宝")
+        yield from context.wait_scene(LINGXIAO_MAIN_SCENE_ID, wait=12.0, label="灵霄仙会：确认重试后寻宝主页")
     # #571 has a child activity identity distinct from its #575 parent.  The
     # dedicated reader validates that containment and only certifies its
     # observed no-reward state; a red dot never authorizes a click here.
-    yield from runtime.wait_click(LINGXIAO_MAIN_SCENE_ID, "仙门福令", timeout=8.0, label="灵霄仙会：打开仙门福令")
-    fuling_landing = yield from runtime.wait_view(LINGXIAO_FULING_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, timeout=12.0, label="灵霄仙会：等待仙门福令或中断返回主页")
+    yield from context.wait_click(LINGXIAO_MAIN_SCENE_ID, "仙门福令", timeout=8.0, label="灵霄仙会：打开仙门福令")
+    fuling_landing = yield from context.wait_scene(LINGXIAO_FULING_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, wait=12.0, label="灵霄仙会：等待仙门福令或中断返回主页")
     if int(getattr(fuling_landing, "id", fuling_landing)) == LINGXIAO_MAIN_SCENE_ID:
         # A transient disconnect prompt can close back to the initiating
         # #575 page.  Retrying its verified entry once is safe; a second
         # unexpected #575 is still a real timeout rather than a click loop.
-        yield from runtime.wait_click(LINGXIAO_MAIN_SCENE_ID, "仙门福令", timeout=8.0, label="灵霄仙会：中断关闭后重试仙门福令")
-        yield from runtime.wait_view(LINGXIAO_FULING_SCENE_ID, timeout=12.0, label="灵霄仙会：确认重试后仙门福令")
+        yield from context.wait_click(LINGXIAO_MAIN_SCENE_ID, "仙门福令", timeout=8.0, label="灵霄仙会：中断关闭后重试仙门福令")
+        yield from context.wait_scene(LINGXIAO_FULING_SCENE_ID, wait=12.0, label="灵霄仙会：确认重试后仙门福令")
     free_track_gui_state = read_lingxiao_free_track_gui_state(
-        runtime.ocr_text_in_shapes(
+        context.ocr_text_in_shapes(
             LINGXIAO_FULING_SCENE_ID,
             ("免费奖励",),
-            frame_data_url=runtime.cur_frame(update=True),
+            frame_data_url=context.cur_frame(update=True),
             padding=8,
         )
     )
@@ -936,7 +935,7 @@ def execute_lingxiao_xianhui_job(
         # This is a state-changing action.  It must be one resumable behavior-
         # tree primitive: a bare click followed by a yielded wait may replay
         # after a tick resumes while the server is still changing the panel.
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             LINGXIAO_FULING_SCENE_ID,
             "免费奖励",
             timeout=8.0,
@@ -946,27 +945,27 @@ def execute_lingxiao_xianhui_job(
         # layer.  Do not OCR the dimmed #571 background or click through a
         # generic overlay: #581 is a real captured scene with the specific
         # "免费福令已激活" + continuation evidence.
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             LINGXIAO_FULING_ACTIVATION_RESULT_SCENE_ID,
-            timeout=12.0,
+            wait=12.0,
             label="灵霄仙会：确认免费福令激活结果",
         )
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             LINGXIAO_FULING_ACTIVATION_RESULT_SCENE_ID,
             "继续",
             timeout=8.0,
             label="灵霄仙会：关闭免费福令激活结果",
         )
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             LINGXIAO_FULING_SCENE_ID,
-            timeout=12.0,
+            wait=12.0,
             label="灵霄仙会：确认回到仙门福令",
         )
         activated_state = read_lingxiao_free_track_gui_state(
-            runtime.ocr_text_in_shapes(
+            context.ocr_text_in_shapes(
                 LINGXIAO_FULING_SCENE_ID,
                 ("免费奖励",),
-                frame_data_url=runtime.cur_frame(update=True),
+                frame_data_url=context.cur_frame(update=True),
                 padding=8,
             )
         )
@@ -984,20 +983,20 @@ def execute_lingxiao_xianhui_job(
         # Unlike a normal text button, this card becomes a green completed
         # state after claim.  Match it once before click so a completed card is
         # a legitimate no-op instead of a wait timeout or a repeated claim.
-        visual_gate = runtime.shape_matches(
+        visual_gate = context.shape_matches(
             LINGXIAO_FULING_SCENE_ID,
             "当前免费奖励（领取门卫）",
         )
         if visual_gate is None:
             free_reward_action = "免费普通轨首卡未呈现可领取视觉态"
         else:
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 LINGXIAO_FULING_SCENE_ID,
                 "当前免费奖励（领取门卫）",
                 timeout=8.0,
                 label="灵霄仙会：领取当前免费普通轨",
             )
-            yield from runtime.wait_action_settle(2.0)
+            yield from context.wait_action_settle(2.0)
             fuling_reward_snapshot = read_lingxiao_fuling_rewards_runtime()
             after_track = fuling_reward_snapshot.get("normal_track_state")
             claimed_ids = {
@@ -1011,22 +1010,22 @@ def execute_lingxiao_xianhui_job(
                     f"{missing}"
                 )
             free_reward_action = f"已领取免费普通轨 Runtime targets={list(free_target_ids)}"
-    yield from runtime.wait_click(LINGXIAO_FULING_SCENE_ID, "返回", timeout=8.0, label="灵霄仙会：从仙门福令返回世界")
-    yield from _normalize_lingxiao_world(runtime, label="灵霄仙会：确认福令页返回世界")
+    yield from context.wait_click(LINGXIAO_FULING_SCENE_ID, "返回", timeout=8.0, label="灵霄仙会：从仙门福令返回世界")
+    yield from _normalize_lingxiao_world(context, label="灵霄仙会：确认福令页返回世界")
     # #571's verified return lands at #34 rather than #575.  Re-enter through
     # the established parent path instead of assuming an unobserved tab hop.
-    yield from runtime.wait_click(34, "灵霄仙会", timeout=8.0, label="灵霄仙会：重新进入活动")
-    yield from runtime.wait_view(LINGXIAO_COVER_SCENE_ID, timeout=12.0, label="灵霄仙会：确认活动封面")
-    yield from runtime.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：重新打开仙门寻宝")
-    yield from runtime.wait_view(LINGXIAO_MAIN_SCENE_ID, timeout=12.0, label="灵霄仙会：确认寻宝主页")
+    yield from context.wait_click(34, "灵霄仙会", timeout=8.0, label="灵霄仙会：重新进入活动")
+    yield from context.wait_scene(LINGXIAO_COVER_SCENE_ID, wait=12.0, label="灵霄仙会：确认活动封面")
+    yield from context.wait_click(LINGXIAO_COVER_SCENE_ID, "仙门寻宝", timeout=8.0, label="灵霄仙会：重新打开仙门寻宝")
+    yield from context.wait_scene(LINGXIAO_MAIN_SCENE_ID, wait=12.0, label="灵霄仙会：确认寻宝主页")
     # #570 owns the RevenueTask model.  Read its complete group membership
     # before considering any dynamic-row click; at this stage the workflow is
     # observation-only, so an unproven task result cannot consume a reward.
-    yield from runtime.wait_click(LINGXIAO_MAIN_SCENE_ID, "福令任务", timeout=8.0, label="灵霄仙会：打开福令任务")
-    task_landing = yield from runtime.wait_view(LINGXIAO_TASK_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, timeout=12.0, label="灵霄仙会：等待福令任务或中断返回主页")
+    yield from context.wait_click(LINGXIAO_MAIN_SCENE_ID, "福令任务", timeout=8.0, label="灵霄仙会：打开福令任务")
+    task_landing = yield from context.wait_scene(LINGXIAO_TASK_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, wait=12.0, label="灵霄仙会：等待福令任务或中断返回主页")
     if int(getattr(task_landing, "id", task_landing)) == LINGXIAO_MAIN_SCENE_ID:
-        yield from runtime.wait_click(LINGXIAO_MAIN_SCENE_ID, "福令任务", timeout=8.0, label="灵霄仙会：中断关闭后重试福令任务")
-        yield from runtime.wait_view(LINGXIAO_TASK_SCENE_ID, timeout=12.0, label="灵霄仙会：确认重试后福令任务")
+        yield from context.wait_click(LINGXIAO_MAIN_SCENE_ID, "福令任务", timeout=8.0, label="灵霄仙会：中断关闭后重试福令任务")
+        yield from context.wait_scene(LINGXIAO_TASK_SCENE_ID, wait=12.0, label="灵霄仙会：确认重试后福令任务")
     task_snapshot = read_lingxiao_fuling_tasks_runtime()
     claimed_daily_task_ids: list[int] = []
     # Runtime config positions are not UI positions.  Re-read the active
@@ -1052,7 +1051,7 @@ def execute_lingxiao_xianhui_job(
         # A bare click is not resumable under the behavior-tree tick model:
         # use the framework's atomic click node so a pending Runtime read
         # cannot replay this reward action on the next tick.
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             LINGXIAO_TASK_SCENE_ID,
             row_title,
             timeout=8.0,
@@ -1067,8 +1066,8 @@ def execute_lingxiao_xianhui_job(
     # UI transition is asynchronous.  A bare click followed by an immediate
     # scene read can still observe the old task frame, so the world return is
     # always confirmed by its own wait.
-    yield from runtime.wait_click(LINGXIAO_TASK_SCENE_ID, "返回", timeout=8.0, label="灵霄仙会：从任务页返回世界")
-    yield from _normalize_lingxiao_world(runtime, label="灵霄仙会：确认回到世界")
+    yield from context.wait_click(LINGXIAO_TASK_SCENE_ID, "返回", timeout=8.0, label="灵霄仙会：从任务页返回世界")
+    yield from _normalize_lingxiao_world(context, label="灵霄仙会：确认回到世界")
     # Lingxiao is currently an AI research workflow, not a self-scheduling
     # production duty.  A stale Scheduler dispatch must therefore clear its
     # own trigger rather than silently recreate the next check after the user

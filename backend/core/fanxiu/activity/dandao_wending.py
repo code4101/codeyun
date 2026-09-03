@@ -416,7 +416,10 @@ def ensure_dandao_wending_activity(session: Session) -> str:
                 "official_name": DANDAO_WENDING_OFFICIAL_NAME,
                 "phase": plan.phase,
                 "same_server": True,
-                "rank_scope_activity_ids": {"personal": request.rank_activity_id},
+                "rank_scope_identities": {"personal": {
+                    "runtime_rank_activity_id": request.rank_activity_id,
+                    "reward_activity_id": request.rank_activity_id,
+                }},
                 "rank_reward_group": request.reward_group,
                 "game_activity_id": DANDAO_WENDING_PRELIMINARY_ACTIVITY_ID,
                 "period_start_time_ms": int(raw_occurrence.get("startTime") or 0),

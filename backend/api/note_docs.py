@@ -519,7 +519,14 @@ def update_note_doc(
     _require_resource_access(access, "editor")
     raw_request = note_in.model_dump(exclude_unset=True)
     requested_updates = changed_fields_from_request(raw_request)
-    if note_in.base_version is not None and int(note.version or 1) != int(note_in.base_version):
+    should_validate_expected_fields = (
+        note_in.expected_fields is not None
+        or (
+            note_in.base_version is not None
+            and int(note.version or 1) != int(note_in.base_version)
+        )
+    )
+    if should_validate_expected_fields:
         conflicts = stale_field_conflicts(note, requested_updates, note_in.expected_fields)
         if conflicts:
             raise HTTPException(

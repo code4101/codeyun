@@ -12,7 +12,7 @@ from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_json,
     write_data_annotation_json,
 )
-from backend.core.settings import get_settings
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_kernel_scheduler_dir
 
 
 GAME_STATE_INSPECTION_INTERVAL_SECONDS = 60.0
@@ -66,13 +66,11 @@ def _validate_game_state_probe_source(source: str) -> str:
 
 
 def game_state_inspection_state_path() -> Path:
-    return _inspection_runtime_dir() / "game_state_inspection.json"
+    return _inspection_scheduler_dir() / "game_state_inspection.json"
 
 
-def _inspection_runtime_dir() -> Path:
-    path = get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def _inspection_scheduler_dir() -> Path:
+    return fanxiu_kernel_scheduler_dir()
 
 
 def _scheduler_job_group_enabled() -> bool:
@@ -81,7 +79,7 @@ def _scheduler_job_group_enabled() -> bool:
     # lifecycle rule is separate from the probe implementation: probes still
     # read the game-native Runtime and never submit or occupy a Kernel Cell.
     payload = read_data_annotation_json(
-        _inspection_runtime_dir() / "scheduler_settings.json",
+        _inspection_scheduler_dir() / "scheduler_settings.json",
         {},
     )
     return bool(
@@ -92,7 +90,7 @@ def _scheduler_job_group_enabled() -> bool:
 
 
 def _inspection_recovery_allowed() -> tuple[bool, str]:
-    from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
         read_scheduler_tasks,
     )
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import (
@@ -339,7 +337,7 @@ def inspect_game_state_once(
     checked_at = now or datetime.now()
     selected = tuple(probes) if probes is not None else registered_game_state_probes()
     if due_sink is None:
-        from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
             advance_scheduler_task_from_fact,
         )
 

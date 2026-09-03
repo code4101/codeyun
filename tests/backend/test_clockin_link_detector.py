@@ -1,5 +1,6 @@
 from backend.core.attendance.clockin_link_detector import (
     _dismiss_xiaoe_clockin_onboarding,
+    _expand_xiaoe_punch_home_page,
     build_xiaoe_diary_list_url,
     choose_attendance_clockin_activities,
 )
@@ -84,3 +85,20 @@ def test_dismiss_xiaoe_clockin_onboarding_uses_exact_visible_skip_button() -> No
     assert _dismiss_xiaoe_clockin_onboarding(tab) is True
     assert "=== '跳过'" in tab.script
     assert "getBoundingClientRect" in tab.script
+
+
+def test_expand_xiaoe_punch_home_page_selects_one_hundred_rows() -> None:
+    class FakeTab:
+        def __init__(self) -> None:
+            self.scripts: list[str] = []
+
+        def run_js(self, script: str) -> bool:
+            self.scripts.append(script)
+            return True
+
+    tab = FakeTab()
+
+    assert _expand_xiaoe_punch_home_page(tab) is True
+    assert ".ss-pagination-select" in tab.scripts[0]
+    assert ".ss-select-dropdown__item" in tab.scripts[1]
+    assert "100 条" in tab.scripts[1]

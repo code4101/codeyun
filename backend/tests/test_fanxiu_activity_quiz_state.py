@@ -5,11 +5,11 @@ from backend.core.fanxiu.data_annotation.tasks.activity_quiz import (
     parse_question_number,
     resolve_activity_quiz_native_target,
 )
-from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
     read_scheduler_tasks,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from scripts.fanxiu_bt import _require_one_shot_confirmation
 
@@ -112,7 +112,7 @@ def test_activity_quiz_is_a_visible_manual_standard_job(tmp_path):
     assert task["next_time"] is None
     assert task["trigger_description"] == "手动"
     assert task["payload"] == {
-        "max_runtime_seconds": 240,
+        "max_execution_seconds": 240,
         "native_snapshot_max_age_seconds": 2,
         "native_prompt_match_threshold": 82,
         "match_score_threshold": 82,
@@ -123,7 +123,7 @@ def test_activity_quiz_is_a_visible_manual_standard_job(tmp_path):
 def test_activity_quiz_is_in_default_scheduler_checklist():
     task = next(
         job
-        for job in default_data_annotation_scheduler_tasks()
+        for job in default_kernel_scheduler_tasks()
         if job["task_type"] == "activity_quiz"
     )
 
@@ -132,7 +132,7 @@ def test_activity_quiz_is_in_default_scheduler_checklist():
     assert task["trigger_description"] == "手动"
     assert task["next_time"] is None
     assert task["payload"] == {
-        "max_runtime_seconds": 240,
+        "max_execution_seconds": 240,
         "native_snapshot_max_age_seconds": 2,
         "native_prompt_match_threshold": 82,
         "match_score_threshold": 82,

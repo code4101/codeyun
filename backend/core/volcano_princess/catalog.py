@@ -11,7 +11,7 @@ from fastapi import HTTPException
 
 CATALOG_SCHEMA_VERSION = 1
 THEATER_CATALOG_SCHEMA_VERSION = 1
-DEFAULT_REVERSE_ROOT = Path(r"D:\home\chenkunze\data\m2607火山的女儿逆向")
+DEFAULT_REVERSE_ROOT = Path(r"C:\home\chenkunze\data\m2607火山的女儿逆向")
 
 
 def get_volcano_princess_reverse_root() -> Path:

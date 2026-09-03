@@ -8,7 +8,7 @@ from typing import Any
 from backend.core.fanxiu.data_annotation.schedule_navigation import (
     select_schedule_activity,
 )
-from backend.core.fanxiu.runtime.mumu_control import text_mumu_adb
+from backend.core.fanxiu.client.mumu_control import text_mumu_adb
 
 
 LINGQUAN_TRIGGER_TIME = dt_time(20, 30)
@@ -51,12 +51,12 @@ class LingquanTaskMixin:
             "current_scene": None,
         })
 
-    def _wait_lingquan_until(self, runtime: Any, deadline: datetime, *, poll_seconds: float = 1.0):
+    def _wait_lingquan_until(self, context: Any, deadline: datetime, *, poll_seconds: float = 1.0):
         while True:
             remaining = (deadline - _now()).total_seconds()
             if remaining <= 0:
                 return
-            yield from runtime.wait_action_settle(min(max(0.1, poll_seconds), remaining))
+            yield from context.wait_action_settle(min(max(0.1, poll_seconds), remaining))
 
     @staticmethod
     def _lingquan_timeout(deadline: datetime, requested: float) -> float:
@@ -90,13 +90,13 @@ class LingquanTaskMixin:
         except (TypeError, ValueError):
             return None
 
-    def _enter_lingquan(self, runtime: Any, *, transition_timeout: float, deadline: datetime):
-        scene_id, _score, _frame = runtime.current_scene([389, 388, 387, 386, 66, 34], update=True)
+    def _enter_lingquan(self, context: Any, *, transition_timeout: float, deadline: datetime):
+        scene_id, _score, _frame = context.current_scene([389, 388, 387, 386, 66, 34], update=True)
         if scene_id is None:
             self._log("info", "日常_灵泉：当前为过渡/未知画面，等待进入稳定业务场景")
-            waited = yield from runtime.wait_view(
+            waited = yield from context.wait_scene(
                 389, 388, 387, 386,
-                timeout=self._lingquan_window_timeout(deadline),
+                wait=self._lingquan_window_timeout(deadline),
                 label="日常_灵泉：等待过渡结束并进入稳定业务场景",
             )
             scene_id = self._view_id(waited)
@@ -105,37 +105,37 @@ class LingquanTaskMixin:
             return
         if scene_id == 388:
             timeout = self._lingquan_question_page_timeout(deadline, transition_timeout)
-            yield from runtime.wait_click_then_view(388, "进入问答", 389, timeout=timeout)
+            yield from context.wait_click_then_scene(388, "进入问答", 389, timeout=timeout)
             return
         if scene_id == 34:
             self._log("info", "日常_灵泉：未识别到 #386，使用 #34 → #66[前往] 活动入口")
             self._lingquan_timeout(deadline, transition_timeout)
-            yield from runtime.goto_view(66)
+            yield from context.go_scene(66)
             scene_id = 66
         elif scene_id not in {66, 386, 387}:
             self._log("info", "日常_灵泉：当前不在活动入口，使用 #34 → #66[前往] 活动入口")
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             self._lingquan_timeout(deadline, transition_timeout)
-            yield from runtime.goto_view(66)
+            yield from context.go_scene(66)
             scene_id = 66
         if scene_id == 66:
             settle_seconds = self._lingquan_timeout(deadline, 3.0)
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
             timeout = self._lingquan_timeout(deadline, transition_timeout)
             yield from select_schedule_activity(
-                runtime,
+                context,
                 r"灵泉",
                 enter=True,
                 settle_seconds=min(0.8, settle_seconds),
             )
-            yield from runtime.wait_view(
+            yield from context.wait_scene(
                 386,
-                timeout=timeout,
+                wait=timeout,
                 label="日常_灵泉：等待已校验的活动卡片进入 #386",
             )
             scene_id = 386
         if scene_id == 386:
-            landed = yield from runtime.wait_click_then_view(
+            landed = yield from context.wait_click_then_scene(
                 386, "前往", [387, 388, 389],
                 timeout=self._lingquan_window_timeout(deadline),
                 label="日常_灵泉：等待过渡结束并进入 #387/#388/#389",
@@ -145,27 +145,27 @@ class LingquanTaskMixin:
             return
         if scene_id == 388:
             timeout = self._lingquan_question_page_timeout(deadline, transition_timeout)
-            yield from runtime.wait_click_then_view(388, "进入问答", 389, timeout=timeout)
+            yield from context.wait_click_then_scene(388, "进入问答", 389, timeout=timeout)
             return
         if scene_id != 387:
             raise RuntimeError(f"日常_灵泉：过渡结束后落点无效：{scene_id!r}")
         timeout = self._lingquan_timeout(deadline, transition_timeout)
-        yield from runtime.wait_click_then_view(387, "灵泉", 303, timeout=timeout)
-        yield from runtime.advance_dialogue(303, "对话", label="日常_灵泉：推进管事对话")
+        yield from context.wait_click_then_scene(387, "灵泉", 303, timeout=timeout)
+        yield from context.advance_dialogue(303, "对话", label="日常_灵泉：推进管事对话")
         timeout = self._lingquan_timeout(deadline, transition_timeout)
-        yield from runtime.wait_view(388, timeout=timeout, label="日常_灵泉：等待准备页 #388")
+        yield from context.wait_scene(388, wait=timeout, label="日常_灵泉：等待准备页 #388")
         timeout = self._lingquan_question_page_timeout(deadline, transition_timeout)
-        yield from runtime.wait_click_then_view(388, "进入问答", 389, timeout=timeout)
+        yield from context.wait_click_then_scene(388, "进入问答", 389, timeout=timeout)
 
     def _ensure_lingquan_question_scene(
         self,
-        runtime: Any,
+        context: Any,
         *,
         cutoff: datetime,
         transition_timeout: float,
     ):
         """Keep the active quiz window anchored at #389."""
-        scene_id, _score, _frame = runtime.current_scene([389, 388, 387, 386, 66, 34], update=True)
+        scene_id, _score, _frame = context.current_scene([389, 388, 387, 386, 66, 34], update=True)
         if scene_id == 389:
             return
         self._log(
@@ -173,17 +173,17 @@ class LingquanTaskMixin:
             f"日常_灵泉：答题窗口内发现当前不在 #389（#{scene_id or 'unknown'}），自动恢复答题页",
         )
         yield from self._enter_lingquan(
-            runtime,
+            context,
             transition_timeout=transition_timeout,
             deadline=cutoff,
         )
-        scene_id, _score, _frame = runtime.current_scene([389], update=True)
+        scene_id, _score, _frame = context.current_scene([389], update=True)
         if scene_id != 389:
             raise TimeoutError("日常_灵泉：窗口内恢复后仍未确认到 #389")
 
     def _answer_lingquan_question(
         self,
-        runtime: Any,
+        context: Any,
         *,
         frame_data_url: str | None,
         transition_timeout: float,
@@ -199,7 +199,7 @@ class LingquanTaskMixin:
         question_text = str(
             question_text
             if question_text is not None
-            else runtime.ocr_text_in_shapes(389, ("题目",), frame_data_url=frame_data_url)
+            else context.ocr_text_in_shapes(389, ("题目",), frame_data_url=frame_data_url)
         ).strip()
         matched, score = match_lingquan_question_cached(question_text)
         if matched is None or score <= score_threshold:
@@ -218,20 +218,20 @@ class LingquanTaskMixin:
         # 打开的是 MuMu/Android 系统输入法；键盘会改变画面底部，不能把
         # “必须识别成 #390”作为继续输入的前置条件。#390 只提供发送按钮
         # 的宿主 Shape 配置，实际画面和坐标仍以当前业务宿主为准。
-        yield from runtime.wait_click(389, "输入")
-        yield from runtime.wait_action_settle(0.5)
+        yield from context.wait_click(389, "输入")
+        yield from context.wait_action_settle(0.5)
         input_ready_at = time.perf_counter()
         text_mumu_adb(matched.answer)
-        yield from runtime.wait_action_settle(0.5)
+        yield from context.wait_action_settle(0.5)
         text_ready_at = time.perf_counter()
         # 第一击只关闭输入法弹窗；强制间隔两秒后第二击才真正发送。
         # 当前业务状态与按钮宿主已由 #389/#390 明确，限时路径不能再为
         # 每一击重复取帧、OCR「发送」并保存动作前截图。坐标仍从正式
         # #390[发送] 标注解析，只跳过这两类昂贵的重复证据。
-        runtime.click_shape_center_fast(390, "发送")
+        context.click_shape_center_fast(390, "发送")
         first_click_at = time.perf_counter()
-        yield from runtime.wait_action_settle(2.0)
-        runtime.click_shape_center_fast(390, "发送")
+        yield from context.wait_action_settle(2.0)
+        context.click_shape_center_fast(390, "发送")
         second_click_at = time.perf_counter()
         self._log(
             "detail",
@@ -253,7 +253,7 @@ class LingquanTaskMixin:
 
     def _run_lingquan_question_loop(
         self,
-        runtime: Any,
+        context: Any,
         *,
         cutoff: datetime,
         transition_timeout: float,
@@ -290,9 +290,9 @@ class LingquanTaskMixin:
                     f"剩余 {countdown} 秒",
                 )
             else:
-                frame = runtime.cur_frame(update=True)
+                frame = context.cur_frame(update=True)
                 question_text = str(
-                    runtime.ocr_text_in_shapes(
+                    context.ocr_text_in_shapes(
                         389,
                         ("题目",),
                         frame_data_url=frame,
@@ -307,16 +307,16 @@ class LingquanTaskMixin:
                 # Runtime 快照都缺失时才付出整场景识别/恢复成本；此前每题
                 # 开头无条件识别 #389，会在 OCR 退化时额外消耗 7-27 秒。
                 yield from self._ensure_lingquan_question_scene(
-                    runtime,
+                    context,
                     cutoff=cutoff,
                     transition_timeout=transition_timeout,
                 )
                 yield from self._wait_lingquan_until(
-                    runtime, min(cutoff, _now() + timedelta(seconds=poll_seconds)), poll_seconds=poll_seconds,
+                    context, min(cutoff, _now() + timedelta(seconds=poll_seconds)), poll_seconds=poll_seconds,
                 )
                 continue
             if not use_runtime_question:
-                numbers, countdown_text = runtime.ocr_numbers_in_shapes(
+                numbers, countdown_text = context.ocr_numbers_in_shapes(
                     389,
                     ("倒计时",),
                     frame_data_url=frame,
@@ -331,7 +331,7 @@ class LingquanTaskMixin:
                 f"日常_灵泉：识别到题目，倒计时 {countdown_text!r}，刷新截止 {refresh_deadline:%H:%M:%S}",
             )
             result = yield from self._answer_lingquan_question(
-                runtime,
+                context,
                 frame_data_url=frame,
                 transition_timeout=transition_timeout,
                 score_threshold=score_threshold,
@@ -341,13 +341,13 @@ class LingquanTaskMixin:
             answers += int(bool(result.get("answered")))
             if result.get("answered"):
                 previous_matched_question = str(result.get("matched_question") or "")
-            yield from self._wait_lingquan_until(runtime, min(refresh_deadline, cutoff), poll_seconds=poll_seconds)
+            yield from self._wait_lingquan_until(context, min(refresh_deadline, cutoff), poll_seconds=poll_seconds)
         return answers
 
-    def _exit_lingquan_to_world(self, runtime: Any, *, timeout: float):
+    def _exit_lingquan_to_world(self, context: Any, *, timeout: float):
         """Consume every nested leave layer until the real world scene is reached."""
         deadline = time.monotonic() + max(1.0, float(timeout))
-        scene_id, _score, _frame = runtime.current_scene(
+        scene_id, _score, _frame = context.current_scene(
             [34, 388, 186, 86],
             update=True,
         )
@@ -357,7 +357,7 @@ class LingquanTaskMixin:
         # #186 当成异常，也不能只消费一次确认；每次动作后都重新识别，
         # 直到真实命中 #34。动作次数与总时间同时有界，避免异常画面狂点。
         for _step in range(8):
-            # wait_view / wait_click_then_view 已经用真实帧确认落到 #34 时，
+            # wait_scene / wait_click_then_scene 已经用真实帧确认落到 #34 时，
             # 即使动作恰好耗尽总预算也应以业务成功为准。否则下一轮先算
             # remaining 会把“截止瞬间已回世界”误写成离场超时。
             if scene_id == 34:
@@ -367,29 +367,29 @@ class LingquanTaskMixin:
             if remaining <= 0:
                 raise TimeoutError("日常_灵泉：多层离场超时，尚未回到 #34")
             if scene_id is None:
-                waited = yield from runtime.wait_view(
+                waited = yield from context.wait_scene(
                     34,
                     388,
                     186,
                     86,
-                    timeout=remaining,
+                    wait=remaining,
                     label="日常_灵泉：重新识别多层离场上下文",
                 )
                 scene_id = self._view_id(waited)
                 continue
             if scene_id in {388, 186}:
                 self._log("action", f"日常_灵泉：点击 #{scene_id}「离开」")
-                runtime.click_shape(scene_id, "离开")
-                yield from runtime.wait_action_settle(2.0)
+                context.click_shape(scene_id, "离开")
+                yield from context.wait_action_settle(2.0)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("日常_灵泉：点击离开后等待落点超时")
-                landed = yield from runtime.wait_view(
+                landed = yield from context.wait_scene(
                     86,
                     34,
                     388,
                     186,
-                    timeout=remaining,
+                    wait=remaining,
                     label="日常_灵泉：点击离开后重新识别落点",
                 )
                 scene_id = self._view_id(landed)
@@ -398,7 +398,7 @@ class LingquanTaskMixin:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("日常_灵泉：离场确认前已超时")
-                landed = yield from runtime.wait_click_then_view(
+                landed = yield from context.wait_click_then_scene(
                     86,
                     "确认",
                     [34, 388, 186, 86],
@@ -423,7 +423,7 @@ class LingquanTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_灵泉资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         transition_timeout = float(payload.get("transition_timeout_seconds") or 20.0)
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 1.0))
         score_threshold = float(payload.get("match_score_threshold") or 90.0)
@@ -460,14 +460,14 @@ class LingquanTaskMixin:
             while _now() < cutoff:
                 try:
                     yield from self._enter_lingquan(
-                        runtime,
+                        context,
                         transition_timeout=transition_timeout,
                         deadline=cutoff,
                     )
                     entered_question_scene = True
-                    yield from self._wait_lingquan_until(runtime, question_start, poll_seconds=poll_seconds)
+                    yield from self._wait_lingquan_until(context, question_start, poll_seconds=poll_seconds)
                     answers += yield from self._run_lingquan_question_loop(
-                        runtime,
+                        context,
                         cutoff=cutoff,
                         transition_timeout=transition_timeout,
                         score_threshold=score_threshold,
@@ -481,15 +481,15 @@ class LingquanTaskMixin:
                         "warning",
                         f"日常_灵泉：答题窗口内等待超时，保留活动现场并自动恢复 #389：{exc}",
                     )
-                    yield from runtime.wait_action_settle(min(1.0, (cutoff - _now()).total_seconds()))
+                    yield from context.wait_action_settle(min(1.0, (cutoff - _now()).total_seconds()))
             if not entered_question_scene:
                 raise _LingquanWindowExpired("日常_灵泉：入场等待已到答题截止")
             timeout = self._lingquan_timeout(exit_time, transition_timeout)
-            yield from runtime.wait_click_then_view(389, "返回", 388, timeout=timeout)
-            yield from self._wait_lingquan_until(runtime, exit_time, poll_seconds=poll_seconds)
+            yield from context.wait_click_then_scene(389, "返回", 388, timeout=timeout)
+            yield from self._wait_lingquan_until(context, exit_time, poll_seconds=poll_seconds)
             exiting = True
             yield from self._exit_lingquan_to_world(
-                runtime,
+                context,
                 timeout=float(payload.get("exit_timeout_seconds") or 30.0),
             )
         except _LingquanWindowExpired:
@@ -509,7 +509,7 @@ class LingquanTaskMixin:
         # 到达硬截止并正常推进到次日触发即为成功，答题数量只作统计，
         # 不能把 0 题改写成失败并让已结束的窗口继续重试。
         self._log("success", f"日常_灵泉：本日窗口结束，完成 {answers} 道题并已离场")
-        runtime.set_next_time(next_time)
+        context.set_next_time(next_time)
         return {
             "result": "success",
             "message": f"日常_灵泉本日窗口已结束，共回答 {answers} 道题；等待明日触发",

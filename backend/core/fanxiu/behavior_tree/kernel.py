@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from backend.core.fanxiu.behavior_tree import runtime as behavior_tree
+from backend.core.fanxiu.behavior_tree import kernel_scheduler as behavior_tree
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ class FanxiuKernel:
         from backend.core.fanxiu.behavior_tree.jupyter_kernel import execute_fanxiu_jupyter_cell
 
         entry = behavior_tree.resolve_fanxiu_entry(self.entry_id)
-        behavior_tree.ensure_fanxiu_behavior_tree_service(entry, self.entry_id)
+        behavior_tree.ensure_fanxiu_kernel_scheduler_service(entry, self.entry_id)
         return execute_fanxiu_jupyter_cell(
             str(code or ""),
             timeout_seconds=timeout_seconds,
@@ -85,7 +85,7 @@ class FanxiuKernel:
 
         return {
             "kernel": fanxiu_kernel_manager_status(),
-            "runtime": behavior_tree.fanxiu_behavior_tree_runtime_status(),
+            "scheduler": behavior_tree.fanxiu_kernel_scheduler_status(),
         }
 
     def interrupt(self, *, timeout_seconds: float = 15.0) -> dict[str, Any]:
@@ -104,7 +104,7 @@ class FanxiuKernel:
         return send_fanxiu_kernel_manager_command("shutdown", timeout_seconds=timeout_seconds)
 
     def logs(self, *, limit: int = 200, scope: str = "", item_id: str = "") -> list[dict[str, Any]]:
-        return behavior_tree.fanxiu_behavior_tree_runtime_logs(limit=limit, scope=scope, item_id=item_id)
+        return behavior_tree.fanxiu_kernel_scheduler_logs(limit=limit, scope=scope, item_id=item_id)
 
 
 def kernel(entry_id: str = behavior_tree.DEFAULT_FANXIU_ENTRY_ID) -> FanxiuKernel:

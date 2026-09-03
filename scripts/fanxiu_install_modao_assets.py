@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from backend.core.fanxiu.behavior_tree.runtime import (
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
     DEFAULT_FANXIU_ENTRY_ID,
     data_annotation_asset_tree_path,
 )

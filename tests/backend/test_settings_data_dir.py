@@ -47,6 +47,22 @@ def test_explicit_data_dir_is_still_respected(monkeypatch, tmp_path):
         settings_module.get_settings.cache_clear()
 
 
+def test_backup_dir_can_live_on_an_independent_archive_root(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data" / "codepc_mf"
+    archive_dir = tmp_path / "archive" / "backups"
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CODEYUN_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("CODEYUN_BACKUP_DIR", str(archive_dir))
+    settings_module.get_settings.cache_clear()
+
+    try:
+        settings = settings_module.get_settings()
+        assert settings.data_dir == data_dir.resolve()
+        assert settings.backup_dir == archive_dir.resolve()
+    finally:
+        settings_module.get_settings.cache_clear()
+
+
 def test_ocr_model_stays_warm_long_enough_for_scheduled_work(monkeypatch, tmp_path):
     monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
     monkeypatch.setenv("CODEYUN_DATA_DIR", str(tmp_path / "data"))

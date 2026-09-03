@@ -5,12 +5,24 @@ import threading
 import time
 from typing import Any, Iterable
 
+from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+
 YUANDING_ACTIVITY_NAME = "缘定三生"
 YUANDING_MAIN_SCENE_ID = 249
 
 
 def _normalized_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).replace("：", ":")
+
+
+def fragment_text(fragments: Iterable[dict[str, Any]]) -> str:
+    """Build the same compact text as Runtime.ocr_text from known fragments."""
+
+    return "".join(
+        _sanitize_ocr_text(item.get("text"))
+        for item in fragments
+        if isinstance(item, dict)
+    )
 
 
 def exact_fragment(
@@ -112,7 +124,7 @@ class YuandingSanshengTaskMixin:
 
     def _wait_yuanding_page(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         expected_state: str,
         *,
@@ -122,16 +134,16 @@ class YuandingSanshengTaskMixin:
         last_text = ""
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            fragments = runtime.ocr_fragments(frame)
-            last_text = runtime.ocr_text(frame)
-            scene_id, _score, _frame = runtime.current_scene(
+            frame = context.cur_frame(update=True)
+            fragments = context.ocr_fragments(frame)
+            last_text = fragment_text(fragments)
+            scene_id, _score, _frame = context.current_scene(
                 [34, 66, YUANDING_MAIN_SCENE_ID],
                 update=False,
             )
             if yuanding_page_state(scene_id, fragments, last_text) == expected_state:
                 return frame, fragments
-            yield from runtime.wait_action_settle(0.35)
+            yield from context.wait_action_settle(0.35)
         raise RuntimeError(
             f"缘定三生_每日礼包：等待 {expected_state} 超时，末帧={_normalized_text(last_text)[:180]}"
         )
@@ -145,14 +157,14 @@ class YuandingSanshengTaskMixin:
         payload = dict(payload or {})
         payload.pop("__scheduler_task_id", None)
         payload["manage_schedule"] = False
-        runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
         page_timeout = float(payload.get("page_timeout_seconds") or 20.0)
         entry_timeout = float(payload.get("entry_timeout_seconds") or 30.0)
 
-        frame = runtime.cur_frame(update=True)
-        fragments = runtime.ocr_fragments(frame)
-        text = runtime.ocr_text(frame)
-        scene_id, _score, _frame = runtime.current_scene(
+        frame = context.cur_frame(update=True)
+        fragments = context.ocr_fragments(frame)
+        text = fragment_text(fragments)
+        scene_id, _score, _frame = context.current_scene(
             [34, 66, YUANDING_MAIN_SCENE_ID],
             update=False,
         )
@@ -163,7 +175,7 @@ class YuandingSanshengTaskMixin:
             )
 
         if state == "world":
-            yield from runtime.goto_view(66)
+            yield from context.go_scene(66)
             state = "schedule"
 
         if state == "schedule":
@@ -171,22 +183,22 @@ class YuandingSanshengTaskMixin:
             entry: dict[str, Any] | None = None
             while time.monotonic() < deadline:
                 self._raise_if_stopped(stop_event)
-                frame = runtime.cur_frame(update=True)
-                entry = exact_fragment(runtime.ocr_fragments(frame), YUANDING_ACTIVITY_NAME)
+                frame = context.cur_frame(update=True)
+                entry = exact_fragment(context.ocr_fragments(frame), YUANDING_ACTIVITY_NAME)
                 if entry is not None:
                     break
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
             if entry is None:
-                runtime.click_shape_center(66, "返回")
-                yield from runtime.wait_view(34, timeout=page_timeout, label="缘定三生：无活动时返回世界")
+                context.click_shape_center(66, "返回")
+                yield from context.wait_scene(34, wait=page_timeout, label="缘定三生：无活动时返回世界")
                 return self._yuanding_result(
                     payload,
                     outcome="activity_unavailable",
                     message="缘定三生_每日礼包：当前日程未发现活动入口",
                 )
-            runtime.click_frame_point(66, *fragment_center(entry))
+            context.click_frame_point(66, *fragment_center(entry))
             _frame, fragments = yield from self._wait_yuanding_page(
-                runtime,
+                context,
                 stop_event,
                 "intro",
                 timeout_seconds=page_timeout,
@@ -197,9 +209,9 @@ class YuandingSanshengTaskMixin:
             details = exact_fragment(fragments, "查看详情")
             if details is None:
                 raise RuntimeError("缘定三生_每日礼包：活动介绍层未唯一识别到“查看详情”")
-            runtime.click_frame_point(66, *fragment_center(details))
+            context.click_frame_point(66, *fragment_center(details))
             _frame, fragments = yield from self._wait_yuanding_page(
-                runtime,
+                context,
                 stop_event,
                 "main",
                 timeout_seconds=page_timeout,
@@ -210,9 +222,9 @@ class YuandingSanshengTaskMixin:
             gift_tab = gift_tab_fragment(fragments)
             if gift_tab is None:
                 raise RuntimeError("缘定三生_每日礼包：活动主页未唯一识别到右下角“礼包”页签")
-            runtime.click_frame_point(YUANDING_MAIN_SCENE_ID, *fragment_center(gift_tab))
+            context.click_frame_point(YUANDING_MAIN_SCENE_ID, *fragment_center(gift_tab))
             yield from self._wait_yuanding_page(
-                runtime,
+                context,
                 stop_event,
                 "store",
                 timeout_seconds=page_timeout,
@@ -228,9 +240,9 @@ class YuandingSanshengTaskMixin:
         free: dict[str, Any] | None = None
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            fragments = runtime.ocr_fragments(frame)
-            text = runtime.ocr_text(frame)
+            frame = context.cur_frame(update=True)
+            fragments = context.ocr_fragments(frame)
+            text = fragment_text(fragments)
             store_state = yuanding_store_state(fragments, text)
             if store_state != "loading" and store_state == stable_state:
                 stable_count += 1
@@ -240,7 +252,7 @@ class YuandingSanshengTaskMixin:
             if stable_count >= 2:
                 free = exact_fragment(fragments, "免费")
                 break
-            yield from runtime.wait_action_settle(0.35)
+            yield from context.wait_action_settle(0.35)
         if stable_count < 2:
             raise RuntimeError("缘定三生_每日礼包：礼包页未形成连续两帧稳定状态")
 
@@ -248,28 +260,28 @@ class YuandingSanshengTaskMixin:
         if stable_state == "claimable":
             if free is None:
                 raise RuntimeError("缘定三生_每日礼包：存在每日限购 1，但未唯一识别到“免费”")
-            runtime.click_frame_point(YUANDING_MAIN_SCENE_ID, *fragment_center(free))
+            context.click_frame_point(YUANDING_MAIN_SCENE_ID, *fragment_center(free))
             claimed_count = 0
             verify_deadline = time.monotonic() + max(5.0, page_timeout)
             while time.monotonic() < verify_deadline:
                 self._raise_if_stopped(stop_event)
-                frame = runtime.cur_frame(update=True)
-                fragments = runtime.ocr_fragments(frame)
-                if yuanding_store_state(fragments, runtime.ocr_text(frame)) == "claimed":
+                frame = context.cur_frame(update=True)
+                fragments = context.ocr_fragments(frame)
+                if yuanding_store_state(fragments, fragment_text(fragments)) == "claimed":
                     claimed_count += 1
                 else:
                     claimed_count = 0
                 if claimed_count >= 2:
                     claimed_now = True
                     break
-                yield from runtime.wait_action_settle(0.35)
+                yield from context.wait_action_settle(0.35)
             if not claimed_now:
                 raise RuntimeError("缘定三生_每日礼包：点击免费礼包后未确认每日限购 0")
 
-        runtime.click_shape_center(YUANDING_MAIN_SCENE_ID, "返回")
-        yield from runtime.wait_view(66, timeout=page_timeout, label="缘定三生：返回日程")
-        runtime.click_shape_center(66, "返回")
-        yield from runtime.wait_view(34, timeout=page_timeout, label="缘定三生：返回世界")
+        context.click_shape_center(YUANDING_MAIN_SCENE_ID, "返回")
+        yield from context.wait_scene(66, wait=page_timeout, label="缘定三生：返回日程")
+        context.click_shape_center(66, "返回")
+        yield from context.wait_scene(34, wait=page_timeout, label="缘定三生：返回世界")
         return self._yuanding_result(
             payload,
             outcome=("claimed" if claimed_now else "already_claimed"),
@@ -286,6 +298,7 @@ __all__ = [
     "YUANDING_MAIN_SCENE_ID",
     "YuandingSanshengTaskMixin",
     "exact_fragment",
+    "fragment_text",
     "fragment_center",
     "gift_tab_fragment",
     "yuanding_page_state",

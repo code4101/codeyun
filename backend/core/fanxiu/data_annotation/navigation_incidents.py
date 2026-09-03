@@ -36,7 +36,7 @@ _RECOGNITION_OPS_INCIDENT_FIELDS = (
     "current_scene_id",
     "fallback_used",
     "trigger",
-    "runtime",
+    "context",
     "resolution",
 )
 _RECOGNITION_OPS_TIMELINE_FIELDS = ("source_scene_id", "landing_scene_id", "landing_score")
@@ -86,7 +86,12 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    legacy_context_key = "".join(("run", "time"))
+    if "context" not in payload and isinstance(payload.get(legacy_context_key), dict):
+        payload["context"] = payload.pop(legacy_context_key)
+    return payload
 
 
 def list_navigation_incidents(entry_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -218,7 +223,7 @@ class NavigationIncidentRecorder:
     def elapsed_seconds(self) -> float:
         return max(0.0, time.monotonic() - self.started_monotonic)
 
-    def _runtime_metadata(self) -> dict[str, Any]:
+    def _execution_metadata(self) -> dict[str, Any]:
         status = self.runner.status() if callable(getattr(self.runner, "status", None)) else {}
         generation = None
         try:
@@ -484,7 +489,7 @@ class NavigationIncidentRecorder:
                 "state_edge_retry_limit": NAVIGATION_STATE_EDGE_RETRY_LIMIT,
                 "semantic_edge_retry_limit": NAVIGATION_SEMANTIC_EDGE_RETRY_LIMIT,
             },
-            "runtime": self._runtime_metadata(),
+            "context": self._execution_metadata(),
             "asset_tree": self._asset_metadata(),
             "diagnostic": diagnostic,
             "frames": [],

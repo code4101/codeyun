@@ -113,13 +113,13 @@ class MoyuChallengeTaskMixin:
 
     def _moyu_open_activity(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any] | None = None,
     ):
         options = dict(payload or {})
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_click_then_view(34, "日常", 69)
-        entry_result = yield from runtime.open_daily_entry(
+        yield from context.go_scene(34)
+        yield from context.wait_click_then_scene(34, "日常", 69)
+        entry_result = yield from context.open_daily_entry(
             label="魔狱_挑战",
             title_pattern=r"魔狱|封阵",
             progress_can_mark_done=False,
@@ -128,7 +128,7 @@ class MoyuChallengeTaskMixin:
         )
         if entry_result != "open":
             raise RuntimeError("魔狱_挑战：#69 日常列表未找到“魔狱/封阵”入口")
-        yield from runtime.wait_view_or_ocr(
+        yield from context.wait_scene_or_ocr(
             400,
             lambda text: (
                 "大道外域" in re.sub(r"\s+", "", str(text or ""))
@@ -140,9 +140,9 @@ class MoyuChallengeTaskMixin:
             ),
             label="魔狱_挑战：等待大道外域 #400",
         )
-        yield from runtime.wait_click_then_view(400, "封阵", 401)
+        yield from context.wait_click_then_scene(400, "封阵", 401)
 
-    def _moyu_try_challenge(self, runtime: Any, payload: dict[str, Any]):
+    def _moyu_try_challenge(self, context: Any, payload: dict[str, Any]):
         preflight = read_godsoul_boss_challenge_snapshot()
         if preflight.get("complete") is True and preflight.get("settled") is True:
             return {
@@ -158,18 +158,18 @@ class MoyuChallengeTaskMixin:
         # annotated button region; full-frame OCR also contains “挑战要求” and
         # would therefore misclassify the “报名” state.
         action_shape = "报名"
-        if hasattr(runtime, "ocr_text_in_shapes"):
-            button_text = runtime.ocr_text_in_shapes(401, ("报名",), padding=12)
+        if hasattr(context, "ocr_text_in_shapes"):
+            button_text = context.ocr_text_in_shapes(401, ("报名",), padding=12)
             if "挑战" in re.sub(r"\s+", "", str(button_text or "")):
                 action_shape = "挑战"
-        yield from runtime.wait_click(401, action_shape)
+        yield from context.wait_click(401, action_shape)
         try:
-            landing = yield from runtime.wait_view(
+            landing = yield from context.wait_scene(
                 463,
                 464,
                 85,
                 465,
-                timeout=max(3.0, float(payload.get("entry_timeout_seconds") or 12.0)),
+                wait=max(3.0, float(payload.get("entry_timeout_seconds") or 12.0)),
                 label="魔狱_挑战：等待确认、战斗或结算响应",
             )
         except TimeoutError:
@@ -188,17 +188,17 @@ class MoyuChallengeTaskMixin:
         landing_id = getattr(landing, "id", landing)
         battle_entered = landing_id in {85, 464}
         if landing_id == 463:
-            yield from runtime.wait_click(463, "确认")
+            yield from context.wait_click(463, "确认")
             try:
                 # #401 remains visible briefly behind the confirmation while
                 # the real battle #85 is still being created.  It is not a
                 # valid post-confirm terminal and must never short-circuit the
                 # battle wait.
-                landing = yield from runtime.wait_view(
+                landing = yield from context.wait_scene(
                     464,
                     85,
                     465,
-                    timeout=30.0,
+                    wait=30.0,
                     label="魔狱_挑战：确认后的战斗或结算响应",
                 )
                 landing_id = getattr(landing, "id", landing)
@@ -215,10 +215,10 @@ class MoyuChallengeTaskMixin:
 
         if battle_entered:
             try:
-                landing = yield from runtime.wait_view(
+                landing = yield from context.wait_scene(
                     465,
                     401,
-                    timeout=max(
+                    wait=max(
                         60.0,
                         float(payload.get("battle_timeout_seconds") or 1200.0),
                     ),
@@ -236,7 +236,7 @@ class MoyuChallengeTaskMixin:
                 }
 
         if landing_id == 465:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 465,
                 "继续",
                 401,
@@ -264,31 +264,31 @@ class MoyuChallengeTaskMixin:
             "runtime_snapshot": snapshot,
         }
 
-    def _moyu_return_world(self, runtime: Any):
-        current, _score, _frame = runtime.current_scene([401, 400, 34], update=True)
+    def _moyu_return_world(self, context: Any):
+        current, _score, _frame = context.current_scene([401, 400, 34], update=True)
         if current == 401:
-            runtime.click_shape_center(401, "返回")
-            landing = yield from runtime.wait_view(
+            context.click_shape_center(401, "返回")
+            landing = yield from context.wait_scene(
                 400,
                 34,
-                timeout=30.0,
+                wait=30.0,
                 label="魔狱_挑战：#401 返回后等待 #400/#34",
             )
             current = getattr(landing, "id", landing)
         if current == 400:
-            runtime.click_shape_center(400, "返回")
-            yield from runtime.wait_view(
+            context.click_shape_center(400, "返回")
+            yield from context.wait_scene(
                 34,
-                timeout=30.0,
+                wait=30.0,
                 label="魔狱_挑战：#400 返回世界 #34",
             )
             return
         if current != 34:
             # 魔狱结算可能进入与 #314 全帧高度相似、但没有任何控件的
-            # 魔道回城动画。复用 goto_view 已有的窄 transition guard：
+            # 魔道回城动画。复用 go_scene 已有的窄 transition guard：
             # 只在 #314 相似度达到 94% 时等待自然落到 #34，绝不把动画
             # 当 #314，也不执行通用 unknown 左下返回。
-            ctx = getattr(runtime, "ctx", None)
+            ctx = getattr(context, "ctx", None)
             sentinel = object()
             previous_guard = (
                 ctx.get("_go_scene_unknown_transition_guard", sentinel)
@@ -304,7 +304,7 @@ class MoyuChallengeTaskMixin:
                     "label": "魔狱结算回城动画",
                 }
             try:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             finally:
                 if isinstance(ctx, dict):
                     if previous_guard is sentinel:
@@ -312,7 +312,7 @@ class MoyuChallengeTaskMixin:
                     else:
                         ctx["_go_scene_unknown_transition_guard"] = previous_guard
 
-    def _moyu_claim_reward(self, runtime: Any, payload: dict[str, Any]):
+    def _moyu_claim_reward(self, context: Any, payload: dict[str, Any]):
         now = datetime.now()
         if now >= _at(now, REWARD_DEADLINE):
             return {
@@ -321,25 +321,25 @@ class MoyuChallengeTaskMixin:
                 "message": "已到 22:00，今日奖励窗口结束",
             }
 
-        current, _score, _frame = runtime.current_scene([466, 401], update=True)
+        current, _score, _frame = context.current_scene([466, 401], update=True)
         if current not in {466, 401}:
-            yield from self._moyu_open_activity(runtime, payload)
+            yield from self._moyu_open_activity(context, payload)
             current = 401
         if current == 401:
-            yield from runtime.wait_click(401, "奖励")
-            yield from runtime.wait_view(
+            yield from context.wait_click(401, "奖励")
+            yield from context.wait_scene(
                 466,
-                timeout=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
+                wait=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
                 label="魔狱_挑战：等待奖励页 #466 场景身份",
             )
-        frame = runtime.cur_frame(update=True)
-        reward_text = runtime.ocr_text(frame)
+        frame = context.cur_frame(update=True)
+        reward_text = context.ocr_text(frame)
         if not self._moyu_reward_text(reward_text):
             raise RuntimeError(
                 f"魔狱_挑战：#466 已识别但奖励标题 OCR 不一致：{reward_text}"
             )
 
-        claim_action_text = runtime.ocr_text_in_shapes(
+        claim_action_text = context.ocr_text_in_shapes(
             466,
             ("领取",),
             padding=12,
@@ -403,14 +403,14 @@ class MoyuChallengeTaskMixin:
             }
 
         selected_round = int(selected["round"])
-        runtime.click_shape_center(466, f"第{selected_round}轮")
-        yield from runtime.wait_action_settle(1.0)
-        runtime.click_shape_center(466, "领取")
-        with runtime.expect_views(539):
+        context.click_shape_center(466, f"第{selected_round}轮")
+        yield from context.wait_action_settle(1.0)
+        context.click_shape_center(466, "领取")
+        with context.expect_views(539):
             try:
-                yield from runtime.wait_view(
+                yield from context.wait_scene(
                     539,
-                    timeout=8.0,
+                    wait=8.0,
                     label="魔狱_挑战：等待排名奖励领取确认 #539",
                 )
             except TimeoutError:
@@ -422,11 +422,11 @@ class MoyuChallengeTaskMixin:
                     raise
                 confirmed = False
             else:
-                runtime.click_shape_center(539, "确认")
+                context.click_shape_center(539, "确认")
                 confirmed = True
         if confirmed:
-            yield from runtime.wait_action_settle(4.0)
-        claimed_text = runtime.ocr_text(update=True)
+            yield from context.wait_action_settle(4.0)
+        claimed_text = context.ocr_text(update=True)
         if not self._moyu_reward_claimed_text(claimed_text):
             final_snapshot = read_godsoul_boss_reward_snapshot()
             if final_snapshot.get("already_claimed") is not True:
@@ -441,28 +441,28 @@ class MoyuChallengeTaskMixin:
             "rewards": rewards,
         }
 
-    def _moyu_close_reward_and_return_world(self, runtime: Any):
-        text = runtime.ocr_text(update=True)
+    def _moyu_close_reward_and_return_world(self, context: Any):
+        text = context.ocr_text(update=True)
         if self._moyu_reward_text(text):
-            runtime.click_shape_center(466, "返回")
-            landing = yield from runtime.wait_view(
+            context.click_shape_center(466, "返回")
+            landing = yield from context.wait_scene(
                 400,
                 401,
-                timeout=30.0,
+                wait=30.0,
                 label="魔狱_挑战：奖励页返回 #400/#401",
             )
             if getattr(landing, "id", landing) == 401:
-                runtime.click_shape_center(401, "返回")
-                yield from runtime.wait_view(
+                context.click_shape_center(401, "返回")
+                yield from context.wait_scene(
                     400,
                     34,
-                    timeout=30.0,
+                    wait=30.0,
                     label="魔狱_挑战：#401 返回后等待 #400/#34",
                 )
-        yield from self._moyu_return_world(runtime)
+        yield from self._moyu_return_world(context)
 
-    def moyu_challenge_flow(self, runtime: Any):
-        payload = dict(getattr(runtime, "attrs", {}).get("payload") or {})
+    def moyu_challenge_flow(self, context: Any):
+        payload = dict(getattr(context, "attrs", {}).get("payload") or {})
         now = datetime.now()
         morning_end = _at(now, MORNING_CHALLENGE_DEADLINE)
         evening_start = _at(now, EVENING_TRIGGER)
@@ -477,8 +477,8 @@ class MoyuChallengeTaskMixin:
             "message": "已超过本轮 20 分钟挑战窗口，跳过挑战",
         }
         if should_challenge:
-            yield from self._moyu_open_activity(runtime, payload)
-            challenge = yield from self._moyu_try_challenge(runtime, payload)
+            yield from self._moyu_open_activity(context, payload)
+            challenge = yield from self._moyu_try_challenge(context, payload)
 
         if (
             should_challenge
@@ -499,7 +499,7 @@ class MoyuChallengeTaskMixin:
                     datetime.now() + timedelta(minutes=REWARD_EVIDENCE_RETRY_MINUTES),
                 )
                 next_time = min(next_time, reward_end - timedelta(minutes=1))
-            runtime.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
+            context.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
             return {
                 "result": "success",
                 "current_scene": None,
@@ -514,13 +514,13 @@ class MoyuChallengeTaskMixin:
         if is_morning:
             returned_world = True
             try:
-                yield from self._moyu_return_world(runtime)
+                yield from self._moyu_return_world(context)
             except (RuntimeError, TimeoutError):
                 if not challenge.get("responded"):
                     raise
                 returned_world = False
             next_time = _at(now, EVENING_TRIGGER)
-            runtime.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
+            context.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
             return {
                 "result": "success",
                 "current_scene": 34 if returned_world else None,
@@ -531,8 +531,8 @@ class MoyuChallengeTaskMixin:
                 "challenge": challenge,
             }
 
-        reward = yield from self._moyu_claim_reward(runtime, payload)
-        yield from self._moyu_close_reward_and_return_world(runtime)
+        reward = yield from self._moyu_claim_reward(context, payload)
+        yield from self._moyu_close_reward_and_return_world(context)
         if reward.get("deferred") is True and datetime.now() < reward_end:
             next_time = min(
                 datetime.now() + timedelta(minutes=REWARD_EVIDENCE_RETRY_MINUTES),
@@ -540,7 +540,7 @@ class MoyuChallengeTaskMixin:
             )
         else:
             next_time = _at(now + timedelta(days=1), MORNING_TRIGGER)
-        runtime.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
+        context.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
         return {
             "result": "success",
             "current_scene": 34,

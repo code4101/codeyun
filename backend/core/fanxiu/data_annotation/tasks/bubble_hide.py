@@ -25,16 +25,16 @@ class BubbleHideTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("气泡_隐藏：缺少资产树路径")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         settle_seconds = max(0.5, min(3.0, float(payload.get("settle_seconds") or 1.0)))
-        frame = runtime.cur_frame(update=True)
-        overlay_scene = bubble_sdk_overlay_scene(runtime, frame=frame)
+        frame = context.cur_frame(update=True)
+        overlay_scene = bubble_sdk_overlay_scene(context, frame=frame)
         if overlay_scene is not None:
             raise RuntimeError(
                 f"气泡_隐藏：SDK 事务仍打开在 #{overlay_scene}，拒绝穿过弹窗拖拽"
             )
 
-        match = runtime.shape_matches(421, "气泡", frame_data_url=frame)
+        match = context.shape_matches(421, "气泡", frame_data_url=frame)
         resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
         grace_samples = max(
             0,
@@ -45,14 +45,14 @@ class BubbleHideTaskMixin:
             min(2.0, float(payload.get("bubble_appearance_poll_seconds") or 1.0)),
         )
         for _sample in range(grace_samples if match is None else 0):
-            yield from runtime.wait_action_settle(grace_poll)
-            frame = runtime.cur_frame(update=True)
-            overlay_scene = bubble_sdk_overlay_scene(runtime, frame=frame)
+            yield from context.wait_action_settle(grace_poll)
+            frame = context.cur_frame(update=True)
+            overlay_scene = bubble_sdk_overlay_scene(context, frame=frame)
             if overlay_scene is not None:
                 raise RuntimeError(
                     f"气泡_隐藏：延迟观察时出现 SDK 事务 #{overlay_scene}"
                 )
-            match = runtime.shape_matches(421, "气泡", frame_data_url=frame)
+            match = context.shape_matches(421, "气泡", frame_data_url=frame)
             resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
             if match is not None:
                 break
@@ -65,33 +65,33 @@ class BubbleHideTaskMixin:
                 "action",
                 f"气泡_隐藏：从 ({start_x:.0f},{start_y:.0f}) 拖到正式 [拖拽隐藏] 区",
             )
-            runtime.drag_shape_to_shape(
+            context.drag_shape_to_shape(
                 421,
                 "气泡",
                 "拖拽隐藏",
                 duration=0.65,
                 frame_data_url=frame,
             )
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
 
         # The bubble is an Android top-level overlay.  Its absence is accepted
         # only on two fresh frames that also contain no SDK-owned modal layer;
         # the underlying game scene is irrelevant and is never navigated.
         absent_count = 0
         for _sample in range(3):
-            verify_frame = runtime.cur_frame(update=True)
-            overlay_scene = bubble_sdk_overlay_scene(runtime, frame=verify_frame)
+            verify_frame = context.cur_frame(update=True)
+            overlay_scene = bubble_sdk_overlay_scene(context, frame=verify_frame)
             if overlay_scene is not None:
                 raise RuntimeError(
                     f"气泡_隐藏：验证时意外进入 SDK 事务 #{overlay_scene}"
                 )
-            if runtime.shape_matches(421, "气泡", frame_data_url=verify_frame) is None:
+            if context.shape_matches(421, "气泡", frame_data_url=verify_frame) is None:
                 absent_count += 1
                 if absent_count >= 2:
                     break
             else:
                 absent_count = 0
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
         if absent_count < 2:
             raise RuntimeError("气泡_隐藏：拖拽后悬浮球仍可见，未写入隐藏成功事实")
 

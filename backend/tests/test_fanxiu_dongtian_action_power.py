@@ -2,7 +2,7 @@ import threading
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 from backend.core.fanxiu.data_annotation.tasks.daily_foundation import _DONGTIAN_PLACE_ANCHORS
 
 
@@ -11,7 +11,7 @@ def test_dongtian_action_power_uses_runtime_without_gui():
         def cur_frame(self, **_kwargs):
             raise AssertionError("不得读取 GUI 帧")
 
-    value, source = BehaviorTreeRuntimeRunner()._daily_dongtian_action_power(
+    value, source = BehaviorTreeExecutor()._daily_dongtian_action_power(
         Runtime(),
         {
             "__dongtian_runtime_snapshot_override": {
@@ -38,7 +38,7 @@ def test_dongtian_action_power_uses_narrow_reader_not_clear_plan(monkeypatch):
             "evidence": {},
         },
     )
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     monkeypatch.setattr(
         runner,
         "_daily_dongtian_runtime_snapshot",
@@ -52,7 +52,7 @@ def test_dongtian_action_power_uses_narrow_reader_not_clear_plan(monkeypatch):
 
 
 def test_dongtian_enemy_plan_is_reused_within_same_job(monkeypatch):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     calls = []
     plan = {
         "available": True,
@@ -79,7 +79,7 @@ def test_dongtian_enemy_plan_is_reused_within_same_job(monkeypatch):
 
 def test_dongtian_initial_clear_plan_action_power_is_consumed_once(monkeypatch):
     calls = []
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     payload = {
         "__dongtian_runtime_snapshot": {
             "available": True,
@@ -106,7 +106,7 @@ def test_dongtian_initial_clear_plan_action_power_is_consumed_once(monkeypatch):
 
 
 def test_dongtian_action_power_finishes_after_battle_started_with_last_100(monkeypatch):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     powers = iter([(100, "100")])
     battles = []
     scheduled = []
@@ -139,7 +139,7 @@ def test_dongtian_action_power_finishes_after_battle_started_with_last_100(monke
 
 
 def test_dongtian_action_power_keeps_final_battle_visual_error_as_failure(monkeypatch):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     scheduled = []
 
     class Runtime:
@@ -174,7 +174,7 @@ def test_dongtian_action_power_keeps_final_battle_visual_error_as_failure(monkey
 
 
 def test_dongtian_retry_short_circuits_when_runtime_already_below_100(monkeypatch):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     scheduled = []
     monkeypatch.setattr(
         runner,
@@ -206,8 +206,8 @@ def _finish_generator(generator):
 
 def test_dongtian_detail_returns_canonical_name_after_fuzzy_dynamic_title_match():
     class Runtime:
-        def wait_view(self, scene_id, *, label):
-            assert scene_id == 341
+        def wait_scene(self, *scene_ids, label):
+            assert scene_ids == (341, 342)
             assert "白玉京" in label
             if False:
                 yield None
@@ -228,7 +228,7 @@ def test_dongtian_detail_returns_canonical_name_after_fuzzy_dynamic_title_match(
             raise AssertionError("不得再用 #341 场景标识 ROI 的编队文字核对地点")
 
     result = _finish_generator(
-        BehaviorTreeRuntimeRunner()._daily_dongtian_validate_enemy_detail(Runtime(), "白玉京", {})
+        BehaviorTreeExecutor()._daily_dongtian_validate_enemy_detail(Runtime(), "白玉京", {})
     )
 
     assert result == "白玉京"
@@ -238,7 +238,7 @@ def test_dongtian_detail_mismatch_returns_home_and_fails_closed():
     clicks = []
 
     class Runtime:
-        def wait_view(self, *_args, **_kwargs):
+        def wait_scene(self, *_args, **_kwargs):
             if False:
                 yield None
 
@@ -251,14 +251,14 @@ def test_dongtian_detail_mismatch_returns_home_and_fails_closed():
         def ocr_fragments_in_shapes(self, *_args, **_kwargs):
             return [{"text": "月虹梁"}]
 
-        def wait_click_then_view(self, scene_id, title, target_scene_id):
+        def wait_click_then_scene(self, scene_id, title, target_scene_id):
             clicks.append((scene_id, title, target_scene_id))
             if False:
                 yield None
 
     with pytest.raises(RuntimeError, match="顶部地点标题不一致"):
         _finish_generator(
-            BehaviorTreeRuntimeRunner()._daily_dongtian_validate_enemy_detail(Runtime(), "白玉京", {})
+            BehaviorTreeExecutor()._daily_dongtian_validate_enemy_detail(Runtime(), "白玉京", {})
         )
 
     assert clicks == [(341, "返回", 279)]
@@ -289,7 +289,7 @@ def test_dongtian_enemy_click_uses_runtime_aligned_name_box_not_global_template_
                 return Shape({"x": 650, "y": 300, "w": 240, "h": 500})
             raise AssertionError(f"不应再读取全局地点模板：{title}")
 
-        def wait_view(self, scene_id, *, label):
+        def wait_scene(self, scene_id, *, label):
             assert scene_id == 279
             assert "洞天福地" in label
             if False:
@@ -323,7 +323,7 @@ def test_dongtian_enemy_click_uses_runtime_aligned_name_box_not_global_template_
                 yield None
 
     result = _finish_generator(
-        BehaviorTreeRuntimeRunner()._daily_dongtian_click_first_enemy_place(
+        BehaviorTreeExecutor()._daily_dongtian_click_first_enemy_place(
             Runtime(),
             threading.Event(),
             ["白玉京"],
@@ -332,7 +332,7 @@ def test_dongtian_enemy_click_uses_runtime_aligned_name_box_not_global_template_
     )
 
     assert result == "白玉京"
-    assert clicks == [(279, 451.5, 555.0)]
+    assert clicks == [(279, 450.0, 655.0)]
 
 
 def test_dongtian_enemy_click_retries_bounded_left_hotspot_when_first_click_stays_on_list():
@@ -358,7 +358,7 @@ def test_dongtian_enemy_click_retries_bounded_left_hotspot_when_first_click_stay
                 return Shape({"x": 650, "y": 300, "w": 240, "h": 500})
             raise AssertionError(title)
 
-        def wait_view(self, *_args, **_kwargs):
+        def wait_scene(self, *_args, **_kwargs):
             if False:
                 yield None
 
@@ -380,23 +380,23 @@ def test_dongtian_enemy_click_retries_bounded_left_hotspot_when_first_click_stay
                 yield None
 
         def current_scene(self, scene_ids, *, update=False):
-            assert (scene_ids, update) == ([341, 279], True)
+            assert (scene_ids, update) == ([279, 341, 342], True)
             scene_id = 279 if len(clicks) == 1 else 341
             return scene_id, 1.0, "frame"
 
     result = _finish_generator(
-        BehaviorTreeRuntimeRunner()._daily_dongtian_click_first_enemy_place(
+        BehaviorTreeExecutor()._daily_dongtian_click_first_enemy_place(
             Runtime(), threading.Event(), ["[洞天]月虹梁"], max_scrolls=0
         )
     )
 
     assert result == "[洞天]月虹梁"
-    assert clicks == [(279, 781.5, 802.0), (279, 741.5, 802.0)]
+    assert clicks == [(279, 780.0, 902.0), (279, 781.5, 802.0)]
 
 
 @pytest.mark.parametrize("place", _DONGTIAN_PLACE_ANCHORS)
 def test_dongtian_location_box_accepts_every_known_exact_place_name(place):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     normalized = runner._daily_dongtian_normalize_place_name(place)
     prefix = "[福地]" if place.startswith("[福地]") else "[洞天]" if place.startswith("[洞天]") else ""
     line = {
@@ -425,7 +425,7 @@ def test_dongtian_location_box_accepts_every_known_exact_place_name(place):
 
 
 def test_dongtian_location_box_rejects_same_prefix_different_place():
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     line = {
         "text": "[福地]月虹窟",
         "x": 100,
@@ -439,7 +439,7 @@ def test_dongtian_location_box_rejects_same_prefix_different_place():
 
 
 def test_dongtian_location_click_point_rejects_fixed_header_hotspot():
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     window = {"x": 13, "y": 160, "w": 872, "h": 1162}
 
     assert runner._daily_dongtian_location_click_point(
@@ -475,7 +475,7 @@ def test_dongtian_place_locator_reverses_after_down_boundary_and_finds_target_up
             assert scene_id == 279
             return Shape({"x": 650, "y": 300, "w": 240, "h": 500}) if title == "我的编队" else Shape({"x": 0, "y": 0, "w": 900, "h": 1400})
 
-        def wait_view(self, scene_id, *, label):
+        def wait_scene(self, scene_id, *, label):
             assert scene_id == 279
             if False:
                 yield None
@@ -512,7 +512,7 @@ def test_dongtian_place_locator_reverses_after_down_boundary_and_finds_target_up
                 yield None
 
     result = _finish_generator(
-        BehaviorTreeRuntimeRunner()._daily_dongtian_click_place(
+        BehaviorTreeExecutor()._daily_dongtian_click_place(
             Runtime(),
             threading.Event(),
             ["[洞天]璇霄崖"],

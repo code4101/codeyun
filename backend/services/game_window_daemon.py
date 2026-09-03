@@ -14,7 +14,7 @@ from backend.core.services.launcher import install_child_process_no_window_defau
 
 install_child_process_no_window_default()
 
-from backend.core.fanxiu.runtime.mumu_control import (
+from backend.core.fanxiu.client.mumu_control import (
     activate_mumu_window,
     click_mumu_window_processed_point,
     drag_mumu_window_processed_points,

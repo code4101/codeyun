@@ -242,7 +242,7 @@ def gate_dongtian_seating_commit(
 ) -> dict[str, Any]:
     """Fail closed before an irreversible occupy action.
 
-    This function is deliberately only a gate: it has no GUI/runtime action
+    This function is deliberately only a gate: it has no GUI/context action
     dependency and cannot perform the occupy transition.  Even after all GUI
     capabilities are proven, a fresh transaction revalidation is required and
     the caller must consume ``commit_enabled`` explicitly in a future executor.

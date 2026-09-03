@@ -8,7 +8,7 @@ from backend.core.fanxiu.data_annotation.trial_purchase import (
     normalize_xianqiao_trial_purchase_target,
     purchases_completed_before_price,
 )
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 
 
 def _finish(generator):
@@ -20,7 +20,7 @@ def _finish(generator):
 
 
 def _runtime():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     images = {
         357: {
             "id": 357,
@@ -48,7 +48,7 @@ def _runtime():
             "shapes": [{"title": "返回", "x": 0.05, "y": 0.9, "w": 0.08, "h": 0.04}],
         },
     }
-    return runner._fanxiu_runtime({"images": images}, stop_event=threading.Event())
+    return runner._behavior_tree_context({"images": images}, stop_event=threading.Event())
 
 
 def _stub_purchase_io(
@@ -91,12 +91,12 @@ def _stub_purchase_io(
         lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
     )
 
-    def wait_view(*_args, **_kwargs):
+    def wait_scene(*_args, **_kwargs):
         if False:
             yield None
         return next(waits)
 
-    monkeypatch.setattr(runtime, "wait_view", wait_view)
+    monkeypatch.setattr(runtime, "wait_scene", wait_scene)
     return clicks
 
 

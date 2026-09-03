@@ -14,13 +14,13 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-os.environ.setdefault("CODEYUN_ENV", "test")
-os.environ.setdefault("CODEYUN_LOAD_DOTENV", "0")
+os.environ["CODEYUN_ENV"] = "test"
+os.environ["CODEYUN_LOAD_DOTENV"] = "0"
 TEST_DATA_DIR = tempfile.mkdtemp(prefix="codeyun-pytest-data-")
-os.environ.setdefault("CODEYUN_DATA_DIR", TEST_DATA_DIR)
-os.environ.setdefault("CODEYUN_MACHINE_STATE_DIR", os.path.join(TEST_DATA_DIR, "machine-state"))
-os.environ.setdefault("KQ_DATABASE_PATH", os.path.join(TEST_DATA_DIR, "attendance.sqlite3"))
-os.environ.setdefault("KQ_RESOURCE_CACHE_ROOT", os.path.join(TEST_DATA_DIR, "attendance-resource-cache"))
+os.environ["CODEYUN_DATA_DIR"] = TEST_DATA_DIR
+os.environ["CODEYUN_MACHINE_STATE_DIR"] = os.path.join(TEST_DATA_DIR, "machine-state")
+os.environ["KQ_DATABASE_PATH"] = os.path.join(TEST_DATA_DIR, "attendance.sqlite3")
+os.environ["KQ_RESOURCE_CACHE_ROOT"] = os.path.join(TEST_DATA_DIR, "attendance-resource-cache")
 
 from backend.app import app
 from backend.db import get_session
@@ -28,9 +28,24 @@ from backend.models import User
 from backend.core.devices.device import device_manager
 from backend.core.access.auth import get_current_user_from_token, get_optional_current_user_from_token
 
+
+def _discard_duplicate_named_indexes():
+    """Normalize metadata after plugin discovery and pytest collect the same model."""
+
+    seen_indexes = set()
+    for table in SQLModel.metadata.tables.values():
+        for index in list(table.indexes):
+            if not index.name or index.name not in seen_indexes:
+                if index.name:
+                    seen_indexes.add(index.name)
+                continue
+            table.indexes.discard(index)
+
+
 # Use in-memory SQLite for tests
 @pytest.fixture(name="engine")
 def fixture_engine():
+    _discard_duplicate_named_indexes()
     engine = create_engine(
         "sqlite://", 
         connect_args={"check_same_thread": False}, 

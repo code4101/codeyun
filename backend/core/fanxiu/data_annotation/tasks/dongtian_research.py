@@ -23,13 +23,13 @@ def enter_dongtian_home_for_research(
         30,
         max(0, int(research_payload.get("max_scrolls") or 24)),
     )
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     allowed_start_scene_ids = (34, 66, 477, 69)
-    scene_id, _score, frame = runtime.current_scene(
+    scene_id, _score, frame = context.current_scene(
         allowed_start_scene_ids,
         update=True,
     )
-    text = runtime.ocr_text(frame)
+    text = context.ocr_text(frame)
     if scene_id not in allowed_start_scene_ids:
         raise RuntimeError(
             f"{task_label}：只接受 #34/#66/#477/#69 作为研究入口起点，当前场景未确认"
@@ -44,14 +44,14 @@ def enter_dongtian_home_for_research(
             label=task_label,
         )
         if recovered:
-            scene_id, _score, frame = runtime.current_scene(
+            scene_id, _score, frame = context.current_scene(
                 [34, 69],
                 update=True,
             )
-            text = runtime.ocr_text(frame)
+            text = context.ocr_text(frame)
         scene_id = yield from runner._enter_daily_from_world_like(
             ctx,
-            runtime,
+            context,
             stop_event,
             frame,
             scene_id,

@@ -53,8 +53,8 @@ def _complete_snapshot() -> dict[str, Any]:
     return snapshot
 
 
-def _shape_tokens(runtime: Any, scene_id: int, shape_name: str, frame: str) -> str:
-    tokens = runtime.ocr_tokens_in_shapes(
+def _shape_tokens(context: Any, scene_id: int, shape_name: str, frame: str) -> str:
+    tokens = context.ocr_tokens_in_shapes(
         scene_id,
         (shape_name,),
         frame_data_url=frame,
@@ -63,12 +63,12 @@ def _shape_tokens(runtime: Any, scene_id: int, shape_name: str, frame: str) -> s
     return "".join(str(item.get("text") or "").strip() for item in ordered)
 
 
-def _target_slot(runtime: Any, frame: str, goods_ids: list[int]) -> int | None:
+def _target_slot(context: Any, frame: str, goods_ids: list[int]) -> int | None:
     if len(goods_ids) != 5:
         raise RuntimeError("万象宝阁揭晓商品不是五个")
     matches: list[int] = []
     for slot in range(1, 6):
-        text = _shape_tokens(runtime, MAIN_REVEALED_SCENE, f"商品{slot}", frame)
+        text = _shape_tokens(context, MAIN_REVEALED_SCENE, f"商品{slot}", frame)
         if "0.5折" in text and "120元" in text and "6元" in text:
             matches.append(slot)
     if len(matches) > 1:
@@ -76,12 +76,12 @@ def _target_slot(runtime: Any, frame: str, goods_ids: list[int]) -> int | None:
     return matches[0] if matches else None
 
 
-def _open_refund_box(runtime: Any):
-    yield from runtime.goto_view(WORLD_SCENE)
-    yield from runtime.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=12)
-    yield from runtime.wait_scene(
+def _open_refund_box(context: Any):
+    yield from context.go_scene(WORLD_SCENE)
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=12)
+    yield from context.wait_scene(
         STORAGE_BAG_SCENE,
-        timeout=12,
+        wait=12,
         label="万象宝阁：等待储物袋",
     )
     snapshot = dict(fanxiu_instrumentation_service.backpack_ui_snapshot())
@@ -113,7 +113,7 @@ def _open_refund_box(runtime: Any):
             session.commit()
 
     adapter = StorageBagFixedBoxGuiAdapter(
-        runtime=runtime,
+        context=context,
         snapshot_reader=fanxiu_instrumentation_service.backpack_ui_snapshot,
         catalog_cards_by_id=cards,
         recorder=recorder,
@@ -142,8 +142,8 @@ def _open_refund_box(runtime: Any):
         raise RuntimeError(f"代币宝匣充值代币奖励不是6：{rewards}")
     if dict(result.wallet_after).get(1001, 0) - dict(result.wallet_before).get(1001, 0) != 6:
         raise RuntimeError("代币宝匣未精确回补6元充值代币")
-    yield from runtime.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8)
-    yield from runtime.wait_scene(WORLD_SCENE, timeout=12, label="万象宝阁：返回世界")
+    yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8)
+    yield from context.wait_scene(WORLD_SCENE, wait=12, label="万象宝阁：返回世界")
     return {
         "opened": 1,
         "rewards": rewards,
@@ -163,18 +163,18 @@ def execute_wanxiang_baoge_task(
     contract = load_wanxiang_refund_offer_contract()
     if contract.get("complete") is not True or int(contract.get("price_cny_fen") or 0) != 600:
         raise RuntimeError("万象宝阁静态六元契约不完整")
-    runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+    context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
     max_refreshes = max(0, min(MAX_REFRESHES, int(payload.get("max_refreshes") or MAX_REFRESHES)))
 
     snapshot = read_wanxiang_baoge_runtime()
     if snapshot.get("complete") is not True:
-        yield from runtime.goto_view(WORLD_SCENE)
+        yield from context.go_scene(WORLD_SCENE)
         menu = read_activity_menu_snapshot("world_left")
         targets = [item for item in menu.items if int(item.base_id or 0) == WANXIANG_ACTIVITY_BASE_ID]
         if len(targets) != 1 or targets[0].activity_id is None:
             raise RuntimeError("世界左侧菜单没有唯一万象宝阁实例")
         yield from open_loaded_activity_menu_item(
-            runtime,
+            context,
             int(targets[0].activity_id),
             kind="world_left",
             source_scene_id=WORLD_SCENE,
@@ -186,17 +186,17 @@ def execute_wanxiang_baoge_task(
 
     if int(snapshot.get("buy_times") or 0) >= 1:
         if int(snapshot.get("refund_box_count") or 0) > 0:
-            box = yield from _open_refund_box(runtime)
+            box = yield from _open_refund_box(context)
             return {"ok": True, "outcome": "refund_complete", "cash_paid_fen": 0, "box": box}
-        yield from runtime.goto_view(WORLD_SCENE)
+        yield from context.go_scene(WORLD_SCENE)
         return {"ok": True, "outcome": "already_completed", "cash_paid_fen": 0}
 
     if int(snapshot.get("refresh_times") or 0) == 0:
         if snapshot.get("goods_ids") != []:
             raise RuntimeError("首次免费状态与商品列表矛盾")
-        yield from runtime.wait_click(MAIN_FREE_SCENE, "第一抽免费", timeout=10)
+        yield from context.wait_click(MAIN_FREE_SCENE, "第一抽免费", timeout=10)
         for _attempt in range(20):
-            yield from runtime.wait_action_settle(0.4)
+            yield from context.wait_action_settle(0.4)
             snapshot = read_wanxiang_baoge_runtime()
             if snapshot.get("complete") and int(snapshot.get("refresh_times") or 0) == 1 and len(snapshot.get("goods_ids") or []) == 5:
                 break
@@ -209,30 +209,30 @@ def execute_wanxiang_baoge_task(
         snapshot = _complete_snapshot()
         if int(snapshot.get("buy_times") or 0) >= 1:
             break
-        frame = runtime.cur_frame(update=True)
-        slot = _target_slot(runtime, frame, [int(value) for value in snapshot.get("goods_ids") or []])
+        frame = context.cur_frame(update=True)
+        slot = _target_slot(context, frame, [int(value) for value in snapshot.get("goods_ids") or []])
         if slot is not None:
             active_goods_id = int(snapshot["goods_ids"][slot - 1])
             counts = {int(key): int(value) for key, value in (snapshot.get("purchase_counts") or {}).items()}
             if counts.get(active_goods_id, 0) != 0:
                 raise RuntimeError("目标商品已购账本与总购买次数矛盾")
             # Read-only detail click proves the icon is the documented box.
-            runtime.click_shape(MAIN_REVEALED_SCENE, f"查看商品{slot}", frame_data_url=frame)
-            yield from runtime.wait_scene(BOX_DETAIL_SCENE, timeout=10, label="万象宝阁：核对代币宝匣详情")
-            yield from runtime.wait_click(BOX_DETAIL_SCENE, "关闭详情", timeout=8)
-            yield from runtime.wait_scene(MAIN_REVEALED_SCENE, timeout=10, label="万象宝阁：详情返回")
+            context.click_shape(MAIN_REVEALED_SCENE, f"查看商品{slot}", frame_data_url=frame)
+            yield from context.wait_scene(BOX_DETAIL_SCENE, wait=10, label="万象宝阁：核对代币宝匣详情")
+            yield from context.wait_click(BOX_DETAIL_SCENE, "关闭详情", timeout=8)
+            yield from context.wait_scene(MAIN_REVEALED_SCENE, wait=10, label="万象宝阁：详情返回")
 
             purchase_before = _complete_snapshot()
-            frame = runtime.cur_frame(update=True)
-            runtime.click_shape(MAIN_REVEALED_SCENE, f"购买商品{slot}", frame_data_url=frame)
-            yield from runtime.wait_scene(PURCHASE_CONFIRM_SCENE, timeout=10, label="万象宝阁：等待六元确认")
-            confirm_frame = runtime.cur_frame(update=True)
-            confirm = "".join(str(item.get("text") or "") for item in runtime.full_frame_ocr_tokens(frame_data_url=confirm_frame))
+            frame = context.cur_frame(update=True)
+            context.click_shape(MAIN_REVEALED_SCENE, f"购买商品{slot}", frame_data_url=frame)
+            yield from context.wait_scene(PURCHASE_CONFIRM_SCENE, wait=10, label="万象宝阁：等待六元确认")
+            confirm_frame = context.cur_frame(update=True)
+            confirm = "".join(str(item.get("text") or "") for item in context.full_frame_ocr_tokens(frame_data_url=confirm_frame))
             if "购买商品：代币宝匣" not in confirm or "购买所需：6" not in confirm or "代币购买" not in confirm:
                 raise RuntimeError("代币确认页商品或六元金额不完整")
-            runtime.click_shape(PURCHASE_CONFIRM_SCENE, "确认代币购买", frame_data_url=confirm_frame)
+            context.click_shape(PURCHASE_CONFIRM_SCENE, "确认代币购买", frame_data_url=confirm_frame)
             for _attempt in range(20):
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
                 after = read_wanxiang_baoge_runtime()
                 if after.get("complete") and int(after.get("buy_times") or 0) == int(purchase_before.get("buy_times") or 0) + 1:
                     break
@@ -253,9 +253,9 @@ def execute_wanxiang_baoge_task(
         before_refresh_times = int(snapshot.get("refresh_times") or 0)
         before_stones = int(snapshot.get("spirit_stone") or 0)
         before_goods = list(snapshot.get("goods_ids") or [])
-        yield from runtime.wait_click(MAIN_REVEALED_SCENE, "试试手气", timeout=10)
+        yield from context.wait_click(MAIN_REVEALED_SCENE, "试试手气", timeout=10)
         for _attempt in range(20):
-            yield from runtime.wait_action_settle(0.4)
+            yield from context.wait_action_settle(0.4)
             refreshed = read_wanxiang_baoge_runtime()
             if refreshed.get("complete") and int(refreshed.get("refresh_times") or 0) == before_refresh_times + 1:
                 break
@@ -267,7 +267,7 @@ def execute_wanxiang_baoge_task(
     final_purchase = _complete_snapshot()
     if int(final_purchase.get("refund_box_count") or 0) != 1:
         raise RuntimeError("购买完成后没有唯一代币宝匣")
-    box = yield from _open_refund_box(runtime)
+    box = yield from _open_refund_box(context)
     return {
         "ok": True,
         "outcome": "refund_complete",

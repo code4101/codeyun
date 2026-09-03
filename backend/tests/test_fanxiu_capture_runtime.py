@@ -275,7 +275,7 @@ def test_capture_runtime_local_stream_stop_only_seals_pcap(monkeypatch, tmp_path
 def test_capture_runtime_idle_seals_and_restarts_tcpdump(monkeypatch):
     service = FanxiuCaptureRuntimeService(idle_finalize_seconds=1)
     service._active_reasons.add("test")
-    service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
+    service._current_remote_pcap_path = "/data/local/tmp/codeyun_behavior_tree_context_test.pcap"
     service._current_pcap_path = "fanxiu_runtime_test.pcap"
     service._last_remote_pcap_size = 4096
     service._last_remote_pcap_size_seen_at = time.monotonic() - 2
@@ -307,7 +307,7 @@ def test_capture_runtime_idle_seals_and_restarts_tcpdump(monkeypatch):
 def test_capture_runtime_idle_waits_until_size_is_stable(monkeypatch):
     service = FanxiuCaptureRuntimeService(idle_finalize_seconds=60)
     service._active_reasons.add("test")
-    service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
+    service._current_remote_pcap_path = "/data/local/tmp/codeyun_behavior_tree_context_test.pcap"
     service._last_remote_pcap_size = 4096
     service._last_remote_pcap_size_seen_at = 0.0
     service._last_snapshot_remote_pcap_size = 4096
@@ -332,7 +332,7 @@ def test_capture_runtime_idle_waits_until_size_is_stable(monkeypatch):
 def test_capture_runtime_seals_when_segment_exceeds_max_age(monkeypatch):
     service = FanxiuCaptureRuntimeService(idle_finalize_seconds=60, max_segment_seconds=10)
     service._active_reasons.add("test")
-    service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
+    service._current_remote_pcap_path = "/data/local/tmp/codeyun_behavior_tree_context_test.pcap"
     service._current_pcap_path = "fanxiu_runtime_test.pcap"
     service._last_remote_pcap_size = 4096
     service._last_remote_pcap_size_seen_at = time.monotonic()
@@ -365,7 +365,7 @@ def test_capture_runtime_seals_when_segment_exceeds_max_age(monkeypatch):
 def test_capture_runtime_does_not_snapshot_running_pcap(monkeypatch, tmp_path):
     service = FanxiuCaptureRuntimeService(idle_finalize_seconds=1)
     service.device_id = "127.0.0.1:7555"
-    service._current_remote_pcap_path = "/data/local/tmp/codeyun_fanxiu_runtime_test.pcap"
+    service._current_remote_pcap_path = "/data/local/tmp/codeyun_behavior_tree_context_test.pcap"
     adb_calls: list[tuple[str, ...]] = []
 
     monkeypatch.setattr("backend.core.fanxiu.history_museum.packet_capture.capture_runtime.resolve_fanxiu_tcp_live_capture_dir", lambda: tmp_path)

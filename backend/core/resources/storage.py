@@ -95,7 +95,7 @@ def migrate_legacy_source_data_dir(
             root = (
                 Path(backup_root).resolve(strict=False)
                 if backup_root is not None
-                else settings.data_workspace_dir / "backups"
+                else settings.backup_dir
             )
             backup_dir = root / f"legacy-source-data-{time.strftime('%Y%m%d-%H%M%S')}"
             backup_dir.mkdir(parents=True, exist_ok=True)

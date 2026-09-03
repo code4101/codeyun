@@ -50,10 +50,10 @@ def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
 
-def _quick_operation_panel_visible(runtime: Any, scene_id: Any, frame: str) -> bool:
+def _quick_operation_panel_visible(context: Any, scene_id: Any, frame: str) -> bool:
     if scene_id == QUICK_OPERATION_SCENE:
         return True
-    shape_matches = getattr(runtime, "shape_matches", None)
+    shape_matches = getattr(context, "shape_matches", None)
     if not callable(shape_matches):
         return False
     try:
@@ -89,7 +89,7 @@ def _verify_quick_options_read_only() -> dict[str, Any]:
     return snapshot
 
 
-def _wait_quick_operation_panel(runtime: Any, *, timeout: float):
+def _wait_quick_operation_panel(context: Any, *, timeout: float):
     """Wait for #526 without depending solely on its decorative title.
 
     Some live frames render the four operation rows before (or without) the
@@ -100,19 +100,26 @@ def _wait_quick_operation_panel(runtime: Any, *, timeout: float):
     # Keep this entrance wait independent from the post-action monotonic clock,
     # whose tests deliberately advance in large steps to prove fixed points.
     deadline = time.perf_counter() + timeout
-    last_text = ""
+    last_frame: str | None = None
     while time.perf_counter() < deadline:
-        frame = runtime.cur_frame(update=True)
-        last_text = _compact_text(runtime.ocr_text(frame))
-        scene_id, _score, _matched_frame = runtime.current_scene(
+        frame = context.cur_frame(update=True)
+        last_frame = frame
+        scene_id, _score, _matched_frame = context.current_scene(
             (QUICK_OPERATION_SCENE,),
             frame_data_url=frame,
         )
         if scene_id == QUICK_OPERATION_SCENE:
             return {"evidence": "scene_526", "frame": frame}
-        if _quick_operation_panel_visible(runtime, scene_id, frame):
+        if _quick_operation_panel_visible(context, scene_id, frame):
             return {"evidence": "panel_shape_contract", "frame": frame}
-        yield from runtime.wait_action_settle(0.25)
+        yield from context.wait_action_settle(0.25)
+    # Full-frame OCR is diagnostic only.  Defer it until timeout so the normal
+    # #526/shape-contract path does not pay this cost on every entrance.
+    last_text = (
+        _compact_text(context.ocr_text(last_frame))
+        if last_frame is not None
+        else ""
+    )
     raise TimeoutError(
         "储物袋_操作：等待快捷操作面板超时；"
         f"未命中 #526 或四项完整面板契约，last_ocr={last_text!r}"
@@ -120,7 +127,7 @@ def _wait_quick_operation_panel(runtime: Any, *, timeout: float):
 
 
 def _observe_known_scene(
-    runtime: Any,
+    context: Any,
     scene_ids: tuple[int, ...],
     *,
     deadline: float,
@@ -129,44 +136,44 @@ def _observe_known_scene(
     """Observe only; unknown/toast-obscured frames never trigger a click."""
 
     while time.monotonic() < deadline:
-        frame = runtime.cur_frame(update=True)
-        text = _compact_text(runtime.ocr_text(frame))
+        frame = context.cur_frame(update=True)
+        text = _compact_text(context.ocr_text(frame))
         if EMPTY_OPERATION_TOAST in text and accept_empty_toast:
             return "empty", frame
         if EMPTY_OPERATION_TOAST in text:
-            yield from runtime.wait_action_settle(0.25)
+            yield from context.wait_action_settle(0.25)
             continue
-        scene_id, _score, _matched_frame = runtime.current_scene(
+        scene_id, _score, _matched_frame = context.current_scene(
             list(scene_ids),
             frame_data_url=frame,
         )
         if (
             QUICK_OPERATION_SCENE in scene_ids
-            and _quick_operation_panel_visible(runtime, scene_id, frame)
+            and _quick_operation_panel_visible(context, scene_id, frame)
         ):
             scene_id = QUICK_OPERATION_SCENE
         if scene_id in scene_ids:
             return int(scene_id), frame
-        yield from runtime.wait_action_settle(0.25)
+        yield from context.wait_action_settle(0.25)
     raise TimeoutError(
         f"储物袋_操作：等待已知场景 {scene_ids} 超时；unknown 期间未执行点击"
     )
 
 
-def _finish_reward_chain(runtime: Any, *, deadline: float):
+def _finish_reward_chain(context: Any, *, deadline: float):
     stable_since: float | None = None
     stable_polls = 0
     stable_scene: int | None = None
     while time.monotonic() < deadline:
-        frame = runtime.cur_frame(update=True)
-        text = _compact_text(runtime.ocr_text(frame))
+        frame = context.cur_frame(update=True)
+        text = _compact_text(context.ocr_text(frame))
         if EMPTY_OPERATION_TOAST in text:
             return "empty_toast"
-        landed, _score, _matched_frame = runtime.current_scene(
+        landed, _score, _matched_frame = context.current_scene(
             (REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
             frame_data_url=frame,
         )
-        if _quick_operation_panel_visible(runtime, landed, frame):
+        if _quick_operation_panel_visible(context, landed, frame):
             landed = QUICK_OPERATION_SCENE
         if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE):
             break
@@ -192,22 +199,22 @@ def _finish_reward_chain(runtime: Any, *, deadline: float):
             stable_scene = None
             stable_since = None
             stable_polls = 0
-        yield from runtime.wait_action_settle(0.25)
+        yield from context.wait_action_settle(0.25)
     else:
         raise TimeoutError(
             "储物袋_操作：执行后未进入奖励链，也未形成稳定 #526 无奖励固定点"
         )
     if landed == REWARD_SCENE:
-        yield from runtime.wait_click(REWARD_SCENE, "继续", timeout=8.0)
+        yield from context.wait_click(REWARD_SCENE, "继续", timeout=8.0)
         landed, _frame = yield from _observe_known_scene(
-            runtime,
+            context,
             (DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE),
             deadline=deadline,
         )
     if landed == DANYAO_REWARD_SCENE:
-        yield from runtime.wait_click(DANYAO_REWARD_SCENE, "继续", timeout=8.0)
+        yield from context.wait_click(DANYAO_REWARD_SCENE, "继续", timeout=8.0)
         landed, _frame = yield from _observe_known_scene(
-            runtime,
+            context,
             (STORAGE_BAG_SCENE,),
             deadline=deadline,
         )
@@ -224,7 +231,7 @@ def execute_storage_bag_operation_task(
 ):
     """Run at most three safe quick-operation batches to a proven terminal state."""
 
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
@@ -235,41 +242,41 @@ def execute_storage_bag_operation_task(
         max(15.0, float(payload.get("quick_operation_result_timeout_seconds") or 60.0)),
     )
 
-    yield from runtime.goto_view(WORLD_SCENE)
-    yield from runtime.wait_click(
+    yield from context.go_scene(WORLD_SCENE)
+    yield from context.wait_click(
         WORLD_SCENE,
         "右侧菜单/储物袋",
         timeout=10.0,
     )
-    yield from runtime.wait_scene(
+    yield from context.wait_scene(
         STORAGE_BAG_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="储物袋_操作：等待储物袋主页",
     )
 
     completed_rounds = 0
     for _round_index in range(max_rounds):
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             STORAGE_BAG_SCENE,
             "快捷操作",
             timeout=8.0,
         )
-        yield from _wait_quick_operation_panel(runtime, timeout=8.0)
+        yield from _wait_quick_operation_panel(context, timeout=8.0)
         _verify_quick_options_read_only()
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             QUICK_OPERATION_SCENE,
             "执行快捷操作（高风险）",
             timeout=8.0,
         )
         # BackPackQuickView.configBtnFunc emits BackPack_12 and returns without
         # sending CM_ItemOneKeyOperate when all selected lists are empty.
-        yield from runtime.wait_action_settle(0.15)
+        yield from context.wait_action_settle(0.15)
         # This deadline belongs only to the current click's result transition.
         # The Job has no arbitrary five-minute business cutoff: each navigation
         # and click already has its own timeout, while this probe distinguishes
         # reward, exact empty toast, and a stable no-result fixed point.
         result_deadline = time.monotonic() + result_timeout_seconds
-        outcome = yield from _finish_reward_chain(runtime, deadline=result_deadline)
+        outcome = yield from _finish_reward_chain(context, deadline=result_deadline)
         if outcome == "storage_fixed_point":
             # The underlying bag can be recognizable before a delayed reward
             # overlay appears.  Only a fresh, stable #525 may count as the
@@ -281,27 +288,27 @@ def execute_storage_bag_operation_task(
             # #526 is recognizable again, then close through its formal shape.
             if outcome == "empty_toast":
                 landed, _frame = yield from _observe_known_scene(
-                        runtime,
+                        context,
                         (QUICK_OPERATION_SCENE,),
                         deadline=result_deadline,
                         accept_empty_toast=False,
                 )
                 if landed != QUICK_OPERATION_SCENE:
                     raise RuntimeError("储物袋_操作：空列表提示后未恢复 #526")
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 QUICK_OPERATION_SCENE,
                 "外部顶部空白",
                 timeout=8.0,
             )
-            yield from runtime.wait_scene(
+            yield from context.wait_scene(
                 STORAGE_BAG_SCENE,
-                timeout=8.0,
+                wait=8.0,
                 label="储物袋_操作：关闭快捷操作面板",
             )
-            yield from runtime.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
-            yield from runtime.wait_scene(
+            yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
+            yield from context.wait_scene(
                 WORLD_SCENE,
-                timeout=10.0,
+                wait=10.0,
                 label="储物袋_操作：返回世界",
             )
             return {

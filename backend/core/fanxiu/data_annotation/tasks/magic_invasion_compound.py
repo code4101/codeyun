@@ -88,23 +88,23 @@ def execute_magic_invasion_compound_checkpoint(
     )
     if not bool(schedule.get("available") and schedule.get("complete")):
         raise RuntimeError("魔道任务步骤的 Runtime 日程不可用")
-    runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-    yield from runtime.goto_view(66)
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    yield from context.go_scene(66)
     yield from select_schedule_activity(
-        runtime,
+        context,
         r"魔道入侵",
         enter=True,
         runtime_schedule=schedule,
         require_runtime_alignment=True,
         now=job_now(),
     )
-    yield from runtime.wait_scene(
+    yield from context.wait_scene(
         509,
-        timeout=30.0,
+        wait=30.0,
         label="魔道入侵：等待活动主页领取任务",
     )
     task_result = yield from claim_magic_invasion_task_rewards(
-        runtime,
+        context,
         activity_id=occurrence.activity_id,
     )
     counts, inventory_evidence = read_backpack_item_counts(
@@ -161,7 +161,7 @@ def execute_magic_invasion_compound_checkpoint(
         explore_payload,
         stop_event,
         manage_schedule=False,
-        prepared_runtime=runtime,
+        prepared_context=context,
         prepared_schedule=schedule,
         already_on_main_scene=already_on_main_scene,
     )

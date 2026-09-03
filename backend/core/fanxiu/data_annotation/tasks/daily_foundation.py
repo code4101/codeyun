@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Literal, Mapping
 
 from pyxllib.prog import BehaviorTreeStatus
-from pyxllib.autogui import Shape, View, image_number as _runtime_image_number
+from pyxllib.autogui import Shape, View, image_number as _image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
@@ -37,7 +37,7 @@ from backend.core.fanxiu.data_annotation.duel_strategy import (
     parse_slot_value_title,
     plan_swaps,
 )
-from backend.core.fanxiu.data_annotation import behavior_tree_runtime as _behavior_tree_runtime
+from backend.core.fanxiu.data_annotation import behavior_tree_executor as _behavior_tree_executor
 from backend.core.fanxiu.data_annotation.arena_schedule import (
     XIANYUAN_DUEL_TASK_ID,
     next_xianyuan_duel_cycle_trigger_at,
@@ -51,7 +51,7 @@ from backend.core.fanxiu.data_annotation.job_times import (
 )
 from backend.core.fanxiu.data_annotation.storage import data_annotation_entry_image_dir
 from backend.core.temp_paths import codeyun_temp_root
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
     DEFAULT_SCROLL_UNCHANGED_THRESHOLD,
     FULLWIDTH_DIGIT_TRANSLATION,
     _now,
@@ -61,7 +61,7 @@ from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
     _parse_daily_boss_reward_remaining,
     _parse_xianfu_skill_cd_seconds,
     _parse_xianfu_visit_cd_seconds,
-    _read_data_annotation_scheduler_tasks,
+    _read_kernel_scheduler_tasks,
     _read_data_annotation_world_facts,
     _write_data_annotation_world_facts,
 )
@@ -450,22 +450,22 @@ class DailyFoundationTaskMixin:
         return int(default)
 
     def _next_daily_activity_time_text(self) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         next_at = (now + timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
         return next_at.strftime("%Y-%m-%d %H:%M:%S")
 
-    def daily_activity_flow(self, runtime: Any):
-        yield from runtime.go_scene(69)
+    def daily_activity_flow(self, context: Any):
+        yield from context.go_scene(69)
 
         attempt = 0
         while True:
             attempt += 1
-            frame = runtime.cur_frame(update=True)
-            scene_id, score, _frame = runtime.current_scene([69], frame_data_url=frame)
+            frame = context.cur_frame(update=True)
+            scene_id, score, _frame = context.current_scene([69], frame_data_url=frame)
             if scene_id != 69:
                 raise RuntimeError(f"日常_活跃度：读取总活跃度时已不在 #69：#{scene_id or 'unknown'} {score:.0f}%")
 
-            values, text = runtime.ocr_numbers_in_shapes(
+            values, text = context.ocr_numbers_in_shapes(
                 69,
                 ["总活跃度"],
                 padding=0,
@@ -477,12 +477,12 @@ class DailyFoundationTaskMixin:
                 break
 
             self._log("detail", f"日常_活跃度：第 {attempt} 次未读到总活跃度数值，OCR={text!r}，继续识别")
-            yield from runtime.wait_action_settle(0.8)
+            yield from context.wait_action_settle(0.8)
 
         if total_activity < 500:
-            yield from runtime.go_scene(34)
-            runtime.set_next_time(
-                (_behavior_tree_runtime._now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+            yield from context.go_scene(34)
+            context.set_next_time(
+                (_behavior_tree_executor._now() + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
             )
             return {
                 "result": "success",
@@ -490,10 +490,10 @@ class DailyFoundationTaskMixin:
                 "current_scene": 34,
             }
 
-        runtime.click_shape_center(69, "奖励")
-        yield from runtime.wait_action_settle(1.5)
-        yield from runtime.go_scene(34)
-        runtime.set_next_time(self._next_daily_activity_time_text())
+        context.click_shape_center(69, "奖励")
+        yield from context.wait_action_settle(1.5)
+        yield from context.go_scene(34)
+        context.set_next_time(self._next_daily_activity_time_text())
         return {
             "result": "success",
             "message": f"日常_活跃度：总活跃度 {total_activity}，已点击奖励并回到世界",
@@ -508,7 +508,7 @@ class DailyFoundationTaskMixin:
     ):
         normalized_payload = dict(payload or {})
         normalized_payload.setdefault("fallback_seconds", 3600)
-        result = yield from self._execute_daily_runtime_task(
+        result = yield from self._execute_daily_task(
             ctx,
             stop_event,
             normalized_payload,
@@ -518,7 +518,7 @@ class DailyFoundationTaskMixin:
         )
         self._trigger_daily_experience_after_prerequisites(
             completed_task_type="daily_activity",
-            completed_at=_behavior_tree_runtime._now(),
+            completed_at=_behavior_tree_executor._now(),
         )
         return result
 
@@ -528,7 +528,7 @@ class DailyFoundationTaskMixin:
         completed: bool,
         now: datetime | None = None,
     ) -> str:
-        current = now or _behavior_tree_runtime._now()
+        current = now or _behavior_tree_executor._now()
         if not completed and current.weekday() in {3, 4}:
             next_at = current + timedelta(days=1)
         else:
@@ -538,25 +538,25 @@ class DailyFoundationTaskMixin:
             next_at = current + timedelta(days=days_until_thursday)
         return next_at.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
-    def weekly_activity_flow(self, runtime: Any):
-        yield from runtime.go_scene(69)
-        runtime.click_shape_center(69, "周常")
-        yield from runtime.wait_action_settle(float(runtime.payload.get("weekly_tab_settle_seconds") or 1.5))
+    def weekly_activity_flow(self, context: Any):
+        yield from context.go_scene(69)
+        context.click_shape_center(69, "周常")
+        yield from context.wait_action_settle(float(context.payload.get("weekly_tab_settle_seconds") or 1.5))
 
         attempt = 0
         while True:
             attempt += 1
-            frame = runtime.cur_frame(update=True)
-            scene_id, score, _frame = runtime.current_scene([402], frame_data_url=frame)
+            frame = context.cur_frame(update=True)
+            scene_id, score, _frame = context.current_scene([402], frame_data_url=frame)
             if scene_id != 402:
                 self._log(
                     "detail",
                     f"周常_活跃度：第 {attempt} 次尚未识别到 #402：#{scene_id or 'unknown'} {score:.0f}%，继续识别",
                 )
-                yield from runtime.wait_action_settle(0.8)
+                yield from context.wait_action_settle(0.8)
                 continue
 
-            values, text = runtime.ocr_numbers_in_shapes(
+            values, text = context.ocr_numbers_in_shapes(
                 402,
                 ["活跃度"],
                 padding=0,
@@ -574,10 +574,10 @@ class DailyFoundationTaskMixin:
                 "detail",
                 f"周常_活跃度：第 {attempt} 次未读到活跃度数值，OCR={text!r}，继续识别",
             )
-            yield from runtime.wait_action_settle(0.8)
+            yield from context.wait_action_settle(0.8)
 
-        threshold = max(1, int(runtime.payload.get("weekly_activity_threshold") or 2400))
-        now = _behavior_tree_runtime._now()
+        threshold = max(1, int(context.payload.get("weekly_activity_threshold") or 2400))
+        now = _behavior_tree_executor._now()
         if total_activity < threshold:
             final_attempt = now.weekday() == 5
             next_time = self._next_weekly_activity_time_text(completed=final_attempt, now=now)
@@ -588,8 +588,8 @@ class DailyFoundationTaskMixin:
                 )
             else:
                 message = f"周常_活跃度：活跃度 {total_activity} < {threshold}，下次 {next_time} 复查"
-            yield from runtime.go_scene(34)
-            runtime.set_next_time(next_time)
+            yield from context.go_scene(34)
+            context.set_next_time(next_time)
             return {
                 "result": "success",
                 "message": message,
@@ -597,7 +597,7 @@ class DailyFoundationTaskMixin:
             }
 
         reward_layout = weekly_activity_reward_layout_from_ocr(
-            runtime.full_frame_ocr_tokens(frame),
+            context.full_frame_ocr_tokens(frame),
             frame_width=900,
             frame_height=1600,
         )
@@ -637,7 +637,7 @@ class DailyFoundationTaskMixin:
             latest_scene_id: int | None = None
             latest_score = 0.0
             for attempt in range(3):
-                latest_scene_id, latest_score, _ = runtime.current_scene(
+                latest_scene_id, latest_score, _ = context.current_scene(
                     [402],
                     frame_data_url=latest_frame,
                 )
@@ -648,8 +648,8 @@ class DailyFoundationTaskMixin:
                         "detail",
                         f"周常_活跃度：{action_label}后第 {attempt + 1} 帧暂未识别 #402，继续复核",
                     )
-                    yield from runtime.wait_action_settle(0.4)
-                    latest_frame = runtime.cur_frame(update=True)
+                    yield from context.wait_action_settle(0.4)
+                    latest_frame = context.cur_frame(update=True)
             raise RuntimeError(
                 f"周常_活跃度：{action_label}后未留在 #402："
                 f"#{latest_scene_id or 'unknown'} {latest_score:.0f}%"
@@ -674,12 +674,12 @@ class DailyFoundationTaskMixin:
                         f"周常_活跃度：横向滚动后仍未找到可领档 {claimable_thresholds}"
                     )
                 before_visible = set(reward_states)
-                runtime.drag_frame_point(402, 760, 350, 260, 350, duration_ms=1000)
-                yield from runtime.wait_action_settle(0.8)
-                final_frame = runtime.cur_frame(update=True)
+                context.drag_frame_point(402, 760, 350, 260, 350, duration_ms=1000)
+                yield from context.wait_action_settle(0.8)
+                final_frame = context.cur_frame(update=True)
                 final_frame = yield from confirm_reward_scene(final_frame, action_label="横向滚动")
                 reward_layout = weekly_activity_reward_layout_from_ocr(
-                    runtime.full_frame_ocr_tokens(final_frame),
+                    context.full_frame_ocr_tokens(final_frame),
                     frame_width=900,
                     frame_height=1600,
                 )
@@ -694,15 +694,15 @@ class DailyFoundationTaskMixin:
             for milestone in visible_claimable:
                 before = reward_states[milestone]
                 click_x, click_y = before["point"]
-                runtime.click_frame_point(402, click_x, click_y)
-                yield from runtime.wait_action_settle(float(runtime.payload.get("reward_settle_seconds") or 1.5))
-                after_frame = runtime.cur_frame(update=True)
+                context.click_frame_point(402, click_x, click_y)
+                yield from context.wait_action_settle(float(context.payload.get("reward_settle_seconds") or 1.5))
+                after_frame = context.cur_frame(update=True)
                 after_frame = yield from confirm_reward_scene(
                     after_frame,
                     action_label=f"点击 {milestone} 档",
                 )
                 after_layout = weekly_activity_reward_layout_from_ocr(
-                    runtime.full_frame_ocr_tokens(after_frame),
+                    context.full_frame_ocr_tokens(after_frame),
                     frame_width=900,
                     frame_height=1600,
                 )
@@ -729,16 +729,16 @@ class DailyFoundationTaskMixin:
         final_milestone = max(WEEKLY_ACTIVITY_REWARD_MILESTONES)
         if reward_states.get(final_milestone, {}).get("state") != "claimed":
             raise RuntimeError(f"周常_活跃度：右边界 {final_milestone} 档未显示绿色勾")
-        final_tokens = runtime.full_frame_ocr_tokens(final_frame)
+        final_tokens = context.full_frame_ocr_tokens(final_frame)
         if weekly_activity_pending_badge_present(
             final_tokens,
             frame_width=900,
             frame_height=1600,
         ):
             raise RuntimeError("周常_活跃度：Runtime 无可领档但周常页签仍显示“领”，拒绝写入下周")
-        yield from runtime.go_scene(34)
+        yield from context.go_scene(34)
         next_time = self._next_weekly_activity_time_text(completed=True, now=now)
-        runtime.set_next_time(next_time)
+        context.set_next_time(next_time)
         reward_message = (
             f"本次领取 {claimed_now}"
             if claimed_now
@@ -759,7 +759,7 @@ class DailyFoundationTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ):
-        return (yield from self._execute_daily_runtime_task(
+        return (yield from self._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -783,7 +783,7 @@ class DailyFoundationTaskMixin:
         if result == "success":
             self._trigger_daily_experience_after_prerequisites(
                 completed_task_type="daily_boss",
-                completed_at=_behavior_tree_runtime._now(),
+                completed_at=_behavior_tree_executor._now(),
             )
         return result
 
@@ -837,7 +837,7 @@ class DailyFoundationTaskMixin:
     ) -> str | None:
         """Trigger experience only after boss and activity both completed this game day."""
 
-        tasks = _read_data_annotation_scheduler_tasks()
+        tasks = _read_kernel_scheduler_tasks()
         tasks_by_type = {
             str(task.get("task_type") or ""): task
             for task in tasks
@@ -889,7 +889,7 @@ class DailyFoundationTaskMixin:
             self._log("detail", f"{source_label}：日常_经验已在两项前置完成后执行，本轮不重复触发")
             return None
 
-        trigger_time = _behavior_tree_runtime.set_data_annotation_scheduler_task_trigger_time(
+        trigger_time = _behavior_tree_executor.set_kernel_scheduler_task_trigger_time(
             "日常_经验",
             completed_at,
         )
@@ -943,15 +943,15 @@ class DailyFoundationTaskMixin:
                 yield from self._return_daily_boss_to_world(ctx, stop_event)
                 return "success"
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame = runtime.current_scene(update=True)
-        current_text = runtime.ocr_text(_frame)
-        if (yield from self._close_daily_boss_item_detail_if_present(ctx, runtime, stop_event, _frame, current_text)):
-            scene_id, _score, _frame = runtime.current_scene(update=True)
-            current_text = runtime.ocr_text(_frame)
-        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, current_text)):
-            scene_id, _score, _frame = runtime.current_scene(update=True)
-            current_text = runtime.ocr_text(_frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, _frame = context.current_scene(update=True)
+        current_text = context.ocr_text(_frame)
+        if (yield from self._close_daily_boss_item_detail_if_present(ctx, context, stop_event, _frame, current_text)):
+            scene_id, _score, _frame = context.current_scene(update=True)
+            current_text = context.ocr_text(_frame)
+        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, context, stop_event, _frame, current_text)):
+            scene_id, _score, _frame = context.current_scene(update=True)
+            current_text = context.ocr_text(_frame)
         if self._daily_boss_done_text(current_text):
             return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
         if self._daily_boss_combat_in_progress_text(current_text):
@@ -975,10 +975,10 @@ class DailyFoundationTaskMixin:
         if scene_id != 179:
             if scene_id != 178:
                 if scene_id != 69:
-                    world_text = runtime.ocr_text(_frame)
+                    world_text = context.ocr_text(_frame)
                     scene_id = yield from self._enter_daily_from_world_like(
                         ctx,
-                        runtime,
+                        context,
                         stop_event,
                         _frame,
                         scene_id,
@@ -1010,8 +1010,8 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        status = yield from runtime.open_daily_entry(
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        status = yield from context.open_daily_entry(
             label="日常_首领",
             title_pattern=r"击\s*败\s*首\s*领",
             progress_can_mark_done=False,
@@ -1040,7 +1040,7 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少 #178「首领列表」滚动区域标注，无法查找注视中首领")
         xianjie_shape = self._find_shape(image178, "仙界")
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         runtime_snapshot = self._daily_boss_runtime_snapshot_for_list(payload)
         runtime_remaining_authoritative = bool(
             runtime_snapshot.get("complete")
@@ -1065,15 +1065,15 @@ class DailyFoundationTaskMixin:
         else:
             remaining = self._daily_boss_reward_remaining_from_scene(ctx, image178)
             if remaining is None:
-                remaining = _parse_daily_boss_reward_remaining(runtime.ocr_text(update=True))
+                remaining = _parse_daily_boss_reward_remaining(context.ocr_text(update=True))
         if remaining == 0 and not runtime_remaining_authoritative:
             # A single OCR ``0`` must not suppress the whole day's boss job.  The
             # counter is small and animated; a bad crop/read previously wrote a
             # cross-day retry even while the daily ledger still showed 0/3.
             # Confirm it from a newly captured frame before treating it as the
             # authoritative completion signal.
-            confirm_frame = runtime.cur_frame(update=True)
-            confirm_text = runtime.ocr_text_in_shapes(
+            confirm_frame = context.cur_frame(update=True)
+            confirm_text = context.ocr_text_in_shapes(
                 View(image178),
                 ("剩余奖励次数",),
                 padding=12,
@@ -1106,7 +1106,7 @@ class DailyFoundationTaskMixin:
             return (
                 yield from self._open_available_normal_daily_boss_detail(
                     ctx,
-                    runtime,
+                    context,
                     stop_event,
                     payload,
                 )
@@ -1116,12 +1116,12 @@ class DailyFoundationTaskMixin:
                 self._set_status_locked("running", "日常_首领：确认仙界页签", phase="daily_boss_open_xianjie", current_scene=178)
                 self._log_locked("action", "日常_首领：点击 #178「仙界」页签")
             box = self._box(xianjie_shape, image178)
-            runtime.click_frame_point(
+            context.click_frame_point(
                 View(image178),
                 float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
                 float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
             )
-            yield from runtime.wait_action_settle(1.5)
+            yield from context.wait_action_settle(1.5)
             yield from self._wait_daily_boss_list(ctx, stop_event, timeout=12.0, label="日常_首领：等待仙界首领列表 #178")
 
         scroll_index = 0
@@ -1134,8 +1134,8 @@ class DailyFoundationTaskMixin:
                     phase="daily_boss_find_watched",
                     current_scene=178,
                 )
-            frame = runtime.cur_frame(update=True)
-            item = runtime.find_floating_item_by_anchor(
+            frame = context.cur_frame(update=True)
+            item = context.find_floating_item_by_anchor(
                 178,
                 "条目",
                 "注视中",
@@ -1144,7 +1144,7 @@ class DailyFoundationTaskMixin:
             )
             if item is not None:
                 cd_status = yield from self._daily_boss_handle_watched_item_cd(
-                    runtime,
+                    context,
                     item,
                     payload,
                     stop_event,
@@ -1161,11 +1161,11 @@ class DailyFoundationTaskMixin:
                         current_scene=178,
                     )
                     self._log_locked("action", f"日常_首领：点击 #178「{item.text or '注视中'}」")
-                runtime.click_floating_item_field(item, "注视中")
-                yield from runtime.wait_any(
+                context.click_floating_item_field(item, "注视中")
+                yield from context.wait_any(
                     {
-                        "scene": runtime.view_visible(179),
-                        "detail": runtime.ocr_matches(
+                        "scene": context.scene_visible(179),
+                        "detail": context.ocr_matches(
                             self._daily_boss_text_is_detail,
                             label="日常_首领：首领详情 OCR",
                             preview_chars=120,
@@ -1196,7 +1196,7 @@ class DailyFoundationTaskMixin:
     def _open_available_normal_daily_boss_detail(
         self,
         ctx: dict[str, Any],
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
@@ -1210,12 +1210,12 @@ class DailyFoundationTaskMixin:
         if tabs_shape is None or list_shape is None:
             raise RuntimeError("日常_首领：缺少 #178 页签或首领列表标注")
 
-        frame = runtime.cur_frame(update=True)
+        frame = context.cur_frame(update=True)
         human_line = next(
             (
                 line
                 for line in self._daily_boss_ocr_lines_in_shape(
-                    runtime, image178, tabs_shape, frame
+                    context, image178, tabs_shape, frame
                 )
                 if "人界"
                 in re.sub(r"\s+", "", str(line.get("text") or ""))
@@ -1232,7 +1232,7 @@ class DailyFoundationTaskMixin:
                 current_scene=178,
             )
             self._log_locked("action", self._status["message"])
-        runtime.click_frame_point(
+        context.click_frame_point(
             View(image178),
             float(human_line["x"]) + float(human_line["w"]) / 2,
             float(human_line["y"]) + float(human_line["h"]) / 2,
@@ -1242,10 +1242,10 @@ class DailyFoundationTaskMixin:
         map_lines: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            yield from runtime.wait_action_settle(1.5)
-            frame = runtime.cur_frame(update=True)
+            yield from context.wait_action_settle(1.5)
+            frame = context.cur_frame(update=True)
             map_lines = self._daily_boss_ocr_lines_in_shape(
-                runtime, image178, list_shape, frame
+                context, image178, list_shape, frame
             )
             if any(
                 "当前首领" in str(line.get("text") or "")
@@ -1267,14 +1267,14 @@ class DailyFoundationTaskMixin:
                         current_scene=178,
                     )
                     self._log_locked("action", self._status["message"])
-                runtime.click_frame_point(
+                context.click_frame_point(
                     View(image178),
                     float(candidate["x"]) + float(candidate["w"]) / 2,
                     float(candidate["y"]) + float(candidate["h"]) / 2,
                 )
-                yield from runtime.wait_view(
+                yield from context.wait_scene(
                     179,
-                    timeout=45.0,
+                    wait=45.0,
                     label="日常_首领：等待普通首领详情 #179",
                 )
                 return "opened"
@@ -1286,9 +1286,9 @@ class DailyFoundationTaskMixin:
             )
             if not changed:
                 break
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             map_lines = self._daily_boss_ocr_lines_in_shape(
-                runtime, image178, list_shape, frame
+                context, image178, list_shape, frame
             )
         raise RuntimeError(
             "日常_首领：Runtime 仍有存活普通首领，但人界可见地图均为未知或刷新 CD"
@@ -1296,7 +1296,7 @@ class DailyFoundationTaskMixin:
 
     def _daily_boss_ocr_lines_in_shape(
         self,
-        runtime: Any,
+        context: Any,
         image: dict[str, Any],
         shape: dict[str, Any],
         frame: str,
@@ -1307,7 +1307,7 @@ class DailyFoundationTaskMixin:
         right = left + float(box.get("w") or 0)
         bottom = top + float(box.get("h") or 0)
         lines: list[dict[str, Any]] = []
-        for line in group_ocr_tokens(runtime.full_frame_ocr_tokens(frame)):
+        for line in group_ocr_tokens(context.full_frame_ocr_tokens(frame)):
             x = float(line.get("x") or 0)
             y = float(line.get("y") or 0)
             w = float(line.get("w") or 0)
@@ -1352,14 +1352,14 @@ class DailyFoundationTaskMixin:
 
     def _daily_boss_handle_watched_item_cd(
         self,
-        runtime: Any,
+        context: Any,
         item: Any,
         payload: dict[str, Any],
         stop_event: threading.Event,
         *,
         frame_data_url: str | None = None,
     ):
-        refresh_text = runtime.read_floating_item_field(item, "刷新时间", frame_data_url=frame_data_url, padding=12)
+        refresh_text = context.read_floating_item_field(item, "刷新时间", frame_data_url=frame_data_url, padding=12)
         if not re.search(r"刷新|时间", _sanitize_ocr_text(refresh_text)):
             return "ready"
         timeout_seconds = float(payload.get("cd_ocr_timeout_seconds") or 30.0)
@@ -1393,7 +1393,7 @@ class DailyFoundationTaskMixin:
             yield BehaviorTreeStatus.RUNNING
             if stop_event.wait(1.0):
                 self._raise_if_stopped(stop_event)
-            last_text = runtime.read_floating_item_field(item, "刷新时间", padding=12)
+            last_text = context.read_floating_item_field(item, "刷新时间", padding=12)
 
     def _wait_daily_boss_list(
         self,
@@ -1404,7 +1404,7 @@ class DailyFoundationTaskMixin:
         label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
@@ -1412,8 +1412,8 @@ class DailyFoundationTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([178], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([178], update=True)
+            text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if scene_id == 178 or self._daily_boss_text_is_list(text):
                 with self._lock:
@@ -1443,8 +1443,8 @@ class DailyFoundationTaskMixin:
         image179 = ctx.get("images", {}).get(179)
         if not isinstance(image179, dict):
             raise RuntimeError("缺少 #179「首领详情」标注，无法处理首领挑战")
-        runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
-        detail_text = runtime.ocr_text_in_shapes(179, ("神识注视", "剩余奖励次数", "挑战状态"), padding=20)
+        context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
+        detail_text = context.ocr_text_in_shapes(179, ("神识注视", "剩余奖励次数", "挑战状态"), padding=20)
         remaining = _parse_daily_boss_reward_remaining(detail_text)
         if remaining == 0:
             next_time = self._next_daily_boss_reset_time_text()
@@ -1470,14 +1470,14 @@ class DailyFoundationTaskMixin:
             yield from self._return_daily_boss_to_world(ctx, stop_event)
             return "skipped"
 
-        view179 = runtime.get_view(179)
+        view179 = context.get_view(179)
         challenge_shape = view179.get_shape("前往挑战") if isinstance(view179, View) else None
         if challenge_shape is None:
             raise RuntimeError("缺少 #179「前往挑战」标注，无法挑战首领")
 
         if remaining is None and "前往挑战" not in detail_text:
             fallback_seconds = int(payload.get("fallback_seconds") or 300)
-            next_time = (_behavior_tree_runtime._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (_behavior_tree_executor._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
             self._persist_scheduler_task_next_time(
                 str(payload.get("__scheduler_task_id") or "daily-boss"),
                 next_time,
@@ -1493,14 +1493,14 @@ class DailyFoundationTaskMixin:
         box = challenge_shape.box()
         click_x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
         click_y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
-        runtime.click_frame_point(179, click_x, click_y)
+        context.click_frame_point(179, click_x, click_y)
         post_result = yield from self._wait_daily_boss_after_challenge(ctx, stop_event, payload)
         return post_result
 
     def _wait_daily_boss_after_challenge(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]) -> str:
         deadline = time.monotonic() + float(payload.get("post_challenge_wait_seconds") or 300)
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         saw_fighting = False
         challenge_remaining = payload.get("_daily_boss_challenge_remaining")
         try:
@@ -1520,14 +1520,14 @@ class DailyFoundationTaskMixin:
             self._raise_if_stopped(stop_event)
             if stop_event.wait(3.0):
                 self._raise_if_stopped(stop_event)
-            scene_id, score, frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+            scene_id, score, frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
             if scene_id == 181:
-                return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
+                return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
             if scene_id == 180:
                 saw_fighting = True
                 current_text = self._daily_boss_status_text_from_frame(ctx, frame)
                 if self._daily_boss_done_text(current_text):
-                    return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
+                    return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
                 with self._lock:
                     self._set_status_locked(
                         "running",
@@ -1539,7 +1539,7 @@ class DailyFoundationTaskMixin:
                 continue
             current_text = self._daily_boss_status_text_from_frame(ctx, frame)
             if self._daily_boss_done_text(current_text):
-                return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
+                return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
             probe_now = time.monotonic()
             runtime_snapshot = (
                 self._daily_boss_runtime_snapshot(payload)
@@ -1675,10 +1675,10 @@ class DailyFoundationTaskMixin:
         )
 
     def _complete_daily_boss_from_done_frame(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]) -> str:
-        runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
-        return (yield from self._finish_daily_boss_round_after_done(ctx, runtime, stop_event, payload))
+        context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
+        return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
 
-    def _finish_daily_boss_round_after_done(self, ctx: dict[str, Any], runtime: Any, stop_event: threading.Event, payload: dict[str, Any]) -> str:
+    def _finish_daily_boss_round_after_done(self, ctx: dict[str, Any], context: Any, stop_event: threading.Event, payload: dict[str, Any]) -> str:
         next_time, source, completed = yield from self._record_daily_boss_next_time_after_done(
             ctx,
             stop_event,
@@ -1721,8 +1721,8 @@ class DailyFoundationTaskMixin:
         *,
         reason: str,
     ) -> str:
-        runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
-        view180 = runtime.get_view(180)
+        context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
+        view180 = context.get_view(180)
         leave_shape = view180.get_shape("离开") if isinstance(view180, View) else None
         if leave_shape is None:
             next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
@@ -1731,13 +1731,13 @@ class DailyFoundationTaskMixin:
         with self._lock:
             self._set_status_locked("running", f"日常_首领：{reason}，离开后复核奖励次数", phase="daily_boss_leave_stuck_20", current_scene=180)
             self._log_locked("action", "日常_首领：点击 #180「离开」")
-        leave_shape.click(runtime)
-        opened = yield from self._open_daily_boss_list_after_leaving_fight(ctx, runtime, stop_event)
+        leave_shape.click(context)
+        opened = yield from self._open_daily_boss_list_after_leaving_fight(ctx, context, stop_event)
         if opened == "done":
             yield from self._return_daily_boss_to_world(ctx, stop_event)
             return "success"
         if not opened:
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
             if scene_id == 181:
                 return (yield from self._complete_daily_boss_from_done_frame(ctx, stop_event, payload))
             next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
@@ -1769,14 +1769,14 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._log_locked("warning", "日常_首领：缺少资产树路径，无法收尾回世界 #34")
             return "skipped"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
-        if (yield from self._close_daily_boss_item_detail_if_present(ctx, runtime, stop_event, _frame, _text)):
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
-        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, _text)):
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
+        if (yield from self._close_daily_boss_item_detail_if_present(ctx, context, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
+        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, context, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
         transition_forward_point = (
-            self._daily_boss_transition_forward_point(runtime, _frame)
+            self._daily_boss_transition_forward_point(context, _frame)
             if scene_id is None and allow_post_boss_transition
             else None
         )
@@ -1794,14 +1794,14 @@ class DailyFoundationTaskMixin:
                     current_scene=None,
                 )
                 self._log_locked("action", self._status["message"])
-            runtime.click_frame_point(reference, x, y)
+            context.click_frame_point(reference, x, y)
             deadline = time.monotonic() + 60.0
             while True:
                 self._raise_if_stopped(stop_event)
-                yield from runtime.wait_action_settle(2.0)
-                scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
+                yield from context.wait_action_settle(2.0)
+                scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(
                     ctx,
-                    runtime,
+                    context,
                     update=True,
                 )
                 if scene_id in {34, 661}:
@@ -1834,9 +1834,9 @@ class DailyFoundationTaskMixin:
                 self._log_locked("wait", self._status["message"])
             while time.monotonic() < deadline:
                 self._raise_if_stopped(stop_event)
-                yield from runtime.wait_action_settle(3.0)
-                scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
-                    ctx, runtime, update=True
+                yield from context.wait_action_settle(3.0)
+                scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(
+                    ctx, context, update=True
                 )
                 if scene_id == 34:
                     yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
@@ -1847,7 +1847,7 @@ class DailyFoundationTaskMixin:
             yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
             return "success"
         if allow_post_boss_transition and scene_id in {186, 678}:
-            result_view = runtime.get_view(scene_id)
+            result_view = context.get_view(scene_id)
             leave_shape = (
                 result_view.get_shape("离开")
                 if isinstance(result_view, View)
@@ -1865,23 +1865,23 @@ class DailyFoundationTaskMixin:
                     current_scene=scene_id,
                 )
                 self._log_locked("action", self._status["message"])
-            leave_shape.click(runtime)
-            landing = yield from runtime.wait_view(
+            leave_shape.click(context)
+            landing = yield from context.wait_scene(
                 86,
                 34,
                 178,
-                timeout=30.0,
+                wait=30.0,
                 label="日常_首领：等待战后离开确认或稳定场景",
             )
             landing_id = getattr(landing, "id", landing)
             if landing_id == 86:
                 with self._lock:
                     self._log_locked("action", "日常_首领：点击 #86「确认」离开战场")
-                yield from runtime.wait_click(86, "确认", timeout=10.0)
-                landing = yield from runtime.wait_view(
+                yield from context.wait_click(86, "确认", timeout=10.0)
+                landing = yield from context.wait_scene(
                     34,
                     178,
-                    timeout=30.0,
+                    wait=30.0,
                     label="日常_首领：确认离开后等待世界或首领列表",
                 )
                 landing_id = getattr(landing, "id", landing)
@@ -1891,22 +1891,29 @@ class DailyFoundationTaskMixin:
                         {"current_scene": 34, "updated_at": time.time()}
                     )
                 return "success"
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
-                ctx, runtime, update=True
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(
+                ctx, context, update=True
             )
         image178 = images.get(178)
         back_shape = self._find_shape(image178, "返回") if isinstance(image178, dict) else None
-        if self._daily_boss_text_is_list(_text) and isinstance(image178, dict) and back_shape is not None:
+        if (
+            self._daily_boss_exit_list_evidence(context, scene_id, _frame, _text)
+            and isinstance(image178, dict)
+            and back_shape is not None
+        ):
             box = self._box(back_shape, image178)
             x = float(box.get("x") or 0) + float(box.get("w") or 0) / 2
             y = float(box.get("y") or 0) + float(box.get("h") or 0) / 2
             with self._lock:
                 self._set_status_locked("running", "日常_首领：从首领列表返回世界", phase="daily_boss_return_from_list", current_scene=178)
                 self._log_locked("action", "日常_首领：点击 #178「返回」")
-            runtime.click_frame_point(image178, x, y)
-            yield from runtime.wait_action_settle(2.0)
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
-            if scene_id == 34:
+            context.click_frame_point(image178, x, y)
+            landing = yield from context.wait_scene(
+                34,
+                wait=30.0,
+                label="日常_首领：从首领列表返回世界 #34",
+            )
+            if getattr(landing, "id", landing) == 34:
                 with self._lock:
                     self._status.update({"current_scene": 34, "updated_at": time.time()})
                 return "success"
@@ -1915,7 +1922,7 @@ class DailyFoundationTaskMixin:
             self._log_locked("action", "日常_首领：完成后按场景图回到 #34 世界")
         try:
             self._clear_tick_frame(ctx)
-            runtime.clear_frame()
+            context.clear_frame()
             ctx["_go_scene_unknown_transition_guard"] = {
                 "reference_scene_id": 314,
                 "similarity_threshold": 94.0,
@@ -1924,10 +1931,10 @@ class DailyFoundationTaskMixin:
                 "label": "魔道入侵回城动画",
             }
             try:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             finally:
                 ctx.pop("_go_scene_unknown_transition_guard", None)
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
             if scene_id != 34:
                 raise RuntimeError(f"回世界后仍识别为 #{scene_id or 'unknown'}")
             with self._lock:
@@ -1936,14 +1943,14 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._log_locked("warning", f"日常_首领：收尾回世界 #34 失败：{exc}")
             # Leaving #186/#181 can enter a long, control-free transition.
-            # ``goto_view`` may exhaust its generic unknown budget after the
+            # ``go_scene`` may exhaust its generic unknown budget after the
             # formal Leave/Confirm actions have already succeeded.  From this
             # point a second click is unsafe; only wait for the authoritative
             # world identity to settle before surfacing the original error.
             try:
-                landing = yield from runtime.wait_view(
+                landing = yield from context.wait_scene(
                     34,
-                    timeout=120.0,
+                    wait=120.0,
                     label="日常_首领：离开确认后等待长加载落到世界 #34",
                 )
                 if getattr(landing, "id", landing) == 34:
@@ -1960,11 +1967,11 @@ class DailyFoundationTaskMixin:
                 # list OCR plus its existing #178 Return shape is stronger
                 # evidence than that conflicting scene identity.  This is a
                 # safe exit from the current page, not a scene-graph repair.
-                scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(
-                    ctx, runtime, update=True
+                scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(
+                    ctx, context, update=True
                 )
                 if (
-                    self._daily_boss_text_is_list(_text)
+                    self._daily_boss_exit_list_evidence(context, scene_id, _frame, _text)
                     and isinstance(image178, dict)
                     and back_shape is not None
                 ):
@@ -1979,10 +1986,10 @@ class DailyFoundationTaskMixin:
                             current_scene=178,
                         )
                         self._log_locked("action", self._status["message"])
-                    runtime.click_frame_point(image178, x, y)
-                    landing = yield from runtime.wait_view(
+                    context.click_frame_point(image178, x, y)
+                    landing = yield from context.wait_scene(
                         34,
-                        timeout=30.0,
+                        wait=30.0,
                         label="日常_首领：从长等待后的首领列表返回世界 #34",
                     )
                     if getattr(landing, "id", landing) == 34:
@@ -1996,7 +2003,7 @@ class DailyFoundationTaskMixin:
 
     def _daily_boss_transition_forward_point(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         frame: str | None,
     ) -> tuple[float, float] | None:
         """Locate the unique post-boss ``前往`` button from the live OCR frame.
@@ -2010,10 +2017,10 @@ class DailyFoundationTaskMixin:
         if (
             not isinstance(frame, str)
             or not frame
-            or not hasattr(runtime, "full_frame_ocr_tokens")
+            or not hasattr(context, "full_frame_ocr_tokens")
         ):
             return None
-        lines = group_ocr_tokens(runtime.full_frame_ocr_tokens(frame))
+        lines = group_ocr_tokens(context.full_frame_ocr_tokens(frame))
         normalized_lines = [
             re.sub(r"\s+", "", str(item.get("text") or ""))
             for item in lines
@@ -2053,7 +2060,7 @@ class DailyFoundationTaskMixin:
     def _close_daily_boss_item_detail_if_present(
         self,
         ctx: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         stop_event: threading.Event,
         frame: str | None,
         text: str,
@@ -2071,8 +2078,8 @@ class DailyFoundationTaskMixin:
         with self._lock:
             self._set_status_locked("running", "日常_首领：关闭奖励道具详情弹窗", phase="daily_boss_close_item_detail")
             self._log_locked("action", "日常_首领：检测到道具详情弹窗，点击 #250「返回」")
-        runtime.click_frame_point(image250, x, y)
-        yield from runtime.wait_action_settle(2.0)
+        context.click_frame_point(image250, x, y)
+        yield from context.wait_action_settle(2.0)
         return True
 
     def _daily_boss_storage_bag_text_matches(self, text: str) -> bool:
@@ -2085,7 +2092,7 @@ class DailyFoundationTaskMixin:
     def _close_daily_boss_storage_bag_if_present(
         self,
         ctx: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         stop_event: threading.Event,
         frame: str | None,
         text: str,
@@ -2103,32 +2110,32 @@ class DailyFoundationTaskMixin:
         with self._lock:
             self._set_status_locked("running", "日常_首领：关闭储物袋页", phase="daily_boss_close_storage_bag")
             self._log_locked("action", "日常_首领：检测到储物袋页，点击 #249「返回」")
-        runtime.click_frame_point(image249, x, y)
-        yield from runtime.wait_action_settle(2.0)
+        context.click_frame_point(image249, x, y)
+        yield from context.wait_action_settle(2.0)
         return True
 
     def _open_daily_boss_list_after_leaving_fight(
         self,
         ctx: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         stop_event: threading.Event,
     ):
         try:
-            yield from runtime.wait_view_id(178, timeout=8.0, label="日常_首领：等待首领列表 #178")
+            yield from context.wait_scene(178, wait=8.0, label="日常_首领：等待首领列表 #178")
             return True
         except Exception:
             pass
-        if (yield from self._close_daily_boss_reward_result_if_present(ctx, runtime, stop_event)):
+        if (yield from self._close_daily_boss_reward_result_if_present(ctx, context, stop_event)):
             try:
-                yield from runtime.wait_view_id(178, timeout=8.0, label="日常_首领：等待奖励页关闭后回到首领列表 #178")
+                yield from context.wait_scene(178, wait=8.0, label="日常_首领：等待奖励页关闭后回到首领列表 #178")
                 return True
             except Exception:
                 pass
-        scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
-        if (yield from self._close_daily_boss_item_detail_if_present(ctx, runtime, stop_event, _frame, _text)):
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
-        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, runtime, stop_event, _frame, _text)):
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
+        if (yield from self._close_daily_boss_item_detail_if_present(ctx, context, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
+        if (yield from self._close_daily_boss_storage_bag_if_present(ctx, context, stop_event, _frame, _text)):
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
         if scene_id == 178:
             return True
         if scene_id == 181:
@@ -2138,11 +2145,11 @@ class DailyFoundationTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "日常_首领：离开战斗后重新进入日常 #69", phase="daily_boss_reopen_daily_after_leave")
                     self._log_locked("action", "日常_首领：离开战斗后按场景图跳转到 #69")
-                yield from runtime.goto_view(69)
+                yield from context.go_scene(69)
             status = yield from self._open_daily_boss_list_from_daily(ctx, stop_event)
             return "done" if status == "done" else True
         except Exception as exc:
-            scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+            scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
             if scene_id == 34:
                 with self._lock:
                     self._log_locked("warning", f"日常_首领：离开战斗后复核 #178 失败，但已回到世界，转为稍后复查：{exc}")
@@ -2154,11 +2161,11 @@ class DailyFoundationTaskMixin:
     def _close_daily_boss_reward_result_if_present(
         self,
         ctx: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         stop_event: threading.Event,
     ):
         try:
-            scene_id, _score, frame, text = self._fanxiu_runtime_scene_text(ctx, runtime, [177, 178, 34], update=True)
+            scene_id, _score, frame, text = self._behavior_tree_context_scene_text(ctx, context, [177, 178, 34], update=True)
         except Exception as exc:
             self._log("detail", f"日常_首领：奖励结果页探测失败，跳过奖励页收口：{exc}")
             return False
@@ -2181,8 +2188,8 @@ class DailyFoundationTaskMixin:
         with self._lock:
             self._set_status_locked("running", "日常_首领：关闭挑战奖励结果页", phase="daily_boss_close_reward_result", current_scene=scene_id)
             self._log_locked("action", "日常_首领：点击奖励结果页「点击屏幕继续」")
-        runtime.click_frame_point(image177 if isinstance(image177, dict) else {"width": width, "height": height}, width * 0.5, height * 0.86)
-        yield from runtime.wait_action_settle(2.0)
+        context.click_frame_point(image177 if isinstance(image177, dict) else {"width": width, "height": height}, width * 0.5, height * 0.86)
+        yield from context.wait_action_settle(2.0)
         return True
 
     def _record_daily_boss_next_time_after_done(
@@ -2191,22 +2198,22 @@ class DailyFoundationTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
-        runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
-        scene_id, _score, _frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
+        scene_id, _score, _frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
         returned_to_list = scene_id == 178
         if scene_id != 178:
-            view181 = runtime.get_view(181)
+            view181 = context.get_view(181)
             leave_shape = view181.get_shape("离开") if isinstance(view181, View) else None
             if leave_shape is not None:
                 with self._lock:
                     self._set_status_locked("running", "日常_首领：挑战完成，点击离开回列表读取刷新时间", phase="daily_boss_leave_done", current_scene=181)
                     self._log_locked("action", "日常_首领：点击 #181「离开」")
-                leave_shape.click(runtime)
+                leave_shape.click(context)
                 try:
-                    landing = yield from runtime.wait_view(
+                    landing = yield from context.wait_scene(
                         178,
                         34,
-                        timeout=120.0,
+                        wait=120.0,
                         label="日常_首领：离开完成页后等待首领列表 #178 或世界 #34",
                     )
                     returned_to_list = getattr(landing, "id", landing) == 178
@@ -2217,8 +2224,20 @@ class DailyFoundationTaskMixin:
                 with self._lock:
                     self._log_locked("warning", "日常_首领：缺少 #181「离开」标注，无法回 #178 首领列表读取刷新时间")
         if returned_to_list:
-            next_time, source = self._record_daily_boss_next_time_from_current_list(ctx, payload)
+            # The list scheduler decision and the completion decision consume
+            # the same post-battle fact.  Keep that one fresh snapshot local to
+            # this branch instead of traversing BossData twice back-to-back.
             runtime_snapshot = self._daily_boss_runtime_snapshot(payload)
+            payload["_daily_boss_current_list_runtime_snapshot"] = dict(
+                runtime_snapshot
+            )
+            try:
+                next_time, source = self._record_daily_boss_next_time_from_current_list(
+                    ctx,
+                    payload,
+                )
+            finally:
+                payload.pop("_daily_boss_current_list_runtime_snapshot", None)
             runtime_remaining = (
                 runtime_snapshot.get("reward_remaining")
                 if runtime_snapshot.get("complete")
@@ -2280,7 +2299,12 @@ class DailyFoundationTaskMixin:
         return next_time, "已识别 #181 封印完成；挑战前奖励次数未知，半小时后复查刷新 CD", False
 
     def _record_daily_boss_next_time_from_current_list(self, ctx: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str]:
-        runtime_snapshot = self._daily_boss_runtime_snapshot(payload)
+        runtime_snapshot = payload.pop(
+            "_daily_boss_current_list_runtime_snapshot",
+            None,
+        )
+        if not isinstance(runtime_snapshot, dict):
+            runtime_snapshot = self._daily_boss_runtime_snapshot(payload)
         remaining = (
             runtime_snapshot.get("reward_remaining")
             if runtime_snapshot.get("complete")
@@ -2314,6 +2338,7 @@ class DailyFoundationTaskMixin:
             next_time = self._record_daily_boss_recheck_time(
                 payload,
                 seconds=runtime_cd_seconds + 10,
+                maximum_seconds=None,
             )
             return (
                 next_time,
@@ -2331,9 +2356,9 @@ class DailyFoundationTaskMixin:
 
     def _daily_boss_status_text_from_frame(self, ctx: dict[str, Any], frame: str | None = None) -> str:
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
-        current_frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
-        scene_text = runtime.ocr_text(current_frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
+        current_frame = frame if isinstance(frame, str) and frame else context.cur_frame(update=True)
+        scene_text = context.ocr_text(current_frame)
         # #186's formal shapes identify the page and the Leave control, but
         # the live refresh countdown is a floating combat field outside those
         # shapes.  Reuse the same frame's shared OCR result and admit only the
@@ -2341,7 +2366,7 @@ class DailyFoundationTaskMixin:
         # preserves scene identity while avoiding a generic full-screen
         # countdown interpretation.
         hud_texts: list[str] = []
-        for item in group_ocr_tokens(runtime.full_frame_ocr_tokens(current_frame)):
+        for item in group_ocr_tokens(context.full_frame_ocr_tokens(current_frame)):
             text = re.sub(r"\s+", "", str(item.get("text") or ""))
             x = float(item.get("x") or 0)
             y = float(item.get("y") or 0)
@@ -2367,6 +2392,53 @@ class DailyFoundationTaskMixin:
             and "首领境界" in normalized
             and ("剩余奖励次数" in normalized or "掉落记录" in normalized)
         )
+
+    def _daily_boss_exit_list_evidence(
+        self,
+        context: BehaviorTreeContext,
+        scene_id: int | None,
+        frame: str | None,
+        text: str,
+    ) -> bool:
+        """Recognize the boss list conservatively enough for its safe Back action.
+
+        The #336 title image can cover the list and reduce scene OCR to only
+        ``首领``.  In that narrow conflict, use full-frame OCR as secondary
+        navigation evidence.  One realm tab plus one list cue is sufficient;
+        Runtime reward/CD facts remain authoritative for business decisions.
+        """
+        if self._daily_boss_text_is_list(text):
+            return True
+        normalized = re.sub(
+            r"\s+",
+            "",
+            _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION),
+        )
+        if scene_id != 336 or "首领" not in normalized or not frame:
+            return False
+        try:
+            rows = group_ocr_tokens(context.full_frame_ocr_tokens(frame))
+        except Exception:
+            return False
+        candidates = [
+            re.sub(r"\s+", "", _sanitize_ocr_text(str(row.get("text") or "")))
+            for row in rows
+        ]
+        candidates = [item for item in candidates if item]
+        full_text = "".join(candidates)
+
+        def matches(term: str) -> bool:
+            return term in full_text or any(
+                ocr_name_similarity(term, candidate) >= 0.50
+                for candidate in candidates
+            )
+
+        has_realm_tab = any(matches(term) for term in ("人界", "灵界", "仙界"))
+        has_list_cue = any(
+            matches(term)
+            for term in ("首领境界", "境界", "剩余奖励", "掉落记录", "神识注视")
+        )
+        return has_realm_tab and has_list_cue
 
     def _daily_boss_text_is_detail(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -2398,9 +2470,24 @@ class DailyFoundationTaskMixin:
         normalized = _sanitize_ocr_text(text)
         return "离开" in normalized and "数据统计" in normalized and "自动战斗中" not in normalized
 
-    def _record_daily_boss_recheck_time(self, payload: dict[str, Any], *, seconds: int) -> str:
-        recheck_seconds = min(1800, max(60, int(seconds)))
-        next_time = (_behavior_tree_runtime._now() + timedelta(seconds=recheck_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+    def _record_daily_boss_recheck_time(
+        self,
+        payload: dict[str, Any],
+        *,
+        seconds: int,
+        maximum_seconds: int | None = 1800,
+    ) -> str:
+        """Persist the next boss check without over-polling uncertain UI state.
+
+        OCR and incomplete Runtime branches retain the historical 30-minute
+        ceiling.  A complete Runtime snapshot may opt out of that ceiling and
+        schedule the exact authoritative refresh countdown instead.
+        """
+
+        recheck_seconds = max(60, int(seconds))
+        if maximum_seconds is not None:
+            recheck_seconds = min(max(60, int(maximum_seconds)), recheck_seconds)
+        next_time = (_behavior_tree_executor._now() + timedelta(seconds=recheck_seconds)).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or "daily-boss"),
             next_time,
@@ -2419,11 +2506,11 @@ class DailyFoundationTaskMixin:
         images = ctx.get("images", {}) if isinstance(ctx.get("images"), dict) else {}
         image178 = images.get(178)
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
-        frame = runtime.cur_frame(update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
+        frame = context.cur_frame(update=True)
         texts: list[str] = []
         if isinstance(image178, dict):
-            item = runtime.find_floating_item_by_anchor(
+            item = context.find_floating_item_by_anchor(
                 178,
                 "条目",
                 "注视中",
@@ -2431,7 +2518,7 @@ class DailyFoundationTaskMixin:
                 frame_data_url=frame,
             )
             if item is not None:
-                text = runtime.read_floating_item_field(
+                text = context.read_floating_item_field(
                     item,
                     "刷新时间",
                     frame_data_url=frame,
@@ -2446,7 +2533,7 @@ class DailyFoundationTaskMixin:
                     cd_seconds = _parse_daily_boss_cd_seconds(text)
                 if cd_seconds and cd_seconds > 0:
                     return cd_seconds, text
-            text = runtime.ocr_text_in_shapes(View(image178), ("首领列表",), padding=8, frame_data_url=frame)
+            text = context.ocr_text_in_shapes(View(image178), ("首领列表",), padding=8, frame_data_url=frame)
             if text:
                 texts.append(text)
                 cd_seconds = _parse_daily_boss_cd_seconds(text)
@@ -2456,8 +2543,8 @@ class DailyFoundationTaskMixin:
 
     def _daily_boss_reward_remaining_from_scene(self, ctx: dict[str, Any], image: dict[str, Any]) -> int | None:
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
-        text = runtime.ocr_text_in_shapes(View(image), ("剩余奖励次数",), padding=12)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
+        text = context.ocr_text_in_shapes(View(image), ("剩余奖励次数",), padding=12)
         return _parse_daily_boss_reward_remaining(text)
 
     def _daily_boss_runtime_snapshot(
@@ -2494,7 +2581,7 @@ class DailyFoundationTaskMixin:
         return self._daily_boss_runtime_snapshot(payload)
 
     def _next_daily_boss_reset_time_text(self) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         reset_at = now.replace(hour=5, minute=0, second=0, microsecond=0)
         if reset_at <= now:
             reset_at += timedelta(days=1)
@@ -2520,10 +2607,10 @@ class DailyFoundationTaskMixin:
         score: float = 0.0,
     ) -> tuple[int | None, float, str]:
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, frame_data_url=frame)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, frame_data_url=frame)
+        text = context.ocr_text(frame)
         if scene_id is None:
-            scene_id, score, _frame = runtime.current_scene([34, 69, 183, 184, 185, 186, 187, 188, 189], frame_data_url=frame)
+            scene_id, score, _frame = context.current_scene([34, 69, 183, 184, 185, 186, 187, 188, 189], frame_data_url=frame)
         return scene_id, score, text
 
     def _record_daily_lingzu_done(self, payload: dict[str, Any], *, message: str) -> str:
@@ -2590,7 +2677,7 @@ class DailyFoundationTaskMixin:
     def _daily_lingzu_next_time_is_future(self, payload: dict[str, Any]) -> str | None:
         task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-lingzu").strip() or "legacy-daily-lingzu"
         task = next(
-            (item for item in _read_data_annotation_scheduler_tasks() if str(item.get("id") or "") == task_id),
+            (item for item in _read_kernel_scheduler_tasks() if str(item.get("id") or "") == task_id),
             None,
         )
         next_time = str(task.get("next_time") or "").strip() if isinstance(task, dict) else ""
@@ -2612,8 +2699,8 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_灵祖资产树路径，无法执行作业")
         next_time = self._daily_lingzu_next_time_is_future(payload)
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
         scene_id, _score, current_text = self._daily_lingzu_scene_from_frame(ctx, frame, scene_id, _score)
         if next_time and scene_id not in {183, 184, 185, 186, 187, 188, 189}:
             with self._lock:
@@ -2630,19 +2717,19 @@ class DailyFoundationTaskMixin:
             self._record_daily_lingzu_done(payload, message="当前已在灵祖奖励完成态")
             return "success"
         if scene_id in {185, 187, 188, 189}:
-            return (yield from self._run_daily_lingzu_challenge(ctx, runtime, stop_event, payload))
+            return (yield from self._run_daily_lingzu_challenge(ctx, context, stop_event, payload))
         if scene_id == 184:
-            return (yield from self._run_daily_lingzu_challenge(ctx, runtime, stop_event, payload))
+            return (yield from self._run_daily_lingzu_challenge(ctx, context, stop_event, payload))
         if scene_id == 183:
-            detail_status = yield from self._open_daily_lingzu_detail(ctx, runtime, stop_event, payload)
+            detail_status = yield from self._open_daily_lingzu_detail(ctx, context, stop_event, payload)
             if detail_status == "done":
                 return "success"
-            return (yield from self._run_daily_lingzu_challenge(ctx, runtime, stop_event, payload))
+            return (yield from self._run_daily_lingzu_challenge(ctx, context, stop_event, payload))
         if scene_id != 69:
-            world_text = runtime.ocr_text(frame)
+            world_text = context.ocr_text(frame)
             scene_id = yield from self._enter_daily_from_world_like(
                 ctx,
-                runtime,
+                context,
                 stop_event,
                 frame,
                 scene_id,
@@ -2656,12 +2743,12 @@ class DailyFoundationTaskMixin:
             yield from self._safe_return_daily_lingzu_to_world_after_done(ctx, stop_event)
             return "success"
 
-        detail_status = yield from self._open_daily_lingzu_detail(ctx, runtime, stop_event, payload)
+        detail_status = yield from self._open_daily_lingzu_detail(ctx, context, stop_event, payload)
         if detail_status == "done":
             yield from self._safe_return_daily_lingzu_to_world_after_done(ctx, stop_event)
             return "success"
 
-        return (yield from self._run_daily_lingzu_challenge(ctx, runtime, stop_event, payload))
+        return (yield from self._run_daily_lingzu_challenge(ctx, context, stop_event, payload))
 
     def _return_daily_lingzu_to_world(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
@@ -2669,8 +2756,8 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._log_locked("warning", "日常_灵祖：缺少资产树路径，无法收尾回世界 #34")
             return "skipped"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame, _text = self._fanxiu_runtime_scene_text(ctx, runtime, update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame, _text = self._behavior_tree_context_scene_text(ctx, context, update=True)
         scene_id, _score, _text = self._daily_lingzu_scene_from_frame(ctx, frame, scene_id, _score)
         if scene_id == 34:
             with self._lock:
@@ -2703,12 +2790,12 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：关闭奖励浮层", phase="daily_lingzu_close_reward", current_scene=186)
                 self._log_locked("action", f"日常_灵祖：点击 #186「{close_shape.get('title') or '关闭'}」")
-            yield from runtime.wait_click(186, str(close_shape.get("title") or "关闭"))
+            yield from context.wait_click(186, str(close_shape.get("title") or "关闭"))
             start = time.monotonic()
             while True:
                 self._raise_if_stopped(stop_event)
-                yield from runtime.wait_action_settle(1.0)
-                scene_id, _score, _frame = runtime.current_scene([34, 183, 184, 187, 188], update=True)
+                yield from context.wait_action_settle(1.0)
+                scene_id, _score, _frame = context.current_scene([34, 183, 184, 187, 188], update=True)
                 if scene_id is not None:
                     break
                 if time.monotonic() - start >= 12:
@@ -2718,26 +2805,27 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：从日常列表返回世界", phase="daily_lingzu_return_daily", current_scene=69)
                 self._log_locked("action", "日常_灵祖：点击 #69「退出」")
-            yield from runtime.wait_click(69, "退出")
-            yield from runtime.wait_action_settle(2.0)
-            frame = runtime.cur_frame(update=True)
-            text = runtime.ocr_text(frame)
+            yield from context.wait_click(69, "退出")
+            yield from context.wait_action_settle(2.0)
+            frame = context.cur_frame(update=True)
+            text = context.ocr_text(frame)
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="日常_灵祖")):
-                yield from runtime.wait_action_settle(2.0)
-            yield from runtime.wait_view_id(34, timeout=18.0, label="日常_灵祖：等待世界 #34")
+                yield from context.wait_action_settle(2.0)
+            yield from context.wait_scene(34, wait=18.0, label="日常_灵祖：等待世界 #34")
 
         if scene_id == 188:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：从圣雷龙妖祖返回战灵长老", phase="daily_lingzu_return_elder", current_scene=188)
                 self._log_locked("action", "日常_灵祖：点击 #188「返回」")
-            yield from runtime.wait_click(188, "返回")
-            scene_id, _score = yield from runtime.wait_view_id(187, timeout=18.0, label="日常_灵祖：等待战灵长老 #187")
+            yield from context.wait_click(188, "返回")
+            landing = yield from context.wait_scene(187, wait=18.0, label="日常_灵祖：等待战灵长老 #187")
+            scene_id, _score = int(getattr(landing, "id", landing)), 100.0
 
         if scene_id == 187:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：关闭战灵长老对话", phase="daily_lingzu_close_elder", current_scene=187)
                 self._log_locked("action", "日常_灵祖：点击 #187「空白」")
-            yield from runtime.wait_click(187, "空白")
+            yield from context.wait_click(187, "空白")
             scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
                 ctx,
                 stop_event,
@@ -2750,18 +2838,19 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：关闭灵祖详情", phase="daily_lingzu_close_detail", current_scene=184)
                 self._log_locked("action", "日常_灵祖：点击 #184「空白」")
-            yield from runtime.wait_click(184, "空白")
-            scene_id, _score = yield from runtime.wait_view_id(183, timeout=18.0, label="日常_灵祖：等待灵祖活动列表 #183")
+            yield from context.wait_click(184, "空白")
+            landing = yield from context.wait_scene(183, wait=18.0, label="日常_灵祖：等待灵祖活动列表 #183")
+            scene_id, _score = int(getattr(landing, "id", landing)), 100.0
 
         if scene_id == 183:
             with self._lock:
                 self._set_status_locked("running", "日常_灵祖：返回世界", phase="daily_lingzu_return_world_click", current_scene=183)
                 self._log_locked("action", "日常_灵祖：点击 #183「返回」")
-            yield from runtime.wait_click(183, "返回")
-            yield from runtime.wait_view_id(34, timeout=18.0, label="日常_灵祖：等待世界 #34")
+            yield from context.wait_click(183, "返回")
+            yield from context.wait_scene(34, wait=18.0, label="日常_灵祖：等待世界 #34")
 
-        scene_id, _score, frame = runtime.current_scene(update=True)
-        text = runtime.ocr_text(frame)
+        scene_id, _score, frame = context.current_scene(update=True)
+        text = context.ocr_text(frame)
         if scene_id != 34:
             raise RuntimeError(f"日常_灵祖：回世界后仍识别为 #{scene_id or 'unknown'}")
         yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
@@ -2777,8 +2866,8 @@ class DailyFoundationTaskMixin:
                 self._log_locked("warning", "日常_灵祖：缺少 #85「某区域内部」标注，无法确认是否已离开宗门内部")
             return "skipped"
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        text = runtime.ocr_text(update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        text = context.ocr_text(update=True)
         if not self._daily_lingzu_world_text_is_internal_area(text):
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
@@ -2786,7 +2875,7 @@ class DailyFoundationTaskMixin:
         with self._lock:
             self._set_status_locked("running", "日常_灵祖：当前仍在宗门内部，点击离开", phase="daily_lingzu_leave_internal_area", current_scene=85)
             self._log_locked("action", "日常_灵祖：点击 #85「离开」")
-        yield from runtime.wait_click(85, "离开")
+        yield from context.wait_click(85, "离开")
 
         start = time.monotonic()
         last_scene_id: int | None = None
@@ -2795,8 +2884,8 @@ class DailyFoundationTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([34, 86, 204, 69], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([34, 86, 204, 69], update=True)
+            text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if scene_id == 34 and not self._daily_lingzu_world_text_is_internal_area(text):
                 with self._lock:
@@ -2812,8 +2901,8 @@ class DailyFoundationTaskMixin:
                         current_scene=204,
                     )
                     self._log_locked("action", "日常_灵祖：点击 #204「返回」")
-                yield from runtime.wait_click(204, "返回")
-                yield from runtime.wait_action_settle(2.0)
+                yield from context.wait_click(204, "返回")
+                yield from context.wait_action_settle(2.0)
                 continue
             if scene_id == 69:
                 with self._lock:
@@ -2824,8 +2913,8 @@ class DailyFoundationTaskMixin:
                         current_scene=69,
                     )
                     self._log_locked("action", "日常_灵祖：点击 #69「退出」")
-                yield from runtime.wait_click(69, "退出")
-                yield from runtime.wait_action_settle(2.0)
+                yield from context.wait_click(69, "退出")
+                yield from context.wait_action_settle(2.0)
                 continue
             if scene_id in {289, 86}:
                 confirm_id = int(scene_id)
@@ -2837,8 +2926,8 @@ class DailyFoundationTaskMixin:
                         current_scene=confirm_id,
                     )
                     self._log_locked("action", f"日常_灵祖：点击 #{confirm_id}「确认」离开场景")
-                yield from runtime.wait_click(confirm_id, "确认")
-                yield from runtime.wait_action_settle(2.0)
+                yield from context.wait_click(confirm_id, "确认")
+                yield from context.wait_action_settle(2.0)
                 continue
             if time.monotonic() - start >= 20:
                 scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
@@ -2906,9 +2995,9 @@ class DailyFoundationTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_剑灵资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([190, 191, 192, 69, 34], update=True)
-        current_text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([190, 191, 192, 69, 34], update=True)
+        current_text = context.ocr_text(frame)
         if scene_id == 192 or self._daily_jianling_text_is_result(current_text):
             yield from self._finish_daily_jianling_result(ctx, stop_event)
             scene_id = 190
@@ -2920,7 +3009,7 @@ class DailyFoundationTaskMixin:
                 yield from self._finish_daily_jianling_result(ctx, stop_event)
             scene_id = 190
         if scene_id == 190:
-            text = runtime.ocr_text(update=True)
+            text = context.ocr_text(update=True)
             if self._daily_jianling_remaining_zero(text):
                 self._record_daily_jianling_done(payload, message="淬剑试炼剩余次数为 0")
                 yield from self._safe_daily_done_cleanup(
@@ -2933,10 +3022,10 @@ class DailyFoundationTaskMixin:
             return "success"
 
         if scene_id != 69:
-            world_text = runtime.ocr_text(frame)
+            world_text = context.ocr_text(frame)
             scene_id = yield from self._enter_daily_from_world_like(
                 ctx,
-                runtime,
+                context,
                 stop_event,
                 frame,
                 scene_id,
@@ -2944,7 +3033,7 @@ class DailyFoundationTaskMixin:
                 label="日常_剑灵",
             )
 
-        daily_status = yield from runtime.open_daily_entry(
+        daily_status = yield from context.open_daily_entry(
             label="日常_剑灵",
             title_pattern=r"挑战或扫荡淬剑试炼|淬剑试炼|淬剑|剑试",
             max_scrolls=self._payload_int(payload, "max_scrolls", "jianling_max_scrolls", default=30),
@@ -2966,14 +3055,14 @@ class DailyFoundationTaskMixin:
                 repeat_risk="重复扫荡",
             )
             return "success"
-        yield from runtime.wait_view(190, label="日常_剑灵：等待淬剑试炼 #190")
+        yield from context.wait_scene(190, label="日常_剑灵：等待淬剑试炼 #190")
         yield from self._run_daily_jianling_sweep(ctx, stop_event, payload)
         return "success"
 
     def _open_daily_jianling_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        status = yield from runtime.open_daily_entry(
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        status = yield from context.open_daily_entry(
             label="日常_剑灵",
             title_pattern=r"挑战或扫荡淬剑试炼|淬剑试炼|淬剑|剑试",
             max_scrolls=self._payload_int(payload, "max_scrolls", "jianling_max_scrolls", default=30),
@@ -2989,17 +3078,17 @@ class DailyFoundationTaskMixin:
             return "skipped"
         if status != "open":
             return status
-        yield from runtime.wait_view(190, label="日常_剑灵：等待淬剑试炼 #190")
+        yield from context.wait_scene(190, label="日常_剑灵：等待淬剑试炼 #190")
         return "open"
 
     def _run_daily_jianling_sweep(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", "日常_剑灵：点击扫荡", phase="daily_jianling_sweep", current_scene=190)
             self._log_locked("action", "日常_剑灵：点击 #190「扫荡」")
-        yield from runtime.wait_click(190, "扫荡")
-        yield from runtime.wait_view(191, label="日常_剑灵：等待扫荡确认 #191")
+        yield from context.wait_click(190, "扫荡")
+        yield from context.wait_scene(191, label="日常_剑灵：等待扫荡确认 #191")
         confirm_result = yield from self._confirm_daily_jianling_sweep(ctx, stop_event)
         if confirm_result == "result":
             yield from self._finish_daily_jianling_result(ctx, stop_event)
@@ -3012,11 +3101,11 @@ class DailyFoundationTaskMixin:
 
     def _confirm_daily_jianling_sweep(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", "日常_剑灵：确认进行扫荡", phase="daily_jianling_confirm_sweep", current_scene=191)
             self._log_locked("action", "日常_剑灵：点击 #191「进行扫荡」")
-        yield from runtime.wait_click(191, "进行扫荡")
+        yield from context.wait_click(191, "进行扫荡")
         start = time.monotonic()
         timeout = 18.0
         min_main_return_seconds = 8.0
@@ -3027,8 +3116,8 @@ class DailyFoundationTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([190, 192], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([190, 192], update=True)
+            text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, float(score), text or last_text
             if scene_id == 192 or self._daily_jianling_text_is_result(text):
                 return "result"
@@ -3051,11 +3140,11 @@ class DailyFoundationTaskMixin:
 
     def _finish_daily_jianling_result(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         for index in range(8):
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = runtime.current_scene([190, 192], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene([190, 192], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 190 or ("淬剑试炼" in text and "通关进度" in text):
                 return "success"
             if scene_id == 192 or "点击" in text or self._daily_jianling_text_is_result(text):
@@ -3066,10 +3155,10 @@ class DailyFoundationTaskMixin:
                     else:
                         self._log_locked("action", "日常_剑灵：结果页未识别为 #192，按 OCR「点击屏幕继续」收口")
                 if scene_id == 192:
-                    yield from runtime.wait_click(192, "点击继续")
+                    yield from context.wait_click(192, "点击继续")
                 else:
-                    runtime.click_frame_point({"width": 900, "height": 1600}, 450, 1380)
-                    yield from runtime.wait_action_settle()
+                    context.click_frame_point({"width": 900, "height": 1600}, 450, 1380)
+                    yield from context.wait_action_settle()
                 yield BehaviorTreeStatus.RUNNING
                 continue
             raise RuntimeError(f"日常_剑灵：扫荡结果页状态异常，文本：{text[:120]}")
@@ -3077,16 +3166,16 @@ class DailyFoundationTaskMixin:
 
     def _return_daily_jianling_to_world(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([190, 69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([190, 69, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id is None and self._daily_jianling_text_is_main(text):
             scene_id = 190
         if scene_id == 190:
             with self._lock:
                 self._set_status_locked("running", "日常_剑灵：退出淬剑试炼", phase="daily_jianling_exit_main", current_scene=190)
                 self._log_locked("action", "日常_剑灵：点击 #190「返回」")
-            yield from runtime.wait_click(190, "返回")
+            yield from context.wait_click(190, "返回")
             scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
                 ctx,
                 stop_event,
@@ -3098,8 +3187,8 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "日常_剑灵：从日常列表返回世界", phase="daily_jianling_return_daily", current_scene=69)
                 self._log_locked("action", "日常_剑灵：点击 #69「退出」")
-            yield from runtime.wait_click(69, "退出")
-            yield from runtime.wait_view_id(34, timeout=18.0, label="日常_剑灵：等待世界 #34")
+            yield from context.wait_click(69, "退出")
+            yield from context.wait_scene(34, wait=18.0, label="日常_剑灵：等待世界 #34")
         yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
         return "success"
 
@@ -3140,8 +3229,8 @@ class DailyFoundationTaskMixin:
         require_world_like: bool = True,
     ):
         del text, require_world_like
-        runtime = self._fanxiu_runtime(ctx, stop_event=stop_event, frame_data_url=frame)
-        scene_id, score, _matched_frame = runtime.current_scene(
+        context = self._behavior_tree_context(ctx, stop_event=stop_event, frame_data_url=frame)
+        scene_id, score, _matched_frame = context.current_scene(
             [477, 66, 326, 325, 266, 265, 264, 233, 225, 85, 186, 289, 86, 69, 34],
             frame_data_url=frame,
         )
@@ -3155,11 +3244,11 @@ class DailyFoundationTaskMixin:
         # #477 注册为通用 go_scene 补偿入口。
         if scene_id == 477:
             self._log("action", f"{label}：识别 #477 {score:.0f}%，沿正式「返回」回到日程/世界")
-            yield from runtime.wait_click(477, "返回", timeout=8.0)
-            scene_id = yield from runtime.wait_view(
+            yield from context.wait_click(477, "返回", timeout=8.0)
+            scene_id = yield from context.wait_scene(
                 66,
                 34,
-                timeout=12.0,
+                wait=12.0,
                 label=f"{label}：等待离开 #477",
             )
             if scene_id == 34:
@@ -3168,10 +3257,10 @@ class DailyFoundationTaskMixin:
 
         if scene_id == 66:
             self._log("action", f"{label}：从日程 #66 点击正式「返回」回世界")
-            yield from runtime.wait_click(66, "返回", timeout=8.0)
-            yield from runtime.wait_view(
+            yield from context.wait_click(66, "返回", timeout=8.0)
+            yield from context.wait_scene(
                 34,
-                timeout=12.0,
+                wait=12.0,
                 label=f"{label}：等待日程返回世界 #34",
             )
             ctx["_go_scene_known_scene_id"] = 34
@@ -3179,31 +3268,31 @@ class DailyFoundationTaskMixin:
 
         if scene_id in {233, 225}:
             self._log("action", f"{label}：识别 #{scene_id} {score:.0f}%，点击正式标注「空白」关闭提示")
-            yield from runtime.wait_click(scene_id, "空白", timeout=8.0)
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_click(scene_id, "空白", timeout=8.0)
+            yield from context.wait_action_settle(1.0)
             return True
 
         if scene_id in {326, 325, 266, 265, 264}:
             self._log("action", f"{label}：识别 #{scene_id} {score:.0f}%，点击正式标注「返回」")
-            yield from runtime.wait_click(scene_id, "返回")
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_click(scene_id, "返回")
+            yield from context.wait_action_settle(1.0)
             if scene_id == 326:
-                yield from runtime.wait_view(325, 69, 34, timeout=18.0, label=f"{label}：等待离开 #326")
+                yield from context.wait_scene(325, 69, 34, wait=18.0, label=f"{label}：等待离开 #326")
             elif scene_id == 325:
-                yield from runtime.wait_view(69, 34, timeout=18.0, label=f"{label}：等待离开 #325")
+                yield from context.wait_scene(69, 34, wait=18.0, label=f"{label}：等待离开 #325")
             elif scene_id == 266:
-                yield from runtime.wait_view(265, 264, 34, timeout=18.0, label=f"{label}：等待离开 #266")
+                yield from context.wait_scene(265, 264, 34, wait=18.0, label=f"{label}：等待离开 #266")
             elif scene_id == 265:
-                yield from runtime.wait_view(264, 34, timeout=18.0, label=f"{label}：等待离开 #265")
+                yield from context.wait_scene(264, 34, wait=18.0, label=f"{label}：等待离开 #265")
             else:
-                yield from runtime.wait_view(34, timeout=18.0, label=f"{label}：等待离开 #264")
+                yield from context.wait_scene(34, wait=18.0, label=f"{label}：等待离开 #264")
                 ctx["_go_scene_known_scene_id"] = 34
             return True
 
         if scene_id in {289, 86}:
             self._log("action", f"{label}：识别正式确认场景 #{scene_id}，点击「确认」")
-            yield from runtime.wait_click(scene_id, "确认")
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_click(scene_id, "确认")
+            yield from context.wait_action_settle(1.0)
         elif scene_id in {85, 186}:
             with self._lock:
                 self._set_status_locked(
@@ -3213,13 +3302,13 @@ class DailyFoundationTaskMixin:
                     current_scene=scene_id,
                 )
                 self._log_locked("action", f"{label}：点击 #{scene_id}「离开」")
-            yield from runtime.wait_click(scene_id, "离开")
-            yield from runtime.wait_action_settle(1.0)
-            confirm_id, _confirm_score, _confirm_frame = runtime.current_scene([289, 86, 34], update=True)
+            yield from context.wait_click(scene_id, "离开")
+            yield from context.wait_action_settle(1.0)
+            confirm_id, _confirm_score, _confirm_frame = context.current_scene([289, 86, 34], update=True)
             if confirm_id in {289, 86}:
                 self._log("action", f"{label}：识别正式确认场景 #{confirm_id}，点击「确认」")
-                yield from runtime.wait_click(confirm_id, "确认")
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_click(confirm_id, "确认")
+                yield from context.wait_action_settle(1.0)
 
         with self._lock:
             self._set_status_locked(
@@ -3228,14 +3317,14 @@ class DailyFoundationTaskMixin:
                 phase="world_side_scene_leave_wait_world",
                 current_scene=scene_id,
             )
-        yield from runtime.wait_view(34, timeout=12.0, label=f"{label}：等待返回世界 #34")
+        yield from context.wait_scene(34, wait=12.0, label=f"{label}：等待返回世界 #34")
         ctx["_go_scene_known_scene_id"] = 34
         return True
 
     def _enter_daily_from_world_like(
         self,
         ctx: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         stop_event: threading.Event,
         frame: str,
         scene_id: int | None,
@@ -3246,8 +3335,8 @@ class DailyFoundationTaskMixin:
         if scene_id == 69:
             return 69
         if scene_id is None:
-            scene_id, _score, frame = runtime.current_scene(frame_data_url=frame)
-            text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene(frame_data_url=frame)
+            text = context.ocr_text(frame)
             if scene_id == 69:
                 return 69
         if self._daily_lundao_text_is_seated(text):
@@ -3259,9 +3348,9 @@ class DailyFoundationTaskMixin:
                     current_scene=scene_id,
                 )
                 self._log_locked("action", f"{label}：OCR 命中论道闻道中，点击「离开」并确认")
-            yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, scene_id)
-            scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-            text = runtime.ocr_text(frame)
+            yield from self._leave_daily_lundao_seated_for_daily_entry(context, scene_id)
+            scene_id, _score, frame = context.current_scene([69, 34], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 69:
                 return 69
             world_like = scene_id == 34
@@ -3278,8 +3367,8 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("action", f"{label}：命中 #20/绿瓶主界面，点击 #20「回到世界」")
             yield from self._leave_green_bottle_to_world(ctx, stop_event, label=label)
-            scene_id, _score, frame = runtime.current_scene([69, 34, 20], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene([69, 34, 20], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 69:
                 return 69
             world_like = scene_id == 34
@@ -3299,9 +3388,9 @@ class DailyFoundationTaskMixin:
                     current_scene=None,
                 )
                 self._log_locked("action", f"{label}：OCR 命中异火页，先用已标注返回链回世界")
-            yield from self._daily_yihuo_return_best_effort(runtime)  # type: ignore[attr-defined]
-            scene_id, _score, frame = runtime.current_scene([69, 34, 20], update=True)
-            text = runtime.ocr_text(frame)
+            yield from self._daily_yihuo_return_best_effort(context)  # type: ignore[attr-defined]
+            scene_id, _score, frame = context.current_scene([69, 34, 20], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 69:
                 return 69
             world_like = scene_id == 34
@@ -3321,10 +3410,10 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("action", f"{label}：OCR 命中修仙传游历页，点击 #228「返回」回世界")
             try:
-                yield from runtime.wait_click(228, "返回")
-                yield from runtime.wait_action_settle(2.0)
-                scene_id, _score, frame = runtime.current_scene([69, 34, 20], update=True)
-                text = runtime.ocr_text(frame)
+                yield from context.wait_click(228, "返回")
+                yield from context.wait_action_settle(2.0)
+                scene_id, _score, frame = context.current_scene([69, 34, 20], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 69:
                     return 69
                 world_like = scene_id == 34
@@ -3341,11 +3430,11 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("action", f"{label}：命中 #59「封魔杀」弹层，点击「空白」关闭")
             try:
-                yield from runtime.wait_click(59, "空白", label=f"{label}：关闭封魔杀活动弹层")
-                yield from runtime.wait_action_settle(2.0)
-                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-                text = runtime.ocr_text(frame)
-                popup_view = runtime.find_view("弹窗")
+                yield from context.wait_click(59, "空白", label=f"{label}：关闭封魔杀活动弹层")
+                yield from context.wait_action_settle(2.0)
+                scene_id, _score, frame = context.current_scene([69, 34], update=True)
+                text = context.ocr_text(frame)
+                popup_view = context.find_view("弹窗")
                 if scene_id == 59 or (popup_view is not None and popup_view.id == 59):
                     raise RuntimeError("#59「封魔杀」弹层点击「空白」后仍未离开，当前「空白」标注无效，需要人工补有效关闭/返回/前往路径")
                 if scene_id == 69:
@@ -3365,15 +3454,15 @@ class DailyFoundationTaskMixin:
                 require_world_like=False,
             )
             if recovered:
-                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, _score, frame = context.current_scene([69, 34], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 69:
                     return 69
                 world_like = scene_id == 34
         if scene_id is None and not world_like:
             recovered, scene_id, frame, text = yield from self._recover_daily_youli_result_before_daily_entry(
                 ctx,
-                runtime,
+                context,
                 stop_event,
                 scene_id,
                 frame,
@@ -3396,8 +3485,8 @@ class DailyFoundationTaskMixin:
                 while True:
                     self._raise_if_stopped(stop_event)
                     yield BehaviorTreeStatus.RUNNING
-                    scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-                    text = runtime.ocr_text(frame)
+                    scene_id, _score, frame = context.current_scene([69, 34], update=True)
+                    text = context.ocr_text(frame)
                     if scene_id == 69:
                         return 69
                     if scene_id == 34:
@@ -3415,9 +3504,9 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("action", f"{label}：当前场景未识别为日常/世界，尝试 goto #69 恢复起点")
             try:
-                yield from runtime.goto_view(69)
-                scene_after, score_after, frame_after = runtime.current_scene([69, 34], update=True)
-                text_after = runtime.ocr_text(frame_after)
+                yield from context.go_scene(69)
+                scene_after, score_after, frame_after = context.current_scene([69, 34], update=True)
+                text_after = context.ocr_text(frame_after)
                 if scene_after == 69:
                     return 69
                 if scene_after == 34:
@@ -3439,9 +3528,9 @@ class DailyFoundationTaskMixin:
                     f"{label}：直接恢复到 #69 失败，先经稳定锚点 #34 恢复后重试：{exc}",
                 )
                 try:
-                    yield from runtime.goto_view(34)
-                    scene_after, score_after, frame_after = runtime.current_scene([69, 34], update=True)
-                    text_after = runtime.ocr_text(frame_after)
+                    yield from context.go_scene(34)
+                    scene_after, score_after, frame_after = context.current_scene([69, 34], update=True)
+                    text_after = context.ocr_text(frame_after)
                     if scene_after == 69:
                         return 69
                     if scene_after != 34:
@@ -3460,8 +3549,8 @@ class DailyFoundationTaskMixin:
             while True:
                 self._raise_if_stopped(stop_event)
                 yield BehaviorTreeStatus.RUNNING
-                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, _score, frame = context.current_scene([69, 34], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 69:
                     return 69
                 if scene_id == 34:
@@ -3479,9 +3568,9 @@ class DailyFoundationTaskMixin:
         try:
             last_error: RuntimeError | None = None
             for attempt in range(2):
-                yield from runtime.goto_view(69)
-                scene_after, score_after, frame_after = runtime.current_scene([69, 34], update=True)
-                text_after = runtime.ocr_text(frame_after)
+                yield from context.go_scene(69)
+                scene_after, score_after, frame_after = context.current_scene([69, 34], update=True)
+                text_after = context.ocr_text(frame_after)
                 if scene_after == 69:
                     return 69
                 last_error = RuntimeError(
@@ -3493,7 +3582,7 @@ class DailyFoundationTaskMixin:
                     break
                 if scene_after == 34:
                     self._log("detail", f"{label}：进入日常被世界页浮层/活动入口打断后已回到 #34，重试进入 #69")
-                    yield from runtime.wait_action_settle(1.0)
+                    yield from context.wait_action_settle(1.0)
                     continue
                 if not (yield from self._leave_world_side_scene_if_present(
                     ctx,
@@ -3504,7 +3593,7 @@ class DailyFoundationTaskMixin:
                     require_world_like=False,
                 )):
                     break
-                yield from runtime.wait_action_settle(2.0)
+                yield from context.wait_action_settle(2.0)
             raise last_error or RuntimeError(f"{label}：跳转后未确认进入日常列表")
         except Exception as exc:
             raise RuntimeError(f"{label}：无法通过场景图跳转到 #69；需要补当前场景到日常页的路由/返回/离开标注：{exc}") from exc
@@ -3512,7 +3601,7 @@ class DailyFoundationTaskMixin:
     def _recover_daily_youli_result_before_daily_entry(
         self,
         ctx: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         stop_event: threading.Event,
         scene_id: int | None,
         frame: str,
@@ -3524,8 +3613,8 @@ class DailyFoundationTaskMixin:
             return False, scene_id, frame, text
         is_quick_result = scene_id == 237 or self._daily_youli_text_is_quick_result(text)  # type: ignore[attr-defined]
         if not is_quick_result:
-            probe_scene, _probe_score, probe_frame = runtime.current_scene([237, 69, 34], update=True)
-            probe_text = runtime.ocr_text(probe_frame)
+            probe_scene, _probe_score, probe_frame = context.current_scene([237, 69, 34], update=True)
+            probe_text = context.ocr_text(probe_frame)
             if probe_scene == 69:
                 return False, probe_scene, probe_frame, probe_text
             if probe_scene == 34:
@@ -3552,8 +3641,8 @@ class DailyFoundationTaskMixin:
             image236 = images.get(236)
             if isinstance(image228, dict) and isinstance(image236, dict):
                 yield from self._return_daily_youli_to_world(ctx, stop_event, image228, image236, task_label=label)  # type: ignore[attr-defined]
-        scene_after, _score_after, frame_after = runtime.current_scene([69, 34], update=True)
-        text_after = runtime.ocr_text(frame_after)
+        scene_after, _score_after, frame_after = context.current_scene([69, 34], update=True)
+        text_after = context.ocr_text(frame_after)
         return True, scene_after, frame_after, text_after
 
     def _daily_lingta_text_is_green_bottle_like(self, text: str) -> bool:
@@ -3569,11 +3658,11 @@ class DailyFoundationTaskMixin:
         if back_shape is None:
             raise RuntimeError("缺少 #20「回到世界」标注，无法回到世界")
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", f"{label}：退出绿瓶", phase="exit_green_bottle", current_scene=20)
             self._log_locked("action", f"{label}：点击 #20「回到世界」")
-        yield from runtime.wait_click(20, "回到世界")
+        yield from context.wait_click(20, "回到世界")
         yield BehaviorTreeStatus.RUNNING
 
         start = time.monotonic()
@@ -3584,8 +3673,8 @@ class DailyFoundationTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([34, 20], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([34, 20], update=True)
+            text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if scene_id == 34:
                 with self._lock:
@@ -3599,7 +3688,7 @@ class DailyFoundationTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", f"{label}：绿瓶外层仍未回世界，点击左下角「世界」", phase="exit_green_bottle_outer", current_scene=scene_id)
                     self._log_locked("action", f"{label}：点击绿瓶左下角「世界」")
-                runtime.click_frame_point(20, x, y)
+                context.click_frame_point(20, x, y)
                 clicked_outer_world = True
                 continue
             if time.monotonic() - start >= 18.0:
@@ -3624,70 +3713,70 @@ class DailyFoundationTaskMixin:
         label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([275, 237, 204, 69, 289, 86, 58, 20, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        scene_id, score, frame = context.current_scene([275, 237, 204, 69, 289, 86, 58, 20, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
-            self._daily_assistant_close_one_key_result(ctx, runtime, frame, label=label)
-            yield from runtime.wait_action_settle(1.0)
-            scene_id, score, frame = runtime.current_scene([237, 204, 69, 289, 86, 58, 20, 34], update=True)
-            text = runtime.ocr_text(frame)
+            self._daily_assistant_close_one_key_result(ctx, context, frame, label=label)
+            yield from context.wait_action_settle(1.0)
+            scene_id, score, frame = context.current_scene([237, 204, 69, 289, 86, 58, 20, 34], update=True)
+            text = context.ocr_text(frame)
         if scene_id == 237:
-            yield from self._daily_assistant_close_youli_result(runtime, {})
-            yield from runtime.wait_action_settle(1.0)
-            scene_id, score, frame = runtime.current_scene([204, 69, 289, 86, 58, 20, 34], update=True)
-            text = runtime.ocr_text(frame)
+            yield from self._daily_assistant_close_youli_result(context, {})
+            yield from context.wait_action_settle(1.0)
+            scene_id, score, frame = context.current_scene([204, 69, 289, 86, 58, 20, 34], update=True)
+            text = context.ocr_text(frame)
         if scene_id == 204 or self._daily_assistant_text_is_list(text):
             with self._lock:
                 self._set_status_locked("running", f"{label}：小助手总览仍在前台，先返回日常页", phase="cleanup_exit_daily_assistant", current_scene=204)
                 self._log_locked("action", f"{label}：点击 #204「返回」")
-            yield from runtime.wait_click(204, "返回")
-            landed = yield from runtime.wait_view(
+            yield from context.wait_click(204, "返回")
+            landed = yield from context.wait_scene(
                 69,
                 34,
                 275,
                 237,
-                timeout=15.0,
+                wait=15.0,
                 label=f"{label}：等待退出小助手总览",
             )
             scene_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
             score = 100.0
-            frame = runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None
-            text = runtime.ocr_text(frame)
+            frame = context.cur_frame(update=True) if hasattr(context, "cur_frame") else None
+            text = context.ocr_text(frame)
         if scene_id == 69:
             with self._lock:
                 self._set_status_locked("running", f"{label}：从日常页返回世界", phase="cleanup_exit_daily_page", current_scene=69)
                 self._log_locked("action", f"{label}：点击 #69「退出」")
-            yield from runtime.wait_click(69, "退出")
-            landed = yield from runtime.wait_view(34, timeout=25.0, label=f"{label}：等待日常页返回世界")
+            yield from context.wait_click(69, "退出")
+            landed = yield from context.wait_scene(34, wait=25.0, label=f"{label}：等待日常页返回世界")
             scene_id = int(landed.id) if isinstance(landed, View) and landed.id is not None else int(landed)
             score = 100.0
-            frame = runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None
-            text = runtime.ocr_text(frame)
+            frame = context.cur_frame(update=True) if hasattr(context, "cur_frame") else None
+            text = context.ocr_text(frame)
         if scene_id in {289, 86}:
             confirm_id = int(scene_id)
             with self._lock:
                 self._set_status_locked("running", f"{label}：确认离开场景后继续收尾", phase="cleanup_confirm_leave", current_scene=confirm_id)
                 self._log_locked("action", f"{label}：点击 #{confirm_id}「确认」")
-            yield from runtime.wait_click(confirm_id, "确认")
-            yield from runtime.wait_action_settle(2.0)
-            scene_id, score, frame = runtime.current_scene([58, 20, 34], update=True)
-            text = runtime.ocr_text(frame)
+            yield from context.wait_click(confirm_id, "确认")
+            yield from context.wait_action_settle(2.0)
+            scene_id, score, frame = context.current_scene([58, 20, 34], update=True)
+            text = context.ocr_text(frame)
         if scene_id == 58:
             with self._lock:
                 self._set_status_locked("running", f"{label}：隐藏浮动窗后确认世界", phase="cleanup_hide_floating_window", current_scene=58)
                 self._log_locked("action", f"{label}：检测到 #58 浮动窗，先执行隐藏浮动窗")
             self._execute_hide_floating_window(ctx, stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([20, 34], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([20, 34], update=True)
+            text = context.ocr_text(frame)
         if scene_id == 20:
             yield from self._leave_green_bottle_to_world(ctx, stop_event, label=label)
-            scene_id, score, frame = runtime.current_scene([34], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([34], update=True)
+            text = context.ocr_text(frame)
         if scene_id == 34:
-            scene_id, score, frame = runtime.current_scene([34], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([34], update=True)
+            text = context.ocr_text(frame)
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
                 self._log_locked("success", f"{label}：已确认干净世界 #34")
@@ -3707,12 +3796,12 @@ class DailyFoundationTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_灵塔资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([196, 195, 194, 193, 69, 34, 20], update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([196, 195, 194, 193, 69, 34, 20], update=True)
         if scene_id == 20:
             yield from self._leave_daily_lingta_green_bottle(ctx, stop_event)
-            scene_id, _score, frame = runtime.current_scene([196, 195, 194, 193, 69, 34, 20], update=True)
-        text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene([196, 195, 194, 193, 69, 34, 20], update=True)
+        text = context.ocr_text(frame)
         if scene_id is None and self._daily_lingta_text_is_main(text):
             scene_id = 194
         if scene_id == 196:
@@ -3734,7 +3823,7 @@ class DailyFoundationTaskMixin:
             yield from self._open_daily_lingta_main_from_entry(ctx, stop_event)
             scene_id = 194
         if scene_id == 194:
-            text = runtime.ocr_text(update=True)
+            text = context.ocr_text(update=True)
             if self._daily_lingta_remaining_zero(text):
                 self._record_daily_lingta_done(payload, message="混沌灵塔剩余次数为 0")
                 yield from self._safe_daily_done_cleanup(
@@ -3747,10 +3836,10 @@ class DailyFoundationTaskMixin:
             return "success"
 
         if scene_id != 69:
-            world_text = runtime.ocr_text(frame)
+            world_text = context.ocr_text(frame)
             scene_id = yield from self._enter_daily_from_world_like(
                 ctx,
-                runtime,
+                context,
                 stop_event,
                 frame,
                 scene_id,
@@ -3758,7 +3847,7 @@ class DailyFoundationTaskMixin:
                 label="日常_灵塔",
             )
 
-        daily_status = yield from runtime.open_daily_entry(
+        daily_status = yield from context.open_daily_entry(
             label="日常_灵塔",
             title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
             max_scrolls=self._payload_int(payload, "max_scrolls", "lingta_max_scrolls", default=10),
@@ -3780,7 +3869,7 @@ class DailyFoundationTaskMixin:
                 repeat_risk="重复扫荡",
             )
             return "success"
-        view = yield from runtime.wait_view(193, 194, label="日常_灵塔：等待区域入口 #193 或混沌灵塔 #194")
+        view = yield from context.wait_scene(193, 194, label="日常_灵塔：等待区域入口 #193 或混沌灵塔 #194")
         if getattr(view, "id", view) == 193:
             yield from self._open_daily_lingta_main_from_entry(ctx, stop_event)
         yield from self._run_daily_lingta_sweep(ctx, stop_event, payload)
@@ -3788,8 +3877,8 @@ class DailyFoundationTaskMixin:
 
     def _open_daily_lingta_from_daily(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        status = yield from runtime.open_daily_entry(
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        status = yield from context.open_daily_entry(
             label="日常_灵塔",
             title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
             max_scrolls=self._payload_int(payload, "max_scrolls", "lingta_max_scrolls", default=10),
@@ -3818,12 +3907,12 @@ class DailyFoundationTaskMixin:
 
     def _open_daily_lingta_main_from_entry(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         for index in range(3):
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, _score, frame = runtime.current_scene([194, 193], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene([194, 193], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 194:
                 return "success"
             if self._daily_jianling_text_is_main(text):
@@ -3835,14 +3924,14 @@ class DailyFoundationTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "日常_灵塔：点击区域入口「进入」", phase="daily_lingta_enter_area", current_scene=193)
                     self._log_locked("action", "日常_灵塔：点击 #193「进入」")
-                yield from runtime.wait_click(193, "进入")
+                yield from context.wait_click(193, "进入")
         start = time.monotonic()
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([194], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([194], update=True)
+            text = context.ocr_text(frame)
             last_text = text or last_text
             if scene_id == 194:
                 with self._lock:
@@ -3867,12 +3956,12 @@ class DailyFoundationTaskMixin:
 
     def _run_daily_lingta_sweep(self, ctx: dict[str, Any], stop_event: threading.Event, payload: dict[str, Any]):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", "日常_灵塔：点击扫荡", phase="daily_lingta_sweep", current_scene=194)
             self._log_locked("action", "日常_灵塔：点击 #194「扫荡」")
-        yield from runtime.wait_click(194, "扫荡")
-        yield from runtime.wait_view(195, label="日常_灵塔：等待扫荡确认 #195")
+        yield from context.wait_click(194, "扫荡")
+        yield from context.wait_scene(195, label="日常_灵塔：等待扫荡确认 #195")
         yield from self._confirm_daily_lingta_sweep(ctx, stop_event)
         result_status = yield from self._finish_daily_lingta_result(ctx, stop_event)
         self._record_daily_lingta_done(payload, message="混沌灵塔扫荡完成")
@@ -3884,20 +3973,20 @@ class DailyFoundationTaskMixin:
 
     def _confirm_daily_lingta_sweep(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", "日常_灵塔：确认进行扫荡", phase="daily_lingta_confirm_sweep", current_scene=195)
             self._log_locked("action", "日常_灵塔：点击 #195「进行扫荡」")
-        yield from runtime.wait_click(195, "进行扫荡")
-        yield from runtime.wait_view(196, label="日常_灵塔：等待扫荡结果 #196")
+        yield from context.wait_click(195, "进行扫荡")
+        yield from context.wait_scene(196, label="日常_灵塔：等待扫荡结果 #196")
 
     def _finish_daily_lingta_result(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         for index in range(8):
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = runtime.current_scene([194, 196], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene([194, 196], update=True)
+            text = context.ocr_text(frame)
             if self._daily_lingta_remaining_zero(text):
                 return "done"
             if scene_id == 194 or ("混沌灵塔" in text and "剩余次数" in text):
@@ -3906,7 +3995,7 @@ class DailyFoundationTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", f"日常_灵塔：关闭扫荡结果 {index + 1}", phase="daily_lingta_continue_result", current_scene=196)
                     self._log_locked("action", "日常_灵塔：点击 #196「点击继续」")
-                yield from runtime.wait_click(196, "点击继续")
+                yield from context.wait_click(196, "点击继续")
                 yield BehaviorTreeStatus.RUNNING
                 continue
             raise RuntimeError(f"日常_灵塔：扫荡结果页状态异常，文本：{text[:120]}")
@@ -3914,16 +4003,16 @@ class DailyFoundationTaskMixin:
 
     def _return_daily_lingta_to_world(self, ctx: dict[str, Any], stop_event: threading.Event):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([194, 69, 20, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([194, 69, 20, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id is None and self._daily_lingta_text_is_main(text):
             scene_id = 194
         if scene_id == 194:
             with self._lock:
                 self._set_status_locked("running", "日常_灵塔：退出混沌灵塔", phase="daily_lingta_exit_main", current_scene=194)
                 self._log_locked("action", "日常_灵塔：点击 #194「返回」")
-            yield from runtime.wait_click(194, "返回")
+            yield from context.wait_click(194, "返回")
             scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
                 ctx,
                 stop_event,
@@ -3935,7 +4024,7 @@ class DailyFoundationTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "日常_灵塔：从日常列表返回世界", phase="daily_lingta_return_daily", current_scene=69)
                 self._log_locked("action", "日常_灵塔：点击 #69「退出」")
-            yield from runtime.wait_click(69, "退出")
+            yield from context.wait_click(69, "退出")
             scene_id, _score = yield from self._wait_daily_lingzu_return_scene(
                 ctx,
                 stop_event,
@@ -4030,7 +4119,7 @@ class DailyFoundationTaskMixin:
         return next_time
 
     def _daily_xianyuan_runtime_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
-        override = payload.get("runtime_task_snapshot")
+        override = payload.get("execution_task_snapshot")
         if isinstance(override, dict):
             return dict(override)
         return read_daily_task_runtime_snapshot(1008)
@@ -4049,7 +4138,7 @@ class DailyFoundationTaskMixin:
         image34 = images.get(34)
         image69 = images.get(69)
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         task_snapshot = self._daily_xianyuan_runtime_snapshot(payload)
         self._log(
             "detail",
@@ -4062,10 +4151,10 @@ class DailyFoundationTaskMixin:
         )
         if task_snapshot.get("complete") is True and task_snapshot.get("task_id") == 1008 and task_snapshot.get("done") is True:
             self._record_daily_xianyuan_done(payload, message="Runtime 已证明挑战仙缘任务完成")
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return "success"
-        scene_id, _score, frame = runtime.current_scene(DAILY_XIANYUAN_LAYER0_SCENE_IDS, update=True)
-        text = runtime.ocr_text(frame)
+        scene_id, _score, frame = context.current_scene(DAILY_XIANYUAN_LAYER0_SCENE_IDS, update=True)
+        text = context.ocr_text(frame)
         if scene_id == 197 and not self._daily_xianyuan_text_is_people_list(text):
             if self._daily_xianyuan_text_is_daily_list(text):
                 scene_id = 69
@@ -4082,18 +4171,18 @@ class DailyFoundationTaskMixin:
         if scene_id != 69:
             if self._daily_xianyuan_text_is_dialogue(text):
                 return (yield from self._run_daily_xianyuan_from_dialogue(ctx, stop_event, payload))
-            if self._daily_xianyuan_text_is_detail(text):
+            if self._daily_xianyuan_text_is_detail(text) or self._daily_xianyuan_detail_crop_matches(context, frame):
                 return (yield from self._run_daily_xianyuan_from_detail(ctx, stop_event, payload))
             if scene_id != 34:
                 if self._daily_xianyuan_text_is_people_list(text):
                     return (yield from self._run_daily_xianyuan_from_list(ctx, stop_event, payload))
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="日常_挑战仙缘")):
-                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, _score, frame = context.current_scene([69, 34], update=True)
+                text = context.ocr_text(frame)
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
                     ctx,
-                    runtime,
+                    context,
                     stop_event,
                     frame,
                     scene_id,
@@ -4164,15 +4253,15 @@ class DailyFoundationTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少仙缘斗法资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([308, 69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([308, 69, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id not in {308, 69}:
-            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="仙缘斗法")
+            scene_id = yield from self._enter_daily_from_world_like(ctx, context, stop_event, frame, scene_id, text, label="仙缘斗法")
         if scene_id not in {308, 69}:
             raise RuntimeError("仙缘斗法：未能进入 #69 日常列表")
         if scene_id == 69:
-            status = yield from runtime.open_daily_entry(
+            status = yield from context.open_daily_entry(
                 label="仙缘斗法",
                 title_pattern=r"斗\s*法",
                 progress_can_mark_done=False,
@@ -4189,7 +4278,7 @@ class DailyFoundationTaskMixin:
                 )
                 return "skipped"
         if not bool(payload.get("skip_purchase")):
-            yield from self._prepare_daily_xianyuan_duel_purchases(runtime, payload)
+            yield from self._prepare_daily_xianyuan_duel_purchases(context, payload)
         max_runs = int(payload.get("max_runs") or 7)
         max_no_effect_retries = max(1, int(payload.get("max_no_effect_retries") or 3))
         no_effect_retries = 0
@@ -4200,19 +4289,19 @@ class DailyFoundationTaskMixin:
         for probe_index in range(max_runs + max_no_effect_retries + 2):
             facts = pending_facts
             try:
-                remaining = yield from self._read_daily_xianyuan_duel_remaining(runtime, payload)
+                remaining = yield from self._read_daily_xianyuan_duel_remaining(context, payload)
             except RuntimeError as exc:
                 if "无法从 #308[次数] 识别剩余次数" not in str(exc):
                     raise
                 facts = facts or (yield from self._wait_current_daily_xianyuan_duel_facts(
-                    runtime,
+                    context,
                     payload,
                     reason=f"round-{completed + 1}-ocr-fallback",
                     self_power_hint=stable_self_power,
                 ))
                 if facts is None:
                     return (yield from self._defer_daily_xianyuan_duel_runtime(
-                        runtime,
+                        context,
                         payload,
                         scheduler_task_id=scheduler_task_id,
                         reason="次数 OCR 与 Runtime 均未在等待窗口内就绪",
@@ -4234,14 +4323,14 @@ class DailyFoundationTaskMixin:
                 )
                 return "success"
             facts = facts or (yield from self._wait_current_daily_xianyuan_duel_facts(
-                runtime,
+                context,
                 payload,
                 reason=f"round-{completed + 1}",
                 self_power_hint=stable_self_power,
             ))
             if facts is None:
                 return (yield from self._defer_daily_xianyuan_duel_runtime(
-                    runtime,
+                    context,
                     payload,
                     scheduler_task_id=scheduler_task_id,
                     reason="Runtime 未在等待窗口内取得完整当前事实",
@@ -4260,15 +4349,15 @@ class DailyFoundationTaskMixin:
             if completed >= max_runs:
                 break
 
-            mapped = self._map_daily_xianyuan_duel_targets(runtime, facts, payload)
+            mapped = self._map_daily_xianyuan_duel_targets(context, facts, payload)
             chosen = choose_xianyuan_duel_target(mapped["targets"], self_power=int(facts["self_power"]))
             if chosen is None:
                 refreshes = int(facts.get("remaining_refreshes") or 0)
                 if refreshes > 0 and not refresh_used:
                     self._log("action", "仙缘斗法：3 个候选均无法稳妥挑战，使用今日唯一一次刷新")
-                    yield from runtime.wait_click(308, "刷新")
+                    yield from context.wait_click(308, "刷新")
                     refreshed = yield from self._wait_current_daily_xianyuan_duel_facts(
-                        runtime,
+                        context,
                         payload,
                         reason="after-refresh",
                         previous=facts,
@@ -4276,7 +4365,7 @@ class DailyFoundationTaskMixin:
                     )
                     if refreshed is None:
                         return (yield from self._defer_daily_xianyuan_duel_runtime(
-                            runtime,
+                            context,
                             payload,
                             scheduler_task_id=scheduler_task_id,
                             reason="刷新后 Runtime 候选未在等待窗口内推进",
@@ -4304,33 +4393,33 @@ class DailyFoundationTaskMixin:
                 f"仙侣战力 {chosen['team_power']}，关系 {chosen['relation_label']}，"
                 f"映射 {mapped['method']}",
             )
-            yield from runtime.wait_click_then_view(308, str(chosen["challenge_shape"]), 309)
+            yield from context.wait_click_then_scene(308, str(chosen["challenge_shape"]), 309)
             formation_payload = {
                 **payload,
                 "__xianyuan_duel_facts": facts,
                 "__xianyuan_duel_target": chosen,
             }
-            yield from self._optimize_daily_xianyuan_duel_formation(runtime, formation_payload)
+            yield from self._optimize_daily_xianyuan_duel_formation(context, formation_payload)
             # #308 is the preparation/opponent page, not a valid battle
             # landing.  It may flash during the transition, so the local
             # transaction must wait for the optional battle layer #345 or the
             # layer-0 result page #310.  Only clicking #310 may return to #308.
             try:
-                view_after_start = yield from runtime.wait_click_then_view(
+                view_after_start = yield from context.wait_click_then_scene(
                     309,
                     "开始挑战",
                     [345, 310],
                     timeout=float(payload.get("battle_result_timeout") or 60.0),
                 )
             except TimeoutError:
-                recovery_scene_id, recovery_score, _recovery_frame = runtime.current_scene(
+                recovery_scene_id, recovery_score, _recovery_frame = context.current_scene(
                     [308],
                     update=True,
                 )
                 if recovery_scene_id != 308:
                     raise
                 recovery_remaining = yield from self._read_daily_xianyuan_duel_remaining(
-                    runtime,
+                    context,
                     payload,
                 )
                 if recovery_remaining >= remaining:
@@ -4354,7 +4443,7 @@ class DailyFoundationTaskMixin:
                     f"{remaining} 降为 {recovery_remaining}，按本轮已生效继续处理",
                 )
                 pending_facts = yield from self._wait_current_daily_xianyuan_duel_facts(
-                    runtime,
+                    context,
                     payload,
                     reason=f"after-recovered-round-{completed}",
                     previous=facts,
@@ -4362,18 +4451,18 @@ class DailyFoundationTaskMixin:
                 )
                 if pending_facts is None:
                     return (yield from self._defer_daily_xianyuan_duel_runtime(
-                        runtime,
+                        context,
                         payload,
                         scheduler_task_id=scheduler_task_id,
                         reason=f"恢复第 {completed} 轮后 Runtime 未在等待窗口内推进",
                     ))
                 continue
             if _lundao_waited_scene_id(view_after_start) == 345:
-                view_after_start = yield from runtime.wait_click_then_view(345, "跳过", 310)
-            yield from runtime.wait_click_then_view(310, "点击继续", 308)
+                view_after_start = yield from context.wait_click_then_scene(345, "跳过", 310)
+            yield from context.wait_click_then_scene(310, "点击继续", 308)
             completed += 1
             pending_facts = yield from self._wait_current_daily_xianyuan_duel_facts(
-                runtime,
+                context,
                 payload,
                 reason=f"after-round-{completed}",
                 previous=facts,
@@ -4381,7 +4470,7 @@ class DailyFoundationTaskMixin:
             )
             if pending_facts is None:
                 return (yield from self._defer_daily_xianyuan_duel_runtime(
-                    runtime,
+                    context,
                     payload,
                     scheduler_task_id=scheduler_task_id,
                     reason=f"第 {completed} 轮后 Runtime 未在等待窗口内推进",
@@ -4400,11 +4489,11 @@ class DailyFoundationTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         raid_scenes = {319, 320, 321, 322, 323, 324}
         joined_existing_team = False
-        scene_id, _score, frame = runtime.current_scene([331, 330, *sorted(raid_scenes), 69, 34, 20], update=True)
-        text = runtime.ocr_text(frame)
+        scene_id, _score, frame = context.current_scene([331, 330, *sorted(raid_scenes), 69, 34, 20], update=True)
+        text = context.ocr_text(frame)
         if scene_id == 331:
             # #331 is the already-joined team page.  Whether it was reached after
             # a committed #324 transaction or after replaying #320 against an
@@ -4415,12 +4504,12 @@ class DailyFoundationTaskMixin:
                 payload,
                 reason="起点已处于 #331「已加入」状态，本轮业务已完成",
             )
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return "success"
         if scene_id == 330:
-            scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(runtime)
+            scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
         if scene_id not in {69, *raid_scenes}:
-            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_奇袭魔界")
+            scene_id = yield from self._enter_daily_from_world_like(ctx, context, stop_event, frame, scene_id, text, label="日常_奇袭魔界")
         if scene_id not in {69, *raid_scenes}:
             raise RuntimeError("日常_奇袭魔界：未能进入 #69 日常列表")
         if scene_id == 69:
@@ -4431,7 +4520,7 @@ class DailyFoundationTaskMixin:
                 or debug_payload.get("stop_after_daily_entry")
                 or debug_payload.get("pause_after_daily_entry")
             )
-            status = yield from runtime.open_daily_entry(
+            status = yield from context.open_daily_entry(
                 label="日常_奇袭魔界",
                 title_pattern=r"参与.{0,4}奇|奇.{0,4}魔|魔界",
                 progress_can_mark_done=False,
@@ -4449,9 +4538,9 @@ class DailyFoundationTaskMixin:
             if status == "done":
                 raise RuntimeError("日常_奇袭魔界：入口行完成态不能作为奇袭魔界完成判据")
             if stop_after_daily_entry:
-                yield from runtime.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
-                current_scene_id, score, frame = runtime.current_scene(update=True)
-                text = runtime.ocr_text(frame)
+                yield from context.wait_action_settle(float(payload.get("entry_pause_settle_seconds") or 1.5))
+                current_scene_id, score, frame = context.current_scene(update=True)
+                text = context.ocr_text(frame)
                 scene_label = f"#{current_scene_id}" if current_scene_id is not None else "unknown"
                 self._log(
                     "warning",
@@ -4459,18 +4548,18 @@ class DailyFoundationTaskMixin:
                 )
                 return "skipped"
             try:
-                waited = yield from runtime.wait_view(319, 330, label="日常_奇袭魔界：等待奇袭魔界 #319")
+                waited = yield from context.wait_scene(319, 330, label="日常_奇袭魔界：等待奇袭魔界 #319")
                 if getattr(waited, "id", waited) == 330:
-                    scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(runtime)
+                    scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
                 else:
                     scene_id = 319
             except TimeoutError as exc:
-                yield from self._handle_daily_mojie_raid_open_blocker_placeholder(runtime, payload)
+                yield from self._handle_daily_mojie_raid_open_blocker_placeholder(context, payload)
                 raise RuntimeError("日常_奇袭魔界：入口点击后未到达 #319，疑似遇到未实现的特殊弹窗") from exc
         if scene_id == 319:
             self._log("success", "日常_奇袭魔界：已到达 #319")
             existing_team_match = None
-            shape_matches = getattr(runtime, "shape_matches", None)
+            shape_matches = getattr(context, "shape_matches", None)
             if callable(shape_matches):
                 existing_team_match = shape_matches(319, "队伍")
             if existing_team_match:
@@ -4480,9 +4569,9 @@ class DailyFoundationTaskMixin:
                     payload,
                     reason="#319 已显示「我的队伍」，本轮业务已完成",
                 )
-                yield from runtime.wait_click_then_view(319, "返回", 34)
+                yield from context.wait_click_then_scene(319, "返回", 34)
                 return "success"
-            numbers, text = runtime.ocr_numbers_in_shapes(
+            numbers, text = context.ocr_numbers_in_shapes(
                 319,
                 ("剩余次数",),
                 padding=int(payload.get("mojie_raid_remaining_padding") or 16),
@@ -4493,7 +4582,7 @@ class DailyFoundationTaskMixin:
                     "日常_奇袭魔界：底层 #319 被前置「确定」浮层覆盖；"
                     "先完成既有 #330 确认闭环，再重新检查「我的队伍」",
                 )
-                scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(runtime)
+                scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
                 if scene_id == 319:
                     existing_team_match = shape_matches(319, "队伍") if callable(shape_matches) else None
                     if existing_team_match:
@@ -4501,9 +4590,9 @@ class DailyFoundationTaskMixin:
                             payload,
                             reason="#330 确认后 #319 已显示「我的队伍」，本轮业务已完成",
                         )
-                        yield from runtime.wait_click_then_view(319, "返回", 34)
+                        yield from context.wait_click_then_scene(319, "返回", 34)
                         return "success"
-                    numbers, text = runtime.ocr_numbers_in_shapes(
+                    numbers, text = context.ocr_numbers_in_shapes(
                         319,
                         ("剩余次数",),
                         padding=int(payload.get("mojie_raid_remaining_padding") or 16),
@@ -4527,8 +4616,8 @@ class DailyFoundationTaskMixin:
                 # 等待后重新取一张真实帧确认；若第二帧恢复为正数，继续本周流程。
                 confirm_seconds = float(payload.get("mojie_raid_zero_confirm_seconds") or 2.0)
                 self._log("warning", "日常_奇袭魔界：首次读到剩余次数 0，等待新帧复核后再结束本周")
-                yield from runtime.wait_action_settle(confirm_seconds)
-                confirm_numbers, confirm_text = runtime.ocr_numbers_in_shapes(
+                yield from context.wait_action_settle(confirm_seconds)
+                confirm_numbers, confirm_text = context.ocr_numbers_in_shapes(
                     319,
                     ("剩余次数",),
                     padding=int(payload.get("mojie_raid_remaining_padding") or 16),
@@ -4544,18 +4633,28 @@ class DailyFoundationTaskMixin:
                     )
                 self._log("detail", f"日常_奇袭魔界：剩余次数复核 {remaining}，OCR={confirm_text[:80]}")
             if remaining <= 0:
-                self._schedule_next_mojie_raid_week(
-                    payload,
-                    reason="连续两帧确认剩余次数为 0，本周已完成",
-                )
-                yield from runtime.wait_click(319, "返回")
+                confirmed_at = _behavior_tree_executor._now()
+                if not self._mojie_raid_completion_window_open(confirmed_at):
+                    self._schedule_mojie_raid_thursday_verification(
+                        payload,
+                        reason="连续两帧确认剩余次数为 0，但尚未到周四，不能判定本周完成",
+                        now=confirmed_at,
+                    )
+                else:
+                    self._schedule_next_mojie_raid_week(
+                        payload,
+                        reason="周四起连续两帧确认剩余次数为 0，本周已完成",
+                        confirmed_remaining=remaining,
+                        confirmed_at=confirmed_at,
+                    )
+                yield from context.wait_click(319, "返回")
                 return "success"
-            yield from runtime.wait_click_then_view(319, "参与进攻", 320)
+            yield from context.wait_click_then_scene(319, "参与进攻", 320)
             scene_id = 320
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
-            countdown_text = runtime.ocr_text_in_shapes(
+            countdown_text = context.ocr_text_in_shapes(
                 320,
                 ("进攻倒计时标识",),
                 padding=int(payload.get("mojie_raid_attack_countdown_padding") or 12),
@@ -4568,16 +4667,16 @@ class DailyFoundationTaskMixin:
                 )
             if countdown_seconds > 0:
                 return (yield from self._defer_daily_mojie_raid_attack_countdown(
-                    runtime,
+                    context,
                     payload,
                     countdown_seconds=countdown_seconds,
                     countdown_text=countdown_text,
                 ))
             try:
-                scene_id = yield from self._click_daily_mojie_raid_top_attack_target(runtime, payload)
+                scene_id = yield from self._click_daily_mojie_raid_top_attack_target(context, payload)
             except _DailyMojieRaidAttackCountdown as countdown:
                 return (yield from self._defer_daily_mojie_raid_attack_countdown(
-                    runtime,
+                    context,
                     payload,
                     countdown_seconds=countdown.seconds,
                     countdown_text=countdown.text,
@@ -4592,16 +4691,16 @@ class DailyFoundationTaskMixin:
                     payload,
                     reason="点击据点后已处于 #331「已加入」状态，本轮业务已完成",
                 )
-                yield from runtime.click_shape_center_then_view(331, "返回", 320)
-                yield from runtime.wait_click(320, "返回")
-                yield from runtime.wait_click_then_view(319, "返回", 34)
+                yield from context.click_shape_center_then_scene(331, "返回", 320)
+                yield from context.wait_click(320, "返回")
+                yield from context.wait_click_then_scene(319, "返回", 34)
                 return "success"
         if scene_id == 321:
             # #322 is only a confirmation popup, but a persistent #321 can mean
             # the server-side weekly attack allowance is already exhausted or
             # another business guard rejected the request.  Re-clicking cannot
             # distinguish those states and may duplicate a delayed UI action.
-            yield from runtime.wait_click_then_view(321, "创建队伍", 322, max_clicks=1)
+            yield from context.wait_click_then_scene(321, "创建队伍", 322, max_clicks=1)
             scene_id = 322
         if scene_id == 322:
             # 业务语义：奇袭魔界的建队额度由整个同盟共享，并非每个玩家各有
@@ -4612,7 +4711,7 @@ class DailyFoundationTaskMixin:
             # 队伍卡片的位置、队长名和人数都会变化；#321 的“加入”状态只会
             # 出现在本联盟且可加入的 roleItem 上，因此用它定位动态卡片，再按
             # 资产模板记录的相对位移点击真正绑定事件的整个人物卡片。
-            team_numbers, team_text = runtime.ocr_numbers_in_shapes(
+            team_numbers, team_text = context.ocr_numbers_in_shapes(
                 322,
                 ("队伍额度",),
                 padding=int(payload.get("mojie_raid_team_count_padding") or 12),
@@ -4635,12 +4734,12 @@ class DailyFoundationTaskMixin:
                     "action",
                     f"日常_奇袭魔界：#322 建队额度已满 {team_count}/{team_limit}，返回 #321 加入友方队伍",
                 )
-                yield from runtime.wait_click_then_view(322, "返回", 321)
-                joined_scene = yield from self._join_daily_mojie_raid_friendly_team(runtime, payload)
+                yield from context.wait_click_then_scene(322, "返回", 321)
+                joined_scene = yield from self._join_daily_mojie_raid_friendly_team(context, payload)
                 if joined_scene is None:
-                    yield from runtime.click_shape_center_then_view(321, "返回", 320)
-                    yield from runtime.wait_click(320, "返回")
-                    yield from runtime.wait_click_then_view(319, "返回", 34)
+                    yield from context.click_shape_center_then_scene(321, "返回", 320)
+                    yield from context.wait_click(320, "返回")
+                    yield from context.wait_click_then_scene(319, "返回", 34)
                     self._schedule_next_mojie_raid_trigger(
                         payload,
                         reason=f"#322 建队额度已满 {team_count}/{team_limit}，#321 暂无可加入友方队伍",
@@ -4649,14 +4748,14 @@ class DailyFoundationTaskMixin:
                 scene_id = joined_scene
                 joined_existing_team = True
             else:
-                yield from runtime.wait_click_then_view(322, "下拉选项", 323)
+                yield from context.wait_click_then_scene(322, "下拉选项", 323)
                 scene_id = 323
         if scene_id == 323:
-            yield from runtime.wait_click_then_view(323, "开启", 322)
+            yield from context.wait_click_then_scene(323, "开启", 322)
             # 创建队伍的“确定”输入历史上经常不生效；#322 仍被可靠识别时，
             # 继续补点同一已标注按钮。重试必须有界，且一旦离开 #322 或
-            # 进入 unknown，wait_click_then_view 会立即停止，不能盲目连点。
-            yield from runtime.wait_click_then_view(
+            # 进入 unknown，wait_click_then_scene 会立即停止，不能盲目连点。
+            yield from context.wait_click_then_scene(
                 322,
                 "确定",
                 324,
@@ -4679,26 +4778,26 @@ class DailyFoundationTaskMixin:
             # 图像身份失效；此时再用 wait_click 会永远等不到源场景。
             # 「返回」本身是固定标注坐标，直接点击，并兼容实机可能跳到
             # 中间页 #331 或直接回到世界 #34 两种落点。
-            landed = yield from runtime.click_shape_center_then_view(324, "返回", 331, 34)
+            landed = yield from context.click_shape_center_then_scene(324, "返回", 331, 34)
             scene_id = int(getattr(landed, "id", landed))
             if scene_id == 34:
                 return "success"
         if scene_id == 331:
-            yield from runtime.click_shape_center_then_view(331, "返回", 320)
-            yield from runtime.wait_click(320, "返回")
-            yield from runtime.wait_click_then_view(319, "返回", 34)
+            yield from context.click_shape_center_then_scene(331, "返回", 320)
+            yield from context.wait_click(320, "返回")
+            yield from context.wait_click_then_scene(319, "返回", 34)
         return "success"
 
     def _daily_mojie_raid_join_click_delta(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
     ) -> tuple[float, float]:
         """Read the roleItem click offset from #321 assets instead of hard-coding pixels."""
 
-        anchor = runtime.shape(321, "友方加入锚点")
-        click_target = runtime.shape(321, "友方人物点击点")
-        view = runtime.view(321)
-        width, height = runtime.runner._frame_size(view.raw)
+        anchor = context.shape(321, "友方加入锚点")
+        click_target = context.shape(321, "友方人物点击点")
+        view = context.view(321)
+        width, height = context.runner._frame_size(view.raw)
 
         def center(shape: Shape) -> tuple[float, float]:
             raw = shape.raw
@@ -4713,7 +4812,7 @@ class DailyFoundationTaskMixin:
 
     def _join_daily_mojie_raid_friendly_team(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
     ):
         """Join one visible friendly corps, horizontally loading #321 when needed.
@@ -4728,18 +4827,18 @@ class DailyFoundationTaskMixin:
         max_scrolls = max(0, int(payload.get("mojie_raid_join_max_scrolls") or 8))
         max_candidates = max(1, int(payload.get("mojie_raid_join_max_candidates") or 6))
         settle_seconds = float(payload.get("mojie_raid_join_scroll_settle_seconds") or 2.0)
-        dx, dy = self._daily_mojie_raid_join_click_delta(runtime)
+        dx, dy = self._daily_mojie_raid_join_click_delta(context)
         attempted = 0
         seen_pages: set[tuple[str, ...]] = set()
 
         for scroll_index in range(max_scrolls + 1):
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             # Restrict both candidate discovery and page identity to the
             # annotated horizontal team window.  A tuple of only ``3/5`` /
             # ``5/5`` counters is not a page identity: different pages often
             # have the same member-count distribution and would stop scanning
             # too early.
-            fragments = runtime.ocr_fragments_in_shapes(
+            fragments = context.ocr_fragments_in_shapes(
                 321,
                 ("队伍窗口",),
                 frame_data_url=frame,
@@ -4773,15 +4872,15 @@ class DailyFoundationTaskMixin:
                     "action",
                     f"日常_奇袭魔界：按第 {attempted} 个“加入”锚点定位并点击友方人物卡片",
                 )
-                runtime.click_frame_point(321, x, y)
+                context.click_frame_point(321, x, y)
                 try:
                     # #508 is the formally annotated "是否加入该队伍" business
                     # scene.  It must be the Layer-0 target of this transition;
                     # a one-shot full-frame OCR probe can miss the animated popup
                     # and used to leave it open while the task kept scrolling #321.
-                    yield from runtime.wait_view(
+                    yield from context.wait_scene(
                         508,
-                        timeout=float(payload.get("mojie_raid_join_popup_timeout_seconds") or 8.0),
+                        wait=float(payload.get("mojie_raid_join_popup_timeout_seconds") or 8.0),
                         label="日常_奇袭魔界：等待加入队伍确认 #508",
                     )
                 except RuntimeError:
@@ -4791,11 +4890,11 @@ class DailyFoundationTaskMixin:
                     )
                     continue
 
-                runtime.click_shape_center(508, "确认")
+                context.click_shape_center(508, "确认")
                 try:
-                    yield from runtime.wait_view(
+                    yield from context.wait_scene(
                         324,
-                        timeout=float(payload.get("mojie_raid_join_result_timeout_seconds") or 12.0),
+                        wait=float(payload.get("mojie_raid_join_result_timeout_seconds") or 12.0),
                         label="日常_奇袭魔界：确认加入后等待队伍页 #324",
                     )
                 except RuntimeError as exc:
@@ -4810,7 +4909,7 @@ class DailyFoundationTaskMixin:
                 break
             if page_key:
                 seen_pages.add(page_key)
-            changed = yield from runtime.scroll_shape_content(
+            changed = yield from context.scroll_shape_content(
                 321,
                 "队伍窗口",
                 direction="right",
@@ -4826,13 +4925,13 @@ class DailyFoundationTaskMixin:
 
     def _click_daily_mojie_raid_top_attack_target(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
     ):
         target_shape = str(payload.get("mojie_raid_target_shape") or "检索区域/修罗").strip()
         match_timeout = float(
             payload.get("mojie_raid_target_match_timeout")
-            or getattr(runtime, "default_wait_click_timeout", self._daily_default_wait_condition_timeout)
+            or getattr(context, "default_wait_click_timeout", self._daily_default_wait_condition_timeout)
         )
         wait_timeout = float(
             payload.get("mojie_raid_target_wait_timeout")
@@ -4849,31 +4948,30 @@ class DailyFoundationTaskMixin:
                 "action",
                 f"日常_奇袭魔界：定位并点击 #320「{target_shape}」 {attempt}/{max_clicks}",
             )
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 320,
                 target_shape,
                 timeout=match_timeout,
                 x_ratio=click_x_ratio,
                 y_ratio=click_y_ratio,
             )
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
             try:
-                waited = yield from runtime.wait_view(
+                waited = yield from context.wait_scene(
                     321,
                     331,
-                    timeout=wait_timeout,
+                    wait=wait_timeout,
                     label="日常_奇袭魔界：点击 #320 修罗据点后等待 #321/#331",
                 )
                 return int(getattr(waited, "id", waited) or 0)
             except TimeoutError as exc:
                 last_error = exc
-                scene_id, score, _frame = runtime.current_scene(
+                scene_id, score, _frame = context.current_scene(
                     [320, 321, 331],
                     update=True,
-                    handle_interruptions=False,
                 )
                 if scene_id == 320:
-                    countdown_text = runtime.ocr_text_in_shapes(
+                    countdown_text = context.ocr_text_in_shapes(
                         320,
                         ("进攻倒计时标识",),
                         padding=int(payload.get("mojie_raid_attack_countdown_padding") or 12),
@@ -4941,7 +5039,7 @@ class DailyFoundationTaskMixin:
 
     def _defer_daily_mojie_raid_attack_countdown(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         countdown_seconds: int,
@@ -4955,20 +5053,46 @@ class DailyFoundationTaskMixin:
                 f"{countdown_text.strip()}，据点当前不可交互"
             ),
         )
-        yield from runtime.wait_click(320, "返回")
-        yield from runtime.wait_click_then_view(319, "返回", 34)
+        yield from context.wait_click(320, "返回")
+        yield from context.wait_click_then_scene(319, "返回", 34)
         return "skipped"
 
     def _next_mojie_raid_week_start_time_text(
         self,
         now: datetime | None = None,
     ) -> str:
-        now = now or _behavior_tree_runtime._now()
+        now = now or _behavior_tree_executor._now()
         days_until_next_monday = (7 - now.weekday()) % 7
         if days_until_next_monday == 0:
             days_until_next_monday = 7
         next_monday = now + timedelta(days=days_until_next_monday)
         return next_monday.replace(
+            hour=10,
+            minute=0,
+            second=0,
+            microsecond=0,
+        ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _mojie_raid_completion_window_open(
+        self,
+        now: datetime | None = None,
+    ) -> bool:
+        """Only Thursday and later may close the current raid week."""
+
+        current = now or _behavior_tree_executor._now()
+        return current.weekday() >= 3
+
+    def _next_mojie_raid_thursday_verification_time_text(
+        self,
+        now: datetime | None = None,
+    ) -> str:
+        """Return this week's Thursday 10:00 verification boundary."""
+
+        current = now or _behavior_tree_executor._now()
+        days_until_thursday = 3 - current.weekday()
+        if days_until_thursday <= 0:
+            raise ValueError("奇袭魔界周四复核时间只适用于周一至周三")
+        return (current + timedelta(days=days_until_thursday)).replace(
             hour=10,
             minute=0,
             second=0,
@@ -4981,7 +5105,7 @@ class DailyFoundationTaskMixin:
     ) -> str:
         """Choose the next 13:00/21:30 check until rewards reach zero."""
 
-        current = now or _behavior_tree_runtime._now()
+        current = now or _behavior_tree_executor._now()
         for hour, minute in ((13, 0), (21, 30)):
             candidate = current.replace(
                 hour=hour,
@@ -5005,13 +5129,35 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any],
         *,
         reason: str,
+        confirmed_remaining: int,
+        confirmed_at: datetime | None = None,
     ) -> str:
-        next_time = self._next_mojie_raid_week_start_time_text()
+        current = confirmed_at or _behavior_tree_executor._now()
+        if int(confirmed_remaining) != 0:
+            raise ValueError("奇袭魔界只有明确确认剩余次数为 0 才能推进到下周")
+        if not self._mojie_raid_completion_window_open(current):
+            raise ValueError("奇袭魔界只有周四起才能判定本周完成")
+        next_time = self._next_mojie_raid_week_start_time_text(current)
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid"),
             next_time,
         )
         self._log("success", f"日常_奇袭魔界：{reason}，下次 {next_time}")
+        return next_time
+
+    def _schedule_mojie_raid_thursday_verification(
+        self,
+        payload: dict[str, Any],
+        *,
+        reason: str,
+        now: datetime | None = None,
+    ) -> str:
+        next_time = self._next_mojie_raid_thursday_verification_time_text(now)
+        self._persist_scheduler_task_next_time(
+            str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid"),
+            next_time,
+        )
+        self._log("success", f"日常_奇袭魔界：{reason}，本周周四复核 {next_time}")
         return next_time
 
     def _schedule_next_mojie_raid_trigger(
@@ -5037,7 +5183,7 @@ class DailyFoundationTaskMixin:
 
         safety_seconds = max(1, int(payload.get("mojie_raid_countdown_safety_seconds") or 60))
         next_time = (
-            _behavior_tree_runtime._now()
+            _behavior_tree_executor._now()
             + timedelta(seconds=max(1, int(countdown_seconds)) + safety_seconds)
         ).strftime("%Y-%m-%d %H:%M:%S")
         scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid")
@@ -5047,10 +5193,10 @@ class DailyFoundationTaskMixin:
 
     def _handle_daily_mojie_raid_open_blocker_placeholder(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
     ):
-        del runtime, payload
+        del context, payload
         self._log("warning", "日常_奇袭魔界：特殊弹窗处理占位，等待后续补标/补流程")
         if False:
             yield None
@@ -5058,10 +5204,10 @@ class DailyFoundationTaskMixin:
 
     def _confirm_daily_mojie_raid_reward_confirmation(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
     ):
         self._log("action", "日常_奇袭魔界：检测到 #330 前置奖励确认，点击「确定」后继续等待 #319")
-        waited = yield from runtime.wait_click_then_view(
+        waited = yield from context.wait_click_then_scene(
             330,
             "确定",
             [319],
@@ -5086,15 +5232,26 @@ class DailyFoundationTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_周本资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([327, 326, 325, 69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([420, 419, 327, 326, 325, 69, 34], update=True)
+        text = context.ocr_text(frame)
+        recorded_next_time = self._daily_weekly_dungeon_recorded_future(payload)
+        if scene_id in {419, 420}:
+            yield from self._wait_daily_weekly_dungeon_battle_completion(context, payload, battle_started=True)
+            self._record_daily_weekly_dungeon_done(
+                payload,
+                message="从运行中的副本恢复并确认战斗结束，已回到 #34",
+            )
+            return "success"
+        if recorded_next_time:
+            self._log("success", f"日常_周本：本周期完成事实已记录，下次 {recorded_next_time}")
+            return "success"
         if scene_id not in {327, 326, 325, 69}:
-            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="日常_周本")
+            scene_id = yield from self._enter_daily_from_world_like(ctx, context, stop_event, frame, scene_id, text, label="日常_周本")
         if scene_id not in {327, 326, 325, 69}:
             raise RuntimeError("日常_周本：未能进入 #69 日常列表")
         if scene_id == 69:
-            status = yield from runtime.open_daily_entry(
+            status = yield from context.open_daily_entry(
                 label="日常_周本",
                 title_pattern="周本",
                 progress_can_mark_done=False,
@@ -5111,22 +5268,50 @@ class DailyFoundationTaskMixin:
                 return "skipped"
             scene_id = 325
         if scene_id == 325:
-            scene_id = yield from self._open_daily_weekly_dungeon_tiangong_view(runtime, payload)
+            scene_id = yield from self._open_daily_weekly_dungeon_tiangong_view(context, payload)
         if scene_id == 326:
-            scene_id = yield from self._open_daily_weekly_dungeon_challenge_view(runtime, payload)
+            scene_id = yield from self._open_daily_weekly_dungeon_challenge_view(context, payload)
         if scene_id == -1:
             return "success"
-        yield from runtime.wait_click(327, "挑战")
-        yield from runtime.wait_view(
-            34,
-            timeout=float(payload.get("battle_return_world_timeout") or 600.0),
-            label="日常_周本：等待战斗结束回到世界 #34",
-        )
+        yield from context.wait_click(327, "挑战")
+        yield from self._wait_daily_weekly_dungeon_battle_completion(context, payload)
         self._record_daily_weekly_dungeon_done(
             payload,
             message="战斗结束，已回到 #34",
         )
         return "success"
+
+    def _daily_weekly_dungeon_recorded_future(self, payload: dict[str, Any]) -> str | None:
+        task_id = str(payload.get("__scheduler_task_id") or "daily-weekly-dungeon").strip() or "daily-weekly-dungeon"
+        task = next(
+            (item for item in _read_kernel_scheduler_tasks() if str(item.get("id") or "") == task_id),
+            None,
+        )
+        next_time = str(task.get("next_time") or "").strip() if isinstance(task, dict) else ""
+        due_at = parse_data_annotation_task_time(next_time) if next_time else None
+        if due_at is None or due_at <= time.time():
+            return None
+        return next_time if next_time == self._daily_weekly_dungeon_next_time_text(payload) else None
+
+    def _wait_daily_weekly_dungeon_battle_completion(
+        self,
+        context: BehaviorTreeContext,
+        payload: dict[str, Any],
+        *,
+        battle_started: bool = False,
+    ):
+        if not battle_started:
+            yield from context.wait_scene(
+                419,
+                420,
+                wait=float(payload.get("battle_start_timeout") or 60.0),
+                label="日常_周本：等待副本自动战斗真正启动 #419/#420",
+            )
+        yield from context.wait_scene(
+            34,
+            wait=float(payload.get("battle_return_world_timeout") or 600.0),
+            label="日常_周本：等待副本自动战斗结束并真正回到世界 #34",
+        )
 
     def _daily_weekly_dungeon_next_time_text(self, payload: dict[str, Any]) -> str:
         now = _now()
@@ -5145,7 +5330,7 @@ class DailyFoundationTaskMixin:
 
     def _open_daily_weekly_dungeon_tiangong_view(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
     ):
         max_attempts = max(1, int(payload.get("weekly_tiangong_max_attempts") or 3))
@@ -5157,7 +5342,7 @@ class DailyFoundationTaskMixin:
         last_error: TimeoutError | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     325,
                     "天宫",
                     326,
@@ -5168,8 +5353,8 @@ class DailyFoundationTaskMixin:
                 return 326
             except TimeoutError as exc:
                 last_error = exc
-                scene_id, score, frame = runtime.current_scene([326, 325, 69], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, score, frame = context.current_scene([326, 325, 69], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 326:
                     return 326
                 if scene_id == 325 and attempt < max_attempts:
@@ -5185,7 +5370,7 @@ class DailyFoundationTaskMixin:
 
     def _open_daily_weekly_dungeon_challenge_view(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
     ):
         max_attempts = max(1, int(payload.get("tiangong_challenge_max_attempts") or 3))
@@ -5195,21 +5380,27 @@ class DailyFoundationTaskMixin:
         last_error: TimeoutError | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                yield from runtime.wait_view(326, timeout=wait_timeout, label="日常_周本：确认 #326 玉霄天宫页")
+                yield from context.wait_scene(326, wait=wait_timeout, label="日常_周本：确认 #326 玉霄天宫页")
                 if pre_click_wait > 0:
                     self._log("wait", f"日常_周本：等待 #326 浮动战报消失 {pre_click_wait:.1f}s")
-                    yield from runtime.wait_action_settle(pre_click_wait)
+                    yield from context.wait_action_settle(pre_click_wait)
                 try:
-                    text = runtime.ocr_text(update=True)
+                    text = context.ocr_text(update=True)
                 except TypeError:
-                    text = runtime.ocr_text(runtime.cur_frame(update=True) if hasattr(runtime, "cur_frame") else None)
+                    text = context.ocr_text(context.cur_frame(update=True) if hasattr(context, "cur_frame") else None)
                 remaining = self._daily_weekly_dungeon_remaining_count(text)
                 if remaining is not None:
                     self._log("detail", f"日常_周本：#326 本周剩余奖励次数 {remaining}，OCR={text[:80]}")
                     if remaining <= 0:
                         self._record_daily_weekly_dungeon_done(payload, message="#326 显示本周剩余奖励次数为 0")
                         return -1
-                yield from runtime.wait_click_then_view(
+                    if remaining < 3:
+                        self._record_daily_weekly_dungeon_done(
+                            payload,
+                            message=f"#326 显示本周剩余奖励次数已降为 {remaining}/3，本周挑战已执行",
+                        )
+                        return -1
+                yield from context.wait_click_then_scene(
                     326,
                     "挑战",
                     327,
@@ -5220,8 +5411,8 @@ class DailyFoundationTaskMixin:
                 return 327
             except TimeoutError as exc:
                 last_error = exc
-                scene_id, score, frame = runtime.current_scene([327, 326], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, score, frame = context.current_scene([327, 326], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 327:
                     return 327
                 if scene_id == 326 and attempt < max_attempts:
@@ -5283,7 +5474,7 @@ class DailyFoundationTaskMixin:
 
     def _wait_current_daily_xianyuan_duel_facts(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         reason: str,
@@ -5315,13 +5506,13 @@ class DailyFoundationTaskMixin:
                 "wait",
                 f"仙缘斗法：{reason} 等待 Runtime {elapsed:.1f}/{timeout:.0f}s，{last_reason}",
             )
-            yield from runtime.wait_action_settle(
+            yield from context.wait_action_settle(
                 min(poll_seconds, max(0.2, timeout - elapsed))
             )
 
     def _defer_daily_xianyuan_duel_runtime(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         scheduler_task_id: str,
@@ -5332,7 +5523,7 @@ class DailyFoundationTaskMixin:
         self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
         self._log("skip", f"仙缘斗法：{reason}，{next_time} 安全复查")
         try:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
         except (InterruptedError, GeneratorExit):
             raise
         except Exception as exc:
@@ -5341,15 +5532,15 @@ class DailyFoundationTaskMixin:
 
     def _map_daily_xianyuan_duel_targets(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         facts: dict[str, Any],
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        scene_id, score, frame = runtime.current_scene([308], update=True)
+        scene_id, score, frame = context.current_scene([308], update=True)
         if scene_id != 308:
             raise RuntimeError(f"仙缘斗法：选人要求当前为 #308，实际 #{scene_id or 'unknown'} {score:.0f}%")
         ocr_names = [
-            runtime.ocr_text_in_shapes(
+            context.ocr_text_in_shapes(
                 308,
                 (f"姓名{slot}",),
                 padding=int(payload.get("target_name_ocr_padding") or 4),
@@ -5380,7 +5571,7 @@ class DailyFoundationTaskMixin:
 
     def _read_daily_xianyuan_duel_remaining(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
     ):
         max_attempts = max(1, int(payload.get("remaining_ocr_attempts") or 6))
@@ -5389,9 +5580,9 @@ class DailyFoundationTaskMixin:
         max_remaining = max(0, int(payload.get("max_runs") or 7))
         last_text = ""
         for attempt in range(max_attempts):
-            numbers, last_text = runtime.ocr_numbers_in_shapes(308, ("次数",), padding=padding)
+            numbers, last_text = context.ocr_numbers_in_shapes(308, ("次数",), padding=padding)
             if not numbers:
-                crop_numbers, crop_text = runtime.ocr_numbers_in_shapes(
+                crop_numbers, crop_text = context.ocr_numbers_in_shapes(
                     308,
                     ("次数",),
                     padding=padding,
@@ -5417,7 +5608,7 @@ class DailyFoundationTaskMixin:
                         remaining = corrected
                     else:
                         if attempt + 1 < max_attempts:
-                            yield from runtime.wait_action_settle(0.8)
+                            yield from context.wait_action_settle(0.8)
                             continue
                         raise RuntimeError(
                             "仙缘斗法：#308[次数] OCR 超出单周期安全上限，"
@@ -5426,12 +5617,12 @@ class DailyFoundationTaskMixin:
                 self._log("detail", f"仙缘斗法：#308[次数] 剩余 {remaining}，OCR={last_text[:80]}")
                 return remaining
             if attempt + 1 < max_attempts:
-                yield from runtime.wait_action_settle(retry_seconds)
+                yield from context.wait_action_settle(retry_seconds)
         raise RuntimeError(f"仙缘斗法：无法从 #308[次数] 识别剩余次数，最后 OCR={last_text[:120]}")
 
     def _open_daily_xianyuan_duel_purchase(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         reason: str,
@@ -5441,7 +5632,7 @@ class DailyFoundationTaskMixin:
         last_scene: tuple[int | None, float, str] | None = None
         for attempt in range(1, attempts + 1):
             try:
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     308,
                     "购买",
                     311,
@@ -5450,8 +5641,8 @@ class DailyFoundationTaskMixin:
                 )
                 return
             except TimeoutError as exc:
-                scene_id, score, frame = runtime.current_scene([311, 308], update=True)
-                last_scene = (scene_id, score, runtime.ocr_text(frame))
+                scene_id, score, frame = context.current_scene([311, 308], update=True)
+                last_scene = (scene_id, score, context.ocr_text(frame))
                 if scene_id == 311:
                     return
                 if scene_id != 308:
@@ -5469,13 +5660,13 @@ class DailyFoundationTaskMixin:
                     f"仙缘斗法：{reason}后等待 #311 超时，但新帧仍确认 #308；"
                     f"稳定等待后重试购买入口 {attempt + 1}/{attempts}",
                 )
-                yield from runtime.wait_action_settle(
+                yield from context.wait_action_settle(
                     float(payload.get("purchase_open_retry_settle_seconds") or 1.0)
                 )
 
-    def _prepare_daily_xianyuan_duel_purchases(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
+    def _prepare_daily_xianyuan_duel_purchases(self, context: BehaviorTreeContext, payload: dict[str, Any]):
         yield from self._open_daily_xianyuan_duel_purchase(
-            runtime,
+            context,
             payload,
             reason="首次检查购买档位",
         )
@@ -5492,10 +5683,10 @@ class DailyFoundationTaskMixin:
         last_purchased_price: int | None = None
         for _index in range(max_attempts):
             for _retry in range(3):
-                numbers, text = runtime.ocr_numbers_in_shapes(311, ("价格",), padding=16)
+                numbers, text = context.ocr_numbers_in_shapes(311, ("价格",), padding=16)
                 if numbers:
                     break
-                yield from runtime.wait_action_settle(0.8)
+                yield from context.wait_action_settle(0.8)
             if not numbers:
                 continue
             price = numbers[0]
@@ -5505,7 +5696,7 @@ class DailyFoundationTaskMixin:
                     f"上一档 {last_purchased_price}，当前 {price}，拒绝重放灵石购买"
                 )
             if price == stop_price:
-                yield from runtime.wait_click_then_view(311, "返回", 308)
+                yield from context.wait_click_then_scene(311, "返回", 308)
                 return
             if price not in expected_purchase_prices:
                 raise RuntimeError(
@@ -5513,12 +5704,12 @@ class DailyFoundationTaskMixin:
                     f"{stop_price} 灵石幂等停止档，当前价格 {price}"
                 )
             self._log("action", f"仙缘斗法：购买斗法次数，价格 {price}")
-            yield from runtime.wait_click(311, "购买")
+            yield from context.wait_click(311, "购买")
             last_purchased_price = int(price)
-            yield from runtime.wait_action_settle(1.0)
-            scene_id, score, frame = runtime.current_scene([311, 308], update=True)
+            yield from context.wait_action_settle(1.0)
+            scene_id, score, frame = context.current_scene([311, 308], update=True)
             if scene_id == 308:
-                text = runtime.ocr_text(frame)
+                text = context.ocr_text(frame)
                 self._log(
                     "detail",
                     "仙缘斗法：购买后入口关闭并返回 #308，"
@@ -5526,7 +5717,7 @@ class DailyFoundationTaskMixin:
                     f"当前 #308 {score:.0f}%，OCR={text[:80]}",
                 )
                 yield from self._open_daily_xianyuan_duel_purchase(
-                    runtime,
+                    context,
                     payload,
                     reason="购买后重新确认下一档",
                 )
@@ -5538,7 +5729,7 @@ class DailyFoundationTaskMixin:
                 )
         raise RuntimeError(f"仙缘斗法：购买页价格识别失败或未达到停止价格，最后识别文本：{text if 'text' in locals() else ''}")
 
-    def _optimize_daily_xianyuan_duel_formation(self, runtime: FanxiuRuntimeSession, payload: dict[str, Any]):
+    def _optimize_daily_xianyuan_duel_formation(self, context: BehaviorTreeContext, payload: dict[str, Any]):
         if bool(payload.get("skip_formation_optimize")):
             return
         facts = payload.get("__xianyuan_duel_facts")
@@ -5596,7 +5787,7 @@ class DailyFoundationTaskMixin:
             enemy_team = target.get("team") if isinstance(target.get("team"), dict) else {}
 
         start_ts = time.monotonic()
-        scene_id, score, frame = runtime.current_scene([309], update=True)
+        scene_id, score, frame = context.current_scene([309], update=True)
         if scene_id != 309:
             raise RuntimeError(f"仙缘斗法：阵容优化要求当前为 #309，实际为 #{scene_id or 'unknown'} {score:.0f}%")
         if not self_team.get("formation_complete") or not enemy_team.get("formation_complete"):
@@ -5618,14 +5809,14 @@ class DailyFoundationTaskMixin:
         settle_seconds = float(payload.get("formation_drag_settle_seconds") or 1.8)
         drag_duration = float(payload.get("formation_drag_duration_seconds") or 2.0)
         for start_slot, end_slot in swaps:
-            runtime.drag_shape_to_shape(
+            context.drag_shape_to_shape(
                 309,
                 f"拖拽锚点{start_slot}",
                 f"拖拽锚点{end_slot}",
                 duration=drag_duration,
                 frame_data_url=frame,
             )
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
         elapsed = time.monotonic() - start_ts
         my_labels = [XIANYUAN_CAREER_LABELS[int(value)] for value in best["careers"]]
         enemy_labels = [XIANYUAN_CAREER_LABELS[int(value)] for value in best["enemy_careers"]]
@@ -5636,21 +5827,21 @@ class DailyFoundationTaskMixin:
             f"调整{len(swaps)}次，耗时{elapsed:.1f}s",
         )
 
-    def _read_daily_xianyuan_duel_formation_state(self, runtime: FanxiuRuntimeSession) -> dict[str, Any]:
+    def _read_daily_xianyuan_duel_formation_state(self, context: BehaviorTreeContext) -> dict[str, Any]:
         from PIL import Image, ImageChops, ImageStat
 
-        scene_id, score, frame = runtime.current_scene([309], update=True)
+        scene_id, score, frame = context.current_scene([309], update=True)
         if scene_id != 309:
             raise RuntimeError(f"仙缘斗法：阵容优化要求当前为 #309，实际为 #{scene_id or 'unknown'} {score:.0f}%")
-        image309 = runtime.view(309).raw
-        entry = runtime.ctx.get("entry") if isinstance(runtime.ctx, dict) else None
+        image309 = context.view(309).raw
+        entry = context.ctx.get("entry") if isinstance(context.ctx, dict) else None
         entry_id = str(getattr(entry, "entry_id", "") or "")
         filename = str(image309.get("filename") or "")
         if not entry_id or not filename:
             raise RuntimeError("仙缘斗法：缺少 #309 参考图，无法识别阵容")
         ref_path = data_annotation_entry_image_dir(entry_id) / filename
         ref_image = Image.open(ref_path).convert("RGB")
-        cur_image = Image.open(io.BytesIO(runtime.runner._decode_frame_data_url(frame))).convert("RGB")
+        cur_image = Image.open(io.BytesIO(context.runner._decode_frame_data_url(frame))).convert("RGB")
 
         def crop(pil_image: Any, shape: dict[str, Any], *, pad: int = 1):
             width, height = pil_image.size
@@ -5884,17 +6075,17 @@ class DailyFoundationTaskMixin:
     ):
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         image69 = (ctx.get("images") or {}).get(69)
         if not isinstance(image69, dict):
             raise RuntimeError("缺少 #69「日常」标注，无法遍历日常列表")
 
-        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        scene_id, _score, frame = context.current_scene([69, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id != 69:
             scene_id = yield from self._enter_daily_from_world_like(
                 ctx,
-                runtime,
+                context,
                 stop_event,
                 frame,
                 scene_id,
@@ -5911,13 +6102,13 @@ class DailyFoundationTaskMixin:
             self._raise_if_stopped(stop_event)
             with self._lock:
                 self._set_status_locked("running", f"日常_复核：读取日常列表 {index + 1}/{max_scrolls + 1}", phase="daily_audit_scan", current_scene=69)
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             lines = self._ocr_fragments_in_scene_shapes(ctx, frame, image69)
             self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_复核")
             rows = self._merge_daily_audit_rows(rows, self._daily_audit_visible_rows(lines, image69))
             if index >= max_scrolls:
                 break
-            changed = yield from runtime.scroll_shape_content(view69, list_shape, direction="down")
+            changed = yield from context.scroll_shape_content(view69, list_shape, direction="down")
             if not changed:
                 break
 
@@ -5993,8 +6184,8 @@ class DailyFoundationTaskMixin:
         task_label: str,
     ) -> None:
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, frame_data_url=frame)
-        scene_id, score, _frame = runtime.current_scene([69, 34], frame_data_url=frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, frame_data_url=frame)
+        scene_id, score, _frame = context.current_scene([69, 34], frame_data_url=frame)
         text = "\n".join(str(line.get("text") or "") for line in lines if isinstance(line, dict))
         if scene_id == 69:
             return
@@ -6014,9 +6205,9 @@ class DailyFoundationTaskMixin:
         initial_checks: int = 1,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         max_scrolls = self._payload_int(payload, "max_scrolls", default=30)
-        return (yield from runtime.open_daily_entry(
+        return (yield from context.open_daily_entry(
             label=task_label,
             title_pattern=title_pattern,
             exclude_pattern=exclude_pattern,
@@ -6049,7 +6240,7 @@ class DailyFoundationTaskMixin:
         daily_start_time: str | time_cls | None = None,
         daily_end_time: str | time_cls | None = None,
     ) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         retry_at = now + timedelta(seconds=max(60, int(seconds)))
         if daily_start_time is not None and daily_end_time is not None:
             retry_at = clip_daily_retry_to_window(
@@ -6076,7 +6267,7 @@ class DailyFoundationTaskMixin:
     ) -> tuple[int | None, float, str]:
         timeout = float(payload.get("post_click_timeout") or 8.0)
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
@@ -6084,15 +6275,15 @@ class DailyFoundationTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = runtime.current_scene([69, 34], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene([69, 34], update=True)
+            text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text or last_text
             if scene_id in {69, 34}:
                 return scene_id, float(score), last_text
             if time.monotonic() - start >= timeout:
                 if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                    scene_id, score, frame = runtime.current_scene([69, 34], update=True)
-                    text = runtime.ocr_text(frame)
+                    scene_id, score, frame = context.current_scene([69, 34], update=True)
+                    text = context.ocr_text(frame)
                     return scene_id, float(score), text
                 return last_scene_id, float(last_score), last_text
             with self._lock:
@@ -6124,17 +6315,17 @@ class DailyFoundationTaskMixin:
         image34 = images.get(34)
         image69 = images.get(69)
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([69, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame = runtime.current_scene([69, 34], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, _score, frame = context.current_scene([69, 34], update=True)
+                text = context.ocr_text(frame)
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
                     ctx,
-                    runtime,
+                    context,
                     stop_event,
                     frame,
                     scene_id,
@@ -6181,7 +6372,7 @@ class DailyFoundationTaskMixin:
 
     def daily_lundao_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         if lundao_safety_threshold(now) is not None:
             return None
         return self._persist_admission_decision(payload, {
@@ -6205,31 +6396,31 @@ class DailyFoundationTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少论道_座位资产树路径，无法执行作业")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
 
-        scene_id, _score, frame = runtime.current_scene([69, 34, 296, 297, 298, 371, 372, 373, 375, 329, 301, 302, 303, 304, 391, 52, 53, 54], update=True)
+        scene_id, _score, frame = context.current_scene([69, 34, 296, 297, 298, 371, 372, 373, 375, 329, 301, 302, 303, 304, 391, 52, 53, 54], update=True)
         # Candidate-set scoring can project a real world frame onto #69 when
         # current-scene closure candidates are included.  Before treating that broad result as
         # authorization to scroll the daily list, arbitrate #69 vs #34 again
         # on the exact same frame.  The list guard remains the final barrier.
         if scene_id == 69:
-            anchored_scene_id, anchored_score, _ = runtime.current_scene(
+            anchored_scene_id, anchored_score, _ = context.current_scene(
                 [69, 34],
                 frame_data_url=frame,
             )
             if anchored_scene_id in {69, 34}:
                 scene_id, _score = anchored_scene_id, anchored_score
-        text = runtime.ocr_text(frame)
+        text = context.ocr_text(frame)
         if scene_id in {34, 69}:
             runtime_guard = yield from self._daily_lundao_world_runtime_guard(
-                runtime,
+                context,
                 payload,
                 scene_id=scene_id,
             )
             if runtime_guard is not None:
                 return runtime_guard
         if scene_id == 54 or self._daily_lundao_text_is_exit_confirm(text):
-            result = yield from self._confirm_daily_lundao_exit_to_world(runtime)
+            result = yield from self._confirm_daily_lundao_exit_to_world(context)
             return self._finish_daily_lundao_current_scene_action(
                 payload,
                 result,
@@ -6238,40 +6429,40 @@ class DailyFoundationTaskMixin:
         if self._daily_lundao_text_is_reward(text):
             scene_id = 52
         if scene_id in {297, 298, 371, 372, 373, 375}:
-            result = yield from self._run_daily_lundao_seat_and_leave(runtime, stop_event, payload=payload)
+            result = yield from self._run_daily_lundao_seat_and_leave(context, stop_event, payload=payload)
             return self._finish_daily_lundao_current_scene_action(
                 payload,
                 result,
                 reason=f"从当前中间场景 #{scene_id} 收口完成",
             )
         if scene_id in {329, 301, 302, 303, 52, 53}:
-            result = yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id)
+            result = yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id)
             return self._finish_daily_lundao_current_scene_action(
                 payload,
                 result,
                 reason=f"从当前入座收尾场景 #{scene_id} 收口完成",
             )
         if scene_id == 391:
-            entry_result = yield from self._dismiss_daily_lundao_kicked(runtime)
+            entry_result = yield from self._dismiss_daily_lundao_kicked(context)
             scene_id = entry_result.get("scene_id")
         if scene_id == 304:
             return (yield from self._run_daily_lundao_dynamic_strategy_timed(
-                runtime,
+                context,
                 stop_event,
                 payload,
                 daluo_source_scene_id=304,
             ))
         if scene_id == 296:
-            return (yield from self._run_daily_lundao_dynamic_strategy_timed(runtime, stop_event, payload))
+            return (yield from self._run_daily_lundao_dynamic_strategy_timed(context, stop_event, payload))
         if scene_id != 69:
-            scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label="论道_座位")
+            scene_id = yield from self._enter_daily_from_world_like(ctx, context, stop_event, frame, scene_id, text, label="论道_座位")
         if scene_id != 69:
             raise RuntimeError("论道_座位：未能进入 #69 日常列表")
         entry_result = yield from self._enter_daily_lundao_and_route_state(
             ctx,
             stop_event,
             payload,
-            runtime,
+            context,
         )
         if entry_result["status"] == "not_found":
             return self._finish_daily_lundao_unseated_retry(
@@ -6279,18 +6470,18 @@ class DailyFoundationTaskMixin:
                 reason="#69 暂未找到论道入口，首次落座前立即重试",
             )
         if entry_result["status"] == "kicked":
-            entry_result = yield from self._dismiss_daily_lundao_kicked(runtime)
+            entry_result = yield from self._dismiss_daily_lundao_kicked(context)
         scene_id = entry_result.get("scene_id")
         score = float(entry_result.get("score") or 0.0)
         if entry_result["status"] == "in_progress":
             return (yield from self._run_daily_lundao_dynamic_strategy_timed(
-                runtime,
+                context,
                 stop_event,
                 payload,
                 daluo_source_scene_id=304,
             ))
         if entry_result["status"] == "dojo_selection":
-            return (yield from self._run_daily_lundao_dynamic_strategy_timed(runtime, stop_event, payload))
+            return (yield from self._run_daily_lundao_dynamic_strategy_timed(context, stop_event, payload))
         if entry_result["status"] in {"unknown", "unimplemented"}:
             raise RuntimeError(
                 f"论道_座位：进入后的落点分支尚未实现，当前 "
@@ -6303,7 +6494,7 @@ class DailyFoundationTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: Any,
+        context: Any,
     ) -> dict[str, Any]:
         """节点 1：从 #69 打开论道并判定四态或道场选择页。
 
@@ -6321,12 +6512,12 @@ class DailyFoundationTaskMixin:
         if status != "open":
             return {"status": status, "scene_id": None, "score": 0.0}
 
-        yield from runtime.wait_scene(
+        yield from context.wait_scene(
             *_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS,
-            timeout=20.0,
+            wait=20.0,
             label="论道_座位：等待道场选择/闻道中/被踢状态",
         )
-        scene_id, score, frame = runtime.current_scene(_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS, update=True)
+        scene_id, score, frame = context.current_scene(_DAILY_LUNDAO_ENTRY_LAYER0_SCENE_IDS, update=True)
         return self._route_daily_lundao_entry_scene(scene_id, score, frame)
 
     def _route_daily_lundao_entry_scene(
@@ -6348,18 +6539,18 @@ class DailyFoundationTaskMixin:
         # 新的正式落点先显式失败；待用户给出业务语义后再加入四态映射或独立路由。
         return {"status": "unimplemented", "scene_id": scene_id, "score": float(score)}
 
-    def _dismiss_daily_lundao_kicked(self, runtime: Any) -> dict[str, Any]:
+    def _dismiss_daily_lundao_kicked(self, context: Any) -> dict[str, Any]:
         """确认 #391「被踢了」提示，再按同一组稳定状态重新路由。"""
 
         post_kick_scene_ids = [296, 304]
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             391,
             "确认",
             post_kick_scene_ids,
             settle_seconds=1.5,
             timeout=20.0,
         )
-        scene_id, score, frame = runtime.current_scene(post_kick_scene_ids, update=True)
+        scene_id, score, frame = context.current_scene(post_kick_scene_ids, update=True)
         return self._route_daily_lundao_entry_scene(scene_id, score, frame)
 
     def _record_daily_lundao_next_time(
@@ -6385,8 +6576,8 @@ class DailyFoundationTaskMixin:
     ) -> str:
         """Close Scheduler intent after consuming a provable current scene."""
 
-        status = self._read_daily_lundao_runtime_status(payload)
-        now = _behavior_tree_runtime._now()
+        status = self._read_daily_lundao_execution_status(payload)
+        now = _behavior_tree_executor._now()
         left_time = status.get("current_left_listen_time")
         room_id = status.get("room_id")
         next_at = (
@@ -6421,7 +6612,7 @@ class DailyFoundationTaskMixin:
         """
 
         retry_at = next_lundao_unseated_retry(
-            _behavior_tree_runtime._now()
+            _behavior_tree_executor._now()
         ).strftime("%Y-%m-%d %H:%M:%S")
         self._record_daily_lundao_next_time(
             payload,
@@ -6432,21 +6623,21 @@ class DailyFoundationTaskMixin:
 
     def _finish_daily_lundao_changed_sanqing_target(
         self,
-        runtime: Any,
+        context: Any,
         payload: Mapping[str, Any],
     ):
         """Finish safely when the selected Sanqing occupant moved before click."""
 
-        yield from self._return_daily_lundao_to_selection(runtime, 297)
-        yield from runtime.goto_view(34)
+        yield from self._return_daily_lundao_to_selection(context, 297)
+        yield from context.go_scene(34)
         return self._finish_daily_lundao_unseated_retry(
             payload,
             reason="三清目标已变化，未执行入座，10分钟后继续检查",
         )
 
-    def _daily_lundao_first_visible_dojo(self, runtime: Any) -> str:
-        frame = runtime.cur_frame(update=True)
-        tokens = runtime.ocr_tokens_in_shapes(296, ["至尊道场"], frame_data_url=frame)
+    def _daily_lundao_first_visible_dojo(self, context: Any) -> str:
+        frame = context.cur_frame(update=True)
+        tokens = context.ocr_tokens_in_shapes(296, ["至尊道场"], frame_data_url=frame)
         fragments = group_ocr_tokens(tokens)
         hits: list[str] = []
         for fragment in fragments:
@@ -6461,7 +6652,7 @@ class DailyFoundationTaskMixin:
 
     def _click_daily_lundao_dojo(
         self,
-        runtime: Any,
+        context: Any,
         target: str,
         *,
         source_scene_id: int = 296,
@@ -6474,14 +6665,14 @@ class DailyFoundationTaskMixin:
             # the fragment only recovers a candidate and never promotes an
             # unknown frame or permits an ambiguous click.
             stable_target = target.removesuffix("道场") or target
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             # The dojo tabs are controls, not #304 identity shapes.  Prefer
             # the shared full-frame token cache so candidate collection does
             # not silently exclude them; this does not launch another OCR
             # pass.  Legacy/test adapters fall back to their token method.
-            ocr_tokens = getattr(runtime, "full_frame_ocr_tokens", None)
+            ocr_tokens = getattr(context, "full_frame_ocr_tokens", None)
             if not callable(ocr_tokens):
-                ocr_tokens = getattr(runtime, "ocr_tokens", None)
+                ocr_tokens = getattr(context, "ocr_tokens", None)
             if callable(ocr_tokens):
                 # Consume the real token boxes so ``大`` and ``罗`` may be
                 # reconstructed without assuming OCR returns one full line.
@@ -6502,7 +6693,7 @@ class DailyFoundationTaskMixin:
             else:
                 # Test/legacy adapter fallback; production Runtime exposes
                 # token-level OCR and therefore takes the branch above.
-                lines = runtime.ocr_lines(frame_data_url=frame)
+                lines = context.ocr_lines(frame_data_url=frame)
                 candidates = [
                     line
                     for line in lines
@@ -6516,7 +6707,7 @@ class DailyFoundationTaskMixin:
                     f"候选={len(candidates)}，已停止且未点击"
                 )
             line = candidates[0]
-            runtime.click_frame_point(
+            context.click_frame_point(
                 304,
                 float(line.get("x") or 0) + float(line.get("w") or 0) / 2,
                 float(line.get("y") or 0) + float(line.get("h") or 0) / 2,
@@ -6525,17 +6716,17 @@ class DailyFoundationTaskMixin:
         if source_scene_id != 296:
             raise RuntimeError(f"论道_座位：不支持从 #{source_scene_id} 选择「{target}」")
         order = ("至尊", "大罗", "三清", "御界")
-        first = self._daily_lundao_first_visible_dojo(runtime)
+        first = self._daily_lundao_first_visible_dojo(context)
         slot = order.index(target) - order.index(first) + 1
         slot_shapes = {1: "至尊道场", 2: "大罗道场", 3: "三清道场"}
         shape = slot_shapes.get(slot)
         if shape is None:
             raise RuntimeError(f"论道_座位：#296 当前首行为「{first}」，目标「{target}」不在可见三行，已停止")
-        runtime.click_shape_center(296, shape)
+        context.click_shape_center(296, shape)
 
     def _click_daily_lundao_dojo_with_stable_ocr(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         target: str,
         *,
@@ -6557,7 +6748,7 @@ class DailyFoundationTaskMixin:
             self._raise_if_stopped(stop_event)
             try:
                 self._click_daily_lundao_dojo(
-                    runtime,
+                    context,
                     target,
                     source_scene_id=source_scene_id,
                 )
@@ -6575,7 +6766,7 @@ class DailyFoundationTaskMixin:
                     "论道_座位：#304 本帧未读到大罗，保持当前场景且不点击，"
                     f"等待新鲜帧 {attempt}/{bounded_attempts}",
                 )
-                yield from runtime.wait_action_settle(max(0.0, float(retry_seconds)))
+                yield from context.wait_action_settle(max(0.0, float(retry_seconds)))
                 continue
             self._log(
                 "detail",
@@ -6618,7 +6809,7 @@ class DailyFoundationTaskMixin:
 
     def _wait_daily_lundao_room_facts(
         self,
-        runtime: Any,
+        context: Any,
         *,
         reason: str,
         room_id: int,
@@ -6652,7 +6843,7 @@ class DailyFoundationTaskMixin:
                 return facts
             if retry >= max(0, int(settle_retries)):
                 break
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_action_settle(1.0)
             facts = self._refresh_daily_lundao_runtime_facts(reason=reason, room_id=room_id)
         return facts
 
@@ -6664,8 +6855,8 @@ class DailyFoundationTaskMixin:
         except (TypeError, ValueError):
             return None
 
-    def _daily_lundao_remaining_attempts(self, runtime: Any) -> int:
-        text = runtime.ocr_text_in_shapes(296, ["次数"], padding=8)
+    def _daily_lundao_remaining_attempts(self, context: Any) -> int:
+        text = context.ocr_text_in_shapes(296, ["次数"], padding=8)
         normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
         values = parse_ocr_values(normalized)
         if values is None:
@@ -6674,7 +6865,7 @@ class DailyFoundationTaskMixin:
 
     def _buy_one_daily_lundao_attempt(
         self,
-        runtime: Any,
+        context: Any,
         *,
         before: int,
         at: datetime,
@@ -6696,21 +6887,21 @@ class DailyFoundationTaskMixin:
                 "reason": "purchase_cutoff",
             }
         self._log("action", "论道_座位：座位动作已确认且次数为 0，点击 #296[购买]")
-        runtime.click_shape_center(296, "购买")
-        yield from runtime.wait_scene(392, timeout=15.0, label="论道_座位：等待购买次数页 #392")
+        context.click_shape_center(296, "购买")
+        yield from context.wait_scene(392, wait=15.0, label="论道_座位：等待购买次数页 #392")
         self._log("action", "论道_座位：只购买 1 次")
-        runtime.click_shape_center(392, "购买")
-        yield from runtime.wait_action_settle(1.5)
-        scene_id, score, _frame = runtime.current_scene([392], update=True)
+        context.click_shape_center(392, "购买")
+        yield from context.wait_action_settle(1.5)
+        scene_id, score, _frame = context.current_scene([392], update=True)
         scene_id = _lundao_waited_scene_id(scene_id)
         if scene_id != 392:
             raise RuntimeError(
                 f"论道_座位：点击 #392[购买] 后出现未知结果，scene={scene_id} score={float(score):.0f}%，"
                 "已停止且不会重复购买"
             )
-        runtime.click_shape_center(392, "返回")
-        yield from runtime.wait_scene(296, timeout=15.0, label="论道_座位：购买后返回 #296")
-        after = self._daily_lundao_remaining_attempts(runtime)
+        context.click_shape_center(392, "返回")
+        yield from context.wait_scene(296, wait=15.0, label="论道_座位：购买后返回 #296")
+        after = self._daily_lundao_remaining_attempts(context)
         if after <= before:
             self._log(
                 "warning",
@@ -6720,38 +6911,38 @@ class DailyFoundationTaskMixin:
         self._log("success", f"论道_座位：购买 1 次成功，剩余次数 {before}->{after}")
         return {"ready": True, "purchased": True, "before": before, "after": after}
 
-    def _return_daily_lundao_to_selection(self, runtime: Any, scene_id: int) -> int:
+    def _return_daily_lundao_to_selection(self, context: Any, scene_id: int) -> int:
         # #298 is the empty-seat variant of the same room list; its full-screen
         # reference has no duplicate return annotation, so use the shared #297
         # room-list return control already present at the same stable location.
-        runtime.click_shape_center(297, "返回")
-        return (yield from runtime.wait_scene(296, 304, timeout=15.0, label="论道_座位：返回道场选择"))
+        context.click_shape_center(297, "返回")
+        return (yield from context.wait_scene(296, 304, wait=15.0, label="论道_座位：返回道场选择"))
 
-    def _confirm_daily_lundao_seated_after_return(self, runtime: Any, initial_scene: int) -> int:
+    def _confirm_daily_lundao_seated_after_return(self, context: Any, initial_scene: int) -> int:
         """Resolve the short #296 -> #304 transition without trusting packet state."""
 
         scene_id = _lundao_waited_scene_id(initial_scene)
         if scene_id == 304:
             return 304
         for _attempt in range(3):
-            yield from runtime.wait_action_settle(2.0)
-            detected, _score, frame = runtime.current_scene([296, 304], update=True)
+            yield from context.wait_action_settle(2.0)
+            detected, _score, frame = context.current_scene([296, 304], update=True)
             scene_id = _lundao_waited_scene_id(detected)
             if scene_id == 304:
                 return 304
-            ocr_text = getattr(runtime, "ocr_text", None)
+            ocr_text = getattr(context, "ocr_text", None)
             if callable(ocr_text) and self._daily_lundao_text_is_seated(ocr_text(frame)):
                 return 304
         return scene_id
 
     def _run_daily_lundao_room_action(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         opportunity: Mapping[str, Any],
     ) -> str:
-        scene_id, score, _frame = runtime.current_scene([297, 298], update=True)
+        scene_id, score, _frame = context.current_scene([297, 298], update=True)
         action = str(opportunity.get("action") or "")
         # The Runtime roster can change between planning and the final fresh
         # layer-0 read.  #298 is itself authoritative evidence that an empty
@@ -6761,7 +6952,7 @@ class DailyFoundationTaskMixin:
         # an older ``empty`` decision must abort this room attempt rather than
         # being upgraded to a kick from stale facts.
         if scene_id == 298 and action in {"empty", "kick"}:
-            scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(runtime)
+            scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(context)
         elif scene_id == 297 and action == "empty":
             return "target_changed"
         elif action == "kick" and scene_id == 297:
@@ -6769,7 +6960,7 @@ class DailyFoundationTaskMixin:
             if target is None:
                 raise RuntimeError("论道_座位：策略要求踢人但没有合法目标，已停止")
             kick_result = yield from self._run_daily_lundao_kick_for_seat_strategy(
-                runtime,
+                context,
                 stop_event,
                 target_player=target,
                 room_id=int(
@@ -6782,11 +6973,11 @@ class DailyFoundationTaskMixin:
             score = float(kick_result.get("score") or 0.0)
         else:
             raise RuntimeError(f"论道_座位：策略动作 {action!r} 与当前场景 #{scene_id} 不一致，已停止")
-        return (yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id, score))
+        return (yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id, score))
 
     def _run_daily_lundao_dynamic_strategy_timed(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: Mapping[str, Any],
         **kwargs: Any,
@@ -6797,7 +6988,7 @@ class DailyFoundationTaskMixin:
         result = "failed"
         try:
             value = yield from self._run_daily_lundao_dynamic_strategy(
-                runtime,
+                context,
                 stop_event,
                 payload,
                 **kwargs,
@@ -6813,7 +7004,7 @@ class DailyFoundationTaskMixin:
 
     def _rebuild_daily_lundao_strategy_after_attempt_check(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: Mapping[str, Any],
         *,
@@ -6829,7 +7020,7 @@ class DailyFoundationTaskMixin:
             )
         return (
             yield from self._run_daily_lundao_dynamic_strategy(
-                runtime,
+                context,
                 stop_event,
                 payload,
                 attempt_ready=True,
@@ -6840,7 +7031,7 @@ class DailyFoundationTaskMixin:
 
     def _run_daily_lundao_dynamic_strategy(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: Mapping[str, Any],
         *,
@@ -6848,30 +7039,30 @@ class DailyFoundationTaskMixin:
         purchase_used: bool = False,
         daluo_source_scene_id: int = 296,
     ) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         from backend.core.fanxiu.instrumentation.lundao import (
             read_lundao_snapshot,
         )
 
         runtime_override = payload.get("__lundao_runtime_snapshot_override")
-        runtime_status = (
+        execution_status = (
             dict(runtime_override)
             if isinstance(runtime_override, Mapping)
             else read_lundao_snapshot()
         )
-        if runtime_status.get("available") and runtime_status.get("complete"):
+        if execution_status.get("available") and execution_status.get("complete"):
             self._log(
                 "detail",
                 "论道_座位：已从游戏 Runtime 读取剩余闻道时间、"
                 "自身座位与房间空位",
             )
             runtime_decision = plan_lundao_strategy(
-                runtime_status,
+                execution_status,
                 daluo_opportunity=None,
                 at=now,
             )
             if runtime_decision.get("action") in {"done", "stay_daluo"}:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 next_time = runtime_decision["next_time"].strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
@@ -6887,7 +7078,7 @@ class DailyFoundationTaskMixin:
             self._log(
                 "detail",
                 "论道_座位：Runtime 状态尚未加载，先打开道场触发模型初始化，"
-                f"reason={runtime_status.get('reason') or 'incomplete'}",
+                f"reason={execution_status.get('reason') or 'incomplete'}",
             )
         # Opening Daluo is read-only and initializes the Runtime room roster.
         initial = self._refresh_daily_lundao_runtime_facts(
@@ -6898,7 +7089,7 @@ class DailyFoundationTaskMixin:
         baseline_key = tuple((baseline.get("evidence") or {}).get("order_key") or ())
         if daluo_source_scene_id == 304:
             yield from self._click_daily_lundao_dojo_with_stable_ocr(
-                runtime,
+                context,
                 stop_event,
                 "大罗道场",
                 source_scene_id=304,
@@ -6906,9 +7097,9 @@ class DailyFoundationTaskMixin:
                 retry_seconds=float(payload.get("scene304_ocr_retry_seconds") or 1.0),
             )
         else:
-            self._click_daily_lundao_dojo(runtime, "大罗")
+            self._click_daily_lundao_dojo(context, "大罗")
         try:
-            yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待大罗座位列表")
+            yield from context.wait_scene(297, 298, wait=15.0, label="论道_座位：等待大罗座位列表")
         except TimeoutError as exc:
             # A player already seated in Daluo has a `离座` control on their own
             # row, so the ordinary #297 identity (which expects `请他让座`) can
@@ -6950,7 +7141,7 @@ class DailyFoundationTaskMixin:
                 f"reason={runtime_roster.get('reason') or runtime_after_open.get('reason') or 'incomplete'}",
             )
             refreshed = yield from self._wait_daily_lundao_room_facts(
-                runtime,
+                context,
                 reason="daily-lundao-daluo-roster",
                 room_id=LUNDAO_DALUO_ROOM_ID,
                 baseline_key=baseline_key,
@@ -6960,7 +7151,7 @@ class DailyFoundationTaskMixin:
         authoritative_runtime = (
             runtime_after_open
             if runtime_after_open.get("available") and runtime_after_open.get("complete")
-            else runtime_status
+            else execution_status
         )
         if authoritative_runtime.get("available") and authoritative_runtime.get("complete"):
             status = {
@@ -6996,14 +7187,14 @@ class DailyFoundationTaskMixin:
             )
         )
         if not fresh_status_and_roster:
-            return_scene = yield from self._return_daily_lundao_to_selection(runtime, 297)
+            return_scene = yield from self._return_daily_lundao_to_selection(context, 297)
             # #296 can be a transient match while the already-seated view is
             # settling to #304. Runtime incompleteness must not gate the
             # independent visual confirmation.
-            return_scene = yield from self._confirm_daily_lundao_seated_after_return(runtime, return_scene)
-            yield from runtime.goto_view(34)
+            return_scene = yield from self._confirm_daily_lundao_seated_after_return(context, return_scene)
+            yield from context.go_scene(34)
             if return_scene == 304:
-                next_at = next_lundao_recheck(_behavior_tree_runtime._now())
+                next_at = next_lundao_recheck(_behavior_tree_executor._now())
                 next_time = next_at.strftime("%Y-%m-%d %H:%M:%S")
                 catch_up_status = self._daily_lundao_runtime_catch_up_status(refreshed)
                 self._record_daily_lundao_next_time(
@@ -7027,8 +7218,8 @@ class DailyFoundationTaskMixin:
         # by a roster that is irrelevant to a no-op decision.
         status_decision = plan_lundao_strategy(status, daluo_opportunity=None, at=now)
         if status_decision.get("action") in {"done", "stay_daluo"}:
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            yield from runtime.goto_view(34)
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
             next_time = status_decision["next_time"].strftime("%Y-%m-%d %H:%M:%S")
             self._record_daily_lundao_next_time(payload, next_time, reason=str(status_decision.get("reason")))
             return "success"
@@ -7057,15 +7248,15 @@ class DailyFoundationTaskMixin:
             f"空位={opportunity.get('available_count')}，合法目标={opportunity.get('eligible_count')}，决策={decision.get('action')}",
         )
         if not opportunity.get("ok"):
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            yield from runtime.goto_view(34)
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
             raise RuntimeError(
                 "论道_座位：大罗事实不足，保留原触发时间立即整单重试，"
                 f"reason={opportunity.get('reason') or 'unknown'}"
             )
         if decision.get("action") == "done":
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            yield from runtime.goto_view(34)
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
             next_time = decision["next_time"].strftime("%Y-%m-%d %H:%M:%S")
             self._record_daily_lundao_next_time(payload, next_time, reason=str(decision.get("reason")))
             return "success"
@@ -7073,18 +7264,18 @@ class DailyFoundationTaskMixin:
         fallback_without_attempt = False
         if decision.get("action") == "seat_daluo":
             if not attempt_ready:
-                selection_source_scene_id = yield from self._return_daily_lundao_to_selection(runtime, 297)
+                selection_source_scene_id = yield from self._return_daily_lundao_to_selection(context, 297)
                 returned_to_selection = True
-                remaining = self._daily_lundao_remaining_attempts(runtime)
+                remaining = self._daily_lundao_remaining_attempts(context)
                 attempt = {"ready": remaining > 0, "purchased": False, "before": remaining, "after": remaining}
                 if remaining <= 0:
                     if purchase_used:
                         attempt = {"ready": False, "reason": "purchase_already_attempted"}
                     else:
-                        attempt = yield from self._buy_one_daily_lundao_attempt(runtime, before=remaining, at=now)
+                        attempt = yield from self._buy_one_daily_lundao_attempt(context, before=remaining, at=now)
                 if not attempt.get("ready"):
                     if attempt.get("reason") == "purchase_cutoff":
-                        yield from runtime.goto_view(34)
+                        yield from context.go_scene(34)
                         next_at = next_lundao_daily_trigger(now)
                         self._record_daily_lundao_next_time(
                             payload,
@@ -7105,7 +7296,7 @@ class DailyFoundationTaskMixin:
                     # the decision from a new packet baseline before any seat click.
                     return (
                         yield from self._rebuild_daily_lundao_strategy_after_attempt_check(
-                            runtime,
+                            context,
                             stop_event,
                             payload,
                             source_scene_id=int(_lundao_waited_scene_id(selection_source_scene_id)),
@@ -7113,7 +7304,7 @@ class DailyFoundationTaskMixin:
                         )
                     )
             if attempt_ready:
-                result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=opportunity)
+                result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=opportunity)
                 if result == "target_changed":
                     # The selected Daluo player disappeared before the click.  No
                     # seat transaction happened, so do not pretend the previous
@@ -7132,7 +7323,7 @@ class DailyFoundationTaskMixin:
                         label="大罗入座",
                     )
                     after_left_time = after_status.get("current_left_listen_time")
-                    completed_at = _behavior_tree_runtime._now()
+                    completed_at = _behavior_tree_executor._now()
                     # Daluo is the terminal target seat.  A same-day rerun is
                     # now requested only by a newly observed eviction mail.
                     next_at = next_lundao_daily_trigger(completed_at)
@@ -7141,23 +7332,23 @@ class DailyFoundationTaskMixin:
 
         current_room = int(status.get("room_id") or 0)
         if not returned_to_selection:
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
+            yield from self._return_daily_lundao_to_selection(context, 297)
         if current_room == LUNDAO_SANQING_ROOM_ID:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             next_at = decision.get("next_time") if isinstance(decision.get("next_time"), datetime) else next_lundao_recheck(now)
             self._record_daily_lundao_next_time(payload, next_at.strftime("%Y-%m-%d %H:%M:%S"), reason="大罗条件不足，保留三清")
             return "success"
 
         if not attempt_ready and not fallback_without_attempt:
-            remaining = self._daily_lundao_remaining_attempts(runtime)
+            remaining = self._daily_lundao_remaining_attempts(context)
             attempt = {"ready": remaining > 0, "purchased": False, "before": remaining, "after": remaining}
             if remaining <= 0:
                 if purchase_used:
                     attempt = {"ready": False, "reason": "purchase_already_attempted"}
                 else:
-                    attempt = yield from self._buy_one_daily_lundao_attempt(runtime, before=remaining, at=now)
+                    attempt = yield from self._buy_one_daily_lundao_attempt(context, before=remaining, at=now)
             if not attempt.get("ready"):
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 purchase_cutoff = attempt.get("reason") == "purchase_cutoff"
                 next_at = (
                     next_lundao_daily_trigger(now)
@@ -7188,13 +7379,13 @@ class DailyFoundationTaskMixin:
         before_sanqing_key = tuple(
             (before_sanqing_roster.get("evidence") or {}).get("order_key") or ()
         )
-        self._click_daily_lundao_dojo(runtime, "三清")
+        self._click_daily_lundao_dojo(context, "三清")
         sanqing_scene = _lundao_waited_scene_id(
-            (yield from runtime.wait_scene(297, 298, timeout=15.0, label="论道_座位：等待三清座位列表"))
+            (yield from context.wait_scene(297, 298, wait=15.0, label="论道_座位：等待三清座位列表"))
         )
         if sanqing_scene == 298:
             result = yield from self._run_daily_lundao_room_action(
-                runtime,
+                context,
                 stop_event,
                 opportunity={"action": "empty"},
             )
@@ -7202,7 +7393,7 @@ class DailyFoundationTaskMixin:
                 payload,
                 reason="daily-lundao-after-sanqing-empty-seat",
             )
-            next_at = next_lundao_recheck(_behavior_tree_runtime._now())
+            next_at = next_lundao_recheck(_behavior_tree_executor._now())
             self._record_confirmed_daily_lundao_seat(
                 payload,
                 after_status,
@@ -7213,14 +7404,14 @@ class DailyFoundationTaskMixin:
             )
             return result
         if fallback_without_attempt:
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            yield from runtime.goto_view(34)
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
             return self._finish_daily_lundao_unseated_retry(
                 payload,
                 reason="三清当前满座且没有可用挑战次数，10分钟后继续检查空位",
             )
         sanqing_facts = yield from self._wait_daily_lundao_room_facts(
-            runtime,
+            context,
             reason="daily-lundao-sanqing-roster",
             room_id=LUNDAO_SANQING_ROOM_ID,
             baseline_key=before_sanqing_key,
@@ -7237,24 +7428,24 @@ class DailyFoundationTaskMixin:
             require_safety_threshold=False,
         )
         if not sanqing.get("ok"):
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            yield from runtime.goto_view(34)
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
             raise RuntimeError(
                 "论道_座位：三清事实不足，不能误判为无座位，保留原触发时间重试，"
                 f"reason={sanqing.get('reason') or 'unknown'}"
             )
         if not sanqing.get("actionable"):
-            yield from self._return_daily_lundao_to_selection(runtime, 297)
-            yield from runtime.goto_view(34)
+            yield from self._return_daily_lundao_to_selection(context, 297)
+            yield from context.go_scene(34)
             return self._finish_daily_lundao_unseated_retry(
                 payload,
                 reason="尚未落座，保持立即到期并继续争取三清座位",
             )
-        result = yield from self._run_daily_lundao_room_action(runtime, stop_event, opportunity=sanqing)
+        result = yield from self._run_daily_lundao_room_action(context, stop_event, opportunity=sanqing)
         if result == "target_changed":
             return (
                 yield from self._finish_daily_lundao_changed_sanqing_target(
-                    runtime,
+                    context,
                     payload,
                 )
             )
@@ -7263,7 +7454,7 @@ class DailyFoundationTaskMixin:
             reason="daily-lundao-after-sanqing-seat",
         )
         after_left_time = after_status.get("current_left_listen_time")
-        completed_at = _behavior_tree_runtime._now()
+        completed_at = _behavior_tree_executor._now()
         next_at = (
             next_lundao_daily_trigger(completed_at)
             if after_left_time is not None and int(after_left_time) <= 0
@@ -7287,18 +7478,18 @@ class DailyFoundationTaskMixin:
     ) -> dict[str, Any]:
         """Prefer the live seated model after a successful seat transaction."""
 
-        runtime_status = self._read_daily_lundao_runtime_status(payload)
+        execution_status = self._read_daily_lundao_execution_status(payload)
         if (
-            runtime_status.get("available")
-            and runtime_status.get("complete")
-            and runtime_status.get("seated") is True
+            execution_status.get("available")
+            and execution_status.get("complete")
+            and execution_status.get("seated") is True
         ):
             self._log(
                 "detail",
                 "论道_座位：入座后 Runtime 已确认 seated=true 与"
                 "剩余闻道时间",
             )
-            return runtime_status
+            return execution_status
         self._log("detail", "论道_座位：入座后按需重读 Runtime，" f"reason={reason}")
         after = self._refresh_daily_lundao_runtime_facts(reason=reason)
         return (
@@ -7345,7 +7536,7 @@ class DailyFoundationTaskMixin:
         )
         self._record_daily_lundao_next_time(payload, next_time, reason=reason)
 
-    def _read_daily_lundao_runtime_status(
+    def _read_daily_lundao_execution_status(
         self,
         payload: Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -7357,42 +7548,42 @@ class DailyFoundationTaskMixin:
             "__lundao_post_seat_runtime_snapshot_override",
             payload.get("__lundao_runtime_snapshot_override"),
         )
-        runtime_status = (
+        execution_status = (
             dict(override)
             if isinstance(override, Mapping)
             else read_lundao_snapshot()
         )
-        return runtime_status
+        return execution_status
 
     def _daily_lundao_world_runtime_guard(
         self,
-        runtime: Any,
+        context: Any,
         payload: Mapping[str, Any],
         *,
         scene_id: int,
     ):
         """Skip a vanished daily entry when Runtime already proves the state."""
 
-        runtime_status = self._read_daily_lundao_runtime_status(payload)
+        execution_status = self._read_daily_lundao_execution_status(payload)
         if not (
-            runtime_status.get("available")
-            and runtime_status.get("complete")
+            execution_status.get("available")
+            and execution_status.get("complete")
         ):
             return None
-        current_left = runtime_status.get("current_left_listen_time")
-        seated = runtime_status.get("seated") is True
+        current_left = execution_status.get("current_left_listen_time")
+        seated = execution_status.get("seated") is True
         if current_left is None or (int(current_left) > 0 and not seated):
             return None
         # 三清已入座只证明当前有座位，不能证明无需升级。继续进入论道
         # 动态策略，刷新大罗名册、检查免费次数并判断是否可以换座。
         if (
             int(current_left) > 0
-            and int(runtime_status.get("room_id") or 0) != LUNDAO_DALUO_ROOM_ID
+            and int(execution_status.get("room_id") or 0) != LUNDAO_DALUO_ROOM_ID
         ):
             return None
         if scene_id != 34:
-            yield from runtime.goto_view(34)
-        now = _behavior_tree_runtime._now()
+            yield from context.go_scene(34)
+        now = _behavior_tree_executor._now()
         if int(current_left) <= 0:
             next_at = next_lundao_daily_trigger(now)
             self._record_daily_lundao_next_time(
@@ -7413,7 +7604,7 @@ class DailyFoundationTaskMixin:
         )
         return "skipped"
 
-    def _select_daily_lundao_dojo_level(self, runtime: Any, scene_id: int | None) -> dict[str, Any]:
+    def _select_daily_lundao_dojo_level(self, context: Any, scene_id: int | None) -> dict[str, Any]:
         """节点 2：选择论道道场级别，输出抢座节点的起始场景。
 
         输入是节点 1 路由出的 #294「准备开始」或 #296 道场选择页。该节点
@@ -7426,27 +7617,27 @@ class DailyFoundationTaskMixin:
         #297「踢人抢座」入口，不证明 #297 后续动作。
         """
         if scene_id == 294:
-            runtime.click_shape_center(294, "大罗道场")
+            context.click_shape_center(294, "大罗道场")
             return {"status": "target_pending", "source_scene_id": 294, "scene_id": None, "score": 0.0}
         if scene_id != 296:
             return {"status": "unimplemented", "source_scene_id": scene_id, "scene_id": None, "score": 0.0}
-        runtime.click_shape_center(296, "大罗道场")
-        yield from runtime.wait_action_settle(5.0)
-        next_scene_id, score, _frame = runtime.current_scene([297], update=True)
+        context.click_shape_center(296, "大罗道场")
+        yield from context.wait_action_settle(5.0)
+        next_scene_id, score, _frame = context.current_scene([297], update=True)
         if next_scene_id != 297:
             return {"status": "unknown", "source_scene_id": 296, "scene_id": next_scene_id, "score": float(score)}
         return {"status": "selected", "source_scene_id": 296, "scene_id": 297, "score": float(score)}
 
     def _continue_after_daily_lundao_dojo_selection(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         selection_result: dict[str, Any],
         *,
         payload: Mapping[str, Any] | None = None,
     ) -> str:
         if selection_result.get("status") == "selected" and selection_result.get("scene_id") == 297:
-            return (yield from self._run_daily_lundao_seat_and_leave(runtime, stop_event, payload=payload))
+            return (yield from self._run_daily_lundao_seat_and_leave(context, stop_event, payload=payload))
         if selection_result.get("status") == "target_pending":
             raise RuntimeError("论道_座位：#294 已点击「大罗道场」，真实落点与后续路由尚未提供")
         raise RuntimeError(
@@ -7457,7 +7648,7 @@ class DailyFoundationTaskMixin:
 
     def _run_daily_lundao_seat_and_leave(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         payload: Mapping[str, Any] | None = None,
@@ -7477,7 +7668,7 @@ class DailyFoundationTaskMixin:
         # belong to the previously running job.  #295 is accepted only inside
         # _advance_daily_lundao_kick_dialogue after this job has initiated its
         # own kick/battle transaction.
-        scene_id, score, _frame = runtime.current_scene([297, 298, 371, 372, 373, 375], update=True)
+        scene_id, score, _frame = context.current_scene([297, 298, 371, 372, 373, 375], update=True)
         if scene_id == 297:
             selection = self._select_daily_lundao_kick_target()
             if not selection.get("ok"):
@@ -7487,7 +7678,7 @@ class DailyFoundationTaskMixin:
                 )
             target = selection.get("target") if isinstance(selection.get("target"), dict) else None
             if target is None:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 next_time = self._schedule_daily_lundao_next_check(
                     dict(payload or {}),
                     message="大罗满座且没有可击败的非友军",
@@ -7501,12 +7692,12 @@ class DailyFoundationTaskMixin:
                 f"{target.get('faze_cross')}跨，战力 {float(target.get('battle_score') or 0):.3e}",
             )
             kick_result = yield from self._run_daily_lundao_kick_for_seat_strategy(
-                runtime,
+                context,
                 stop_event,
                 target_player=target,
             )
             if kick_result.get("status") == "target_changed":
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 next_time = self._schedule_daily_lundao_next_check(
                     dict(payload or {}),
                     message="大罗目标已变化，保持当前座位",
@@ -7521,21 +7712,21 @@ class DailyFoundationTaskMixin:
             scene_id = int(kick_result.get("scene_id") or 52)
             score = float(kick_result.get("score") or 0.0)
         elif scene_id == 298:
-            scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(runtime)
+            scene_id, score = yield from self._run_daily_lundao_empty_seat_strategy(context)
         elif scene_id == 371:
-            dialogue_result = yield from self._confirm_daily_lundao_kick_request(runtime, start_scene=371)
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=371)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 372:
-            dialogue_result = yield from self._confirm_daily_lundao_kick_request(runtime, start_scene=372)
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=372)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 373:
-            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(runtime, start_scene=373)
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=373)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 375:
-            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(runtime, start_scene=375)
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=375)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         else:
@@ -7543,29 +7734,29 @@ class DailyFoundationTaskMixin:
                 f"论道_座位：抢座节点入口只接受 #297/#298/#371/#372/#373/#375，当前 "
                 f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
             )
-        return (yield from self._complete_daily_lundao_seat_and_leave(runtime, stop_event, scene_id, score))
+        return (yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id, score))
 
-    def _leave_daily_lundao_rule_block_to_world(self, runtime: Any) -> dict[str, Any]:
+    def _leave_daily_lundao_rule_block_to_world(self, context: Any) -> dict[str, Any]:
         """Close the rule-prerequisite notice and suspend Lundao at world #34."""
 
-        scene_id, score, _frame = runtime.current_scene([564], update=True)
+        scene_id, score, _frame = context.current_scene([564], update=True)
         if scene_id != 564:
             raise RuntimeError(
                 "论道_座位：法则前置缺失退出只接受已确认的 #564，"
                 f"当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
             )
         self._log("action", "论道_座位：#564 仅作为法则前置缺失信号，关闭提示后退回世界")
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             564,
             "确认",
             297,
             timeout=12.0,
             label="论道_座位：关闭法则提示后等待座位列表 #297",
         )
-        if not isinstance(landed, View) or landed.id != 297:
+        if int(getattr(landed, "scene_id", getattr(landed, "id", landed))) != 297:
             raise RuntimeError("论道_座位：关闭 #564 后未可靠回到座位列表 #297")
-        yield from runtime.goto_view(34)
-        final_scene, final_score, _final_frame = runtime.current_scene([34], update=True)
+        yield from context.go_scene(34)
+        final_scene, final_score, _final_frame = context.current_scene([34], update=True)
         if final_scene != 34:
             raise RuntimeError(
                 "论道_座位：法则前置缺失退出后未确认世界 #34，"
@@ -7592,7 +7783,7 @@ class DailyFoundationTaskMixin:
         message: str,
         seconds: int | None = None,
     ) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         next_at = (
             next_lundao_unseated_retry(now)
             if seconds is None
@@ -7614,7 +7805,7 @@ class DailyFoundationTaskMixin:
 
     def _run_daily_lundao_kick_for_seat_strategy(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         target_player: Mapping[str, Any] | None = None,
@@ -7645,14 +7836,14 @@ class DailyFoundationTaskMixin:
         if bool(target.get("excluded") or target.get("is_ally")):
             raise RuntimeError("论道_座位：#297 上游目标已标记为排除/同盟，已停止且未点击")
 
-        window = runtime.shape(297, "窗口")
+        window = context.shape(297, "窗口")
         if str(window.raw.get("loadDirection") or "").strip().lower() != "down":
             raise RuntimeError("论道_座位：#297[窗口] loadDirection 不是 down，已停止且未点击")
 
         def request_kick(item: Any):
-            if not runtime.floating_item_is_fully_inside(item, "窗口"):
+            if not context.floating_item_is_fully_inside(item, "窗口"):
                 raise RuntimeError(f"论道_座位：目标「{target_name}」模板实例位于窗口裁剪边缘，已停止且未点击")
-            if not runtime.floating_item_field_is_inside(item, "按钮", "窗口"):
+            if not context.floating_item_field_is_inside(item, "按钮", "窗口"):
                 raise RuntimeError(f"论道_座位：目标「{target_name}」预测按钮中心不在窗口内，已停止且未点击")
             protect_end_time = int(target.get("protect_end_time") or 0)
             if protect_end_time > int(time.time() * 1000):
@@ -7683,8 +7874,8 @@ class DailyFoundationTaskMixin:
                         "scene_id": 297,
                         "score": 0.0,
                     }
-            runtime.click_floating_item_field(item, "按钮")
-            dialogue_result = yield from self._confirm_daily_lundao_kick_request(runtime)
+            context.click_floating_item_field(item, "按钮")
+            dialogue_result = yield from self._confirm_daily_lundao_kick_request(context)
             if dialogue_result.get("status") == "prerequisite_required":
                 return dialogue_result
             return {
@@ -7698,8 +7889,8 @@ class DailyFoundationTaskMixin:
         fallback_similarity = -1.0
         for _index in range(31):
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            items = runtime.find_floating_items_by_anchor_text(
+            frame = context.cur_frame(update=True)
+            items = context.find_floating_items_by_anchor_text(
                 297,
                 "模板",
                 "区服姓名",
@@ -7715,15 +7906,15 @@ class DailyFoundationTaskMixin:
                     fallback_similarity = best.name_similarity
                 if best.name_similarity >= DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD:
                     if (
-                        runtime.floating_item_is_fully_inside(best, "窗口")
-                        and runtime.floating_item_field_is_inside(best, "按钮", "窗口")
+                        context.floating_item_is_fully_inside(best, "窗口")
+                        and context.floating_item_field_is_inside(best, "按钮", "窗口")
                     ):
                         return (yield from request_kick(best))
                     self._log(
                         "detail",
                         f"论道_座位：目标「{target_name}」当前贴近窗口裁剪边缘，继续滚动后重新定位",
                     )
-            changed = yield from runtime.scroll_shape_content(297, "窗口")
+            changed = yield from context.scroll_shape_content(297, "窗口")
             if not changed:
                 break
         if not fallback_text:
@@ -7734,19 +7925,19 @@ class DailyFoundationTaskMixin:
             f"{DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD:.0%}，已停止且未点击"
         )
 
-    def _confirm_daily_lundao_kick_request(self, runtime: Any, *, start_scene: int | None = None):
+    def _confirm_daily_lundao_kick_request(self, context: Any, *, start_scene: int | None = None):
         """忽略过渡帧，依次在 #371 发起请离、在 #372 确认。"""
         if start_scene is None:
-            start_scene = yield from self._wait_daily_lundao_kick_request_result(runtime)
+            start_scene = yield from self._wait_daily_lundao_kick_request_result(context)
         if start_scene == 564:
-            return (yield from self._leave_daily_lundao_rule_block_to_world(runtime))
+            return (yield from self._leave_daily_lundao_rule_block_to_world(context))
         if start_scene == 371:
             # 这类人物选项偶尔会吞掉第一次点击。点击后必须同时观察来源页与
             # 目标页；只等待 #372 会把仍然可靠存在的 #371 错报成 unknown，
             # 然后无意义地盲等到超时。
             for attempt in range(1, 4):
-                frame = runtime.cur_frame(update=True)
-                tokens = runtime.ocr_tokens_in_shapes(371, ["请他让座"], frame_data_url=frame)
+                frame = context.cur_frame(update=True)
+                tokens = context.ocr_tokens_in_shapes(371, ["请他让座"], frame_data_url=frame)
                 candidates: list[dict[str, float]] = []
                 for fragment in group_ocr_tokens(tokens):
                     text = re.sub(r"\s+", "", _sanitize_ocr_text(fragment.get("text")))
@@ -7759,16 +7950,16 @@ class DailyFoundationTaskMixin:
                 if len(candidates) != 1:
                     raise RuntimeError(f"论道_座位：#371 未唯一定位「请他让座」文字行，候选={len(candidates)}，已停止且未点击")
                 box = candidates[0]
-                runtime.click_frame_point(371, float(box["x"]) + float(box["w"]) / 2, float(box["y"]) + float(box["h"]) / 2)
-                yield from runtime.wait_action_settle(1.5)
-                observed = yield from runtime.wait_scene(
+                context.click_frame_point(371, float(box["x"]) + float(box["w"]) / 2, float(box["y"]) + float(box["h"]) / 2)
+                yield from context.wait_action_settle(1.5)
+                observed = yield from context.wait_scene(
                     371,
                     372,
                     373,
                     375,
                     295,
                     52,
-                    timeout=8.0,
+                    wait=8.0,
                     label=f"论道_座位：第 {attempt}/3 次点击请他让座后确认来源或落点",
                 )
                 start_scene = _lundao_waited_scene_id(observed)
@@ -7778,34 +7969,34 @@ class DailyFoundationTaskMixin:
             if start_scene == 371:
                 raise RuntimeError("论道_座位：连续 3 次点击「请他让座」仍停留 #371，已停止避免无限重试")
             if start_scene in {373, 375, 295, 52}:
-                return (yield from self._advance_daily_lundao_kick_dialogue(runtime, start_scene=start_scene))
+                return (yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=start_scene))
         if start_scene != 372:
             raise RuntimeError(f"论道_座位：请离确认节点只接受 #371/#372，当前 #{start_scene}")
-        runtime.click_shape_center(372, "确定")
+        context.click_shape_center(372, "确定")
         # #372 后会进入若干段同坐标对话。无需把每一段都识别成 #373；
         # 先给首段画面稳定时间，随后只以正式终点 #375 是否出现作为循环条件。
-        yield from runtime.wait_action_settle(1.5)
-        return (yield from self._advance_daily_lundao_kick_dialogue(runtime))
+        yield from context.wait_action_settle(1.5)
+        return (yield from self._advance_daily_lundao_kick_dialogue(context))
 
     def _wait_daily_lundao_kick_request_result(
         self,
-        runtime: Any,
+        context: Any,
         *,
         timeout: float = 180.0,
     ):
         """Wait through the dojo auto-route for the row button outcome."""
 
-        scene = yield from runtime.wait_scene(
+        scene = yield from context.wait_scene(
             371,
             564,
-            timeout=timeout,
+            wait=timeout,
             label="论道_座位：等待 #297 动态条目按钮的局部结果 #371/#564",
         )
         return _lundao_waited_scene_id(scene)
 
     def _advance_daily_lundao_kick_dialogue(
         self,
-        runtime: Any,
+        context: Any,
         *,
         start_scene: int | None = None,
     ) -> dict[str, Any]:
@@ -7813,12 +8004,12 @@ class DailyFoundationTaskMixin:
         pre_battle_clicks = 0
         battle_scene = start_scene
         if battle_scene not in {373, 375, 295, 52}:
-            battle_scene = yield from runtime.wait_scene(
+            battle_scene = yield from context.wait_scene(
                 373,
                 375,
                 295,
                 52,
-                timeout=20.0,
+                wait=20.0,
                 label="论道_座位：等待战前对话/战斗/结束",
             )
             battle_scene = _lundao_waited_scene_id(battle_scene)
@@ -7832,18 +8023,18 @@ class DailyFoundationTaskMixin:
                 "score": 100.0,
             }
         if battle_scene == 373:
-            pre_battle_clicks = yield from runtime.advance_dialogue(
+            pre_battle_clicks = yield from context.advance_dialogue(
                 373,
                 "聊天按钮",
                 label="论道_座位：推进战前对话",
             )
-            battle_scene = yield from runtime.wait_scene(
+            battle_scene = yield from context.wait_scene(
                 375,
                 295,
                 52,
                 186,
                 303,
-                timeout=30.0,
+                wait=30.0,
                 label="论道_座位：战前对话结束后等待战斗/胜利/入座对话",
             )
             battle_scene = _lundao_waited_scene_id(battle_scene)
@@ -7862,28 +8053,27 @@ class DailyFoundationTaskMixin:
         # 看见胜利只能表示战斗结束，不能提前报作业成功。
         after_battle_scene = battle_scene
         if after_battle_scene not in {375, 295}:
-            after_battle_scene = yield from runtime.wait_scene(
+            after_battle_scene = yield from context.wait_scene(
                 373,
                 52,
                 375,
                 295,
-                timeout=180.0,
-                layer0_wait_seconds=180.0,
+                wait=180.0,
                 label="论道_座位：等待战斗结束后的对话/#52/#375/#295",
             )
             after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
         if after_battle_scene in {375, 295}:
             victory_scene_id = int(after_battle_scene)
-            runtime.click_shape_center(victory_scene_id, "关闭")
-            yield from runtime.wait_action_settle(1.5)
-            after_battle_scene = yield from runtime.wait_scene(
+            context.click_shape_center(victory_scene_id, "关闭")
+            yield from context.wait_action_settle(1.5)
+            after_battle_scene = yield from context.wait_scene(
                 373,
                 52,
                 329,
                 301,
                 302,
                 303,
-                timeout=30.0,
+                wait=30.0,
                 label="论道_座位：关闭胜利浮层后等待战后对话/入座",
             )
             after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
@@ -7898,18 +8088,18 @@ class DailyFoundationTaskMixin:
             }
         post_battle_clicks = 0
         if after_battle_scene == 373:
-            post_battle_clicks = yield from runtime.advance_dialogue(
+            post_battle_clicks = yield from context.advance_dialogue(
                 373,
                 "聊天按钮",
                 label="论道_座位：推进战后对话",
             )
-            after_battle_scene = yield from runtime.wait_scene(
+            after_battle_scene = yield from context.wait_scene(
                 52,
                 329,
                 301,
                 302,
                 303,
-                timeout=30.0,
+                wait=30.0,
                 label="论道_座位：战后对话结束后等待入座",
             )
             after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
@@ -7922,7 +8112,7 @@ class DailyFoundationTaskMixin:
                 "scene_id": 52,
                 "score": 100.0,
             }
-        scene_id, score, _frame = runtime.current_scene([329, 301, 302, 303], update=True)
+        scene_id, score, _frame = context.current_scene([329, 301, 302, 303], update=True)
         if scene_id is None:
             raise RuntimeError("论道_座位：关闭胜利浮层后未确认战后对话或入座落点")
         return {
@@ -7936,20 +8126,20 @@ class DailyFoundationTaskMixin:
 
     def _run_daily_lundao_empty_seat_strategy(
         self,
-        runtime: Any,
+        context: Any,
         *,
         transition_timeout: float = 45.0,
     ):
         """#298 空位策略；复用既有入座及后续确认落点，不复制收尾。"""
-        yield from runtime.wait_click(298, "入座")
-        yield from runtime.wait_action_settle(1.5)
+        yield from context.wait_click(298, "入座")
+        yield from context.wait_action_settle(1.5)
         transition_timeout = max(20.0, min(120.0, float(transition_timeout)))
         deadline = time.monotonic() + transition_timeout
         last_text = ""
         while time.monotonic() < deadline:
-            frame = runtime.cur_frame(update=True)
-            last_text = runtime.ocr_text(frame)
-            scene_id, score, _frame = runtime.current_scene(
+            frame = context.cur_frame(update=True)
+            last_text = context.ocr_text(frame)
+            scene_id, score, _frame = context.current_scene(
                 [300, 329, 301, 302, 303],
                 frame_data_url=frame,
             )
@@ -7965,7 +8155,7 @@ class DailyFoundationTaskMixin:
                     "论道_座位：图模型未稳定区分 #300/#329，但 OCR 已确认前往道场弹窗",
                 )
                 return 300, float(score or 0.0)
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_action_settle(1.0)
         raise TimeoutError(
             f"论道_座位：点击 #298「入座」后 {transition_timeout:g} 秒内未确认空位链 "
             "#300/#329/#301/#302/#303，"
@@ -7974,7 +8164,7 @@ class DailyFoundationTaskMixin:
 
     def _advance_daily_lundao_dojo_travel_confirmation(
         self,
-        runtime: Any,
+        context: Any,
         scene_id: int | None,
     ):
         """Consume the equivalent #300/#329 prompt without stale-scene races."""
@@ -7996,44 +8186,44 @@ class DailyFoundationTaskMixin:
         deadline = time.monotonic() + 60.0
         confirm_attempts = 0
         while time.monotonic() < deadline:
-            detected, score, frame = runtime.current_scene(
+            detected, score, frame = context.current_scene(
                 [*prompt_ids, *target_ids],
                 update=True,
             )
             last_scene_id, last_score = detected, float(score or 0.0)
-            last_text = runtime.ocr_text(frame)
+            last_text = context.ocr_text(frame)
             if detected == 53:
                 if (
                     self._daily_lundao_text_is_seated(last_text)
                     and self._daily_lundao_runtime_confirms_seated()
                 ):
                     return 53, float(score or 0.0)
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_action_settle(1.0)
                 continue
             if detected in target_ids:
                 return int(detected), float(score or 0.0)
             if detected in prompt_ids:
                 preferred_prompt_id = int(detected)
             elif not self._daily_lundao_text_is_dojo_travel_prompt(last_text):
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_action_settle(1.0)
                 continue
 
             if confirm_attempts >= 3:
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_action_settle(1.0)
                 continue
             confirm_attempts += 1
             self._log(
                 "action",
                 f"论道_座位：确认前往道场弹窗 #{preferred_prompt_id}",
             )
-            runtime.click_shape_center(preferred_prompt_id, "确认")
-            yield from runtime.wait_action_settle(1.5)
+            context.click_shape_center(preferred_prompt_id, "确认")
+            yield from context.wait_action_settle(1.5)
             remaining = max(0.1, deadline - time.monotonic())
             try:
-                landed = yield from runtime.wait_scene(
+                landed = yield from context.wait_scene(
                     *prompt_ids,
                     *target_ids,
-                    timeout=min(20.0, remaining),
+                    wait=min(20.0, remaining),
                     label="论道_座位：确认前往道场后等待入座链",
                 )
             except TimeoutError:
@@ -8052,7 +8242,7 @@ class DailyFoundationTaskMixin:
 
     def _prefer_daily_lundao_seat_choice_scene(
         self,
-        runtime: Any,
+        context: Any,
         scene_id: int | None,
         score: float = 0.0,
         *,
@@ -8062,8 +8252,8 @@ class DailyFoundationTaskMixin:
 
         if scene_id != 53:
             return scene_id, float(score or 0.0)
-        frame = frame_data_url or runtime.cur_frame(update=True)
-        seat_score = float(runtime.shape_score(301, "入座", frame_data_url=frame) or 0.0)
+        frame = frame_data_url or context.cur_frame(update=True)
+        seat_score = float(context.shape_score(301, "入座", frame_data_url=frame) or 0.0)
         if seat_score >= 80.0:
             self._log(
                 "detail",
@@ -8075,7 +8265,7 @@ class DailyFoundationTaskMixin:
 
     def _complete_daily_lundao_seat_and_leave(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         scene_id: int | None,
         score: float = 0.0,
@@ -8086,47 +8276,47 @@ class DailyFoundationTaskMixin:
         # to normalize every dialogue/battle scene first.
         if scene_id in {371, 372}:
             dialogue_result = yield from self._confirm_daily_lundao_kick_request(
-                runtime,
+                context,
                 start_scene=scene_id,
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id in {373, 375, 295}:
             dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
-                runtime,
+                context,
                 start_scene=scene_id,
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         scene_id, score = self._prefer_daily_lundao_seat_choice_scene(
-            runtime,
+            context,
             scene_id,
             score,
         )
         if scene_id in {300, 329}:
             scene_id, score = yield from self._advance_daily_lundao_dojo_travel_confirmation(
-                runtime,
+                context,
                 scene_id,
             )
             scene_id, score = self._prefer_daily_lundao_seat_choice_scene(
-                runtime,
+                context,
                 scene_id,
                 score,
             )
         if scene_id in {301, 302}:
-            scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(runtime, stop_event, scene_id)
+            scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(context, stop_event, scene_id)
         if scene_id in {303, 373}:
             scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
-                runtime,
+                context,
                 scene_id,
             )
         if scene_id == 52:
-            yield from runtime.wait_click_then_view(52, "确认", wait_leave=True)
-            scene_id, score, frame_after = runtime.current_scene([53, 69, 34, 85, 186, 52], update=True)
-            text_after = runtime.ocr_text(frame_after)
+            yield from context.wait_click_then_scene(52, "确认", wait_leave=True)
+            scene_id, score, frame_after = context.current_scene([53, 69, 34, 85, 186, 52], update=True)
+            text_after = context.ocr_text(frame_after)
             if self._daily_lundao_text_is_seated(text_after):
                 if scene_id == 53:
-                    yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 53)
+                    yield from self._leave_daily_lundao_seated_for_daily_entry(context, 53)
                     self._log("success", "论道_座位：已确认听道收益并退出回世界")
                     return "success"
                 if scene_id == 186:
@@ -8141,7 +8331,7 @@ class DailyFoundationTaskMixin:
                         and seated_status.get("seated") is True
                     ):
                         yield from self._leave_shared_scene_186_to_world(
-                            runtime,
+                            context,
                             label="论道_座位",
                         )
                         self._log(
@@ -8162,20 +8352,20 @@ class DailyFoundationTaskMixin:
             self._log("success", f"论道_座位：已确认听道收益并返回 #{scene_id}")
             return "success"
         if scene_id == 53:
-            yield from self._leave_daily_lundao_seated_for_daily_entry(runtime, 53)
+            yield from self._leave_daily_lundao_seated_for_daily_entry(context, 53)
             self._log("success", "论道_座位：已完成听道并退出回世界")
             return "success"
         if scene_id == 186:
-            yield from self._leave_shared_scene_186_to_world(runtime, label="论道_座位")
+            yield from self._leave_shared_scene_186_to_world(context, label="论道_座位")
             self._log("success", "论道_座位：已从 #186 点击「离开」并退出回世界")
             return "success"
         if scene_id == 54:
-            return (yield from self._confirm_daily_lundao_exit_to_world(runtime))
+            return (yield from self._confirm_daily_lundao_exit_to_world(context))
         raise RuntimeError(f"论道_座位：抢座或收尾落点尚未实现，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
 
     def _advance_daily_lundao_post_seat_dialogue(
         self,
-        runtime: Any,
+        context: Any,
         start_scene: int,
         *,
         max_cycles: int = 8,
@@ -8187,7 +8377,7 @@ class DailyFoundationTaskMixin:
         scene_id = int(start_scene)
         score = 100.0
         for cycle in range(1, max_cycles + 1):
-            observed_scene, observed_score, _frame = runtime.current_scene(
+            observed_scene, observed_score, _frame = context.current_scene(
                 candidates,
                 update=True,
             )
@@ -8202,7 +8392,7 @@ class DailyFoundationTaskMixin:
             scene_id = int(observed_scene)
             score = float(observed_score or 0.0)
             dialogue_shape = "对话" if scene_id == 303 else "聊天按钮"
-            yield from runtime.advance_dialogue(
+            yield from context.advance_dialogue(
                 scene_id,
                 dialogue_shape,
                 label=(
@@ -8211,9 +8401,9 @@ class DailyFoundationTaskMixin:
                 ),
             )
 
-            waited_scene = yield from runtime.wait_scene(
+            waited_scene = yield from context.wait_scene(
                 *candidates,
-                timeout=30.0,
+                wait=30.0,
                 label="论道_座位：人物对话后等待入座/下一段对话",
             )
             if isinstance(waited_scene, View):
@@ -8239,17 +8429,17 @@ class DailyFoundationTaskMixin:
             f"最后 #{scene_id} {score:.0f}%"
         )
 
-    def _finish_daily_lundao_in_progress(self, runtime: Any, *, continue_to_selection: bool = False) -> str | int:
+    def _finish_daily_lundao_in_progress(self, context: Any, *, continue_to_selection: bool = False) -> str | int:
         """Leave #304; dynamic strategy may continue on the dojo selection page."""
-        runtime.click_shape_center(304, "返回")
+        context.click_shape_center(304, "返回")
         if continue_to_selection:
-            next_scene = yield from runtime.wait_scene(296, 34, 69, timeout=15.0, label="论道_座位：#304 返回后等待道场选择")
+            next_scene = yield from context.wait_scene(296, 34, 69, wait=15.0, label="论道_座位：#304 返回后等待道场选择")
             if isinstance(next_scene, View):
                 if next_scene.id is None:
                     raise RuntimeError("论道_座位：#304 返回后的 View 缺少场景编号")
                 return int(next_scene.id)
             return int(next_scene)
-        yield from runtime.wait_action_settle(1.5)
+        yield from context.wait_action_settle(1.5)
         self._log("success", "论道_座位：#304 论道中，点击「返回」")
         return "success"
 
@@ -8314,12 +8504,32 @@ class DailyFoundationTaskMixin:
             )
         )
 
-    def _confirm_daily_lundao_exit_to_world(self, runtime: Any) -> str:
-        yield from runtime.wait_click_then_view(54, "确认", [34, 69], settle_seconds=1.5, timeout=20.0)
+    def _confirm_daily_lundao_exit_to_world(self, context: Any) -> str:
+        yield from context.wait_click_then_scene(54, "确认", [34, 69], settle_seconds=1.5, timeout=20.0)
         self._log("success", "论道_座位：已确认退出道场，神识分身继续闻道")
         return "success"
 
-    def _leave_shared_scene_186_to_world(self, runtime: Any, *, label: str) -> str:
+    def _goto_world_after_shared_victory_overlay(self, context: Any, *, label: str):
+        """Finish a proven exit even if world auto-battle hides the HUD."""
+
+        try:
+            return (yield from context.go_scene(34))
+        except RuntimeError as exc:
+            if "场景跳转缺少可靠标注" not in str(exc):
+                raise
+        self._log(
+            "diagnostic",
+            f"{label}：退出业务页后处于世界战斗过场，等待世界[聊天] HUD 恢复",
+        )
+        yield from context.wait_shape(
+            34,
+            "聊天",
+            timeout=60.0,
+            label=f"{label}：等待世界战斗过场结束",
+        )
+        return "success"
+
+    def _leave_shared_scene_186_to_world(self, context: Any, *, label: str) -> str:
         """Leave a shared internal scene without letting the guard consume its confirmation."""
         scene_id = 186
         score = 100.0
@@ -8332,22 +8542,28 @@ class DailyFoundationTaskMixin:
                     f"{label}：离开道场后出现已知胜利浮层 #{scene_id}，"
                     "继续按场景图返回 #34",
                 )
-                yield from runtime.goto_view(34)
+                yield from self._goto_world_after_shared_victory_overlay(
+                    context,
+                    label=label,
+                )
                 return "success"
             if scene_id == 386:
                 self._log(
                     "action",
                     f"{label}：已离开道场并落到已知活动浮层 #386，继续按场景图返回 #34",
                 )
-                yield from runtime.goto_view(34)
+                yield from self._goto_world_after_shared_victory_overlay(
+                    context,
+                    label=label,
+                )
                 return "success"
             # #47 is the generic parent match briefly visible before the more
             # specific #86 leave-confirmation OCR becomes ready. Keep it claimed
             # by the business flow so the popup guard cannot click its background.
-            with runtime.expect_views(47, 86, 289, 34, 69, 186, 85, 386, 375, 295):
+            with context.expect_views(47, 86, 289, 34, 69, 186, 85, 386, 375, 295):
                 if scene_id in {289, 86}:
                     self._log("action", f"{label}：识别正式确认场景 #{scene_id}，点击「确认」")
-                    waited_scene = yield from runtime.wait_click_then_view(
+                    waited_scene = yield from context.wait_click_then_scene(
                         scene_id,
                             "确认",
                             [34, 69, 186, 85, 386, 375, 295],
@@ -8362,7 +8578,7 @@ class DailyFoundationTaskMixin:
                         f"（第 {attempt}/4 次）",
                     )
                     try:
-                        waited_scene = yield from runtime.wait_click_then_view(
+                        waited_scene = yield from context.wait_click_then_scene(
                             scene_id,
                             "离开",
                             [47, 34, 69, 289, 86, 85, 386, 375, 295],
@@ -8371,7 +8587,7 @@ class DailyFoundationTaskMixin:
                             max_clicks=1,
                         )
                     except TimeoutError:
-                        scene_id, score, _frame = runtime.current_scene(
+                        scene_id, score, _frame = context.current_scene(
                             [34, 69, 289, 86, 186, 85, 386, 375, 295],
                             update=True,
                         )
@@ -8387,9 +8603,9 @@ class DailyFoundationTaskMixin:
                             f"{label}：#186[离开] 后命中父级确认层 #47，"
                             "按操作上下文点击已有 #86[确认]",
                         )
-                        runtime.click_shape_center(86, "确认")
-                        yield from runtime.wait_action_settle(1.5)
-                        waited_scene = yield from runtime.wait_view(
+                        context.click_shape_center(86, "确认")
+                        yield from context.wait_action_settle(1.5)
+                        waited_scene = yield from context.wait_scene(
                             34,
                             69,
                             186,
@@ -8398,7 +8614,7 @@ class DailyFoundationTaskMixin:
                             386,
                             375,
                             295,
-                            timeout=15.0,
+                            wait=15.0,
                             label=f"{label}：确认离开后等待落点",
                         )
                 else:
@@ -8423,7 +8639,7 @@ class DailyFoundationTaskMixin:
                 "action",
                 f"{label}：离场预算末步已出现正式确认场景 #{scene_id}，点击「确认」收口",
             )
-            waited_scene = yield from runtime.wait_click_then_view(
+            waited_scene = yield from context.wait_click_then_scene(
                 scene_id,
                 "确认",
                 [34, 69, 186, 85, 386, 375, 295],
@@ -8443,37 +8659,37 @@ class DailyFoundationTaskMixin:
             f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
         )
 
-    def _leave_daily_lundao_seated_for_daily_entry(self, runtime: Any, scene_id: int | None):
+    def _leave_daily_lundao_seated_for_daily_entry(self, context: Any, scene_id: int | None):
         if scene_id != 53:
             raise RuntimeError(
                 f"论道闻道中只接受正式场景 #53，当前 #{scene_id if scene_id is not None else 'unknown'}，"
                 "禁止借用其它场景的「离开」坐标"
             )
-        runtime.click_shape_center(53, "离开")
-        yield from runtime.wait_action_settle(1.5)
-        next_scene_id = yield from runtime.wait_scene(
+        context.click_shape_center(53, "离开")
+        yield from context.wait_action_settle(1.5)
+        next_scene_id = yield from context.wait_scene(
             54,
             34,
             69,
             186,
-            timeout=30.0,
+            wait=30.0,
             label="论道_座位：点击 #53「离开」后等待退出确认/世界",
         )
         next_scene_id = _lundao_waited_scene_id(next_scene_id)
         if next_scene_id == 54:
-            yield from self._confirm_daily_lundao_exit_to_world(runtime)
+            yield from self._confirm_daily_lundao_exit_to_world(context)
             return "success"
         if next_scene_id in {34, 69}:
             return "success"
         if next_scene_id == 186:
-            return (yield from self._leave_shared_scene_186_to_world(runtime, label="论道_座位"))
+            return (yield from self._leave_shared_scene_186_to_world(context, label="论道_座位"))
         raise RuntimeError(
             f"论道闻道中点击「离开」后未到退出确认/世界/日常，当前 #{next_scene_id if next_scene_id is not None else 'unknown'}"
         )
 
     def _advance_daily_lundao_seat_confirmation(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         scene_id: int | None,
     ):
@@ -8483,7 +8699,7 @@ class DailyFoundationTaskMixin:
             self._raise_if_stopped(stop_event)
             if scene_id in {300, 329}:
                 scene_id, last_score = yield from self._advance_daily_lundao_dojo_travel_confirmation(
-                    runtime,
+                    context,
                     scene_id,
                 )
             if scene_id == 301:
@@ -8493,23 +8709,22 @@ class DailyFoundationTaskMixin:
                 # #302 action itself is intentionally unconstrained; current
                 # game versions may say either “空位入座” or “更换到该座位”,
                 # so an old #302 identity string must not become a new gate.
-                yield from runtime.wait_click(301, "入座")
-                yield from runtime.wait_action_settle(2.0)
+                yield from context.wait_click(301, "入座")
+                yield from context.wait_action_settle(2.0)
                 scene_id = 302
             if scene_id == 302:
                 # The preceding #301 action established the business chain.
                 # #302[确定] deliberately has no visual constraint, so
                 # wait_click performs a direct fixed action rather than
                 # repeating scene/OCR recognition.
-                yield from runtime.wait_click(302, "确定")
-                yield from runtime.wait_action_settle(2.0)
-            scene_id, score, _frame = runtime.current_scene(
+                yield from context.wait_click(302, "确定")
+                yield from context.wait_action_settle(2.0)
+            scene_id, score, _frame = context.current_scene(
                 [303, 301, 302, 329, 52, 53, 186, 237, 18, 14, 69, 34],
                 update=True,
-                handle_interruptions=False,
             )
             last_scene_id, last_score = scene_id, float(score)
-            current_text = runtime.ocr_text(_frame)
+            current_text = context.ocr_text(_frame)
             if self._daily_lundao_text_is_seated(current_text):
                 if scene_id in {53, 186}:
                     return scene_id, float(score)
@@ -8535,14 +8750,14 @@ class DailyFoundationTaskMixin:
                         "论道_座位：OCR 已显示闻道中但 #186 身份尚未稳定，"
                         "继续等待，不点击通用返回",
                     )
-                    yield from runtime.wait_action_settle(1.0)
+                    yield from context.wait_action_settle(1.0)
                     continue
                 raise RuntimeError(
                     f"论道_座位：OCR 已确认闻道中，但图模型落点为 "
                     f"#{scene_id}，禁止映射成其它场景"
                 )
             scene_id, score = self._prefer_daily_lundao_seat_choice_scene(
-                runtime,
+                context,
                 scene_id,
                 score,
                 frame_data_url=_frame,
@@ -8559,7 +8774,7 @@ class DailyFoundationTaskMixin:
                 if self._daily_lundao_text_is_seat_confirm_prompt(current_text):
                     scene_id = 302
                     continue
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_action_settle(1.0)
                 continue
             if scene_id == 301:
                 continue
@@ -8584,7 +8799,7 @@ class DailyFoundationTaskMixin:
         allow_claim_page: bool = False,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         timeout = float(payload.get("dongtian_home_timeout") or 25.0)
         start = time.monotonic()
         last_scene_id: int | None = None
@@ -8594,8 +8809,8 @@ class DailyFoundationTaskMixin:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
             scene_candidates = [284, 279] if allow_claim_page else [279]
-            scene_id, score, frame = runtime.current_scene(scene_candidates, update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene(scene_candidates, update=True)
+            text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, float(score), text
             if allow_claim_page and scene_id == 284:
                 with self._lock:
@@ -8656,7 +8871,7 @@ class DailyFoundationTaskMixin:
         start_scene_id: int | None = None,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
         if not isinstance(images.get(284), dict):
             raise RuntimeError(f"{task_label}：缺少 #284 收益领取页标注，无法把 #279「收益」后的下一步作为场景锚点")
@@ -8664,15 +8879,15 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #284「领取」shape 标注，无法执行下一步领取")
 
         if start_scene_id is None:
-            start_scene_id, _score, _frame = runtime.current_scene([284, 279], update=True)
+            start_scene_id, _score, _frame = context.current_scene([284, 279], update=True)
         claimed = start_scene_id == 284
         if start_scene_id == 279:
-            outcome = yield from runtime.wait_click_then_any(
+            outcome = yield from context.wait_click_then_any(
                 279,
                 "收益",
                 {
-                    "claim_page": runtime.view_visible(284),
-                    "no_reward": runtime.view_visible(279),
+                    "claim_page": context.scene_visible(284),
+                    "no_reward": context.scene_visible(279),
                 },
                 label=f"{task_label}：点击 #279「收益」后识别领取页或无收益主页",
                 settle_seconds=float(payload.get("dongtian_profit_settle_seconds") or 2.0),
@@ -8688,17 +8903,17 @@ class DailyFoundationTaskMixin:
         else:
             raise RuntimeError(f"{task_label}：领取收益前应在 #279/#284，实际 #{start_scene_id if start_scene_id is not None else 'unknown'}")
         if claimed:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 284,
                 "领取",
                 279,
                 label=f"{task_label}：点击 #284「领取」后等待 #279 洞天主页",
                 settle_seconds=max(2.0, float(payload.get("dongtian_claim_settle_seconds") or 2.0)),
             )
-            scene_after, score_after, frame_after = runtime.current_scene([279], update=True)
-            text_after = runtime.ocr_text(frame_after)
+            scene_after, score_after, frame_after = context.current_scene([279], update=True)
+            text_after = context.ocr_text(frame_after)
             self._log("success", f"{task_label}：已点击 #284「领取」并回到 #279，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
-        return_landing = yield from runtime.wait_click_then_view(
+        return_landing = yield from context.wait_click_then_scene(
             279,
             "返回",
             34,
@@ -8711,23 +8926,23 @@ class DailyFoundationTaskMixin:
                 "detail",
                 f"{task_label}：#279「返回」落到 #20，沿正式场景图继续返回世界",
             )
-            result = runtime.go_scene(34)
+            result = context.go_scene(34)
             if hasattr(result, "send"):
                 yield from result
-        scene_return, score_return, frame_return = runtime.current_scene([34], update=True)
+        scene_return, score_return, frame_return = context.current_scene([34], update=True)
         if scene_return != 34 or score_return < 90:
             raise RuntimeError(
                 f"{task_label}：离开洞天后未到可靠 #34，当前 "
                 f"#{scene_return if scene_return is not None else 'unknown'} {score_return:.0f}%"
             )
-        text_return = runtime.ocr_text(frame_return)
+        text_return = context.ocr_text(frame_return)
         self._log("success", f"{task_label}：已从 #279 返回 #34，当前 #{scene_return} {score_return:.0f}%，OCR={text_return[:160]}")
         return claimed
 
     def daily_dongtian_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
         decision = self._daily_window_admission(
-            now=_behavior_tree_runtime._now(),
+            now=_behavior_tree_executor._now(),
             trigger=time_cls(14, 0),
             cutoff=time_cls(22, 0),
             label="洞天_领取",
@@ -8750,7 +8965,7 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少 #279「洞天福地」标注，无法确认洞天主页")
 
         task_label = "洞天_领取"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         # Reward-memory discovery can require a full LuaJIT heap scan when its
         # cached roots have drifted.  That snapshot is only an optional GUI
         # short-circuit for this claim job, so do not let it block the normal,
@@ -8787,8 +9002,8 @@ class DailyFoundationTaskMixin:
                 "detail",
                 "洞天_领取：Runtime 收益状态不可用，保留原 GUI 流程兜底",
             )
-        scene_id, _score, frame = runtime.current_scene([284, 279, 69, 34, 47], update=True)
-        text = runtime.ocr_text(frame)
+        scene_id, _score, frame = context.current_scene([284, 279, 69, 34, 47], update=True)
+        text = context.ocr_text(frame)
         if scene_id == 284:
             claimed = yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label, start_scene_id=284)
             self._record_daily_dongtian_done(payload, message="已领取洞天福地收益" if claimed is not False else "当前没有待领取的洞天收益")
@@ -8804,8 +9019,8 @@ class DailyFoundationTaskMixin:
 
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame = runtime.current_scene([284, 279, 69, 34, 47], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, _score, frame = context.current_scene([284, 279, 69, 34, 47], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 284:
                     claimed = yield from self._claim_daily_dongtian_profit(ctx, stop_event, payload, task_label=task_label, start_scene_id=284)
                     self._record_daily_dongtian_done(payload, message="已领取洞天福地收益" if claimed is not False else "当前没有待领取的洞天收益")
@@ -8821,7 +9036,7 @@ class DailyFoundationTaskMixin:
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
                     ctx,
-                    runtime,
+                    context,
                     stop_event,
                     frame,
                     scene_id,
@@ -8873,7 +9088,7 @@ class DailyFoundationTaskMixin:
         return "success"
 
     def _record_daily_lingmai_done(self, payload: dict[str, Any], *, message: str) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         start_clock = parse_data_annotation_daily_clock(payload.get("daily_start_time") or "17:30") or time_cls(17, 30)
         next_time = datetime.combine(now.date() + timedelta(days=1), start_clock).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
@@ -8891,7 +9106,7 @@ class DailyFoundationTaskMixin:
     ) -> dict[str, Any]:
         """Close today's seat attempt when the game proves the consumable is gone."""
 
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         start_clock = parse_data_annotation_daily_clock(payload.get("daily_start_time") or "17:30") or time_cls(17, 30)
         next_time = datetime.combine(now.date() + timedelta(days=1), start_clock).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
@@ -8910,7 +9125,7 @@ class DailyFoundationTaskMixin:
         start_clock = parse_data_annotation_daily_clock(payload.get("daily_start_time") or "17:30") or time_cls(17, 30)
         end_clock = parse_data_annotation_daily_clock(payload.get("daily_end_time") or "22:00") or time_cls(22, 0)
         decision = self._daily_window_admission(
-            now=_behavior_tree_runtime._now(),
+            now=_behavior_tree_executor._now(),
             trigger=start_clock,
             cutoff=end_clock,
             label="灵脉_座位",
@@ -9003,12 +9218,12 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("灵脉_座位：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
 
         task_label = "灵脉_座位"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([443, 318, 305, 288, 286, 285, 69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, score, frame = context.current_scene([443, 318, 588, 305, 288, 286, 285, 69, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id in {34, 69}:
             runtime_guard = yield from self._daily_lingmai_world_runtime_guard(
-                runtime,
+                context,
                 ctx,
                 payload,
                 scene_id=scene_id,
@@ -9017,11 +9232,23 @@ class DailyFoundationTaskMixin:
                 return runtime_guard
         if scene_id == 318:
             self._log("success", f"{task_label}：当前已在 #318 灵脉奖励确认，场景分 {score:.0f}%，OCR={text[:160]}")
-            return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+            return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
+        if scene_id == 588:
+            self._log(
+                "info",
+                f"{task_label}：恢复已有 #588 灵脉占位详情，场景分 {score:.0f}%",
+            )
+            return (yield from self._finish_daily_lingmai_to_world(
+                context,
+                payload,
+                task_label=task_label,
+                scene_id=scene_id,
+                frame=frame,
+            ))
         if scene_id == 443:
             self._log("success", f"{task_label}：当前已在 #443 灵脉更换确认，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._confirm_daily_lingmai_switch_popup(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=443,
@@ -9029,25 +9256,25 @@ class DailyFoundationTaskMixin:
             ))
         if scene_id == 305:
             self._log("success", f"{task_label}：当前已在 #305 灵脉聚灵确认弹窗，场景分 {score:.0f}%，OCR={text[:160]}")
-            return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
+            return (yield from self._confirm_daily_lingmai_gather(context, payload, task_label=task_label))
         if scene_id == 288:
             self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, context, task_label=task_label))
         if scene_id == 286:
             self._log("success", f"{task_label}：当前已在 #286 选择空位，场景分 {score:.0f}%，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, context, frame, task_label=task_label))
         if scene_id == 285:
             self._log("success", f"{task_label}：当前已在 #285 造化灵脉，场景分 {score:.0f}%，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, context, frame, task_label=task_label))
 
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, score, frame = runtime.current_scene([443, 318, 305, 288, 286, 285, 69, 34], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, score, frame = context.current_scene([443, 318, 588, 305, 288, 286, 285, 69, 34], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 443:
                     self._log("success", f"{task_label}：当前已在 #443 灵脉更换确认，场景分 {score:.0f}%，OCR={text[:160]}")
                     return (yield from self._confirm_daily_lingmai_switch_popup(
-                        runtime,
+                        context,
                         payload,
                         task_label=task_label,
                         scene_id=443,
@@ -9055,25 +9282,37 @@ class DailyFoundationTaskMixin:
                     ))
                 if scene_id == 318:
                     self._log("success", f"{task_label}：当前已在 #318 灵脉奖励确认，场景分 {score:.0f}%，OCR={text[:160]}")
-                    return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+                    return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
+                if scene_id == 588:
+                    self._log(
+                        "info",
+                        f"{task_label}：恢复已有 #588 灵脉占位详情，场景分 {score:.0f}%",
+                    )
+                    return (yield from self._finish_daily_lingmai_to_world(
+                        context,
+                        payload,
+                        task_label=task_label,
+                        scene_id=scene_id,
+                        frame=frame,
+                    ))
                 if scene_id == 305:
                     self._log("success", f"{task_label}：当前已在 #305 灵脉聚灵确认弹窗，场景分 {score:.0f}%，OCR={text[:160]}")
-                    return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
+                    return (yield from self._confirm_daily_lingmai_gather(context, payload, task_label=task_label))
                 if scene_id == 288:
                     self._log("success", f"{task_label}：当前已在 #288，场景分 {score:.0f}%，OCR={text[:160]}")
-                    return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+                    return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, context, task_label=task_label))
                 if scene_id == 286:
                     self._log("success", f"{task_label}：当前已在 #286 选择空位，场景分 {score:.0f}%，OCR={text[:160]}")
-                    return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+                    return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, context, frame, task_label=task_label))
                 if scene_id == 285:
                     self._log("success", f"{task_label}：当前已在 #285 造化灵脉，场景分 {score:.0f}%，OCR={text[:160]}")
-                    return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame, task_label=task_label))
+                    return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, context, frame, task_label=task_label))
 
         _scene_after, _score_after, frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
             ctx,
             stop_event,
             payload,
-            runtime,
+            context,
             scene_id,
             frame,
             text,
@@ -9081,11 +9320,11 @@ class DailyFoundationTaskMixin:
         )
         if _scene_after is None:
             return "skipped"
-        return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, runtime, frame_after, task_label=task_label))
+        return (yield from self._continue_daily_lingmai_from_zaohua(ctx, stop_event, payload, context, frame_after, task_label=task_label))
 
     def _daily_lingmai_world_runtime_guard(
         self,
-        runtime: Any,
+        context: Any,
         ctx: dict[str, Any],
         payload: dict[str, Any],
         *,
@@ -9096,28 +9335,28 @@ class DailyFoundationTaskMixin:
         runtime_override = payload.get(
             "__lingmai_runtime_snapshot_override"
         )
-        runtime_status = (
+        execution_status = (
             dict(runtime_override)
             if isinstance(runtime_override, Mapping)
             else refresh_lingmai_daily_status()
         )
         if (
-            runtime_status.get("available")
-            and runtime_status.get("complete")
+            execution_status.get("available")
+            and execution_status.get("complete")
         ):
-            ctx["_daily_lingmai_status"] = runtime_status
+            ctx["_daily_lingmai_status"] = execution_status
         else:
             return None
         try:
             remaining_ms = int(
-                runtime_status.get("remaining_milliseconds")
+                execution_status.get("remaining_milliseconds")
             )
         except (TypeError, ValueError):
             return None
         self_seat = (
-            runtime_status.get("self_seat_facts")
+            execution_status.get("self_seat_facts")
             if isinstance(
-                runtime_status.get("self_seat_facts"),
+                execution_status.get("self_seat_facts"),
                 Mapping,
             )
             else {}
@@ -9125,7 +9364,7 @@ class DailyFoundationTaskMixin:
         seated = self_seat.get("seated") is True
         if remaining_ms > 0 and not seated:
             return None
-        level_plan = self._daily_lingmai_level_plan(runtime_status)
+        level_plan = self._daily_lingmai_level_plan(execution_status)
         if remaining_ms > 0 and seated and level_plan.get("action") == "try_shengmai":
             self._log(
                 "info",
@@ -9135,8 +9374,8 @@ class DailyFoundationTaskMixin:
             )
             return None
         if scene_id != 34:
-            yield from runtime.goto_view(34)
-        if remaining_ms <= 0 or runtime_status.get("completed") is True:
+            yield from context.go_scene(34)
+        if remaining_ms <= 0 or execution_status.get("completed") is True:
             self._log(
                 "success",
                 "灵脉_座位：世界页 Runtime 已确认 "
@@ -9171,7 +9410,7 @@ class DailyFoundationTaskMixin:
     def daily_lingmai_clear_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
         decision = self._daily_window_admission(
-            now=_behavior_tree_runtime._now(),
+            now=_behavior_tree_executor._now(),
             trigger=time_cls(21, 30),
             cutoff=time_cls(22, 0),
             label="灵脉_清体力",
@@ -9188,7 +9427,7 @@ class DailyFoundationTaskMixin:
     ) -> str:
         """Persist tomorrow's run when a nightly clear job succeeds."""
 
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         next_date = (
             now.date()
             if now.time() < time_cls(21, 30)
@@ -9238,63 +9477,99 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("灵脉_清体力：缺少 #285「造化灵脉」标注，无法确认入口后的场景锚点")
 
         task_label = "灵脉_清体力"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, frame = runtime.current_scene([589, 315, 314, 313, 312, 285, 69, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, score, frame = context.current_scene([589, 315, 314, 313, 312, 285, 69, 34], update=True)
+        text = context.ocr_text(frame)
         if scene_id == 589:
             yield from self._check_daily_lingmai_guiyuan_upgrade(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 already_open=True,
             )
-            yield from runtime.wait_click_then_view(285, "探索", 313)
-            return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+            yield from context.wait_click_then_scene(285, "探索", 313)
+            return (yield from self._continue_daily_lingmai_clear_from_explore(context, payload, task_label=task_label))
         if scene_id == 315:
-            return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_transient(context, payload, task_label=task_label))
         if scene_id == 314:
-            return (yield from self._continue_daily_lingmai_clear_from_amount(runtime, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_amount(context, payload, task_label=task_label))
         if scene_id == 313:
-            return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_explore(context, payload, task_label=task_label))
         if scene_id == 312:
-            yield from runtime.wait_click_then_view(312, "确认", 285)
-            frame = runtime.cur_frame(update=True)
-            return (yield from self._continue_daily_lingmai_clear_from_zaohua(runtime, payload, task_label=task_label))
+            yield from context.wait_click_then_scene(312, "确认", 285)
+            frame = context.cur_frame(update=True)
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(context, payload, task_label=task_label))
         if scene_id == 285:
             self._log("success", f"{task_label}：已在 #285 造化灵脉，继续清理体力，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_clear_from_zaohua(runtime, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(context, payload, task_label=task_label))
         scene_after, _score_after, frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
             ctx,
             stop_event,
             payload,
-            runtime,
+            context,
             scene_id,
             frame,
             text,
             task_label=task_label,
         )
         if scene_after == 285:
-            return (yield from self._continue_daily_lingmai_clear_from_zaohua(runtime, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(context, payload, task_label=task_label))
         return "skipped"
 
     def _continue_daily_lingmai_clear_from_zaohua(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
     ):
         yield from self._check_daily_lingmai_guiyuan_upgrade(
-            runtime,
+            context,
             payload,
             task_label=task_label,
         )
-        yield from runtime.wait_click_then_view(285, "探索", 313)
-        return (yield from self._continue_daily_lingmai_clear_from_explore(runtime, payload, task_label=task_label))
+        try:
+            yield from context.wait_click_then_scene(285, "探索", 313)
+        except TimeoutError:
+            frame = context.cur_frame(update=True)
+            scene_id, _score, frame = context.current_scene([286, 313], update=False)
+            if scene_id == 286:
+                daily_status = refresh_lingmai_daily_status()
+                remaining_ms = daily_status.get("remaining_milliseconds")
+                if (
+                    daily_status.get("available")
+                    and daily_status.get("completed")
+                    and remaining_ms == 0
+                ):
+                    self._log(
+                        "success",
+                        f"{task_label}：#286 只读状态确认今日灵脉已完成、剩余 0ms，"
+                        "无需再次进入探索",
+                    )
+                    yield from context.go_scene(34)
+                    return self._complete_daily_clear_task(
+                        payload,
+                        task_id="legacy-daily-lingmai-clear",
+                        label=task_label,
+                    )
+            stamina_text = context.ocr_text_in_shapes(
+                313,
+                ("体力",),
+                frame_data_url=frame,
+            )
+            stamina = self._parse_daily_lingmai_clear_stamina(stamina_text)
+            if stamina is None or stamina[0] != 30 or stamina[1] < 0:
+                raise
+            self._log(
+                "detail",
+                f"{task_label}：场景身份未命中，但 #313[体力] 已读取 "
+                f"{stamina[0]}/{stamina[1]}，确认进入探索页",
+            )
+        return (yield from self._continue_daily_lingmai_clear_from_explore(context, payload, task_label=task_label))
 
     def _check_daily_lingmai_guiyuan_upgrade(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -9303,15 +9578,15 @@ class DailyFoundationTaskMixin:
         """在 #285 检查一次归元凝神；资源不足时零升级并返回入口页。"""
 
         if not already_open:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 285,
                 "归元凝神",
                 589,
                 timeout=float(payload.get("lingmai_guiyuan_open_timeout_seconds") or 15.0),
                 label=f"{task_label}：打开 #589 归元凝神",
             )
-        frame = runtime.cur_frame(update=True)
-        resource_text = runtime.ocr_text_in_shapes(
+        frame = context.cur_frame(update=True)
+        resource_text = context.ocr_text_in_shapes(
             589,
             ("凝神资源",),
             frame_data_url=frame,
@@ -9326,7 +9601,7 @@ class DailyFoundationTaskMixin:
                 "detail",
                 f"{task_label}：#589 未可靠读取凝神资源「{resource_text}」，本次不升级",
             )
-            yield from runtime.wait_click_then_view(589, "返回", 285)
+            yield from context.wait_click_then_scene(589, "返回", 285)
             return "unknown"
 
         available, cost = values
@@ -9335,36 +9610,36 @@ class DailyFoundationTaskMixin:
                 "detail",
                 f"{task_label}：#589 凝神消耗无效 {available}/{cost}，本次不升级",
             )
-            yield from runtime.wait_click_then_view(589, "返回", 285)
+            yield from context.wait_click_then_scene(589, "返回", 285)
             return "unknown"
         if available < cost:
             self._log(
                 "success",
                 f"{task_label}：归元凝神资源 {available}/{cost}，当前不可升级，直接通过",
             )
-            yield from runtime.wait_click_then_view(589, "返回", 285)
+            yield from context.wait_click_then_scene(589, "返回", 285)
             return "not_upgradable"
 
         self._log(
             "action",
             f"{task_label}：归元凝神资源 {available}/{cost}，执行一次凝神升级",
         )
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             589,
             "凝神",
             346,
             timeout=float(payload.get("lingmai_guiyuan_upgrade_timeout_seconds") or 15.0),
             label=f"{task_label}：等待归元凝神升级成功层",
         )
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             346,
             "继续",
             589,
             timeout=float(payload.get("lingmai_guiyuan_continue_timeout_seconds") or 15.0),
             label=f"{task_label}：关闭归元凝神成功层",
         )
-        after_frame = runtime.cur_frame(update=True)
-        after_text = runtime.ocr_text_in_shapes(
+        after_frame = context.cur_frame(update=True)
+        after_text = context.ocr_text_in_shapes(
             589,
             ("凝神资源",),
             frame_data_url=after_frame,
@@ -9383,19 +9658,19 @@ class DailyFoundationTaskMixin:
             "success",
             f"{task_label}：归元凝神升级成功，资源 {available}->{after_values[0]}",
         )
-        yield from runtime.wait_click_then_view(589, "返回", 285)
+        yield from context.wait_click_then_scene(589, "返回", 285)
         return "upgraded"
 
     def _continue_daily_lingmai_clear_from_explore(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
     ):
         """在 #313 勾选一键探索，再进入 #314 选择消耗体力。"""
-        frame = runtime.cur_frame(update=True)
-        stamina_text = runtime.ocr_text_in_shapes(313, ("体力",), frame_data_url=frame)
+        frame = context.cur_frame(update=True)
+        stamina_text = context.ocr_text_in_shapes(313, ("体力",), frame_data_url=frame)
         stamina = self._parse_daily_lingmai_clear_stamina(stamina_text)
         if stamina is not None:
             per_run_cost, available = stamina
@@ -9408,7 +9683,7 @@ class DailyFoundationTaskMixin:
                     "success",
                     f"{task_label}：现有体力 {available} 小于单次消耗 {per_run_cost}，本次无需探索，返回 #34",
                 )
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 return self._complete_daily_clear_task(
                     payload,
                     task_id="legacy-daily-lingmai-clear",
@@ -9416,7 +9691,7 @@ class DailyFoundationTaskMixin:
                 )
         else:
             self._log("detail", f"{task_label}：未可靠解析 #313[体力]「{stamina_text}」，继续固定一轮探索")
-        unchecked_score = runtime.shape_score(313, "一键探索", frame_data_url=frame)
+        unchecked_score = context.shape_score(313, "一键探索", frame_data_url=frame)
         # #313「一键探索」参考图表示未勾选状态。真实调试中未勾选为 100，
         # 勾选后仍可能因大部分背景相同而达到 81；因此这里使用独立的严格
         # 状态阈值，而不能沿用普通 overlay_threshold=55。
@@ -9426,10 +9701,10 @@ class DailyFoundationTaskMixin:
             f"{task_label}：#313「一键探索」未勾选图像 score={unchecked_score:.0f}% threshold={unchecked_threshold:.0f}%",
         )
         if unchecked_score >= unchecked_threshold:
-            yield from runtime.wait_click(313, "一键探索")
-            yield from runtime.wait_action_settle(float(payload.get("lingmai_one_click_settle_seconds") or 1.0))
-        yield from runtime.wait_click_then_view(313, "确定", 314)
-        return (yield from self._continue_daily_lingmai_clear_from_amount(runtime, payload, task_label=task_label))
+            yield from context.wait_click(313, "一键探索")
+            yield from context.wait_action_settle(float(payload.get("lingmai_one_click_settle_seconds") or 1.0))
+        yield from context.wait_click_then_scene(313, "确定", 314)
+        return (yield from self._continue_daily_lingmai_clear_from_amount(context, payload, task_label=task_label))
 
     @staticmethod
     def _parse_daily_lingmai_clear_stamina(text: str) -> tuple[int, int] | None:
@@ -9439,21 +9714,47 @@ class DailyFoundationTaskMixin:
 
     def _continue_daily_lingmai_clear_from_amount(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
     ):
         """在 #314 通过已标注滚动条选择最大体力并确认。"""
         self._log("action", f"{task_label}：拖动 #314「滚动条」到最右端选择最大体力")
-        runtime.drag_shape_to_frame_edge(
+        context.drag_shape_to_frame_edge(
             314,
             "滚动条",
             direction="right",
             duration=float(payload.get("lingmai_amount_drag_seconds") or 0.6),
         )
-        yield from runtime.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
-        landing = yield from runtime.wait_click_then_view(
+        yield from context.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
+        frame = context.cur_frame(update=True)
+        amount_text = context.ocr_text_in_shapes(
+            314,
+            ("消耗体力",),
+            frame_data_url=frame,
+        )
+        amount = self._parse_daily_lingmai_clear_stamina(amount_text)
+        if amount is None:
+            raise RuntimeError(
+                f"{task_label}：#314 拖动后未可靠读取消耗体力「{amount_text}」，禁止确认"
+            )
+        selected, available = amount
+        remainder = available - selected
+        self._log(
+            "detail",
+            f"{task_label}：#314 拖动后消耗体力={selected}/{available}，差值={remainder}",
+        )
+        if selected < 0 or available < 0 or remainder < 0:
+            raise RuntimeError(
+                f"{task_label}：#314 消耗体力数值无效 {selected}/{available}，禁止确认"
+            )
+        if remainder >= 30:
+            raise RuntimeError(
+                f"{task_label}：#314 滚动条未拖到末端，消耗体力 {selected}/{available}，"
+                f"差值 {remainder} 不小于 30，禁止确认"
+            )
+        landing = yield from context.wait_click_then_scene(
             314,
             "确定",
             [315, 313, 285],
@@ -9462,7 +9763,7 @@ class DailyFoundationTaskMixin:
         )
         landing_id = int(getattr(landing, "id", landing) or 0)
         if landing_id == 315:
-            return (yield from self._continue_daily_lingmai_clear_from_transient(runtime, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_transient(context, payload, task_label=task_label))
         if landing_id == 313:
             self._log("success", f"{task_label}：已完成固定一轮探索并回到 #313，剩余体力不再继续处理")
             return self._complete_daily_clear_task(
@@ -9479,7 +9780,7 @@ class DailyFoundationTaskMixin:
 
     def _continue_daily_lingmai_clear_from_transient(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -9487,7 +9788,7 @@ class DailyFoundationTaskMixin:
         """尽快消费有时效性的 #315；错过它时仍以回到 #285 为完成。"""
         self._log("action", f"{task_label}：检测到有时效性的 #315，尝试点击「继续」")
         try:
-            landing = yield from runtime.wait_click_then_view(
+            landing = yield from context.wait_click_then_scene(
                 315,
                 "继续",
                 [313, 285],
@@ -9504,10 +9805,10 @@ class DailyFoundationTaskMixin:
                 )
         except TimeoutError:
             self._log("detail", f"{task_label}：#315 可能已自动消失，确认回到 #313 或 #285")
-            landing = yield from runtime.wait_view(
+            landing = yield from context.wait_scene(
                 313,
                 285,
-                timeout=float(payload.get("lingmai_finish_timeout_seconds") or 15.0),
+                wait=float(payload.get("lingmai_finish_timeout_seconds") or 15.0),
                 label=f"{task_label}：等待有时效性的 #315 自动消失并回到 #313/#285",
             )
             if int(getattr(landing, "id", landing) or 0) == 313:
@@ -9529,7 +9830,7 @@ class DailyFoundationTaskMixin:
         if bool(payload.get("ignore_schedule_window")):
             return None
         decision = self._daily_window_admission(
-            now=_behavior_tree_runtime._now(),
+            now=_behavior_tree_executor._now(),
             trigger=time_cls(21, 30),
             cutoff=time_cls(22, 0),
             label="洞天_行动力",
@@ -9546,9 +9847,9 @@ class DailyFoundationTaskMixin:
         """执行“洞天_行动力”的业务部分。
 
         完整工程作业由 ``run_task('daily_dongtian_clear')`` 组织成原子闭环：
-        外层先用通用 ``goto_view(34)`` 归一到世界，本函数从 #34 进入日常和
+        外层先用通用 ``go_scene(34)`` 归一到世界，本函数从 #34 进入日常和
         洞天并清理行动力；本函数返回 ``success`` 后，外层再用同一个通用
-        ``goto_view(34)`` 按 ``#341 -> #279 -> #34`` 等真实落点动态收尾。
+        ``go_scene(34)`` 按 ``#341 -> #279 -> #34`` 等真实落点动态收尾。
         因而这里不应复制一条洞天专用返回链。
 
         内层也允许从 #279 洞天主页或 #341 地点详情直接开始，供同一 Cell 内
@@ -9564,24 +9865,24 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("洞天_行动力：缺少 #279「洞天福地」标注，无法确认洞天主页")
 
         task_label = "洞天_行动力"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([341, 279, 69, 34, 47], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([341, 279, 69, 34, 47], update=True)
+        text = context.ocr_text(frame)
         if scene_id == 341:
-            return (yield from self._daily_dongtian_clear_action_power_loop(runtime, stop_event, payload))
+            return (yield from self._daily_dongtian_clear_action_power_loop(context, stop_event, payload))
         if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-            return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
+            return (yield from self._continue_daily_dongtian_clear_from_home(context, stop_event, payload))
 
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame = runtime.current_scene([279, 69, 34, 47], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, _score, frame = context.current_scene([279, 69, 34, 47], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 279 or self._daily_dongtian_text_is_home(text):
-                    return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
+                    return (yield from self._continue_daily_dongtian_clear_from_home(context, stop_event, payload))
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
                     ctx,
-                    runtime,
+                    context,
                     stop_event,
                     frame,
                     scene_id,
@@ -9609,15 +9910,15 @@ class DailyFoundationTaskMixin:
             )
             return "skipped"
         yield from self._wait_daily_dongtian_home(ctx, stop_event, payload, task_label=task_label)
-        return (yield from self._continue_daily_dongtian_clear_from_home(runtime, stop_event, payload))
+        return (yield from self._continue_daily_dongtian_clear_from_home(context, stop_event, payload))
 
     def _continue_daily_dongtian_clear_from_home(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
-        return (yield from self._daily_dongtian_clear_action_power_loop(runtime, stop_event, payload))
+        return (yield from self._daily_dongtian_clear_action_power_loop(context, stop_event, payload))
 
     def _daily_dongtian_runtime_snapshot(
         self,
@@ -9647,12 +9948,12 @@ class DailyFoundationTaskMixin:
 
     def _daily_dongtian_action_power(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any] | None = None,
     ) -> tuple[int, str]:
         """Read authoritative action power from game memory only."""
 
-        _ = runtime
+        _ = context
         if not isinstance(payload, dict):
             raise RuntimeError("洞天_行动力：缺少 Runtime payload，拒绝降级 OCR")
         initial_plan = payload.get("__dongtian_runtime_snapshot")
@@ -9715,7 +10016,7 @@ class DailyFoundationTaskMixin:
 
     def _daily_dongtian_clear_action_power_loop(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
@@ -9736,7 +10037,7 @@ class DailyFoundationTaskMixin:
         rounds = 0
         max_rounds = max(1, int(payload.get("max_action_power_rounds") or 100))
         while rounds < max_rounds:
-            scene_id, score, _frame = runtime.current_scene([341, 279], update=True)
+            scene_id, score, _frame = context.current_scene([341, 279], update=True)
             if scene_id not in {341, 279}:
                 raise RuntimeError(f"洞天_行动力：循环只接受 #341/#279，当前 #{scene_id} {score:.0f}%")
 
@@ -9748,7 +10049,7 @@ class DailyFoundationTaskMixin:
                 dict,
             ):
                 self._daily_dongtian_runtime_snapshot(payload)
-            action_power, evidence = self._daily_dongtian_action_power(runtime, payload)
+            action_power, evidence = self._daily_dongtian_action_power(context, payload)
             self._log("detail", f"洞天_行动力：当前 #{scene_id} 行动力={action_power}，来源={evidence!r}")
             if action_power < 100:
                 self._log("success", f"洞天_行动力：行动力已低于 100（当前 {action_power}），共挑战 {rounds} 次")
@@ -9765,17 +10066,17 @@ class DailyFoundationTaskMixin:
                 if not enemy_places:
                     raise RuntimeError("洞天_行动力：Runtime 未解析出敌对地点")
                 clicked_place = yield from self._daily_dongtian_click_first_enemy_place(
-                    runtime,
+                    context,
                     stop_event,
                     enemy_places,
                     max_scrolls=max(0, int(payload.get("place_max_scrolls") or 12)),
                 )
-                yield from self._daily_dongtian_validate_enemy_detail(runtime, clicked_place, payload)
+                yield from self._daily_dongtian_validate_enemy_detail(context, clicked_place, payload)
                 if bool(payload.get("pause_after_enemy_place_click")):
                     self._log("success", f"洞天_行动力：已点击敌对地点「{clicked_place}」，按调试参数暂停")
                     return "manual_check_pending"
 
-            yield from self._daily_dongtian_continue_enemy_occupation(runtime)
+            yield from self._daily_dongtian_continue_enemy_occupation(context)
             rounds += 1
             # 一轮战斗无论胜负都会消耗行动力；进入战斗前只剩 100 时，
             # 正常走到 #346「继续」就已经能确定剩余行动力低于 100。
@@ -9834,27 +10135,55 @@ class DailyFoundationTaskMixin:
             f"洞天_行动力：Runtime 解析敌对地点 {enemies}，"
             f"已解码 {len(mines)} 个，unions={union_summary}",
         )
+        # #279 opens with the tier-one White Jade card already selected and
+        # its roster rendered at the right.  Clicking the visible ``白玉京``
+        # label again is therefore an idempotent selection, not navigation to
+        # #341.  Prefer any other Runtime-authorized enemy; keep White Jade as
+        # a last-resort target only when it is the sole hostile place.
+        non_selected_enemies = [
+            item
+            for item in enemies
+            if self._daily_dongtian_normalize_place_name(item) != "白玉京"
+        ]
+        if non_selected_enemies:
+            return non_selected_enemies
         return enemies
 
     def _daily_dongtian_validate_enemy_detail(
         self,
-        runtime: Any,
+        context: Any,
         clicked_place: str,
         payload: dict[str, Any],
     ):
-        yield from runtime.wait_view(341, label=f"洞天_行动力：核对地点「{clicked_place}」详情")
         expected_place = self._daily_dongtian_normalize_place_name(clicked_place)
         if expected_place not in {
             self._daily_dongtian_normalize_place_name(item)
             for item in _DONGTIAN_PLACE_ANCHORS
         }:
             raise RuntimeError(f"洞天_行动力：Runtime 授权了未知地点 {clicked_place!r}")
-        title_shape = runtime.shape(341, "地点名称")
+        landing = yield from context.wait_scene(
+            341,
+            342,
+            label=f"洞天_行动力：核对地点「{clicked_place}」详情",
+        )
+        landed_scene = int(getattr(landing, "id", landing) or 341)
+        if landed_scene == 342:
+            # Some place cards expose the first position's occupation dialog
+            # directly.  The #279 click was already bound to the exact OCR
+            # title selected from the authoritative Runtime enemy list, and
+            # #342 is the declared direct child of #341[位置1].
+            self._log(
+                "detail",
+                f"洞天_行动力：地点「{expected_place}」直接进入 #342 占领弹窗，"
+                "跳过重复的 #341[位置1] 点击",
+            )
+            return expected_place
+        title_shape = context.shape(341, "地点名称")
         if title_shape is None:
             raise RuntimeError("洞天_行动力：缺少 #341「地点名称」区域，无法核对点击落点")
 
-        frame = runtime.cur_frame(update=True)
-        title_fragments = runtime.ocr_fragments_in_shapes(
+        frame = context.cur_frame(update=True)
+        title_fragments = context.ocr_fragments_in_shapes(
             341,
             ["地点名称"],
             frame_data_url=frame,
@@ -9884,35 +10213,41 @@ class DailyFoundationTaskMixin:
             f"洞天_行动力：点击后安全核验失败（顶部地点标题不一致），立即返回 #279；"
             f"expected={expected_place!r}, observed={observed!r}",
         )
-        yield from runtime.wait_click_then_view(341, "返回", 279)
+        yield from context.wait_click_then_scene(341, "返回", 279)
         raise RuntimeError("洞天_行动力：敌方地点安全核验失败（顶部地点标题不一致），已返回洞天主页")
 
-    def _daily_dongtian_continue_enemy_occupation(self, runtime: Any):
-        yield from runtime.wait_click_then_view(341, "位置1", 342)
-        yield from runtime.wait_click_then_view(342, "占领", 343)
-        yield from runtime.wait_click(343, "占领")
-        yield from runtime.wait_action_settle(0.3)
-        scene_id, _score, frame = runtime.current_scene([344, 343], update=True)
+    def _daily_dongtian_continue_enemy_occupation(self, context: Any):
+        scene_id, _score, _frame = context.current_scene([341, 342], update=True)
+        if scene_id == 341:
+            yield from context.wait_click_then_scene(341, "位置1", 342)
+        elif scene_id != 342:
+            raise RuntimeError(
+                f"洞天_行动力：占领流程要求 #341/#342，当前 #{scene_id or 'unknown'}"
+            )
+        yield from context.wait_click_then_scene(342, "占领", 343)
+        yield from context.wait_click(343, "占领")
+        yield from context.wait_action_settle(0.3)
+        scene_id, _score, frame = context.current_scene([344, 343], update=True)
         if scene_id == 343:
             # The transition can begin a few frames after the click.  One
             # bounded second sample distinguishes a delayed transition from
             # an inert button without requiring the transient battle frame to
             # have a stable scene identity.
-            yield from runtime.wait_action_settle(0.8)
-            scene_id, _score, frame = runtime.current_scene([344, 343], update=True)
+            yield from context.wait_action_settle(0.8)
+            scene_id, _score, frame = context.current_scene([344, 343], update=True)
         if scene_id == 344:
-            runtime.click_shape(344, "战斗", frame_data_url=frame)
-            runtime.clear_frame()
+            context.click_shape(344, "战斗", frame_data_url=frame)
+            context.clear_frame()
         elif scene_id == 343:
             raise RuntimeError("洞天_行动力：点击 #343「占领」后仍停在队伍确认页")
         # Any other reliable observation means #343 has been left and the
         # direct battle transition is already in flight.  The battle finisher
         # owns the next stable business anchors.
-        yield from self._daily_dongtian_finish_battle(runtime)
+        yield from self._daily_dongtian_finish_battle(context)
 
     def _daily_dongtian_finish_battle(
         self,
-        runtime: Any,
+        context: Any,
         *,
         tick_seconds: float = 1.0,
         max_ticks: int = 180,
@@ -9924,31 +10259,31 @@ class DailyFoundationTaskMixin:
         """
         skip_clicked = False
         for _tick in range(max(1, int(max_ticks))):
-            yield from runtime.wait_action_settle(max(0.1, float(tick_seconds)))
-            scene_id, _score, _frame = runtime.current_scene([345, 346], update=True)
+            yield from context.wait_action_settle(max(0.1, float(tick_seconds)))
+            scene_id, _score, _frame = context.current_scene([345, 346], update=True)
             if scene_id == 345:
                 if not skip_clicked:
-                    yield from runtime.wait_click(345, "跳过")
+                    yield from context.wait_click(345, "跳过")
                     skip_clicked = True
                 continue
             if scene_id == 346:
-                yield from runtime.wait_click(346, "继续")
+                yield from context.wait_click(346, "继续")
                 # 继续后通常回到当前地点详情 #341，也可能直接回洞天主页 #279；
                 # 两者都表示本轮战斗闭环完成，不把其中一个误设成唯一成功终点。
-                yield from runtime.wait_view(341, 279, label="洞天_行动力：确认战斗后的正常落点")
+                yield from context.wait_scene(341, 279, label="洞天_行动力：确认战斗后的正常落点")
                 return
         raise RuntimeError("洞天_行动力：战斗等待超时，未出现最终场景 #346「继续」")
 
     def _daily_dongtian_click_first_enemy_place(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         enemy_places: list[str],
         *,
         max_scrolls: int,
     ):
         return (yield from self._daily_dongtian_click_place(
-            runtime,
+            context,
             stop_event,
             enemy_places,
             max_scrolls=max_scrolls,
@@ -9958,7 +10293,7 @@ class DailyFoundationTaskMixin:
 
     def _daily_dongtian_click_place(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         place_names: list[str],
         *,
@@ -9974,13 +10309,13 @@ class DailyFoundationTaskMixin:
         for an exact normalized place identity; #341 remains the independent
         post-click assertion performed by the caller.
         """
-        view279 = runtime.view(279)
-        window_shape = runtime.shape(279, "窗口")
+        view279 = context.view(279)
+        window_shape = context.shape(279, "窗口")
         if window_shape is None:
             raise RuntimeError("洞天_行动力：缺少 #279「窗口」标注，无法查找敌对地点")
         window_box = window_shape.box()
 
-        roster_shape = runtime.shape(279, "我的编队")
+        roster_shape = context.shape(279, "我的编队")
         if roster_shape is None:
             raise RuntimeError("洞天_行动力：缺少 #279「我的编队」禁点区标注，拒绝点击地点")
         roster_box = roster_shape.box()
@@ -10010,12 +10345,12 @@ class DailyFoundationTaskMixin:
         for direction_index, direction in enumerate(directions):
             for scroll_index in range(max_scrolls + 1):
                 self._raise_if_stopped(stop_event)
-                yield from runtime.wait_view(279, label=f"{task_label}：等待 #279 洞天福地")
-                frame = runtime.cur_frame(update=True)
-                lines = runtime.ocr_fragments_in_shapes(279, ["窗口"], frame_data_url=frame)
+                yield from context.wait_scene(279, label=f"{task_label}：等待 #279 洞天福地")
+                frame = context.cur_frame(update=True)
+                lines = context.ocr_fragments_in_shapes(279, ["窗口"], frame_data_url=frame)
                 tokens = (
-                    runtime.ocr_tokens_in_shapes(279, ["窗口"], frame_data_url=frame)
-                    if hasattr(runtime, "ocr_tokens_in_shapes")
+                    context.ocr_tokens_in_shapes(279, ["窗口"], frame_data_url=frame)
+                    if hasattr(context, "ocr_tokens_in_shapes")
                     else []
                 )
                 matches: list[tuple[float, float, str, dict[str, Any], float, float]] = []
@@ -10048,7 +10383,15 @@ class DailyFoundationTaskMixin:
                         raise RuntimeError(f"{task_label}：地点名称内部一致性校验失败：place={place!r}")
                     if click_x <= 0 or click_y <= 0:
                         raise RuntimeError(f"{task_label}：地点「{place}」 OCR 坐标无效，line={line}")
-                    click_candidates = [(click_x, click_y)]
+                    # The visible place title itself is the stable native card
+                    # target.  The old locator clicked a derived point 100 px
+                    # above it; on the current #279 layout that point is only
+                    # decorative building art and can stay inert indefinitely.
+                    # Keep the historical upper-card points as fallbacks for
+                    # older layouts, but prefer the exact OCR title centre.
+                    click_candidates = [(location_center_x, location_center_y)]
+                    if (click_x, click_y) not in click_candidates:
+                        click_candidates.append((click_x, click_y))
                     location_width = float(line.get("w") or 0)
                     fallback_x = click_x - min(40.0, max(18.0, location_width * 0.25))
                     if (
@@ -10056,8 +10399,9 @@ class DailyFoundationTaskMixin:
                         and not point_in_box(fallback_x, click_y, roster_box)
                     ):
                         click_candidates.append((fallback_x, click_y))
-
-                    settle_seconds = float(runtime.payload.get("place_click_settle_seconds") or 2.0)
+                    successor_wait_seconds = float(
+                        context.payload.get("place_click_successor_wait_seconds") or 20.0
+                    )
                     for attempt, (candidate_x, candidate_y) in enumerate(click_candidates, start=1):
                         self._log(
                             "click",
@@ -10065,17 +10409,38 @@ class DailyFoundationTaskMixin:
                             f"点击同一 OCR 地点上方热区=({candidate_x:.0f},{candidate_y:.0f})"
                             f"，尝试 {attempt}/{len(click_candidates)}",
                         )
-                        runtime.click_frame_point(279, candidate_x, candidate_y)
-                        yield from runtime.wait_action_settle(settle_seconds)
-                        if not hasattr(runtime, "current_scene"):
+                        context.click_frame_point(279, candidate_x, candidate_y)
+                        if not hasattr(context, "current_scene"):
                             return place
-                        landed_scene, _score, _frame = runtime.current_scene([341, 279], update=True)
+                        try:
+                            landing = yield from context.wait_scene(
+                                341,
+                                342,
+                                wait=successor_wait_seconds,
+                                handle_interruptions=False,
+                                label=f"{task_label}：等待地点「{place}」详情或占领弹窗",
+                            )
+                        except TimeoutError:
+                            landing = None
+                        landed_scene = int(getattr(landing, "id", landing) or 0)
+                        if landed_scene in {341, 342}:
+                            return place
+                        landed_scene, _score, _frame = context.current_scene(
+                            [279, 341, 342],
+                            update=True,
+                        )
+                        if landed_scene in {341, 342}:
+                            return place
                         if landed_scene != 279:
-                            return place
+                            raise RuntimeError(
+                                f"{task_label}：点击地点「{place}」后落点不可靠："
+                                f"scene={landed_scene or 'unknown'}"
+                            )
                         if attempt < len(click_candidates):
                             self._log(
                                 "warning",
-                                f"{task_label}：地点「{place}」点击未生效，仍在 #279，"
+                                f"{task_label}：地点「{place}」等待 {successor_wait_seconds:.0f}s "
+                                "后仍可靠停在 #279，"
                                 "改用同一地点的备用热区重试",
                             )
                     raise RuntimeError(f"{task_label}：地点「{place}」点击重试后仍停在 #279")
@@ -10083,7 +10448,7 @@ class DailyFoundationTaskMixin:
                     break
                 direction_text = "向下" if direction == "down" else "向上"
                 self._log("action", f"{task_label}：当前窗口未找到地点，{direction_text}滚动 {scroll_index + 1}/{max_scrolls}")
-                changed = yield from runtime.scroll_shape_content(view279, window_shape, direction=direction)
+                changed = yield from context.scroll_shape_content(view279, window_shape, direction=direction)
                 if not changed:
                     break
             if direction_index + 1 < len(directions):
@@ -10092,7 +10457,7 @@ class DailyFoundationTaskMixin:
 
     def _daily_dongtian_click_seating_target(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         authorization: Mapping[str, Any],
         *,
@@ -10132,7 +10497,7 @@ class DailyFoundationTaskMixin:
             f" mine_id={gate['mine_id']} place={gate['place_name']!r}",
         )
         return (yield from self._daily_dongtian_click_place(
-            runtime,
+            context,
             stop_event,
             [str(gate["place_name"])],
             max_scrolls=max_scrolls,
@@ -10210,7 +10575,7 @@ class DailyFoundationTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         scene_id: int | None,
         frame: str | None,
         text: str,
@@ -10219,13 +10584,13 @@ class DailyFoundationTaskMixin:
     ) -> tuple[int | None, float, str | None]:
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, score, frame = runtime.current_scene([285, 69, 34], update=True)
-                text = runtime.ocr_text(frame)
+                scene_id, score, frame = context.current_scene([285, 69, 34], update=True)
+                text = context.ocr_text(frame)
                 if scene_id == 285:
                     self._log("success", f"{task_label}：已到达 #285 造化灵脉，当前 #{scene_id} {score:.0f}%，OCR={text[:160]}")
                     return scene_id, score, frame
             if scene_id != 69:
-                scene_id = yield from self._enter_daily_from_world_like(ctx, runtime, stop_event, frame, scene_id, text, label=task_label)
+                scene_id = yield from self._enter_daily_from_world_like(ctx, context, stop_event, frame, scene_id, text, label=task_label)
 
         daily_status = yield from self._open_daily_entry_from_daily(
             ctx,
@@ -10245,15 +10610,24 @@ class DailyFoundationTaskMixin:
                 entry_label="参与灵脉争夺1小时",
             )
             return None, 0.0, frame
-        yield from self._wait_daily_lingmai_zaohua_after_entry(runtime, payload, task_label=task_label)
-        scene_after, score_after, frame_after = runtime.current_scene([285], update=True)
-        text_after = runtime.ocr_text(frame_after)
+        landed = yield from self._wait_daily_lingmai_zaohua_after_entry(
+            context,
+            payload,
+            task_label=task_label,
+        )
+        landed_id = int(landed.id if isinstance(landed, View) else landed)
+        if landed_id != 285:
+            raise RuntimeError(f"{task_label}：处理入口弹窗后未确认到达 #285")
+        scene_after = 285
+        score_after = 100.0
+        frame_after = context.cur_frame(update=True)
+        text_after = context.ocr_text(frame_after)
         self._log("success", f"{task_label}：已到达 #285 造化灵脉，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
         return scene_after, score_after, frame_after
 
     def _wait_daily_lingmai_zaohua_after_entry(
         self,
-        runtime: FanxiuRuntimeSession,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -10266,23 +10640,23 @@ class DailyFoundationTaskMixin:
             if remaining <= 0:
                 raise TimeoutError(f"{task_label}：点击 #69 入口后等待 #285/#312 超过 {timeout:.0f} 秒")
             try:
-                scene_id = yield from runtime.wait_view(
+                scene_id = yield from context.wait_scene(
                     285,
                     312,
-                    timeout=max(1.0, min(8.0, remaining)) if not retried_entry else max(1.0, remaining),
+                    wait=max(1.0, min(8.0, remaining)) if not retried_entry else max(1.0, remaining),
                     label=f"{task_label}：点击 #69 入口后等待 #285 造化灵脉",
                 )
             except TimeoutError:
-                scene_after, _score_after, _frame_after = runtime.current_scene([285, 312, 69], update=True)
+                scene_after, _score_after, _frame_after = context.current_scene([285, 312, 69], update=True)
                 if scene_after in {285, 312}:
-                    scene_id = runtime.view(scene_after)
+                    scene_id = context.view(scene_after)
                 elif scene_after == 69 and not retried_entry and time.monotonic() < deadline:
                     retried_entry = True
                     self._log(
                         "action",
                         f"{task_label}：入口点击后的瞬态弹层已清理但仍在 #69，原等待预算内重开入口一次",
                     )
-                    reopen_status = yield from runtime.open_daily_entry(
+                    reopen_status = yield from context.open_daily_entry(
                         label=task_label,
                         title_pattern=_DAILY_LINGMAI_ENTRY_PATTERN,
                         progress_can_mark_done=False,
@@ -10302,10 +10676,10 @@ class DailyFoundationTaskMixin:
                     raise
             if int(scene_id.id if isinstance(scene_id, View) else scene_id) == 285:
                 return scene_id
-            yield from runtime.wait_click_then_view(312, "确认", [285, 312], timeout=8.0)
-            scene_after, _score_after, _frame_after = runtime.current_scene([285, 312], update=True)
+            yield from context.wait_click_then_scene(312, "确认", [285, 312], timeout=8.0)
+            scene_after, _score_after, _frame_after = context.current_scene([285, 312], update=True)
             if scene_after == 285:
-                return runtime.view(285)
+                return context.view(285)
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"{task_label}：处理 #312 确认弹窗后仍未到达 #285")
 
@@ -10317,7 +10691,7 @@ class DailyFoundationTaskMixin:
         seconds: int = 1800,
         retry_at_ms: int | None = None,
     ) -> str:
-        now = _behavior_tree_runtime._now()
+        now = _behavior_tree_executor._now()
         if retry_at_ms is None:
             retry_at = now + timedelta(seconds=max(5, int(seconds)))
         else:
@@ -10342,53 +10716,53 @@ class DailyFoundationTaskMixin:
 
     def _confirm_daily_lingmai_gather(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
     ) -> str:
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             305,
             "确定",
             wait_leave=True,
             timeout=float(payload.get("lingmai_gather_confirm_timeout") or 20.0),
         )
-        yield from runtime.wait_action_settle(float(payload.get("lingmai_gather_confirm_settle_seconds") or 3.0))
-        scene_after, score_after, frame_after = runtime.current_scene([318, 306, 285, 288, 289, 305, 186, 34], update=True)
-        text_after = runtime.ocr_text(frame_after)
+        yield from context.wait_action_settle(float(payload.get("lingmai_gather_confirm_settle_seconds") or 3.0))
+        scene_after, score_after, frame_after = context.current_scene([318, 306, 285, 288, 289, 305, 186, 34], update=True)
+        text_after = context.ocr_text(frame_after)
         if scene_after == 305:
             raise RuntimeError(f"{task_label}：点击 #305「确定」后仍停留在灵脉聚灵确认弹窗，OCR={text_after[:160]}")
         if scene_after == 318:
-            return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+            return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_after == 306:
-            return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
+            return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
         self._log("success", f"{task_label}：已确认聚灵，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
-        return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label))
+        return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label))
 
     def _confirm_daily_lingmai_reward(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
     ) -> str:
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             318,
             "确认",
             wait_leave=True,
             timeout=float(payload.get("lingmai_reward_confirm_timeout") or 20.0),
         )
-        yield from runtime.wait_action_settle(float(payload.get("lingmai_reward_confirm_settle_seconds") or 2.0))
-        scene_after, score_after, frame_after = runtime.current_scene([306, 303, 285, 186, 34, 318, 59], update=True)
-        text_after = runtime.ocr_text(frame_after)
+        yield from context.wait_action_settle(float(payload.get("lingmai_reward_confirm_settle_seconds") or 2.0))
+        scene_after, score_after, frame_after = context.current_scene([306, 303, 285, 186, 34, 318, 59], update=True)
+        text_after = context.ocr_text(frame_after)
         if scene_after == 318:
             raise RuntimeError(f"{task_label}：点击 #318「确认」后仍停留在灵脉奖励确认，OCR={text_after[:160]}")
         self._log("success", f"{task_label}：已关闭 #318 灵脉奖励确认，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
-        return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
+        return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
 
     def _finish_daily_lingmai_to_world(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -10396,15 +10770,15 @@ class DailyFoundationTaskMixin:
         frame: str | None = None,
     ) -> str:
         if scene_id is None:
-            scene_id, _score, frame = runtime.current_scene([34, 306, 318, 285, 286, 287, 288, 289, 305, 186, 59, 588], update=True)
-        text = runtime.ocr_text(frame) if isinstance(frame, str) and frame else runtime.ocr_text(update=True)
+            scene_id, _score, frame = context.current_scene([34, 306, 318, 285, 286, 287, 288, 289, 305, 186, 59, 588], update=True)
+        text = context.ocr_text(frame) if isinstance(frame, str) and frame else context.ocr_text(update=True)
         daily_remaining_seconds = self._parse_daily_lingmai_remaining_seconds(text)
         if scene_id == 588:
             # #588 is the stable Lingmai room page observed after a successful
             # kick battle.  It is a real terminal state, not the visually
             # similar #340 offering page.  Leave through its own annotated
             # action before handing the result to the common Runtime verifier.
-            landed = yield from runtime.wait_click_then_view(
+            landed = yield from context.wait_click_then_scene(
                 588,
                 "离开",
                 [289, 186, 85, 34, 285],
@@ -10412,75 +10786,75 @@ class DailyFoundationTaskMixin:
             )
             landed_id = int(landed.id if isinstance(landed, View) else landed)
             if landed_id == 289:
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     289,
                     "确认",
                     [186, 85, 34, 285],
                     timeout=float(payload.get("lingmai_occupied_leave_confirm_timeout") or 30.0),
                 )
-            scene_id, _score, frame = runtime.current_scene([186, 85, 34, 285], update=True)
+            scene_id, _score, frame = context.current_scene([186, 85, 34, 285], update=True)
         if scene_id == 306:
-            yield from self._confirm_daily_lingmai_summary_popup(runtime, payload, task_label=task_label, scene_id=scene_id, frame=frame)
-            landed = yield from runtime.wait_scene(
+            yield from self._confirm_daily_lingmai_summary_popup(context, payload, task_label=task_label, scene_id=scene_id, frame=frame)
+            landed = yield from context.wait_scene(
                 312,
                 285,
                 85,
                 186,
                 34,
-                timeout=float(payload.get("lingmai_summary_landing_timeout") or 30.0),
+                wait=float(payload.get("lingmai_summary_landing_timeout") or 30.0),
                 label=f"{task_label}：#306 确认后等待可选 #312 或灵脉内部/世界",
             )
             scene_id = int(landed.id if isinstance(landed, View) else landed)
             if scene_id == 312:
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     312,
                     "确认",
                     [285, 85, 186, 34],
                     timeout=float(payload.get("lingmai_summary_312_timeout") or 20.0),
                 )
-                scene_id, _score, frame = runtime.current_scene([285, 85, 186, 34], update=True)
+                scene_id, _score, frame = context.current_scene([285, 85, 186, 34], update=True)
         if scene_id == 186:
-            yield from self._leave_shared_scene_186_to_world(runtime, label=task_label)
+            yield from self._leave_shared_scene_186_to_world(context, label=task_label)
             scene_id = 34
         if (
             scene_id is not None
             and scene_id != 34
-            and isinstance(getattr(runtime, "ctx", None), dict)
+            and isinstance(getattr(context, "ctx", None), dict)
         ):
             # Preserve the just-resolved business Layer 0 result for the first
             # generic goto step.  Without this hand-off, goto immediately runs
             # an unrelated global recognition pass and can replace a valid
             # #186 exit scene with another business frame before clicking.
-            runtime.ctx["_go_scene_known_scene_id"] = int(scene_id)
+            context.ctx["_go_scene_known_scene_id"] = int(scene_id)
         if daily_remaining_seconds == 0:
             if scene_id != 34:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             self._log("success", f"{task_label}：今日聚灵剩余已为 00:00:00，结算后回到 #34，不再尝试占座或驱离")
             return "success"
         if scene_id != 34:
             self._log("action", f"{task_label}：本轮操作后按场景图回到 #34 世界")
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
         self._log("success", f"{task_label}：本轮操作后已回到 #34 世界")
 
         runtime_override = payload.get(
             "__lingmai_post_action_runtime_snapshot_override"
         )
-        runtime_status = (
+        execution_status = (
             dict(runtime_override)
             if isinstance(runtime_override, Mapping)
             else refresh_lingmai_daily_status()
         )
         if (
-            runtime_status.get("available")
-            and runtime_status.get("complete")
+            execution_status.get("available")
+            and execution_status.get("complete")
         ):
             try:
                 remaining_ms = int(
-                    runtime_status.get("remaining_milliseconds")
+                    execution_status.get("remaining_milliseconds")
                 )
             except (TypeError, ValueError):
                 remaining_ms = None
-            if runtime_status.get("completed") is True or remaining_ms == 0:
+            if execution_status.get("completed") is True or remaining_ms == 0:
                 self._log(
                     "success",
                     f"{task_label}：战后 Runtime 确认 leftListenTime=0，"
@@ -10489,9 +10863,9 @@ class DailyFoundationTaskMixin:
                 return "success"
             if remaining_ms is not None and remaining_ms > 0:
                 self_seat = (
-                    runtime_status.get("self_seat_facts")
+                    execution_status.get("self_seat_facts")
                     if isinstance(
-                        runtime_status.get("self_seat_facts"),
+                        execution_status.get("self_seat_facts"),
                         Mapping,
                     )
                     else {}
@@ -10500,7 +10874,7 @@ class DailyFoundationTaskMixin:
                     expected_room_id = int(payload.get("__lingmai_expected_room_id") or 0)
                     actual_room_id = int(
                         self_seat.get("room_id")
-                        or runtime_status.get("own_room_id")
+                        or execution_status.get("own_room_id")
                         or 0
                     )
                 except (TypeError, ValueError):
@@ -10575,30 +10949,30 @@ class DailyFoundationTaskMixin:
 
     def _confirm_daily_lingmai_summary_popup(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
         scene_id: int | None = None,
         frame: str | None = None,
     ) -> str:
-        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
+        frame = frame if isinstance(frame, str) and frame else context.cur_frame(update=True)
         if scene_id is None:
-            scene_id, _score, _frame = runtime.current_scene([306], frame_data_url=frame)
+            scene_id, _score, _frame = context.current_scene([306], frame_data_url=frame)
         if scene_id != 306:
             raise RuntimeError(f"{task_label}：未识别到正式灵脉收益确认 scene，拒绝按 OCR 猜按钮")
-        view = runtime.view(scene_id)
+        view = context.view(scene_id)
         action = view.get_shape("确认") or view.get_shape("确定")
         if action is None:
             raise RuntimeError(f"{task_label}：#{scene_id} 缺少「确认/确定」动作 shape")
         self._log("action", f"{task_label}：点击 #{scene_id}「{action.title}」")
-        runtime.click_shape_center(view, action)
-        yield from runtime.wait_action_settle(float(payload.get("lingmai_summary_confirm_settle_seconds") or 2.0))
+        context.click_shape_center(view, action)
+        yield from context.wait_action_settle(float(payload.get("lingmai_summary_confirm_settle_seconds") or 2.0))
         return "success"
 
     def _confirm_daily_lingmai_switch_popup(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -10608,14 +10982,14 @@ class DailyFoundationTaskMixin:
         """Confirm #443 and wait through dialogue until take-seat success."""
 
         yield from self._click_daily_lingmai_switch_confirm(
-            runtime,
+            context,
             payload,
             task_label=task_label,
             scene_id=scene_id,
             frame=frame,
         )
 
-        landed = yield from runtime.wait_scene(
+        landed = yield from context.wait_scene(
             318,
             303,
             289,
@@ -10623,43 +10997,43 @@ class DailyFoundationTaskMixin:
             306,
             443,
             47,
-            timeout=float(payload.get("lingmai_switch_landing_timeout") or 20.0),
+            wait=float(payload.get("lingmai_switch_landing_timeout") or 20.0),
             label=f"{task_label}：确认更换灵脉后等待对话或入座成功页",
         )
         landed_id = int(landed.id if isinstance(landed, View) else landed)
         if landed_id in {443, 47}:
             raise RuntimeError(
                 f"{task_label}：点击灵脉更换「确定」后仍停留在 #{landed_id}，"
-                f"OCR={runtime.ocr_text(update=True)[:160]}"
+                f"OCR={context.ocr_text(update=True)[:160]}"
             )
         if landed_id in {318, 303}:
             landed_id = yield from self._advance_daily_lingmai_kick_dialogue(
-                runtime,
+                context,
                 terminal_scene_ids=(289, 305, 306),
                 timeout=float(payload.get("lingmai_switch_dialogue_timeout") or 60.0),
                 label=f"{task_label}：推进更换灵脉对话直到入座成功页",
             )
         if landed_id == 289:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 289,
                 "确认",
                 [186, 85, 34, 285],
                 timeout=float(payload.get("lingmai_switch_success_timeout") or 30.0),
             )
-            scene_after, _score_after, frame_after = runtime.current_scene([186, 85, 34, 285], update=True)
+            scene_after, _score_after, frame_after = context.current_scene([186, 85, 34, 285], update=True)
             return (yield from self._finish_daily_lingmai_to_world(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=scene_after,
                 frame=frame_after,
             ))
         if landed_id == 305:
-            return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
+            return (yield from self._confirm_daily_lingmai_gather(context, payload, task_label=task_label))
         if landed_id == 306:
-            scene_after, _score_after, frame_after = runtime.current_scene([306], update=True)
+            scene_after, _score_after, frame_after = context.current_scene([306], update=True)
             return (yield from self._finish_daily_lingmai_to_world(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=scene_after,
@@ -10671,7 +11045,7 @@ class DailyFoundationTaskMixin:
 
     def _click_daily_lingmai_switch_confirm(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -10684,8 +11058,8 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(
                 f"{task_label}：通用提示 #{scene_id} 不拥有灵脉更换确认权限，等待正式 #443"
             )
-        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
-        text = runtime.ocr_text_in_shapes(
+        frame = frame if isinstance(frame, str) and frame else context.cur_frame(update=True)
+        text = context.ocr_text_in_shapes(
             443,
             ("是否更换",),
             frame_data_url=frame,
@@ -10700,19 +11074,19 @@ class DailyFoundationTaskMixin:
 
         self._log("action", f"{task_label}：确认从当前灵脉更换到目标灵脉")
         image = (
-            runtime.ctx.get("images", {}).get(scene_id)
-            if isinstance(getattr(runtime, "ctx", None), dict)
+            context.ctx.get("images", {}).get(scene_id)
+            if isinstance(getattr(context, "ctx", None), dict)
             else None
         )
         if isinstance(image, dict) and self._find_shape(image, "确定") is not None:
-            runtime.click_shape_center(scene_id, "确定")
+            context.click_shape_center(scene_id, "确定")
         else:
             raise RuntimeError(f"{task_label}：#{scene_id} 缺少「确定」动作 shape，拒绝按 OCR 猜按钮")
-        yield from runtime.wait_action_settle(float(payload.get("lingmai_switch_confirm_settle_seconds") or 2.0))
+        yield from context.wait_action_settle(float(payload.get("lingmai_switch_confirm_settle_seconds") or 2.0))
 
     def _enter_daily_lingmai_level(
         self,
-        runtime: Any,
+        context: Any,
         payload: Mapping[str, Any],
         *,
         level_name: str,
@@ -10736,7 +11110,7 @@ class DailyFoundationTaskMixin:
             f"{task_label}：在 #285[窗口] {search_direction or '双向'}查找「{target}」，"
             "命中后按 (x, y+2h) 进入对应灵脉",
         )
-        match = yield from runtime.wait_click_ocr_text(
+        match = yield from context.wait_click_ocr_text(
             285,
             target,
             in_shapes=("窗口",),
@@ -10756,9 +11130,9 @@ class DailyFoundationTaskMixin:
         )
         if not wait_for_landing:
             return match
-        return (yield from runtime.wait_view(
+        return (yield from context.wait_scene(
             286,
-            timeout=float(payload.get("lingmai_select_slot_timeout") or 12.0),
+            wait=float(payload.get("lingmai_select_slot_timeout") or 12.0),
             label=f"{task_label}：点击「{target}」后等待 #286 座位页",
         ))
 
@@ -10767,7 +11141,7 @@ class DailyFoundationTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         frame: str | None,
         *,
         task_label: str,
@@ -10777,7 +11151,7 @@ class DailyFoundationTaskMixin:
         if not isinstance(image285, dict):
             raise RuntimeError(f"{task_label}：缺少 #285「造化灵脉」标注，无法进入神脉")
         self._raise_if_stopped(stop_event)
-        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
+        frame = frame if isinstance(frame, str) and frame else context.cur_frame(update=True)
         daily_status = (
             ctx.get("_daily_lingmai_status")
             if isinstance(ctx.get("_daily_lingmai_status"), dict)
@@ -10802,7 +11176,7 @@ class DailyFoundationTaskMixin:
                 "success",
                 f"{task_label}：#285 只读状态确认 leftListenTime=0，今日 3 小时聚灵已完成",
             )
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return "success"
         level_plan = (
             self._daily_lingmai_level_plan(daily_status)
@@ -10826,7 +11200,7 @@ class DailyFoundationTaskMixin:
                 )
             )
             self._log("success", f"{task_label}：{reason}")
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             if level_plan.get("action") == "hold_shengmai":
                 return "success"
             self._schedule_daily_lingmai_next_check(
@@ -10838,13 +11212,13 @@ class DailyFoundationTaskMixin:
         gathering_shape = self._find_shape(image285, "聚灵中")
         gathering_threshold = float(payload.get("lingmai_gathering_threshold") or self.overlay_threshold)
         gathering_score = (
-            runtime.shape_score(285, "聚灵中", frame_data_url=frame)
+            context.shape_score(285, "聚灵中", frame_data_url=frame)
             if gathering_shape is not None
             else 0.0
         )
         gathering_ocr_hit = False
         if gathering_score < gathering_threshold:
-            gathering_ocr_hit = "聚灵中" in _sanitize_ocr_text(runtime.ocr_text(frame))
+            gathering_ocr_hit = "聚灵中" in _sanitize_ocr_text(context.ocr_text(frame))
         self._log(
             "detail",
             f"{task_label}：#285 幂等校验「聚灵中」score={gathering_score:.0f}% "
@@ -10854,7 +11228,7 @@ class DailyFoundationTaskMixin:
             gathering_score >= gathering_threshold or gathering_ocr_hit
         ) and level_plan.get("action") != "try_shengmai":
             self._log("success", f"{task_label}：#285 已在聚灵中，不再重复抢座，退出后定时复查")
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             self._schedule_daily_lingmai_next_check(
                 payload,
                 message="当前仍在聚灵中，30 分钟后复查是否被驱离",
@@ -10874,7 +11248,7 @@ class DailyFoundationTaskMixin:
         )
         if bool(payload.get("stop_after_click_285_empty")):
             yield from self._enter_daily_lingmai_level(
-                runtime,
+                context,
                 payload,
                 level_name=target_level_name,
                 search_direction=search_direction,
@@ -10885,24 +11259,24 @@ class DailyFoundationTaskMixin:
             self._log("success", f"{task_label}：试运行已点击 #285「{target_level_name}」，按 payload 停止")
             return "success"
         yield from self._enter_daily_lingmai_level(
-            runtime,
+            context,
             payload,
             level_name=target_level_name,
             search_direction=search_direction,
             frame=frame,
             task_label=task_label,
         )
-        scene_next, score_next, frame_next = runtime.current_scene([286], update=True)
-        text_next = runtime.ocr_text(frame_next)
+        scene_next, score_next, frame_next = context.current_scene([286], update=True)
+        text_next = context.ocr_text(frame_next)
         self._log("success", f"{task_label}：已到达 #286「{target_level_name}」座位页，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:160]}")
-        return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, runtime, frame_next, task_label=task_label))
+        return (yield from self._continue_daily_lingmai_from_select_slot(ctx, stop_event, payload, context, frame_next, task_label=task_label))
 
     def _fallback_daily_lingmai_to_shenmai(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: Any,
+        context: Any,
         *,
         task_label: str,
     ):
@@ -10910,7 +11284,7 @@ class DailyFoundationTaskMixin:
 
         self._raise_if_stopped(stop_event)
         self._log("action", f"{task_label}：圣脉暂无合法座位，返回 #285 并进入仙煌神脉保底")
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             286,
             "返回",
             285,
@@ -10919,7 +11293,7 @@ class DailyFoundationTaskMixin:
         ctx["_daily_lingmai_target_room_id"] = LINGMAI_UNION_SHENMAI_ROOM_ID
         ctx["_daily_lingmai_target_level_name"] = "仙煌神脉"
         yield from self._enter_daily_lingmai_level(
-            runtime,
+            context,
             payload,
             level_name="仙煌神脉",
             task_label=task_label,
@@ -10927,12 +11301,12 @@ class DailyFoundationTaskMixin:
         # The seat list may retain Shengmai's scroll offset across this tier
         # switch, so the fallback search must explicitly start from the top.
         payload["lingmai_kick_reset_to_top"] = True
-        _scene, _score, frame = runtime.current_scene([286], update=True)
+        _scene, _score, frame = context.current_scene([286], update=True)
         return (yield from self._continue_daily_lingmai_from_select_slot(
             ctx,
             stop_event,
             payload,
-            runtime,
+            context,
             frame,
             task_label=task_label,
         ))
@@ -10942,7 +11316,7 @@ class DailyFoundationTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         frame: str | None,
         *,
         task_label: str,
@@ -10955,7 +11329,7 @@ class DailyFoundationTaskMixin:
         self._raise_if_stopped(stop_event)
         threshold = float(payload.get("lingmai_select_empty_slot_threshold") or self.overlay_threshold)
         if not frame:
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
         daily_status = (
             ctx.get("_daily_lingmai_status")
             if isinstance(ctx.get("_daily_lingmai_status"), dict)
@@ -10976,7 +11350,7 @@ class DailyFoundationTaskMixin:
                 "success",
                 f"{task_label}：#286 只读状态确认 leftListenTime=0，今日 3 小时聚灵已完成",
             )
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             return "success"
         level_plan = (
             self._daily_lingmai_level_plan(daily_status)
@@ -10995,7 +11369,7 @@ class DailyFoundationTaskMixin:
         )
         empty_shape = self._find_shape(image286, "选择空位")
         empty_score = (
-            runtime.shape_score(286, "选择空位", frame_data_url=frame)
+            context.shape_score(286, "选择空位", frame_data_url=frame)
             if empty_shape is not None
             else 0.0
         )
@@ -11019,7 +11393,7 @@ class DailyFoundationTaskMixin:
                 "self_veins_group_missing",
             }
             if selection_status == "runtime_unavailable" or selection_reason in transient_reasons:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 next_time = self._schedule_daily_lingmai_next_check(
                     payload,
                     message=(
@@ -11043,7 +11417,7 @@ class DailyFoundationTaskMixin:
                 ctx,
                 stop_event,
                 payload,
-                runtime,
+                context,
                 task_label=task_label,
             ))
         if action == "already_seated":
@@ -11053,7 +11427,7 @@ class DailyFoundationTaskMixin:
                 f"{task_label}：只读状态确认自己已在「{target_level_name}」座位 {self_seat.get('seat_id')}，"
                 "不再占空位或驱离玩家",
             )
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             if target_room_id == LINGMAI_UNION_SHENGMAI_ROOM_ID:
                 return "success"
             self._schedule_daily_lingmai_next_check(
@@ -11077,10 +11451,10 @@ class DailyFoundationTaskMixin:
                     ctx,
                     stop_event,
                     payload,
-                    runtime,
+                    context,
                     task_label=task_label,
                 ))
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
             next_time = self._schedule_daily_lingmai_next_check(
                 payload,
                 message=(
@@ -11102,7 +11476,7 @@ class DailyFoundationTaskMixin:
                 for item in selection.get("eligible_targets") or []
                 if isinstance(item, dict)
             ]
-            visible_roster_text = runtime.ocr_text(update=True)
+            visible_roster_text = context.ocr_text(update=True)
             visible_target = select_visible_lingmai_target(
                 eligible_targets,
                 visible_roster_text,
@@ -11125,12 +11499,12 @@ class DailyFoundationTaskMixin:
                     ctx,
                     stop_event,
                     payload,
-                    runtime,
+                    context,
                     target_player=target,
                     task_label=task_label,
                 ))
             except _DailyLingmaiKickTargetLost as exc:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 next_time = self._schedule_daily_lingmai_next_check(
                     payload,
                     message=f"目标「{target.get('name')}」在 #286 GUI 列表中未达到可信定位门槛，已停止点击并返回 #34",
@@ -11166,14 +11540,14 @@ class DailyFoundationTaskMixin:
         # 0% into a fake "second check" even though the empty row is now visible.
         # Wait on fresh frames after the authoritative Runtime decision instead.
         try:
-            fresh_empty_frame = yield from runtime.wait_shape(
+            fresh_empty_frame = yield from context.wait_shape(
                 286,
                 "选择空位",
                 timeout=float(payload.get("lingmai_select_empty_slot_timeout") or 10.0),
                 threshold=threshold,
                 label=f"{task_label}：等待 #286 空位行完成渲染",
             )
-            score = runtime.shape_score(
+            score = context.shape_score(
                 286,
                 "选择空位",
                 frame_data_url=fresh_empty_frame,
@@ -11183,15 +11557,15 @@ class DailyFoundationTaskMixin:
         self._log("detail", f"{task_label}：新鲜帧复核 #286「选择空位」score={score:.0f}% threshold={threshold:.0f}%")
         if score < threshold:
             self._log("warning", f"{task_label}：#286「选择空位」新鲜帧匹配不足 {score:.0f}%，点击返回")
-            yield from runtime.wait_click(286, "返回")
-            yield from runtime.wait_action_settle(float(payload.get("lingmai_select_return_settle_seconds") or 2.0))
+            yield from context.wait_click(286, "返回")
+            yield from context.wait_action_settle(float(payload.get("lingmai_select_return_settle_seconds") or 2.0))
             raise RuntimeError(f"{task_label}：#286「选择空位」新鲜帧校验失败 {score:.0f}%<{threshold:.0f}%，已返回")
 
         self._log("success", f"{task_label}：#286「选择空位」新鲜帧校验通过 {score:.0f}%，点击「占领」")
-        yield from runtime.wait_click(286, "占领")
-        yield from runtime.wait_action_settle(float(payload.get("lingmai_occupy_click_settle_seconds") or 2.0))
-        scene_next, score_next, frame_next = runtime.current_scene([287, 285, 286, 47], update=True)
-        text_next = runtime.ocr_text(frame_next)
+        yield from context.wait_click(286, "占领")
+        yield from context.wait_action_settle(float(payload.get("lingmai_occupy_click_settle_seconds") or 2.0))
+        scene_next, score_next, frame_next = context.current_scene([287, 285, 286, 47], update=True)
+        text_next = context.ocr_text(frame_next)
         text_compact = _sanitize_ocr_text(text_next)
         if re.search(r"聚灵体力符持有数量[:：]?0(?:\D|$)", text_compact):
             return self._record_daily_lingmai_resource_insufficient(
@@ -11200,11 +11574,11 @@ class DailyFoundationTaskMixin:
             )
         if scene_next == 287:
             self._log("success", f"{task_label}：已到达 #287 前往灵脉确认弹窗，当前 #{scene_next if scene_next is not None else 'unknown'} {score_next:.0f}%，点击「确认」")
-            yield from runtime.wait_click(287, "确认")
-            yield from runtime.wait_action_settle(float(payload.get("lingmai_confirm_settle_seconds") or 2.0))
+            yield from context.wait_click(287, "确认")
+            yield from context.wait_action_settle(float(payload.get("lingmai_confirm_settle_seconds") or 2.0))
         elif "前往灵脉" in text_compact:
-            self._click_daily_lingmai_go_button(runtime, frame_next, task_label=task_label)
-            yield from runtime.wait_action_settle(float(payload.get("lingmai_go_button_settle_seconds") or 2.0))
+            self._click_daily_lingmai_go_button(context, frame_next, task_label=task_label)
+            yield from context.wait_action_settle(float(payload.get("lingmai_go_button_settle_seconds") or 2.0))
         else:
             self._log(
                 "warning",
@@ -11212,22 +11586,22 @@ class DailyFoundationTaskMixin:
                 f"当前 {'#' + str(scene_next) if scene_next is not None else 'unknown'} {score_next:.0f}%，OCR={text_next[:120]}",
             )
 
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             288,
-            timeout=float(payload.get("lingmai_after_confirm_timeout") or 90.0),
+            wait=float(payload.get("lingmai_after_confirm_timeout") or 90.0),
             label=f"{task_label}：点击 #287「确认」后等待真实 #288 占领页",
         )
-        scene_after, score_after, frame_after = runtime.current_scene([288], update=True)
-        text_after = runtime.ocr_text(frame_after)
+        scene_after, score_after, frame_after = context.current_scene([288], update=True)
+        text_after = context.ocr_text(frame_after)
         self._log("success", f"{task_label}：已到达 #288，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，点击「占领」")
-        return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, runtime, task_label=task_label))
+        return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, context, task_label=task_label))
 
     def _click_daily_lingmai_kick_target(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         *,
         target_player: Mapping[str, Any],
         task_label: str,
@@ -11253,16 +11627,16 @@ class DailyFoundationTaskMixin:
         if bool(target_player.get("excluded") or target_player.get("is_ally")):
             raise RuntimeError(f"{task_label}：驱离目标被标记为同盟/排除，已停止且未点击")
 
-        name_shape = runtime.shape(286, "姓名")
-        button_shape = runtime.shape(286, "驱离按钮")
-        view286 = runtime.view(286)
-        name_box = runtime.runner._box(name_shape.raw, view286.raw)
-        button_box = runtime.runner._box(button_shape.raw, view286.raw)
+        name_shape = context.shape(286, "姓名")
+        button_shape = context.shape(286, "驱离按钮")
+        view286 = context.view(286)
+        name_box = context.runner._box(name_shape.raw, view286.raw)
+        button_box = context.runner._box(button_shape.raw, view286.raw)
         name_center_y = float(name_box.get("y") or 0) + float(name_box.get("h") or 0) / 2
         button_center_x = float(button_box.get("x") or 0) + float(button_box.get("w") or 0) / 2
         button_center_y = float(button_box.get("y") or 0) + float(button_box.get("h") or 0) / 2
         offset_y = button_center_y - name_center_y
-        frame_width, frame_height = runtime.runner._frame_size(view286.raw)
+        frame_width, frame_height = context.runner._frame_size(view286.raw)
         safe_top_ratio = min(
             0.45,
             max(0.0, float(payload.get("lingmai_kick_safe_top_ratio") or 0.34)),
@@ -11413,33 +11787,33 @@ class DailyFoundationTaskMixin:
                 f"到 OCR「{best['text']}」{float(best['similarity']):.0%}，"
                 "点击同条目「驱离按钮」",
             )
-            runtime.click_frame_point(286, click_x, click_y)
-            yield from runtime.wait_scene(
+            context.click_frame_point(286, click_x, click_y)
+            yield from context.wait_scene(
                 380,
-                timeout=float(payload.get("lingmai_kick_to_380_timeout") or 60.0),
+                wait=float(payload.get("lingmai_kick_to_380_timeout") or 60.0),
                 label=f"{task_label}：点击「{target_name}」驱离按钮后等待 #380",
             )
-            scene_id, score, frame380 = runtime.current_scene([380], update=True)
+            scene_id, score, frame380 = context.current_scene([380], update=True)
             if scene_id != 380:
                 raise RuntimeError(f"{task_label}：驱离后未确认到达 #380，已停止后续点击")
-            self._log("success", f"{task_label}：已到达 #380（{score:.0f}%），OCR={runtime.ocr_text(frame380)[:120]}")
-            return (yield from self._complete_daily_lingmai_kick(runtime, payload, task_label=task_label))
+            self._log("success", f"{task_label}：已到达 #380（{score:.0f}%），OCR={context.ocr_text(frame380)[:120]}")
+            return (yield from self._complete_daily_lingmai_kick(context, payload, task_label=task_label))
 
         # The game preserves the seat-list scroll offset when switching
         # between Shengmai and Shenmai.  A down-only search from that retained
         # offset can therefore declare "bottom" while the selected target is
         # above the viewport.  Normalize to the top before scanning downward.
         if bool(payload.get("lingmai_kick_reset_to_top", False)):
-            runtime.drag_shape_to_frame_edge(
+            context.drag_shape_to_frame_edge(
                 286,
                 "姓名",
                 direction="down",
                 duration=float(payload.get("lingmai_kick_scroll_seconds") or 0.8),
             )
-            yield from runtime.wait_action_settle(
+            yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_scroll_settle_seconds") or 1.0)
             )
-            scene_id, _score, _frame = runtime.current_scene([286], update=True)
+            scene_id, _score, _frame = context.current_scene([286], update=True)
             if scene_id != 286:
                 raise RuntimeError(f"{task_label}：复位座位列表到顶部时离开 #286，已停止且未点击")
             self._log("detail", f"{task_label}：已先复位 #286 座位列表到顶部，再向下查找目标")
@@ -11448,7 +11822,7 @@ class DailyFoundationTaskMixin:
         best_below_threshold: dict[str, Any] | None = None
         for index in range(max_scrolls + 1):
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             candidates = collect_candidates(frame)
             if candidates:
                 best = candidates[0]
@@ -11462,7 +11836,7 @@ class DailyFoundationTaskMixin:
                         f"{task_label}：目标「{target_name}」当前贴近 #286 列表裁剪边缘，"
                         "先小幅复位后重新确认同一行驱离按钮",
                     )
-                    direction = yield from runtime.nudge_shape_content_for_box(
+                    direction = yield from context.nudge_shape_content_for_box(
                         safe_viewport,
                         candidate_click_box(best),
                         edge_margin_ratio=float(payload.get("lingmai_kick_edge_margin_ratio") or 0.18),
@@ -11474,25 +11848,25 @@ class DailyFoundationTaskMixin:
                         continue
             if index >= max_scrolls:
                 break
-            before_signature = runtime.image_signature_bytes_in_shape(
+            before_signature = context.image_signature_bytes_in_shape(
                 name_shape,
                 frame_data_url=frame,
             )
-            runtime.drag_shape_to_frame_edge(
+            context.drag_shape_to_frame_edge(
                 286,
                 "姓名",
                 direction="up",
                 duration=float(payload.get("lingmai_kick_scroll_seconds") or 0.8),
             )
-            yield from runtime.wait_action_settle(float(payload.get("lingmai_kick_scroll_settle_seconds") or 1.0))
-            scene_id, _score, _frame = runtime.current_scene([286], update=True)
+            yield from context.wait_action_settle(float(payload.get("lingmai_kick_scroll_settle_seconds") or 1.0))
+            scene_id, _score, _frame = context.current_scene([286], update=True)
             if scene_id != 286:
                 raise RuntimeError(f"{task_label}：滚动寻找目标时离开 #286，已停止且未点击")
-            after_signature = runtime.image_signature_bytes_in_shape(
+            after_signature = context.image_signature_bytes_in_shape(
                 name_shape,
                 frame_data_url=_frame,
             )
-            similarity = runtime.image_signature_similarity(before_signature, after_signature)
+            similarity = context.image_signature_similarity(before_signature, after_signature)
             self._log(
                 "detail",
                 f"{task_label}：#286 滚动后姓名识别区相似度 {similarity:.1f}%",
@@ -11516,7 +11890,7 @@ class DailyFoundationTaskMixin:
 
     def _complete_daily_lingmai_kick(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -11528,7 +11902,7 @@ class DailyFoundationTaskMixin:
             1,
             min(3, int(payload.get("lingmai_kick_open_confirm_attempts") or 3)),
         )
-        yield from runtime.wait_action_settle(
+        yield from context.wait_action_settle(
             float(payload.get("lingmai_kick_button_ready_seconds") or 3.0)
         )
         for open_attempt in range(1, open_attempts + 1):
@@ -11538,7 +11912,7 @@ class DailyFoundationTaskMixin:
             # battle landing) is already present, consume it instead of
             # waiting for the now-absent #380 button and reporting a false
             # timeout.
-            scene_id, _score, _frame = runtime.current_scene(
+            scene_id, _score, _frame = context.current_scene(
                 [381, 318, 443, 380, 588],
                 update=True,
             )
@@ -11549,11 +11923,11 @@ class DailyFoundationTaskMixin:
                 raise RuntimeError(
                     f"{task_label}：重试点击 #380「驱离」前场景身份不可靠：scene={scene_id}"
                 )
-            yield from runtime.wait_click(380, "驱离")
-            yield from runtime.wait_action_settle(
+            yield from context.wait_click(380, "驱离")
+            yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_open_confirm_settle_seconds") or 3.0)
             )
-            scene_id, _score, _frame = runtime.current_scene(
+            scene_id, _score, _frame = context.current_scene(
                 [381, 318, 443, 380, 588],
                 update=True,
             )
@@ -11570,19 +11944,25 @@ class DailyFoundationTaskMixin:
                 # transaction bound to its legal overlay/direct successors;
                 # only an exact fresh #380 below may authorize another click.
                 try:
-                    confirmation = yield from runtime.wait_scene(
+                    confirmation = yield from context.wait_scene(
                         381,
                         318,
                         443,
-                        timeout=float(
+                        wait=float(
                             payload.get("lingmai_kick_confirm_appear_timeout") or 20.0
                         ),
+                        # This is an action-owned business transaction.  The
+                        # generic #47 popup resembles the confirmation while
+                        # #381 OCR is warming up and can otherwise click its
+                        # background, stealing the confirmation before the
+                        # Lingmai task consumes it.
+                        handle_interruptions=False,
                         label=(
                             f"{task_label}：#380「驱离」点击后等待业务确认层/战前对白"
                         ),
                     )
                 except TimeoutError:
-                    scene_id, _score, _frame = runtime.current_scene(
+                    scene_id, _score, _frame = context.current_scene(
                         [381, 318, 443, 380, 588],
                         update=True,
                     )
@@ -11620,15 +12000,15 @@ class DailyFoundationTaskMixin:
         # matching also keeps the generic #47 popup guard from closing this
         # business confirmation before the intended click.
         if confirmation_scene_id == 381:
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 381,
                 "确定",
                 timeout=float(payload.get("lingmai_kick_confirm_timeout") or 20.0),
             )
-            pre_battle_scene = yield from runtime.wait_scene(
+            pre_battle_scene = yield from context.wait_scene(
                 318,
                 443,
-                timeout=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
+                wait=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
                 label=f"{task_label}：点击 #381「确定」后等待更换确认或战前对白",
             )
             pre_battle_scene_id = int(
@@ -11638,36 +12018,44 @@ class DailyFoundationTaskMixin:
             pre_battle_scene_id = int(confirmation_scene_id or 0)
         if pre_battle_scene_id == 443:
             yield from self._click_daily_lingmai_switch_confirm(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=443,
             )
-            yield from runtime.wait_view(
+            yield from context.wait_scene(
                 318,
-                timeout=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
+                wait=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
                 label=f"{task_label}：确认更换灵脉后等待 #318 战前对白",
             )
         battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
-            runtime,
-            terminal_scene_ids=(374, 382, 375, 588),
+            context,
+            # #588 is the occupied-seat page underneath the battle transition.
+            # A fresh sample can project it after the last pre-battle dialogue,
+            # before #374 or a victory layer materializes.  Treating that
+            # background as a terminal makes the cleanup click ``离开`` while
+            # the battle is still pending, which starts the fight during the
+            # leave transaction.  Only battle/victory scenes can close this
+            # phase; a genuine post-battle #588 remains accepted by the
+            # dedicated battle-finish wait below.
+            terminal_scene_ids=(374, 382, 375),
             timeout=float(payload.get("lingmai_kick_battle_start_timeout") or 60.0),
             label=f"{task_label}：推进战前对白直到战斗或胜利",
         )
         victory_scene_id = battle_scene_id
         if battle_scene_id == 374:
-            victory_scene = yield from runtime.wait_scene(
+            victory_scene = yield from context.wait_scene(
                 382,
                 375,
                 588,
-                timeout=float(payload.get("lingmai_kick_battle_finish_timeout") or 180.0),
+                wait=float(payload.get("lingmai_kick_battle_finish_timeout") or 180.0),
                 label=f"{task_label}：等待战斗结束到胜利浮层 #382/#375",
             )
             victory_scene_id = int(victory_scene.id if isinstance(victory_scene, View) else victory_scene)
         if victory_scene_id == 588:
-            scene_id, _score, frame = runtime.current_scene([588], update=True)
+            scene_id, _score, frame = context.current_scene([588], update=True)
             return (yield from self._finish_daily_lingmai_to_world(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=scene_id,
@@ -11675,49 +12063,49 @@ class DailyFoundationTaskMixin:
             ))
         if victory_scene_id == 382:
             yield from self._close_daily_lingmai_victory_layers(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
             )
         else:
-            yield from runtime.wait_click(victory_scene_id, "关闭")
-            yield from runtime.wait_action_settle(
+            yield from context.wait_click(victory_scene_id, "关闭")
+            yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_victory_close_settle_seconds") or 2.0)
             )
         post_battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
-            runtime,
+            context,
             terminal_scene_ids=(443, 289, 305, 306, 85, 186, 285, 588),
             timeout=float(payload.get("lingmai_kick_summary_timeout") or 45.0),
             label=f"{task_label}：推进战后对白直到换座/入座确认或稳定灵脉场景",
         )
         if post_battle_scene_id == 443:
             return (yield from self._confirm_daily_lingmai_switch_popup(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=443,
             ))
         if post_battle_scene_id == 289:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 289,
                 "确认",
                 [186, 85, 34, 285],
                 timeout=float(payload.get("lingmai_kick_success_timeout") or 30.0),
             )
-            scene_id, _score, frame = runtime.current_scene([186, 85, 34, 285], update=True)
+            scene_id, _score, frame = context.current_scene([186, 85, 34, 285], update=True)
         elif post_battle_scene_id == 305:
             return (yield from self._confirm_daily_lingmai_gather(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
             ))
         else:
-            scene_id, _score, frame = runtime.current_scene(
+            scene_id, _score, frame = context.current_scene(
                 [post_battle_scene_id],
                 update=True,
             )
         return (yield from self._finish_daily_lingmai_to_world(
-            runtime,
+            context,
             payload,
             task_label=task_label,
             scene_id=scene_id,
@@ -11726,7 +12114,7 @@ class DailyFoundationTaskMixin:
 
     def _close_daily_lingmai_victory_layers(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -11736,17 +12124,17 @@ class DailyFoundationTaskMixin:
         successors = [382, 318, 303, 443, 289, 305, 306, 85, 186, 285, 588]
         max_layers = max(1, int(payload.get("lingmai_kick_victory_max_layers") or 4))
         for layer_index in range(max_layers):
-            yield from runtime.wait_click(382, "关闭")
+            yield from context.wait_click(382, "关闭")
             # Multiple materialized victory sheets reuse the same #382 scene
             # identity.  A successful click may therefore reveal a fresh
             # #382 rather than leave the scene.  Waiting for identity loss
             # here deadlocks before the bounded layer loop can do its job.
-            yield from runtime.wait_action_settle(
+            yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_victory_settle_seconds") or 1.0)
             )
-            landed = yield from runtime.wait_scene(
+            landed = yield from context.wait_scene(
                 *successors,
-                timeout=float(payload.get("lingmai_kick_victory_layer_timeout") or 60.0),
+                wait=float(payload.get("lingmai_kick_victory_layer_timeout") or 60.0),
                 label=f"{task_label}：关闭第 {layer_index + 1} 层胜利结果后等待 fresh 后继",
             )
             scene_id = int(landed.id if isinstance(landed, View) else landed)
@@ -11760,7 +12148,7 @@ class DailyFoundationTaskMixin:
 
     def _advance_daily_lingmai_kick_dialogue(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         *,
         terminal_scene_ids: tuple[int, ...],
         timeout: float,
@@ -11771,46 +12159,46 @@ class DailyFoundationTaskMixin:
 
         terminals = tuple(int(scene_id) for scene_id in terminal_scene_ids)
         for _index in range(max(1, int(max_clicks))):
-            scene = yield from runtime.wait_scene(
+            scene = yield from context.wait_scene(
                 318,
                 303,
                 *terminals,
-                timeout=timeout,
+                wait=timeout,
                 label=label,
             )
             scene_id = int(scene.id if isinstance(scene, View) else scene)
             if scene_id in terminals:
                 return scene_id
             if scene_id == 318:
-                runtime.click_shape_center(318, "确认")
+                context.click_shape_center(318, "确认")
             elif scene_id == 303:
-                runtime.click_shape_center(303, "对话")
+                context.click_shape_center(303, "对话")
             else:
                 raise RuntimeError(f"{label}：出现未声明对白场景 #{scene_id}")
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_action_settle(1.0)
         raise RuntimeError(f"{label}：连续推进 {max_clicks} 次仍未到达 {terminals}")
 
     def _click_daily_lingmai_go_button(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         frame: str | None,
         *,
         task_label: str,
     ) -> None:
-        frame = frame if isinstance(frame, str) and frame else runtime.cur_frame(update=True)
-        view = runtime.view(287)
+        frame = frame if isinstance(frame, str) and frame else context.cur_frame(update=True)
+        view = context.view(287)
         action = view.get_shape("前往灵脉") or view.get_shape("确认")
         if action is None:
             raise RuntimeError(f"{task_label}：#287 缺少「前往灵脉/确认」动作 shape")
         self._log("action", f"{task_label}：点击 #287「{action.title}」")
-        runtime.click_shape_center(view, action)
+        context.click_shape_center(view, action)
 
     def _continue_daily_lingmai_from_final_occupy(
         self,
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         *,
         task_label: str,
     ) -> str:
@@ -11822,7 +12210,7 @@ class DailyFoundationTaskMixin:
             raise RuntimeError(f"{task_label}：缺少 #288「占领」shape 标注，无法点击过渡后的占领按钮")
         terminal_scene_ids = [443, 318, 306, 305, 285, 286, 287, 186, 47]
         try:
-            waited_scene = yield from runtime.wait_click_then_view(
+            waited_scene = yield from context.wait_click_then_scene(
                 288,
                 "占领",
                 terminal_scene_ids,
@@ -11831,11 +12219,11 @@ class DailyFoundationTaskMixin:
                 max_clicks=int(payload.get("lingmai_final_occupy_max_clicks") or 2),
             )
         except TimeoutError:
-            scene_final, score_final, frame_final = runtime.current_scene(
+            scene_final, score_final, frame_final = context.current_scene(
                 [288, *terminal_scene_ids],
                 update=True,
             )
-            text_final = runtime.ocr_text(frame_final)
+            text_final = context.ocr_text(frame_final)
             raise RuntimeError(
                 f"{task_label}：点击 #288「占领」后未进入合法后继；"
                 f"当前 {'#' + str(scene_final) if scene_final is not None else 'unknown'} "
@@ -11844,29 +12232,29 @@ class DailyFoundationTaskMixin:
         waited_scene_id = int(
             waited_scene.id if isinstance(waited_scene, View) else waited_scene
         )
-        scene_final, score_final, frame_final = runtime.current_scene(
+        scene_final, score_final, frame_final = context.current_scene(
             terminal_scene_ids,
             update=True,
         )
         if scene_final is None and waited_scene_id in terminal_scene_ids:
             scene_final = waited_scene_id
             score_final = 100.0
-            frame_final = runtime.cur_frame(update=True)
-        text_final = runtime.ocr_text(frame_final)
+            frame_final = context.cur_frame(update=True)
+        text_final = context.ocr_text(frame_final)
         if scene_final == 318:
-            return (yield from self._confirm_daily_lingmai_reward(runtime, payload, task_label=task_label))
+            return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_final == 305:
-            return (yield from self._confirm_daily_lingmai_gather(runtime, payload, task_label=task_label))
+            return (yield from self._confirm_daily_lingmai_gather(context, payload, task_label=task_label))
         if scene_final in {443, 47}:
             return (yield from self._confirm_daily_lingmai_switch_popup(
-                runtime,
+                context,
                 payload,
                 task_label=task_label,
                 scene_id=int(scene_final),
                 frame=frame_final,
             ))
         if scene_final in {306, 186}:
-            return (yield from self._finish_daily_lingmai_to_world(runtime, payload, task_label=task_label, scene_id=scene_final, frame=frame_final))
+            return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label, scene_id=scene_final, frame=frame_final))
         raise RuntimeError(
             f"{task_label}：点击 #288「占领」后出现未实现的业务后继；"
             f"当前 {'#' + str(scene_final) if scene_final is not None else 'unknown'} {score_final:.0f}%，OCR={text_final[:160]}"
@@ -11914,21 +12302,21 @@ class DailyFoundationTaskMixin:
 
     def _baiye_detail_state(
         self,
-        runtime: Any,
+        context: Any,
         *,
         frame_data_url: str | None = None,
         update: bool = False,
     ) -> tuple[str, str, str]:
         """Read #266 through its formal scene and local Shapes only."""
 
-        scene_id, _score, frame = runtime.current_scene(
+        scene_id, _score, frame = context.current_scene(
             [266],
             frame_data_url=frame_data_url,
             update=update,
         )
         if scene_id != 266:
             return "absent", "", frame
-        text = runtime.ocr_text_in_shapes(
+        text = context.ocr_text_in_shapes(
             266,
             ["法则之主名称", "法则详情", "拜谒"],
             padding=8,
@@ -11943,7 +12331,7 @@ class DailyFoundationTaskMixin:
     def _schedule_baiye_retry(self, payload: Mapping[str, Any], *, reason: str) -> str:
         retry_seconds = max(60, int(payload.get("baiye_lord_retry_seconds") or 300))
         next_time = (
-            _behavior_tree_runtime._now() + timedelta(seconds=retry_seconds)
+            _behavior_tree_executor._now() + timedelta(seconds=retry_seconds)
         ).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or "legacy-daily-baiye"),
@@ -11954,25 +12342,25 @@ class DailyFoundationTaskMixin:
 
     def _click_baiye_worship_button(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         reason: str,
     ) -> Iterator[Any]:
         self._log("action", f"日常_拜谒：{reason}，点击 #266「拜谒」")
-        runtime.click_shape_center(266, "拜谒")
+        context.click_shape_center(266, "拜谒")
         timeout = max(2.0, float(payload.get("baiye_worship_confirm_timeout") or 20.0))
         poll_seconds = max(0.2, float(payload.get("baiye_worship_poll_seconds") or 1.0))
         state = "absent"
         worship_text = ""
         max_attempts = max(1, int(math.ceil(timeout / poll_seconds)))
         for attempt in range(1, max_attempts + 1):
-            yield from runtime.wait_action_settle(poll_seconds)
-            state, worship_text, _frame = self._baiye_detail_state(runtime, update=True)
+            yield from context.wait_action_settle(poll_seconds)
+            state, worship_text, _frame = self._baiye_detail_state(context, update=True)
             if state == "completed":
                 self._log("success", f"日常_拜谒：已完成拜谒，OCR={worship_text[:120]}")
                 yield from self._finish_baiye_completed(
-                    runtime,
+                    context,
                     payload,
                     reason="拜谒完成后收尾",
                 )
@@ -11994,7 +12382,7 @@ class DailyFoundationTaskMixin:
 
     def _finish_baiye_completed(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         reason: str,
@@ -12011,7 +12399,7 @@ class DailyFoundationTaskMixin:
             )
             payload["__baiye_completion_persisted"] = True
         try:
-            yield from self._return_baiye_to_world(runtime, payload, reason=reason)
+            yield from self._return_baiye_to_world(context, payload, reason=reason)
         except (InterruptedError, GeneratorExit):
             raise
         except Exception as exc:
@@ -12024,7 +12412,7 @@ class DailyFoundationTaskMixin:
 
     def _return_baiye_to_world(
         self,
-        runtime: Any,
+        context: Any,
         payload: Mapping[str, Any] | None = None,
         *,
         reason: str,
@@ -12032,8 +12420,8 @@ class DailyFoundationTaskMixin:
         settle_seconds = float((payload or {}).get("baiye_return_settle_seconds") or 1.0)
         self._log("action", f"日常_拜谒：{reason}，按拜谒页面栈返回 #34")
         for _attempt in range(8):
-            frame = runtime.cur_frame(update=True)
-            scene_id, score, _frame = runtime.current_scene(
+            frame = context.cur_frame(update=True)
+            scene_id, score, _frame = context.current_scene(
                 [266, 265, 264, 34],
                 frame_data_url=frame,
             )
@@ -12042,23 +12430,23 @@ class DailyFoundationTaskMixin:
                 return "success"
             if scene_id == 266:
                 self._log("action", f"日常_拜谒：当前 #266 {score:.0f}%，点击「返回」回法则之主选择页")
-                runtime.click_shape_center(266, "返回")
-                yield from runtime.wait_action_settle(settle_seconds)
+                context.click_shape_center(266, "返回")
+                yield from context.wait_action_settle(settle_seconds)
                 continue
             if scene_id == 265:
                 self._log("action", f"日常_拜谒：当前 #265 {score:.0f}%，点击「返回」回三千大道")
-                runtime.click_shape_center(265, "返回")
-                yield from runtime.wait_action_settle(settle_seconds)
+                context.click_shape_center(265, "返回")
+                yield from context.wait_action_settle(settle_seconds)
                 continue
             if scene_id == 264:
                 self._log("action", f"日常_拜谒：当前 #264 {score:.0f}%，点击「返回」回世界")
-                runtime.click_shape_center(264, "返回")
-                yield from runtime.wait_action_settle(settle_seconds)
+                context.click_shape_center(264, "返回")
+                yield from context.wait_action_settle(settle_seconds)
                 continue
             self._log("warning", f"日常_拜谒：页面栈返回未识别到 #264/#265/#266/#34，当前 scene={scene_id}，回退通用 goto #34")
-            yield from runtime.goto_view(34)
-            yield from runtime.wait_action_settle(settle_seconds)
-            scene_id, _score, _frame = runtime.current_scene([34, 266, 265, 264], update=True)
+            yield from context.go_scene(34)
+            yield from context.wait_action_settle(settle_seconds)
+            scene_id, _score, _frame = context.current_scene([34, 266, 265, 264], update=True)
             if scene_id == 34:
                 self._log("success", "日常_拜谒：已通过通用 goto 返回 #34 世界，闭环完成")
                 return "success"
@@ -12076,8 +12464,8 @@ class DailyFoundationTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_拜谒资产树路径，无法执行作业")
         target = self._baiye_payload_target(payload)
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([266, 265, 264, 69, 34], update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([266, 265, 264, 69, 34], update=True)
         if scene_id == 266:
             result = yield from self._select_baiye_law_lord(ctx, stop_event, payload, target=target)
             if result == "success" and not payload.get("__baiye_completion_persisted"):
@@ -12092,10 +12480,10 @@ class DailyFoundationTaskMixin:
         if scene_id != 265:
             if scene_id != 264:
                 if scene_id != 69:
-                    text = runtime.ocr_text(frame)
+                    text = context.ocr_text(frame)
                     scene_id = yield from self._enter_daily_from_world_like(
                         ctx,
-                        runtime,
+                        context,
                         stop_event,
                         frame,
                         scene_id,
@@ -12121,8 +12509,8 @@ class DailyFoundationTaskMixin:
                         entry_label="拜谒",
                     )
                     return "skipped"
-                yield from runtime.wait_any(
-                    {"scene": runtime.view_visible(264)},
+                yield from context.wait_any(
+                    {"scene": context.scene_visible(264)},
                     timeout=20.0,
                     label="日常_拜谒：等待三千大道 #264",
                 )
@@ -12158,30 +12546,30 @@ class DailyFoundationTaskMixin:
         if not isinstance(images.get(baiye_scene_id), dict):
             raise RuntimeError("缺少 #283「拜谒」标注，无法完成绿瓶拜谒")
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", "日常_绿瓶拜谒：前往绿瓶 #20", phase="daily_green_bottle_baiye_goto_20")
             self._log_locked("action", "日常_绿瓶拜谒：调用通用场景移动前往 #20")
-        yield from runtime.goto_view(20)
-        scene_id, score, _frame = runtime.current_scene([20], update=True)
+        yield from context.go_scene(20)
+        scene_id, score, _frame = context.current_scene([20], update=True)
         if scene_id != 20:
             raise RuntimeError(f"日常_绿瓶拜谒：未能确认到达 #20，当前 scene={scene_id} score={score:.0f}%")
         with self._lock:
             self._set_status_locked("running", "日常_绿瓶拜谒：点击 #20「绿瓶」", phase="daily_green_bottle_baiye_click_bottle", current_scene=20)
             self._log_locked("success", f"日常_绿瓶拜谒：已到达 #20 {score:.0f}%")
             self._log_locked("action", "日常_绿瓶拜谒：点击 #20「绿瓶」")
-        yield from runtime.wait_click(20, "绿瓶")
-        yield from runtime.wait_action_settle(float(payload.get("green_bottle_settle_seconds") or 2.0))
-        entry_scene_id, _entry_score, entry_frame = runtime.current_scene([282, 301, 20], update=True)
+        yield from context.wait_click(20, "绿瓶")
+        yield from context.wait_action_settle(float(payload.get("green_bottle_settle_seconds") or 2.0))
+        entry_scene_id, _entry_score, entry_frame = context.current_scene([282, 301, 20], update=True)
         if entry_scene_id == 301:
-            entry_text = runtime.ocr_text(entry_frame)
+            entry_text = context.ocr_text(entry_frame)
             compact_entry_text = re.sub(r"\s+", "", _sanitize_ocr_text(entry_text))
             if "已达巅峰" in compact_entry_text:
                 with self._lock:
                     self._log_locked("success", "日常_绿瓶拜谒：掌天瓶已达巅峰，今日绿瓶状态已确认")
                     self._log_locked("action", "日常_绿瓶拜谒：点击 #301「返回」退出掌天瓶详情")
-                yield from runtime.wait_click(301, "返回")
-                yield from runtime.wait_action_settle(float(payload.get("green_bottle_rank_back_settle_seconds") or 2.0))
+                yield from context.wait_click(301, "返回")
+                yield from context.wait_action_settle(float(payload.get("green_bottle_rank_back_settle_seconds") or 2.0))
                 self._record_daily_entry_done(
                     payload,
                     task_id="legacy-daily-green-bottle-baiye",
@@ -12194,8 +12582,8 @@ class DailyFoundationTaskMixin:
                     self._log_locked("action", "日常_绿瓶拜谒：调用通用场景移动回到 #34")
                 final_scene_id, final_score = None, 0.0
                 try:
-                    yield from runtime.goto_view(34)
-                    final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
+                    yield from context.go_scene(34)
+                    final_scene_id, final_score, _final_frame = context.current_scene([34], update=True)
                 except Exception as exc:
                     with self._lock:
                         self._log_locked("warning", f"日常_绿瓶拜谒：今日已完成，收尾返回 #34 失败：{exc}")
@@ -12212,15 +12600,15 @@ class DailyFoundationTaskMixin:
             self._set_status_locked("running", f"日常_绿瓶拜谒：点击 #{rank_scene_id}「境界排行」", phase="daily_green_bottle_baiye_click_rank", current_scene=rank_scene_id)
             self._log_locked("success", "日常_绿瓶拜谒：已点击 #20「绿瓶」")
             self._log_locked("action", f"日常_绿瓶拜谒：点击 #{rank_scene_id}「境界排行」")
-        yield from runtime.wait_click(rank_scene_id, "境界排行")
-        yield from runtime.wait_action_settle(float(payload.get("green_bottle_rank_settle_seconds") or 2.0))
+        yield from context.wait_click(rank_scene_id, "境界排行")
+        yield from context.wait_action_settle(float(payload.get("green_bottle_rank_settle_seconds") or 2.0))
         with self._lock:
             self._set_status_locked("running", "日常_绿瓶拜谒：点击 #283「拜谒」", phase="daily_green_bottle_baiye_click_baiye", current_scene=baiye_scene_id)
             self._log_locked("success", f"日常_绿瓶拜谒：已点击 #{rank_scene_id}「境界排行」")
             self._log_locked("action", "日常_绿瓶拜谒：确认天道魁首拜谒状态")
-        worship_scene_id, _worship_score, _worship_frame = runtime.current_scene([baiye_scene_id], update=True)
+        worship_scene_id, _worship_score, _worship_frame = context.current_scene([baiye_scene_id], update=True)
         remaining_numbers, remaining_text = yield from self._read_green_bottle_baiye_remaining(
-            runtime,
+            context,
             payload,
             scene_id=baiye_scene_id,
         )
@@ -12231,8 +12619,8 @@ class DailyFoundationTaskMixin:
         else:
             with self._lock:
                 self._log_locked("action", f"日常_绿瓶拜谒：#283[剩余次数]={remaining}，点击 #283「拜谒」")
-            runtime.click_shape_center(baiye_scene_id, "拜谒")
-            yield from runtime.wait_action_settle(float(payload.get("green_bottle_baiye_settle_seconds") or 2.0))
+            context.click_shape_center(baiye_scene_id, "拜谒")
+            yield from context.wait_action_settle(float(payload.get("green_bottle_baiye_settle_seconds") or 2.0))
         with self._lock:
             self._log_locked("success", "日常_绿瓶拜谒：今日拜谒已确认完成")
             self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
@@ -12248,8 +12636,8 @@ class DailyFoundationTaskMixin:
         # 通用 goto；sceneJumpTarget 是可增量学习的历史落点频次，不是硬规则。
         final_scene_id, final_score = None, 0.0
         try:
-            yield from runtime.goto_view(34)
-            final_scene_id, final_score, _final_frame = runtime.current_scene([34], update=True)
+            yield from context.go_scene(34)
+            final_scene_id, final_score, _final_frame = context.current_scene([34], update=True)
         except Exception as exc:
             with self._lock:
                 self._log_locked("warning", f"日常_绿瓶拜谒：今日已完成，收尾返回 #34 失败：{exc}")
@@ -12264,7 +12652,7 @@ class DailyFoundationTaskMixin:
 
     def _read_green_bottle_baiye_remaining(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         scene_id: int = 283,
@@ -12275,7 +12663,7 @@ class DailyFoundationTaskMixin:
         settle_seconds = max(0.1, float(payload.get("green_bottle_remaining_read_settle_seconds") or 0.8))
         last_text = ""
         for attempt in range(1, max_attempts + 1):
-            last_text = runtime.ocr_text_in_shapes(
+            last_text = context.ocr_text_in_shapes(
                 scene_id,
                 ["剩余次数"],
                 padding=8,
@@ -12291,7 +12679,7 @@ class DailyFoundationTaskMixin:
                         "warning",
                         f"日常_绿瓶拜谒：#283[剩余次数] 第 {attempt}/{max_attempts} 帧 OCR 为空，等待新帧复核",
                     )
-                yield from runtime.wait_action_settle(settle_seconds)
+                yield from context.wait_action_settle(settle_seconds)
         raise RuntimeError(
             f"日常_绿瓶拜谒：连续 {max_attempts} 帧未能从 #283[剩余次数] 读取剩余次数，"
             f"最后 OCR={last_text[:80]}"
@@ -12306,9 +12694,9 @@ class DailyFoundationTaskMixin:
         keyword: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        view264 = runtime.view(264)
-        list_shape = runtime.shape(view264, "识别区")
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        view264 = context.view(264)
+        list_shape = context.shape(view264, "识别区")
         max_scrolls = self._payload_int(payload, "baiye_rule_max_scrolls", "max_scrolls", default=30)
         for direction, scroll_count in (("down", max_scrolls),):
             for scroll_index in range(max(0, int(scroll_count)) + 1):
@@ -12320,9 +12708,9 @@ class DailyFoundationTaskMixin:
                         phase="daily_baiye_find_rule",
                         current_scene=264,
                     )
-                frame = runtime.cur_frame(update=True)
-                lines = runtime.ocr_fragments_in_shapes(264, ["识别区"], frame_data_url=frame) if hasattr(runtime, "ocr_fragments_in_shapes") else []
-                tokens = runtime.ocr_tokens_in_shapes(264, ["识别区"], frame_data_url=frame)
+                frame = context.cur_frame(update=True)
+                lines = context.ocr_fragments_in_shapes(264, ["识别区"], frame_data_url=frame) if hasattr(context, "ocr_fragments_in_shapes") else []
+                tokens = context.ocr_tokens_in_shapes(264, ["识别区"], frame_data_url=frame)
                 matches = [line for line in lines if keyword in _sanitize_ocr_text(line.get("text"))]
                 if matches:
                     fragment = sorted(matches, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))[0]
@@ -12335,9 +12723,9 @@ class DailyFoundationTaskMixin:
                     y = float(target_box.get("y") or 0) + float(target_box.get("h") or 0) / 2
                     text = _sanitize_ocr_text(fragment.get("text"))
                     self._log("action", f"日常_拜谒：点击 #264 OCR「{text}」")
-                    runtime.click_frame_point(264, x, y)
-                    yield from runtime.wait_any(
-                        {"scene": runtime.view_visible(265)},
+                    context.click_frame_point(264, x, y)
+                    yield from context.wait_any(
+                        {"scene": context.scene_visible(265)},
                         timeout=20.0,
                         label="日常_拜谒：等待法则之主 #265",
                     )
@@ -12345,7 +12733,7 @@ class DailyFoundationTaskMixin:
                 if scroll_index >= int(scroll_count):
                     break
                 self._log("action", f"日常_拜谒：#264 未找到 {keyword}，{direction} 滚动 {scroll_index + 1}")
-                changed = yield from runtime.scroll_shape_content(view264, list_shape, direction=direction)
+                changed = yield from context.scroll_shape_content(view264, list_shape, direction=direction)
                 if not changed:
                     break
         raise RuntimeError(f"日常_拜谒：#264 识别区未找到包含 {keyword} 的法则")
@@ -12398,7 +12786,7 @@ class DailyFoundationTaskMixin:
         target: str,
     ) -> str:
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         timeout = float(payload.get("baiye_lord_timeout") or 120.0)
         scene_recovery_timeout = float(payload.get("baiye_scene_recovery_timeout") or 8.0)
         poll_seconds = float(payload.get("baiye_lord_poll_seconds") or 0.75)
@@ -12418,9 +12806,9 @@ class DailyFoundationTaskMixin:
                     f"日常_拜谒：{timeout:.0f}s 未找到「{target}」，"
                     f"点击返回并于 {next_time} 重试",
                 )
-                runtime.click_shape_center(265, "返回")
-                yield from runtime.wait_any(
-                    {"scene": runtime.view_visible(264)},
+                context.click_shape_center(265, "返回")
+                yield from context.wait_any(
+                    {"scene": context.scene_visible(264)},
                     timeout=20.0,
                     label="日常_拜谒：等待返回 #264",
                 )
@@ -12432,9 +12820,9 @@ class DailyFoundationTaskMixin:
                     phase="daily_baiye_find_lord",
                     current_scene=265,
                 )
-            frame = runtime.cur_frame(update=True)
+            frame = context.cur_frame(update=True)
             detail_state, detail_text, _detail_frame = self._baiye_detail_state(
-                runtime,
+                context,
                 frame_data_url=frame,
             )
             if detail_state == "completed":
@@ -12447,7 +12835,7 @@ class DailyFoundationTaskMixin:
                     )
                 self._log("success", f"日常_拜谒：当前已是完成态，OCR={detail_text[:120]}")
                 yield from self._finish_baiye_completed(
-                    runtime,
+                    context,
                     payload,
                     reason="检测到已完成态后收尾",
                 )
@@ -12467,7 +12855,7 @@ class DailyFoundationTaskMixin:
                     )
                     return "skipped"
                 reason = f"当前已在「{target}」详情页"
-                return (yield from self._click_baiye_worship_button(runtime, payload, reason=reason))
+                return (yield from self._click_baiye_worship_button(context, payload, reason=reason))
             if detail_state == "unknown":
                 self._schedule_baiye_retry(
                     payload,
@@ -12475,7 +12863,7 @@ class DailyFoundationTaskMixin:
                 )
                 return "skipped"
 
-            scene_id, _score, _scene_frame = runtime.current_scene(
+            scene_id, _score, _scene_frame = context.current_scene(
                 [265],
                 frame_data_url=frame,
             )
@@ -12496,7 +12884,7 @@ class DailyFoundationTaskMixin:
                     "wait",
                     f"日常_拜谒：进入 #265 后画面暂未稳定，继续观察，scene={scene_id}",
                 )
-                yield from runtime.wait_action_settle(poll_seconds)
+                yield from context.wait_action_settle(poll_seconds)
                 continue
             unrecognized_since = None
             ocr_options = {
@@ -12505,16 +12893,16 @@ class DailyFoundationTaskMixin:
                 "text_det_unclip_ratio": float(payload.get("baiye_text_det_unclip_ratio") or 1.2),
             }
             lines = (
-                runtime.ocr_fragments_in_shapes(
+                context.ocr_fragments_in_shapes(
                     265,
                     ["识别区"],
                     frame_data_url=frame,
                     options=ocr_options,
                 )
-                if hasattr(runtime, "ocr_fragments_in_shapes")
+                if hasattr(context, "ocr_fragments_in_shapes")
                 else []
             )
-            tokens = runtime.ocr_tokens_in_shapes(
+            tokens = context.ocr_tokens_in_shapes(
                 265,
                 ["识别区"],
                 frame_data_url=frame,
@@ -12534,19 +12922,19 @@ class DailyFoundationTaskMixin:
                 if bool(payload.get("baiye_lord_probe_only") or payload.get("probe_only")):
                     self._log("success", f"日常_拜谒：probe 已在 #265 OCR 命中「{target}」，未点击选择目标")
                     if bool(payload.get("baiye_lord_probe_return", True)):
-                        runtime.click_shape_center(265, "返回")
-                        yield from runtime.wait_any(
-                            {"scene": runtime.view_visible(264)},
+                        context.click_shape_center(265, "返回")
+                        yield from context.wait_any(
+                            {"scene": context.scene_visible(264)},
                             timeout=20.0,
                             label="日常_拜谒：probe 等待返回 #264",
                         )
                     return "skipped"
-                runtime.click_frame_point(265, click_x, click_y)
-                yield from runtime.wait_action_settle(1.0)
+                context.click_frame_point(265, click_x, click_y)
+                yield from context.wait_action_settle(1.0)
                 try:
-                    yield from runtime.wait_view(
+                    yield from context.wait_scene(
                         266,
-                        timeout=float(payload.get("baiye_detail_wait_seconds") or 12.0),
+                        wait=float(payload.get("baiye_detail_wait_seconds") or 12.0),
                         label=f"日常_拜谒：等待「{target}」详情 #266",
                     )
                 except TimeoutError:
@@ -12555,11 +12943,11 @@ class DailyFoundationTaskMixin:
                         reason=f"点击「{target}」后未在时限内识别到 #266",
                     )
                     return "skipped"
-                after_state, after_text, _after_frame = self._baiye_detail_state(runtime, update=True)
+                after_state, after_text, _after_frame = self._baiye_detail_state(context, update=True)
                 if after_state == "completed":
                     self._log("success", f"日常_拜谒：已点击「{target}」，完成态 OCR={after_text[:120]}")
                     yield from self._finish_baiye_completed(
-                        runtime,
+                        context,
                         payload,
                         reason=f"已点击「{target}」进入完成态后收尾",
                     )
@@ -12571,20 +12959,20 @@ class DailyFoundationTaskMixin:
                             reason=f"选择「{target}」后详情页目标不确定，禁止点击拜谒",
                         )
                         return "skipped"
-                    return (yield from self._click_baiye_worship_button(runtime, payload, reason=f"已选中「{target}」且显示可拜谒"))
+                    return (yield from self._click_baiye_worship_button(context, payload, reason=f"已选中「{target}」且显示可拜谒"))
                 self._schedule_baiye_retry(
                     payload,
                     reason=f"点击「{target}」后未确认 #266 完成/可拜谒态，state={after_state}",
                 )
                 return "skipped"
             self._log("detail", f"日常_拜谒：暂未命中「{target}」，OCR={last_text[:80]}")
-            yield from runtime.wait_action_settle(poll_seconds)
+            yield from context.wait_action_settle(poll_seconds)
 
-    def _daily_youli_current_state(self, runtime: Any, *, update: bool = False) -> tuple[int | None, float, str, str]:
-        scene_id, score, frame = runtime.current_scene([237, 236, 233, 229, 228, 71, 69, 34], update=update)
+    def _daily_youli_current_state(self, context: Any, *, update: bool = False) -> tuple[int | None, float, str, str]:
+        scene_id, score, frame = context.current_scene([237, 236, 233, 229, 228, 71, 69, 34], update=update)
         if scene_id is None:
-            scene_id, score, frame = runtime.current_scene(frame_data_url=frame)
-        return scene_id, float(score), frame, runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene(frame_data_url=frame)
+        return scene_id, float(score), frame, context.ocr_text(frame)
 
     def _execute_daily_youli_task(
         self,
@@ -12607,8 +12995,8 @@ class DailyFoundationTaskMixin:
         image237 = images.get(237)
 
         task_label = "日常_游历"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame, text = self._daily_youli_current_state(runtime, update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, frame, text = self._daily_youli_current_state(context, update=True)
         if self._daily_youli_text_is_reward_recovery(text):
             return (yield from self._return_daily_youli_reward_recovery_to_world(ctx, stop_event, task_label=task_label))
         if scene_id == 237 or self._daily_youli_text_is_quick_result(text):
@@ -12639,7 +13027,7 @@ class DailyFoundationTaskMixin:
             return (yield from self._click_daily_youli_last_region(ctx, stop_event, payload, image228, image236, image237, task_label=task_label))
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame, text = self._daily_youli_current_state(runtime, update=True)
+                scene_id, _score, frame, text = self._daily_youli_current_state(context, update=True)
                 if self._daily_youli_text_is_reward_recovery(text):
                     return (yield from self._return_daily_youli_reward_recovery_to_world(ctx, stop_event, task_label=task_label))
                 if scene_id == 237 or self._daily_youli_text_is_quick_result(text):
@@ -12672,7 +13060,7 @@ class DailyFoundationTaskMixin:
                 if scene_id == 34 and (
                     yield from self._try_enter_daily_youli_from_world_mainline(
                         ctx,
-                        runtime,
+                        context,
                         stop_event,
                         payload,
                         image34,
@@ -12680,7 +13068,7 @@ class DailyFoundationTaskMixin:
                         task_label=task_label,
                     )
                 ):
-                    scene_id, _score, frame = runtime.current_scene([71, 228], update=True)
+                    scene_id, _score, frame = context.current_scene([71, 228], update=True)
                     if scene_id == 71:
                         yield from self._select_daily_youli_from_xiuxianzhuan_menu(ctx, stop_event, payload, image71, task_label=task_label)
                         yield from self._wait_daily_youli_home(ctx, stop_event, timeout=18.0, label="日常_游历：等待修仙传游历 #228")
@@ -12688,7 +13076,7 @@ class DailyFoundationTaskMixin:
                     return (yield from self._click_daily_youli_last_region(ctx, stop_event, payload, image228, image236, image237, task_label=task_label))
                 scene_id = yield from self._enter_daily_from_world_like(
                     ctx,
-                    runtime,
+                    context,
                     stop_event,
                     frame,
                     scene_id,

@@ -11,7 +11,7 @@ def test_fanxiu_behavior_tree_defaults_to_the_formal_mf_host(monkeypatch):
     monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
     monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc-mf.example")
 
-    assert management.is_fanxiu_behavior_tree_service_enabled() is True
+    assert management.is_fanxiu_kernel_scheduler_service_enabled() is True
 
 
 def test_fanxiu_behavior_tree_stays_disabled_by_default_on_other_hosts(monkeypatch):
@@ -19,27 +19,27 @@ def test_fanxiu_behavior_tree_stays_disabled_by_default_on_other_hosts(monkeypat
     monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
     monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc_mi15")
 
-    assert management.is_fanxiu_behavior_tree_service_enabled() is False
+    assert management.is_fanxiu_kernel_scheduler_service_enabled() is False
 
 
 def test_fanxiu_behavior_tree_explicit_configuration_overrides_host_default(monkeypatch):
     monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc_mf")
     monkeypatch.setenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED", "false")
     monkeypatch.delenv("FX_RUNTIME_SERVICES", raising=False)
-    assert management.is_fanxiu_behavior_tree_service_enabled() is False
+    assert management.is_fanxiu_kernel_scheduler_service_enabled() is False
 
     monkeypatch.delenv("FX_BEHAVIOR_TREE_SERVICE_ENABLED", raising=False)
     monkeypatch.setenv("FX_RUNTIME_SERVICES", "behavior_tree")
     monkeypatch.setattr(management.socket, "gethostname", lambda: "codepc_mi15")
-    assert management.is_fanxiu_behavior_tree_service_enabled() is True
+    assert management.is_fanxiu_kernel_scheduler_service_enabled() is True
 
 
 def test_fanxiu_startup_ensures_the_single_external_scheduler(monkeypatch):
     entry = type("Entry", (), {"entry_id": "entry-a"})()
     calls = []
-    monkeypatch.setattr(management, "_resolve_data_annotation_runtime_entry", lambda _session: entry)
-    monkeypatch.setattr(management, "ensure_fanxiu_behavior_tree_service", lambda **_kwargs: {})
-    monkeypatch.setattr(management, "_get_data_annotation_behavior_tree_status", lambda: {})
+    monkeypatch.setattr(management, "_resolve_kernel_scheduler_entry", lambda _session: entry)
+    monkeypatch.setattr(management, "ensure_fanxiu_kernel_scheduler_service", lambda **_kwargs: {})
+    monkeypatch.setattr(management, "_get_fanxiu_kernel_scheduler_status", lambda: {})
     monkeypatch.setattr(management, "_fanxiu_doctor_watch_autostart_enabled", lambda: True)
     monkeypatch.setattr(
         management,
@@ -47,13 +47,13 @@ def test_fanxiu_startup_ensures_the_single_external_scheduler(monkeypatch):
         lambda **kwargs: calls.append(kwargs) or {"started": True},
     )
 
-    result = management.ensure_data_annotation_behavior_tree_service(object())
+    result = management.ensure_fanxiu_kernel_scheduler_managed_service(object())
 
     assert result["doctor_watch"]["started"] is True
     assert calls == [{}]
 
 
-def test_build_runtime_status_reuses_runtime_device_for_command_services(monkeypatch):
+def test_build_execution_status_reuses_runtime_device_for_command_services(monkeypatch):
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine, tables=[Task.__table__])
     local_device_id = "device-local"
@@ -102,7 +102,7 @@ def test_build_runtime_status_reuses_runtime_device_for_command_services(monkeyp
         monkeypatch.setattr(management, "_collect_builtin_services", lambda: {"items": []})
         monkeypatch.setattr(management.device_manager, "get_device", lambda device_id: fake_device if device_id == local_device_id else None)
 
-        payload = management.build_runtime_status(session, local_device_id)
+        payload = management.build_execution_status(session, local_device_id)
 
     assert [item["key"] for item in payload["items"]] == ["service-1"]
     assert fake_device.status_calls == ["service-1"]
@@ -163,7 +163,7 @@ def test_scan_running_tasks_skips_recent_repeat_and_rescans_after_ttl(monkeypatc
     ]
 
 
-def test_warm_runtime_status_caches_on_startup_continues_after_errors(monkeypatch):
+def test_warm_execution_status_caches_on_startup_continues_after_errors(monkeypatch):
     calls: list[str] = []
 
     class DummySessionContext:
@@ -180,7 +180,7 @@ def test_warm_runtime_status_caches_on_startup_continues_after_errors(monkeypatc
     monkeypatch.setattr(management, "_collect_builtin_jobs", lambda _session: (_ for _ in ()).throw(RuntimeError("jobs failed")))
     monkeypatch.setattr(management, "_collect_builtin_services", lambda: calls.append("services"))
 
-    result = management.warm_runtime_status_caches_on_startup()
+    result = management.warm_execution_status_caches_on_startup()
 
     assert calls == ["scan", "session_enter", "session_exit", "services"]
     assert result == {
@@ -270,7 +270,7 @@ def test_collect_builtin_services_returns_stale_payload_while_refreshing(monkeyp
 
     monkeypatch.setattr(management.time, "monotonic", lambda: 131.0)
     monkeypatch.setattr(management, "is_attendance_behavior_tree_service_enabled", lambda: False)
-    monkeypatch.setattr(management, "_fanxiu_behavior_tree_service_enabled", lambda: False)
+    monkeypatch.setattr(management, "_fanxiu_kernel_scheduler_service_enabled", lambda: False)
     monkeypatch.setattr(management, "_fanxiu_game_window_service_enabled", lambda: False)
     monkeypatch.setattr(
         management,
@@ -299,14 +299,14 @@ def test_collect_builtin_services_returns_stale_payload_while_refreshing(monkeyp
     assert management._builtin_services_status_cache[2]["items"][0]["title"] == "Fresh Service"
 
 
-def test_runtime_status_cache_ttls_cover_ten_poll_intervals():
+def test_execution_status_cache_ttls_cover_ten_poll_intervals():
     poll_window_seconds = 10 * 3.0
 
     assert management._BUILTIN_JOBS_STATUS_CACHE_TTL_SECONDS >= poll_window_seconds
     assert management._BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS >= poll_window_seconds
 
 
-def test_build_runtime_status_compacts_builtin_list_payload(monkeypatch):
+def test_build_execution_status_compacts_builtin_list_payload(monkeypatch):
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine, tables=[Task.__table__])
     local_device_id = "device-local"
@@ -412,7 +412,7 @@ def test_build_runtime_status_compacts_builtin_list_payload(monkeypatch):
             },
         )
 
-        payload = management.build_runtime_status(session, local_device_id)
+        payload = management.build_execution_status(session, local_device_id)
 
     command_item = next(item for item in payload["items"] if item["source"] == "command")
     builtin_job = next(item for item in payload["items"] if item["key"] == "job-a")

@@ -1,13 +1,13 @@
 # AI Context: CodeYun
 
-> **Last Updated**: 2026-07-27
+> **Last Updated**: 2026-08-31
 > **Purpose**: 本文档旨在为AI提供CodeYun项目的全局上下文、架构设计与核心逻辑，以便快速理解代码并进行准确的修改。
 
 ## 1. 项目概览 (Project Overview)
 
 **CodeYun** 是个人超级工具集成平台，主仓库在 `codeyun`，但部分运行单元会显式编排和托管外部同源运行时，例如 `xlproject/xlsln/kq5034` 的考勤行为树。
 
-> **CRITICAL**: 默认优先在 `D:\home\chenkunze\slns\codeyun` 内搜索、分析和修改；但当任务明确涉及考勤行为树、凡修行为树、运行单元托管、外部脚本接管或 CodeYun 调用的外部业务运行时时，必须把 `codeyun` 视为控制层、把对应外部仓库视为被托管运行时，一并检查真实入口与状态文件，不能假装 `codeyun` 与 `xlproject/pyxllib` 完全无关。
+> **CRITICAL**: 默认优先在 `C:\home\chenkunze\slns\codeyun` 内搜索、分析和修改；但当任务明确涉及考勤行为树、凡修行为树、运行单元托管、外部脚本接管或 CodeYun 调用的外部业务运行时时，必须把 `codeyun` 视为控制层、把对应外部仓库视为被托管运行时，一并检查真实入口与状态文件，不能假装 `codeyun` 与 `xlproject/pyxllib` 完全无关。
 
 
 *   **核心能力**:
@@ -16,9 +16,9 @@
     *   **Agent 模式**: 每个运行后端实例的设备既是 Server 也是 Agent，支持组成对等网络（Mesh-like）。
     *   **远程文件系统**: 浏览和操作远程设备的文件目录。
     *   **远端 Sub-Agent（设计中）**: 通过设备能力探测和受控运行接口调用远端 Codex CLI 等 agent runtime。设计见 `docs/platform/architecture/远端SubAgent能力设计.md`，实现前不要继续把它当成默认可用能力。
-    *   **凡修手游自动化**：所有凡修任务统一进入 `D:\home\chenkunze\slns\skills\fanxiu\SKILL.md`，先按其只读主干判断接口层、调度层或业务层，再读取一个对应能力层。当前代码、API、外部工作区和运行手册从 [`docs/domains/fanxiu/README.md`](./domains/fanxiu/README.md) 查询；本文件不复制凡修内部规则。
-    *   **行为树运行单元运维**: 若任务涉及考勤行为树或凡修行为树的启动、重启、停机、单实例诊断、状态文件、日志文件或“旧框架是否还有效”的判断，先读 `docs/operations/runbooks/行为树运行单元运维约定.md`。该文档定义了 CodeYun 作为控制层的正式入口、状态文件位置、旧 `xlserver`/脚本直觉的废弃边界，以及对外部 `xlproject` 运行时的接管方式。当前统一 runtime action 已明确到：考勤 `inspect/restart/reset`，凡修 `inspect/restart/wake`；不要再把凡修 `wake` 误读为 restart，也不要把 attendance Windows descendant 进程误读为第二棵 root 行为树。考勤与凡修的正式执行主机现在都为 `codepc_mf`；`codepc_mi15` 已退出考勤生产调度。前端运行页/日志页对这些 builtin service 的按钮、说明和反馈文案优先读取 runtime item 元数据 `action_labels/action_descriptions/action_success_messages/action_error_messages`，不要再额外写页面分支猜语义。凡修源码路径优先认 `backend.core.fanxiu.*`；`backend.core.fanxiu_behavior_tree` 与 `backend.core.fanxiu_data_annotation_*` 仅为兼容别名。
-    *   **考勤主数据与订单入口**: `codepc_mf` 使用本机既有浏览器登录态下载小鹅通用户清单、微信支付原始 CSV，并在同一 CodeYun 数据工作区完成原文件归档、解析、用户/支付主数据保存，以及报名表用户 ID 和订单匹配。日常运行不再读取 PG 的 `user_table / weipay_table / weipay_matview`，这些表只在迁移观察期作为只读核对源。微信支付网页实时核验或退款仍统一调用 CodeYun 高层 API：`POST /api/attendance/order-execute`、`POST /api/attendance/order-refund-details`，其执行设备必须配置为 mf，不再转发到 mi15。课程视频与打卡配置、数据只使用课程工作簿，不再读取 PG。处理课程配置、完成算法和 Step 1–6 前，还必须先读 [`考勤课程ABC分类约定`](./domains/attendance/考勤课程ABC分类约定.md)：A 类是普通觉观/念住月课，B 类是禅宗/修道班，C 类是闯关，三类规则不得互套。
+    *   **凡修手游自动化**：所有凡修任务统一进入 `C:\home\chenkunze\slns\skills\fanxiu\SKILL.md`；当前实现、API 和运行手册从 [凡修文档地图](./domains/fanxiu/README.md) 按需读取，本文件不复制内部规则。
+    *   **行为树运行单元运维**：考勤或凡修行为树的启动、重启、停机、状态与日志诊断统一进入 [行为树运行单元运维约定](./operations/runbooks/行为树运行单元运维约定.md)。
+    *   **考勤**：考勤是 CodeYun 控制层与外部 `xlproject/xlsln/kq5034` 运行时共同组成的独立业务域；分类、执行主机、公共接口、工作簿和收尾规则统一从 [考勤文档入口](./domains/attendance/README.md) 进入。
 
 *   **技术栈**:
     *   **Backend**: Python 3.10+, FastAPI, Uvicorn, APScheduler (定时任务), psutil (进程管理)。
@@ -34,7 +34,7 @@
 
 ### 2.2 数据流 (Data Flow)
 1.  **任务状态**: `psutil` 实时监控 -> `DeviceManager` 聚合 -> API 轮询为主，部分任务/日志状态可通过 WebSocket 房间推送 -> 前端 Store。
-2.  **配置存储**: **SQLite 数据库**（默认位于仓库外的数据目录，例如 `D:\home\chenkunze\data\m2603codeyun\codepc_mf\codeyun.db`）。
+2.  **配置存储**: **SQLite 数据库**（默认位于仓库外的数据目录，例如 `C:\home\chenkunze\data\m2603codeyun\codepc_mf\codeyun.db`）。
     *   `Device`: 存储设备信息及 API Token。
     *   `Task`: 存储任务配置。
     *   `User`: 用户信息。
@@ -43,17 +43,17 @@
 
 ## 3. 目录映射 (Directory Map)
 
-### Backend (`D:\home\chenkunze\slns\codeyun\backend`)
+### Backend (`C:\home\chenkunze\slns\codeyun\backend`)
 | 路径 | 职责 | 关键文件/说明 |
 | :--- | :--- | :--- |
 | `app.py` | **入口** | FastAPI 应用实例，CORS 配置，路由挂载。 |
 | `api/` | **接口层** | `task_manager.py` (核心任务逻辑), `agent.py` (节点发现), `filesystem.py` (文件操作)。 |
 | `core/` | **业务逻辑** | `device.py`: 封装设备抽象 (Local/Remote) 和底层进程操作。 |
-| `CODEYUN_DATA_DIR` | **持久化** | 仓库外数据工作区，默认形如 `D:\home\chenkunze\data\m2603codeyun\codepc_<本机名>`，包含 `codeyun.db` 等运行数据。 |
+| `CODEYUN_DATA_DIR` | **持久化** | 仓库外数据工作区，默认形如 `C:\home\chenkunze\data\m2603codeyun\codepc_<本机名>`，包含 `codeyun.db` 等运行数据。 |
 | `../scripts/` | **工具脚本** | 根目录脚本集合，包含验证、同步、修复等维护入口。 |
 | `../tests/` / `tests/` | **测试** | 根目录 `tests/` 是 pytest 默认收集目录；`backend/tests/` 存放后端专项测试。 |
 
-### Frontend (`D:\home\chenkunze\slns\codeyun\frontend`)
+### Frontend (`C:\home\chenkunze\slns\codeyun\frontend`)
 | 路径 | 职责 | 关键文件/说明 |
 | :--- | :--- | :--- |
 | `src/standard/` / `src/views/` | **页面** | 新标准页面集中在 `src/standard/**/page.vue`；集群任务/日志页分别位于 `src/standard/cluster/tasks/page.vue` 和 `src/standard/cluster/logs/page.vue`，`src/views/` 仍保留部分旧入口如 `FileExplorer.vue`。 |
@@ -133,4 +133,4 @@ CodeYun 的功能模块往往涉及前后端及多个组件的联动，修改时
 *   **API Consistency**: 确保 `create_task` 和 `update_task` 的 API 行为一致，特别是在处理默认值和可选字段时。
 
 ### 7.2 文档维护 (Documentation Maintenance)
-*   每次添加新功能（如“编辑任务”），必须同步更新 `AGENTS.md` 中的功能描述，确保用户和 AI 助手都能获取最新信息。
+*   新功能应更新对应平台或业务域文档，并维护 `docs/README.md` 导航；只有全库通用运行方式、责任边界、安全约束或路由发生变化时才更新根 `AGENTS.md`。

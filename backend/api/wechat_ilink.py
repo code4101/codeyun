@@ -11,7 +11,7 @@ from backend.core.access.feature_access_guard import require_feature_access_depe
 from backend.core.messaging.wechat_ilink import (
     WechatIlinkError,
     delete_account,
-    get_runtime_status,
+    get_execution_status,
     get_updates,
     list_accounts,
     resolve_media_file,
@@ -158,7 +158,7 @@ def _map_wechat_error(exc: WechatIlinkError) -> HTTPException:
 @router.get("/status", response_model=WechatIlinkStatusResponse)
 def get_wechat_ilink_status() -> dict[str, Any]:
     try:
-        return get_runtime_status()
+        return get_execution_status()
     except WechatIlinkError as exc:
         raise _map_wechat_error(exc) from exc
 

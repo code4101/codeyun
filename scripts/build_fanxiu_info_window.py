@@ -90,7 +90,7 @@ def build_apk() -> Path:
 
 
 def adb_command() -> tuple[Path, str]:
-    from backend.core.fanxiu.runtime.adb_device import fanxiu_adb_device_service
+    from backend.core.fanxiu.client.adb_device import fanxiu_adb_device_service
 
     return fanxiu_adb_device_service.adb_path(), fanxiu_adb_device_service.choose_device()
 

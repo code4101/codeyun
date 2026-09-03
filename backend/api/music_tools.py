@@ -67,7 +67,7 @@ SEPARATED_STEMS_BY_ENGINE = {
     "demucs": ("vocals", "other", "bass", "drums"),
     "audio_separator_6s": ("vocals", "drums", "bass", "guitar", "piano", "other"),
 }
-MUSIC_TOOLS_ROOT = Path(r"D:\home\chenkunze\slns+\music-tools")
+MUSIC_TOOLS_ROOT = Path(r"C:\home\chenkunze\slns+\music-tools")
 TRANSCRIPTION_ROOT = MUSIC_TOOLS_ROOT / "outputs" / "transcriptions"
 INSTRUMENT_REGISTRY_PATH = MUSIC_TOOLS_ROOT / "data" / "instrument-registry" / "instrument-registry.json"
 DEMUCS_PYTHON = MUSIC_TOOLS_ROOT / ".venvs" / "demucs" / "Scripts" / "python.exe"

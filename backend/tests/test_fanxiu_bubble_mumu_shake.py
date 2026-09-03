@@ -1,4 +1,4 @@
-from backend.core.fanxiu.runtime import mumu_control
+from backend.core.fanxiu.client import mumu_control
 
 
 def test_native_shake_repeats_with_bounded_interval(monkeypatch):

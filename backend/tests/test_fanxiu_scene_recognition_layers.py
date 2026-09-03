@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext, SceneMatch
 
 
 def _scene(scene_id: int, layer: int) -> dict:
@@ -35,8 +37,93 @@ def _context() -> dict:
     }
 
 
+def _recognition_tuple(result) -> tuple[int | None, float, str, int | None]:
+    return result.scene_id, result.score, result.status, result.matched_layer
+
+
+def _drain_result(generator):
+    while True:
+        try:
+            next(generator)
+        except StopIteration as exc:
+            return exc.value
+
+
+def test_scene_api_has_one_waiting_entry_and_no_legacy_aliases() -> None:
+    wait_parameters = inspect.signature(BehaviorTreeContext.wait_scene).parameters
+    current_parameters = inspect.signature(BehaviorTreeContext.current_scene).parameters
+
+    assert wait_parameters["wait"].default == 5.0
+    assert "wait" not in current_parameters
+    for legacy_name in (
+        "recognize_scene",
+        "observe_scene",
+        "wait_view",
+        "wait_view_id",
+        "goto_view",
+    ):
+        assert not hasattr(BehaviorTreeContext, legacy_name)
+
+
+def test_scene_match_is_an_id_with_explicit_recognition_facts() -> None:
+    match = SceneMatch(382, score=96.5, matched_layer=2, scope="global", status="matched")
+
+    assert match == 382
+    assert match.scene_id == 382
+    assert match.id == 382
+    assert match.as_dict() == {
+        "scene_id": 382,
+        "score": 96.5,
+        "matched_layer": 2,
+        "scope": "global",
+        "status": "matched",
+    }
+
+
+def test_layered_wait_reports_actual_business_layer_not_asset_layer(monkeypatch) -> None:
+    runner = create_behavior_tree_executor()
+    raw_context = _context()
+    raw_context["_fanxiu_scene_observation_probe"] = True
+    context = BehaviorTreeContext(runner, raw_context)
+    monkeypatch.setattr(context, "cur_frame", lambda update=False: "frame")
+    monkeypatch.setattr(
+        runner,
+        "_scene_score",
+        lambda _ctx, image, _frame: 95.0 if image["filename"] == "0301.png" else 0.0,
+    )
+
+    match, score, frame = _drain_result(context._recognize_scene_layers([301], wait=0))
+
+    assert match.scene_id == 301
+    assert match.matched_layer == 0
+    assert match.scope == "business"
+    assert score == 95.0
+    assert frame == "frame"
+
+
+def test_layered_wait_reports_global_layer2_fallback(monkeypatch) -> None:
+    runner = create_behavior_tree_executor()
+    raw_context = _context()
+    raw_context["_fanxiu_scene_observation_probe"] = True
+    context = BehaviorTreeContext(runner, raw_context)
+    monkeypatch.setattr(context, "cur_frame", lambda update=False: "frame")
+    monkeypatch.setattr(
+        runner,
+        "_scene_score",
+        lambda _ctx, image, _frame: 95.0 if image["filename"] == "0201.png" else 0.0,
+    )
+
+    match, score, frame = _drain_result(context._recognize_scene_layers([301], wait=0))
+
+    assert match.scene_id == 201
+    assert match.matched_layer == 2
+    assert match.scope == "global"
+    assert score == 95.0
+    assert frame == "frame"
+
+
 def test_layer0_match_short_circuits_layer1_and_layer2(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     calls: list[tuple[str, list[int]]] = []
 
     def identify(_ctx, _frame, scene_ids, *, layer_label, trace=None):
@@ -45,12 +132,14 @@ def test_layer0_match_short_circuits_layer1_and_layer2(monkeypatch):
 
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
 
-    assert runner._identify_scene_number_by_graph(_context(), "frame", [301]) == (301, 95.0, "matched")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(_context(), "frame", [301])) == (
+        301, 95.0, "matched", 0,
+    )
     assert calls == [("layer0", [301])]
 
 
 def test_explicit_layer0_miss_does_not_fall_through_to_default_layers(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     calls: list[tuple[str, list[int]]] = []
 
     def identify(_ctx, _frame, scene_ids, *, layer_label, trace=None):
@@ -59,12 +148,14 @@ def test_explicit_layer0_miss_does_not_fall_through_to_default_layers(monkeypatc
 
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
 
-    assert runner._identify_scene_number_by_graph(_context(), "frame", [301]) == (None, 20.0, "no_match")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(_context(), "frame", [301])) == (
+        None, 20.0, "no_match", None,
+    )
     assert calls == [("layer0", [301])]
 
 
 def test_layer1_match_short_circuits_layer2(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     calls: list[tuple[str, list[int]]] = []
 
     def identify(_ctx, _frame, scene_ids, *, layer_label, trace=None):
@@ -73,12 +164,14 @@ def test_layer1_match_short_circuits_layer2(monkeypatch):
 
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
 
-    assert runner._identify_scene_number_by_graph(_context(), "frame") == (101, 92.0, "matched")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(_context(), "frame")) == (
+        101, 92.0, "matched", 1,
+    )
     assert calls == [("layer1", [101])]
 
 
 def test_default_layer1_graph_includes_popup_candidates(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     world = _scene(101, 1)
     normal_layer2 = _scene(201, 2)
     popup = _scene(47, 2)
@@ -100,12 +193,42 @@ def test_default_layer1_graph_includes_popup_candidates(monkeypatch):
 
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
 
-    assert runner._identify_scene_number_by_graph(ctx, "frame") == (101, 98.0, "graph_nearest")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(ctx, "frame")) == (
+        101, 98.0, "graph_nearest", 1,
+    )
     assert calls == [("layer1", [101, 47])]
 
 
+def test_canonical_global_layers_exclude_popup_candidates(monkeypatch):
+    runner = create_behavior_tree_executor()
+    world = _scene(101, 1)
+    popup = _scene(47, 2)
+    tree = [
+        world,
+        {"type": "folder", "title": "弹窗", "children": [popup]},
+    ]
+    ctx = {
+        "asset_tree": tree,
+        "images": {101: world, 47: popup},
+    }
+    calls: list[tuple[str, list[int]]] = []
+
+    def identify(_ctx, _frame, scene_ids, *, layer_label, trace=None):
+        calls.append((layer_label, list(scene_ids)))
+        return 101, 98.0, "graph_nearest"
+
+    monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
+
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(
+        ctx,
+        "frame",
+        include_default_popup_candidates=False,
+    )) == (101, 98.0, "graph_nearest", 1)
+    assert calls == [("layer1", [101])]
+
+
 def test_layer2_runs_only_after_layer1_whole_layer_misses(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     calls: list[tuple[str, list[int]]] = []
 
     def identify(_ctx, _frame, scene_ids, *, layer_label, trace=None):
@@ -116,7 +239,9 @@ def test_layer2_runs_only_after_layer1_whole_layer_misses(monkeypatch):
 
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
 
-    assert runner._identify_scene_number_by_graph(_context(), "frame") == (201, 91.0, "matched")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(_context(), "frame")) == (
+        201, 91.0, "matched", 2,
+    )
     assert calls == [
         ("layer1", [101]),
         ("layer2", [201, 301]),
@@ -124,7 +249,7 @@ def test_layer2_runs_only_after_layer1_whole_layer_misses(monkeypatch):
 
 
 def test_layer3_similarity_is_auxiliary_after_identity_layers_miss(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     graph_calls: list[str] = []
     layer3_calls: list[list[int]] = []
 
@@ -139,13 +264,15 @@ def test_layer3_similarity_is_auxiliary_after_identity_layers_miss(monkeypatch):
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify_graph)
     monkeypatch.setattr(runner, "_identify_scene_number_in_layer3_candidates", identify_layer3)
 
-    assert runner._identify_scene_number_by_graph(_context(), "frame") == (None, 93.0, "no_match")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(_context(), "frame")) == (
+        None, 93.0, "no_match", None,
+    )
     assert graph_calls == ["layer1", "layer2"]
     assert layer3_calls == [[401]]
 
 
 def test_layer3_reports_strongest_reference_without_producing_scene_id(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     first = {
         "type": "image",
         "title": "first",
@@ -188,7 +315,7 @@ def test_layer3_reports_strongest_reference_without_producing_scene_id(monkeypat
 
 
 def test_layer1_ambiguity_still_blocks_lower_priority_layer2(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     calls: list[str] = []
 
     def identify(_ctx, _frame, _scene_ids, *, layer_label, trace=None):
@@ -199,12 +326,14 @@ def test_layer1_ambiguity_still_blocks_lower_priority_layer2(monkeypatch):
 
     monkeypatch.setattr(runner, "_identify_scene_number_in_graph_candidates", identify)
 
-    assert runner._identify_scene_number_by_graph(_context(), "frame") == (None, 94.0, "ambiguous")
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(_context(), "frame")) == (
+        None, 94.0, "ambiguous", 1,
+    )
     assert calls == ["layer1"]
 
 
 def test_candidates_inside_one_layer_are_scored_in_parallel(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     images = {scene_id: _scene(scene_id, 1) for scene_id in range(1, 7)}
     active = 0
     peak_active = 0
@@ -229,7 +358,7 @@ def test_candidates_inside_one_layer_are_scored_in_parallel(monkeypatch):
 
 
 def test_parallel_layer_candidates_share_one_ocr_fill(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     images = {scene_id: _scene(scene_id, 1) for scene_id in range(1, 7)}
     ocr_calls = 0
     lock = threading.Lock()
@@ -254,7 +383,7 @@ def test_parallel_layer_candidates_share_one_ocr_fill(monkeypatch):
 
 
 def test_recognition_graph_reuses_static_pair_relations(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     images = {scene_id: _scene(scene_id, 2) for scene_id in (201, 202)}
     ctx = {"images": images}
     calls: list[tuple[int, int]] = []

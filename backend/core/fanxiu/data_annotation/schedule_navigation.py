@@ -26,7 +26,7 @@ ACTIVITY_CARD_FORWARD_SHAPE = "活动卡片/前往"
 
 
 def _activity_card_indicator_points(
-    runtime: Any,
+    context: Any,
     frame_data_url: str,
 ) -> tuple[tuple[float, float], ...]:
     """Locate the real dot pager rendered at the bottom of #66's promo card."""
@@ -39,9 +39,9 @@ def _activity_card_indicator_points(
             np.frombuffer(base64.b64decode(encoded), dtype=np.uint8),
             cv2.IMREAD_COLOR,
         )
-        card_shape = runtime.shape(SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE)
+        card_shape = context.shape(SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE)
         view = card_shape.parent_view
-        box = runtime.runner._box(card_shape.raw, view.raw)
+        box = context.runner._box(card_shape.raw, view.raw)
     except Exception:
         return ()
     if image is None:
@@ -364,7 +364,17 @@ def resolve_schedule_runtime_activity_targets(
 ) -> tuple[ScheduleActivityTarget, ...]:
     """Use Runtime names to locate noisy OCR rows while preserving all instances."""
 
-    header = parse_schedule_header(header_lines, anchor_date=anchor_date)
+    try:
+        header = parse_schedule_header(header_lines, anchor_date=anchor_date)
+    except RuntimeError:
+        # For today's already-active Runtime entity, the uniquely aligned
+        # calendar title itself supplies both row and column coordinates.
+        # This keeps a missing/occluded ``今天`` header from blocking the
+        # Runtime-authorized entry, while future/past offsets still require a
+        # parsed date axis and therefore remain fail-closed.
+        if int(day_offset) != 0:
+            raise
+        header = None
     entities = tuple(runtime_entities)
     scored: list[ScheduleActivityTarget] = []
     rows = [dict(raw) for raw in calendar_lines]
@@ -411,7 +421,12 @@ def resolve_schedule_runtime_activity_targets(
         candidate = GuiCandidate(
             key=f"calendar-line-{index}",
             text=combined_text or text,
-            point=(header.x_for_day_offset(day_offset), label_y),
+            point=(
+                header.x_for_day_offset(day_offset)
+                if header is not None
+                else _center(main_line)[0],
+                label_y,
+            ),
             payload={"anchor": item, "row_lines": nearby},
         )
         eligible_entities: list[RuntimeEntity] = []
@@ -449,7 +464,11 @@ def resolve_schedule_runtime_activity_targets(
         scored.append(
             ScheduleActivityTarget(
                 day_offset=int(day_offset),
-                x=header.x_for_day_offset(day_offset),
+                x=(
+                    header.x_for_day_offset(day_offset)
+                    if header is not None
+                    else _center(main_line)[0]
+                ),
                 y=label_y,
                 matched_text=combined_text or text,
                 runtime_key=best.runtime_key,
@@ -634,17 +653,17 @@ def _schedule_card_diagnostics_summary(
 
 
 def _log_schedule_card_diagnostics(
-    runtime: Any,
+    context: Any,
     diagnostics: Iterable[ScheduleCardProjection],
 ) -> None:
     summary = _schedule_card_diagnostics_summary(diagnostics)
-    logger = getattr(getattr(runtime, "runner", None), "_log", None)
+    logger = getattr(getattr(context, "runner", None), "_log", None)
     if summary and callable(logger):
         logger("detail", f"#66 活动卡片逐页 Runtime-GUI 对齐：{summary}")
 
 
 def select_schedule_activity(
-    runtime: Any,
+    context: Any,
     activity_pattern: str | Pattern[str],
     *,
     day_offset: int = 0,
@@ -653,15 +672,17 @@ def select_schedule_activity(
     runtime_schedule: Mapping[str, Any] | None = None,
     require_runtime_alignment: bool = False,
     expected_activity_id: int | None = None,
+    expected_runtime_id: str | None = None,
+    expected_cross_count: int | None = None,
     now: datetime | None = None,
 ) :
     """Select and verify a #66 activity without encoding rotating content."""
 
-    frame = runtime.cur_frame(update=True)
-    header_lines = runtime.ocr_fragments_in_shapes(
+    frame = context.cur_frame(update=True)
+    header_lines = context.ocr_fragments_in_shapes(
         SCHEDULE_SCENE_ID, [HEADER_SHAPE], frame_data_url=frame
     )
-    calendar_lines = runtime.ocr_fragments_in_shapes(
+    calendar_lines = context.ocr_fragments_in_shapes(
         SCHEDULE_SCENE_ID, [CALENDAR_SHAPE], frame_data_url=frame
     )
     current_moment = now or datetime.now()
@@ -685,7 +706,20 @@ def select_schedule_activity(
             for entity in runtime_entities
             if int(entity.payload.get("activityId") or 0) == int(expected_activity_id)
         )
-    current_page = runtime.paged_content_snapshot(
+    if expected_runtime_id is not None:
+        runtime_entities = tuple(
+            entity
+            for entity in runtime_entities
+            if str(entity.payload.get("id") or "") == str(expected_runtime_id)
+        )
+    if expected_cross_count is not None:
+        runtime_entities = tuple(
+            entity
+            for entity in runtime_entities
+            if int(entity.payload.get("serverCount") or 1)
+            == int(expected_cross_count)
+        )
+    current_page = context.paged_content_snapshot(
         SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE, frame_data_url=frame
     )
     current_projection = classify_activity_card(
@@ -715,23 +749,47 @@ def select_schedule_activity(
     # enter=True must consume that cell instead of paging unrelated cards.
     # Keep enter=False observational: calendar cells are navigation actions.
     if enter and runtime_entities and not current_projection.exact_match:
-        calendar_targets = resolve_schedule_runtime_activity_targets(
-            header_lines=header_lines,
-            calendar_lines=calendar_lines,
-            runtime_entities=runtime_entities,
-            day_offset=day_offset,
-            anchor_date=current_moment.date(),
-        )
+        calendar_targets = ()
+        alignment_error: RuntimeError | None = None
+        # Header/calendar OCR occasionally returns one incomplete frame even
+        # though #66 itself is stable.  Retry the same read-only alignment on
+        # fresh frames; never click until exactly one Runtime-bound row exists.
+        for alignment_attempt in range(3):
+            try:
+                calendar_targets = resolve_schedule_runtime_activity_targets(
+                    header_lines=header_lines,
+                    calendar_lines=calendar_lines,
+                    runtime_entities=runtime_entities,
+                    day_offset=day_offset,
+                    anchor_date=current_moment.date(),
+                )
+                alignment_error = None
+            except RuntimeError as exc:
+                calendar_targets = ()
+                alignment_error = exc
+            if len(calendar_targets) == 1:
+                break
+            if alignment_attempt < 2:
+                yield from context.wait_action_settle(0.8)
+                frame = context.cur_frame(update=True)
+                header_lines = context.ocr_fragments_in_shapes(
+                    SCHEDULE_SCENE_ID, [HEADER_SHAPE], frame_data_url=frame
+                )
+                calendar_lines = context.ocr_fragments_in_shapes(
+                    SCHEDULE_SCENE_ID, [CALENDAR_SHAPE], frame_data_url=frame
+                )
         if len(calendar_targets) == 1:
             selected_target = calendar_targets[0]
-            runtime.click_frame_point(
+            context.click_frame_point(
                 SCHEDULE_SCENE_ID,
                 selected_target.x,
                 selected_target.y,
             )
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
             return selected_target
         if require_runtime_alignment:
+            if alignment_error is not None:
+                raise alignment_error
             raise RuntimeError(
                 f"#66 Runtime 对齐的日历活动命中 {len(calendar_targets)} 个，拒绝猜测入口"
             )
@@ -766,11 +824,11 @@ def select_schedule_activity(
             return projection.exact_match
 
         found = None
-        indicator_points = _activity_card_indicator_points(runtime, frame)
+        indicator_points = _activity_card_indicator_points(context, frame)
         for x, y in indicator_points:
-            runtime.click_frame_point(SCHEDULE_SCENE_ID, x, y)
-            yield from runtime.wait_action_settle(settle_seconds)
-            candidate = runtime.paged_content_snapshot(
+            context.click_frame_point(SCHEDULE_SCENE_ID, x, y)
+            yield from context.wait_action_settle(settle_seconds)
+            candidate = context.paged_content_snapshot(
                 SCHEDULE_SCENE_ID,
                 ACTIVITY_CARD_SHAPE,
             )
@@ -778,12 +836,12 @@ def select_schedule_activity(
                 found = candidate
                 break
         if found is None and not indicator_points:
-            found = yield from runtime.find_paged_content(
+            found = yield from context.find_paged_content(
                 SCHEDULE_SCENE_ID,
                 card_matches,
                 ACTIVITY_CARD_SHAPE,
             )
-        _log_schedule_card_diagnostics(runtime, card_diagnostics)
+        _log_schedule_card_diagnostics(context, card_diagnostics)
         if found is None:
             diagnostic_summary = _schedule_card_diagnostics_summary(card_diagnostics)
             raise ScheduleActivityNotFoundError(
@@ -850,7 +908,7 @@ def select_schedule_activity(
             alignment_score=selected_projection.name_score,
         )
     if enter:
-        runtime.click_shape(
+        context.click_shape(
             SCHEDULE_SCENE_ID,
             ACTIVITY_CARD_FORWARD_SHAPE,
             frame_data_url=selected_page.get("frame"),

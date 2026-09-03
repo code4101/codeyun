@@ -1,6 +1,6 @@
 import threading
 
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
 
 class _Runtime:
@@ -8,8 +8,8 @@ class _Runtime:
         self.calls = []
         self.battle_scenes = iter(battle_scenes or [346])
 
-    def wait_click_then_view(self, scene, shape, target, **_kwargs):
-        self.calls.append(("wait_click_then_view", scene, shape, target))
+    def wait_click_then_scene(self, scene, shape, target, **_kwargs):
+        self.calls.append(("wait_click_then_scene", scene, shape, target))
         yield
         return f"scene-{target}"
 
@@ -27,8 +27,8 @@ class _Runtime:
         self.calls.append(("wait_click", scene, shape))
         yield
 
-    def wait_view(self, *scenes, label):
-        self.calls.append(("wait_view", scenes, label))
+    def wait_scene(self, *scenes, label):
+        self.calls.append(("wait_scene", scenes, label))
         yield
 
     def wait_action_settle(self, seconds):
@@ -44,13 +44,13 @@ class _Runtime:
 def test_daily_dongtian_known_occupation_chain():
     runtime = _Runtime([345, 346])
 
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     list(runner._daily_dongtian_continue_enemy_occupation(runtime))
 
     assert runtime.calls == [
-        ("wait_click_then_view", 341, "\u4f4d\u7f6e1", 342),
-        ("wait_click_then_view", 342, "\u5360\u9886", 343),
-        ("wait_click_then_view", 343, "\u5360\u9886", 344),
+        ("wait_click_then_scene", 341, "\u4f4d\u7f6e1", 342),
+        ("wait_click_then_scene", 342, "\u5360\u9886", 343),
+        ("wait_click_then_scene", 343, "\u5360\u9886", 344),
         ("cur_frame",),
         ("click_shape", "scene-344", "\u6218\u6597", "current-frame"),
         ("clear_frame",),
@@ -60,13 +60,13 @@ def test_daily_dongtian_known_occupation_chain():
         ("wait_action_settle", 1.0),
         ("current_scene", [345, 346], True, 346),
         ("wait_click", 346, "\u7ee7\u7eed"),
-        ("wait_view", (341, 279), "\u6d1e\u5929_\u884c\u52a8\u529b\uff1a\u786e\u8ba4\u6218\u6597\u540e\u7684\u6b63\u5e38\u843d\u70b9"),
+        ("wait_scene", (341, 279), "\u6d1e\u5929_\u884c\u52a8\u529b\uff1a\u786e\u8ba4\u6218\u6597\u540e\u7684\u6b63\u5e38\u843d\u70b9"),
     ]
 
 
 def test_daily_dongtian_battle_can_finish_without_optional_skip_scene():
     runtime = _Runtime([346])
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
 
     list(runner._daily_dongtian_finish_battle(runtime))
 
@@ -74,7 +74,7 @@ def test_daily_dongtian_battle_can_finish_without_optional_skip_scene():
         ("wait_action_settle", 1.0),
         ("current_scene", [345, 346], True, 346),
         ("wait_click", 346, "\u7ee7\u7eed"),
-        ("wait_view", (341, 279), "\u6d1e\u5929_\u884c\u52a8\u529b\uff1a\u786e\u8ba4\u6218\u6597\u540e\u7684\u6b63\u5e38\u843d\u70b9"),
+        ("wait_scene", (341, 279), "\u6d1e\u5929_\u884c\u52a8\u529b\uff1a\u786e\u8ba4\u6218\u6597\u540e\u7684\u6b63\u5e38\u843d\u70b9"),
     ]
 
 
@@ -95,7 +95,7 @@ def test_daily_dongtian_action_power_loop_can_start_at_341_and_stop_below_100():
             return [value], str(value)
 
     runtime = Runtime()
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._log = lambda *_args, **_kwargs: None
     occupation_calls = []
 
@@ -137,7 +137,7 @@ def test_daily_dongtian_action_power_reuses_279_hud_shape_on_current_frame():
             assert frame_data_url == "current-341-frame"
             return [80], "80"
 
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
 
     assert runner._daily_dongtian_action_power(Runtime()) == (80, "80")
 
@@ -154,13 +154,13 @@ def test_daily_dongtian_action_power_reads_zero_from_full_frame_context():
             assert frame == "current-279-frame"
             return "洞天福地 我的编队 0 联盟占领"
 
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
 
     assert runner._daily_dongtian_action_power(Runtime()) == (0, "我的编队0")
 
 
 def test_daily_dongtian_action_power_prefers_runtime_snapshot():
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
 
     class Runtime:
         def cur_frame(self, *, update=False):
@@ -180,7 +180,7 @@ def test_daily_dongtian_action_power_prefers_runtime_snapshot():
 
 
 def test_daily_dongtian_runtime_snapshot_builds_enemy_place_list():
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._log = lambda *_args, **_kwargs: None
     payload = {
         "__dongtian_runtime_snapshot": {
@@ -202,19 +202,19 @@ def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
         def __init__(self):
             self.calls = []
 
-        def wait_view(self, scene, *, label):
-            self.calls.append(("wait_view", scene))
+        def wait_scene(self, scene, *, label):
+            self.calls.append(("wait_scene", scene))
             yield
 
         def ocr_text(self, *, update):
             return "白玉京 玉清道宗 详情"
 
-        def wait_click_then_view(self, scene, shape, target):
-            self.calls.append(("wait_click_then_view", scene, shape, target))
+        def wait_click_then_scene(self, scene, shape, target):
+            self.calls.append(("wait_click_then_scene", scene, shape, target))
             yield
 
     runtime = Runtime()
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._log = lambda *_args, **_kwargs: None
     action = runner._daily_dongtian_validate_enemy_detail(
         runtime,
@@ -229,8 +229,8 @@ def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
         assert "已返回洞天主页" in str(exc)
 
     assert runtime.calls == [
-        ("wait_view", 341),
-        ("wait_click_then_view", 341, "返回", 279),
+        ("wait_scene", 341),
+        ("wait_click_then_scene", 341, "返回", 279),
     ]
 
 
@@ -265,7 +265,7 @@ def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster()
                 "地点图标": Shape({"x": 540, "y": 1080, "w": 74, "h": 50}),
             }[title]
 
-        def wait_view(self, scene, *, label):
+        def wait_scene(self, scene, *, label):
             yield
 
         def cur_frame(self, *, update):
@@ -286,7 +286,7 @@ def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster()
             yield
 
     runtime = Runtime()
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._log = lambda *_args, **_kwargs: None
     action = runner._daily_dongtian_click_first_enemy_place(
         runtime,
@@ -332,7 +332,7 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
                 "地点图标": Shape({"x": 540, "y": 1080, "w": 74, "h": 50}),
             }[title]
 
-        def wait_view(self, scene, *, label):
+        def wait_scene(self, scene, *, label):
             yield
 
         def cur_frame(self, *, update):
@@ -365,7 +365,7 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
             return True
 
     runtime = Runtime()
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._log = lambda *_args, **_kwargs: None
     action = runner._daily_dongtian_click_first_enemy_place(
         runtime,
@@ -405,7 +405,7 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
 
 
 def test_daily_dongtian_location_uses_only_tokens_linked_to_native_line():
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     lines = [
         {"line_id": "line-20", "text": "\u7389\u6e05\u9053\u5b9712/12", "x": 103, "y": 898, "w": 191, "h": 28},
         {"line_id": "line-21", "text": "\u592a\u660e\u7389\u589f", "x": 644, "y": 898, "w": 113, "h": 31},
@@ -425,7 +425,7 @@ def test_daily_dongtian_location_uses_only_tokens_linked_to_native_line():
 
 
 def test_daily_dongtian_location_suffix_uses_real_linked_token_box():
-    runner = BehaviorTreeRuntimeRunner.__new__(BehaviorTreeRuntimeRunner)
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     line = {"line_id": "line-14", "text": "\u767d\u7389\u4eac100%", "x": 414, "y": 638, "w": 130, "h": 32}
     tokens = [
         {"text": char, "x": 414 + index * 20, "y": 638, "w": 20, "h": 32, "parent_line_id": "line-14", "line_order": 14, "order": index}

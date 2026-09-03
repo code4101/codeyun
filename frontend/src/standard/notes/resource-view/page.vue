@@ -65,6 +65,7 @@ const RESOURCE_LINK_SUBMENU_WIDTH = 176
 const SHEET_ADVANCED_SUBMENU_WIDTH = 196
 const WORKBOOK_CONTEXT_MENU_WIDTH = 148
 const WORKBOOK_CONTEXT_MENU_HEIGHT = 300
+const RESOURCE_ACCESS_RETRY_INTERVAL_MS = 3_000
 
 type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
 
@@ -184,6 +185,7 @@ const inlineLoginForm = reactive({
 })
 const inlineLoginError = ref('')
 let workbookLoadSeq = 0
+let resourceAccessRetryTimer: ReturnType<typeof setInterval> | null = null
 
 const routeName = computed(() => String(route.name ?? ''))
 const isExplicitIndependentAttendanceResource = computed(() => routeName.value.startsWith('IndependentAttendance'))
@@ -432,6 +434,31 @@ function refreshCurrentResourceAfterAuth() {
   }
 }
 
+function stopResourceAccessRetry() {
+  if (resourceAccessRetryTimer == null) {
+    return
+  }
+  clearInterval(resourceAccessRetryTimer)
+  resourceAccessRetryTimer = null
+}
+
+function startResourceAccessRetry() {
+  if (resourceAccessRetryTimer != null) {
+    return
+  }
+  resourceAccessRetryTimer = setInterval(() => {
+    if (
+      !resourceAccessIssue.value
+      || !userStore.isAuthenticated
+      || loading.value
+      || document.visibilityState !== 'visible'
+    ) {
+      return
+    }
+    refreshCurrentResourceAfterAuth()
+  }, RESOURCE_ACCESS_RETRY_INTERVAL_MS)
+}
+
 async function submitInlineLogin() {
   const username = inlineLoginForm.username.trim()
   const password = inlineLoginForm.password
@@ -526,6 +553,31 @@ async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
   return true
 }
 
+async function redirectToStandaloneSheetFromWorkbookQuery(): Promise<boolean> {
+  if (isIndependentAttendanceResource.value) {
+    return false
+  }
+  const targetSheetId = querySheetId.value
+  if (targetSheetId == null) {
+    return false
+  }
+
+  try {
+    await fetchNoteSheet(targetSheetId, { paginate: false })
+  } catch (error) {
+    if (isAccessDeniedStatus(getNoteSheetApiErrorStatus(error))) {
+      return false
+    }
+    throw error
+  }
+
+  void router.replace({
+    path: sheetResourcePath(targetSheetId),
+    query: getCleanWorkbookRouteQuery(),
+  })
+  return true
+}
+
 async function loadWorkbookResource() {
   if (!isWorkbookMode.value) {
     return
@@ -551,58 +603,82 @@ async function loadWorkbookResource() {
   prefetchedSheetDetail.value = null
   try {
     void preloadNoteSheetWorkspace()
-    let legacyAttendancePrefetchedDetail: NoteSheetDetail | null = null
-    if (!isExplicitIndependentAttendanceResource.value && targetSheetId != null) {
-      const { fetchIndependentAttendanceSheetDocumentById } = await loadAttendanceApi()
-      legacyAttendancePrefetchedDetail = await fetchIndependentAttendanceSheetDocumentById(
-        targetSheetId,
-        { workbookId: targetWorkbookId },
+    legacyAttendanceWorkbookMatch.value = false
+    let detail: WorkbookDetail | null = null
+    let prefetchedDetail: NoteSheetDetail | null = null
+
+    if (isExplicitIndependentAttendanceResource.value) {
+      const {
+        fetchIndependentAttendanceSheetDocumentById,
+        fetchIndependentAttendanceWorkbookById,
+      } = await loadAttendanceApi()
+      const workbookRequest = markBootPerfAsync(
+        'resource-view.fetchWorkbook',
+        () => fetchIndependentAttendanceWorkbookById(targetWorkbookId),
       )
+      const requestedSheetRequest = targetSheetId == null
+        ? Promise.resolve(null)
+        : markBootPerfAsync(
+            'resource-view.prefetchSheet',
+            () => fetchIndependentAttendanceSheetDocumentById(targetSheetId, { workbookId: targetWorkbookId }),
+          ).catch((error) => {
+            if (shouldLogResourceLoadWarning(error)) {
+              console.warn('Failed to prefetch workbook sheet:', error)
+            }
+            return null
+          })
+      ;[detail, prefetchedDetail] = await Promise.all([workbookRequest, requestedSheetRequest])
+    } else {
+      // A /workbook URL names a standard CodeYun resource. Resolve that resource
+      // before trying the legacy attendance fallback: the attendance API has a
+      // separate operator permission and its 403 must not mask a valid workbook grant.
+      const workbookRequest = markBootPerfAsync(
+        'resource-view.fetchWorkbook',
+        () => fetchWorkbook(targetWorkbookId),
+      )
+      const requestedSheetRequest = targetSheetId == null
+        ? Promise.resolve(null)
+        : markBootPerfAsync(
+            'resource-view.prefetchSheet',
+            () => fetchNoteSheet(targetSheetId, {
+              workbookId: targetWorkbookId,
+              includeWorkbookContext: false,
+            }),
+          ).catch((error) => {
+            if (shouldLogResourceLoadWarning(error)) {
+              console.warn('Failed to prefetch workbook sheet:', error)
+            }
+            return null
+          })
+      ;[detail, prefetchedDetail] = await Promise.all([workbookRequest, requestedSheetRequest])
+
       if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
         return
       }
-      legacyAttendanceWorkbookMatch.value = legacyAttendancePrefetchedDetail != null
-    } else {
-      legacyAttendanceWorkbookMatch.value = false
-    }
-    const workbookRequest = markBootPerfAsync(
-      'resource-view.fetchWorkbook',
-      async () => {
-        if (isIndependentAttendanceResource.value) {
-          const { fetchIndependentAttendanceWorkbookById } = await loadAttendanceApi()
-          return fetchIndependentAttendanceWorkbookById(targetWorkbookId)
-        }
-        const detail = await fetchWorkbook(targetWorkbookId)
-        if (detail) {
-          return detail
-        }
-        const { fetchIndependentAttendanceWorkbookById } = await loadAttendanceApi()
-        return fetchIndependentAttendanceWorkbookById(targetWorkbookId)
-      },
-    )
-    const requestedSheetRequest = targetSheetId == null
-      ? null
-      : legacyAttendancePrefetchedDetail != null
-        ? Promise.resolve(legacyAttendancePrefetchedDetail)
-      : markBootPerfAsync(
-          'resource-view.prefetchSheet',
-          async () => {
-            if (isIndependentAttendanceResource.value) {
-              const { fetchIndependentAttendanceSheetDocumentById } = await loadAttendanceApi()
-              return fetchIndependentAttendanceSheetDocumentById(targetSheetId, { workbookId: targetWorkbookId })
+      if (!detail) {
+        const {
+          fetchIndependentAttendanceSheetDocumentById,
+          fetchIndependentAttendanceWorkbookById,
+        } = await loadAttendanceApi()
+        detail = await markBootPerfAsync(
+          'resource-view.fetchWorkbook',
+          () => fetchIndependentAttendanceWorkbookById(targetWorkbookId),
+        )
+        legacyAttendanceWorkbookMatch.value = detail != null
+        if (detail && targetSheetId != null) {
+          prefetchedDetail = await markBootPerfAsync(
+            'resource-view.prefetchSheet',
+            () => fetchIndependentAttendanceSheetDocumentById(targetSheetId, { workbookId: targetWorkbookId }),
+          ).catch((error) => {
+            if (shouldLogResourceLoadWarning(error)) {
+              console.warn('Failed to prefetch workbook sheet:', error)
             }
-            return fetchNoteSheet(targetSheetId, {
-              workbookId: targetWorkbookId,
-              includeWorkbookContext: false,
-            })
-          },
-        ).catch((error) => {
-          if (shouldLogResourceLoadWarning(error)) {
-            console.warn('Failed to prefetch workbook sheet:', error)
-          }
-          return null
-        })
-    const detail = await workbookRequest
+            return null
+          })
+        }
+      }
+    }
+
     let resolvedSheetId: number | null = null
     if (detail) {
       resolvedSheetId = resolveSheetIdFromWorkbookDetail(detail, [
@@ -611,9 +687,6 @@ async function loadWorkbookResource() {
         detail.sheets[0]?.id ?? null,
       ])
     }
-    let prefetchedDetail = requestedSheetRequest == null
-      ? null
-      : await requestedSheetRequest
     if (prefetchedDetail == null && detail && resolvedSheetId != null) {
       prefetchedDetail = await markBootPerfAsync(
         'resource-view.prefetchSheet',
@@ -676,6 +749,9 @@ async function loadWorkbookResource() {
     const status = getNoteSheetApiErrorStatus(error)
     if (shouldLogResourceLoadWarning(error)) {
       console.warn('Failed to load public workbook resource:', error)
+    }
+    if (isAccessDeniedStatus(status) && await redirectToStandaloneSheetFromWorkbookQuery()) {
+      return
     }
     if (!isAccessDeniedStatus(status) && await redirectWorkbookRouteFromSheetQuery()) {
       return
@@ -944,6 +1020,10 @@ function getSheetTabResourceHref() {
   const sheet = sheetTabContextMenuSheet.value
   if (!sheet) {
     return ''
+  }
+  const currentWorkbook = workbook.value
+  if (isIndependentAttendanceResource.value && currentWorkbook) {
+    return resolveWorkbookResourceHref(currentWorkbook.id, sheet.id)
   }
   return resolveSheetResourceHref(sheet.id)
 }
@@ -1532,6 +1612,17 @@ watch(
   },
 )
 
+watch(
+  [resourceAccessIssue, () => userStore.isAuthenticated],
+  ([issue, isAuthenticated]) => {
+    if (issue && isAuthenticated) {
+      startResourceAccessRetry()
+      return
+    }
+    stopResourceAccessRetry()
+  },
+)
+
 onMounted(() => {
   markBootPerf('resource-view.mounted', {
     workbookMode: isWorkbookMode.value,
@@ -1548,6 +1639,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopResourceAccessRetry()
   document.removeEventListener('mousedown', handleGlobalMouseDown)
   document.removeEventListener('keydown', handleGlobalKeydown)
 })

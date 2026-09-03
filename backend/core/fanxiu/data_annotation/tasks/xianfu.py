@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from pyxllib.prog import BehaviorTreeStatus
-from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
+from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.data_annotation import behavior_tree_runtime as _behavior_tree_runtime
+from backend.core.fanxiu.data_annotation import behavior_tree_executor as _behavior_tree_executor
 from backend.core.temp_paths import codeyun_temp_root
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
     FULLWIDTH_DIGIT_TRANSLATION,
     _now,
     _parse_daily_boss_cd_seconds,
@@ -40,7 +40,7 @@ class XianfuTaskMixin:
     ) -> str:
         delay = max(60, int(payload.get("fallback_seconds") or seconds))
         next_time = (
-            _behavior_tree_runtime._now() + timedelta(seconds=delay)
+            _behavior_tree_executor._now() + timedelta(seconds=delay)
         ).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or task_id),
@@ -78,9 +78,9 @@ class XianfuTaskMixin:
                 "禁止由仙府作业点击「跳过」"
             )
 
-    def _ensure_xianfu_home_partner_tab(self, runtime: BehaviorTreeRuntime, image171: dict[str, Any], *, task_label: str):
-        frame = runtime.cur_frame(update=True)
-        full_text = _sanitize_ocr_text(runtime.ocr_text(frame))
+    def _ensure_xianfu_home_partner_tab(self, context: BehaviorTreeContext, image171: dict[str, Any], *, task_label: str):
+        frame = context.cur_frame(update=True)
+        full_text = _sanitize_ocr_text(context.ocr_text(frame))
         if self._xianfu_partner_entry_ready_text(full_text):
             return "success"
         raise RuntimeError(f"{task_label}：#171 未显示「寻仙台」入口，请检查仙府主页标注或当前页状态；当前 OCR={full_text or '空'}")
@@ -101,10 +101,10 @@ class XianfuTaskMixin:
             raise RuntimeError("缺少仙府_寻访仙侣资产树路径，无法执行作业")
         raw_max_continue = payload.get("max_continue", 20)
         max_continue = int(20 if raw_max_continue in {None, ""} else raw_max_continue)
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, _frame = runtime.current_scene([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, score, _frame = context.current_scene([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], update=True)
         self._reject_non_xianfu_scene(scene_id, task_label="仙府_寻访仙侣")
-        current_text = runtime.ocr_text(_frame)
+        current_text = context.ocr_text(_frame)
         if scene_id is None:
             if self._xianfu_visit_text_is_continue_popup(current_text):
                 scene_id = 175
@@ -130,15 +130,15 @@ class XianfuTaskMixin:
                 )
                 self._log_locked("warning", f"仙府_寻访仙侣：起点停在领悟绝技页 #{scene_id}，先走领悟绝技收尾链路")
             if scene_id == 177:
-                yield from self._handle_xianfu_learn_skill_result_popup(runtime)
-            yield from self._return_xianfu_learn_skill_to_world(runtime)
+                yield from self._handle_xianfu_learn_skill_result_popup(context)
+            yield from self._return_xianfu_learn_skill_to_world(context)
             scene_id = 34
 
         if scene_id == 69:
             raise RuntimeError("仙府_寻访仙侣：当前停在日常页 #69，禁止把日常页退出路径作为仙府寻访入口；请先由日常作业收尾回世界 #34 后再重试")
 
         if scene_id == 175:
-            yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=max_continue)
+            yield from self._handle_xianfu_continue_visit_popup(context, max_continue=max_continue)
             scene_id = 174
 
         if scene_id != 174:
@@ -150,54 +150,54 @@ class XianfuTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "仙府_寻访仙侣：进入仙府主页 #171", phase="xianfu_visit_go_home")
                     self._log_locked("action", "仙府_寻访仙侣：按场景图跳转到 #171")
-                yield from runtime.goto_view(171, layer0_wait_seconds=60.0)
+                yield from context.go_scene(171, wait=60.0)
                 scene_id = 171
             if scene_id == 171:
-                view171 = runtime.get_view(171)
+                view171 = context.get_view(171)
                 image171 = ctx.get("images", {}).get(171)
                 if isinstance(image171, dict):
-                    self._ensure_xianfu_home_partner_tab(runtime, image171, task_label="仙府_寻访仙侣")
+                    self._ensure_xianfu_home_partner_tab(context, image171, task_label="仙府_寻访仙侣")
                 shape = view171.get_shape("寻仙台") if isinstance(view171, View) else None
                 if shape is None:
                     raise RuntimeError("缺少 #171「寻仙台」标注，无法进入寻仙台")
                 with self._lock:
                     self._set_status_locked("running", "仙府_寻访仙侣：点击寻仙台", phase="xianfu_visit_open_platform", current_scene=171)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #171「寻仙台」")
-                shape.click(runtime)
-                yield from runtime.wait_view(172, timeout=18.0, label="仙府_寻访仙侣：等待寻仙台 #172")
+                shape.click(context)
+                yield from context.wait_scene(172, wait=18.0, label="仙府_寻访仙侣：等待寻仙台 #172")
                 scene_id = 172
             if scene_id == 172:
-                view172 = runtime.get_view(172)
+                view172 = context.get_view(172)
                 shape = view172.get_shape("寻访") if isinstance(view172, View) else None
                 if shape is None:
                     raise RuntimeError("缺少 #172「寻访」标注，无法进入仙侣寻访")
                 with self._lock:
                     self._set_status_locked("running", "仙府_寻访仙侣：进入寻访", phase="xianfu_visit_open_visit", current_scene=172)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #172「寻访」")
-                shape.click(runtime)
-                view = yield from runtime.wait_view(173, 174, timeout=18.0, label="仙府_寻访仙侣：等待寻访页")
-                scene_id = view.id if isinstance(view, View) else None
+                shape.click(context)
+                view = yield from context.wait_scene(173, 174, wait=18.0, label="仙府_寻访仙侣：等待寻访页")
+                scene_id = getattr(view, "scene_id", getattr(view, "id", None))
             if scene_id == 173:
-                view173 = runtime.get_view(173)
+                view173 = context.get_view(173)
                 shape = view173.get_shape("绝品仙侣") if isinstance(view173, View) else None
                 if shape is None:
                     raise RuntimeError("缺少 #173「绝品仙侣」标注，无法切换绝品页")
                 with self._lock:
                     self._set_status_locked("running", "仙府_寻访仙侣：切换绝品仙侣", phase="xianfu_visit_open_juepin", current_scene=173)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #173「绝品仙侣」")
-                shape.click(runtime)
-                yield from self._wait_xianfu_visit_juepin(runtime, timeout=18.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
+                shape.click(context)
+                yield from self._wait_xianfu_visit_juepin(context, timeout=18.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
 
         image174 = ctx.get("images", {}).get(174)
         if not isinstance(image174, dict):
             raise RuntimeError("缺少 #174 绝品仙侣标注，无法读取寻访状态")
-        frame = runtime.cur_frame(update=True)
-        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
+        frame = context.cur_frame(update=True)
+        status_text = self._behavior_tree_context_ocr_text_in_shapes(context, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
         if cd_seconds is None:
             raise RuntimeError(f"仙府_寻访仙侣：无法识别免费寻访倒计时：{status_text or '空'}")
         if cd_seconds > 0:
-            next_time = (_behavior_tree_runtime._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-visit-partner")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -211,7 +211,7 @@ class XianfuTaskMixin:
                     current_scene=174,
                 )
                 self._log_locked("success", self._status["message"])
-            yield from self._return_xianfu_visit_partner_to_world(runtime)
+            yield from self._return_xianfu_visit_partner_to_world(context)
             return "success"
 
         image175 = ctx.get("images", {}).get(175)
@@ -221,22 +221,22 @@ class XianfuTaskMixin:
                 task_id="xianfu-visit-partner",
                 message="仙府_寻访仙侣：当前可免费寻访，但缺少 #175「继续寻访」弹窗标注，暂不自动点击",
             )
-            yield from self._return_xianfu_visit_partner_to_world(runtime)
+            yield from self._return_xianfu_visit_partner_to_world(context)
             return "skipped"
-        view174 = runtime.get_view(174)
+        view174 = context.get_view(174)
         visit_shape = view174.get_shape("寻访") if isinstance(view174, View) else None
         if visit_shape is None:
             raise RuntimeError("缺少 #174「寻访」标注，无法执行免费寻访")
         with self._lock:
             self._set_status_locked("running", "仙府_寻访仙侣：免费寻访一次", phase="xianfu_visit_free_draw", current_scene=174)
             self._log_locked("action", "仙府_寻访仙侣：点击 #174「寻访」")
-        visit_shape.click(runtime)
-        yield from self._handle_xianfu_continue_visit_popup(runtime, max_continue=max_continue)
-        frame = runtime.cur_frame(update=True)
-        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
+        visit_shape.click(context)
+        yield from self._handle_xianfu_continue_visit_popup(context, max_continue=max_continue)
+        frame = context.cur_frame(update=True)
+        status_text = self._behavior_tree_context_ocr_text_in_shapes(context, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
         if cd_seconds and cd_seconds > 0:
-            next_time = (_behavior_tree_runtime._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-visit-partner")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -250,26 +250,26 @@ class XianfuTaskMixin:
                     current_scene=174,
                 )
                 self._log_locked("success", self._status["message"])
-            yield from self._return_xianfu_visit_partner_to_world(runtime)
+            yield from self._return_xianfu_visit_partner_to_world(context)
             return "success"
         self._record_xianfu_retry(
             payload,
             task_id="xianfu-visit-partner",
             message=f"仙府_寻访仙侣：寻访后未读到有效 CD：{status_text or '空'}",
         )
-        yield from self._return_xianfu_visit_partner_to_world(runtime)
+        yield from self._return_xianfu_visit_partner_to_world(context)
         return "skipped"
 
-    def _handle_xianfu_continue_visit_popup(self, runtime: BehaviorTreeRuntime, *, max_continue: int = 20):
-        view175 = runtime.get_view(175)
+    def _handle_xianfu_continue_visit_popup(self, context: BehaviorTreeContext, *, max_continue: int = 20):
+        view175 = context.get_view(175)
         if not isinstance(view175, View):
             raise RuntimeError("缺少 #175「继续寻访」标注，无法处理寻访结果弹窗")
         continue_count = 0
         max_continue_count = max(0, int(max_continue))
         while True:
-            yield from runtime.wait_view(175, timeout=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
-            frame = runtime.cur_frame(update=True)
-            half_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, view175, ("半价",), frame_data_url=frame, padding=24)
+            yield from context.wait_scene(175, wait=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
+            frame = context.cur_frame(update=True)
+            half_text = self._behavior_tree_context_ocr_text_in_shapes(context, view175, ("半价",), frame_data_url=frame, padding=24)
             half_value = _parse_first_int(half_text)
             if half_value is not None and half_value < 100 and continue_count < max_continue_count:
                 continue_shape = view175.get_shape("继续")
@@ -283,7 +283,7 @@ class XianfuTaskMixin:
                         current_scene=175,
                     )
                     self._log_locked("action", f"仙府_寻访仙侣：点击 #175「继续」，半价={half_value}")
-                continue_shape.click(runtime)
+                continue_shape.click(context)
                 continue_count += 1
                 continue
             break
@@ -294,10 +294,10 @@ class XianfuTaskMixin:
             with self._lock:
                 self._set_status_locked("running", "仙府_寻访仙侣：关闭继续寻访弹窗", phase="xianfu_visit_close_continue", current_scene=175)
                 self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
-            close_shape.click(runtime)
-            yield from runtime.wait_action_settle(1.0)
-            scene_id, _score, frame = runtime.current_scene([174, 175], update=True)
-            text = runtime.ocr_text(frame)
+            close_shape.click(context)
+            yield from context.wait_action_settle(1.0)
+            scene_id, _score, frame = context.current_scene([174, 175], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 174 or self._xianfu_visit_text_is_juepin(text):
                 return "success"
             if scene_id == 175 or self._xianfu_visit_text_is_continue_popup(text):
@@ -305,7 +305,7 @@ class XianfuTaskMixin:
                     self._log("warning", "仙府_寻访仙侣：关闭后仍停在继续寻访弹窗，重试关闭")
                     continue
             break
-        yield from self._wait_xianfu_visit_juepin(runtime, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
+        yield from self._wait_xianfu_visit_juepin(context, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
         return "success"
 
     def _xianfu_visit_text_is_juepin(self, text: str) -> bool:
@@ -320,34 +320,34 @@ class XianfuTaskMixin:
         normalized = _sanitize_ocr_text(text)
         return "离开当前场景" in normalized and "确认" in normalized and "取消" in normalized
 
-    def _confirm_xianfu_leave_to_world(self, runtime: BehaviorTreeRuntime, *, task_label: str):
-        view86 = runtime.get_view(86)
+    def _confirm_xianfu_leave_to_world(self, context: BehaviorTreeContext, *, task_label: str):
+        view86 = context.get_view(86)
         confirm_shape = view86.get_shape("确认") if isinstance(view86, View) else None
         if confirm_shape is None:
             raise RuntimeError(f"{task_label}：当前在 #86 离开确认弹窗，但缺少 #86「确认」标注，无法返回世界")
         with self._lock:
             self._set_status_locked("running", f"{task_label}：确认离开当前场景", phase="xianfu_return_confirm_leave", current_scene=86)
             self._log_locked("action", f"{task_label}：点击 #86「确认」")
-        confirm_shape.click(runtime)
-        yield from runtime.wait_view(34, timeout=30.0, label=f"{task_label}：确认离开后等待世界 #34")
+        confirm_shape.click(context)
+        yield from context.wait_scene(34, wait=30.0, label=f"{task_label}：确认离开后等待世界 #34")
         return "success"
 
-    def _wait_xianfu_visit_juepin(self, runtime: BehaviorTreeRuntime, *, timeout: float, label: str):
-        return (yield from runtime.wait_any(
+    def _wait_xianfu_visit_juepin(self, context: BehaviorTreeContext, *, timeout: float, label: str):
+        return (yield from context.wait_any(
             {
-                "scene": runtime.view_visible(174),
-                "text": runtime.ocr_matches(self._xianfu_visit_text_is_juepin, label=f"{label} OCR"),
+                "scene": context.scene_visible(174),
+                "text": context.ocr_matches(self._xianfu_visit_text_is_juepin, label=f"{label} OCR"),
             },
             timeout=timeout,
             label=label,
         ))
 
-    def _return_xianfu_visit_partner_to_world(self, runtime: BehaviorTreeRuntime):
+    def _return_xianfu_visit_partner_to_world(self, context: BehaviorTreeContext):
         with self._lock:
             self._set_status_locked("running", "仙府_寻访仙侣：返回世界 #34", phase="xianfu_visit_return_world")
             self._log_locked("action", "仙府_寻访仙侣：按仙府收尾链路返回 #34")
         yield from self._return_xianfu_pages_to_world(
-            runtime,
+            context,
             task_label="仙府_寻访仙侣",
             current_candidates=(175, 174, 173, 172, 171, 86, 34),
         )
@@ -355,14 +355,14 @@ class XianfuTaskMixin:
 
     def _return_xianfu_pages_to_world(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         *,
         task_label: str,
         current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 86, 34),
     ):
         for _attempt in range(6):
-            scene_id, score, _frame = runtime.current_scene(current_candidates, update=True)
-            text = runtime.ocr_text(_frame)
+            scene_id, score, _frame = context.current_scene(current_candidates, update=True)
+            text = context.ocr_text(_frame)
             if scene_id is None:
                 if self._xianfu_visit_text_is_continue_popup(text):
                     scene_id = 175
@@ -378,83 +378,83 @@ class XianfuTaskMixin:
                 self._log("success", f"{task_label}：已返回世界 #34")
                 return "success"
             if scene_id == 86:
-                yield from self._confirm_xianfu_leave_to_world(runtime, task_label=task_label)
+                yield from self._confirm_xianfu_leave_to_world(context, task_label=task_label)
                 continue
             if scene_id == 177:
-                view177 = runtime.get_view(177)
+                view177 = context.get_view(177)
                 continue_shape = view177.get_shape("继续") if isinstance(view177, View) else None
                 if continue_shape is None:
                     raise RuntimeError(f"{task_label}：缺少 #177「继续」标注，无法关闭领悟结果弹窗")
                 with self._lock:
                     self._set_status_locked("running", f"{task_label}：关闭领悟结果弹窗", phase="xianfu_return_close_skill_result", current_scene=177)
                     self._log_locked("action", f"{task_label}：点击 #177「继续」")
-                continue_shape.click(runtime)
-                yield from runtime.wait_view(176, 171, 34, timeout=18.0, label=f"{task_label}：关闭 #177 后等待绝技页")
+                continue_shape.click(context)
+                yield from context.wait_scene(176, 171, 34, wait=18.0, label=f"{task_label}：关闭 #177 后等待绝技页")
                 continue
             if scene_id == 176:
-                view176 = runtime.get_view(176)
+                view176 = context.get_view(176)
                 exit_shape = view176.get_shape("退出") if isinstance(view176, View) else None
                 if exit_shape is None:
                     raise RuntimeError(f"{task_label}：缺少 #176「退出」标注，无法离开绝技页")
                 with self._lock:
                     self._set_status_locked("running", f"{task_label}：退出绝技页", phase="xianfu_return_exit_skill", current_scene=176)
                     self._log_locked("action", f"{task_label}：点击 #176「退出」")
-                exit_shape.click(runtime)
-                yield from runtime.wait_view(171, 172, 34, timeout=18.0, label=f"{task_label}：退出 #176 后等待仙府页")
+                exit_shape.click(context)
+                yield from context.wait_scene(171, 172, 34, wait=18.0, label=f"{task_label}：退出 #176 后等待仙府页")
                 continue
             if scene_id == 175:
-                view175 = runtime.get_view(175)
+                view175 = context.get_view(175)
                 close_shape = view175.get_shape("关闭") if isinstance(view175, View) else None
                 if close_shape is None:
                     raise RuntimeError(f"{task_label}：缺少 #175「关闭」标注，无法关闭寻访结果弹窗")
                 with self._lock:
                     self._set_status_locked("running", f"{task_label}：关闭寻访结果弹窗", phase="xianfu_return_close_visit_result", current_scene=175)
                     self._log_locked("action", f"{task_label}：点击 #175「关闭」")
-                close_shape.click(runtime)
-                yield from runtime.wait_view(174, 173, 171, 34, timeout=18.0, label=f"{task_label}：关闭 #175 后等待仙府页")
+                close_shape.click(context)
+                yield from context.wait_scene(174, 173, 171, 34, wait=18.0, label=f"{task_label}：关闭 #175 后等待仙府页")
                 continue
             if scene_id == 174:
-                view174 = runtime.get_view(174)
+                view174 = context.get_view(174)
                 exit_shape = view174.get_shape("退出") if isinstance(view174, View) else None
                 if exit_shape is None:
                     raise RuntimeError(f"{task_label}：缺少 #174「退出」标注，无法离开绝品仙侣页")
                 with self._lock:
                     self._set_status_locked("running", f"{task_label}：退出绝品仙侣页", phase="xianfu_return_exit_juepin", current_scene=174)
                     self._log_locked("action", f"{task_label}：点击 #174「退出」")
-                exit_shape.click(runtime)
-                yield from runtime.wait_view(171, 173, 172, 34, timeout=18.0, label=f"{task_label}：退出 #174 后等待仙府页")
+                exit_shape.click(context)
+                yield from context.wait_scene(171, 173, 172, 34, wait=18.0, label=f"{task_label}：退出 #174 后等待仙府页")
                 continue
             if scene_id == 173:
-                view173 = runtime.get_view(173)
+                view173 = context.get_view(173)
                 back_shape = view173.get_shape("返回") if isinstance(view173, View) else None
                 if back_shape is None:
                     raise RuntimeError(f"{task_label}：缺少 #173「返回」标注，无法离开仙侣寻访页")
                 with self._lock:
                     self._set_status_locked("running", f"{task_label}：返回仙府主页", phase="xianfu_return_from_visit", current_scene=173)
                     self._log_locked("action", f"{task_label}：点击 #173「返回」")
-                back_shape.click(runtime)
-                yield from runtime.wait_view(171, 172, 34, timeout=18.0, label=f"{task_label}：返回 #173 后等待仙府主页")
+                back_shape.click(context)
+                yield from context.wait_scene(171, 172, 34, wait=18.0, label=f"{task_label}：返回 #173 后等待仙府主页")
                 continue
             if scene_id == 171:
-                view171 = runtime.get_view(171)
+                view171 = context.get_view(171)
                 leave_shape = view171.get_shape("离开") if isinstance(view171, View) else None
                 if leave_shape is None:
                     raise RuntimeError(f"{task_label}：缺少 #171「离开」标注，无法返回世界")
                 with self._lock:
                     self._set_status_locked("running", f"{task_label}：离开仙府", phase="xianfu_return_leave_home", current_scene=171)
                     self._log_locked("action", f"{task_label}：点击 #171「离开」")
-                leave_shape.click(runtime)
-                leave_result = yield from runtime.wait_view(86, 34, timeout=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
-                leave_scene_id = leave_result.id if isinstance(leave_result, View) else None
+                leave_shape.click(context)
+                leave_result = yield from context.wait_scene(86, 34, wait=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
+                leave_scene_id = getattr(leave_result, "scene_id", getattr(leave_result, "id", None))
                 if leave_scene_id == 86:
-                    yield from self._confirm_xianfu_leave_to_world(runtime, task_label=task_label)
+                    yield from self._confirm_xianfu_leave_to_world(context, task_label=task_label)
                 continue
             if scene_id == 172:
                 self._log("warning", f"{task_label}：停在 #172 寻仙台，回退通用场景图返回 #34")
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 continue
             self._log("warning", f"{task_label}：当前场景 unknown/{score:.0f}%，回退通用场景图返回 #34")
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
         raise RuntimeError(f"{task_label}：返回世界 #34 未完成，不能按成功处理")
 
     def _xianfu_reward_transition_text_is_scene(self, text: str) -> bool:
@@ -463,7 +463,7 @@ class XianfuTaskMixin:
 
     def _recover_xianfu_reward_transition(
         self,
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
         scene_id: int | None,
         current_text: str,
     ) -> int | None:
@@ -479,16 +479,16 @@ class XianfuTaskMixin:
                 current_scene=347,
             )
             self._log_locked("detail", "仙府_领悟绝技：#347 无操作，等待自动返回仙府既有页面")
-        result = yield from runtime.wait_view(
+        result = yield from context.wait_scene(
             177,
             176,
             172,
             171,
             34,
-            timeout=18.0,
+            wait=18.0,
             label="仙府_领悟绝技：等待 #347 自动关闭",
         )
-        recovered_scene_id = result.id if isinstance(result, View) else None
+        recovered_scene_id = getattr(result, "scene_id", getattr(result, "id", None))
         if recovered_scene_id not in {177, 176, 172, 171, 34}:
             raise RuntimeError("仙府_领悟绝技：#347 自动关闭后的落点不可确认")
         return recovered_scene_id
@@ -546,14 +546,14 @@ class XianfuTaskMixin:
                 "detail",
                 "仙府_领悟绝技：Runtime 免费状态不可用，保留原 OCR 流程兜底",
             )
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         preferred = [347, 177, 176, 172, 185, 171, 34]
-        scene_id, score, _frame = runtime.current_scene(preferred, update=True)
+        scene_id, score, _frame = context.current_scene(preferred, update=True)
         self._reject_non_xianfu_scene(scene_id, task_label="仙府_领悟绝技")
         current_text = (
             ""
             if runtime_free_available and scene_id in {177, 176, 172, 171}
-            else runtime.ocr_text(_frame)
+            else context.ocr_text(_frame)
         )
         if scene_id == 34 and self._xianfu_home_text_is_scene(current_text):
             self._log("warning", "仙府_领悟绝技：当前画面 OCR 命中仙府主页，覆盖 #34 误识别为 #171")
@@ -561,7 +561,7 @@ class XianfuTaskMixin:
         elif scene_id is None and self._xianfu_home_text_is_scene(current_text):
             scene_id = 171
         scene_id = yield from self._recover_xianfu_reward_transition(
-            runtime,
+            context,
             scene_id,
             current_text,
         )
@@ -575,7 +575,7 @@ class XianfuTaskMixin:
 
         if scene_id == 177:
             yield from self._handle_xianfu_learn_skill_result_popup(
-                runtime,
+                context,
                 refresh_reference_frame_once=refresh_reference_frame_once,
                 scheduler_task_id=scheduler_task_id,
             )
@@ -587,45 +587,45 @@ class XianfuTaskMixin:
                 with self._lock:
                     self._set_status_locked("running", "仙府_领悟绝技：进入仙府主页 #171", phase="xianfu_skill_go_home")
                     self._log_locked("action", "仙府_领悟绝技：按场景图跳转到 #171")
-                yield from runtime.goto_view(171, layer0_wait_seconds=60.0)
+                yield from context.go_scene(171, wait=60.0)
                 scene_id = 171
             if scene_id == 171:
-                view171 = runtime.get_view(171)
+                view171 = context.get_view(171)
                 image171 = images.get(171)
                 if isinstance(image171, dict):
-                    yield from self._ensure_xianfu_home_partner_tab(runtime, image171, task_label="仙府_领悟绝技")
+                    yield from self._ensure_xianfu_home_partner_tab(context, image171, task_label="仙府_领悟绝技")
                 platform_shape = view171.get_shape("寻仙台") if isinstance(view171, View) else None
                 if platform_shape is None:
                     raise RuntimeError("缺少 #171「寻仙台」标注，无法进入寻仙台")
                 with self._lock:
                     self._set_status_locked("running", "仙府_领悟绝技：点击寻仙台", phase="xianfu_skill_open_platform", current_scene=171)
                     self._log_locked("action", "仙府_领悟绝技：点击 #171「寻仙台」")
-                platform_shape.click(runtime)
-                yield from runtime.wait_view(172, timeout=18.0, label="仙府_领悟绝技：等待寻仙台 #172")
+                platform_shape.click(context)
+                yield from context.wait_scene(172, wait=18.0, label="仙府_领悟绝技：等待寻仙台 #172")
                 scene_id = 172
             if scene_id == 172:
-                view172 = runtime.get_view(172)
+                view172 = context.get_view(172)
                 skill_shape = view172.get_shape("领悟绝技") if isinstance(view172, View) else None
                 if skill_shape is None:
                     raise RuntimeError("缺少 #172「领悟绝技」标注，无法进入绝技页")
                 with self._lock:
                     self._set_status_locked("running", "仙府_领悟绝技：进入绝技页", phase="xianfu_skill_open_page", current_scene=172)
                     self._log_locked("action", "仙府_领悟绝技：点击 #172「领悟绝技」")
-                skill_shape.click(runtime)
-                yield from runtime.wait_view(176, timeout=18.0, label="仙府_领悟绝技：等待绝技 #176")
+                skill_shape.click(context)
+                yield from context.wait_scene(176, wait=18.0, label="仙府_领悟绝技：等待绝技 #176")
 
         image176 = images.get(176)
         if not isinstance(image176, dict):
             raise RuntimeError("缺少 #176 绝技标注，无法读取领悟状态")
         if runtime_free_available:
-            yield from self._switch_xianfu_learn_skill_xianpin_tab(runtime)
-            frame = runtime.cur_frame(update=True)
+            yield from self._switch_xianfu_learn_skill_xianpin_tab(context)
+            frame = context.cur_frame(update=True)
             status_text = "Runtime 已确认免费领悟可用"
             cd_seconds = 0
         else:
-            frame = yield from self._ensure_xianfu_learn_skill_xianpin_tab(runtime, image176)
-            status_text = self._fanxiu_runtime_ocr_text_in_shapes(
-                runtime,
+            frame = yield from self._ensure_xianfu_learn_skill_xianpin_tab(context, image176)
+            status_text = self._behavior_tree_context_ocr_text_in_shapes(
+                context,
                 image176,
                 ("状态", "价格"),
                 frame_data_url=frame,
@@ -634,17 +634,17 @@ class XianfuTaskMixin:
             cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
         if cd_seconds is None:
             fallback_seconds = int(payload.get("fallback_seconds") or 1800)
-            next_time = (_behavior_tree_runtime._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (_behavior_tree_executor._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
                 next_time,
             )
             self._log("skip", f"仙府_领悟绝技：未识别到免费领悟或倒计时，当前文本：{status_text or '空'}；{next_time} 兜底重试")
-            yield from self._return_xianfu_learn_skill_to_world(runtime)
+            yield from self._return_xianfu_learn_skill_to_world(context)
             return "skipped"
         if cd_seconds > 0:
-            next_time = (_behavior_tree_runtime._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -658,7 +658,7 @@ class XianfuTaskMixin:
                     current_scene=176,
                 )
                 self._log_locked("skip", self._status["message"])
-            yield from self._return_xianfu_learn_skill_to_world(runtime)
+            yield from self._return_xianfu_learn_skill_to_world(context)
             return "skipped"
 
         if not isinstance(images.get(177), dict):
@@ -668,7 +668,7 @@ class XianfuTaskMixin:
                 message="仙府_领悟绝技：当前可免费领悟，但缺少 #177「领悟绝技」结果弹窗标注，暂不自动点击",
             )
             return "skipped"
-        view176 = runtime.get_view(176)
+        view176 = context.get_view(176)
         learn_shape = view176.get_shape("领悟一次") if isinstance(view176, View) else None
         if learn_shape is None:
             raise RuntimeError("缺少 #176「领悟一次」标注，无法执行免费领悟")
@@ -678,9 +678,9 @@ class XianfuTaskMixin:
         # The current tick has already OCR-confirmed the free-draw state.  Do not
         # run an independent shape match here: it duplicates OCR work and can
         # reject the same frame that produced the business decision above.
-        runtime.click_shape_center(view176, learn_shape)
+        context.click_shape_center(view176, learn_shape)
         yield from self._handle_xianfu_learn_skill_result_popup(
-            runtime,
+            context,
             refresh_reference_frame_once=refresh_reference_frame_once,
             scheduler_task_id=scheduler_task_id,
         )
@@ -710,14 +710,14 @@ class XianfuTaskMixin:
                     current_scene=176,
                 )
                 self._log_locked("success", self._status["message"])
-            yield from self._return_xianfu_learn_skill_to_world(runtime)
+            yield from self._return_xianfu_learn_skill_to_world(context)
             return "success"
 
-        frame = runtime.cur_frame(update=True)
-        status_text = self._fanxiu_runtime_ocr_text_in_shapes(runtime, image176, ("状态", "价格"), frame_data_url=frame, padding=16)
+        frame = context.cur_frame(update=True)
+        status_text = self._behavior_tree_context_ocr_text_in_shapes(context, image176, ("状态", "价格"), frame_data_url=frame, padding=16)
         cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
         if cd_seconds and cd_seconds > 0:
-            next_time = (_behavior_tree_runtime._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -731,14 +731,14 @@ class XianfuTaskMixin:
                     current_scene=176,
                 )
                 self._log_locked("success", self._status["message"])
-            yield from self._return_xianfu_learn_skill_to_world(runtime)
+            yield from self._return_xianfu_learn_skill_to_world(context)
             return "success"
         self._record_xianfu_retry(
             payload,
             task_id="xianfu-learn-skill",
             message=f"仙府_领悟绝技：领悟后未读到有效 CD：{status_text or '空'}",
         )
-        yield from self._return_xianfu_learn_skill_to_world(runtime)
+        yield from self._return_xianfu_learn_skill_to_world(context)
         return "skipped"
 
     def _xianfu_skill_runtime_snapshot(

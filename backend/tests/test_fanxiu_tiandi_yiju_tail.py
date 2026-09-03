@@ -100,11 +100,11 @@ class _Runtime:
         if False:
             yield None
 
-    def wait_view(self, *_args, **_kwargs):
+    def wait_scene(self, *_args, **_kwargs):
         if False:
             yield None
 
-    def goto_view(self, scene):
+    def go_scene(self, scene):
         self.clicks.append(("goto", scene))
         if False:
             yield None
@@ -194,7 +194,7 @@ def test_completed_receipt_replay_creates_no_runtime_and_clicks_nothing(
     )
 
     class _Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs):
+        def _behavior_tree_context(self, *_args, **_kwargs):
             raise AssertionError("幂等回放不得创建 Runtime")
 
     result = _run(tiandi_yiju_tail.execute_tiandi_yiju_exchange_tail(
@@ -263,7 +263,7 @@ def test_active_target_reached_immediately_runs_the_same_exchange_tail(
             events.append(("wait", scene))
             return (yield from done(scene))
 
-        def goto_view(self, scene):
+        def go_scene(self, scene):
             events.append(("goto", scene))
             return (yield from done(scene))
 

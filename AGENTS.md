@@ -1,18 +1,29 @@
 # AGENTS.md
 
+## 项目入口
+
+- CodeYun 是个人超级工具集成平台；全项目概览先读 `docs/AI_CONTEXT.md`，文档分层和业务域入口先读 `docs/README.md`。
+- 根 `AGENTS.md` 只维护全库通用运行方式、责任边界、安全约束和文档路由，不复制考勤、凡修、星图笔记、星云表格等领域内部规则。
+- 任务明确命中某个业务域时，再读取下方路由中的对应 README 和本次需要的专项正文；不要把所有领域上下文一次性加载进全局任务。
+
 ## 运行约定（重要）
 
-- 所有命令默认在仓库根目录执行：`D:\home\chenkunze\slns\codeyun`
+- 所有命令默认在仓库根目录执行：`C:\home\chenkunze\slns\codeyun`
 - Python 命令优先使用 `uv run`
 - 启动开发环境统一使用：`uv run dev.py`
 - 运行测试统一使用：`uv run pytest`
 - 临时 Python 命令统一使用：`uv run python ...`
+- 安装前端依赖：`npm install --prefix frontend`
+- 单独启动前端：`npm run dev --prefix frontend`
+- 仅在 `uv` 不可用时，Windows 使用 `.\.venv\Scripts\python.exe dev.py`；不要依赖全局 Python 或其他项目的虚拟环境。
+- `https://code4101.com` 是本机 CodeYun 经内网穿透暴露的公网入口（回源 `localhost`），不是独立公网实例；若它与临时 Python 进程读取结果不一致，先核对运行环境与 `CODEYUN_DATA_DIR`，不要据 DNS 或临时数据库判断为双实例。
 
 ## 临时产物约定（重要）
 
 - 源码目录只放源码、测试、文档、配置样例和明确要版本管理的静态资产。
 - 调试截图、OCR 裁剪图、抓包片段、探针 JSON、临时 DB、服务 stdout/stderr 日志、一次性脚本输出等临时产物，统一写到系统临时目录，不要写到仓库根目录或源码子目录。
 - Python 代码优先使用 `backend.core.temp_paths.codeyun_temp_root(...)`；一次性 PowerShell 使用 `$env:TEMP\codeyun\...`。
+- 创建数据库克隆、磁盘副本等大体积临时产物前先评估占用；测试结束后必须立即停止相关进程、删除临时副本并复核磁盘空间。若清理失败，当场报告精确路径与占用，不得把 C 盘临时数据留待以后处理。
 - `.codex_tmp/` 是历史遗留目录，不再新建或继续使用；需要保留结论时写入文档摘要，不把大体积原始证据放进仓库。
 - 详细规则见：`docs/operations/runbooks/临时测试产物目录约定.md`。
 
@@ -24,31 +35,6 @@
 - 未完成计划、探索记录、自动化增量上下文和历史材料分别放入 `plans/`、`research/`、`context/`、`archive/`，不得覆盖权威正文。
 - 移动文档后必须同步修复 `AGENTS.md`、源码注释、测试和 Markdown 内部链接中的路径引用。
 
-## 兜底方案
-
-- 仅在 `uv` 不可用时，Windows 使用：
-  - `.\.venv\Scripts\python.exe dev.py`
-- 不要依赖全局 `python` 或其他项目的虚拟环境
-
-## 前端命令
-
-- 安装依赖：`npm install --prefix frontend`
-- 单独启动前端：`npm run dev --prefix frontend`
-
-## 前端页面/菜单挂载约定（重要）
-
-- `frontend/src/standard/**/index.ts` 只负责注册页面路由，不会自动把页面加到侧边栏菜单。
-- 如果新增页面需要在左侧导航里可见，至少要同步检查这几层：
-  - `frontend/src/standard/**/index.ts`：页面路由定义
-  - `frontend/src/features/access/permissionRegistry.json`：补 `route_paths`，需要作为菜单点击项时还要补 `menu_paths`
-  - `frontend/src/layout/MainLayout.vue`：侧边栏菜单是手写结构，必须显式加 `el-menu-item` 或 `el-sub-menu`
-- 如果是“某页面下的新子页面”，不要只复用父页面 `menuPath` 就结束；要先判断用户是否需要在侧边栏直接看到这个子项。
-- 对带子菜单的场景，还要同步检查 `MainLayout.vue` 里的：
-  - 路径常量和标题常量
-  - `*MenuVisible` 之类的显示条件
-  - `defaultOpeneds` 里的默认展开逻辑
-  - 必要时的 submenu 标题点击跳转入口
-
 ## API 与 Agent 责任分层（强约束）
 
 - Skill 和项目文档只说明能力、稳定业务边界、公共 API/CLI 入口与验收，不复制请求参数表或服务端内部工作流。
@@ -57,106 +43,24 @@
 - 公共接口无法直接表达业务意图时，修复或新增高层 API 并补测试；不要把缺口固化成 skill/doc 中的 Agent 操作手册。
 - 历史事故、探针和迁移过程放 `archive/`、`research/`、`context/` 或测试；不得回流为长期调用流程。
 
-## 作业管理约定（重要）
+## 架构与领域路由
 
-- 用户要求“加作业”时，优先理解为给 CodeYun 增加一个可选的作业类型能力，而不是直接给当前机器创建已启用的定时实例。
-- 作业类型、执行逻辑、默认说明可以随代码提交；具体是否加入清单、是否启用、定时策略和下次触发时间属于本地数据库配置。
-- 新增的专用作业类型默认不要出现在运行清单里，应通过“作业 +”的类型目录让用户按需添加。
-- 这样新机器部署 CodeYun 时保持干净清爽，不继承当前机器的一堆个人作业和触发时间。
+| 任务范围 | 入口 |
+| --- | --- |
+| 全库架构与模块地图 | `docs/AI_CONTEXT.md` |
+| 文档层级与全部业务域 | `docs/README.md` |
+| 前端交互、页面与菜单挂载 | `docs/platform/conventions/前端交互约定.md` |
+| 资源保存、并发更新和派生缓存 | `docs/platform/conventions/资源保存与并发更新约定.md` |
+| 作业、服务与本机实例 | `docs/platform/architecture/作业与服务架构.md` |
+| 本地启动、部署与排障 | `docs/operations/runbooks/CodeYun本地开发与部署排障.md` |
+| 考勤 | `docs/domains/attendance/README.md` |
+| 凡修 | `docs/domains/fanxiu/README.md` |
+| 星图笔记 | `docs/domains/notes/README.md` |
+| 星云表格 | `docs/domains/spreadsheets/README.md` |
+| DSP 静态资源同步 | `docs/domains/integrations/guides/DSP静态资源同步.md` |
 
-## 凡修 Kernel / Cell 约定（强约束）
+领域文档中的当前架构和强约束只在相关任务中生效；根文件负责把 Agent 引导到正确入口，不把领域规则提升为全库规则。
 
-- 凡修只有一个长期存活的真实 Jupyter/Python Kernel；Kernel 启动后加载 runtime、ctx、OCR、ADB、shape、scene、tasks、guards 等行为树能力。
-- 外部唯一执行原语是 Cell：调试、单步和正式任务都提交普通 Python Cell；`kernel.task(...)` 只能构造包含 `run_task(...)` 的 Cell，不能形成第二协议或第二执行器。
-- Scheduler/Dispatch Arbiter 位于 Kernel 外，负责触发时间、优先级、重试及模拟器资源仲裁；Kernel 内禁止 manual queue、来源锁、Scheduler 轮询和跨 restart 重放。
-- 用户说“发一个 cell”时，直接从已有业务代码抽取最小片段提交当前 Kernel；不得新增调试 API、注册临时作业或写内部队列。
-- `interrupt` 只停止当前 Cell并保留 namespace；`restart` 替换 Kernel、清空变量并重新加载凡修框架；`shutdown` 终止 Kernel。三者不得混用。
-
-## 凡修资产树标注保护（强约束）
-
-- 凡修已有资产树标注默认只读。AI 可以读取、匹配、诊断、截图、计算分数和提出修改候选，但不得自行改动已有 scene、shape 或识别关系。
-- 禁止未经用户明确授权修改已有标注的坐标、尺寸、标题、场景身份、匹配角色、阈值、OCR 条件、mask、父子/继承关系、`sceneJumpTarget` 或资产树目录结构；也不得以“修复识别”“补全流程”“提高成功率”为由顺手改标。
-- 用户必须明确点名允许修改的具体 scene/shape 或字段后，AI 才能写入；授权只覆盖当次点名范围，不得扩展到相邻标注或批量整理。
-- 获得授权后，修改前先保存当前真实帧和原标注摘要，修改后用同一目标做真实检测，并报告实际变更字段。未获授权时，新发现只写系统临时目录中的诊断证据或人工确认候选，不写正式资产树。
-
-## 部署运维约定（重要）
-
-- 仓库内的 GitHub Actions 自动部署链路已于 `2026-04-16` 移除，不要再假设 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh` 仍然存在。
-- 如需恢复旧方案，唯一参考文档是：`docs/archive/自动部署恢复档案.md`。
-- 当前服务器历史口径仍是系统级 `systemd` 服务 `codeyun-backend`，不是 `systemctl --user`；但相关模板文件已从仓库移除。
-- 服务器运行时 `.env` 只负责应用配置，不负责存 SSH 登录信息。
-- `CODEYUN_DATA_DIR` 是可选项；如果不配置，后端默认使用仓库外的数据工作区
-  `D:\home\chenkunze\data\m2603codeyun\codepc_<本机名>`，不要再回落到 `backend/data/`。
-
-## DSP 静态同步约定
-
-- 戴森球静态资源统一使用：`uv run python scripts/build_dsp_static.py`
-- 该脚本现在是幂等的：
-  - 若 `dsp-calc` 源码内容未变化，则快速跳过，不重复 `npm install / build / copy`
-  - 若源码或依赖清单变化，则自动重新构建并替换 `frontend/public/dsp-calc`
-- 脚本本地状态存放在 `frontend/.codeyun-state/`，该目录已加入 `.gitignore`
-- 需要忽略缓存强制重建时，使用：`uv run python scripts/build_dsp_static.py --force`
-
-## dev.py 调试策略（重要）
-
-- `dev.py` 是长驻进程，终端/工具超时不等于启动失败。
-- 当命令超时时，先检查是否已成功启动，而不是立即判定失败：
-  - `netstat -ano | Select-String ':8000|:5173'`
-  - `Get-Process python,node,uv -ErrorAction SilentlyContinue | Select-Object Id,ProcessName,Path`
-  - 不要用 `Get-CimInstance Win32_Process` / `Get-WmiObject` 扫进程命令行；WMI 异常时会推高 `svchost.exe / Winmgmt` 的提交内存。
-- 重复调试前先清理残留进程，避免多开导致端口冲突或日志混淆：
-  - `python.exe / node.exe / cmd.exe` 中命令行包含 `dev.py`、`uvicorn`、`vite` 的进程都应清理。
-- 为了稳定抓错误，优先使用“后台启动 + 分离 stdout/stderr 日志”方式，不依赖前台交互输出。
-- 成功判据：
-  - 前端日志出现 `VITE ... ready`
-  - 后端日志出现 `Application startup complete`
-- 失败排查顺序：
-  1. `uv sync`（确保依赖与锁文件一致）
-  2. 看后端错误日志（通常是导入/依赖问题）
-  3. 看端口占用与重复进程
-
-## 星图笔记筛选约定（重要）
-
-- 星图笔记里的“筛选”不是传统 `where` 条件拼接，而是受 `pyxllib/file/walker.py` 启发的一套“有序规则链”。
-- 规则按顺序执行，后面的 `include / exclude` 可以覆盖前面的结果；理解时不要把它当成静态布尔表达式。
-- 当前产品把同一套规则模型分成两层执行：
-  - `后端筛选`：跑在后端完整候选集上，决定当前 tab 从后端加载哪些节点/边。
-  - `前端筛选`：跑在当前已加载结果上，规则结构与后端一致，只影响当前视图的实时渲染。
-- 这两层不是两套不同语义，而是同一套规则程序在不同执行层运行；开发时优先保持 schema 和行为对称。
-
-### 核心心智
-
-- 后端筛选负责“加载哪些数据”。
-- 前端筛选负责“已加载数据现在怎么显示”。
-- 两层执行顺序固定：
-  1. 先运行后端筛选，得到当前 tab 的结果集。
-  2. 再运行前端筛选，得到当前视图的可见结果。
-
-### 当前实现约定
-
-- 后端统一接口优先使用 `/api/notes/query-program`。
-- `noteStore` 负责共享实体缓存；每个 tab 自己持有 `dataProgram / viewProgram / currentMonth` 这类视图状态。
-- 列表、全局星系：
-  - 都有 `后端筛选` 和 `前端筛选`
-  - 后端筛选需要显式点击“执行”后才生效并保存
-  - 前端筛选修改后立即生效并立即保存
-- 日历：
-  - `后端筛选` 不给用户直接编辑规则链
-  - 它由当前月视图的整块可见网格日期范围自动生成
-  - 注意这里不是自然月，而是包含月头/月尾补出来的上月末、下月初日期
-  - `前端筛选` 仍是通用规则链，默认 `包含全部节点`
-- 行星图 / 卫星图 / 临时图 tab：
-  - 默认不要强行套用全局星系那套筛选栏
-  - 是否接入通用筛选，要看具体产品语义
-
-### 开发判断原则
-
-- 会改变结果集边界、加载量、分页、后端遍历范围的，放后端筛选。
-- 只影响当前已加载结果可见性、排序、局部隐藏、即时重绘反馈的，放前端筛选。
-- 如果一个条件理论上两层都能做：
-  - 影响“加载哪些数据”的版本放后端
-  - 影响“当前怎么显示”的版本放前端
-- 不要再回到“每个视图自己发明一套筛选语义”的旧模式；允许不同视图有不同 UI，但底层规则模型要尽量统一。
 ## 文件删除安全边界（强约束）
 
 - 禁止对仓库根、工作区根、`.git`、包含 Git 仓库的父目录执行递归删除或移动。

@@ -1,9 +1,8 @@
 import datetime as dt
-from pathlib import Path
 from types import SimpleNamespace
 
 from backend.core.attendance.course_completion import (
-    default_kqmain_path,
+    _is_completable_course,
     enqueue_attendance_course_completion_job,
     run_attendance_course_completion_job,
 )
@@ -29,19 +28,15 @@ def test_attendance_course_completion_submits_local_job_once(monkeypatch) -> Non
     assert submitted == [{"job_type": "attendance.course-completion", "payload": {}}]
 
 
-def test_default_kqmain_path_prefers_attendance_service_project_root(monkeypatch):
-    monkeypatch.setattr("backend.core.settings.get_settings", lambda: type("S", (), {"kqmain_path": ""})())
-    monkeypatch.setattr(
-        "backend.core.attendance_behavior_tree_service.get_attendance_project_root",
-        lambda: Path(r"C:\home\chenkunze\slns\xlproject\src\xlsln\kq5034"),
-    )
-
-    path = default_kqmain_path()
-
-    assert path == Path(r"C:\home\chenkunze\slns\xlproject\src\xlsln\kq5034\kqmain.py")
+def test_attendance_course_completion_scope_excludes_zen_and_challenge():
+    assert _is_completable_course("念住", "第43届念住") is True
+    assert _is_completable_course("觉观", "第49届觉观") is True
+    assert _is_completable_course("梵呗初阶", "20260809梵呗初阶") is True
+    assert _is_completable_course("禅宗一阶", "修道班13期1阶") is False
+    assert _is_completable_course("念住闯关", "20250106念住闯关") is False
 
 
-def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(session, tmp_path: Path, monkeypatch):
+def test_attendance_course_completion_archives_due_rows(session, monkeypatch):
     def serial(year: int, month: int, day: int) -> int:
         return (dt.date(year, month, day) - dt.date(1970, 1, 1)).days + 25569
 
@@ -131,26 +126,10 @@ def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(sessi
         lambda *args, **kwargs: {"rows": 0, "updated_rows": 0, "updated_cells": 0, "styled_cells": 0},
     )
 
-    kqmain_path = tmp_path / "kqmain.py"
-    kqmain_path.write_text(
-        "\n".join(
-            [
-                "觉观念住类型 = [",
-                '    "d260601第41届念住",',
-                '    "d260601第47届觉观",',
-                '    "d260701第42届念住",',
-                "]",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
     result = run_attendance_course_completion_job(
         session,
         today=dt.date(2026, 6, 28),
         sheet_id=404,
-        kqmain_path=kqmain_path,
     )
     session.commit()
 
@@ -159,8 +138,7 @@ def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(sessi
     assert result["skipped_courses"][0]["course_type"] == "梵呗初阶"
     assert result["skipped_courses"][0]["reason"] == "在线考勤表不是本地工作簿链接"
     assert result["sheet_changed"] is True
-    assert result["kqmain"]["removed"] == ["d260601第41届念住", "d260601第47届觉观"]
-    assert "d260701第42届念住" in kqmain_path.read_text(encoding="utf-8")
+    assert "kqmain" not in result
 
     session.refresh(sheet)
     next_rows = sheet.document_json["rows"]
@@ -187,13 +165,11 @@ def test_attendance_course_completion_archives_due_rows_and_updates_kqmain(sessi
         session,
         today=dt.date(2026, 6, 28),
         sheet_id=404,
-        kqmain_path=kqmain_path,
     )
     assert second_result["archived_count"] == 0
-    assert second_result["kqmain"]["changed"] is False
 
 
-def test_attendance_course_completion_archives_due_fanbei_course(session, tmp_path: Path, monkeypatch):
+def test_attendance_course_completion_archives_due_fanbei_course(session, monkeypatch):
     def serial(year: int, month: int, day: int) -> int:
         return (dt.date(year, month, day) - dt.date(1970, 1, 1)).days + 25569
 
@@ -286,7 +262,6 @@ def test_attendance_course_completion_archives_due_fanbei_course(session, tmp_pa
         session,
         today=dt.date(2026, 6, 30),
         sheet_id=405,
-        kqmain_path=tmp_path / "missing_kqmain.py",
     )
     session.commit()
 

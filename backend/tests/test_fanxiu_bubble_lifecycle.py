@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks import bubble_lifecycle as lifecycle
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     consolidate_arena_scheduler_instances,
 )
 
@@ -99,7 +99,7 @@ class _Runner(lifecycle.BubbleLifecycleTaskMixin):
     def _bubble_lifecycle_world_facts_path(self):
         return self.facts_path
 
-    def _fanxiu_runtime(self, *_args, **_kwargs):
+    def _behavior_tree_context(self, *_args, **_kwargs):
         return self.runtime
 
     def _execute_bubble_claim_pills_task(self, _ctx, _stop, _payload):

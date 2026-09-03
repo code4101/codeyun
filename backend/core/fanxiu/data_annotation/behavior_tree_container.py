@@ -19,7 +19,7 @@ from pyxllib.prog import (
 
 
 @dataclass(frozen=True)
-class BehaviorTreeRuntimeGroupSpec:
+class BehaviorTreeGroupSpec:
     group_id: str
     label: str
     priority: int
@@ -27,7 +27,7 @@ class BehaviorTreeRuntimeGroupSpec:
 
 
 @dataclass(frozen=True)
-class BehaviorTreeRuntimeNodeSpec:
+class BehaviorTreeNodeSpec:
     node_id: str
     group_id: str
     label: str
@@ -35,52 +35,52 @@ class BehaviorTreeRuntimeNodeSpec:
     enabled: bool
 
 
-class BehaviorTreeRuntimeContainer:
-    """Builds the dynamic data-annotation runtime tree from backend-owned config."""
+class BehaviorTreeContainer:
+    """Builds the dynamic data-annotation context tree from backend-owned config."""
 
     group_definitions = (
-        BehaviorTreeRuntimeGroupSpec("guard", "守护", 10, preempt_same_group=False),
-        BehaviorTreeRuntimeGroupSpec("job", "作业", 100, preempt_same_group=False),
+        BehaviorTreeGroupSpec("guard", "守护", 10, preempt_same_group=False),
+        BehaviorTreeGroupSpec("job", "作业", 100, preempt_same_group=False),
     )
 
     def __init__(
         self,
         owner: Any,
         *,
-        runtime_ctx: dict[str, Any],
+        execution_ctx: dict[str, Any],
         asset_tree_path: Path,
         stop_event: threading.Event,
         guard_override: bool | None = None,
     ) -> None:
         self.owner = owner
-        self.runtime_ctx = runtime_ctx
+        self.execution_ctx = execution_ctx
         self.asset_tree_path = asset_tree_path
         self.stop_event = stop_event
         self.guard_override = guard_override
 
-    def group_specs(self) -> list[BehaviorTreeRuntimeGroupSpec]:
+    def group_specs(self) -> list[BehaviorTreeGroupSpec]:
         return sorted(self.group_definitions, key=lambda item: item.priority)
 
-    def guard_specs(self) -> list[BehaviorTreeRuntimeNodeSpec]:
+    def guard_specs(self) -> list[BehaviorTreeNodeSpec]:
         return [
-            BehaviorTreeRuntimeNodeSpec(
+            BehaviorTreeNodeSpec(
                 node_id=guard_id,
                 group_id="guard",
                 label=str(definition.get("label") or guard_id),
                 priority=int(definition.get("priority") or 100),
-                enabled=self._guard_enabled(guard_id),
+                enabled=self._is_guard_enabled(guard_id),
             )
             for guard_id, definition in self.owner.guard_definitions.items()
         ]
 
-    def _guard_enabled(self, guard_id: str) -> bool:
+    def _is_guard_enabled(self, guard_id: str) -> bool:
         if self.guard_override is False:
             return False
         if self.guard_override is True:
-            item_enabled = getattr(self.owner, "_runtime_guard_item_enabled", None)
+            item_enabled = getattr(self.owner, "_guard_item_enabled", None)
             if callable(item_enabled):
                 return bool(item_enabled(guard_id))
-        return bool(self.owner._runtime_guard_enabled(guard_id))
+        return bool(self.owner._is_guard_enabled(guard_id))
 
     def guard_nodes(self) -> list[Node]:
         return [
@@ -94,9 +94,9 @@ class BehaviorTreeRuntimeContainer:
 
     def _run_guard_service(self, guard_id: str):
         while True:
-            status = self.owner._runtime_guard_service_tick(
+            status = self.owner._guard_service_tick(
                 guard_id,
-                self.runtime_ctx,
+                self.execution_ctx,
                 self.asset_tree_path,
                 self.stop_event,
                 allow_during_task=True,
@@ -131,7 +131,7 @@ class BehaviorTreeRuntimeContainer:
         action: Callable[[], Any],
         label: str,
         tick_seconds: float = 1.0,
-        max_runtime_seconds: float | None = None,
+        max_execution_seconds: float | None = None,
     ) -> Any:
         result_holder: dict[str, Any] = {}
         started_at = time.monotonic()
@@ -142,9 +142,9 @@ class BehaviorTreeRuntimeContainer:
         )
         while True:
             self.owner._raise_if_stopped(self.stop_event)
-            if max_runtime_seconds is not None and time.monotonic() - started_at > max_runtime_seconds:
+            if max_execution_seconds is not None and time.monotonic() - started_at > max_execution_seconds:
                 self.stop_event.set()
-                raise RuntimeError(f"行为树任务超时：{label} 超过 {max_runtime_seconds:.0f} 秒")
+                raise RuntimeError(f"行为树任务超时：{label} 超过 {max_execution_seconds:.0f} 秒")
             tick_started_at = time.monotonic()
             status = runner.run_once()
             tick_elapsed = time.monotonic() - tick_started_at

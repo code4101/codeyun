@@ -162,7 +162,7 @@ def slider_fraction(*, quantity: int, owned_count: int) -> float:
 
 
 def _wait_scene(
-    runtime: Any,
+    context: Any,
     targets: tuple[int, ...],
     *,
     timeout_seconds: float = 20.0,
@@ -172,7 +172,7 @@ def _wait_scene(
     last_score = 0.0
     last_frame = ""
     while time.monotonic() < deadline:
-        last_scene, last_score, last_frame = runtime.current_scene(list(targets), update=True)
+        last_scene, last_score, last_frame = context.current_scene(list(targets), update=True)
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_frame
         time.sleep(0.25)
@@ -181,9 +181,9 @@ def _wait_scene(
     )
 
 
-def _shape_text(runtime: Any, scene_id: int, shape_title: str) -> str:
-    frame = runtime.cur_frame(update=True)
-    fragments = runtime.ocr_fragments_in_shapes(
+def _shape_text(context: Any, scene_id: int, shape_title: str) -> str:
+    frame = context.cur_frame(update=True)
+    fragments = context.ocr_fragments_in_shapes(
         scene_id,
         (shape_title,),
         frame_data_url=frame,
@@ -193,7 +193,7 @@ def _shape_text(runtime: Any, scene_id: int, shape_title: str) -> str:
     return " ".join(str(item.get("text") or "") for item in fragments).strip()
 
 
-def _wait_magic_invasion_map_entry_settle(runtime: Any) -> tuple[int, float, str]:
+def _wait_magic_invasion_map_entry_settle(context: Any) -> tuple[int, float, str]:
     """Wait through the passive entry animation until the map is stable."""
 
     observed_targets = (
@@ -209,7 +209,7 @@ def _wait_magic_invasion_map_entry_settle(runtime: Any) -> tuple[int, float, str
     last_frame = ""
     last_state = "unknown"
     while time.monotonic() < deadline:
-        scene, score, frame = runtime.current_scene(list(observed_targets), update=True)
+        scene, score, frame = context.current_scene(list(observed_targets), update=True)
         last_scene = int(scene) if scene is not None else None
         last_score = float(score or 0.0)
         last_frame = frame
@@ -244,12 +244,12 @@ def _wait_magic_invasion_map_entry_settle(runtime: Any) -> tuple[int, float, str
     )
 
 
-def _enter_magic_invasion_map(runtime: Any) -> None:
+def _enter_magic_invasion_map(context: Any) -> None:
     """Enter the map while explicitly consuming the Magic-specific confirm layer."""
 
-    runtime.click_shape(MAGIC_INVASION_MAIN_SCENE_ID, "前往大地图")
+    context.click_shape(MAGIC_INVASION_MAIN_SCENE_ID, "前往大地图")
     scene, _score, _frame = _wait_scene(
-        runtime,
+        context,
         (
             MAGIC_INVASION_MAP_SCENE_ID,
             MAGIC_INVASION_MAP_ENTRY_CONFIRM_SCENE_ID,
@@ -260,29 +260,29 @@ def _enter_magic_invasion_map(runtime: Any) -> None:
         timeout_seconds=30.0,
     )
     if scene == MAGIC_INVASION_MAP_ENTRY_CONFIRM_SCENE_ID:
-        runtime.click_shape(MAGIC_INVASION_MAP_ENTRY_CONFIRM_SCENE_ID, "确认")
-        scene, _score, _frame = _wait_magic_invasion_map_entry_settle(runtime)
+        context.click_shape(MAGIC_INVASION_MAP_ENTRY_CONFIRM_SCENE_ID, "确认")
+        scene, _score, _frame = _wait_magic_invasion_map_entry_settle(context)
     elif scene in {
         MAGIC_INVASION_TASK_DEMON_SCENE_ID,
         MAGIC_INVASION_TASK_CULTIVATION_SCENE_ID,
     }:
         raise RuntimeError(f"魔道入侵入口误落任务页 #{scene}，拒绝继续进入大地图")
     elif scene != MAGIC_INVASION_MAP_SCENE_ID:
-        _wait_magic_invasion_map_entry_settle(runtime)
+        _wait_magic_invasion_map_entry_settle(context)
 
 
-def _leave_magic_invasion_map(runtime: Any) -> None:
+def _leave_magic_invasion_map(context: Any) -> None:
     """Leave the sandbox without confusing the map-entry confirmation for an exit."""
 
-    runtime.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "地图返回")
+    context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "地图返回")
     scene, _score, _frame = _wait_scene(
-        runtime,
+        context,
         (34, MAGIC_INVASION_MAIN_SCENE_ID),
         timeout_seconds=15.0,
     )
     if scene == MAGIC_INVASION_MAIN_SCENE_ID:
-        runtime.click_shape_center(MAGIC_INVASION_MAIN_SCENE_ID, "返回")
-        _wait_scene(runtime, (34,), timeout_seconds=15.0)
+        context.click_shape_center(MAGIC_INVASION_MAIN_SCENE_ID, "返回")
+        _wait_scene(context, (34,), timeout_seconds=15.0)
 
 
 def _magic_occurrence_checkpoint(
@@ -298,7 +298,7 @@ def _magic_occurrence_checkpoint(
     business_date = datetime.now().astimezone(start_at.tzinfo).date()
     return RankingCheckpoint(
         instance_key=(
-            f"runtime:{occurrence.occurrence_id}:activity:{occurrence.activity_id}:"
+            f"context:{occurrence.occurrence_id}:activity:{occurrence.activity_id}:"
             f"{start_at.isoformat(timespec='seconds')}:"
             f"{end_at.isoformat(timespec='seconds')}"
         ),
@@ -382,8 +382,8 @@ def load_magic_invasion_occurrence_progress(
     }
 
 
-def _configure_use_quantity(runtime: Any, *, quantity: int) -> Iterator[Any]:
-    owned = parse_owned_item_count(_shape_text(runtime, MAGIC_INVASION_USE_SCENE_ID, "持有数量"))
+def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
+    owned = parse_owned_item_count(_shape_text(context, MAGIC_INVASION_USE_SCENE_ID, "持有数量"))
     if quantity > owned:
         raise RuntimeError(f"天眼符不足：需要 {quantity}，持有 {owned}")
     assets = IntegerSliderAssets(
@@ -397,7 +397,7 @@ def _configure_use_quantity(runtime: Any, *, quantity: int) -> Iterator[Any]:
         count_slider_right_anchor="数量滑轨右端",
     )
     calibration = yield from _set_verified_slider_count(
-        runtime,
+        context,
         assets,
         int(quantity),
         max_adjustments=10,
@@ -419,7 +419,7 @@ def _configure_use_quantity(runtime: Any, *, quantity: int) -> Iterator[Any]:
     }
 
 
-def _prepare_top_up_to_batch(runtime: Any, *, available_count: int) -> Iterator[Any]:
+def _prepare_top_up_to_batch(context: Any, *, available_count: int) -> Iterator[Any]:
     """Prepare the Tianyan use dialog without committing the use action."""
 
     topup = MAGIC_INVASION_EXPLORE_BATCH_SIZE - int(available_count)
@@ -427,38 +427,38 @@ def _prepare_top_up_to_batch(runtime: Any, *, available_count: int) -> Iterator[
         raise RuntimeError(f"魔道入侵可用探查次数越界：{available_count}>500")
     if topup == 0:
         return {"requested_topup": 0, "selected_count": 0}
-    runtime.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "补充探查次数")
-    _wait_scene(runtime, (MAGIC_INVASION_ITEM_SCENE_ID,))
-    runtime.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "天眼符条目")
-    _wait_scene(runtime, (MAGIC_INVASION_USE_SCENE_ID,))
-    calibration = yield from _configure_use_quantity(runtime, quantity=topup)
+    context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "补充探查次数")
+    _wait_scene(context, (MAGIC_INVASION_ITEM_SCENE_ID,))
+    context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "天眼符条目")
+    _wait_scene(context, (MAGIC_INVASION_USE_SCENE_ID,))
+    calibration = yield from _configure_use_quantity(context, quantity=topup)
     return {"requested_topup": topup, **dict(calibration or {})}
 
 
-def _commit_prepared_top_up(runtime: Any) -> int:
+def _commit_prepared_top_up(context: Any) -> int:
     """Commit an already prepared use dialog and return the authoritative map count."""
 
-    runtime.click_shape_center(MAGIC_INVASION_USE_SCENE_ID, "使用")
-    _wait_scene(runtime, (MAGIC_INVASION_ITEM_SCENE_ID,))
-    runtime.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
-    _wait_scene(runtime, (MAGIC_INVASION_MAP_SCENE_ID,))
+    context.click_shape_center(MAGIC_INVASION_USE_SCENE_ID, "使用")
+    _wait_scene(context, (MAGIC_INVASION_ITEM_SCENE_ID,))
+    context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
+    _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
     verified = parse_available_explore_count(
-        _shape_text(runtime, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+        _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
     )
     if verified != MAGIC_INVASION_EXPLORE_BATCH_SIZE:
         raise RuntimeError(f"魔道入侵补充后不是精确 500 次：{verified}")
     return verified
 
 
-def _top_up_to_batch(runtime: Any, *, available_count: int) -> Iterator[Any]:
+def _top_up_to_batch(context: Any, *, available_count: int) -> Iterator[Any]:
     """Compatibility wrapper for callers that do not need transaction arming."""
 
     evidence = yield from _prepare_top_up_to_batch(
-        runtime, available_count=available_count
+        context, available_count=available_count
     )
     requested = int(evidence["requested_topup"])
     verified = (
-        _commit_prepared_top_up(runtime)
+        _commit_prepared_top_up(context)
         if requested
         else int(available_count)
     )
@@ -566,7 +566,7 @@ def execute_magic_invasion_explore_job(
     stop_event: threading.Event,
     *,
     manage_schedule: bool = False,
-    prepared_runtime: Any | None = None,
+    prepared_context: Any | None = None,
     prepared_schedule: Mapping[str, Any] | None = None,
     already_on_main_scene: bool = False,
     already_on_map_scene: bool = False,
@@ -626,32 +626,32 @@ def execute_magic_invasion_explore_job(
             "progress": progress,
         }
 
-    runtime = prepared_runtime or runner._fanxiu_runtime(ctx, stop_event=stop_event)
+    context = prepared_context or runner._behavior_tree_context(ctx, stop_event=stop_event)
     phase = str(progress["state"])
     if phase in {"ready", "confirmed"}:
         if already_on_map_scene:
-            _wait_scene(runtime, (MAGIC_INVASION_MAP_SCENE_ID,), timeout_seconds=15.0)
+            _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,), timeout_seconds=15.0)
         else:
             if already_on_main_scene:
-                _wait_scene(runtime, (MAGIC_INVASION_MAIN_SCENE_ID,), timeout_seconds=15.0)
+                _wait_scene(context, (MAGIC_INVASION_MAIN_SCENE_ID,), timeout_seconds=15.0)
             else:
-                yield from runtime.goto_view(66)
+                yield from context.go_scene(66)
                 yield from select_schedule_activity(
-                    runtime,
+                    context,
                     r"魔道入侵",
                     enter=True,
                     runtime_schedule=schedule,
                     require_runtime_alignment=True,
                     now=now,
                 )
-                _wait_scene(runtime, (MAGIC_INVASION_MAIN_SCENE_ID,), timeout_seconds=30.0)
-            _enter_magic_invasion_map(runtime)
+                _wait_scene(context, (MAGIC_INVASION_MAIN_SCENE_ID,), timeout_seconds=30.0)
+            _enter_magic_invasion_map(context)
 
     def ensure_fast_explore_enabled() -> Iterator[Any]:
-        if runtime.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is None:
-            runtime.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开关")
-            yield from runtime.wait_action_settle(0.5)
-            if runtime.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is None:
+        if context.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is None:
+            context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开关")
+            yield from context.wait_action_settle(0.5)
+            if context.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is None:
                 raise RuntimeError("魔道入侵快速探索开关未进入开启态")
 
     while len(confirmed) < target_batches:
@@ -665,12 +665,12 @@ def execute_magic_invasion_explore_job(
         if phase in {"ready", "confirmed"}:
             yield from ensure_fast_explore_enabled()
             available_count = parse_available_explore_count(
-                _shape_text(runtime, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
             )
             tianyan_before = _read_tianyan_inventory()
             task_before = _compact_task_snapshot(occurrence.activity_id)
             prepared = yield from _prepare_top_up_to_batch(
-                runtime, available_count=available_count
+                context, available_count=available_count
             )
             evidence = {
                 "base_explore_before": base_explore_before,
@@ -687,7 +687,7 @@ def execute_magic_invasion_explore_job(
                     "transaction_evidence": evidence,
                 })
                 _set_progress(occurrence, progress)
-                verified_topup = _commit_prepared_top_up(runtime)
+                verified_topup = _commit_prepared_top_up(context)
             else:
                 verified_topup = available_count
         elif phase == "use_armed":
@@ -706,19 +706,19 @@ def execute_magic_invasion_explore_job(
                     f"预期扣减 {requested_topup}，实际扣减 {actual_topup}"
                 )
             scene, _score, _frame = _wait_scene(
-                runtime,
+                context,
                 (MAGIC_INVASION_ITEM_SCENE_ID, MAGIC_INVASION_MAP_SCENE_ID),
                 timeout_seconds=15.0,
             )
             if scene == MAGIC_INVASION_ITEM_SCENE_ID:
-                runtime.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
-                _wait_scene(runtime, (MAGIC_INVASION_MAP_SCENE_ID,))
+                context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
+                _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
             verified_topup = parse_available_explore_count(
-                _shape_text(runtime, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
             )
         elif phase == "topup_confirmed":
             verified_topup = parse_available_explore_count(
-                _shape_text(runtime, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
             )
         else:
             verified_topup = MAGIC_INVASION_EXPLORE_BATCH_SIZE
@@ -763,13 +763,13 @@ def execute_magic_invasion_explore_job(
                 raise RuntimeError("魔道入侵 topup_confirmed 地图已不再是 500，拒绝探查")
             progress["state"] = "explore_armed"
             _set_progress(occurrence, progress)
-            runtime.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "探查")
+            context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "探查")
             phase = "explore_armed"
 
         result_full_text = ""
         if phase == "explore_armed":
             scene, _score, _frame = _wait_scene(
-                runtime,
+                context,
                 (
                     MAGIC_INVASION_RESULT_SCENE_ID,
                     MAGIC_INVASION_OVERFLOW_SCENE_ID,
@@ -779,12 +779,12 @@ def execute_magic_invasion_explore_job(
                 timeout_seconds=30.0,
             )
             if scene == MAGIC_INVASION_OVERFLOW_SCENE_ID:
-                runtime.click_shape_center(MAGIC_INVASION_OVERFLOW_SCENE_ID, "确认覆盖")
-                _wait_scene(runtime, (MAGIC_INVASION_RESULT_SCENE_ID,), timeout_seconds=30.0)
+                context.click_shape_center(MAGIC_INVASION_OVERFLOW_SCENE_ID, "确认覆盖")
+                _wait_scene(context, (MAGIC_INVASION_RESULT_SCENE_ID,), timeout_seconds=30.0)
                 scene = MAGIC_INVASION_RESULT_SCENE_ID
             if scene == MAGIC_INVASION_RESULT_SCENE_ID:
-                result_frame = runtime.cur_frame(update=True)
-                result_text = _shape_text(runtime, MAGIC_INVASION_RESULT_SCENE_ID, "探索次数结果")
+                result_frame = context.cur_frame(update=True)
+                result_text = _shape_text(context, MAGIC_INVASION_RESULT_SCENE_ID, "探索次数结果")
                 match = re.search(r"快速探索\s*(\d+)\s*次", result_text)
                 if match is None:
                     raise RuntimeError(f"魔道入侵结果没有探索次数证据：{result_text!r}")
@@ -793,15 +793,15 @@ def execute_magic_invasion_explore_job(
                     raise RuntimeError(
                         f"魔道入侵第 {batch_index} 批结果不是精确 500 次：{result_explore_count}"
                     )
-                result_full_text = runtime.ocr_text(result_frame)
+                result_full_text = context.ocr_text(result_frame)
                 result_source = "result_page"
                 task_after: dict[str, Any] = {}
             else:
                 if scene == MAGIC_INVASION_EVENT_SCENE_ID:
-                    runtime.click_shape(MAGIC_INVASION_EVENT_SCENE_ID, "稍后处理")
-                    _wait_scene(runtime, (MAGIC_INVASION_MAP_SCENE_ID,))
+                    context.click_shape(MAGIC_INVASION_EVENT_SCENE_ID, "稍后处理")
+                    _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
                 available_after = parse_available_explore_count(
-                    _shape_text(runtime, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+                    _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
                 )
                 if available_after != 0:
                     raise RuntimeError(
@@ -825,7 +825,7 @@ def execute_magic_invasion_explore_job(
 
         if phase == "result_observed":
             scene, _score, _frame = _wait_scene(
-                runtime,
+                context,
                 (
                     MAGIC_INVASION_RESULT_SCENE_ID,
                     MAGIC_INVASION_MAP_SCENE_ID,
@@ -834,17 +834,17 @@ def execute_magic_invasion_explore_job(
                 timeout_seconds=30.0,
             )
             if scene == MAGIC_INVASION_RESULT_SCENE_ID:
-                runtime.click_shape(MAGIC_INVASION_RESULT_SCENE_ID, "确定")
+                context.click_shape(MAGIC_INVASION_RESULT_SCENE_ID, "确定")
                 scene, _score, _frame = _wait_scene(
-                    runtime,
+                    context,
                     (MAGIC_INVASION_MAP_SCENE_ID, MAGIC_INVASION_EVENT_SCENE_ID),
                     timeout_seconds=30.0,
                 )
             if scene == MAGIC_INVASION_EVENT_SCENE_ID:
-                runtime.click_shape(MAGIC_INVASION_EVENT_SCENE_ID, "稍后处理")
-                _wait_scene(runtime, (MAGIC_INVASION_MAP_SCENE_ID,))
+                context.click_shape(MAGIC_INVASION_EVENT_SCENE_ID, "稍后处理")
+                _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
             available_count_after = parse_available_explore_count(
-                _shape_text(runtime, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
             )
             if available_count_after != 0:
                 raise RuntimeError(
@@ -901,7 +901,7 @@ def execute_magic_invasion_explore_job(
 
     # Departure is best effort after the business terminal is durably stored.
     try:
-        _leave_magic_invasion_map(runtime)
+        _leave_magic_invasion_map(context)
     except Exception as exc:
         runner._log("info", f"魔道入侵 1500 次已提交；返回世界留待通用恢复：{exc}")
 

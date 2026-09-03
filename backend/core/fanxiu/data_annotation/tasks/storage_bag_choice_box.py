@@ -268,13 +268,13 @@ def _shape_box(shape: Mapping[str, Any]) -> tuple[float, float, float, float]:
         raise StorageBagChoiceBoxBlocked("#586 候选 shape 几何无效") from exc
 
 
-def discover_visible_choice_slots(runtime: Any, *, maximum_slots: int = 12) -> tuple[int, ...]:
+def discover_visible_choice_slots(context: Any, *, maximum_slots: int = 12) -> tuple[int, ...]:
     """Discover one contiguous formally annotated #586 candidate prefix."""
 
     slots: list[int] = []
     for slot in range(1, max(1, int(maximum_slots)) + 1):
         try:
-            runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}")
+            context.shape(CHOICE_BOX_SCENE, f"候选{slot}")
         except (KeyError, RuntimeError, ValueError):
             break
         slots.append(slot)
@@ -283,22 +283,22 @@ def discover_visible_choice_slots(runtime: Any, *, maximum_slots: int = 12) -> t
     return tuple(slots)
 
 
-def validate_choice_box_asset_contract(runtime: Any, visible_slots: Sequence[int]) -> None:
+def validate_choice_box_asset_contract(context: Any, visible_slots: Sequence[int]) -> None:
     """Require separate semantics before any choice-box GUI action."""
 
     for title in ("详情标题", "当前数量", "增加数量", "确定"):
-        runtime.shape(CHOICE_BOX_SCENE, title)
+        context.shape(CHOICE_BOX_SCENE, title)
     for title in ("详情标题", "右侧暗幕返回"):
-        runtime.shape(CHOICE_DETAIL_SCENE, title)
+        context.shape(CHOICE_DETAIL_SCENE, title)
     expected_slots = tuple(range(1, len(visible_slots) + 1))
     if tuple(visible_slots) != expected_slots:
         raise StorageBagChoiceBoxBlocked("#586 可见候选 slots 必须是从1开始的连续前缀")
     for slot in visible_slots:
-        container = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}").raw
-        open_detail = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}/打开详情").raw
-        checkbox = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}/右上选择框").raw
-        available = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}/可选状态").raw
-        selected = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}/绿色勾选").raw
+        container = context.shape(CHOICE_BOX_SCENE, f"候选{slot}").raw
+        open_detail = context.shape(CHOICE_BOX_SCENE, f"候选{slot}/打开详情").raw
+        checkbox = context.shape(CHOICE_BOX_SCENE, f"候选{slot}/右上选择框").raw
+        available = context.shape(CHOICE_BOX_SCENE, f"候选{slot}/可选状态").raw
+        selected = context.shape(CHOICE_BOX_SCENE, f"候选{slot}/绿色勾选").raw
         cx, cy, cw, ch = _shape_box(container)
         bx, by, bw, bh = _shape_box(checkbox)
         for child in (open_detail, checkbox, available, selected):
@@ -347,21 +347,21 @@ def luminance_availability(
     )
 
 
-def read_choice_availability(runtime: Any, visible_slots: Sequence[int]) -> dict[int, bool]:
+def read_choice_availability(context: Any, visible_slots: Sequence[int]) -> dict[int, bool]:
     """Read all #586 card-body ROIs from one fresh frame."""
 
     import cv2
     import numpy as np
 
-    frame_data_url = runtime.cur_frame(update=True)
-    raw = runtime.runner._decode_frame_data_url(frame_data_url)
+    frame_data_url = context.cur_frame(update=True)
+    raw = context.runner._decode_frame_data_url(frame_data_url)
     frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         raise StorageBagChoiceBoxBlocked("#586 可选状态帧解码失败")
     height, width = frame.shape[:2]
     result: dict[int, bool] = {}
     for slot in visible_slots:
-        shape = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}/可选状态").raw
+        shape = context.shape(CHOICE_BOX_SCENE, f"候选{slot}/可选状态").raw
         x = max(0, round(width * float(shape.get("x") or 0)))
         y = max(0, round(height * float(shape.get("y") or 0)))
         right = min(width, round(width * (float(shape.get("x") or 0) + float(shape.get("w") or 0))))
@@ -397,19 +397,19 @@ def unique_green_selection(
     )
 
 
-def verify_unique_choice_selection(runtime: Any, selected_slot: int, candidate_count: int) -> bool:
+def verify_unique_choice_selection(context: Any, selected_slot: int, candidate_count: int) -> bool:
     import cv2
     import numpy as np
 
-    frame_data_url = runtime.cur_frame(update=True)
-    raw = runtime.runner._decode_frame_data_url(frame_data_url)
+    frame_data_url = context.cur_frame(update=True)
+    raw = context.runner._decode_frame_data_url(frame_data_url)
     frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return False
     height, width = frame.shape[:2]
     ratios: dict[int, float] = {}
     for slot in range(1, candidate_count + 1):
-        shape = runtime.shape(CHOICE_BOX_SCENE, f"候选{slot}/绿色勾选").raw
+        shape = context.shape(CHOICE_BOX_SCENE, f"候选{slot}/绿色勾选").raw
         x = max(0, round(width * float(shape.get("x") or 0)))
         y = max(0, round(height * float(shape.get("y") or 0)))
         right = min(width, round(width * (float(shape.get("x") or 0) + float(shape.get("w") or 0))))
@@ -420,9 +420,9 @@ def verify_unique_choice_selection(runtime: Any, selected_slot: int, candidate_c
     return unique_green_selection(ratios, selected_slot)
 
 
-def read_choice_count(runtime: Any) -> int:
-    frame = runtime.cur_frame(update=True)
-    tokens = runtime.ocr_tokens_in_shapes(
+def read_choice_count(context: Any) -> int:
+    frame = context.cur_frame(update=True)
+    tokens = context.ocr_tokens_in_shapes(
         CHOICE_BOX_SCENE,
         ("当前数量",),
         padding=4,
@@ -523,23 +523,23 @@ def validate_target_detail_identity(
 
 
 def scan_selected_choice_detail(
-    runtime: Any,
+    context: Any,
     selected: StorageBagChoiceReward,
 ) -> Generator[Any, Any, str]:
     """Open only the selected card's read-only #587 detail and return safely."""
 
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         CHOICE_BOX_SCENE,
         f"候选{selected.slot}/打开详情",
         timeout=8.0,
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         CHOICE_DETAIL_SCENE,
-        timeout=8.0,
+        wait=8.0,
         label=f"储物袋自选匣：等待候选{selected.slot} #587详情",
     )
-    frame = runtime.cur_frame(update=True)
-    tokens = runtime.ocr_tokens_in_shapes(
+    frame = context.cur_frame(update=True)
+    tokens = context.ocr_tokens_in_shapes(
         CHOICE_DETAIL_SCENE,
         ("详情标题",),
         padding=6,
@@ -547,14 +547,14 @@ def scan_selected_choice_detail(
         crop=True,
     )
     observed = _ordered_text(tokens)
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         CHOICE_DETAIL_SCENE,
         "右侧暗幕返回",
         timeout=8.0,
     )
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         CHOICE_BOX_SCENE,
-        timeout=8.0,
+        wait=8.0,
         label="储物袋自选匣：候选详情返回 #586",
     )
     return observed
@@ -825,7 +825,7 @@ class StorageBagChoiceBoxGuiAdapter:
     def __init__(
         self,
         *,
-        runtime: Any,
+        context: Any,
         snapshot_reader: SnapshotReader,
         catalog_cards_by_id: Mapping[str, Mapping[str, Any]],
         target_detail_scanner: TargetDetailScanner = scan_selected_choice_detail,
@@ -842,7 +842,7 @@ class StorageBagChoiceBoxGuiAdapter:
         max_increment_steps: int = 200,
         after_snapshot_retries: int = 4,
     ) -> None:
-        self.runtime = runtime
+        self.context = context
         self.snapshot_reader = snapshot_reader
         self.catalog_cards_by_id = catalog_cards_by_id
         self.click_planner = click_planner
@@ -869,13 +869,13 @@ class StorageBagChoiceBoxGuiAdapter:
         box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
         rewards = choice_rewards_from_catalog(box_card, self.catalog_cards_by_id)
         annotated_slots = tuple(
-            int(slot) for slot in self.visible_slot_reader(self.runtime)
+            int(slot) for slot in self.visible_slot_reader(self.context)
         )
         visible_slots = annotated_slots[: min(len(annotated_slots), len(rewards))]
         if not visible_slots:
             raise StorageBagChoiceBoxBlocked("#586 没有正式标注的可见候选")
         # This gate intentionally runs before even reading/clicking #525.
-        self.asset_validator(self.runtime, visible_slots)
+        self.asset_validator(self.context, visible_slots)
 
         before = dict(self.snapshot_reader())
         identity = _snapshot_identity(before)
@@ -886,14 +886,14 @@ class StorageBagChoiceBoxGuiAdapter:
         retries = 0
         scrolls = 0
         while True:
-            plan = self.click_planner(self.runtime, before, request)
+            plan = self.click_planner(self.context, before, request)
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:
                 if retries >= self.alignment_retries:
                     raise StorageBagChoiceBoxBlocked(f"#525 对齐有限重试后仍不唯一：{plan.status}")
                 retries += 1
-                yield from self.runtime.wait_action_settle(0.2)
+                yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
                 if scrolls >= self.max_scrolls or plan.runtime_index is None or plan.viewport_runtime_start is None or not plan.observations:
@@ -905,7 +905,7 @@ class StorageBagChoiceBoxGuiAdapter:
                 )
                 if directive.direction == "none":
                     raise StorageBagChoiceBoxBlocked("#525 滚动规划与不可见判定矛盾")
-                self.runtime.drag_shape_content(
+                self.context.drag_shape_content(
                     STORAGE_BAG_SCENE,
                     "窗口",
                     direction=directive.direction,
@@ -914,18 +914,18 @@ class StorageBagChoiceBoxGuiAdapter:
                 )
                 scrolls += 1
                 retries = 0
-                yield from self.runtime.wait_action_settle(0.25)
+                yield from self.context.wait_action_settle(0.25)
                 continue
             raise StorageBagChoiceBoxBlocked(f"#525 目标定位失败：{plan.status}")
 
-        self.runtime.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
-        yield from self.runtime.wait_view(
+        self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
+        yield from self.context.wait_scene(
             CHOICE_BOX_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋自选匣：等待 #586",
         )
-        detail_frame = self.runtime.cur_frame(update=True)
-        detail_tokens = self.runtime.ocr_tokens_in_shapes(
+        detail_frame = self.context.cur_frame(update=True)
+        detail_tokens = self.context.ocr_tokens_in_shapes(
             CHOICE_BOX_SCENE,
             ("详情标题",),
             padding=6,
@@ -940,21 +940,21 @@ class StorageBagChoiceBoxGuiAdapter:
         if not detail.confirmed:
             raise StorageBagChoiceBoxBlocked(f"#586 详情标题复核失败：{detail.reason}")
 
-        availability = dict(self.availability_reader(self.runtime, visible_slots))
+        availability = dict(self.availability_reader(self.context, visible_slots))
         selected = choose_reward_from_note(
             request.note, rewards, availability, visible_slots
         )
-        observed_target = yield from self.target_detail_scanner(self.runtime, selected)
+        observed_target = yield from self.target_detail_scanner(self.context, selected)
         validate_target_detail_identity(rewards, selected, observed_target)
-        yield from self.runtime.wait_click(
+        yield from self.context.wait_click(
             CHOICE_BOX_SCENE,
             f"候选{selected.slot}/右上选择框",
             timeout=8.0,
         )
-        if not self.selection_verifier(self.runtime, selected.slot, len(visible_slots)):
+        if not self.selection_verifier(self.context, selected.slot, len(visible_slots)):
             raise StorageBagChoiceBoxBlocked("#586 绿色勾选没有独立证明目标被唯一选中")
 
-        current = self.count_reader(self.runtime)
+        current = self.count_reader(self.context)
         if not 1 <= current <= open_quantity:
             raise StorageBagChoiceBoxBlocked(
                 f"#586 初始数量 {current} 不在 1..计划开启{open_quantity}"
@@ -963,15 +963,15 @@ class StorageBagChoiceBoxGuiAdapter:
         if steps < 0 or steps > self.max_increment_steps:
             raise StorageBagChoiceBoxBlocked("#586 增加数量步数超出有界预算")
         for _step in range(steps):
-            yield from self.runtime.wait_click(CHOICE_BOX_SCENE, "增加数量", timeout=8.0)
-            yield from self.runtime.wait_view(
+            yield from self.context.wait_click(CHOICE_BOX_SCENE, "增加数量", timeout=8.0)
+            yield from self.context.wait_scene(
                 CHOICE_BOX_SCENE,
-                timeout=8.0,
+                wait=8.0,
                 label="储物袋自选匣：增加数量后复验 fresh #586",
             )
-        if not self.selection_verifier(self.runtime, selected.slot, len(visible_slots)):
+        if not self.selection_verifier(self.context, selected.slot, len(visible_slots)):
             raise StorageBagChoiceBoxBlocked("确定前绿色勾选唯一证据失效")
-        if self.count_reader(self.runtime) != open_quantity:
+        if self.count_reader(self.context) != open_quantity:
             raise StorageBagChoiceBoxBlocked("确定前最终 OCR 数量不等于计划开启数量")
 
         partner_before: dict[str, Any] | None = None
@@ -991,10 +991,10 @@ class StorageBagChoiceBoxGuiAdapter:
                     self.catalog_cards_by_id, selected.linked_partner_id
                 )
 
-        yield from self.runtime.wait_click(CHOICE_BOX_SCENE, "确定", timeout=8.0)
-        yield from self.runtime.wait_view(
+        yield from self.context.wait_click(CHOICE_BOX_SCENE, "确定", timeout=8.0)
+        yield from self.context.wait_scene(
             STORAGE_BAG_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋自选匣：确定后等待 #525",
         )
         after: dict[str, Any] | None = None
@@ -1008,7 +1008,7 @@ class StorageBagChoiceBoxGuiAdapter:
                 after = candidate
                 break
             if attempt + 1 < self.after_snapshot_retries:
-                yield from self.runtime.wait_action_settle(0.2)
+                yield from self.context.wait_action_settle(0.2)
         if after is None:
             raise StorageBagChoiceBoxBlocked("确定后未取得同进程、完整且已变化的 Runtime 快照")
         partner_outcome: StorageBagPartnerOutcomeProof | None = None
@@ -1041,7 +1041,7 @@ class StorageBagChoiceBoxGuiAdapter:
                 except StorageBagChoiceBoxBlocked as exc:
                     last_partner_error = exc
                 if attempt + 1 < self.after_snapshot_retries:
-                    yield from self.runtime.wait_action_settle(0.2)
+                    yield from self.context.wait_action_settle(0.2)
             if partner_outcome is None:
                 raise StorageBagChoiceBoxBlocked(
                     f"确定后仙侣结果未被权威证明：{last_partner_error or 'unknown'}"

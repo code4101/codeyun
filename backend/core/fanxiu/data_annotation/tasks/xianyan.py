@@ -31,15 +31,15 @@ class XianyanTaskMixin:
         return "".join(str(item.get("text") or "") for item in tokens).replace(" ", "")
 
     @classmethod
-    def _xianyan_entry_is_visible(cls, runtime: Any, frame: str) -> bool:
+    def _xianyan_entry_is_visible(cls, context: Any, frame: str) -> bool:
         """Require the live activity label before using the time-varying #20 slot."""
 
-        return "仙园游宴" in cls._xianyan_ocr_text(runtime.full_frame_ocr_tokens(frame))
+        return "仙园游宴" in cls._xianyan_ocr_text(context.full_frame_ocr_tokens(frame))
 
-    def _open_xianyan_entry(self, runtime: Any, frame: str):
+    def _open_xianyan_entry(self, context: Any, frame: str):
         """Click the moving #20 activity entry from its live OCR token box."""
 
-        match = runtime.click_ocr_text(
+        match = context.click_ocr_text(
             20,
             "仙园游宴",
             in_shapes=["仙园游宴"],
@@ -51,9 +51,9 @@ class XianyanTaskMixin:
             "action",
             f"仙园游宴动态入口：OCR={match.text!r}，click=({click_x:.1f},{click_y:.1f})",
         )
-        return (yield from runtime.wait_scene(
+        return (yield from context.wait_scene(
             630,
-            timeout=30.0,
+            wait=30.0,
             label="仙园游宴：等待活动主页",
         ))
 
@@ -111,11 +111,11 @@ class XianyanTaskMixin:
     @classmethod
     def _xianyan_checkbox_is_checked(
         cls,
-        runtime: Any,
+        context: Any,
         frame: str,
         box: tuple[float, float, float, float],
     ) -> bool:
-        raw = runtime.runner._decode_frame_data_url(frame)
+        raw = context.runner._decode_frame_data_url(frame)
         with Image.open(io.BytesIO(raw)) as source:
             return cls._xianyan_green_checkbox_ratio(source, box) >= 0.01
 
@@ -220,8 +220,8 @@ class XianyanTaskMixin:
         return result
 
     @staticmethod
-    def _read_baihua_banquet_count(runtime: Any, frame: str) -> int:
-        values, text = runtime.ocr_numbers_in_shapes(
+    def _read_baihua_banquet_count(context: Any, frame: str) -> int:
+        values, text = context.ocr_numbers_in_shapes(
             649,
             ["百花宴拥有数量"],
             frame_data_url=frame,
@@ -232,10 +232,10 @@ class XianyanTaskMixin:
         return int(values[0])
 
     @classmethod
-    def _read_xianyan_banquet_counts(cls, runtime: Any, frame: str) -> dict[str, int]:
+    def _read_xianyan_banquet_counts(cls, context: Any, frame: str) -> dict[str, int]:
         counts: dict[str, int] = {}
         for banquet_name, count_shape, _select_shape in XIANYAN_BANQUET_TYPES:
-            values, text = runtime.ocr_numbers_in_shapes(
+            values, text = context.ocr_numbers_in_shapes(
                 649,
                 [count_shape],
                 frame_data_url=frame,
@@ -247,10 +247,10 @@ class XianyanTaskMixin:
         return counts
 
     @staticmethod
-    def _read_xianyan_remaining_seconds(runtime: Any, frame: str) -> int | None:
+    def _read_xianyan_remaining_seconds(context: Any, frame: str) -> int | None:
         """Read the active banquet countdown from full-frame OCR lines."""
 
-        tokens = runtime.full_frame_ocr_tokens(frame)
+        tokens = context.full_frame_ocr_tokens(frame)
         lines: dict[str, list[dict[str, Any]]] = {}
         for token in tokens:
             line_id = str(token.get("parent_line_id") or "")
@@ -275,12 +275,12 @@ class XianyanTaskMixin:
 
     def _schedule_xianyan_rewards_from_frame(
         self,
-        runtime: Any,
+        context: Any,
         frame: str,
         *,
         settle_padding_seconds: int = 30,
     ) -> str | None:
-        remaining = self._read_xianyan_remaining_seconds(runtime, frame)
+        remaining = self._read_xianyan_remaining_seconds(context, frame)
         if remaining is None:
             self._persist_scheduler_task_next_time(XIANYAN_REWARDS_TASK_ID, None)
             return None
@@ -293,7 +293,7 @@ class XianyanTaskMixin:
 
     def _claim_available_xianyan_rewards(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         max_rounds: int,
@@ -307,47 +307,47 @@ class XianyanTaskMixin:
             # local to this reward transaction.  Keep it in this explicit
             # Layer0 set; default recognition must never turn generic
             # ``点击屏幕继续`` pages into an仙宴 action.
-            scene_id, _score, frame = runtime.current_scene([422, 423, 642, 659], update=True)
+            scene_id, _score, frame = context.current_scene([422, 423, 642, 659], update=True)
             if scene_id == 659:
                 # A previous attempt may have already consumed the reward but
                 # stopped on the full-screen result overlay.  Dismiss it
                 # idempotently without counting a second reward.
-                yield from runtime.wait_click(659, "点击屏幕继续")
-                yield from runtime.wait_action_settle(settle_seconds)
+                yield from context.wait_click(659, "点击屏幕继续")
+                yield from context.wait_action_settle(settle_seconds)
                 continue
             if scene_id == 423:
-                yield from runtime.wait_click(423, "继续")
+                yield from context.wait_click(423, "继续")
                 claimed += 1
-                yield from runtime.wait_action_settle(settle_seconds)
+                yield from context.wait_action_settle(settle_seconds)
                 continue
             if scene_id != 422:
                 return claimed, scene_id, frame
-            yield from runtime.wait_click(422, "获得奖励")
-            next_scene = yield from runtime.wait_view(
+            yield from context.wait_click(422, "获得奖励")
+            next_scene = yield from context.wait_scene(
                 423,
                 642,
                 659,
-                timeout=wait_timeout,
+                wait=wait_timeout,
                 label="仙宴_获得奖励：等待奖励层或幂等返回",
             )
             next_scene = self._xianyan_scene_id(next_scene)
             if next_scene == 659:
-                yield from runtime.wait_click(659, "点击屏幕继续")
+                yield from context.wait_click(659, "点击屏幕继续")
                 claimed += 1
-                yield from runtime.wait_action_settle(settle_seconds)
+                yield from context.wait_action_settle(settle_seconds)
                 continue
             if next_scene == 642:
                 # The server can consume an already-mature reward and return to
                 # the banquet home without rendering #423.  That is a terminal
                 # idempotent success, not a reason to retry the same reward.
-                # Keep the scene proven by wait_view: an immediate second
+                # Keep the scene proven by wait_scene: an immediate second
                 # recognition can hit the short home-page refresh animation and
                 # incorrectly turn this known #642 landing into None.
                 claimed += 1
                 return claimed, 642, frame
-            yield from runtime.wait_click(423, "继续")
+            yield from context.wait_click(423, "继续")
             claimed += 1
-            yield from runtime.wait_action_settle(settle_seconds)
+            yield from context.wait_action_settle(settle_seconds)
         raise RuntimeError(f"仙宴_获得奖励：达到最大轮数 {max_rounds}，仍有奖励可领取")
 
     def _xianyan_attempt_runtime(
@@ -356,7 +356,7 @@ class XianyanTaskMixin:
         stop_event: threading.Event,
     ) -> Any:
         asset_tree_path = ctx.get("asset_tree_path")
-        return self._fanxiu_runtime(
+        return self._behavior_tree_context(
             ctx,
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
@@ -370,15 +370,15 @@ class XianyanTaskMixin:
     ):
         """Start a new Job attempt and host every available banquet."""
 
-        runtime = self._xianyan_attempt_runtime(ctx, stop_event)
-        yield from runtime.go_scene(34)
+        context = self._xianyan_attempt_runtime(ctx, stop_event)
+        yield from context.go_scene(34)
         return (yield from self._execute_xianyan_host_baihua_same_attempt(
-            runtime, stop_event, payload
+            context, stop_event, payload
         ))
 
     def _execute_xianyan_host_baihua_same_attempt(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
@@ -386,44 +386,44 @@ class XianyanTaskMixin:
 
         max_rounds = max(1, min(100, int(payload.get("max_rounds") or 50)))
         claimed = 0
-        scene_id, score, _frame = runtime.current_scene(
+        scene_id, score, _frame = context.current_scene(
             [422, 423, 642, 649, 650, 659, 660], update=True
         )
         if scene_id == 650:
             raise RuntimeError("百花宴作业从未归属的确认事务启动，拒绝重复确认")
         if scene_id not in {422, 423, 642, 649, 659, 660} or float(score or 0) < 80.0:
-            yield from runtime.go_scene(20)
-            entry_scene, entry_score, entry_frame = runtime.current_scene([20], update=True)
+            yield from context.go_scene(20)
+            entry_scene, entry_score, entry_frame = context.current_scene([20], update=True)
             if entry_scene != 20 or float(entry_score or 0.0) < 80.0:
                 raise RuntimeError("仙宴举办：未能可靠到达绿瓶 #20，拒绝探测动态活动槽位")
-            if not self._xianyan_entry_is_visible(runtime, entry_frame):
+            if not self._xianyan_entry_is_visible(context, entry_frame):
                 message = "仙宴举办幂等结束：绿瓶当前没有仙园游宴入口"
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
-            yield from self._open_xianyan_entry(runtime, entry_frame)
-            yield from runtime.wait_click(630, "园中仙宴", timeout=10.0)
-            scene_id = yield from runtime.wait_view(
-                631, 422, 423, 642, timeout=20.0, label="百花宴：等待园中仙宴"
+            yield from self._open_xianyan_entry(context, entry_frame)
+            yield from context.wait_click(630, "园中仙宴", timeout=10.0)
+            scene_id = yield from context.wait_scene(
+                631, 422, 423, 642, wait=20.0, label="百花宴：等待园中仙宴"
             )
             scene_id = self._xianyan_scene_id(scene_id)
             if scene_id == 631:
                 message = "百花宴幂等结束：园中仙宴当前未开放"
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
 
         if scene_id in {422, 423}:
             claimed, scene_id, _frame = yield from self._claim_available_xianyan_rewards(
-                runtime,
+                context,
                 stop_event,
                 max_rounds=100,
                 settle_seconds=1.0,
                 wait_timeout=15.0,
             )
             if scene_id != 642:
-                scene_id = yield from runtime.wait_view(
-                    642, timeout=15.0, label="百花宴：领奖后等待当前仙宴"
+                scene_id = yield from context.wait_scene(
+                    642, wait=15.0, label="百花宴：领奖后等待当前仙宴"
                 )
                 scene_id = self._xianyan_scene_id(scene_id)
 
@@ -435,28 +435,28 @@ class XianyanTaskMixin:
             if scene_id == 649:
                 break
             if scene_id == 659:
-                yield from runtime.wait_click(659, "点击屏幕继续")
+                yield from context.wait_click(659, "点击屏幕继续")
                 scene_id = self._xianyan_scene_id(
-                    (yield from runtime.wait_view(
+                    (yield from context.wait_scene(
                         422, 642, 659, 660,
-                        timeout=20.0,
+                        wait=20.0,
                         label="仙宴：关闭圆满奖励后等待落点",
                     ))
                 )
                 continue
             if scene_id == 660:
-                yield from runtime.wait_click(660, "关闭详情")
+                yield from context.wait_click(660, "关闭详情")
                 scene_id = self._xianyan_scene_id(
-                    (yield from runtime.wait_view(
+                    (yield from context.wait_scene(
                         422, 642, 659, 660,
-                        timeout=20.0,
+                        wait=20.0,
                         label="仙宴：关闭随礼详情后等待落点",
                     ))
                 )
                 continue
             if scene_id in {422, 423}:
                 claimed_after_result, scene_id, _frame = yield from self._claim_available_xianyan_rewards(
-                    runtime,
+                    context,
                     stop_event,
                     max_rounds=100,
                     settle_seconds=1.0,
@@ -465,11 +465,11 @@ class XianyanTaskMixin:
                 claimed += claimed_after_result
                 continue
             if scene_id == 642:
-                yield from runtime.wait_click(642, "举办仙宴", timeout=10.0)
+                yield from context.wait_click(642, "举办仙宴", timeout=10.0)
                 scene_id = self._xianyan_scene_id(
-                    (yield from runtime.wait_view(
+                    (yield from context.wait_scene(
                         659, 649, 642,
-                        timeout=15.0,
+                        wait=15.0,
                         label="百花宴：等待选择层或下一份结算",
                     ))
                 )
@@ -478,7 +478,7 @@ class XianyanTaskMixin:
                         "仙宴举办幂等结束：举办入口未打开选择层，"
                         "活动已结束或当前没有可举办宴席"
                     )
-                    runtime.set_completion_message(message)
+                    context.set_completion_message(message)
                     self._log("success", message)
                     return "success"
                 continue
@@ -487,15 +487,15 @@ class XianyanTaskMixin:
             raise RuntimeError("仙宴结算链在有界次数内未收敛到宴席选择层")
 
         hosted = {banquet_name: 0 for banquet_name, _count_shape, _select_shape in XIANYAN_BANQUET_TYPES}
-        frame = runtime.current_scene([649], update=True, handle_interruptions=False)[2]
-        before = self._read_xianyan_banquet_counts(runtime, frame)
+        frame = context.current_scene([649], update=True)[2]
+        before = self._read_xianyan_banquet_counts(context, frame)
         if sum(before.values()) == 0:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 649, "关闭", 642, timeout=10.0, settle_seconds=1.0,
                 label="仙宴举办幂等结束：关闭选择层",
             )
             message = "仙宴举办幂等结束：百花宴、龙凤宴、瑶星宴食材均为 0"
-            runtime.set_completion_message(message)
+            context.set_completion_message(message)
             self._log("success", message)
             return "success"
 
@@ -505,21 +505,21 @@ class XianyanTaskMixin:
                 item for item in XIANYAN_BANQUET_TYPES if before[item[0]] > 0
             )
             banquet_name, _count_shape, select_shape = selected
-            yield from runtime.wait_click(649, select_shape, timeout=10.0)
-            yield from runtime.wait_view(650, timeout=10.0, label=f"{banquet_name}：等待确认")
-            yield from runtime.wait_click(650, "确认", timeout=10.0)
-            yield from runtime.wait_view(642, timeout=15.0, label=f"{banquet_name}：确认举办成功")
+            yield from context.wait_click(649, select_shape, timeout=10.0)
+            yield from context.wait_scene(650, wait=10.0, label=f"{banquet_name}：等待确认")
+            yield from context.wait_click(650, "确认", timeout=10.0)
+            yield from context.wait_scene(642, wait=15.0, label=f"{banquet_name}：确认举办成功")
             hosted[banquet_name] += 1
             if sum(before.values()) == 1:
                 claimed_after, _scene_id, frame = yield from self._claim_available_xianyan_rewards(
-                    runtime,
+                    context,
                     stop_event,
                     max_rounds=100,
                     settle_seconds=1.0,
                     wait_timeout=15.0,
                 )
                 claimed += claimed_after
-                next_time = self._schedule_xianyan_rewards_from_frame(runtime, frame)
+                next_time = self._schedule_xianyan_rewards_from_frame(context, frame)
                 schedule_text = f"，下次领奖 {next_time}" if next_time else ""
                 hosted_text = "、".join(
                     f"{name} {count} 场" for name, count in hosted.items() if count
@@ -528,14 +528,14 @@ class XianyanTaskMixin:
                     f"仙宴举办完整闭环：本次举办 {hosted_text}、领取 {claimed} 轮，"
                     f"三类食材均已耗尽{schedule_text}"
                 )
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
 
-            yield from runtime.wait_click(642, "举办仙宴", timeout=10.0)
-            yield from runtime.wait_view(649, timeout=10.0, label="仙宴：重新读取库存")
-            frame = runtime.current_scene([649], update=True, handle_interruptions=False)[2]
-            after = self._read_xianyan_banquet_counts(runtime, frame)
+            yield from context.wait_click(642, "举办仙宴", timeout=10.0)
+            yield from context.wait_scene(649, wait=10.0, label="仙宴：重新读取库存")
+            frame = context.current_scene([649], update=True)[2]
+            after = self._read_xianyan_banquet_counts(context, frame)
             expected = dict(before)
             expected[banquet_name] -= 1
             if after != expected:
@@ -552,15 +552,15 @@ class XianyanTaskMixin:
     ):
         """Start a new Job attempt and claim every available banquet reward."""
 
-        runtime = self._xianyan_attempt_runtime(ctx, stop_event)
-        yield from runtime.go_scene(34)
+        context = self._xianyan_attempt_runtime(ctx, stop_event)
+        yield from context.go_scene(34)
         return (yield from self._execute_xianyan_rewards_same_attempt(
-            runtime, stop_event, payload
+            context, stop_event, payload
         ))
 
     def _execute_xianyan_rewards_same_attempt(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
@@ -569,44 +569,44 @@ class XianyanTaskMixin:
         max_rounds = max(1, min(500, int(payload.get("max_rounds") or 100)))
         settle_seconds = max(0.2, min(5.0, float(payload.get("settle_seconds") or 1.0)))
         wait_timeout = max(2.0, min(60.0, float(payload.get("wait_timeout") or 15.0)))
-        scene_id, _score, _frame = runtime.current_scene([422, 423, 642, 659], update=True)
+        scene_id, _score, _frame = context.current_scene([422, 423, 642, 659], update=True)
         if scene_id not in {422, 423, 642, 659}:
-            yield from runtime.go_scene(20)
-            entry_scene, entry_score, entry_frame = runtime.current_scene([20], update=True)
+            yield from context.go_scene(20)
+            entry_scene, entry_score, entry_frame = context.current_scene([20], update=True)
             if entry_scene != 20 or float(entry_score or 0.0) < 80.0:
                 raise RuntimeError("仙宴_获得奖励：未能可靠到达绿瓶 #20，拒绝探测动态活动槽位")
-            if not self._xianyan_entry_is_visible(runtime, entry_frame):
+            if not self._xianyan_entry_is_visible(context, entry_frame):
                 message = "仙宴_获得奖励幂等结束：绿瓶当前没有仙园游宴入口"
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
-            yield from self._open_xianyan_entry(runtime, entry_frame)
-            yield from runtime.wait_click(630, "园中仙宴", timeout=10.0)
-            scene_id = yield from runtime.wait_view(
-                631, 422, 423, 642, 659, timeout=20.0, label="仙宴_获得奖励：等待园中仙宴"
+            yield from self._open_xianyan_entry(context, entry_frame)
+            yield from context.wait_click(630, "园中仙宴", timeout=10.0)
+            scene_id = yield from context.wait_scene(
+                631, 422, 423, 642, 659, wait=20.0, label="仙宴_获得奖励：等待园中仙宴"
             )
             scene_id = self._xianyan_scene_id(scene_id)
             if scene_id == 631:
                 message = "仙宴_获得奖励幂等结束：园中仙宴当前未开放"
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
 
         claimed, _scene_id, frame = yield from self._claim_available_xianyan_rewards(
-            runtime,
+            context,
             stop_event,
             max_rounds=max_rounds,
             settle_seconds=settle_seconds,
             wait_timeout=wait_timeout,
         )
-        next_time = self._schedule_xianyan_rewards_from_frame(runtime, frame)
+        next_time = self._schedule_xianyan_rewards_from_frame(context, frame)
         if claimed:
             message = f"仙宴_获得奖励：完成，共领取 {claimed} 轮"
         else:
             message = "仙宴_获得奖励：当前没有可领取奖励"
         if next_time:
             message += f"，下次 {next_time}"
-        runtime.set_completion_message(message)
+        context.set_completion_message(message)
         self._log("success", message)
         return "success"
 
@@ -618,15 +618,15 @@ class XianyanTaskMixin:
     ):
         """Start a new Job attempt and drain one same-tier gift round."""
 
-        runtime = self._xianyan_attempt_runtime(ctx, stop_event)
-        yield from runtime.go_scene(34)
+        context = self._xianyan_attempt_runtime(ctx, stop_event)
+        yield from context.go_scene(34)
         return (yield from self._execute_xianyan_participation_same_attempt(
-            runtime, stop_event, payload
+            context, stop_event, payload
         ))
 
     def _execute_xianyan_participation_same_attempt(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         payload: dict[str, Any],
     ):
@@ -636,78 +636,78 @@ class XianyanTaskMixin:
         joined = 0
         viewed = 0
         pending_white_before: int | None = None
-        scene_id, _score, _frame = runtime.current_scene([422, 423, 642, 651, 652, 653], update=True)
+        scene_id, _score, _frame = context.current_scene([422, 423, 642, 651, 652, 653], update=True)
         if scene_id not in {422, 423, 642, 651, 652, 653}:
-            yield from runtime.go_scene(20)
-            entry_scene, entry_score, entry_frame = runtime.current_scene([20], update=True)
+            yield from context.go_scene(20)
+            entry_scene, entry_score, entry_frame = context.current_scene([20], update=True)
             if entry_scene != 20 or float(entry_score or 0.0) < 80.0:
                 raise RuntimeError("仙宴_参与：未能可靠到达绿瓶 #20，拒绝探测动态活动槽位")
-            if not self._xianyan_entry_is_visible(runtime, entry_frame):
+            if not self._xianyan_entry_is_visible(context, entry_frame):
                 message = "仙宴_参与幂等结束：绿瓶当前没有仙园游宴入口"
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
-            yield from self._open_xianyan_entry(runtime, entry_frame)
-            yield from runtime.wait_click(630, "园中仙宴", timeout=10.0)
-            scene_id = yield from runtime.wait_view(
-                631, 422, 423, 642, timeout=20.0, label="仙宴_参与：等待园中仙宴"
+            yield from self._open_xianyan_entry(context, entry_frame)
+            yield from context.wait_click(630, "园中仙宴", timeout=10.0)
+            scene_id = yield from context.wait_scene(
+                631, 422, 423, 642, wait=20.0, label="仙宴_参与：等待园中仙宴"
             )
             scene_id = self._xianyan_scene_id(scene_id)
             if scene_id == 631:
                 message = "仙宴_参与幂等结束：园中仙宴当前未开放"
-                runtime.set_completion_message(message)
+                context.set_completion_message(message)
                 self._log("success", message)
                 return "success"
         if scene_id in {422, 423}:
             _claimed, scene_id, _frame = yield from self._claim_available_xianyan_rewards(
-                runtime, stop_event, max_rounds=100, settle_seconds=1.0, wait_timeout=15.0
+                context, stop_event, max_rounds=100, settle_seconds=1.0, wait_timeout=15.0
             )
         if scene_id == 642:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 642, "参与宴会", 651, timeout=15.0, settle_seconds=1.0,
                 label="仙宴_参与：等待宴会列表",
             )
 
         for _round_index in range(max_rounds):
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = runtime.current_scene([651, 652, 653], update=True)
+            scene_id, _score, frame = context.current_scene([651, 652, 653], update=True)
             if scene_id == 651:
                 filter_box = (0.24, 0.76, 0.08, 0.06)
-                if not self._xianyan_checkbox_is_checked(runtime, frame, filter_box):
-                    runtime.click_shape_center_fast(651, "仅显示接受碧螺春")
-                    yield from runtime.wait_action_settle(1.0)
-                    _scene_id, _score, frame = runtime.current_scene([651], update=True)
-                    if not self._xianyan_checkbox_is_checked(runtime, frame, filter_box):
+                if not self._xianyan_checkbox_is_checked(context, frame, filter_box):
+                    context.click_shape_center_fast(651, "仅显示接受碧螺春")
+                    yield from context.wait_action_settle(1.0)
+                    _scene_id, _score, frame = context.current_scene([651], update=True)
+                    if not self._xianyan_checkbox_is_checked(context, frame, filter_box):
                         raise RuntimeError("仙宴_参与：最低礼物筛选勾选后未出现绿色勾")
-                text = self._xianyan_ocr_text(runtime.full_frame_ocr_tokens(frame))
+                text = self._xianyan_ocr_text(context.full_frame_ocr_tokens(frame))
                 if "查看" not in text:
                     break
-                runtime.click_ocr_text(651, "查看", frame_data_url=frame, occurrence=0)
-                yield from runtime.wait_view(652, timeout=15.0, label="仙宴_参与：等待快捷详情")
+                context.click_ocr_text(651, "查看", frame_data_url=frame, occurrence=0)
+                yield from context.wait_scene(652, wait=15.0, label="仙宴_参与：等待快捷详情")
                 continue
 
             if scene_id == 653:
-                gift_text = self._xianyan_ocr_text(runtime.full_frame_ocr_tokens(frame))
+                gift_text = self._xianyan_ocr_text(context.full_frame_ocr_tokens(frame))
                 if "白玉酿" not in gift_text:
                     raise RuntimeError("仙宴_参与：礼物层未识别到白玉酿，拒绝猜测")
-                if not self._xianyan_checkbox_is_checked(runtime, frame, (0.75, 0.395, 0.10, 0.075)):
-                    runtime.click_shape_center_fast(653, "随礼·白玉酿")
-                if not self._xianyan_checkbox_is_checked(runtime, frame, (0.82, 0.675, 0.08, 0.075)):
-                    runtime.click_shape_center_fast(653, "记住选择")
-                runtime.click_shape_center_fast(653, "参与仙宴")
-                yield from runtime.wait_action_settle(1.0)
-                _scene_id, _score, confirm_frame = runtime.current_scene([653], update=True)
-                confirm_text = self._xianyan_ocr_text(runtime.full_frame_ocr_tokens(confirm_frame))
+                if not self._xianyan_checkbox_is_checked(context, frame, (0.75, 0.395, 0.10, 0.075)):
+                    context.click_shape_center_fast(653, "随礼·白玉酿")
+                if not self._xianyan_checkbox_is_checked(context, frame, (0.82, 0.675, 0.08, 0.075)):
+                    context.click_shape_center_fast(653, "记住选择")
+                context.click_shape_center_fast(653, "参与仙宴")
+                yield from context.wait_action_settle(1.0)
+                _scene_id, _score, confirm_frame = context.current_scene([653], update=True)
+                confirm_text = self._xianyan_ocr_text(context.full_frame_ocr_tokens(confirm_frame))
                 if "白玉酿" not in confirm_text or "确定" not in confirm_text:
                     raise RuntimeError("仙宴_参与：未验证到白玉酿确认框，拒绝继续")
-                runtime.click_shape_center_fast(653, "本次登录不再提醒")
-                runtime.click_shape_center_fast(653, "确定使用白玉酿")
-                yield from runtime.wait_action_settle(3.0)
+                context.click_shape_center_fast(653, "本次登录不再提醒")
+                context.click_shape_center_fast(653, "确定使用白玉酿")
+                yield from context.wait_action_settle(3.0)
                 continue
 
             if scene_id != 652:
                 raise RuntimeError(f"仙宴_参与：意外场景 {scene_id!r}")
-            detail_text = self._xianyan_ocr_text(runtime.full_frame_ocr_tokens(frame))
+            detail_text = self._xianyan_ocr_text(context.full_frame_ocr_tokens(frame))
             detail = self._xianyan_detail_state(detail_text)
             state = detail["state"]
             white_count = detail["white_count"]
@@ -719,37 +719,37 @@ class XianyanTaskMixin:
                 joined += 1
                 pending_white_before = None
             if state == "attended":
-                runtime.click_shape_center_fast(652, "查看下一个")
+                context.click_shape_center_fast(652, "查看下一个")
                 viewed += 1
-                yield from runtime.wait_action_settle(1.0)
+                yield from context.wait_action_settle(1.0)
                 continue
             if state == "white_ready" and isinstance(white_count, int) and white_count > 0:
                 pending_white_before = white_count
-                runtime.click_shape_center_fast(652, "参与仙宴")
-                yield from runtime.wait_action_settle(1.5)
+                context.click_shape_center_fast(652, "参与仙宴")
+                yield from context.wait_action_settle(1.5)
                 continue
             if state == "picker_required":
-                runtime.click_shape_center_fast(652, "参与仙宴")
-                yield from runtime.wait_view(653, timeout=10.0, label="仙宴_参与：首次选择白玉酿")
+                context.click_shape_center_fast(652, "参与仙宴")
+                yield from context.wait_scene(653, wait=10.0, label="仙宴_参与：首次选择白玉酿")
                 continue
             if state == "white_ready" and white_count == 0:
                 break
             raise RuntimeError(f"仙宴_参与：无法判定快捷详情状态：{detail_text!r}")
 
-        scene_id, _score, _frame = runtime.current_scene([651], update=True)
+        scene_id, _score, _frame = context.current_scene([651], update=True)
         if scene_id == 651:
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 651, "遮罩关闭", 642, timeout=10.0, settle_seconds=1.0,
                 label="仙宴_参与：完成后关闭列表",
             )
-            yield from runtime.go_scene(34)
+            yield from context.go_scene(34)
         next_time = datetime.now().replace(second=0, microsecond=0) + timedelta(minutes=30)
         self._persist_scheduler_task_next_time(XIANYAN_CLEAN_TASK_ID, next_time)
         message = (
             f"仙宴_参与本轮完成：白玉酿 {joined} 份，查看 {viewed} 席；"
             f"当前轮次已无可查看宴席，下次 {next_time:%Y-%m-%d %H:%M:%S}"
         )
-        runtime.set_completion_message(message)
+        context.set_completion_message(message)
         self._log("success", message)
         return "success"
 
@@ -761,16 +761,16 @@ class XianyanTaskMixin:
     ):
         """Drain all currently actionable banquet rewards, materials and same-tier gifts."""
 
-        runtime = self._xianyan_attempt_runtime(ctx, stop_event)
-        yield from runtime.go_scene(34)
+        context = self._xianyan_attempt_runtime(ctx, stop_event)
+        yield from context.go_scene(34)
         yield from self._execute_xianyan_host_baihua_same_attempt(
-            runtime, stop_event, payload
+            context, stop_event, payload
         )
         yield from self._execute_xianyan_participation_same_attempt(
-            runtime, stop_event, payload
+            context, stop_event, payload
         )
         yield from self._execute_xianyan_rewards_same_attempt(
-            runtime, stop_event, payload
+            context, stop_event, payload
         )
         message = "仙宴_清理完成：当前奖励、宴席材料和可同档随礼项均已处理干净"
         self._log("success", message)

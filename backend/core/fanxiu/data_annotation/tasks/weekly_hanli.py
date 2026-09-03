@@ -30,7 +30,7 @@ class WeeklyHanliTaskMixin:
 
     def _wait_and_click_weekly_hanli_ocr_target(
         self,
-        runtime: Any,
+        context: Any,
         *,
         scene_id: int = 334,
         shape_title: str = "窗口",
@@ -47,23 +47,23 @@ class WeeklyHanliTaskMixin:
         last_matches: list[tuple[float, float, str]] = []
         while time.monotonic() < deadline:
             for keyword in keywords:
-                matches = runtime.ocr_centers_in_shape(scene_id, shape_title, include=(keyword,))
+                matches = context.ocr_centers_in_shape(scene_id, shape_title, include=(keyword,))
                 if not matches:
                     continue
                 last_matches = matches
                 if require_unique and len(matches) != 1:
                     raise RuntimeError(f"{label}：OCR 目标“{keyword}”匹配到 {len(matches)} 项，停止点击")
                 x, y, text = matches[0]
-                runtime.click_frame_point(scene_id, x, y)
+                context.click_frame_point(scene_id, x, y)
                 self._log("action", f"{label}：点击 OCR 目标“{keyword}”，识别文本：{text[:80]}")
-                yield from runtime.wait_action_settle(poll_seconds)
+                yield from context.wait_action_settle(poll_seconds)
                 return {"keyword": keyword, "text": text, "x": x, "y": y}
-            yield from runtime.wait_action_settle(poll_seconds)
+            yield from context.wait_action_settle(poll_seconds)
         raise TimeoutError(f"{label}：等待 OCR 目标超时，最后匹配：{last_matches}")
 
     def _claim_weekly_hanli_gifts(
         self,
-        runtime: Any,
+        context: Any,
         *,
         max_claims: int,
         reward_wait_seconds: float,
@@ -78,8 +78,8 @@ class WeeklyHanliTaskMixin:
             empty_matches: list[tuple[float, float, str]] = []
             blank_frame_count = 0
             while time.monotonic() < deadline:
-                frame = runtime.cur_frame(update=True)
-                matches = runtime.ocr_centers_in_shape(
+                frame = context.cur_frame(update=True)
+                matches = context.ocr_centers_in_shape(
                     379,
                     "礼物",
                     include=("点击领取",),
@@ -87,7 +87,7 @@ class WeeklyHanliTaskMixin:
                 )
                 if matches:
                     break
-                empty_matches = runtime.ocr_centers_in_shape(
+                empty_matches = context.ocr_centers_in_shape(
                     379,
                     "空状态",
                     include=("空空如也",),
@@ -101,9 +101,9 @@ class WeeklyHanliTaskMixin:
                     return claimed
                 blank_frame_count += 1
                 if blank_frame_count >= 3:
-                    yield from runtime.wait_view(
+                    yield from context.wait_scene(
                         379,
-                        timeout=transition_timeout,
+                        wait=transition_timeout,
                         label="周常_韩立：复核空白奖励列表仍在私聊页 #379",
                     )
                     self._log(
@@ -112,7 +112,7 @@ class WeeklyHanliTaskMixin:
                         "按稳定空白列表确认本周已完成",
                     )
                     return claimed
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
 
             if not matches:
                 raise TimeoutError("周常_韩立：私聊页奖励状态在等待期内始终无法稳定分类")
@@ -120,16 +120,16 @@ class WeeklyHanliTaskMixin:
                 raise RuntimeError(f"周常_韩立：已领取 {max_claims} 次后仍有“点击领取”，停止避免无限循环")
 
             x, y, text = matches[0]
-            runtime.click_frame_point(379, x, y)
+            context.click_frame_point(379, x, y)
             claimed.append({"text": text, "x": x, "y": y})
             self._log(
                 "action",
                 f"周常_韩立：点击第 {len(claimed)} 个“点击领取”，本轮识别到 {len(matches)} 个匹配",
             )
-            yield from runtime.wait_action_settle(reward_wait_seconds)
-            yield from runtime.wait_view(
+            yield from context.wait_action_settle(reward_wait_seconds)
+            yield from context.wait_scene(
                 379,
-                timeout=transition_timeout,
+                wait=transition_timeout,
                 label="周常_韩立：等待奖励弹窗结束并回到 #379",
             )
 
@@ -146,28 +146,28 @@ class WeeklyHanliTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少周常_韩立资产树路径，无法执行作业")
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         transition_timeout = float(payload.get("transition_timeout_seconds") or 15.0)
         ocr_timeout = float(payload.get("ocr_timeout_seconds") or 15.0)
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 0.8))
         reward_wait_seconds = max(5.0, float(payload.get("reward_wait_seconds") or 5.0))
         max_gift_claims = max(1, min(100, int(payload.get("max_gift_claims") or 20)))
 
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             34,
             "聊天",
             332,
             timeout=transition_timeout,
             label="周常_韩立：等待聊天页 #332",
         )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             332,
             "通讯录",
             333,
             timeout=transition_timeout,
             label="周常_韩立：等待通讯录 #333",
         )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             333,
             "仙缘",
             334,
@@ -176,35 +176,35 @@ class WeeklyHanliTaskMixin:
         )
 
         hanli = yield from self._wait_and_click_weekly_hanli_ocr_target(
-            runtime,
+            context,
             alternatives=("韩立",),
             label="周常_韩立：选择韩立",
             timeout_seconds=ocr_timeout,
             poll_seconds=poll_seconds,
         )
         private_chat = yield from self._wait_and_click_weekly_hanli_ocr_target(
-            runtime,
+            context,
             alternatives=("私聊", "传音"),
             label="周常_韩立：进入私聊",
             timeout_seconds=ocr_timeout,
             poll_seconds=poll_seconds,
         )
-        yield from runtime.wait_view(379, timeout=transition_timeout, label="周常_韩立：等待私聊页 #379")
+        yield from context.wait_scene(379, wait=transition_timeout, label="周常_韩立：等待私聊页 #379")
 
         gifts = yield from self._claim_weekly_hanli_gifts(
-            runtime,
+            context,
             max_claims=max_gift_claims,
             reward_wait_seconds=reward_wait_seconds,
             transition_timeout=transition_timeout,
         )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             379,
             "返回",
             334,
             timeout=transition_timeout,
             label="周常_韩立：从私聊返回 #334",
         )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             334,
             "返回",
             34,

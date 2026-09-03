@@ -552,6 +552,36 @@ def _collect_xiaoe_punch_home_activities(tab: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
 
 
+def _expand_xiaoe_punch_home_page(tab: Any, *, page_size: int = 100) -> bool:
+    """Expand the activity list before matching a monthly course.
+
+    Xiaoe defaults this page to ten rows, while monthly attendance activities
+    are often created well ahead of their start date and can therefore fall
+    onto page two.  Selecting the largest supported page keeps discovery
+    deterministic without teaching callers how to manipulate Xiaoe's UI.
+    """
+
+    opened = bool(tab.run_js("""
+    const select = document.querySelector('.ss-pagination-select');
+    if (!select) return false;
+    select.click();
+    return true;
+    """))
+    if not opened:
+        return False
+
+    label = f"{int(page_size)} 条"
+    choose_script = """
+    const label = __LABEL__;
+    const option = Array.from(document.querySelectorAll('.ss-select-dropdown__item'))
+      .find(el => (el.innerText || el.textContent || '').trim() === label);
+    if (!option) return false;
+    option.click();
+    return true;
+    """.replace("__LABEL__", json.dumps(label, ensure_ascii=False))
+    return _wait_until(tab, lambda: bool(tab.run_js(choose_script)), timeout=3, interval=0.15)
+
+
 def _dismiss_xiaoe_clockin_onboarding(tab: Any) -> bool:
     """Dismiss Xiaoe's first-visit clockin guide when it covers the activity list."""
 
@@ -621,6 +651,15 @@ def detect_xiaoe_attendance_clockin_activities_browser(
             raise ClockinLinkDetectionError(
                 "小鹅通打卡首页已打开，但没有读取到任何活动；请检查登录状态、首次引导弹窗或页面结构。"
             )
+        initial_activity_count = len(activities)
+        if _expand_xiaoe_punch_home_page(tab):
+            _wait_until(
+                tab,
+                lambda: len(_collect_xiaoe_punch_home_activities(tab)) > initial_activity_count,
+                timeout=10,
+                interval=0.35,
+            )
+            activities = _collect_xiaoe_punch_home_activities(tab)
         selection = choose_attendance_clockin_activities(
             activities,
             target_keywords=target_keywords,

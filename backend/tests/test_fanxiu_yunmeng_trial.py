@@ -83,7 +83,7 @@ def test_yunmeng_reward_guard_ranks_follow_effective_reward_config(tmp_path) -> 
     )
 
     tiers = load_yunmeng_rank_reward_tiers(
-        rank_activity_id=210801,
+        reward_activity_id=210801,
         event_date="2026-08-02",
         export_root=tmp_path,
     )
@@ -125,7 +125,7 @@ def test_rank_reward_config_supports_composite_activity_date_conditions(tmp_path
     )
 
     tiers = load_yunmeng_rank_reward_tiers(
-        rank_activity_id=44307,
+        reward_activity_id=44307,
         event_date="2026-08-03",
         export_root=tmp_path,
     )
@@ -153,7 +153,7 @@ def test_rank_reward_config_supports_semicolon_sibling_activity_conditions(tmp_p
     )
 
     tiers = load_yunmeng_rank_reward_tiers(
-        rank_activity_id=1042811,
+        reward_activity_id=1042811,
         event_date="2026-08-05",
         export_root=tmp_path,
         server_day=473,

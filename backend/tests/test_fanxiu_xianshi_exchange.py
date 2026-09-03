@@ -4,14 +4,16 @@ from datetime import datetime
 
 import pytest
 
+import backend.core.fanxiu.data_annotation.tasks.xianshi_exchange as xianshi_exchange_module
+
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks.xianshi_exchange import (
     exchange_row_action_x,
@@ -141,7 +143,7 @@ def test_langyage_candidate_waits_for_scene_or_complete_detail_ocr():
             calls.append(("settle", seconds))
             yield None
 
-        def view_visible(self, scene_id):
+        def scene_visible(self, scene_id):
             return ("view", scene_id)
 
         def ocr_matches(self, predicate, **kwargs):
@@ -198,8 +200,8 @@ def test_langyage_excludes_immortal_art_tab_even_when_catalog_calls_it_gongfa():
 
 
 def test_both_jobs_are_single_standard_tuesday_0010_instances():
-    register_fanxiu_data_annotation_default_runtime_jobs()
-    tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 8, 12, 0, 0))
+    register_fanxiu_default_jobs()
+    tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 8, 12, 0, 0))
     expected = {
         "xianshi-zhenwuge": ("xianshi_zhenwuge", 10),
         "xianshi-langya-rankings": ("xianshi_langya_rankings", 20),
@@ -213,3 +215,78 @@ def test_both_jobs_are_single_standard_tuesday_0010_instances():
         assert task["dispatch_order"] == dispatch_order
         definition = get_fanxiu_data_annotation_task_cell_definition(task_type)
         assert definition is not None and definition.scheduler_supported is True
+
+
+def _finish(generator):
+    while True:
+        try:
+            next(generator)
+        except StopIteration as exc:
+            return exc.value
+
+
+def test_buy_quantity_reuses_caller_snapshot_but_keeps_post_click_and_final_reads(monkeypatch):
+    reads: list[int] = []
+    snapshots = iter(
+        (
+            {
+                "complete": True,
+                "showNum": 3,
+                "Price": 80,
+                "HadPrice": 1000,
+                "CanBuy": True,
+                "isEnough": True,
+            },
+            {
+                "complete": True,
+                "showNum": 3,
+                "Price": 80,
+                "HadPrice": 1000,
+                "CanBuy": True,
+                "isEnough": True,
+            },
+        )
+    )
+    monkeypatch.setattr(
+        xianshi_exchange_module,
+        "read_common_shop_buy_dialog_snapshot",
+        lambda: reads.append(1) or next(snapshots),
+    )
+    clicks: list[str] = []
+
+    class Runtime:
+        def click_shape_center(self, _scene, shape):
+            clicks.append(shape)
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+        def click_shape_center_then_scene(self, _scene, shape, _target, **_kwargs):
+            clicks.append(shape)
+            if False:
+                yield None
+
+    initial = {
+        "complete": True,
+        "showNum": 1,
+        "Price": 80,
+        "HadPrice": 1000,
+        "CanBuy": True,
+        "isEnough": True,
+    }
+    remaining = _finish(
+        XianshiExchangeTaskMixin()._buy_exchange_quantity(
+            Runtime(),
+            home_scene=469,
+            detail_scene=634,
+            quantity=3,
+            unit_price=80,
+            label="仙市_琅琊榜/测试",
+            initial_snapshot=initial,
+        )
+    )
+
+    assert len(reads) == 2
+    assert clicks == ["+", "+", "兑换（高风险）"]
+    assert remaining == 760

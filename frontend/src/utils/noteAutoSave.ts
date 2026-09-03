@@ -8,6 +8,21 @@ import {
   NOTE_LIFECYCLE_STAGE_DEFAULT,
   normalizeNoteCategories
 } from './noteSemantics';
+import {
+  areEditableNoteSnapshotsEqual,
+  getEditableNoteChangedFields,
+  mergeEditableNoteDraft,
+  type EditableNoteFieldName,
+} from './noteDraftMerge';
+
+export {
+  areEditableNoteSnapshotsEqual,
+  EDITABLE_NOTE_FIELD_NAMES,
+  getEditableNoteChangedFields,
+  mergeEditableNoteDraft,
+  type EditableNoteDraftMergeResult,
+  type EditableNoteFieldName,
+} from './noteDraftMerge';
 
 export type NoteCustomFieldType = 'string' | 'number' | 'boolean' | 'richtext';
 export type NoteCustomFieldStoredValue = string | number | boolean;
@@ -51,6 +66,18 @@ export interface EditableNotePatch {
 }
 
 export type EditableNoteExpectedFields = Partial<Omit<EditableNoteSnapshot, 'id'>>;
+
+export interface EditableNoteSaveConflict {
+  kind: 'conflict';
+  latestNote: NoteNode;
+  conflictingFields: EditableNoteFieldName[];
+}
+
+export type EditableNoteSaveResult = NoteNode | EditableNoteSaveConflict | void;
+
+export const isEditableNoteSaveConflict = (
+  result: EditableNoteSaveResult
+): result is EditableNoteSaveConflict => Boolean(result && 'kind' in result && result.kind === 'conflict');
 
 const normalizeText = (value: unknown) => value == null ? '' : String(value);
 const STANDARD_NUMBER_PATTERN = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/;
@@ -242,24 +269,6 @@ export const createEditableNoteSnapshot = (
 export const cloneEditableNoteSnapshot = (snapshot: EditableNoteSnapshot) =>
   JSON.parse(JSON.stringify(snapshot)) as EditableNoteSnapshot;
 
-export const areEditableNoteSnapshotsEqual = (
-  left: EditableNoteSnapshot,
-  right: EditableNoteSnapshot
-) => (
-  left.id === right.id
-  && left.title === right.title
-  && left.content === right.content
-  && left.weight === right.weight
-  && left.start_at === right.start_at
-  && left.primary_category === right.primary_category
-  && JSON.stringify(left.note_categories) === JSON.stringify(right.note_categories)
-  && left.note_form === right.note_form
-  && left.lifecycle_stage === right.lifecycle_stage
-  && left.color === right.color
-  && left.private_level === right.private_level
-  && JSON.stringify(left.custom_fields) === JSON.stringify(right.custom_fields)
-);
-
 export const buildEditableNotePatch = (
   snapshot: EditableNoteSnapshot,
   baseline: EditableNoteSnapshot | null
@@ -366,3 +375,8 @@ export const buildNoteDraftStorageKey = (noteId?: string | number | null, noteTi
   if (noteTitle && noteTitle.trim()) return `codeyun.note-draft.title.${noteTitle.trim()}`;
   return null;
 };
+
+export const buildScopedNoteDraftStorageKey = (
+  baseKey: string | null,
+  clientInstanceId: string
+) => baseKey ? `${baseKey}.client.${encodeURIComponent(clientInstanceId)}` : null;

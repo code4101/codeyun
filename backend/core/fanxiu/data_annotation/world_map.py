@@ -53,12 +53,12 @@ def _raw(value: Any) -> dict[str, Any]:
 
 
 def _shape_geometry(
-    runtime: Any,
+    context: Any,
     view_id: int,
     shape_title: str,
 ) -> tuple[Any, Any, float, float, float, float]:
-    view = runtime.view(view_id)
-    shape = runtime.shape(view, shape_title)
+    view = context.view(view_id)
+    shape = context.shape(view, shape_title)
     view_raw = _raw(view)
     shape_raw = _raw(shape)
     width = float(view_raw.get("width") or 0)
@@ -100,29 +100,29 @@ def _token_realm_candidates(
 
 
 def read_world_realm(
-    runtime: Any,
+    context: Any,
     *,
     frame_data_url: str | None = None,
 ) -> dict[str, Any]:
     """Read the current #425 realm from only its first character."""
 
     _view, _shape, x, y, w, h = _shape_geometry(
-        runtime,
+        context,
         425,
         "界面",
     )
     frame = (
         frame_data_url
         if isinstance(frame_data_url, str) and frame_data_url
-        else runtime.cur_frame(update=True)
+        else context.cur_frame(update=True)
     )
-    shared_tokens = runtime.ocr_tokens_in_shapes(
+    shared_tokens = context.ocr_tokens_in_shapes(
         425,
         ("界面",),
         padding=4,
         frame_data_url=frame,
     )
-    cropped_tokens = runtime.ocr_tokens_in_shapes(
+    cropped_tokens = context.ocr_tokens_in_shapes(
         425,
         ("界面",),
         padding=4,
@@ -186,13 +186,13 @@ def _token_center(token: dict[str, Any]) -> tuple[float, float]:
 
 
 def _ordered_target_point(
-    runtime: Any,
+    context: Any,
     *,
     current: str,
     target: str,
 ) -> tuple[float, float]:
     _view, _shape, x, y, w, h = _shape_geometry(
-        runtime,
+        context,
         426,
         "选项",
     )
@@ -207,7 +207,7 @@ def _ordered_target_point(
 
 
 def ensure_world_realm(
-    runtime: Any,
+    context: Any,
     target: Any,
     *,
     max_attempts: int = 3,
@@ -217,10 +217,10 @@ def ensure_world_realm(
     target_realm = normalize_world_realm(target)
     attempts: list[dict[str, Any]] = []
     for attempt in range(1, max(1, int(max_attempts)) + 1):
-        current = read_world_realm(runtime)
+        current = read_world_realm(context)
         if not current.get("ok"):
-            yield from runtime.wait_action_settle(0.5)
-            current = read_world_realm(runtime)
+            yield from context.wait_action_settle(0.5)
+            current = read_world_realm(context)
         if not current.get("ok"):
             raise RuntimeError(
                 "无法从 #425「界面」首字确认当前界面，"
@@ -236,9 +236,9 @@ def ensure_world_realm(
                 "attempts": attempts,
             }
 
-        runtime.click_shape_center(425, "界面")
-        yield from runtime.wait_action_settle(1.0)
-        option_tokens = runtime.ocr_tokens_in_shapes(
+        context.click_shape_center(425, "界面")
+        yield from context.wait_action_settle(1.0)
+        option_tokens = context.ocr_tokens_in_shapes(
             426,
             ("选项",),
             padding=4,
@@ -251,15 +251,15 @@ def ensure_world_realm(
             action_source = "target_first_character_ocr"
         else:
             click_x, click_y = _ordered_target_point(
-                runtime,
+                context,
                 current=current_realm,
                 target=target_realm,
             )
             action_source = "ordered_anchor_fallback"
-        runtime.click_frame_point(426, click_x, click_y)
-        yield from runtime.wait_action_settle(2.0)
-        runtime.clear_frame()
-        observed = read_world_realm(runtime)
+        context.click_frame_point(426, click_x, click_y)
+        yield from context.wait_action_settle(2.0)
+        context.clear_frame()
+        observed = read_world_realm(context)
         attempts.append(
             {
                 "attempt": attempt,
@@ -279,7 +279,7 @@ def ensure_world_realm(
                 "realm_name": WORLD_REALM_NAMES[target_realm],
                 "attempts": attempts,
             }
-        yield from runtime.wait_action_settle(0.5)
+        yield from context.wait_action_settle(0.5)
 
     raise RuntimeError(
         f"切换到{WORLD_REALM_NAMES[target_realm]}失败，"

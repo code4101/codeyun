@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from pyxllib.autogui import View
 
 
@@ -32,7 +32,7 @@ def _mail(
 ) -> dict:
     item = {
         "id": mail_id,
-        "runtime_status": status,
+        "execution_status": status,
         "present_in_runtime": True,
         "locked": locked,
     }
@@ -59,7 +59,7 @@ def _attachment_mail(
 
 
 def test_delete_read_mail_confirms_prompt_and_returns_to_mail():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     clicks = []
     waits = []
     views = iter((View({"id": 348, "shapes": []}), View({"id": 121, "shapes": []})))
@@ -70,7 +70,7 @@ def test_delete_read_mail_confirms_prompt_and_returns_to_mail():
             resolved_title = title if isinstance(title, str) else title.title
             clicks.append((resolved_scene, resolved_title))
 
-        def wait_view(self, *_args, **_kwargs):
+        def wait_scene(self, *_args, **_kwargs):
             waits.append(tuple(int(value) for value in _args))
             if False:
                 yield None
@@ -95,7 +95,7 @@ def test_delete_read_mail_confirms_prompt_and_returns_to_mail():
 
 
 def test_delete_read_mail_requires_strict_runtime_decrease(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     snapshot = {"complete": True, "items": [_mail("garbage", "claimed"), _mail("keep", "unclaimed")]}
     monkeypatch.setattr(runner, "_delete_read_mail_once", lambda *_args, **_kwargs: _return_scene(121))
     monkeypatch.setattr(runner, "_read_complete_precise_mail_snapshot", lambda *_args, **_kwargs: snapshot)
@@ -116,7 +116,7 @@ def _return_scene(scene_id):
 
 
 def test_delete_read_mail_cleans_multiple_batches_and_preserves_locked(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     snapshots = iter(
         (
             {"complete": True, "items": [_mail("g2", "no_attachment", read=True), _mail("locked", "claimed", locked=True), _attachment_mail("keep", desired_status="留存")]},
@@ -158,7 +158,7 @@ def test_delete_read_mail_cleans_multiple_batches_and_preserves_locked(monkeypat
 
 
 def test_unread_no_attachment_mail_is_neither_delete_target_nor_protected() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     unread = _mail("unread-info", "no_attachment", read=False)
     read = _mail("read-info", "no_attachment", read=True)
     snapshot = {"complete": True, "items": [unread, read]}
@@ -168,7 +168,7 @@ def test_unread_no_attachment_mail_is_neither_delete_target_nor_protected() -> N
 
 
 def test_delete_read_mail_allows_unread_no_attachment_side_effect(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     initial = {
         "complete": True,
         "items": [
@@ -196,7 +196,7 @@ def test_delete_read_mail_allows_unread_no_attachment_side_effect(monkeypatch):
 
 
 def test_delete_read_mail_is_idempotent_without_garbage(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     snapshot = {"complete": True, "items": [_mail("locked", "claimed", locked=True), _attachment_mail("keep", desired_status="留存")]}
     monkeypatch.setattr(
         runner,
@@ -216,7 +216,7 @@ def test_delete_read_mail_is_idempotent_without_garbage(monkeypatch):
 
 
 def test_selective_claim_reads_and_plans_before_any_delete(monkeypatch, tmp_path: Path):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     stop_event = _StopEvent()
     image121 = {
         "type": "image",
@@ -279,7 +279,7 @@ def test_selective_claim_reads_and_plans_before_any_delete(monkeypatch, tmp_path
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.behavior_tree_runtime.ensure_fanxiu_mail_table",
+        "backend.core.fanxiu.data_annotation.behavior_tree_executor.ensure_fanxiu_mail_table",
         lambda: None,
     )
     refresh_calls = []
@@ -292,10 +292,10 @@ def test_selective_claim_reads_and_plans_before_any_delete(monkeypatch, tmp_path
         "backend.core.fanxiu.data_annotation.tasks.mail.current_runtime_mail_sequence_snapshot",
         lambda *_args, **_kwargs: {"complete": True, "items": []},
     )
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: runtime)
 
-    def open_entry(_runtime):
-        calls.append("open")
+    def open_entry(_runtime, **kwargs):
+        calls.append(f"open:{kwargs.get('refresh_existing_list')}")
         if False:
             yield None
         return "success"
@@ -323,7 +323,7 @@ def test_selective_claim_reads_and_plans_before_any_delete(monkeypatch, tmp_path
     monkeypatch.setattr(runner, "_leave_mail_scene_to_world", leave_mail)
     monkeypatch.setattr(
         runner,
-        "_fanxiu_runtime_scene_text",
+        "_behavior_tree_context_scene_text",
         lambda *_args, **_kwargs: (121, 100.0, "frame", "邮件"),
     )
     monkeypatch.setattr(runner, "_mail_detail_overlay_scene", lambda *_args: None)
@@ -343,12 +343,75 @@ def test_selective_claim_reads_and_plans_before_any_delete(monkeypatch, tmp_path
     )
 
     assert result == "success"
-    assert calls == ["open", "leave", "open", "dynamic-plan"]
+    assert calls == ["open:True", "dynamic-plan"]
     assert refresh_calls[0]["force_refresh"] is True
 
 
+def test_mail_entry_refreshes_only_when_the_job_started_on_existing_list(
+    monkeypatch,
+    tmp_path: Path,
+):
+    runner = create_behavior_tree_executor()
+    image121 = {
+        "id": 121,
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {
+                "id": "back",
+                "kind": "point",
+                "title": "空白-返回",
+                "x": 0.03,
+                "y": 0.95,
+            }
+        ],
+    }
+    calls: list[str] = []
+
+    class FakeRuntime:
+        asset_tree_path = tmp_path / "asset-tree.json"
+        ctx = {"images": {121: image121}}
+        stop_event = threading.Event()
+
+    def no_green(*_args, **_kwargs):
+        if False:
+            yield None
+        return False
+
+    def leave(*_args, **_kwargs):
+        calls.append("leave")
+        if False:
+            yield None
+        return "success"
+
+    monkeypatch.setattr(runner, "_leave_green_bottle_to_world_if_present", no_green)
+    monkeypatch.setattr(
+        runner,
+        "_behavior_tree_context_scene_text",
+        lambda *_args, **_kwargs: (121, 100.0, "frame", "邮件"),
+    )
+    monkeypatch.setattr(runner, "_leave_mail_scene_to_world", leave)
+    monkeypatch.setattr(
+        runner,
+        "_open_mail_stable_entry",
+        lambda *_args, **_kwargs: calls.append("open") or "success",
+    )
+
+    result = runner._run_direct_runtime_action(
+        lambda: runner._open_mail_selective_claim_entry(
+            FakeRuntime(),
+            refresh_existing_list=True,
+        ),
+        stop_event=threading.Event(),
+        tick_seconds=0.01,
+    )
+
+    assert result == "success"
+    assert calls == ["leave", "open"]
+
+
 def test_mail_policy_snapshot_requires_explicit_complete_classification():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runner._validate_precise_mail_policy_snapshot(
         {
             "items": [
@@ -361,8 +424,30 @@ def test_mail_policy_snapshot_requires_explicit_complete_classification():
         reason="测试",
     )
 
+
     runner._validate_precise_mail_policy_snapshot(
         {"items": [_attachment_mail("unknown-retained", desired_status="留存", item_name="未知道具99")]},
+        reason="测试",
+    )
+
+    with pytest.raises(RuntimeError, match="存在未知道具"):
+        runner._validate_precise_mail_policy_snapshot(
+            {"items": [_attachment_mail("unknown-retained", desired_status="留存", item_name="未知道具99")]},
+            reason="终态测试",
+            require_all_classified=True,
+        )
+
+    always_claim_with_unknown = _attachment_mail(
+        "four-ke-with-unknown",
+        desired_status="可领",
+        action_policy="claim",
+        item_name="潜修心得·四刻",
+    )
+    always_claim_with_unknown["payload"]["mail_rewards"].append(
+        {"item_name": "未知道具 #400013004", "count": 1}
+    )
+    runner._validate_precise_mail_policy_snapshot(
+        {"items": [always_claim_with_unknown]},
         reason="测试",
     )
 
@@ -388,8 +473,59 @@ def test_mail_policy_snapshot_requires_explicit_complete_classification():
         )
 
 
+def test_mail_terminal_unknown_requests_deduplicated_engineering_assistance(monkeypatch):
+    runner = create_behavior_tree_executor()
+    captured = []
+
+    def fake_enqueue(evidence, **_kwargs):
+        captured.extend(evidence)
+        return {
+            "queued": True,
+            "signature": "unknown-signature",
+            "task_id": "codex-task",
+        }
+
+    monkeypatch.setattr(
+        "backend.core.fanxiu.client.unknown_item_assistance.enqueue_fanxiu_unknown_item_assistance",
+        fake_enqueue,
+    )
+    unknown = _attachment_mail(
+        "unknown-retained",
+        desired_status="留存",
+        item_name="未知道具 #999999",
+    )
+    unknown["payload"]["mail_rewards"][0].update(
+        item_id="999999",
+        type=0,
+        runtime_name_id=123456,
+    )
+
+    with pytest.raises(RuntimeError, match="拒绝领取并拒绝顺延到次日"):
+        runner._validate_mail_policy_with_unknown_assistance(
+            {"items": [unknown]},
+            reason="任务完成复查",
+            require_all_classified=True,
+        )
+
+    assert captured == [
+        {
+            "mail_id": "unknown-retained",
+            "item_id": "999999",
+            "reward_type": 0,
+            "item_type": "",
+            "item_type_id": None,
+            "item_sub_type_id": None,
+            "runtime_name_id": 123456,
+            "icon": "",
+            "use_condition": "",
+            "name_source": "",
+            "policy_resolution": "",
+        }
+    ]
+
+
 def test_mail_terminal_result_requires_claim_and_garbage_zero_contract():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runner._validate_precise_mail_terminal_result(
         {
             "result": "success",
@@ -430,7 +566,7 @@ def test_mail_terminal_result_requires_claim_and_garbage_zero_contract():
 
 
 def test_mail_detail_action_ocr_can_override_one_false_template_match(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image122 = {
         "type": "image",
         "number": 122,
@@ -496,7 +632,7 @@ def test_mail_detail_action_ocr_can_override_one_false_template_match(monkeypatc
 
 
 def test_mail_detail_uses_stable_detail_subgraph_when_combined_scene_is_unknown(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image122 = {
         "type": "image",
         "number": 122,
@@ -560,7 +696,7 @@ def test_mail_detail_uses_stable_detail_subgraph_when_combined_scene_is_unknown(
 
 
 def test_mail_detail_action_shape_disambiguates_base_list_projection():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     class Runtime:
         def shape_score(self, scene_id, title, **_kwargs):
@@ -570,7 +706,7 @@ def test_mail_detail_action_shape_disambiguates_base_list_projection():
 
 
 def test_mail_detail_action_shape_fails_closed_without_clear_margin():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     class Runtime:
         def shape_score(self, scene_id, title, **_kwargs):
@@ -580,7 +716,7 @@ def test_mail_detail_action_shape_fails_closed_without_clear_margin():
 
 
 def test_mail_detail_action_shape_requires_two_stable_reads(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image122 = {
         "type": "image",
         "number": 122,
@@ -647,7 +783,7 @@ def test_mail_detail_action_shape_requires_two_stable_reads(monkeypatch):
 
 
 def test_mail_detail_overlay_does_not_confuse_list_bulk_actions(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     monkeypatch.setattr(
         runner,
         "_identify_scene_number",

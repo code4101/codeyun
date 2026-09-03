@@ -15,7 +15,7 @@ class _Runtime:
     def __init__(self, events) -> None:
         self.events = events
 
-    def goto_view(self, scene):
+    def go_scene(self, scene):
         self.events.append(("goto", scene))
         yield None
 
@@ -30,7 +30,7 @@ class _Runner:
         self.runtime = _Runtime(events)
         self.mail_fails = mail_fails
 
-    def _fanxiu_runtime(self, _ctx, **_kwargs):
+    def _behavior_tree_context(self, _ctx, **_kwargs):
         return self.runtime
 
     def _log(self, level, message):

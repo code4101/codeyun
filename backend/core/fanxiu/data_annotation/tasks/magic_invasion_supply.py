@@ -150,16 +150,16 @@ def ensure_magic_tianyan_supply(
 ):
     """Open only the deterministic choice boxes needed to cover the shortfall."""
 
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
-    yield from runtime.goto_view(WORLD_SCENE)
-    yield from runtime.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
-    yield from runtime.wait_scene(
+    yield from context.go_scene(WORLD_SCENE)
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
+    yield from context.wait_scene(
         STORAGE_BAG_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="魔道入侵：等待储物袋补充天眼符",
     )
     before = dict(snapshot_reader())
@@ -180,7 +180,7 @@ def ensure_magic_tianyan_supply(
     if plan.needed and not box_name:
         raise RuntimeError("玩法榜甄选·魔道缺少稳定 Catalog 名称")
     adapter = StorageBagChoiceBoxGuiAdapter(
-        runtime=runtime,
+        context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards,
     )
@@ -210,10 +210,10 @@ def ensure_magic_tianyan_supply(
         raise RuntimeError(
             f"魔道补给后天眼符 {tianyan_after} != 精确期望 {expected_after}"
         )
-    yield from runtime.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
-    yield from runtime.wait_scene(
+    yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
+    yield from context.wait_scene(
         WORLD_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="魔道入侵：补给后返回世界",
     )
     return {

@@ -714,7 +714,7 @@
           <el-input
             v-model="addRepoForm.cwd"
             clearable
-            placeholder="例如 D:\home\chenkunze\slns\codeyun"
+            placeholder="例如 C:\home\chenkunze\slns\codeyun"
           />
         </el-form-item>
       </el-form>

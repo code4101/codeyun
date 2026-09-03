@@ -7,7 +7,7 @@ from sqlmodel import Session
 from backend.core.access.auth import verify_api_token
 from backend.core.runtime.management import (
     add_builtin_runtime_job,
-    build_runtime_status,
+    build_execution_status,
     configure_builtin_runtime_item_autostart,
     configure_builtin_runtime_job_schedule,
     delete_builtin_runtime_job,
@@ -53,11 +53,11 @@ def list_runtime_job_catalog(
 
 
 @router.get("/status")
-def get_runtime_status(
+def get_execution_status(
     token_device: BaseDevice = Depends(verify_api_token),
     session: Session = Depends(get_session),
 ):
-    return build_runtime_status(session, token_device.id)
+    return build_execution_status(session, token_device.id)
 
 
 @router.get("/system-metrics")

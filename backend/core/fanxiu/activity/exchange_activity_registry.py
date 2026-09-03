@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 from typing import Any
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from backend.models import FanxiuExchangeActivity
 
@@ -17,6 +17,7 @@ from backend.core.fanxiu.activity.exchange_activity_spec import (
     PageContract,
     RankActivityIdBinding,
     RankScopeRole,
+    RankScopeIdentity,
     RankScopeSpec,
     RankSubject,
     ResourceRankingResourceAdapter,
@@ -80,6 +81,32 @@ class XianyuanDuokuiExchangeActivityAdapter:
 
 
 class XutianPalaceExchangeActivityAdapter:
+    def resolve_occurrence_rank_identities(
+        self,
+        *,
+        game_activity_id: int,
+        cross_count: int,
+    ) -> Mapping[str, RankScopeIdentity]:
+        del game_activity_id
+        from backend.core.fanxiu.activity.xutian_palace_instrumentation import (
+            resolve_xutian_palace_reward_activity_id,
+        )
+
+        runtime_ids = {
+            "personal": 80000 + int(cross_count) * 100 + 91,
+            "plane": 80000 + int(cross_count) * 100 + 71,
+        }
+        return {
+            scope: RankScopeIdentity(
+                scope=scope,
+                runtime_rank_activity_id=runtime_id,
+                reward_activity_id=resolve_xutian_palace_reward_activity_id(
+                    cross_count=int(cross_count), ranking_scope=scope
+                ),
+            )
+            for scope, runtime_id in runtime_ids.items()
+        }
+
     def materialize_activity(self, session: Session) -> str:
         from backend.core.fanxiu.activity.xutian_palace_instrumentation import (
             ensure_xutian_palace_activity,
@@ -149,6 +176,7 @@ class BeastAbyssExchangeActivityAdapter:
         return collect_and_store_beast_abyss_activity(
             session,
             activity_id=activity_id,
+            collect_runtime_rank=False,
         )
 
 
@@ -166,15 +194,26 @@ class TiandiYijuExchangeActivityAdapter:
         },
     }
 
-    def resolve_occurrence_rank_activity_ids(
+    def resolve_occurrence_rank_identities(
         self,
         *,
-        activity_id: int,
-    ) -> Mapping[str, int]:
+        game_activity_id: int,
+        cross_count: int,
+    ) -> Mapping[str, RankScopeIdentity]:
         try:
-            return self._OCCURRENCES[int(activity_id)]["rank_ids"]
+            occurrence = self._OCCURRENCES[int(game_activity_id)]
         except KeyError as exc:
-            raise ValueError(f"天地弈局活动 {int(activity_id)} 不是可物化棋局") from exc
+            raise ValueError(f"天地弈局活动 {int(game_activity_id)} 不是可物化棋局") from exc
+        if int(occurrence["cross_count"]) != int(cross_count):
+            raise ValueError("天地弈局活动与跨数不一致")
+        return {
+            scope: RankScopeIdentity(
+                scope=scope,
+                runtime_rank_activity_id=int(runtime_id),
+                reward_activity_id=int(runtime_id),
+            )
+            for scope, runtime_id in occurrence["rank_ids"].items()
+        }
 
     def resolve_occurrence_shop(
         self,
@@ -371,7 +410,7 @@ def _rank_scope(
         scope=scope,
         required=required,
         accepted_vo_types=(vo_type,),
-        activity_id=binding,
+        runtime_rank_activity_id=binding,
         label=label,
         role=role,
         subject=subject,
@@ -870,7 +909,23 @@ def materialize_registered_exchange_activity(
     adapter = spec.adapter
     if not isinstance(adapter, ExchangeActivityMaterializer):
         return None
-    return adapter.materialize_activity(session)
+    try:
+        return adapter.materialize_activity(session)
+    except ValueError:
+        # A page GET is also the history reader.  Absence of a currently
+        # materializable Runtime occurrence must not make already-persisted
+        # instances disappear behind HTTP 500.
+        latest = session.exec(
+            select(FanxiuExchangeActivity)
+            .where(FanxiuExchangeActivity.activity_type == activity_type)
+            .order_by(
+                FanxiuExchangeActivity.start_date.desc(),
+                FanxiuExchangeActivity.updated_at.desc(),
+            )
+        ).first()
+        if latest is not None:
+            return latest.id
+        raise
 
 
 def resolve_registered_occurrence_shop(
@@ -891,15 +946,40 @@ def resolve_registered_occurrence_shop(
     return spec.shop
 
 
-def resolve_registered_occurrence_rank_activity_ids(
+def resolve_registered_occurrence_rank_identities(
     *,
     activity_type: str,
-    activity_id: int,
-) -> Mapping[str, int] | None:
-    adapter = get_exchange_activity_spec(activity_type).adapter
+    game_activity_id: int,
+    cross_count: int,
+    activity_follow: tuple[int, ...] = (),
+) -> Mapping[str, RankScopeIdentity]:
+    """Resolve all rank namespaces for one concrete game occurrence."""
+
+    spec = get_exchange_activity_spec(activity_type)
+    adapter = spec.adapter
     if isinstance(adapter, ExchangeOccurrenceRankAdapter):
-        return adapter.resolve_occurrence_rank_activity_ids(activity_id=int(activity_id))
-    return None
+        return adapter.resolve_occurrence_rank_identities(
+            game_activity_id=int(game_activity_id),
+            cross_count=int(cross_count),
+        )
+    result: dict[str, RankScopeIdentity] = {}
+    for scope in spec.rank_scopes:
+        try:
+            runtime_id = scope.runtime_rank_activity_id.resolve(
+                activity_follow=activity_follow,
+                activity_id=int(game_activity_id),
+                cross_count=int(cross_count),
+            )
+        except ValueError:
+            if scope.required:
+                raise
+            continue
+        result[scope.scope] = RankScopeIdentity(
+            scope=scope.scope,
+            runtime_rank_activity_id=runtime_id,
+            reward_activity_id=runtime_id if scope.reward_tiers_enabled else None,
+        )
+    return result
 
 
 def load_registered_resource_ranking_tasks(

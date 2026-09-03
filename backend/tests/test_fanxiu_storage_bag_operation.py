@@ -9,8 +9,8 @@ from backend.core.fanxiu.data_annotation import default_jobs
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks import storage_bag_operation
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_operation import (
@@ -40,7 +40,7 @@ class _Runtime:
         self.toast_reads = 0
         self.calls = []
 
-    def goto_view(self, scene):
+    def go_scene(self, scene):
         self.calls.append(("goto", scene))
         self.scene = scene
         yield None
@@ -116,7 +116,7 @@ class _Runner:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    def _fanxiu_runtime(self, ctx, asset_tree_path, *, stop_event):
+    def _behavior_tree_context(self, ctx, asset_tree_path, *, stop_event):
         return self.runtime
 
 
@@ -387,6 +387,11 @@ def test_quick_panel_accepts_shape_contract_when_title_identity_is_missing():
         def __init__(self):
             super().__init__([])
             self.scene = 999
+            self.ocr_calls = 0
+
+        def ocr_text(self, frame):
+            self.ocr_calls += 1
+            return ""
 
         def current_scene(self, scenes, *, frame_data_url):
             return None, 0, None
@@ -403,7 +408,57 @@ def test_quick_panel_accepts_shape_contract_when_title_identity_is_missing():
     result = _consume(_wait_quick_operation_panel(runtime, timeout=1.0))
 
     assert result["evidence"] == "panel_shape_contract"
+    assert runtime.ocr_calls == 0
     assert not [call for call in runtime.calls if call[0] in {"click", "checkbox"}]
+
+
+def test_quick_panel_scene_success_skips_full_frame_ocr():
+    runtime = _Runtime([])
+    runtime.scene = 526
+    ocr_calls = 0
+
+    def ocr_text(frame):
+        nonlocal ocr_calls
+        ocr_calls += 1
+        return ""
+
+    runtime.ocr_text = ocr_text
+
+    result = _consume(_wait_quick_operation_panel(runtime, timeout=1.0))
+
+    assert result["evidence"] == "scene_526"
+    assert ocr_calls == 0
+
+
+def test_quick_panel_timeout_runs_one_last_frame_ocr_for_diagnostics(monkeypatch):
+    class Runtime(_Runtime):
+        def __init__(self):
+            super().__init__([])
+            self.scene = 999
+            self.ocr_calls = []
+
+        def current_scene(self, scenes, *, frame_data_url):
+            return None, 0, None
+
+        def shape_matches(self, scene, title, *, frame_data_url):
+            return None
+
+        def ocr_text(self, frame):
+            self.ocr_calls.append(frame)
+            return " 面板仍在加载 "
+
+    runtime = Runtime()
+    moments = iter((0.0, 0.5, 1.0))
+    monkeypatch.setattr(
+        storage_bag_operation.time,
+        "perf_counter",
+        lambda: next(moments),
+    )
+
+    with pytest.raises(TimeoutError, match="last_ocr='面板仍在加载'"):
+        _consume(_wait_quick_operation_panel(runtime, timeout=1.0))
+
+    assert runtime.ocr_calls == ["frame-999"]
 
 
 def test_shape_contract_restores_526_for_observe_and_fixed_point(monkeypatch):
@@ -449,7 +504,7 @@ def test_next_time_is_following_day_at_0100():
 
 
 def test_storage_bag_cell_is_independent_daily_standard_job():
-    default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    default_jobs.register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "storage_bag_operation"
     )
@@ -458,7 +513,7 @@ def test_storage_bag_cell_is_independent_daily_standard_job():
     assert definition.standard_job is True
     assert definition.standard_job_id == "storage-bag-operation"
     assert definition.standard_job_description == "每日"
-    tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 11, 0, 0))
+    tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 11, 0, 0))
     matches = [task for task in tasks if task["id"] == "storage-bag-operation"]
     assert len(matches) == 1
     assert matches[0]["task_type"] == "storage_bag_operation"
@@ -468,7 +523,7 @@ def test_storage_bag_cell_is_independent_daily_standard_job():
 
 
 def test_storage_bag_success_persists_following_daily_trigger(monkeypatch):
-    default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    default_jobs.register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "storage_bag_operation"
     )

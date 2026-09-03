@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from backend.core.fanxiu.activity import ranking_reconcile
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
-from backend.models import FanxiuExchangeActivity
+from backend.models import FanxiuExchangeActivity, FanxiuExchangeShopItem
 
 
 def _session() -> Session:
@@ -64,23 +64,23 @@ def test_seed_materializes_tiandi_phase_specific_rank_and_shop_contracts() -> No
         server_contract = (
             server.game_shop_base_id,
             server.currency_type,
-            dict(server.evidence["rank_scope_activity_ids"]),
+            dict(server.evidence["rank_scope_identities"]),
         )
         cross_contract = (
             cross.game_shop_base_id,
             cross.currency_type,
-            dict(cross.evidence["rank_scope_activity_ids"]),
+            dict(cross.evidence["rank_scope_identities"]),
         )
 
     assert server_contract[:2] == (90000, 11)
     assert server_contract[2] == {
-        "personal": 90101,
-        "alliance": 90102,
+        "personal": {"runtime_rank_activity_id": 90101, "reward_activity_id": 90101},
+        "alliance": {"runtime_rank_activity_id": 90102, "reward_activity_id": 90102},
     }
     assert cross_contract[:2] == (90002, 13)
     assert cross_contract[2] == {
-        "personal": 90808,
-        "alliance": 90813,
+        "personal": {"runtime_rank_activity_id": 90808, "reward_activity_id": 90808},
+        "alliance": {"runtime_rank_activity_id": 90813, "reward_activity_id": 90813},
     }
 
 
@@ -122,6 +122,44 @@ def test_seed_resolves_server_and_cross_magic_shop_independently(monkeypatch) ->
         assert "period_close_time" not in server.evidence
 
 
+def test_seed_existing_occurrence_preserves_observation_state(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "_activity_definition_index",
+        lambda: {700014: {"id": 700014, "follow": [7000114, 7000214]}},
+    )
+    occurrence = _magic_occurrence(cross_count=8)
+    with _session() as session:
+        activity = ranking_reconcile.seed_ranking_occurrence(
+            session,
+            occurrence,
+            captured_at="2026-08-21T00:30:00+08:00",
+        )
+        activity.captured_at = "2026-08-21T23:42:58+08:00"
+        activity.source_kind = "beast_abyss_runtime_collection"
+        activity.instance_data = {
+            **dict(activity.instance_data or {}),
+            "beast_abyss_initialization": {"status": "not_started"},
+            "custom_state": {"keep": True},
+        }
+        session.add(activity)
+        session.flush()
+
+        reseeded = ranking_reconcile.seed_ranking_occurrence(
+            session,
+            occurrence,
+            captured_at="2026-08-22T00:30:00+08:00",
+        )
+
+        assert reseeded.captured_at == "2026-08-21T23:42:58+08:00"
+        assert reseeded.source_kind == "beast_abyss_runtime_collection"
+        assert reseeded.instance_data["beast_abyss_initialization"] == {
+            "status": "not_started"
+        }
+        assert reseeded.instance_data["custom_state"] == {"keep": True}
+        assert reseeded.instance_data["world_level"] == occurrence.world_level
+
+
 def test_reconcile_projects_static_tiers_without_live_rank(monkeypatch) -> None:
     collected: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -137,8 +175,12 @@ def test_reconcile_projects_static_tiers_without_live_rank(monkeypatch) -> None:
     monkeypatch.setattr(
         ranking_reconcile,
         "collect_registered_exchange_activity",
-        lambda _session, *, activity_type, activity_id: collected.append(
-            (activity_type, activity_id)
+        lambda _session, *, activity_type, activity_id: (
+            collected.append((activity_type, activity_id))
+            or SimpleNamespace(
+                shop_refresh_status="updated",
+                shop_refresh_reason="",
+            )
         ),
     )
     monkeypatch.setattr(
@@ -164,6 +206,170 @@ def test_reconcile_projects_static_tiers_without_live_rank(monkeypatch) -> None:
     assert result["snapshot_kind"] == "running"
     assert collected == [("magic-invasion", "magic-invasion-8-2026-08-21-2026-08-21")]
     assert result["collect_error"] == ""
+
+
+def test_reconcile_does_not_complete_when_shop_collection_was_retained(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "_activity_definition_index",
+        lambda: {700014: {"id": 700014, "follow": [7000114, 7000214]}},
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "materialize_registered_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "collect_registered_exchange_activity",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            shop_refresh_status="retained",
+            shop_refresh_reason="目标活动兑换页当前未打开，无法读取 V_ShowList",
+        ),
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "list_exchange_rankings",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            reward_tiers=[object()],
+            loaded_entry_count=0,
+            declared_rank_count=0,
+            complete=False,
+        ),
+    )
+
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _magic_occurrence(cross_count=8),
+            captured_at="2026-08-21T00:30:00+08:00",
+        )
+
+    assert result["status"] == "blocked"
+    assert result["facts"]["shop"] == "retained"
+    assert result["facts"]["shop_refresh_status"] == "retained"
+    assert "V_ShowList" in result["message"]
+
+
+def test_reconcile_does_not_complete_without_required_reward_tiers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "_activity_definition_index",
+        lambda: {700014: {"id": 700014, "follow": [7000114, 7000214]}},
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "materialize_registered_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "collect_registered_exchange_activity",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            shop_refresh_status="updated",
+            shop_refresh_reason="",
+        ),
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "list_exchange_rankings",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            reward_tiers=[],
+            loaded_entry_count=0,
+            declared_rank_count=0,
+            complete=False,
+        ),
+    )
+
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _magic_occurrence(cross_count=8),
+            captured_at="2026-08-21T00:30:00+08:00",
+        )
+
+    assert result["status"] == "blocked"
+    assert result["facts"]["shop"] == "updated"
+    assert "榜单奖励档次本次未加载" in result["message"]
+
+
+def test_reconcile_accepts_occurrence_shop_snapshot_covering_checkpoint_watermark(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "_activity_definition_index",
+        lambda: {700014: {"id": 700014, "follow": [7000114, 7000214]}},
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "materialize_registered_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def retain_after_open(session, *, activity_type, activity_id):
+        assert activity_type == "magic-invasion"
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        assert activity is not None
+        activity.evidence = {
+            **dict(activity.evidence or {}),
+            "shop_snapshot_captured_at": "2026-08-21T00:31:00+08:00",
+            "refresh_status": {
+                "shop": "retained",
+                "shop_reason": "目标活动兑换页当前未打开，无法读取 V_ShowList",
+            },
+        }
+        session.add(activity)
+        session.add(
+            FanxiuExchangeShopItem(
+                activity_id=activity_id,
+                goods_id=1,
+                item_id=1,
+                name="已采商品",
+                token_cost=100,
+            )
+        )
+        session.commit()
+        return SimpleNamespace(
+            shop_refresh_status="retained",
+            shop_refresh_reason="目标活动兑换页当前未打开，无法读取 V_ShowList",
+            shop_snapshot_captured_at="2026-08-21T00:31:00+08:00",
+        )
+
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "collect_registered_exchange_activity",
+        retain_after_open,
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "list_exchange_rankings",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            reward_tiers=[object()],
+            loaded_entry_count=0,
+            declared_rank_count=0,
+            complete=False,
+        ),
+    )
+
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _magic_occurrence(cross_count=8),
+            captured_at="2026-08-21T00:40:00+08:00",
+            required_fact_watermark=datetime.fromisoformat(
+                "2026-08-21T00:30:00+08:00"
+            ),
+        )
+
+    assert result["status"] == "completed"
+    assert result["facts"]["shop"] == "updated"
+    assert result["facts"]["shop_refresh_status"] == "retained"
+    assert result["facts"]["shop_watermark_satisfied"] is True
 
 
 def test_reconcile_does_not_complete_when_live_collection_failed(monkeypatch) -> None:
@@ -267,9 +473,9 @@ def test_seed_inherits_only_explicit_global_monotonic_server_day_floor(monkeypat
         )
 
     assert activity.game_rank_activity_id == 43103
-    assert activity.evidence["rank_scope_activity_ids"] == {
-        "personal": 43103,
-        "plane": 43104,
+    assert activity.evidence["rank_scope_identities"] == {
+        "personal": {"runtime_rank_activity_id": 43103, "reward_activity_id": 43103},
+        "plane": {"runtime_rank_activity_id": 43104, "reward_activity_id": 43104},
     }
     assert activity.evidence["server_day"] == 31
     assert "monotonic lower bound" in activity.evidence["server_day_evidence"]

@@ -52,14 +52,14 @@ class DailyXuanhuangTaskMixin:
 
     def _daily_xuanhuang_open_counter(
         self,
-        runtime: Any,
+        context: Any,
         *,
         payload: dict[str, Any] | None,
         view_timeout: float,
         recommend_timeout_seconds: float,
     ):
-        yield from runtime.goto_view(69)
-        entry_result = yield from runtime.open_daily_entry(
+        yield from context.go_scene(69)
+        entry_result = yield from context.open_daily_entry(
             label="日常_玄荒",
             title_pattern="玄荒",
             progress_can_mark_done=False,
@@ -74,19 +74,19 @@ class DailyXuanhuangTaskMixin:
         if entry_result != "open":
             raise RuntimeError(f"日常_玄荒：无法打开日常入口，结果={entry_result!r}")
 
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             400,
-            timeout=view_timeout,
+            wait=view_timeout,
             label="日常_玄荒：等待玄荒入口 #400",
         )
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             400,
             "玄荒",
             timeout=view_timeout,
         )
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             417,
-            timeout=view_timeout,
+            wait=view_timeout,
             label="日常_玄荒：等待推荐窗口 #417",
         )
 
@@ -111,7 +111,7 @@ class DailyXuanhuangTaskMixin:
                 )
             return "done"
 
-        match = yield from runtime.wait_ocr_any_text(
+        match = yield from context.wait_ocr_any_text(
             417,
             ("推", "荐"),
             in_shapes=["窗口"],
@@ -122,12 +122,12 @@ class DailyXuanhuangTaskMixin:
             # #417 默认停在 3 级。角色战力不满足 3 级推荐条件时，
             # 当前列表即使完整左右遍历也不会出现“推”；切到 2 级后
             # 必须重新从头遍历同一个可加载窗口，再决定是否失败。
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 417,
                 "2级",
                 timeout=view_timeout,
             )
-            match = yield from runtime.wait_ocr_any_text(
+            match = yield from context.wait_ocr_any_text(
                 417,
                 ("推", "荐"),
                 in_shapes=["窗口"],
@@ -142,22 +142,22 @@ class DailyXuanhuangTaskMixin:
                 f"2级三轮往返滚动 {recommend_timeout_seconds * 3:g} 秒后"
                 "仍未识别到「推」或「荐」"
             )
-        runtime.click_frame_point(
+        context.click_frame_point(
             417,
             float(match.x) - float(match.w),
             float(match.y) + 2 * float(match.h),
         )
 
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             418,
-            timeout=view_timeout,
+            wait=view_timeout,
             label="日常_玄荒：等待挑战页 #418",
         )
         return "open"
 
     def _daily_xuanhuang_read_remaining(
         self,
-        runtime: Any,
+        context: Any,
         *,
         payload: dict[str, Any] | None = None,
         attempts: int,
@@ -184,8 +184,8 @@ class DailyXuanhuangTaskMixin:
 
         last_text = ""
         for attempt in range(attempts):
-            frame = runtime.cur_frame(update=True)
-            _numbers, last_text = runtime.ocr_numbers_in_shapes(
+            frame = context.cur_frame(update=True)
+            _numbers, last_text = context.ocr_numbers_in_shapes(
                 418,
                 ("次数",),
                 padding=16,
@@ -197,14 +197,14 @@ class DailyXuanhuangTaskMixin:
                 if 0 <= remaining <= total:
                     return remaining
             if attempt + 1 < attempts:
-                yield from runtime.wait_action_settle(retry_seconds)
+                yield from context.wait_action_settle(retry_seconds)
         raise RuntimeError(
             f"日常_玄荒：无法从 #418[次数] 稳定识别分子/分母，OCR={last_text!r}"
         )
 
     def _daily_xuanhuang_wait_battle_done(
         self,
-        runtime: Any,
+        context: Any,
         *,
         timeout_seconds: float,
         poll_seconds: float,
@@ -219,8 +219,8 @@ class DailyXuanhuangTaskMixin:
         next_status_at = started_at
         saw_battle_scene = False
         while True:
-            frame = runtime.cur_frame(update=True)
-            scene_id, _score, _frame = runtime.current_scene(
+            frame = context.cur_frame(update=True)
+            scene_id, _score, _frame = context.current_scene(
                 [186, 419, 420],
                 frame_data_url=frame,
             )
@@ -246,8 +246,8 @@ class DailyXuanhuangTaskMixin:
                         status_persister(min_interval_seconds=2.0)
                 next_status_at = now + 30.0
             if now >= deadline:
-                final_frame = runtime.cur_frame(update=True)
-                final_scene, _score, _frame = runtime.current_scene(
+                final_frame = context.cur_frame(update=True)
+                final_scene, _score, _frame = context.current_scene(
                     [186, 419, 420],
                     frame_data_url=final_frame,
                 )
@@ -256,88 +256,88 @@ class DailyXuanhuangTaskMixin:
                 if final_scene in {186, 419}:
                     saw_battle_scene = True
                     deadline = time.monotonic() + timeout_seconds
-                    yield from runtime.wait_action_settle(poll_seconds)
+                    yield from context.wait_action_settle(poll_seconds)
                     continue
                 raise TimeoutError(
                     "日常_玄荒：连续无法识别战斗 #186/#419 或结算 #420 "
                     f"超过 {timeout_seconds:g} 秒"
                 )
-            yield from runtime.wait_action_settle(poll_seconds)
+            yield from context.wait_action_settle(poll_seconds)
 
     def _daily_xuanhuang_leave_finished_battle(
         self,
-        runtime: Any,
+        context: Any,
         *,
         view_timeout: float,
     ):
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             420,
             "离开",
             timeout=view_timeout,
         )
-        landing = yield from runtime.wait_view(
+        landing = yield from context.wait_scene(
             34,
             395,
             85,
-            timeout=max(30.0, view_timeout),
+            wait=max(30.0, view_timeout),
             label="日常_玄荒：离开战斗后等待世界 #34、副本 #395 或区域内页 #85",
         )
         if landing.id == 85:
             # Real #420 departure can land on the formally recognized
             # generic region interior. Use its own annotated Leave control;
             # do not wait for #34/#395 until the already-known #85 is gone.
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 85,
                 "离开",
                 timeout=view_timeout,
             )
-            region_landing = yield from runtime.wait_view(
+            region_landing = yield from context.wait_scene(
                 34,
                 86,
                 55,
-                timeout=max(30.0, view_timeout),
+                wait=max(30.0, view_timeout),
                 label="日常_玄荒：#85 离开后等待世界、确认或大地图",
             )
             if region_landing.id == 86:
-                yield from runtime.wait_click(86, "确认", timeout=view_timeout)
-                yield from runtime.wait_view(
+                yield from context.wait_click(86, "确认", timeout=view_timeout)
+                yield from context.wait_scene(
                     34,
-                    timeout=max(30.0, view_timeout),
+                    wait=max(30.0, view_timeout),
                     label="日常_玄荒：确认离开区域后等待世界 #34",
                 )
             elif region_landing.id == 55:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
         if landing.id == 395:
             # #395 与 #420 使用同一右侧「离开」按钮位置。复用既有
             # #420 shape 坐标，不修改资产树；该点击会进入通用 #86
             # 确认弹窗，然后才能真正返回世界。
-            runtime.click_shape_center(420, "离开")
-            confirm = yield from runtime.wait_view(
+            context.click_shape_center(420, "离开")
+            confirm = yield from context.wait_scene(
                 34,
                 86,
                 55,
-                timeout=max(30.0, view_timeout),
+                wait=max(30.0, view_timeout),
                 label="日常_玄荒：副本 #395 离开后等待确认、世界或大地图",
             )
             if confirm.id == 86:
-                yield from runtime.wait_click(
+                yield from context.wait_click(
                     86,
                     "确认",
                     timeout=view_timeout,
                 )
-                yield from runtime.wait_view(
+                yield from context.wait_scene(
                     34,
-                    timeout=max(30.0, view_timeout),
+                    wait=max(30.0, view_timeout),
                     label="日常_玄荒：确认离开副本后等待世界 #34",
                 )
             elif confirm.id == 55:
                 # 实机存在直接落到 #55「大地图」的分支；通用场景图
                 # 已能从 #55 安全返回 #34，复用它而不新增/修改标注。
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
 
     def _run_daily_xuanhuang_flow(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
         view_timeout = max(1.0, float(payload.get("view_timeout") or 60.0))
@@ -393,7 +393,7 @@ class DailyXuanhuangTaskMixin:
             # 作业入口必须先回答“当前实际在哪”，不能只把 #418 当作一次性
             # 候选探针；后者偶发漏判时会错误地先 goto #34，丢掉已在挑战页
             # 且次数为 0 的业务终态。
-            current_scene, _score, _frame = runtime.current_scene(update=True)
+            current_scene, _score, _frame = context.current_scene(update=True)
             if current_scene == 418:
                 start_from_counter = True
                 break
@@ -403,16 +403,16 @@ class DailyXuanhuangTaskMixin:
             if current_scene is not None:
                 break
             if attempt + 1 < current_scene_probe_attempts:
-                yield from runtime.wait_action_settle(current_scene_probe_retry_seconds)
+                yield from context.wait_action_settle(current_scene_probe_retry_seconds)
 
         if current_scene is None:
             # A long #186/#419 battle can finish between Scheduler attempts.
             # Its departure briefly renders a blank transition frame with no
             # actionable control. Treating that frame as a missing route makes
-            # goto_view(34) fail before the world page has time to appear.
+            # go_scene(34) fail before the world page has time to appear.
             # Wait only for existing safe anchors; this adds no asset identity
             # and performs no irreversible click during the transition.
-            resumed = yield from runtime.wait_view(
+            resumed = yield from context.wait_scene(
                 34,
                 418,
                 186,
@@ -422,7 +422,7 @@ class DailyXuanhuangTaskMixin:
                 395,
                 86,
                 55,
-                timeout=resume_transition_timeout_seconds,
+                wait=resume_transition_timeout_seconds,
                 label="日常_玄荒：等待战斗退出过渡落到已知页面",
             )
             current_scene = resumed.id
@@ -431,34 +431,34 @@ class DailyXuanhuangTaskMixin:
             elif current_scene in {186, 419, 420}:
                 resume_battle_scene = current_scene
             elif current_scene in {85, 395, 86, 55}:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
 
         while True:
             if resume_battle_scene is not None:
                 if resume_battle_scene != 420:
                     yield from self._daily_xuanhuang_wait_battle_done(
-                        runtime,
+                        context,
                         timeout_seconds=battle_timeout_seconds,
                         poll_seconds=battle_poll_seconds,
                     )
                 yield from self._daily_xuanhuang_leave_finished_battle(
-                    runtime,
+                    context,
                     view_timeout=view_timeout,
                 )
                 rounds_completed += 1
                 resume_battle_scene = None
                 continue
             if not start_from_counter:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 counter_state = yield from self._daily_xuanhuang_open_counter(
-                    runtime,
+                    context,
                     payload=payload,
                     view_timeout=view_timeout,
                     recommend_timeout_seconds=recommend_timeout_seconds,
                 )
                 if counter_state == "done":
-                    yield from runtime.goto_view(34)
-                    runtime.set_next_time(next_daily_xuanhuang_time())
+                    yield from context.go_scene(34)
+                    context.set_next_time(next_daily_xuanhuang_time())
                     return {
                         "result": "success",
                         "message": (
@@ -470,14 +470,14 @@ class DailyXuanhuangTaskMixin:
                     }
             start_from_counter = False
             remaining = yield from self._daily_xuanhuang_read_remaining(
-                runtime,
+                context,
                 payload=payload,
                 attempts=counter_attempts,
                 retry_seconds=counter_retry_seconds,
             )
             if remaining == 0:
-                yield from runtime.goto_view(34)
-                runtime.set_next_time(next_daily_xuanhuang_time())
+                yield from context.go_scene(34)
+                context.set_next_time(next_daily_xuanhuang_time())
                 return {
                     "result": "success",
                     "message": (
@@ -494,9 +494,9 @@ class DailyXuanhuangTaskMixin:
 
             # #418 的「前往」偶发会吞掉一次点击。不能在没有确认页面状态的
             # 情况下直接补点（挑战次数属于不可逆动作）；复用 Runtime 的
-            # wait_click_then_view：只有新帧仍可靠识别为源场景 #418 时才重试，
+            # wait_click_then_scene：只有新帧仍可靠识别为源场景 #418 时才重试，
             # 一旦已进入 #419/#420 或变成 unknown 就停止补点。
-            yield from runtime.wait_click_then_view(
+            yield from context.wait_click_then_scene(
                 418,
                 "前往",
                 186,
@@ -509,12 +509,12 @@ class DailyXuanhuangTaskMixin:
                 label="日常_玄荒：点击前往后等待战斗 #186/#419 或结算 #420",
             )
             yield from self._daily_xuanhuang_wait_battle_done(
-                runtime,
+                context,
                 timeout_seconds=battle_timeout_seconds,
                 poll_seconds=battle_poll_seconds,
             )
             yield from self._daily_xuanhuang_leave_finished_battle(
-                runtime,
+                context,
                 view_timeout=view_timeout,
             )
             rounds_completed += 1
@@ -530,12 +530,12 @@ class DailyXuanhuangTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_玄荒资产树路径，无法执行作业")
         return (
-            yield from self._execute_daily_runtime_task(
+            yield from self._execute_daily_task(
                 ctx,
                 stop_event,
                 payload,
                 task_type="daily_xuanhuang",
                 label="日常_玄荒",
-                flow=lambda runtime: self._run_daily_xuanhuang_flow(runtime, payload),
+                flow=lambda context: self._run_daily_xuanhuang_flow(context, payload),
             )
         )

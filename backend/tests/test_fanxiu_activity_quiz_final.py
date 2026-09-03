@@ -17,11 +17,11 @@ from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
-from backend.core.fanxiu.data_annotation.behavior_tree_control import read_scheduler_tasks
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_tasks
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks.activity_quiz_final import (
     FinalQuizOption,
@@ -135,7 +135,7 @@ def test_final_game_truth_is_persisted_without_fixed_option_order(tmp_path):
 
 
 def test_activity_quiz_final_is_manual_standard_one_shot_job(tmp_path):
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("activity_quiz_final")
     assert definition is not None
     assert definition.scheduler_supported is True
@@ -161,7 +161,7 @@ def test_activity_quiz_final_is_manual_standard_one_shot_job(tmp_path):
 
     default = next(
         item
-        for item in default_data_annotation_scheduler_tasks()
+        for item in default_kernel_scheduler_tasks()
         if item["task_type"] == "activity_quiz_final"
     )
     assert default["id"] == "activity-quiz-final"
@@ -210,7 +210,7 @@ def test_final_loop_clicks_current_answer_row_not_saved_position(monkeypatch):
     runtime = Runtime()
 
     class Runner:
-        def _fanxiu_runtime(self, _ctx, _path, *, stop_event):
+        def _behavior_tree_context(self, _ctx, _path, *, stop_event):
             assert stop_event.is_set() is False
             return runtime
 
@@ -218,7 +218,7 @@ def test_final_loop_clicks_current_answer_row_not_saved_position(monkeypatch):
         Runner(),
         {"asset_tree_path": Path("asset-tree.json")},
         {
-            "max_runtime_seconds": 1,
+            "max_execution_seconds": 1,
             "idle_after_click_seconds": 0,
             "native_wait_seconds": 0,
         },
@@ -283,14 +283,14 @@ def test_final_unknown_question_uses_outer_lane_as_advisory_hint(monkeypatch):
     runtime = Runtime()
 
     class Runner:
-        def _fanxiu_runtime(self, _ctx, _path, *, stop_event):
+        def _behavior_tree_context(self, _ctx, _path, *, stop_event):
             return runtime
 
     result = execute_activity_quiz_final_task(
         Runner(),
         {"asset_tree_path": Path("asset-tree.json")},
         {
-            "max_runtime_seconds": 0.35,
+            "max_execution_seconds": 0.35,
             "poll_seconds": 0.01,
             "ai_hint_interval_seconds": 0.03,
             "ai_hint_max_clicks": 2,
@@ -375,14 +375,14 @@ def test_final_missing_prompt_permanently_stops_current_question_hint(monkeypatc
     runtime = Runtime()
 
     class Runner:
-        def _fanxiu_runtime(self, _ctx, _path, *, stop_event):
+        def _behavior_tree_context(self, _ctx, _path, *, stop_event):
             return runtime
 
     result = execute_activity_quiz_final_task(
         Runner(),
         {"asset_tree_path": Path("asset-tree.json")},
         {
-            "max_runtime_seconds": 0.25,
+            "max_execution_seconds": 0.25,
             "poll_seconds": 0.01,
             "ai_hint_interval_seconds": 0.02,
             "ai_hint_max_clicks": 3,
@@ -458,13 +458,13 @@ def test_final_native_answer_clicks_current_shuffled_row(monkeypatch):
     runtime = Runtime()
 
     class Runner:
-        def _fanxiu_runtime(self, _ctx, _path, *, stop_event):
+        def _behavior_tree_context(self, _ctx, _path, *, stop_event):
             return runtime
 
     result = execute_activity_quiz_final_task(
         Runner(),
         {"asset_tree_path": Path("asset-tree.json")},
-        {"max_runtime_seconds": 1, "idle_after_click_seconds": 0},
+        {"max_execution_seconds": 1, "idle_after_click_seconds": 0},
         threading.Event(),
     )
 

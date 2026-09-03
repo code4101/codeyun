@@ -28,6 +28,7 @@ def finish(generator):
 def snapshot(*, claimable=(), claimed=()):
     return {
         "ok": True,
+        "available": True,
         "complete": True,
         "authorized_claim_task_ids": list(claimable),
         "claimed_task_ids": list(claimed),
@@ -47,8 +48,8 @@ class Runtime:
     def current_scene(self, _candidates, *, update=True):
         return self.scene, 100.0, "frame"
 
-    def wait_click_then_view(self, scene, shape, targets, **_kwargs):
-        self.actions.append(("wait_click_then_view", scene, shape, tuple(targets)))
+    def wait_click_then_scene(self, scene, shape, targets, **_kwargs):
+        self.actions.append(("wait_click_then_scene", scene, shape, tuple(targets)))
         self.scene = int(targets[0])
         if False:
             yield None
@@ -61,8 +62,8 @@ class Runtime:
         self.actions.append(("settle", seconds))
         yield None
 
-    def goto_view(self, scene):
-        self.actions.append(("goto_view", scene))
+    def go_scene(self, scene):
+        self.actions.append(("go_scene", scene))
         self.scene = int(scene)
         if False:
             yield None
@@ -123,11 +124,11 @@ def test_claimable_rung_is_verified_then_returns_to_explore():
 
     assert result["claimed_task_ids"] == [440222]
     assert runtime.actions == [
-        ("wait_click_then_view", 657, "任务", (664,)),
+        ("wait_click_then_scene", 657, "任务", (664,)),
         ("click", 664, "首条任务进度区"),
         ("settle", 1.2),
-        ("wait_click_then_view", 664, "兽渊探秘页签", (535,)),
-        ("goto_view", 657),
+        ("wait_click_then_scene", 664, "兽渊探秘页签", (535,)),
+        ("go_scene", 657),
     ]
 
 
@@ -148,16 +149,13 @@ def test_click_must_move_exact_task_into_claimed_ledger():
         )
 
 
-def test_native_prepare_runs_reward_check_before_auto_settings(monkeypatch):
+def test_native_prepare_does_not_couple_reward_maintenance(monkeypatch):
     from backend.core.fanxiu.data_annotation.tasks import beast_abyss_native_auto as module
 
     events = []
 
     def fake_claim(_runtime):
-        events.append("reward_check")
-        if False:
-            yield None
-        return {"checked": True}
+        raise AssertionError("奖励维护应由初始化编排层调用")
 
     def stop_after_reward(*_args, **_kwargs):
         events.append("observe")
@@ -179,4 +177,4 @@ def test_native_prepare_runs_reward_check_before_auto_settings(monkeypatch):
 
     with pytest.raises(RuntimeError, match="stop-after-reward"):
         finish(prepare_beast_abyss_native_auto(runtime, assets, request))
-    assert events == ["reward_check", "observe"]
+    assert events == ["observe"]

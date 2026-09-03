@@ -44,12 +44,12 @@ class TiandiYijuCountAssets:
 
 
 def read_tiandi_yiju_round_count(
-    runtime: Any,
+    context: Any,
     assets: TiandiYijuCountAssets,
 ) -> int:
     """Read one positive round count from #680's current OCR region."""
 
-    values, text = runtime.ocr_numbers_in_shapes(
+    values, text = context.ocr_numbers_in_shapes(
         assets.settings_scene_id,
         [assets.count_region],
         padding=0,
@@ -62,7 +62,7 @@ def read_tiandi_yiju_round_count(
 
 
 def set_tiandi_yiju_round_count(
-    runtime: Any,
+    context: Any,
     target: int,
     *,
     assets: TiandiYijuCountAssets | None = None,
@@ -75,7 +75,7 @@ def set_tiandi_yiju_round_count(
         raise ValueError("天地弈局禁止向右探测原生滑杆上限")
     return (
         yield from set_minimum_then_increment_count(
-            runtime,
+            context,
             assets or TiandiYijuCountAssets(),
             target,
             maximum=TIANDI_YIJU_MAX_BATCH_ROUNDS,
@@ -87,7 +87,7 @@ def set_tiandi_yiju_round_count(
 
 
 def set_tiandi_yiju_funded_rounds(
-    runtime: Any,
+    context: Any,
     desired: int,
     available: int,
     *,
@@ -100,16 +100,16 @@ def set_tiandi_yiju_funded_rounds(
     if target <= 0 or maximum <= 0 or target > maximum:
         raise ValueError("天地弈局目标次数必须位于 Runtime 可用次数内")
     source = assets or TiandiYijuCountAssets()
-    before = read_tiandi_yiju_round_count(runtime, source)
-    left_x, thumb_y = runtime.shape_center(
+    before = read_tiandi_yiju_round_count(context, source)
+    left_x, thumb_y = context.shape_center(
         source.settings_scene_id,
         source.count_slider_thumb,
     )
-    right_button_x, _right_button_y = runtime.shape_center(
+    right_button_x, _right_button_y = context.shape_center(
         source.settings_scene_id,
         source.count_increase,
     )
-    thumb_box = runtime.shape_box(
+    thumb_box = context.shape_box(
         source.settings_scene_id,
         source.count_slider_thumb,
     )
@@ -119,7 +119,7 @@ def set_tiandi_yiju_funded_rounds(
     span = right_x - left_x
     start_x = left_x + span * ((before - 1) / max(1, maximum - 1))
     target_x = left_x + span * ((target - 1) / max(1, maximum - 1))
-    runtime.drag_frame_point(
+    context.drag_frame_point(
         source.settings_scene_id,
         start_x,
         thumb_y,
@@ -127,8 +127,8 @@ def set_tiandi_yiju_funded_rounds(
         thumb_y,
         duration_ms=600,
     )
-    yield from runtime.wait_action_settle(0.8)
-    after = read_tiandi_yiju_round_count(runtime, source)
+    yield from context.wait_action_settle(0.8)
+    after = read_tiandi_yiju_round_count(context, source)
     if not 1 <= after <= maximum:
         raise RuntimeError(
             f"天地弈局比例拖动读回超出资源上限：after={after}, available={maximum}"

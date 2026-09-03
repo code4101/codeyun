@@ -73,7 +73,7 @@ def test_capture_paths_redecodes_when_digest_has_missing_target_stream(monkeypat
             ],
         }
 
-    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", fake_decode)
+    monkeypatch.setattr(worker, "decode_and_sync_behavior_tree_context_capture", fake_decode)
 
     result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
 
@@ -94,7 +94,7 @@ def test_capture_paths_records_actual_decoded_streams(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "_sync_decoded_record_db_after_decoded", lambda decoded: {"ok": True})
     monkeypatch.setattr(
         worker,
-        "decode_and_sync_fanxiu_runtime_capture",
+        "decode_and_sync_behavior_tree_context_capture",
         lambda *_args, **_kwargs: {
             "decoded_count": 1,
             "runtime_protocol_count": 0,
@@ -128,7 +128,7 @@ def test_capture_paths_skips_only_when_target_streams_are_decoded(monkeypatch, t
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0, 1])
     monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
     monkeypatch.setattr(worker, "_sync_decoded_record_db_after_decoded", lambda decoded: {"ok": True})
-    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda path, **kwargs: calls.append(Path(path)))
+    monkeypatch.setattr(worker, "decode_and_sync_behavior_tree_context_capture", lambda path, **kwargs: calls.append(Path(path)))
 
     result = worker.sync_fanxiu_capture_paths([pcap], max_streams=2)
 
@@ -152,7 +152,7 @@ def test_capture_paths_skips_decode_under_host_commit_pressure(monkeypatch, tmp_
     )
     monkeypatch.setattr(
         worker,
-        "decode_and_sync_fanxiu_runtime_capture",
+        "decode_and_sync_behavior_tree_context_capture",
         lambda path, **kwargs: calls.append(Path(path)) or {"decoded_count": 0, "runtime_protocol_count": 0, "worship_protocol_count": 0, "decoded": []},
     )
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [])
@@ -227,7 +227,7 @@ def test_capture_paths_reports_database_write_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda _path, *, max_streams: [0])
     monkeypatch.setattr(
         worker,
-        "decode_and_sync_fanxiu_runtime_capture",
+        "decode_and_sync_behavior_tree_context_capture",
         lambda *_args, **_kwargs: {
             "decoded_count": 1,
             "decoded": [{"stream": 0, "output_path": str(decoded_path), "record_id": "r0"}],
@@ -335,7 +335,7 @@ def test_catch_up_covers_flushed_segment_and_recent_boundary(monkeypatch, tmp_pa
 
 
 def test_packet_decode_pressure_thresholds_match_ocr_guard(monkeypatch):
-    from backend.core.fanxiu.runtime import mumu_control
+    from backend.core.fanxiu.client import mumu_control
 
     monkeypatch.delenv(worker.PACKET_DECODE_ALLOW_UNDER_COMMIT_PRESSURE_ENV, raising=False)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -1100,7 +1100,7 @@ def test_live_capture_backlog_caps_single_pass_scan_window(monkeypatch, tmp_path
     def fake_decode(*_args, **_kwargs):
         raise RuntimeError("force bounded failures")
 
-    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", fake_decode)
+    monkeypatch.setattr(worker, "decode_and_sync_behavior_tree_context_capture", fake_decode)
 
     result = worker.sync_fanxiu_live_capture_backlog(
         data_dir=tmp_path,
@@ -1192,7 +1192,7 @@ def test_live_capture_backlog_skips_pcaps_without_target_stream(monkeypatch, tmp
     monkeypatch.setattr(worker, "_sha256_file", lambda path: f"digest:{Path(path).name}")
     monkeypatch.setattr(worker, "_target_stream_ids_for_pcap", lambda path, *, max_streams: [])
     monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
-    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", lambda path, **_kwargs: decode_calls.append(Path(path)))
+    monkeypatch.setattr(worker, "decode_and_sync_behavior_tree_context_capture", lambda path, **_kwargs: decode_calls.append(Path(path)))
 
     result = worker.sync_fanxiu_live_capture_backlog(
         data_dir=tmp_path,
@@ -1226,7 +1226,7 @@ def test_live_capture_backlog_marks_partial_decode_as_gap(monkeypatch, tmp_path)
     monkeypatch.setattr(worker, "_sync_business_after_decoded", lambda decoded, data_dir=None: ({}, {"ok": True}))
     monkeypatch.setattr(
         worker,
-        "decode_and_sync_fanxiu_runtime_capture",
+        "decode_and_sync_behavior_tree_context_capture",
         lambda *_args, **_kwargs: {
             "decoded_count": 1,
             "runtime_protocol_count": 0,
@@ -1334,7 +1334,7 @@ def test_decode_runtime_capture_with_timeout_raises_quickly(monkeypatch, tmp_pat
         time.sleep(5)
         return {"ok": True}
 
-    monkeypatch.setattr(worker, "decode_and_sync_fanxiu_runtime_capture", slow_decode)
+    monkeypatch.setattr(worker, "decode_and_sync_behavior_tree_context_capture", slow_decode)
 
     started = time.time()
     try:

@@ -248,6 +248,7 @@ const LEGACY_SHEET_CELL_ACTION_LABEL_TYPES = new Map<string, keyof typeof SHEET_
 ])
 const EXCEL_IMPORT_RESET_BUTTON_LABEL = '清空原表数据后导入新表数据'
 const EXCEL_IMPORT_APPEND_BUTTON_LABEL = '添加新表数据'
+const EXCEL_IMPORT_SYNC_BUTTON_LABEL = '按名单同步并保留已有信息'
 const SHEET_CELL_ACTION_BUTTON_TRIGGER_GUARD_MS = 700
 const REGISTRATION_MATCH_RUN_POLL_MS = 2000
 const INITIAL_SHEET_ACTION_STATUS_REFRESH_DELAY_MS = 1600
@@ -1400,8 +1401,11 @@ const pageLoadedRowCount = ref(0)
 const pageRowIndexes = ref<number[] | null>(null)
 const pendingDeletedPageRowIndexes = ref<number[]>([])
 
-const storageKey = computed(() => (
+const legacyStorageKey = computed(() => (
   `notes.sheet.${props.sheetId ?? 'empty'}.page.${currentPage.value}.size.${pageSize.value}.draft.v3`
+))
+const storageKey = computed(() => (
+  `${legacyStorageKey.value}.client.${encodeURIComponent(getSaveClientInstanceId())}`
 ))
 
 let textMeasureContext: CanvasRenderingContext2D | null = null
@@ -2829,6 +2833,7 @@ const isNianzhuChuangguanWorkbook = computed(() => (
   || currentWorkbookTitle.value.includes(NIANZHU_CHUANGGUAN_TITLE_KEYWORD)
 ))
 const shouldShowExcelImportResetButton = computed(() => !isNianzhuChuangguanWorkbook.value)
+const shouldShowExcelImportSyncButton = computed(() => sheetTitle.value.trim() === '报名表')
 function resolveAttendanceCourseType(courseName: string): AttendanceCourseUpdateDataCourseType | null {
   if (courseName.includes('梵呗')) {
     return 'fanbei'
@@ -6469,6 +6474,9 @@ function handleExcelImportFileChange(event: Event) {
 }
 
 async function applyExcelImport(mode: NoteSheetExcelImportMode) {
+  if (excelImportRunning.value) {
+    return
+  }
   if (props.sheetId == null || !excelImportFile.value) {
     ElMessage.warning('请选择 Excel 文件')
     return
@@ -6506,7 +6514,9 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
     const warningSuffix = result.warnings.length ? `，${result.warnings[0]}` : ''
     const modeText = mode === 'append'
       ? `已添加 ${result.imported_count} 行新表数据`
-      : `已清空原表数据并导入 ${result.imported_count} 行新表数据`
+      : mode === 'sync'
+        ? `已按名单同步 ${result.imported_count} 名学员，移除 ${result.removed_existing_row_count} 名未列入名单人员`
+        : `已清空原表数据并导入 ${result.imported_count} 行新表数据`
     ElMessage.success(`${modeText}${extraColumnSuffix}${skippedDuplicateSuffix}${warningSuffix}`)
     closeExcelImportDialog(true)
   } catch (error) {
@@ -14270,6 +14280,13 @@ function readDraftPayload(): SheetDraftPayload | null {
   }
 
   try {
+    if (
+      window.localStorage.getItem(storageKey.value) == null
+      && window.localStorage.getItem(legacyStorageKey.value) != null
+    ) {
+      window.localStorage.setItem(storageKey.value, window.localStorage.getItem(legacyStorageKey.value) as string)
+      window.localStorage.removeItem(legacyStorageKey.value)
+    }
     const raw = window.localStorage.getItem(storageKey.value)
     if (!raw) {
       return null
@@ -20151,6 +20168,138 @@ function buildImmediateCellPatchOperations(records: SheetGridChangeRecord[], sou
   return operations.length ? operations : []
 }
 
+function rebaseCellValuePatchOperations(
+  document: SheetDocument,
+  operations: NoteSheetPatchOperation[],
+) {
+  const columnIds = Array.isArray(document.column_ids) ? document.column_ids : []
+  const rowIds = Array.isArray(document.row_ids) ? document.row_ids : []
+  const rebased: NoteSheetPatchOperation[] = []
+  const conflicts: Array<{
+    rowIndex: number
+    columnIndex: number
+    serverValue: unknown
+    localValue: unknown
+  }> = []
+
+  for (const operation of operations) {
+    if (operation.op !== 'set-cell-value') {
+      return null
+    }
+    const rowIdentityIndex = operation.row_id ? rowIds.indexOf(operation.row_id) : -1
+    const columnIdentityIndex = operation.column_id ? columnIds.indexOf(operation.column_id) : -1
+    const rowIndex = rowIdentityIndex >= 0 ? rowIdentityIndex : operation.row_index
+    const columnIndex = columnIdentityIndex >= 0 ? columnIdentityIndex : operation.column_index
+    if (
+      rowIndex < 0
+      || columnIndex < 0
+      || rowIndex >= document.rows.length
+      || columnIndex >= document.columns.length
+    ) {
+      return null
+    }
+    const serverValue = document.rows[rowIndex]?.[columnIndex] ?? null
+    rebased.push({
+      ...operation,
+      row_index: rowIndex,
+      column_index: columnIndex,
+      expected_value: serverValue,
+    })
+    conflicts.push({
+      rowIndex,
+      columnIndex,
+      serverValue,
+      localValue: operation.value,
+    })
+  }
+
+  return { operations: rebased, conflicts }
+}
+
+function buildCellPatchConflictMessage(
+  document: SheetDocument,
+  conflicts: Array<{
+    rowIndex: number
+    columnIndex: number
+    serverValue: unknown
+    localValue: unknown
+  }>,
+) {
+  const rows = conflicts.slice(0, 5).map((conflict) => {
+    const columnLabel = document.columns[conflict.columnIndex] || `第 ${conflict.columnIndex + 1} 列`
+    const visibleRowNumber = conflict.rowIndex + Math.max(Number(document.data_start_row || 0), 0) + 1
+    const serverText = normalizeCellValue(conflict.serverValue) || '空'
+    const localText = normalizeCellValue(conflict.localValue) || '空'
+    return `第 ${visibleRowNumber} 行「${columnLabel}」：服务器“${serverText}”，本地“${localText}”`
+  })
+  if (conflicts.length > rows.length) {
+    rows.push(`另有 ${conflicts.length - rows.length} 个冲突单元格`)
+  }
+  return `服务器和当前页面修改了相同单元格。\n\n${rows.join('\n')}`
+}
+
+async function resolveCellValuePatchConflict(
+  sheetId: number,
+  workbookId: number | null | undefined,
+  operations: NoteSheetPatchOperation[],
+  serial: number,
+) {
+  const remote = await fetchNoteSheetForCurrentView({
+    page: currentPage.value,
+    pageSize: pageSize.value,
+    paginate: paginationEnabled.value,
+    workbookId,
+    includeWorkbookContext: workbookId == null,
+  })
+  if (!remote) {
+    return false
+  }
+  const remoteDocument = normalizeSheetDocument(remote.document_json, {}, getDefaultSheetHeightMode())
+  const rebased = rebaseCellValuePatchOperations(remoteDocument, operations)
+  if (!rebased) {
+    return false
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      buildCellPatchConflictMessage(remoteDocument, rebased.conflicts),
+      '合并同时发生的单元格编辑',
+      {
+        confirmButtonText: '保留我的修改',
+        cancelButtonText: '使用服务器值',
+        type: 'warning',
+      },
+    )
+  } catch {
+    clearSaveTimer()
+    applyRemoteSheetDetail(remote)
+    sheetRemoteConflictActive = false
+    ElMessage.info('已使用服务器值')
+    return true
+  }
+
+  const retryResult = await patchNoteSheet(
+    sheetId,
+    {
+      base_version: Number(remote.version || 1),
+      ops: rebased.operations,
+      mutation_id: createSaveMutationId(),
+      client_instance_id: getSaveClientInstanceId(),
+    },
+    { workbookId },
+  )
+  sheetVersion.value = Number(retryResult.version || remote.version || sheetVersion.value || 1)
+  savedChangeSerial = Math.max(savedChangeSerial, serial)
+  sheetRemoteConflictActive = false
+  if (serial === changeSerial) {
+    clearDraftStorage()
+  } else {
+    persistDraftDocument(buildCurrentDocument())
+  }
+  ElMessage.success('已保留并保存我的修改')
+  return true
+}
+
 function queueImmediateSheetPatchSave(operations: NoteSheetPatchOperation[], failureMessage = '表格保存失败，已保留本地草稿') {
   if (props.sheetId == null || !operations.length) {
     return
@@ -20196,7 +20345,7 @@ function queueImmediateSheetPatchSave(operations: NoteSheetPatchOperation[], fai
         persistDraftDocument(buildCurrentDocument())
       }
     })
-    .catch((error) => {
+    .catch(async (error) => {
       console.warn('Failed to patch note sheet', JSON.stringify({
         status: getNoteSheetApiErrorStatus(error),
         detail: error?.response?.data?.detail,
@@ -20210,6 +20359,13 @@ function queueImmediateSheetPatchSave(operations: NoteSheetPatchOperation[], fai
       }), error)
       persistDraftDocument(buildCurrentDocument())
       if (getNoteSheetApiErrorStatus(error) === 409) {
+        try {
+          if (await resolveCellValuePatchConflict(sheetId, workbookId, operations, serial)) {
+            return
+          }
+        } catch (retryError) {
+          console.warn('Failed to resolve note sheet cell conflict', retryError)
+        }
         sheetRemoteConflictActive = true
         ElMessage.warning('当前修改位置已被其他页面或系统任务更新，已保留本地草稿，请刷新后合并')
       } else {
@@ -29500,6 +29656,16 @@ defineExpose({
               @click="applyExcelImport('reset')"
             >
               {{ EXCEL_IMPORT_RESET_BUTTON_LABEL }}
+            </el-button>
+            <el-button
+              v-if="shouldShowExcelImportSyncButton"
+              type="warning"
+              plain
+              :loading="excelImportRunningMode === 'sync'"
+              :disabled="excelImportRunning || !excelImportFile"
+              @click="applyExcelImport('sync')"
+            >
+              {{ EXCEL_IMPORT_SYNC_BUTTON_LABEL }}
             </el-button>
             <el-button
               type="primary"

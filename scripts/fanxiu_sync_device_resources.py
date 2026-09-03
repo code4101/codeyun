@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,10 @@ if str(REPO_ROOT) not in sys.path:
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_resource_root
 
 
-DEFAULT_ADB = Path(r"D:\TapTap\Support\android_emulator\engine\nx_device\12.0\shell\adb.exe")
+DEFAULT_ADB = Path(
+    os.environ.get("FANXIU_ADB_PATH")
+    or r"C:\TapTap\Support\android_emulator\engine\nx_device\12.0\shell\adb.exe"
+)
 DEFAULT_PACKAGE = "com.frxxcrjpwssc3.ggws"
 DEFAULT_PARTS = ("filelist.csv", "filelistVersion", "lscripts", "atlasnew")
 SYNC_PARTS = (*DEFAULT_PARTS, "ui", "Audio")

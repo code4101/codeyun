@@ -13,7 +13,7 @@ from backend.models import ZaohuaAlchemyRecipe, ZaohuaHerb
 
 
 CATALOG_SCHEMA_VERSION = 1
-DEFAULT_REVERSE_ROOT = Path(r"D:\home\chenkunze\data\m2607造化仙缘")
+DEFAULT_REVERSE_ROOT = Path(r"C:\home\chenkunze\data\m2607造化仙缘")
 
 
 def get_zaohua_reverse_root() -> Path:

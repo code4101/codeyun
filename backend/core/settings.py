@@ -163,6 +163,15 @@ class Settings:
         return self.data_dir
 
     @property
+    def backup_dir(self) -> Path:
+        """Archive root for recovery points, independently movable off the data disk."""
+
+        return _resolve_path(
+            os.getenv("CODEYUN_BACKUP_DIR"),
+            self.data_workspace_dir / "backups",
+        )
+
+    @property
     def is_production(self) -> bool:
         return self.environment == "production"
 

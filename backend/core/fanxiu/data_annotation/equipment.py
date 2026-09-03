@@ -12,7 +12,7 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
 )
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from pyxllib.autogui import frame_size as _runtime_frame_size
+from pyxllib.autogui import frame_size as _frame_size
 
 
 WORLD_VIEW_ID = 34
@@ -450,15 +450,15 @@ def _predict_equipment_point_from_level_sequence(
 
 
 def read_selected_equipment_strengthening(
-    runtime: Any,
+    context: Any,
     *,
     frame_data_url: str | None = None,
 ) -> EquipmentStrengtheningObservation:
     """Read the selected equipment only from #446 description/resource OCR."""
 
-    frame = frame_data_url or runtime.cur_frame(update=True)
+    frame = frame_data_url or context.cur_frame(update=True)
     description_text = str(
-        runtime.ocr_text_in_shapes(
+        context.ocr_text_in_shapes(
             EQUIPMENT_STRENGTHENING_VIEW_ID,
             ("描述",),
             padding=4,
@@ -466,14 +466,14 @@ def read_selected_equipment_strengthening(
         )
         or ""
     )
-    description_tokens = runtime.ocr_tokens_in_shapes(
+    description_tokens = context.ocr_tokens_in_shapes(
         EQUIPMENT_STRENGTHENING_VIEW_ID,
         ("描述",),
         padding=4,
         frame_data_url=frame,
     )
     resource_text = str(
-        runtime.ocr_text_in_shapes(
+        context.ocr_text_in_shapes(
             EQUIPMENT_STRENGTHENING_VIEW_ID,
             ("资源",),
             padding=4,
@@ -654,15 +654,15 @@ def _find_strengthening_center(
 
 
 def _click_world_equipment(
-    runtime: Any,
+    context: Any,
     *,
     max_attempts: int,
     retry_seconds: float,
 ) -> dict[str, Any]:
     last_tokens: list[dict[str, Any]] = []
     for attempt in range(1, max(1, int(max_attempts)) + 1):
-        frame = runtime.cur_frame(update=True)
-        last_tokens = runtime.ocr_tokens_in_shapes(
+        frame = context.cur_frame(update=True)
+        last_tokens = context.ocr_tokens_in_shapes(
             WORLD_VIEW_ID,
             ("下方菜单",),
             padding=4,
@@ -671,14 +671,14 @@ def _click_world_equipment(
         token = _find_world_equipment_token(last_tokens)
         if token is not None:
             x, y = _world_equipment_click_point(token)
-            runtime.click_frame_point(WORLD_VIEW_ID, x, y)
+            context.click_frame_point(WORLD_VIEW_ID, x, y)
             return {
                 "attempt": attempt,
                 "token": token,
                 "click": [x, y],
             }
         if attempt < max(1, int(max_attempts)):
-            yield from runtime.wait_action_settle(retry_seconds)
+            yield from context.wait_action_settle(retry_seconds)
     raise RuntimeError(
         "#34[下方菜单] 未识别到「装备」「装」或「备」，"
         f"OCR={last_tokens}"
@@ -686,15 +686,15 @@ def _click_world_equipment(
 
 
 def _click_strengthening_menu(
-    runtime: Any,
+    context: Any,
     *,
     max_attempts: int,
     retry_seconds: float,
 ) -> dict[str, Any]:
     last_tokens: list[dict[str, Any]] = []
     for attempt in range(1, max(1, int(max_attempts)) + 1):
-        frame = runtime.cur_frame(update=True)
-        last_tokens = runtime.ocr_tokens_in_shapes(
+        frame = context.cur_frame(update=True)
+        last_tokens = context.ocr_tokens_in_shapes(
             EQUIPMENT_VIEW_ID,
             ("菜单",),
             padding=4,
@@ -704,14 +704,14 @@ def _click_strengthening_menu(
         )
         point = _find_strengthening_center(last_tokens)
         if point is not None:
-            runtime.click_frame_point(EQUIPMENT_VIEW_ID, *point)
+            context.click_frame_point(EQUIPMENT_VIEW_ID, *point)
             return {
                 "attempt": attempt,
                 "tokens": last_tokens,
                 "click": list(point),
             }
         if attempt < max(1, int(max_attempts)):
-            yield from runtime.wait_action_settle(retry_seconds)
+            yield from context.wait_action_settle(retry_seconds)
     raise RuntimeError(
         "#445[菜单] 局部 OCR 未识别到竖排相邻的「强」「化」，"
         f"OCR={last_tokens}"
@@ -719,7 +719,7 @@ def _click_strengthening_menu(
 
 
 def ensure_equipment_strengthening(
-    runtime: Any,
+    context: Any,
     *,
     world_ocr_attempts: int = 3,
     strengthening_ocr_attempts: int = 3,
@@ -732,7 +732,7 @@ def ensure_equipment_strengthening(
     deliberately raised in place so callers retain the current game screen.
     """
 
-    scene_id, _score, _frame = runtime.current_scene(
+    scene_id, _score, _frame = context.current_scene(
         (EQUIPMENT_STRENGTHENING_VIEW_ID, EQUIPMENT_VIEW_ID, WORLD_VIEW_ID),
         update=True,
     )
@@ -746,33 +746,33 @@ def ensure_equipment_strengthening(
     actions: list[dict[str, Any]] = []
     if scene_id != EQUIPMENT_VIEW_ID:
         if scene_id != WORLD_VIEW_ID:
-            yield from runtime.goto_view(WORLD_VIEW_ID)
-        yield from runtime.wait_view(
+            yield from context.go_scene(WORLD_VIEW_ID)
+        yield from context.wait_scene(
             WORLD_VIEW_ID,
-            timeout=transition_timeout,
+            wait=transition_timeout,
             label="进入装备强化：等待世界 #34",
         )
         equipment_action = yield from _click_world_equipment(
-            runtime,
+            context,
             max_attempts=world_ocr_attempts,
             retry_seconds=retry_seconds,
         )
         actions.append({"step": "world_to_equipment", **equipment_action})
-        yield from runtime.wait_view(
+        yield from context.wait_scene(
             EQUIPMENT_VIEW_ID,
-            timeout=transition_timeout,
+            wait=transition_timeout,
             label="进入装备强化：等待装备页 #445",
         )
 
     strengthening_action = yield from _click_strengthening_menu(
-        runtime,
+        context,
         max_attempts=strengthening_ocr_attempts,
         retry_seconds=retry_seconds,
     )
     actions.append({"step": "equipment_to_strengthening", **strengthening_action})
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         EQUIPMENT_STRENGTHENING_VIEW_ID,
-        timeout=transition_timeout,
+        wait=transition_timeout,
         label="进入装备强化：等待强化页 #446",
     )
     return {
@@ -784,7 +784,7 @@ def ensure_equipment_strengthening(
 
 
 def select_equipment_strengthening(
-    runtime: Any,
+    context: Any,
     category: str,
     part: str,
     *,
@@ -811,23 +811,23 @@ def select_equipment_strengthening(
             game_task_activity_id=game_task_activity_id,
         )
     target = resolve_equipment_strengthening_target(snapshot, category, part)
-    yield from ensure_equipment_strengthening(runtime)
+    yield from ensure_equipment_strengthening(context)
 
-    runtime.click_ocr_text(
+    context.click_ocr_text(
         EQUIPMENT_STRENGTHENING_VIEW_ID,
         target.category,
         in_shapes=("类别",),
         padding=4,
     )
-    yield from runtime.wait_action_settle(settle_seconds)
+    yield from context.wait_action_settle(settle_seconds)
 
-    target_view = runtime.view(EQUIPMENT_STRENGTHENING_VIEW_ID)
-    equipment_shape = runtime.resolve_shape_selector(target_view, "装备")
+    target_view = context.view(EQUIPMENT_STRENGTHENING_VIEW_ID)
+    equipment_shape = context.resolve_shape_selector(target_view, "装备")
     alignment_geometry: dict[str, float] | None = None
     try:
-        first_slot_shape = runtime.resolve_shape_selector(target_view, "装备/框1")
-        second_slot_shape = runtime.resolve_shape_selector(target_view, "装备/框2")
-        frame_width, frame_height = _runtime_frame_size(target_view.raw)
+        first_slot_shape = context.resolve_shape_selector(target_view, "装备/框1")
+        second_slot_shape = context.resolve_shape_selector(target_view, "装备/框2")
+        frame_width, frame_height = _frame_size(target_view.raw)
         equipment_left = float(equipment_shape.raw.get("x") or 0) * frame_width
         equipment_right = (
             float(equipment_shape.raw.get("x") or 0)
@@ -866,8 +866,8 @@ def select_equipment_strengthening(
 
     def inspect_after_click(candidate: dict[str, Any]):
         nonlocal last_failures
-        yield from runtime.wait_action_settle(settle_seconds)
-        observation = read_selected_equipment_strengthening(runtime)
+        yield from context.wait_action_settle(settle_seconds)
+        observation = read_selected_equipment_strengthening(context)
         verified, failures = verify_selected_equipment_strengthening(
             observation,
             target,
@@ -884,8 +884,8 @@ def select_equipment_strengthening(
 
     for direction in ("right", "left"):
         for scroll_index in range(max(0, int(max_scrolls_per_direction)) + 1):
-            frame = runtime.cur_frame(update=True)
-            tokens = runtime.ocr_tokens_in_shapes(
+            frame = context.cur_frame(update=True)
+            tokens = context.ocr_tokens_in_shapes(
                 EQUIPMENT_STRENGTHENING_VIEW_ID,
                 ("装备",),
                 padding=4,
@@ -899,7 +899,7 @@ def select_equipment_strengthening(
                     **alignment_geometry,
                 )
                 if aligned is not None:
-                    runtime.click_frame_point(
+                    context.click_frame_point(
                         EQUIPMENT_STRENGTHENING_VIEW_ID,
                         aligned["x"],
                         aligned["y"],
@@ -929,7 +929,7 @@ def select_equipment_strengthening(
             matches = find_text_matches(tokens, expected_level)
             for occurrence, match in enumerate(matches):
                 x, y = match.point()
-                runtime.click_frame_point(EQUIPMENT_STRENGTHENING_VIEW_ID, x, y)
+                context.click_frame_point(EQUIPMENT_STRENGTHENING_VIEW_ID, x, y)
                 verified, observation = yield from inspect_after_click(
                     {
                         "method": "level_ocr",
@@ -973,7 +973,7 @@ def select_equipment_strengthening(
                 ratio for ratio in _VISIBLE_CARD_X_RATIOS if ratio not in ratios
             )
             for ratio in ratios:
-                runtime.click_shape_center(
+                context.click_shape_center(
                     EQUIPMENT_STRENGTHENING_VIEW_ID,
                     equipment_shape,
                     x_ratio=ratio,
@@ -998,7 +998,7 @@ def select_equipment_strengthening(
 
             if scroll_index >= max(0, int(max_scrolls_per_direction)):
                 break
-            changed = yield from runtime.scroll_shape_content(
+            changed = yield from context.scroll_shape_content(
                 equipment_shape,
                 direction=direction,
             )
@@ -1012,7 +1012,7 @@ def select_equipment_strengthening(
 
 
 def strengthen_selected_equipment_once(
-    runtime: Any,
+    context: Any,
     *,
     activity_id: str,
     category: str,
@@ -1059,12 +1059,12 @@ def strengthen_selected_equipment_once(
         before.task_progress_captured_at = stored_before.task_progress_captured_at
     before_target = resolve_equipment_strengthening_target(before, category, part)
 
-    runtime.click_shape(
+    context.click_shape(
         EQUIPMENT_STRENGTHENING_VIEW_ID,
         "强化",
-        frame_data_url=runtime.cur_frame(update=True),
+        frame_data_url=context.cur_frame(update=True),
     )
-    yield from runtime.wait_action_settle(float(settle_seconds))
+    yield from context.wait_action_settle(float(settle_seconds))
 
     after: LingzhuangStrengtheningSnapshot | None = None
     attempts = max(1, int(poll_attempts))
@@ -1106,7 +1106,7 @@ def strengthen_selected_equipment_once(
             after = candidate
             break
         if attempt + 1 < attempts:
-            yield from runtime.wait_action_settle(0.5)
+            yield from context.wait_action_settle(0.5)
     if after is None:
         raise RuntimeError(
             f"点击{category}{part}强化后未读取到玄铁与等级同步变化；"
@@ -1149,7 +1149,7 @@ def strengthen_selected_equipment_once(
 
 
 def complete_equipment_strengthening_tasks(
-    runtime: Any,
+    context: Any,
     *,
     activity_id: str,
     target_progress: int | None = None,
@@ -1172,7 +1172,7 @@ def complete_equipment_strengthening_tasks(
         read_lingzhuang_strengthening_runtime_snapshot,
     )
 
-    yield from ensure_equipment_strengthening(runtime)
+    yield from ensure_equipment_strengthening(context)
     initial = LingzhuangStrengtheningSnapshot.model_validate(
         read_lingzhuang_strengthening_runtime_snapshot(
             cross_count=int(cross_count),
@@ -1231,7 +1231,7 @@ def complete_equipment_strengthening_tasks(
             break
         try:
             selected = yield from select_equipment_strengthening(
-                runtime,
+                context,
                 route_target.category,
                 route_target.part,
                 snapshot=live,
@@ -1251,7 +1251,7 @@ def complete_equipment_strengthening_tasks(
             })
             continue
         while len(actions) < max(1, int(max_clicks)):
-            observation = read_selected_equipment_strengthening(runtime)
+            observation = read_selected_equipment_strengthening(context)
             current = observation.resource_current
             required = observation.resource_required
             if current is None or required is None or required <= 0:
@@ -1268,7 +1268,7 @@ def complete_equipment_strengthening_tasks(
                 })
                 break
             action = yield from strengthen_selected_equipment_once(
-                runtime,
+                context,
                 activity_id=activity_id,
                 category=route_target.category,
                 part=route_target.part,
@@ -1324,7 +1324,7 @@ def complete_equipment_strengthening_tasks(
 
 
 def complete_lingzhuang_score_round(
-    runtime: Any,
+    context: Any,
     *,
     activity_id: str,
     target_round: int = 1,
@@ -1339,7 +1339,7 @@ def complete_lingzhuang_score_round(
         read_lingzhuang_strengthening_runtime_snapshot,
     )
 
-    yield from ensure_equipment_strengthening(runtime)
+    yield from ensure_equipment_strengthening(context)
     initial = LingzhuangStrengtheningSnapshot.model_validate(
         read_lingzhuang_strengthening_runtime_snapshot(cross_count=int(cross_count))
     )
@@ -1387,7 +1387,7 @@ def complete_lingzhuang_score_round(
             break
         try:
             selected = yield from select_equipment_strengthening(
-                runtime,
+                context,
                 route_target.category,
                 route_target.part,
                 snapshot=live,
@@ -1402,7 +1402,7 @@ def complete_lingzhuang_score_round(
             })
             continue
         while len(actions) < max(1, int(max_clicks)):
-            observation = read_selected_equipment_strengthening(runtime)
+            observation = read_selected_equipment_strengthening(context)
             current = observation.resource_current
             required = observation.resource_required
             if current is None or required is None or required <= 0:
@@ -1419,7 +1419,7 @@ def complete_lingzhuang_score_round(
                 })
                 break
             action = yield from strengthen_selected_equipment_once(
-                runtime,
+                context,
                 activity_id=activity_id,
                 category=route_target.category,
                 part=route_target.part,

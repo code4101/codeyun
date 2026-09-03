@@ -9,6 +9,7 @@
       :editor-layout="props.editorLayout"
       :on-save="handleSave"
       :on-save-keepalive="handleSaveKeepalive"
+      @draft-change="handleDraftChange"
       @change="handleEditorChange"
     >
       <template #actions="{ note, readonly }">
@@ -84,6 +85,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { MagicStick } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import axios from 'axios';
 import SharedNoteEditor from './SharedNoteEditor.vue';
 import NoteCopyDialog from './NoteCopyDialog.vue';
 import NoteDocAccessDialog from './NoteDocAccessDialog.vue';
@@ -91,7 +93,7 @@ import NoteTitleActions from './NoteTitleActions.vue';
 import { noteKey, useNoteStore, type NoteDocResourceAccess, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
-import type { EditableNoteExpectedFields, EditableNotePatch } from '@/utils/noteAutoSave';
+import type { EditableNoteExpectedFields, EditableNoteFieldName, EditableNotePatch } from '@/utils/noteAutoSave';
 import { createSaveMutationId, getSaveClientInstanceId } from '@/utils/saveMutationIdentity';
 
 const props = withDefaults(defineProps<{
@@ -271,7 +273,22 @@ const handleSave = async (
     mutation_id: createSaveMutationId(),
     client_instance_id: getSaveClientInstanceId(),
   };
-  const updatedNote = await noteStore.updateNote(note.id, payload);
+  let updatedNote: Awaited<ReturnType<typeof noteStore.updateNote>>;
+  try {
+    updatedNote = await noteStore.updateNote(note.id, payload);
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 409) {
+      const latestNote = await noteStore.fetchNoteDetail(note.id, { force: true });
+      if (latestNote) {
+        return {
+          kind: 'conflict' as const,
+          latestNote,
+          conflictingFields: (error.response.data?.detail?.conflicting_fields || []) as EditableNoteFieldName[],
+        };
+      }
+    }
+    throw error;
+  }
   if (!updatedNote) throw new Error('保存失败');
   emit('update', noteStore.getNoteById(note.id) || updatedNote);
   return updatedNote;
@@ -295,6 +312,11 @@ const handleSaveKeepalive = (
 const handleEditorChange = (note: NoteNode) => {
   currentNote.value = cloneNoteForDetail(note);
   emit('update', note);
+};
+
+const handleDraftChange = (note: NoteNode) => {
+  currentNote.value = cloneNoteForDetail(note);
+  noteStore.applyLocalNoteDraft(note);
 };
 
 const categorizeCurrentNote = async () => {

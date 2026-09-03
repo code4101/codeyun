@@ -2,13 +2,17 @@ from __future__ import annotations
 
 """The two ranking-family Scheduler owners and their internal adapters."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 import threading
 from typing import Any, Iterator
 
 from sqlmodel import Session
 
 from backend.core.fanxiu.activity.ranking_lifecycle import (
+    BEAST_ABYSS_AUTO_CLEAR_KIND,
+    BEAST_ABYSS_FORMAL_KIND,
+    BEAST_ABYSS_INITIALIZATION_KIND,
+    BEAST_ABYSS_MANUAL_CLEAR_KIND,
     DAILY_RECONCILE_KIND,
     DANDAO_REWARDS_KIND,
     EXCHANGE_TAIL_KIND,
@@ -18,6 +22,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     RESOURCE_FREE_GIFT_KIND,
     RESOURCE_RANKING_TASK_ID,
     TIANDI_YIJU_ACTIVE_KIND,
+    XUTIAN_ACTIVE_KIND,
     XIANMENG_ACTIVE_KIND,
     YUANDING_GIFT_KIND,
     RankingFamily,
@@ -28,6 +33,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     completed_ranking_checkpoint_keys,
     ensure_ranking_lifecycle_checkpoint_table,
+    list_ranking_checkpoint_rows,
     ranking_checkpoint_retry_times,
     record_ranking_checkpoint_result,
 )
@@ -36,6 +42,26 @@ from backend.core.fanxiu.data_annotation.effective_time import job_now
 
 
 CHECKPOINT_RETRY_DELAY = timedelta(minutes=10)
+MAX_DEFAULT_CHECKPOINT_ATTEMPTS = 3
+
+
+def _default_retry_policy(
+    *,
+    status: str,
+    checkpoint,
+    occurrence,
+    now: datetime,
+    prior_attempt_count: int,
+) -> tuple[str, datetime | None]:
+    """Bound implicit retries and align pre-start work with the real window."""
+
+    if status not in {"error", "blocked", "pending"}:
+        return status, None
+    if checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND and now < occurrence.start_at:
+        return status, occurrence.start_at
+    if now > occurrence.close_at or prior_attempt_count + 1 >= MAX_DEFAULT_CHECKPOINT_ATTEMPTS:
+        return "unavailable", None
+    return status, now + CHECKPOINT_RETRY_DELAY
 
 
 def _execute_magic_active_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
@@ -47,7 +73,61 @@ def _execute_magic_active_checkpoint(runner, ctx, payload, stop_event, *, occurr
     ))
 
 
+def _execute_xutian_active_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+    from backend.core.fanxiu.data_annotation.tasks.xutian_active import (
+        execute_xutian_active_checkpoint,
+    )
+    return (yield from execute_xutian_active_checkpoint(
+        runner, ctx, payload, stop_event, occurrence=occurrence
+    ))
+
+
+def _execute_beast_abyss_checkpoint(
+    runner,
+    ctx,
+    payload,
+    stop_event,
+    *,
+    checkpoint_kind,
+    occurrence,
+):
+    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+        execute_beast_abyss_auto_clear_checkpoint,
+        execute_beast_abyss_formal_checkpoint,
+        execute_beast_abyss_initialization_checkpoint,
+        execute_beast_abyss_manual_clear_checkpoint,
+    )
+
+    executors = {
+        BEAST_ABYSS_INITIALIZATION_KIND: execute_beast_abyss_initialization_checkpoint,
+        BEAST_ABYSS_FORMAL_KIND: execute_beast_abyss_formal_checkpoint,
+        BEAST_ABYSS_AUTO_CLEAR_KIND: execute_beast_abyss_auto_clear_checkpoint,
+        BEAST_ABYSS_MANUAL_CLEAR_KIND: execute_beast_abyss_manual_clear_checkpoint,
+    }
+    executor = executors.get(checkpoint_kind)
+    if executor is None:
+        raise RuntimeError(f"未知兽渊 checkpoint：{checkpoint_kind}")
+    return (yield from executor(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        occurrence=occurrence,
+    ))
+
+
 def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+    if occurrence.activity_type == "beast-abyss":
+        from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+            execute_beast_abyss_exchange_tail_checkpoint,
+        )
+        return (yield from execute_beast_abyss_exchange_tail_checkpoint(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+            occurrence=occurrence,
+        ))
     if occurrence.activity_type == "magic-invasion":
         from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
             execute_magic_invasion_tail_checkpoint,
@@ -128,9 +208,9 @@ def _execute_resource_checkpoint(
         from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
             run_resource_rank_daily_gift_flow,
         )
-        runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         return (yield from run_resource_rank_daily_gift_flow(
-            runtime,
+            context,
             manage_schedule=False,
             expected_activity_type=occurrence.activity_type,
             expected_activity_id=occurrence.activity_id,
@@ -139,9 +219,9 @@ def _execute_resource_checkpoint(
         from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import (
             run_dandao_task_rewards_flow,
         )
-        runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         result = yield from run_dandao_task_rewards_flow(
-            runtime,
+            context,
             max_claims=int(options.get("max_claims") or 20),
             manage_schedule=False,
         )
@@ -189,6 +269,13 @@ def _execute_family_job(
 
     with Session(engine) as session:
         completed = completed_ranking_checkpoint_keys(session, family=family)
+        prior_attempt_counts = {
+            (row.instance_key, row.checkpoint_kind, row.business_date): int(
+                row.attempt_count or 0
+            )
+            for row in list_ranking_checkpoint_rows(session)
+            if row.family == family
+        }
         due = due_ranking_checkpoints(occurrences, now=now, completed_keys=completed)
         initial_next_time = next_ranking_lifecycle_time(
             occurrences,
@@ -232,10 +319,26 @@ def _execute_family_job(
                         "message": f"{occurrence.activity_type} 已发现，能力状态 {capability or 'internal_adapter'}",
                         "capability": capability or "internal_adapter",
                     }
+                elif occurrence.activity_type == "beast-abyss":
+                    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+                        execute_beast_abyss_daily_reconcile_checkpoint,
+                    )
+
+                    result = yield from execute_beast_abyss_daily_reconcile_checkpoint(
+                        runner,
+                        ctx,
+                        stop_event,
+                        occurrence=occurrence,
+                        captured_at=now,
+                        required_fact_watermark=checkpoint.due_at,
+                    )
                 else:
                     with Session(engine) as session:
                         result = reconcile_ranking_occurrence(
-                            session, occurrence, captured_at=now.isoformat(timespec="seconds")
+                            session,
+                            occurrence,
+                            captured_at=now.isoformat(timespec="seconds"),
+                            required_fact_watermark=checkpoint.due_at,
                         )
             elif checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
                 result = yield from _execute_exchange_tail_checkpoint(
@@ -244,6 +347,24 @@ def _execute_family_job(
             elif checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND:
                 result = yield from _execute_magic_active_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind == XUTIAN_ACTIVE_KIND:
+                result = yield from _execute_xutian_active_checkpoint(
+                    runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind in {
+                BEAST_ABYSS_FORMAL_KIND,
+                BEAST_ABYSS_INITIALIZATION_KIND,
+                BEAST_ABYSS_AUTO_CLEAR_KIND,
+                BEAST_ABYSS_MANUAL_CLEAR_KIND,
+            }:
+                result = yield from _execute_beast_abyss_checkpoint(
+                    runner,
+                    ctx,
+                    payload,
+                    stop_event,
+                    checkpoint_kind=checkpoint.checkpoint_kind,
+                    occurrence=occurrence,
                 )
             elif checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:
                 result = yield from _execute_xianmeng_checkpoint(
@@ -266,6 +387,20 @@ def _execute_family_job(
                 result = {"status": "completed", "message": str(result or "")}
             status = str(result.get("status") or "completed")
             retry_at = _parse_retry_at(result.get("retry_at"))
+            if status in {"error", "blocked", "pending"} and retry_at is None:
+                status, retry_at = _default_retry_policy(
+                    status=status,
+                    checkpoint=checkpoint,
+                    occurrence=occurrence,
+                    now=now,
+                    prior_attempt_count=prior_attempt_counts.get(checkpoint.key, 0),
+                )
+                if status == "unavailable":
+                    result = {
+                        **result,
+                        "status": status,
+                        "terminal_reason": "implicit_retry_budget_exhausted",
+                    }
             with Session(engine) as session:
                 record_ranking_checkpoint_result(
                     session,
@@ -280,20 +415,31 @@ def _execute_family_job(
         except (InterruptedError, KeyboardInterrupt):
             raise
         except Exception as exc:
-            retry_at = now + CHECKPOINT_RETRY_DELAY
+            status, retry_at = _default_retry_policy(
+                status="error",
+                checkpoint=checkpoint,
+                occurrence=occurrence,
+                now=now,
+                prior_attempt_count=prior_attempt_counts.get(checkpoint.key, 0),
+            )
             result = {
-                "status": "error",
+                "status": status,
                 "message": str(exc),
-                "retry_at": retry_at.isoformat(timespec="seconds"),
+                **(
+                    {"retry_at": retry_at.isoformat(timespec="seconds")}
+                    if retry_at is not None else
+                    {"terminal_reason": "implicit_retry_budget_exhausted"}
+                ),
             }
             with Session(engine) as session:
                 record_ranking_checkpoint_result(
                     session,
                     checkpoint,
-                    status="error",
+                    status=status,
                     message=str(exc),
                     result={"error_type": type(exc).__name__},
                     retry_at=retry_at,
+                    completed_at=now if status == "unavailable" else None,
                 )
             results.append({"checkpoint": checkpoint.as_dict(), "result": result})
 
@@ -332,6 +478,86 @@ def execute_ranking_lifecycle_job(runner, ctx, payload, stop_event):
     ))
 
 
+def execute_beast_abyss_initialization_rnd_cell(runner, ctx, payload, stop_event):
+    """Run only the current Beast Abyss initialization in an explicit R&D Cell."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+        execute_beast_abyss_initialization_checkpoint,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    wall_clock = now.timetz().replace(tzinfo=None)
+    if not (time(10, 0) <= wall_clock < time(21, 30)):
+        raise RuntimeError("兽渊初始化研发只能在10:00-21:30自动挑战窗口内运行")
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("兽渊初始化研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "beast-abyss"
+        and occurrence.start_at <= now <= occurrence.end_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"兽渊初始化研发无法唯一定位当前开放实例：matches={len(matches)}"
+        )
+    return (yield from execute_beast_abyss_initialization_checkpoint(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        occurrence=matches[0],
+    ))
+
+
+def execute_beast_abyss_rank_refresh_rnd_cell(runner, ctx, payload, stop_event):
+    """Refresh the current Beast Abyss rank tabs without challenge or exchange."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+        execute_beast_abyss_rank_refresh_probe,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("兽渊榜单刷新研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "beast-abyss"
+        and occurrence.start_at <= now <= occurrence.close_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"兽渊榜单刷新研发无法唯一定位本期实例：matches={len(matches)}"
+        )
+    return (yield from execute_beast_abyss_rank_refresh_probe(
+        runner,
+        ctx,
+        stop_event,
+        occurrence=matches[0],
+    ))
+
+
 def execute_resource_ranking_job(runner, ctx, payload, stop_event):
     return (yield from _execute_family_job(
         runner, ctx, payload, stop_event,
@@ -339,4 +565,9 @@ def execute_resource_ranking_job(runner, ctx, payload, stop_event):
     ))
 
 
-__all__ = ["execute_ranking_lifecycle_job", "execute_resource_ranking_job"]
+__all__ = [
+    "execute_beast_abyss_initialization_rnd_cell",
+    "execute_beast_abyss_rank_refresh_rnd_cell",
+    "execute_ranking_lifecycle_job",
+    "execute_resource_ranking_job",
+]

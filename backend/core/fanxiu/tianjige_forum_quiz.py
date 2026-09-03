@@ -6,13 +6,11 @@ import time
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date
 from typing import Any, Callable, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 TIANJIGE_PROFILE_URL = "https://forum.odchqpto.com/pages/profile/user?tgid=5636&userId=51"
-_QUIZ_TITLE_PATTERN = re.compile(r"有奖竞答.*?DAY\s*([123])", re.IGNORECASE)
 _ANSWER_PATTERN = re.compile(
     r"(?:^|\s)1\s*[.、:：,，)）]\s*(.+?)"
     r"\s*2\s*[.、:：,，)）]\s*(.+?)"
@@ -165,12 +163,6 @@ def _close_work_tab(browser: Any, tab: Any) -> None:
         pass
 
 
-def _expected_quiz_day(activity_date: str) -> int:
-    """Map Tuesday/Wednesday/Thursday to DAY1/DAY2/DAY3."""
-
-    return date.fromisoformat(activity_date).isoweekday() - 1
-
-
 def _thread_title_and_time(item: Any) -> tuple[str, str]:
     title_ele = item.ele("t:uni-view@@class:sq-thread-title", timeout=0.2)
     footer_ele = item.ele("t:uni-view@@class:sq-thread-footer", timeout=0.2)
@@ -184,17 +176,12 @@ def _is_current_quiz_thread(item: Any, activity_date: str) -> tuple[bool, str]:
     """Match the live card format, whose new rows say `刚刚/N分钟前` instead of a date."""
 
     title, posted_at = _thread_title_and_time(item)
-    match = _QUIZ_TITLE_PATTERN.search(title)
-    expected_day = _expected_quiz_day(activity_date)
     if "有奖竞答" not in title:
         return False, title
-    # Tuesday's first post is currently the theme announcement/question post
-    # and often has no literal DAY1 suffix.  DAY2/DAY3 do carry the suffix.
-    if expected_day == 1:
-        if match is not None and int(match.group(1)) != 1:
-            return False, title
-    elif match is None or int(match.group(1)) != expected_day:
-        return False, title
+    # DAY is the campaign's sequence number, not a weekday mapping.  Campaigns
+    # can continue with DAY4/DAY5 while the job still runs on Tue/Wed/Thu, and
+    # the first announcement may omit DAY entirely.  Freshness is therefore
+    # established by the official profile card's date/relative time instead.
     is_today = activity_date in posted_at
     is_recent = bool(re.search(r"(?:刚刚|\d+\s*(?:秒|分钟)前)", posted_at))
     return is_today or is_recent, title

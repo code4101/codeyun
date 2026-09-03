@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from backend.core.fanxiu.data_annotation import behavior_tree_framework
-from backend.core.fanxiu.data_annotation import behavior_tree_control
+from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
 
 
@@ -154,7 +154,7 @@ def test_kernel_child_environment_skips_optional_platform_wmi_probe() -> None:
 
 
 def test_kernel_manager_service_uses_hidden_console_python(monkeypatch, tmp_path) -> None:
-    from backend.core.fanxiu.behavior_tree import runtime
+    from backend.core.fanxiu.behavior_tree import kernel_scheduler
     from backend.core.fanxiu.behavior_tree import jupyter_kernel
 
     statuses = iter((
@@ -176,11 +176,11 @@ def test_kernel_manager_service_uses_hidden_console_python(monkeypatch, tmp_path
         return Process()
 
     monkeypatch.setattr(jupyter_kernel, "fanxiu_kernel_manager_status", lambda **_kwargs: next(statuses))
-    monkeypatch.setattr(runtime, "resolve_python", lambda **_kwargs: r"C:\Python\python.exe")
-    monkeypatch.setattr(runtime, "popen_service", fake_popen)
-    monkeypatch.setattr(runtime, "codeyun_temp_root", lambda _name: tmp_path)
+    monkeypatch.setattr(kernel_scheduler, "resolve_python", lambda **_kwargs: r"C:\Python\python.exe")
+    monkeypatch.setattr(kernel_scheduler, "popen_service", fake_popen)
+    monkeypatch.setattr(kernel_scheduler, "codeyun_temp_root", lambda _name: tmp_path)
 
-    result = runtime._start_external_fanxiu_behavior_tree_service_unlocked(
+    result = kernel_scheduler._start_external_fanxiu_kernel_scheduler_service_unlocked(
         "entry",
         wait_seconds=1,
     )
@@ -190,7 +190,7 @@ def test_kernel_manager_service_uses_hidden_console_python(monkeypatch, tmp_path
     assert captured["command"][-1] == "service"
 
 
-def test_runtime_framework_task_uses_kernel_cell_path(monkeypatch) -> None:
+def test_behavior_tree_framework_task_uses_kernel_cell_path(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
     class Cell:
@@ -212,18 +212,18 @@ def test_runtime_framework_task_uses_kernel_cell_path(monkeypatch) -> None:
         entry=object(),
         entry_id="entry",
         task_type="detect_scene",
-        payload={"max_runtime_seconds": 40},
+        payload={"max_execution_seconds": 40},
     )
 
     assert result == {"status": "success"}
     assert calls == [
         ("kernel", "entry"),
-        ("task", ("detect_scene", {"max_runtime_seconds": 40}, 70.0)),
+        ("task", ("detect_scene", {"max_execution_seconds": 40}, 70.0)),
         ("run", 70.0),
     ]
 
 
-def test_runtime_framework_unbounded_task_keeps_cell_wait_unbounded(monkeypatch) -> None:
+def test_behavior_tree_framework_unbounded_task_keeps_cell_wait_unbounded(monkeypatch) -> None:
     calls: list[tuple[str, object]] = []
 
     class Cell:
@@ -246,13 +246,13 @@ def test_runtime_framework_unbounded_task_keeps_cell_wait_unbounded(monkeypatch)
         entry=object(),
         entry_id="entry",
         task_type="login_game",
-        payload={"unbounded_runtime": True},
+        payload={"unbounded_execution": True},
     )
 
     assert result == {"status": "success"}
     assert calls == [
         ("kernel", "entry"),
-        ("task", ("login_game", {"unbounded_runtime": True}, None)),
+        ("task", ("login_game", {"unbounded_execution": True}, None)),
         ("run", None),
     ]
 
@@ -335,19 +335,19 @@ def test_active_kernel_path_has_no_manual_queue_or_kernel_lock() -> None:
         assert forbidden not in source
 
 
-def test_kernel_status_keeps_kernel_and_business_runtime_orthogonal(monkeypatch) -> None:
+def test_kernel_status_keeps_kernel_and_scheduler_state_orthogonal(monkeypatch) -> None:
     monkeypatch.setattr(
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda: {"alive": True, "execution_state": "idle"},
     )
     monkeypatch.setattr(
-        "backend.core.fanxiu.behavior_tree.runtime.fanxiu_behavior_tree_runtime_status",
+        "backend.core.fanxiu.behavior_tree.kernel_scheduler.fanxiu_kernel_scheduler_status",
         lambda: {"status": "success", "current_task": "demo"},
     )
 
     assert FanxiuKernel().status() == {
         "kernel": {"alive": True, "execution_state": "idle"},
-        "runtime": {"status": "success", "current_task": "demo"},
+        "scheduler": {"status": "success", "current_task": "demo"},
     }
 
 
@@ -371,7 +371,7 @@ def test_interrupt_and_restart_are_distinct_native_commands(monkeypatch) -> None
 
 
 def test_scheduler_keeps_current_kernel_generation_when_code_signature_matches(monkeypatch) -> None:
-    monkeypatch.setattr(behavior_tree_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
     monkeypatch.setattr(
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda **_kwargs: {
@@ -382,7 +382,7 @@ def test_scheduler_keeps_current_kernel_generation_when_code_signature_matches(m
         },
     )
 
-    result = behavior_tree_control.ensure_scheduler_kernel_code_current(
+    result = kernel_scheduler_control.ensure_scheduler_kernel_code_current(
         entry=object(),
         entry_id="entry",
     )
@@ -419,7 +419,7 @@ def test_scheduler_replaces_idle_manager_before_job_when_code_is_stale(monkeypat
             calls.append(("shutdown", timeout_seconds))
             return {"ok": True}
 
-    monkeypatch.setattr(behavior_tree_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
     monkeypatch.setattr(
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda **_kwargs: next(statuses),
@@ -427,12 +427,12 @@ def test_scheduler_replaces_idle_manager_before_job_when_code_is_stale(monkeypat
     kernel_module = importlib.import_module("backend.core.fanxiu.behavior_tree.kernel")
     monkeypatch.setattr(kernel_module, "FanxiuKernel", Kernel)
     monkeypatch.setattr(
-        behavior_tree_control,
-        "ensure_fanxiu_behavior_tree_service",
+        kernel_scheduler_control,
+        "ensure_fanxiu_kernel_scheduler_service",
         lambda _entry, _entry_id: calls.append(("ensure", 0.0)),
     )
 
-    result = behavior_tree_control.ensure_scheduler_kernel_code_current(
+    result = kernel_scheduler_control.ensure_scheduler_kernel_code_current(
         entry=object(),
         entry_id="entry",
     )
@@ -471,7 +471,7 @@ def test_scheduler_replaces_stale_manager_even_when_child_is_dead(monkeypatch) -
             calls.append("shutdown")
             return {"ok": True, "alive": True}
 
-    monkeypatch.setattr(behavior_tree_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
     monkeypatch.setattr(
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda **_kwargs: next(statuses),
@@ -479,12 +479,12 @@ def test_scheduler_replaces_stale_manager_even_when_child_is_dead(monkeypatch) -
     kernel_module = importlib.import_module("backend.core.fanxiu.behavior_tree.kernel")
     monkeypatch.setattr(kernel_module, "FanxiuKernel", Kernel)
     monkeypatch.setattr(
-        behavior_tree_control,
-        "ensure_fanxiu_behavior_tree_service",
+        kernel_scheduler_control,
+        "ensure_fanxiu_kernel_scheduler_service",
         lambda *_args, **_kwargs: calls.append("spawn"),
     )
 
-    result = behavior_tree_control.ensure_scheduler_kernel_code_current(entry=object(), entry_id="entry")
+    result = kernel_scheduler_control.ensure_scheduler_kernel_code_current(entry=object(), entry_id="entry")
 
     assert result["ready"] is True
     assert result["kernel"]["generation"] == 1
@@ -518,7 +518,7 @@ def test_scheduler_replaces_legacy_manager_that_cannot_report_loaded_code(monkey
             calls.append("shutdown")
             return {"ok": True}
 
-    monkeypatch.setattr(behavior_tree_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
     monkeypatch.setattr(
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda **_kwargs: next(statuses),
@@ -526,12 +526,12 @@ def test_scheduler_replaces_legacy_manager_that_cannot_report_loaded_code(monkey
     kernel_module = importlib.import_module("backend.core.fanxiu.behavior_tree.kernel")
     monkeypatch.setattr(kernel_module, "FanxiuKernel", Kernel)
     monkeypatch.setattr(
-        behavior_tree_control,
-        "ensure_fanxiu_behavior_tree_service",
+        kernel_scheduler_control,
+        "ensure_fanxiu_kernel_scheduler_service",
         lambda _entry, _entry_id: calls.append("ensure"),
     )
 
-    result = behavior_tree_control.ensure_scheduler_kernel_code_current(
+    result = kernel_scheduler_control.ensure_scheduler_kernel_code_current(
         entry=object(),
         entry_id="entry",
     )
@@ -579,23 +579,23 @@ def test_scheduler_arbitration_stays_outside_kernel() -> None:
             "backend/core/fanxiu/behavior_tree/jupyter_kernel.py",
         )
     )
-    scheduler_source = (root / "backend/core/fanxiu/data_annotation/behavior_tree_control.py").read_text(
+    scheduler_source = (root / "backend/core/fanxiu/data_annotation/kernel_scheduler_control.py").read_text(
         encoding="utf-8"
     )
 
-    assert "select_due_data_annotation_scheduler_tasks" not in kernel_source
+    assert "select_due_kernel_scheduler_tasks" not in kernel_source
     assert "scheduler_tasks.json" not in kernel_source
-    assert "select_due_data_annotation_scheduler_tasks" in scheduler_source
-    assert "submit_runtime_task_cell" in scheduler_source
+    assert "select_due_kernel_scheduler_tasks" in scheduler_source
+    assert "submit_task_cell" in scheduler_source
 
 
 def test_busy_kernel_preserves_persisted_business_attempt_after_backend_reload(monkeypatch) -> None:
-    monkeypatch.setattr(behavior_tree_control, "read_behavior_tree_runtime_status", lambda path=None: {
+    monkeypatch.setattr(kernel_scheduler_control, "read_kernel_scheduler_status", lambda path=None: {
         "running": True,
         "status": "running",
         "current_task": "demo",
     })
-    monkeypatch.setattr(behavior_tree_control, "behavior_tree_runtime_runner_status", lambda: {
+    monkeypatch.setattr(kernel_scheduler_control, "behavior_tree_executor_status", lambda: {
         "running": False,
         "status": "idle",
         "logs": [],
@@ -605,9 +605,9 @@ def test_busy_kernel_preserves_persisted_business_attempt_after_backend_reload(m
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda: {"alive": True, "execution_state": "busy"},
     )
-    monkeypatch.setattr(behavior_tree_control, "persist_behavior_tree_runtime_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(kernel_scheduler_control, "persist_kernel_scheduler_status", lambda *args, **kwargs: None)
 
-    status = behavior_tree_control.behavior_tree_runtime_status()
+    status = kernel_scheduler_control.kernel_scheduler_status()
 
     assert status["running"] is True
     assert status["status"] == "running"
@@ -617,12 +617,12 @@ def test_busy_kernel_preserves_persisted_business_attempt_after_backend_reload(m
 
 
 def test_idle_kernel_stops_persisted_business_attempt_after_backend_reload(monkeypatch) -> None:
-    monkeypatch.setattr(behavior_tree_control, "read_behavior_tree_runtime_status", lambda path=None: {
+    monkeypatch.setattr(kernel_scheduler_control, "read_kernel_scheduler_status", lambda path=None: {
         "running": True,
         "status": "running",
         "current_task": "demo",
     })
-    monkeypatch.setattr(behavior_tree_control, "behavior_tree_runtime_runner_status", lambda: {
+    monkeypatch.setattr(kernel_scheduler_control, "behavior_tree_executor_status", lambda: {
         "running": False,
         "status": "idle",
         "logs": [],
@@ -632,9 +632,9 @@ def test_idle_kernel_stops_persisted_business_attempt_after_backend_reload(monke
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda: {"alive": True, "execution_state": "idle"},
     )
-    monkeypatch.setattr(behavior_tree_control, "persist_behavior_tree_runtime_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(kernel_scheduler_control, "persist_kernel_scheduler_status", lambda *args, **kwargs: None)
 
-    status = behavior_tree_control.behavior_tree_runtime_status()
+    status = kernel_scheduler_control.kernel_scheduler_status()
 
     assert status["running"] is False
     assert status["status"] == "stopped"
@@ -643,14 +643,14 @@ def test_idle_kernel_stops_persisted_business_attempt_after_backend_reload(monke
 
 
 def test_recent_idle_kernel_waits_for_managed_cell_terminal_writeback(monkeypatch) -> None:
-    monkeypatch.setattr(behavior_tree_control.time, "time", lambda: 120.0)
-    monkeypatch.setattr(behavior_tree_control, "read_behavior_tree_runtime_status", lambda path=None: {
+    monkeypatch.setattr(kernel_scheduler_control.time, "time", lambda: 120.0)
+    monkeypatch.setattr(kernel_scheduler_control, "read_kernel_scheduler_status", lambda path=None: {
         "running": True,
         "status": "running",
         "current_task": "demo",
         "updated_at": 100.0,
     })
-    monkeypatch.setattr(behavior_tree_control, "behavior_tree_runtime_runner_status", lambda: {
+    monkeypatch.setattr(kernel_scheduler_control, "behavior_tree_executor_status", lambda: {
         "running": False,
         "status": "idle",
         "logs": [],
@@ -660,9 +660,9 @@ def test_recent_idle_kernel_waits_for_managed_cell_terminal_writeback(monkeypatc
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
         lambda: {"alive": True, "execution_state": "idle"},
     )
-    monkeypatch.setattr(behavior_tree_control, "persist_behavior_tree_runtime_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr(kernel_scheduler_control, "persist_kernel_scheduler_status", lambda *args, **kwargs: None)
 
-    status = behavior_tree_control.behavior_tree_runtime_status()
+    status = kernel_scheduler_control.kernel_scheduler_status()
 
     assert status["running"] is True
     assert status["status"] == "running"
@@ -696,8 +696,8 @@ def test_task_admission_finishes_before_any_game_side_effect() -> None:
         events.append("business")
         return "success"
 
-    class Runtime:
-        def goto_view(self, scene_id):
+    class Context:
+        def go_scene(self, scene_id):
             events.append(("goto", scene_id))
             if False:
                 yield None
@@ -728,13 +728,13 @@ def test_task_admission_finishes_before_any_game_side_effect() -> None:
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = Runner()
-    binding.runtime = Runtime()
-    binding.runtime_ctx = {}
+    binding.context = Context()
+    binding.execution_ctx = {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -835,7 +835,7 @@ def test_first_maintenance_detection_defers_scheduled_job_without_error_retry(mo
             events.append(("next_time", task_id, next_time))
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value.get("result") or ""), str(value.get("message") or "")
 
         @staticmethod
@@ -843,7 +843,7 @@ def test_first_maintenance_detection_defers_scheduled_job_without_error_retry(mo
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
     monkeypatch.setattr(
@@ -852,7 +852,7 @@ def test_first_maintenance_detection_defers_scheduled_job_without_error_retry(mo
     )
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = Runner()
-    binding.runtime_ctx = {}
+    binding.execution_ctx = {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -908,7 +908,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
             })
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value), ""
 
     binding = object.__new__(FanxiuJupyterBinding)
@@ -916,7 +916,7 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
 
     def run_task(_task_type, _payload):
         # Daily handlers commonly persist their precise business terminal on
-        # the Runtime and return only the framework-level success marker.
+        # the behavior-tree context and return only the framework-level success marker.
         binding.runner._status["message"] = "今日业务已完成并回到世界 #34"
         return "success"
 
@@ -1069,7 +1069,7 @@ def test_recovered_emulator_restart_schedules_login_and_ends_old_gui_transaction
             events.append("schedule_login")
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value.get("result") or ""), str(value.get("message") or "")
 
         @staticmethod
@@ -1077,12 +1077,12 @@ def test_recovered_emulator_restart_schedules_login_and_ends_old_gui_transaction
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = Runner()
-    binding.runtime_ctx = {}
+    binding.execution_ctx = {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -1129,6 +1129,7 @@ def test_scheduler_support_does_not_imply_any_scene_lifecycle() -> None:
 
 
 def test_scheduler_task_cell_has_no_fixed_business_pre_or_post_actions() -> None:
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
     from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
 
@@ -1141,6 +1142,7 @@ def test_scheduler_task_cell_has_no_fixed_business_pre_or_post_actions() -> None
     )
     def handler(_runner, _ctx, _payload, _stop_event):
         events.append("business")
+        BehaviorTreeContext(_runner, _ctx).set_next_time("2026-08-27 00:00:00")
         return "success"
 
     class Runner:
@@ -1154,7 +1156,7 @@ def test_scheduler_task_cell_has_no_fixed_business_pre_or_post_actions() -> None
             yield label
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value), ""
 
         @staticmethod
@@ -1162,23 +1164,27 @@ def test_scheduler_task_cell_has_no_fixed_business_pre_or_post_actions() -> None
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
+            return None
+
+        @staticmethod
+        def _persist_scheduler_task_next_time(_task_id, _next_time):
             return None
 
         @staticmethod
         def _cleanup_failed_scheduler_task_to_scene(**_kwargs):
             raise AssertionError("通用 Cell 包装层不得清理业务场景")
 
-    class Runtime:
+    class Context:
         @staticmethod
-        def goto_view(_scene_id):
+        def go_scene(_scene_id):
             raise AssertionError("通用 Cell 包装层不得导航业务场景")
             yield
 
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = Runner()
-    binding.runtime = Runtime()
-    binding.runtime_ctx = {}
+    binding.context = Context()
+    binding.execution_ctx = {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -1199,12 +1205,12 @@ def test_scheduler_task_cell_has_no_fixed_business_pre_or_post_actions() -> None
     assert events == ["business"]
 
 
-def _task_context_binding(runner, *, runtime_ctx=None):
+def _task_context_binding(runner, *, execution_ctx=None):
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
 
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = runner
-    binding.runtime_ctx = runtime_ctx if runtime_ctx is not None else {}
+    binding.execution_ctx = execution_ctx if execution_ctx is not None else {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -1220,18 +1226,18 @@ def _task_context_binding(runner, *, runtime_ctx=None):
     return binding
 
 
-def test_formal_lingquan_completion_sees_scheduler_task_id_in_runtime_context() -> None:
-    from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntime
+def test_formal_lingquan_completion_sees_scheduler_task_id_in_behavior_tree_context() -> None:
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
     from backend.core.fanxiu.data_annotation.default_jobs import (
-        register_fanxiu_data_annotation_default_runtime_jobs,
+        register_fanxiu_default_jobs,
     )
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     writes = []
 
-    class Runtime:
+    class Context:
         @staticmethod
-        def goto_view(scene_id):
+        def go_scene(scene_id):
             assert scene_id == 34
             if False:
                 yield None
@@ -1242,18 +1248,18 @@ def test_formal_lingquan_completion_sees_scheduler_task_id_in_runtime_context() 
             return None
 
         def _execute_daily_lingquan_task(self, ctx, _stop_event, _payload):
-            BehaviorTreeRuntime(self, ctx).set_next_time("2026-08-26 20:30:00")
+            BehaviorTreeContext(self, ctx).set_next_time("2026-08-26 20:30:00")
             if False:
                 yield None
             return {"result": "success", "message": "灵泉完成"}
 
         @staticmethod
-        def _fanxiu_runtime(_ctx, stop_event=None):
+        def _behavior_tree_context(_ctx, stop_event=None):
             assert stop_event is not None
-            return Runtime()
+            return Context()
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value.get("result") or "success"), str(value.get("message") or "")
 
         @staticmethod
@@ -1261,7 +1267,7 @@ def test_formal_lingquan_completion_sees_scheduler_task_id_in_runtime_context() 
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
         @staticmethod
@@ -1269,7 +1275,7 @@ def test_formal_lingquan_completion_sees_scheduler_task_id_in_runtime_context() 
             writes.append((task_id, next_time))
 
     ctx = {}
-    result = _task_context_binding(Runner(), runtime_ctx=ctx).run_task(
+    result = _task_context_binding(Runner(), execution_ctx=ctx).run_task(
         "daily_lingquan",
         {"__scheduler_task_id": "legacy-daily-lingquan"},
     )
@@ -1280,7 +1286,7 @@ def test_formal_lingquan_completion_sees_scheduler_task_id_in_runtime_context() 
 
 
 def test_generator_job_keeps_scheduler_task_context_until_completion() -> None:
-    from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntime
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
     from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
 
     writes = []
@@ -1292,7 +1298,7 @@ def test_generator_job_keeps_scheduler_task_context_until_completion() -> None:
     )
     def handler(runner, ctx, _payload, _stop_event):
         yield "tick"
-        BehaviorTreeRuntime(runner, ctx).set_next_time("2026-08-27 00:00:00")
+        BehaviorTreeContext(runner, ctx).set_next_time("2026-08-27 00:00:00")
         return "success"
 
     class Runner:
@@ -1301,7 +1307,7 @@ def test_generator_job_keeps_scheduler_task_context_until_completion() -> None:
             writes.append((task_id, next_time))
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value), ""
 
         @staticmethod
@@ -1309,7 +1315,7 @@ def test_generator_job_keeps_scheduler_task_context_until_completion() -> None:
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
     result = _task_context_binding(Runner()).run_task(
@@ -1338,7 +1344,7 @@ def test_task_payload_context_restores_after_error_or_interrupt(error_type) -> N
 
     class Runner:
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value), ""
 
         @staticmethod
@@ -1346,12 +1352,12 @@ def test_task_payload_context_restores_after_error_or_interrupt(error_type) -> N
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
     previous_payload = {"owner": "previous-job"}
     ctx = {"attrs": {"payload": previous_payload, "keep": True}}
-    binding = _task_context_binding(Runner(), runtime_ctx=ctx)
+    binding = _task_context_binding(Runner(), execution_ctx=ctx)
 
     with pytest.raises(error_type, match="stop"):
         binding.run_task(task_type, {"__scheduler_task_id": "failing-job"})
@@ -1361,7 +1367,7 @@ def test_task_payload_context_restores_after_error_or_interrupt(error_type) -> N
 
 
 def test_synchronous_job_can_persist_its_own_scheduler_next_time() -> None:
-    from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntime
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
     from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
 
     writes = []
@@ -1372,7 +1378,7 @@ def test_synchronous_job_can_persist_its_own_scheduler_next_time() -> None:
         scheduler_supported=True,
     )
     def handler(runner, ctx, _payload, _stop_event):
-        BehaviorTreeRuntime(runner, ctx).set_next_time(None)
+        BehaviorTreeContext(runner, ctx).set_next_time(None)
         return "success"
 
     class Runner:
@@ -1381,7 +1387,7 @@ def test_synchronous_job_can_persist_its_own_scheduler_next_time() -> None:
             writes.append((task_id, next_time))
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value), ""
 
         @staticmethod
@@ -1389,7 +1395,7 @@ def test_synchronous_job_can_persist_its_own_scheduler_next_time() -> None:
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
     result = _task_context_binding(Runner()).run_task(
@@ -1401,10 +1407,10 @@ def test_synchronous_job_can_persist_its_own_scheduler_next_time() -> None:
     assert writes == [("sync-job", None)]
 
 
-def test_generic_runtime_task_path_keeps_payload_for_generator_completion() -> None:
-    from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
-        BehaviorTreeRuntime,
-        BehaviorTreeRuntimeRunner,
+def test_generic_task_path_keeps_payload_for_generator_completion() -> None:
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
+        BehaviorTreeContext,
+        BehaviorTreeExecutor,
     )
     from backend.core.fanxiu.data_annotation.jobs import register_fanxiu_data_annotation_task_cell
 
@@ -1417,13 +1423,13 @@ def test_generic_runtime_task_path_keeps_payload_for_generator_completion() -> N
     )
     def handler(runner, ctx, _payload, _stop_event):
         yield "tick"
-        BehaviorTreeRuntime(runner, ctx).set_next_time("2026-08-28 00:00:00")
+        BehaviorTreeContext(runner, ctx).set_next_time("2026-08-28 00:00:00")
         return "success"
 
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     runner._persist_scheduler_task_next_time = lambda task_id, next_time: writes.append((task_id, next_time))
     ctx = {}
-    result = runner._execute_runtime_task(
+    result = runner._execute_task(
         ctx,
         "test_generic_generator_task_context",
         {"__scheduler_task_id": "generic-generator-job"},
@@ -1438,13 +1444,13 @@ def test_generic_runtime_task_path_keeps_payload_for_generator_completion() -> N
 
 def test_world_navigation_jobs_are_registered_without_framework_lifecycle_metadata() -> None:
     from backend.core.fanxiu.data_annotation.default_jobs import (
-        register_fanxiu_data_annotation_default_runtime_jobs,
+        register_fanxiu_default_jobs,
     )
     from backend.core.fanxiu.data_annotation.jobs import (
         get_fanxiu_data_annotation_task_cell_definition,
     )
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     start_and_finish_at_world = {
         "weekly_gift_code", "daily_mozu", "daily_activity", "weekly_activity",
         "daily_redpacket", "daily_signup", "moyu_signup", "daily_boss",
@@ -1477,24 +1483,24 @@ def test_world_navigation_jobs_are_registered_without_framework_lifecycle_metada
     for task_type in {"daily_xianmeng", "jianling_cuiling", "tianjige_forum_quiz"}:
         definition = get_fanxiu_data_annotation_task_cell_definition(task_type)
         assert definition is not None, task_type
-        assert "goto_view(34)" not in inspect.getsource(definition.handler)
+        assert "go_scene(34)" not in inspect.getsource(definition.handler)
 
 
 def test_xianfu_visit_wrapper_does_not_repeat_business_owned_cleanup() -> None:
     from backend.core.fanxiu.data_annotation.default_jobs import (
-        register_fanxiu_data_annotation_default_runtime_jobs,
+        register_fanxiu_default_jobs,
     )
     from backend.core.fanxiu.data_annotation.jobs import (
         get_fanxiu_data_annotation_task_cell_definition,
     )
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "xianfu_visit_partner"
     )
     assert definition is not None
     source = inspect.getsource(definition.handler)
-    assert source.count("goto_view(34)") == 1
+    assert source.count("go_scene(34)") == 1
     assert "_execute_xianfu_visit_partner_task" in source
 
 
@@ -1519,7 +1525,7 @@ def test_run_task_cell_strips_business_terminal_fields() -> None:
             })
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value["result"]), str(value["message"])
 
     binding = object.__new__(FanxiuJupyterBinding)
@@ -1605,11 +1611,11 @@ def test_jupyter_binding_end_cell_releases_acquired_lock_once() -> None:
 
 def test_submit_code_cell_records_log_without_removed_mode_field(monkeypatch) -> None:
     from backend.api import fanxiu
-    from backend.core.fanxiu.data_annotation.models import FanxiuBehaviorTreeRuntimeCodeCellRequest
+    from backend.core.fanxiu.data_annotation.models import FanxiuKernelSchedulerCodeCellRequest
 
     observed = {}
-    monkeypatch.setattr(fanxiu, "_sync_behavior_tree_runtime_runner_to_core", lambda: None)
-    monkeypatch.setattr(fanxiu, "_runtime_log_items_for_cell", lambda: [])
+    monkeypatch.setattr(fanxiu, "_sync_behavior_tree_executor_to_core", lambda: None)
+    monkeypatch.setattr(fanxiu, "_scheduler_log_items_for_cell", lambda: [])
     monkeypatch.setattr(
         fanxiu._behavior_tree_framework,
         "submit_code_cell",
@@ -1620,8 +1626,8 @@ def test_submit_code_cell_records_log_without_removed_mode_field(monkeypatch) ->
         observed.update(title=title, source=source, before_keys=before_keys)
         return status
 
-    monkeypatch.setattr(fanxiu, "_record_runtime_cell_log", record)
-    request = FanxiuBehaviorTreeRuntimeCodeCellRequest(entry_id="entry-1", code="1 + 1")
+    monkeypatch.setattr(fanxiu, "_record_cell_log", record)
+    request = FanxiuKernelSchedulerCodeCellRequest(entry_id="entry-1", code="1 + 1")
 
     result = fanxiu._submit_data_annotation_code_cell(object(), "entry-1", request)
 

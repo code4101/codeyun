@@ -75,7 +75,7 @@ def _authorized(snapshot: Mapping[str, Any], *, subtype: int) -> list[int]:
 
 
 def claim_magic_invasion_task_rewards(
-    runtime: Any,
+    context: Any,
     *,
     activity_id: int,
     reader: TaskReader = read_magic_invasion_task_reward_snapshot,
@@ -98,7 +98,7 @@ def claim_magic_invasion_task_rewards(
             "message": "魔道任务当前无可领取奖励",
         }
 
-    entered = yield from runtime.wait_click_then_view(
+    entered = yield from context.wait_click_then_scene(
         MAGIC_HOME_SCENE,
         "任务",
         tuple(MAGIC_TASK_SCENE_BY_SUBTYPE.values()),
@@ -114,7 +114,7 @@ def claim_magic_invasion_task_rewards(
             continue
         target_scene = MAGIC_TASK_SCENE_BY_SUBTYPE[subtype]
         if current_scene != target_scene:
-            switched = yield from runtime.wait_click_then_view(
+            switched = yield from context.wait_click_then_scene(
                 current_scene,
                 MAGIC_TASK_TAB_BY_SUBTYPE[subtype],
                 target_scene,
@@ -128,12 +128,12 @@ def claim_magic_invasion_task_rewards(
                 int(value)
                 for value in snapshot.get("authorized_claim_task_ids") or []
             ]
-            yield from runtime.wait_click(
+            yield from context.wait_click(
                 current_scene,
                 "首条任务领取区",
                 timeout=10.0,
             )
-            yield from runtime.wait_action_settle(1.0)
+            yield from context.wait_action_settle(1.0)
             after = reader(
                 int(activity_id),
                 expected_claimed_task_id=expected,
@@ -161,7 +161,7 @@ def claim_magic_invasion_task_rewards(
             snapshot = after
             remaining = _authorized(snapshot, subtype=subtype)
 
-    returned = yield from runtime.wait_click_then_view(
+    returned = yield from context.wait_click_then_scene(
         current_scene,
         "活动主页",
         MAGIC_HOME_SCENE,

@@ -444,7 +444,7 @@
         <div class="preview-header-side">
           <el-tag>{{ previewPositionText }}</el-tag>
           <el-button
-            v-if="deleteImage"
+            v-if="deleteImage && (!canDeleteImage || canDeleteImage(previewImage))"
             type="danger"
             plain
             :loading="deletingImageId === previewImage.id"
@@ -627,6 +627,7 @@ const props = withDefaults(
     setVideoCover?: (imageId: string, cover: Blob) => Promise<boolean>;
     updateImageWeight?: (imageId: string, nextWeight: number) => Promise<boolean>;
     deleteImage?: (imageId: string) => Promise<boolean>;
+    canDeleteImage?: (image: GalleryImage) => boolean;
     revealImageInFolder?: (image: GalleryImage) => Promise<boolean | void>;
     openFileInLocalBrowser?: (image: GalleryImage) => Promise<boolean | void>;
     openPdfDocument?: (image: GalleryImage) => Promise<boolean | void>;
@@ -848,6 +849,7 @@ const shouldShowWeightPanel = (image: GalleryImage) =>
   typeof image.weight === 'number' || Boolean(props.updateImageWeight);
 const shouldShowQuickDeleteButton = (image: GalleryImage) =>
   Boolean(props.deleteImage)
+  && (props.canDeleteImage?.(image) ?? true)
   && Boolean(props.showQuickDeleteForNonPositiveWeight)
   && getImageWeight(image) <= 0;
 const isWeightUpdating = (imageId: string) => Boolean(updatingWeightById.value[imageId]);
@@ -1564,6 +1566,9 @@ const restoreGalleryScrollPosition = async (scrollTop: number) => {
 
 const handleDeleteImage = async (imageId: string) => {
   if (!props.deleteImage) return;
+
+  const targetImage = props.images.find((item) => item.id === imageId);
+  if (!targetImage || !(props.canDeleteImage?.(targetImage) ?? true)) return;
 
   const visibleIndex = visibleImages.value.findIndex((item) => item.id === imageId);
   const nextImageId =

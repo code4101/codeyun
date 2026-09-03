@@ -12,17 +12,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _runtime_image_number
+from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _image_number
 from pyxllib.prog import BehaviorTreeStatus
 
 from backend.core.fanxiu.prayer_cycle import PRAYER_CYCLE_NAMES, PRAYER_CYCLE_TIMEZONE, current_prayer_cycle, next_prayer_cycle
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
+from backend.core.fanxiu.evidence_retention import prune_fanxiu_evidence
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.data_annotation.ocr_spatial import find_text_matches
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
     FULLWIDTH_DIGIT_TRANSLATION,
     _parse_daily_boss_cd_seconds,
     _parse_daily_boss_reward_remaining,
@@ -88,7 +89,7 @@ class DailyResourceTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -97,55 +98,55 @@ class DailyResourceTaskMixin:
             flow=self.日常供奉流程,
         )
 
-    def 日常供奉流程(self, runtime: Any):
+    def 日常供奉流程(self, context: Any):
         task_label = "日常_供奉"
-        ctx = runtime.ctx
-        stop_event = runtime.stop_event or threading.Event()
-        payload = runtime.payload
+        ctx = context.ctx
+        stop_event = context.stop_event or threading.Event()
+        payload = context.payload
 
-        image252 = runtime.view(252).raw
-        image254 = runtime.view(254).raw
-        image255 = runtime.view(255).raw
-        image256 = runtime.view(256).raw
-        image257 = runtime.view(257).raw
+        image252 = context.view(252).raw
+        image254 = context.view(254).raw
+        image255 = context.view(255).raw
+        image256 = context.view(256).raw
+        image257 = context.view(257).raw
 
-        scene_id, _score, frame = runtime.current_scene([34, 47, 251, 252, 255, 256, 257], update=True)
+        scene_id, _score, frame = context.current_scene([34, 47, 251, 252, 255, 256, 257], update=True)
         accepted = 0
         upgraded = 0
         if scene_id == 255:
-            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, runtime)
+            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, context)
             scene_id = 254
         if scene_id == 47:
-            yield from runtime.wait_click(47, "空白")
-            scene_id, _score, frame = runtime.current_scene([34, 251, 252, 255, 256, 257], update=True)
+            yield from context.wait_click(47, "空白")
+            scene_id, _score, frame = context.current_scene([34, 251, 252, 255, 256, 257], update=True)
         if scene_id == 257:
-            yield from runtime.wait_click(257, "空白")
-            yield from runtime.wait_action_settle(1.2)
+            yield from context.wait_click(257, "空白")
+            yield from context.wait_action_settle(1.2)
             scene_id = 252
         if scene_id == 256:
-            yield from runtime.wait_click(256, "返回")
-            scene_id, _score, frame = runtime.current_scene([34, 252], update=True)
+            yield from context.wait_click(256, "返回")
+            scene_id, _score, frame = context.current_scene([34, 252], update=True)
 
-        if self._daily_gongfeng_upgrade_page_visible(runtime, frame):
-            upgraded = yield from self._upgrade_daily_gongfeng_until_insufficient(ctx, stop_event, payload, image254, image255, runtime)
-            yield from self._close_daily_gongfeng_upgrade_pages(ctx, stop_event, payload, image254, image256, runtime)
+        if self._daily_gongfeng_upgrade_page_visible(context, frame):
+            upgraded = yield from self._upgrade_daily_gongfeng_until_insufficient(ctx, stop_event, payload, image254, image255, context)
+            yield from self._close_daily_gongfeng_upgrade_pages(ctx, stop_event, payload, image254, image256, context)
         else:
             if scene_id is None:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 scene_id = 34
             if scene_id == 34:
-                yield from runtime.wait_click(34, "主线")
+                yield from context.wait_click(34, "主线")
                 scene_id = 251
             if scene_id == 251:
-                yield from runtime.wait_click(251, "供奉")
+                yield from context.wait_click(251, "供奉")
                 scene_id = 252
             if scene_id == 252:
-                accepted = yield from self._accept_daily_gongfeng_until_done(ctx, stop_event, payload, image252, runtime)
-                yield from self._claim_daily_gongfeng_extra_reward(ctx, stop_event, payload, image252, image257, runtime)
-                upgraded = yield from self._upgrade_daily_gongfeng_law(ctx, stop_event, payload, image252, image254, image255, image256, runtime)
-        yield from runtime.goto_view(34)
-        runtime.set_next_time(self._next_daily_boss_reset_time_text())
-        runtime.set_completion_message(f"{task_label}完成，接受 {accepted} 次，升级 {upgraded} 次，已回到世界")
+                accepted = yield from self._accept_daily_gongfeng_until_done(ctx, stop_event, payload, image252, context)
+                yield from self._claim_daily_gongfeng_extra_reward(ctx, stop_event, payload, image252, image257, context)
+                upgraded = yield from self._upgrade_daily_gongfeng_law(ctx, stop_event, payload, image252, image254, image255, image256, context)
+        yield from context.go_scene(34)
+        context.set_next_time(self._next_daily_boss_reset_time_text())
+        context.set_completion_message(f"{task_label}完成，接受 {accepted} 次，升级 {upgraded} 次，已回到世界")
 
     def _accept_daily_gongfeng_until_done(
         self,
@@ -153,23 +154,23 @@ class DailyResourceTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any],
         image252: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
     ):
         accepted = 0
         max_accept = max(0, int(payload.get("max_accept") or 20))
         max_read = max(1, int(payload.get("gongfeng_count_read_retries") or 8))
         for index in range(max_accept):
             self._raise_if_stopped(stop_event)
-            yield from runtime.wait_view(252, label="日常_供奉：等待供奉页 #252")
+            yield from context.wait_scene(252, label="日常_供奉：等待供奉页 #252")
             remaining = None
             last_text = ""
             for read_index in range(max_read):
-                numbers, last_text = runtime.ocr_numbers_in_shapes(252, ("次数",), padding=16)
+                numbers, last_text = context.ocr_numbers_in_shapes(252, ("次数",), padding=16)
                 self._log("detail", f"日常_供奉：读取次数 {index + 1}.{read_index + 1} OCR={last_text} nums={numbers}")
                 if numbers:
                     remaining = numbers[0]
                     break
-                yield from runtime.wait_action_settle(0.8)
+                yield from context.wait_action_settle(0.8)
             if remaining is None:
                 raise RuntimeError(f"日常_供奉：#252「次数」未识别到整数，OCR={last_text[:120]}")
             if remaining <= 0:
@@ -178,9 +179,9 @@ class DailyResourceTaskMixin:
             with self._lock:
                 self._set_status_locked("running", f"日常_供奉：接受供奉 {accepted + 1}", phase="daily_gongfeng_accept")
                 self._log_locked("action", "日常_供奉：点击 #252「接受供奉」")
-            yield from runtime.wait_click(252, "接受供奉")
+            yield from context.wait_click(252, "接受供奉")
             accepted += 1
-            yield from runtime.wait_action_settle(2.0)
+            yield from context.wait_action_settle(2.0)
         raise RuntimeError(f"日常_供奉：达到最大接受次数 {max_accept} 仍未到 0，已暂停")
 
     def _claim_daily_gongfeng_extra_reward(
@@ -190,32 +191,32 @@ class DailyResourceTaskMixin:
         payload: dict[str, Any],
         image252: dict[str, Any],
         image257: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
     ):
         shape = self._find_shape(image252, "额外奖励")
         if shape is None:
             raise RuntimeError("日常_供奉：缺少 #252「额外奖励」标注")
-        yield from runtime.wait_view(252, label="日常_供奉：等待供奉页 #252")
+        yield from context.wait_scene(252, label="日常_供奉：等待供奉页 #252")
         with self._lock:
             self._set_status_locked("running", "日常_供奉：点击 #252「额外奖励」", phase="daily_gongfeng_extra_reward", current_scene=252)
             self._log_locked("action", "日常_供奉：点击 #252「额外奖励」")
-        yield from runtime.wait_click(252, "额外奖励")
-        yield from runtime.wait_action_settle(float(payload.get("gongfeng_extra_settle_seconds") or 2.0))
-        result = yield from runtime.wait_any(
+        yield from context.wait_click(252, "额外奖励")
+        yield from context.wait_action_settle(float(payload.get("gongfeng_extra_settle_seconds") or 2.0))
+        result = yield from context.wait_any(
             {
-                "详情": runtime.view_visible(257),
-                "供奉页": runtime.view_visible(252),
-                "空白弹层": runtime.view_visible(47),
+                "详情": context.scene_visible(257),
+                "供奉页": context.scene_visible(252),
+                "空白弹层": context.scene_visible(47),
             },
             label="日常_供奉：等待额外奖励结果",
         )
         if result == "详情":
-            yield from runtime.wait_click(257, "空白")
-            yield from runtime.wait_view(252, label="日常_供奉：等待回到 #252")
+            yield from context.wait_click(257, "空白")
+            yield from context.wait_scene(252, label="日常_供奉：等待回到 #252")
             return "closed_257"
         if result == "空白弹层":
-            yield from runtime.wait_click(47, "空白")
-            yield from runtime.wait_view(252, label="日常_供奉：等待回到 #252")
+            yield from context.wait_click(47, "空白")
+            yield from context.wait_scene(252, label="日常_供奉：等待回到 #252")
             return "closed_47"
         self._log("success", "日常_供奉：额外奖励已领取或未弹出详情")
         return "no_popup"
@@ -229,19 +230,19 @@ class DailyResourceTaskMixin:
         image254: dict[str, Any],
         image255: dict[str, Any],
         image256: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
     ) -> int:
-        yield from runtime.wait_view(252, label="日常_供奉：等待供奉页 #252")
-        yield from runtime.wait_click(252, "升级法则")
-        yield from self._wait_daily_gongfeng_upgrade_page(runtime)
-        upgraded = yield from self._upgrade_daily_gongfeng_until_insufficient(ctx, stop_event, payload, image254, image255, runtime)
-        yield from self._close_daily_gongfeng_upgrade_pages(ctx, stop_event, payload, image254, image256, runtime)
+        yield from context.wait_scene(252, label="日常_供奉：等待供奉页 #252")
+        yield from context.wait_click(252, "升级法则")
+        yield from self._wait_daily_gongfeng_upgrade_page(context)
+        upgraded = yield from self._upgrade_daily_gongfeng_until_insufficient(ctx, stop_event, payload, image254, image255, context)
+        yield from self._close_daily_gongfeng_upgrade_pages(ctx, stop_event, payload, image254, image256, context)
         return upgraded
 
-    def _wait_daily_gongfeng_upgrade_page(self, runtime: Any):
-        return (yield from runtime.wait_any(
+    def _wait_daily_gongfeng_upgrade_page(self, context: Any):
+        return (yield from context.wait_any(
             {
-                "升级页": runtime.ocr_contains(
+                "升级页": context.ocr_contains(
                     all_of=("技能描述",),
                     any_of=("升级", "时间道蕴", "仙法"),
                     label="日常_供奉：#254 升级页 OCR",
@@ -252,11 +253,11 @@ class DailyResourceTaskMixin:
 
     def _daily_gongfeng_upgrade_page_visible(
         self,
-        runtime: Any,
+        context: Any,
         frame: str | None = None,
     ) -> bool:
         try:
-            score = runtime.shape_score(254, "升级", frame_data_url=frame)
+            score = context.shape_score(254, "升级", frame_data_url=frame)
         except Exception:
             return False
         return score >= float(self.overlay_threshold)
@@ -268,34 +269,34 @@ class DailyResourceTaskMixin:
         payload: dict[str, Any],
         image254: dict[str, Any],
         image255: dict[str, Any],
-        runtime: Any,
+        context: Any,
     ) -> int:
         upgraded = 0
         max_upgrade = max(0, int(payload.get("max_upgrade") or 50))
         read_retries = max(1, int(payload.get("gongfeng_law_read_retries") or 12))
         for loop_index in range(max_upgrade + 1):
             self._raise_if_stopped(stop_event)
-            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, runtime)
+            yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, context)
             parsed: tuple[int, int] | None = None
             last_text = ""
             for read_index in range(read_retries):
                 self._raise_if_stopped(stop_event)
                 try:
-                    yield from self._wait_daily_gongfeng_upgrade_page(runtime)
+                    yield from self._wait_daily_gongfeng_upgrade_page(context)
                 except TimeoutError:
-                    scene_id, score, _frame = runtime.current_scene([34, 252, 256], update=True)
+                    scene_id, score, _frame = context.current_scene([34, 252, 256], update=True)
                     if scene_id in {34, 252, 256}:
                         self._log("success", f"日常_供奉：升级后已离开 #254，到达 #{scene_id} {score:.0f}%，升级 {upgraded} 次")
                         return upgraded
                     raise
-                nums, last_text = runtime.ocr_numbers_in_shapes(254, ("数值",), padding=26)
+                nums, last_text = context.ocr_numbers_in_shapes(254, ("数值",), padding=26)
                 self._log("detail", f"日常_供奉：读取法则数值 {loop_index + 1}.{read_index + 1} OCR={last_text} nums={nums}")
                 parsed = self._parse_daily_gongfeng_law_progress(last_text)
                 if parsed is not None:
                     break
-                if (yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, runtime)):
+                if (yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, context)):
                     continue
-                yield from runtime.wait_action_settle(0.8)
+                yield from context.wait_action_settle(0.8)
             if parsed is None:
                 raise RuntimeError(f"日常_供奉：#254「数值」未识别到两个整数，OCR={last_text[:120]}")
             current, required = parsed
@@ -304,9 +305,9 @@ class DailyResourceTaskMixin:
                 return upgraded
             with self._lock:
                 self._set_status_locked("running", f"日常_供奉：升级法则 {upgraded + 1}，{current}/{required}", phase="daily_gongfeng_upgrade_law", current_scene=254)
-            runtime.click_shape_center(254, "升级")
+            context.click_shape_center(254, "升级")
             upgraded += 1
-            yield from runtime.wait_action_settle(1.5)
+            yield from context.wait_action_settle(1.5)
         raise RuntimeError(f"日常_供奉：升级超过 {max_upgrade} 次仍未到资源不足，已暂停")
 
     def _parse_daily_gongfeng_law_progress(self, text: Any) -> tuple[int, int] | None:
@@ -331,15 +332,15 @@ class DailyResourceTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         image255: dict[str, Any],
-        runtime: Any,
+        context: Any,
     ):
         del ctx, stop_event, image255
-        scene_id, _score, _frame = runtime.current_scene([255], update=True)
+        scene_id, _score, _frame = context.current_scene([255], update=True)
         if scene_id != 255:
             return False
         self._log("action", "日常_供奉：关闭 #255 物品详情")
-        yield from runtime.wait_click(255, "空白")
-        yield from runtime.wait_action_settle(1.2)
+        yield from context.wait_click(255, "空白")
+        yield from context.wait_action_settle(1.2)
         return True
 
     def _close_daily_gongfeng_upgrade_pages(
@@ -349,35 +350,35 @@ class DailyResourceTaskMixin:
         payload: dict[str, Any],
         image254: dict[str, Any],
         image256: dict[str, Any],
-        runtime: BehaviorTreeRuntime,
+        context: BehaviorTreeContext,
     ):
         del image254
-        scene_id, score, _frame = runtime.current_scene([34, 252, 254, 256], update=True)
+        scene_id, score, _frame = context.current_scene([34, 252, 254, 256], update=True)
         if scene_id in {34, 252}:
             self._log("success", f"日常_供奉：已在收尾场景 #{scene_id} {score:.0f}%，无需关闭 #254")
             return "success"
         if scene_id == 256:
-            yield from runtime.wait_click(256, "返回")
-            yield from runtime.wait_view(252, 34, label="日常_供奉：等待回到 #252/#34")
+            yield from context.wait_click(256, "返回")
+            yield from context.wait_scene(252, 34, label="日常_供奉：等待回到 #252/#34")
             return "success"
         try:
-            yield from self._wait_daily_gongfeng_upgrade_page(runtime)
+            yield from self._wait_daily_gongfeng_upgrade_page(context)
         except TimeoutError:
-            scene_id, score, _frame = runtime.current_scene([34, 252, 256], update=True)
+            scene_id, score, _frame = context.current_scene([34, 252, 256], update=True)
             if scene_id in {34, 252}:
                 self._log("success", f"日常_供奉：未再检测到 #254，当前 #{scene_id} {score:.0f}%，按已收尾处理")
                 return "success"
             if scene_id == 256:
-                yield from runtime.wait_click(256, "返回")
-                yield from runtime.wait_view(252, 34, label="日常_供奉：等待回到 #252/#34")
+                yield from context.wait_click(256, "返回")
+                yield from context.wait_scene(252, 34, label="日常_供奉：等待回到 #252/#34")
                 return "success"
             raise
         self._log("action", "日常_供奉：点击 #254「空白」")
-        yield from runtime.wait_click(254, "空白")
-        yield from runtime.wait_action_settle(1.2)
-        yield from runtime.wait_click(256, "返回")
+        yield from context.wait_click(254, "空白")
+        yield from context.wait_action_settle(1.2)
+        yield from context.wait_click(256, "返回")
         try:
-            yield from runtime.wait_view(252, 34, label="日常_供奉：等待回到 #252/#34")
+            yield from context.wait_scene(252, 34, label="日常_供奉：等待回到 #252/#34")
         except Exception as exc:
             self._log("warning", f"日常_供奉：#256 返回后未确认 #252/#34：{exc}")
         return "success"
@@ -415,25 +416,25 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         yield from self._wait_daily_youli_home(
             ctx,
             stop_event,
             label="日常_游历：等待修仙传游历 #228",
         )
-        result = yield from runtime.wait_click_then_any(
+        result = yield from context.wait_click_then_any(
             228,
             "购买",
             {
-                "purchase": runtime.shape_visible(229, "购买并使用"),
-                "empty": runtime.shape_visible(233, "空白"),
-                "empty_text": runtime.ocr_matches(
+                "purchase": context.shape_visible(229, "购买并使用"),
+                "empty": context.shape_visible(233, "空白"),
+                "empty_text": context.ocr_matches(
                     self._daily_youli_text_is_purchase_empty,
                     label=f"{task_label}：购买次数不足 OCR",
                     preview_chars=120,
                 ),
-                "home": runtime.view_visible(228, threshold=95.0),
-                "home_text": runtime.ocr_matches(
+                "home": context.scene_visible(228, threshold=95.0),
+                "home_text": context.ocr_matches(
                     self._daily_youli_text_is_home,
                     label=f"{task_label}：购买后修仙传游历 OCR",
                     preview_chars=120,
@@ -575,9 +576,9 @@ class DailyResourceTaskMixin:
         label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         scene_threshold = 95.0 if int(target_scene_id) == 228 else 80.0
-        _result, scene_id, score = yield from runtime.wait_view_or_ocr(
+        _result, scene_id, score = yield from context.wait_scene_or_ocr(
             target_scene_id,
             text_predicate,
             view_threshold=scene_threshold,
@@ -585,8 +586,8 @@ class DailyResourceTaskMixin:
             label=label,
         )
         if int(target_scene_id) == 228 and _result != "text":
-            frame = runtime.cur_frame(update=True)
-            text = runtime.ocr_text(frame)
+            frame = context.cur_frame(update=True)
+            text = context.ocr_text(frame)
             if not text_predicate(text):
                 images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
                 image228 = images.get(228)
@@ -599,9 +600,9 @@ class DailyResourceTaskMixin:
                     image228,
                     task_label="日常_游历",
                 )
-                yield from runtime.wait_any(
+                yield from context.wait_any(
                     {
-                        "text": runtime.ocr_matches(
+                        "text": context.ocr_matches(
                             text_predicate,
                             label=f"{label} OCR确认",
                             preview_chars=120,
@@ -610,7 +611,7 @@ class DailyResourceTaskMixin:
                     timeout=timeout,
                     label=f"{label}：确认游历菜单已选中",
                 )
-                scene_id, score, _frame = runtime.current_scene([target_scene_id], update=True)
+                scene_id, score, _frame = context.current_scene([target_scene_id], update=True)
         self._log("success", f"{label}：已到达 #{target_scene_id} {score:.0f}%")
         return scene_id, score
 
@@ -624,9 +625,9 @@ class DailyResourceTaskMixin:
     ):
         del image233
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from runtime.wait_click(233, "空白", label=f"{task_label}：关闭购买次数不足提示")
-        yield from runtime.wait_action_settle(1.0)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from context.wait_click(233, "空白", label=f"{task_label}：关闭购买次数不足提示")
+        yield from context.wait_action_settle(1.0)
         self._log("success", f"{task_label}：已关闭购买次数不足提示")
         return "success"
 
@@ -657,9 +658,9 @@ class DailyResourceTaskMixin:
     ):
         del image229
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from runtime.wait_click(229, "空白", label=f"{task_label}：关闭购买体力弹窗")
-        yield from runtime.wait_action_settle(1.0)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from context.wait_click(229, "空白", label=f"{task_label}：关闭购买体力弹窗")
+        yield from context.wait_action_settle(1.0)
         self._log("success", f"{task_label}：已关闭购买体力弹窗")
         return "success"
 
@@ -678,25 +679,25 @@ class DailyResourceTaskMixin:
         if self._find_shape(image233, "空白") is None:
             raise RuntimeError(f"{task_label}：缺少 #233「空白」标注，无法关闭购买终止弹窗")
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         max_count = int(payload.get("purchase_uses") or payload.get("buy_uses") or 99)
         clicked = 0
         while clicked < max_count:
-            frame = runtime.cur_frame(update=True)
-            text = runtime.ocr_text(frame)
+            frame = context.cur_frame(update=True)
+            text = context.ocr_text(frame)
             if self._daily_youli_text_is_purchase_empty(text):
                 yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
                 self._log("success", f"{task_label}：购买终止于 #233，已回到 #228")
                 return "success"
             if not self._daily_youli_text_is_purchase(text):
-                result = yield from runtime.wait_any(
+                result = yield from context.wait_any(
                     {
-                        "purchase": runtime.ocr_matches(
+                        "purchase": context.ocr_matches(
                             self._daily_youli_text_is_purchase,
                             label=f"{task_label}：等待购买体力 #229 OCR",
                             preview_chars=120,
                         ),
-                        "empty": runtime.ocr_matches(
+                        "empty": context.ocr_matches(
                             self._daily_youli_text_is_purchase_empty,
                             label=f"{task_label}：等待购买次数不足 OCR",
                             preview_chars=120,
@@ -706,8 +707,8 @@ class DailyResourceTaskMixin:
                     interval=float(payload.get("purchase_wait_interval_seconds") or 0.25),
                     label=f"{task_label}：等待购买弹窗结果",
                 )
-                frame = runtime.cur_frame(update=True)
-                text = runtime.ocr_text(frame)
+                frame = context.cur_frame(update=True)
+                text = context.ocr_text(frame)
                 if result == "empty" or self._daily_youli_text_is_purchase_empty(text):
                     yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
                     self._log("success", f"{task_label}：购买终止于 #233，已回到 #228")
@@ -717,21 +718,21 @@ class DailyResourceTaskMixin:
             read_timeout = float(payload.get("purchase_remaining_timeout") or 5.0)
             while True:
                 self._raise_if_stopped(stop_event)
-                numbers, text = runtime.ocr_numbers_in_shapes(229, ("剩余限购次数",), padding=12)
+                numbers, text = context.ocr_numbers_in_shapes(229, ("剩余限购次数",), padding=12)
                 remaining = numbers[-1] if numbers else None
                 if remaining is not None:
                     break
                 if time.monotonic() - read_start >= read_timeout:
                     break
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
             if remaining is None:
                 self._log("warning", f"{task_label}：未识别到剩余限购次数，继续购买直到 #233 终止态，OCR={text[:120]}")
             target_count = min(max_count, clicked + max(1, remaining or 1))
-            yield from runtime.wait_click(229, "购买并使用")
+            yield from context.wait_click(229, "购买并使用")
             clicked += 1
-            yield from runtime.wait_action_settle(float(payload.get("purchase_click_settle_seconds") or 1.2))
-            scene_id, _score, frame = runtime.current_scene([233, 229], update=True)
-            text = runtime.ocr_text(frame)
+            yield from context.wait_action_settle(float(payload.get("purchase_click_settle_seconds") or 1.2))
+            scene_id, _score, frame = context.current_scene([233, 229], update=True)
+            text = context.ocr_text(frame)
             self._log("detail", f"{task_label}：购买并使用 {clicked}/{target_count} 后 OCR={text[:120]}")
             if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
                 yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
@@ -741,8 +742,8 @@ class DailyResourceTaskMixin:
                 self._log("success", f"{task_label}：购买弹窗已关闭，停止购买")
                 return "success"
         if clicked > 0:
-            scene_id, _score, frame = runtime.current_scene([229, 228, 233], update=True)
-            text = runtime.ocr_text(frame)
+            scene_id, _score, frame = context.current_scene([229, 228, 233], update=True)
+            text = context.ocr_text(frame)
             if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
                 yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
             elif scene_id == 229 or self._daily_youli_text_is_purchase(text):
@@ -762,9 +763,9 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([236, 228], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([236, 228], update=True)
+        text = context.ocr_text(frame)
         if scene_id == 236 or self._daily_youli_text_is_region_detail(text):
             self._log("success", f"{task_label}：当前已在游历区域详情，直接执行快速游历")
             quick_status = yield from self._click_daily_youli_quick_travel(ctx, stop_event, payload, image236, image237, task_label=task_label)
@@ -776,7 +777,7 @@ class DailyResourceTaskMixin:
             else:
                 return quick_status
         yield from self._wait_daily_youli_home(ctx, stop_event, label="日常_游历：等待修仙传游历 #228")
-        candidates = runtime.ocr_centers_in_shape(228, "检索区域", include=())
+        candidates = context.ocr_centers_in_shape(228, "检索区域", include=())
         if not candidates:
             raise RuntimeError("日常_游历：#228「检索区域」内未识别到可点击 OCR 文本")
         x, y, text = candidates[-1]
@@ -788,8 +789,8 @@ class DailyResourceTaskMixin:
                 current_scene=228,
             )
             self._log_locked("action", f"{task_label}：点击 #228 检索区域最后一个 OCR「{text}」")
-        runtime.click_frame_point(228, x, y)
-        yield from runtime.wait_action_settle(float(payload.get("region_click_settle_seconds") or 2.0))
+        context.click_frame_point(228, x, y)
+        yield from context.wait_action_settle(float(payload.get("region_click_settle_seconds") or 2.0))
         yield from self._wait_daily_youli_region_detail(
             ctx,
             stop_event,
@@ -816,28 +817,28 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         yield from self._wait_daily_youli_region_detail(
             ctx,
             stop_event,
             label=f"{task_label}：等待游历区域详情 #236",
         )
-        runtime.click_shape_center(236, "快速游历")
-        yield from runtime.wait_action_settle(float(payload.get("quick_travel_settle_seconds") or 2.0))
+        context.click_shape_center(236, "快速游历")
+        yield from context.wait_action_settle(float(payload.get("quick_travel_settle_seconds") or 2.0))
         self._log("success", f"{task_label}：已点击快速游历")
-        result = yield from runtime.wait_any(
+        result = yield from context.wait_any(
             {
-                "result": runtime.ocr_matches(
+                "result": context.ocr_matches(
                     self._daily_youli_text_is_quick_result,
                     label=f"{task_label}：等待游历结果 #237 OCR",
                     preview_chars=120,
                 ),
-                "completed": runtime.ocr_matches(
+                "completed": context.ocr_matches(
                     self._daily_youli_text_is_region_completed,
                     label=f"{task_label}：等待游历区域已完成 OCR",
                     preview_chars=120,
                 ),
-                "resource_empty": runtime.ocr_matches(
+                "resource_empty": context.ocr_matches(
                     self._daily_youli_text_is_purchase_empty,
                     label=f"{task_label}：等待快速游历资源不足 OCR",
                     preview_chars=120,
@@ -871,16 +872,16 @@ class DailyResourceTaskMixin:
         image34 = images.get(34)
         image71 = images.get(71)
         image228 = images.get(228)
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from runtime.wait_click(236, "返回")
-        result = yield from runtime.wait_any(
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        yield from context.wait_click(236, "返回")
+        result = yield from context.wait_any(
             {
-                "home": runtime.ocr_matches(
+                "home": context.ocr_matches(
                     self._daily_youli_text_is_home,
                     label=f"{task_label}：等待返回修仙传游历 #228 OCR",
                     preview_chars=120,
                 ),
-                "world_scene": runtime.view_visible(34),
+                "world_scene": context.scene_visible(34),
             },
             timeout=18.0,
             label=f"{task_label}：等待返回修仙传或世界",
@@ -891,7 +892,7 @@ class DailyResourceTaskMixin:
             raise RuntimeError(f"{task_label}：区域返回落到世界，但缺少 #34/#228 标注，无法重新进入游历")
         entered = yield from self._try_enter_daily_youli_from_world_mainline(
             ctx,
-            runtime,
+            context,
             stop_event,
             payload,
             image34,
@@ -900,7 +901,7 @@ class DailyResourceTaskMixin:
         )
         if not entered:
             raise RuntimeError(f"{task_label}：区域返回落到世界，主线快路径未能重新进入游历")
-        scene_id, _score, _frame = runtime.current_scene([71, 228], update=True)
+        scene_id, _score, _frame = context.current_scene([71, 228], update=True)
         if scene_id == 71:
             yield from self._select_daily_youli_from_xiuxianzhuan_menu(ctx, stop_event, payload, image71, task_label=task_label)
         yield from self._wait_daily_youli_home(ctx, stop_event, timeout=18.0, label=f"{task_label}：等待重新进入修仙传游历 #228")
@@ -916,14 +917,14 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         yield from self._wait_daily_youli_quick_result(
             ctx,
             stop_event,
             label=f"{task_label}：等待游历结果 #237",
         )
-        yield from runtime.wait_click(237, "确定")
-        yield from runtime.wait_action_settle(float(payload.get("quick_result_confirm_settle_seconds") or 2.0))
+        yield from context.wait_click(237, "确定")
+        yield from context.wait_action_settle(float(payload.get("quick_result_confirm_settle_seconds") or 2.0))
         self._log("success", f"{task_label}：已确认游历结果")
         return "success"
 
@@ -937,16 +938,16 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = runtime.current_scene([236, 228, 34], update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        scene_id, _score, frame = context.current_scene([236, 228, 34], update=True)
+        text = context.ocr_text(frame)
         if self._daily_youli_text_is_reward_recovery(text):
             return (yield from self._return_daily_youli_reward_recovery_to_world(ctx, stop_event, task_label=task_label))
         if scene_id == 34:
             self._log("success", f"{task_label}：已在世界 #34")
             return "success"
         if scene_id == 236 or self._daily_youli_text_is_region_detail(text):
-            yield from runtime.wait_click(236, "返回")
+            yield from context.wait_click(236, "返回")
             yield from self._wait_daily_youli_home(
                 ctx,
                 stop_event,
@@ -956,11 +957,11 @@ class DailyResourceTaskMixin:
         else:
             yield from self._wait_daily_youli_home(ctx, stop_event, label=f"{task_label}：等待修仙传游历 #228")
 
-        yield from runtime.wait_click(228, "返回")
-        result = yield from runtime.wait_any(
+        yield from context.wait_click(228, "返回")
+        result = yield from context.wait_any(
             {
-                "world_scene": runtime.view_visible(34),
-                "daily_text": runtime.ocr_matches(
+                "world_scene": context.scene_visible(34),
+                "daily_text": context.ocr_matches(
                     self._daily_youli_text_is_daily_page,
                     label=f"{task_label}：等待 #228 返回后日常 OCR",
                     preview_chars=120,
@@ -988,19 +989,19 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         result = "daily_text"
         for attempt in range(2):
             with self._lock:
                 self._set_status_locked("running", f"{task_label}：从日常页退出到世界", phase="daily_youli_daily_exit")
                 suffix = "" if attempt == 0 else f"重试 {attempt + 1}/2，"
                 self._log_locked("action", f"{task_label}：{suffix}点击 #69「退出」返回世界")
-            runtime.click_shape_center(69, "退出")
-            yield from runtime.wait_action_settle(1.5)
-            result = yield from runtime.wait_any(
+            context.click_shape_center(69, "退出")
+            yield from context.wait_action_settle(1.5)
+            result = yield from context.wait_any(
                 {
-                    "world_scene": runtime.view_visible(34),
-                    "daily_text": runtime.ocr_matches(
+                    "world_scene": context.scene_visible(34),
+                    "daily_text": context.ocr_matches(
                         self._daily_youli_text_is_daily_page,
                         label=f"{task_label}：检查日常退出是否仍停留",
                         preview_chars=120,
@@ -1021,13 +1022,13 @@ class DailyResourceTaskMixin:
         task_label: str,
     ):
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        frame = runtime.cur_frame(update=True)
-        text = runtime.ocr_text(frame)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        frame = context.cur_frame(update=True)
+        text = context.ocr_text(frame)
         if not self._daily_youli_text_is_reward_recovery(text):
-            yield from runtime.wait_any(
+            yield from context.wait_any(
                 {
-                    "reward_recovery": runtime.ocr_matches(
+                    "reward_recovery": context.ocr_matches(
                         self._daily_youli_text_is_reward_recovery,
                         label=f"{task_label}：等待奖励找回页 OCR",
                         preview_chars=120,
@@ -1039,12 +1040,12 @@ class DailyResourceTaskMixin:
         with self._lock:
             self._set_status_locked("running", f"{task_label}：从奖励找回页退出到世界", phase="daily_youli_reward_recovery_exit")
             self._log_locked("action", f"{task_label}：奖励找回 OCR 已确认，点击 #69「退出」关闭奖励找回页")
-        runtime.click_shape_center(69, "退出")
-        yield from runtime.wait_action_settle(1.5)
-        result = yield from runtime.wait_any(
+        context.click_shape_center(69, "退出")
+        yield from context.wait_action_settle(1.5)
+        result = yield from context.wait_any(
             {
-                "world_scene": runtime.view_visible(34),
-                "daily_text": runtime.ocr_matches(
+                "world_scene": context.scene_visible(34),
+                "daily_text": context.ocr_matches(
                     self._daily_youli_text_is_daily_page,
                     label=f"{task_label}：等待奖励找回关闭后日常 OCR",
                     preview_chars=120,
@@ -1077,7 +1078,7 @@ class DailyResourceTaskMixin:
         image250 = images.get(250)
 
         task_label = "仙市_秘藏阁"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         with self._lock:
             self._set_status_locked(
                 "running",
@@ -1086,12 +1087,12 @@ class DailyResourceTaskMixin:
                 current_scene=None,
             )
             self._log_locked("action", f"{task_label}：先回到 #34，再执行完整事务")
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
+        yield from context.go_scene(34)
+        yield from context.wait_scene(34, label=f"{task_label}：等待世界 #34")
         yield from self._open_daily_xianshi_coin_list(ctx, stop_event, payload, image34, image247, image248, task_label=task_label)
 
-        frame = runtime.cur_frame(update=True)
-        text = runtime.ocr_text(frame)
+        frame = context.cur_frame(update=True)
+        text = context.ocr_text(frame)
         if self._daily_xianshi_text_is_box_detail(text):
             completed = yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label)
         else:
@@ -1137,38 +1138,63 @@ class DailyResourceTaskMixin:
         task_label = "仙市_每周资源"
         phase = self._xianshi_weekly_resources_phase(payload)
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame = runtime.current_scene([316, 247, 34], update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, _frame = context.current_scene([316, 247, 34], update=True)
         claimed: list[str] = []
         claim_attempts = 0
+        uncertain_detail = False
         if scene_id == 316:
             if phase != "midnight":
                 raise RuntimeError(f"{task_label}：当前停在商品详情 #316，非 00:00-05:00 补领窗口不自动领取")
             claim_attempts += 1
-            claimed_item = yield from self._claim_current_xianshi_weekly_resource_detail(runtime, current_prayer_cycle())
-            if claimed_item:
-                claimed.append(claimed_item)
-            yield from runtime.wait_view(247, label=f"{task_label}：等待返回秘藏阁 #247")
+            claim_result = yield from self._claim_current_xianshi_weekly_resource_detail(context, current_prayer_cycle())
+            if claim_result["status"] == "claimed":
+                claimed.append(str(claim_result["item"]))
+            elif claim_result["status"] == "unknown":
+                uncertain_detail = True
+            yield from context.wait_scene(247, label=f"{task_label}：等待返回秘藏阁 #247")
             scene_id = 247
         if scene_id != 247:
             if scene_id != 34:
-                yield from runtime.goto_view(34)
-                yield from runtime.wait_view(34)
+                yield from context.go_scene(34)
+                yield from context.wait_scene(34)
             yield from self._open_xianshi_weekly_resource_entry(
-                runtime,
+                context,
                 payload,
             )
 
-        if phase == "midnight":
+        already_terminal = yield from self._confirm_xianshi_weekly_resources_terminal(
+            context,
+            phase=phase,
+            reserved_group=next_prayer_cycle(),
+        )
+        if already_terminal:
+            yield from context.wait_click_then_scene(
+                247,
+                "返回",
+                34,
+                settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0),
+            )
+            next_time = self._record_xianshi_weekly_resources_done(payload)
+            self._log(
+                "success",
+                f"{task_label}：当前免费资源集合已满足 {phase} 阶段终态，下次 {next_time}",
+            )
+            return "success"
+
+        if phase == "midnight" and not uncertain_detail:
             target = current_prayer_cycle()
             max_attempts = 2
             while claim_attempts < max_attempts:
                 claim_attempts += 1
-                claimed_item = yield from self._claim_xianshi_weekly_resource_slot(runtime, "第1个物品", target)
-                if not claimed_item:
+                claim_result = yield from self._claim_xianshi_weekly_resource_slot(context, "第1个物品", target)
+                if claim_result["status"] == "unknown":
+                    uncertain_detail = True
                     break
-                claimed.append(claimed_item)
-        else:
+                if claim_result["status"] != "claimed":
+                    break
+                claimed.append(str(claim_result["item"]))
+        elif phase != "midnight" and not uncertain_detail:
             max_attempts = 8
             skipped_groups = 0
             skipped_group = next_prayer_cycle()
@@ -1181,14 +1207,34 @@ class DailyResourceTaskMixin:
                     if claim_attempts >= max_attempts:
                         break
                     claim_attempts += 1
-                    claimed_item = yield from self._claim_xianshi_weekly_resource_slot(runtime, slot, group)
-                    if not claimed_item:
+                    claim_result = yield from self._claim_xianshi_weekly_resource_slot(context, slot, group)
+                    if claim_result["status"] == "unknown":
+                        uncertain_detail = True
                         break
-                    claimed.append(claimed_item)
+                    if claim_result["status"] != "claimed":
+                        break
+                    claimed.append(str(claim_result["item"]))
+                if uncertain_detail:
+                    break
                 if claim_attempts >= max_attempts:
                     break
 
-        yield from runtime.wait_click_then_view(247, "返回", 34, settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0))
+        terminal_confirmed = yield from self._confirm_xianshi_weekly_resources_terminal(
+            context,
+            phase=phase,
+            reserved_group=next_prayer_cycle(),
+        )
+        yield from context.wait_click_then_scene(247, "返回", 34, settle_seconds=float(payload.get("xianshi_return_settle_seconds") or 1.0))
+        if not terminal_confirmed:
+            next_time = self._record_xianshi_weekly_resources_retry(
+                payload,
+                seconds=int(payload.get("unknown_detail_retry_seconds") or 600),
+            )
+            self._log(
+                "skip",
+                f"{task_label}：未确认免费资源集合达到本阶段幂等终态，本轮不推进周周期，下次 {next_time}",
+            )
+            return "skipped"
         suffix = f"，跳过 {next_prayer_cycle()} 资源" if phase == "after_reset" else ""
         claimed_text = ", ".join(claimed) if claimed else "目标资源已领完"
         next_time = self._record_xianshi_weekly_resources_done(payload)
@@ -1216,17 +1262,32 @@ class DailyResourceTaskMixin:
         )
         return next_time
 
+    def _record_xianshi_weekly_resources_retry(
+        self,
+        payload: dict[str, Any],
+        *,
+        seconds: int,
+        now: datetime | None = None,
+    ) -> str:
+        current = now or datetime.now(PRAYER_CYCLE_TIMEZONE).replace(tzinfo=None)
+        next_time = (current + timedelta(seconds=max(60, int(seconds)))).strftime("%Y-%m-%d %H:%M:%S")
+        self._persist_scheduler_task_next_time(
+            str(payload.get("__scheduler_task_id") or "xianshi-weekly-resources"),
+            next_time,
+        )
+        return next_time
+
     def _open_xianshi_weekly_resource_entry(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
         max_scrolls = max(0, int(payload.get("xianshi_entry_max_scrolls") or 4))
-        entry_shape = runtime.shape(34, "仙市")
+        entry_shape = context.shape(34, "仙市")
         internal_scene_left = False
         for scroll_index in range(max_scrolls + 1):
-            if runtime.match_shape(entry_shape):
-                yield from runtime.wait_click_then_shape(
+            if context.match_shape(entry_shape):
+                yield from context.wait_click_then_shape(
                     34,
                     "仙市",
                     247,
@@ -1237,7 +1298,7 @@ class DailyResourceTaskMixin:
                     max_clicks=int(payload.get("xianshi_entry_max_clicks") or 3),
                 )
                 return True
-            right_menu_text = runtime.ocr_text_in_shapes(
+            right_menu_text = context.ocr_text_in_shapes(
                 34,
                 ("右侧菜单",),
                 padding=8,
@@ -1253,9 +1314,9 @@ class DailyResourceTaskMixin:
                     "action",
                     "仙市_每周资源：当前是世界样式的内部场景，先通过正式离开确认返回正常世界",
                 )
-                runtime.click_shape_center(85, "离开")
-                yield from runtime.wait_view(86, timeout=8.0, label="仙市_每周资源：等待离开场景确认")
-                yield from runtime.wait_click_then_view(
+                context.click_shape_center(85, "离开")
+                yield from context.wait_scene(86, wait=8.0, label="仙市_每周资源：等待离开场景确认")
+                yield from context.wait_click_then_scene(
                     86,
                     "确认",
                     34,
@@ -1270,7 +1331,7 @@ class DailyResourceTaskMixin:
                 "action",
                 f"仙市_每周资源：右侧菜单当前未显示「仙市」，向上恢复菜单 {scroll_index + 1}/{max_scrolls}",
             )
-            can_continue = yield from runtime.scroll_shape_content(
+            can_continue = yield from context.scroll_shape_content(
                 34,
                 "右侧菜单",
                 direction="up",
@@ -1288,11 +1349,88 @@ class DailyResourceTaskMixin:
         if override in {"midnight", "after_reset"}:
             return override
         now = datetime.now(PRAYER_CYCLE_TIMEZONE)
-        if now.weekday() != 0:
-            return "skip"
         if now.hour < 5:
-            return "midnight"
+            return "midnight" if now.weekday() == 0 else "after_reset"
         return "after_reset"
+
+    def _xianshi_weekly_resources_terminal_observation(
+        self,
+        text: str,
+        item_names: list[str],
+        *,
+        phase: str,
+        reserved_group: str,
+    ) -> dict[str, Any]:
+        compact = _sanitize_ocr_text(text).replace(" ", "")
+        free_count = compact.count("免费")
+        groups = [
+            group
+            for name in item_names
+            if (group := self._classify_xianshi_weekly_resource_name(name)) is not None
+        ]
+        obstructed = any(marker in compact for marker in ("幸运地获得了", "获得了"))
+        page_loaded = "每周限购" in compact and ("超值必买" in compact or "仙市" in compact)
+        if phase == "midnight":
+            terminal = not obstructed and page_loaded and free_count == 0
+        else:
+            terminal = not obstructed and (
+                (free_count == 0 and page_loaded)
+                or (
+                    0 < free_count <= 2
+                    and len(groups) == free_count
+                    and all(group == reserved_group for group in groups)
+                )
+            )
+        return {
+            "terminal": terminal,
+            "obstructed": obstructed,
+            "page_loaded": page_loaded,
+            "free_count": free_count,
+            "groups": groups,
+        }
+
+    def _confirm_xianshi_weekly_resources_terminal(
+        self,
+        context: Any,
+        *,
+        phase: str,
+        reserved_group: str,
+    ):
+        previous_key: tuple[int, tuple[str, ...]] | None = None
+        for read_index in range(6):
+            frame = context.cur_frame(update=True)
+            text = context.ocr_text(frame)
+            fragments = context.ocr_fragments(frame)
+            item_names = [str(fragment.get("text") or "") for fragment in fragments]
+            observation = self._xianshi_weekly_resources_terminal_observation(
+                text,
+                item_names,
+                phase=phase,
+                reserved_group=reserved_group,
+            )
+            key = (
+                int(observation["free_count"]),
+                tuple(str(group) for group in observation["groups"]),
+            )
+            self._log(
+                "detail",
+                (
+                    "仙市_每周资源：终态复核 "
+                    f"phase={phase} 免费={key[0]} groups={list(key[1])} "
+                    f"obstructed={observation['obstructed']} terminal={observation['terminal']}"
+                ),
+            )
+            if observation["obstructed"]:
+                previous_key = None
+                if read_index < 5:
+                    yield from context.wait_action_settle(1.5)
+                continue
+            if key == previous_key:
+                return bool(observation["terminal"])
+            previous_key = key
+            if read_index < 5:
+                yield from context.wait_action_settle(1.0)
+        return False
 
     def _classify_xianshi_weekly_resource_name(self, name: str) -> str | None:
         text = _sanitize_ocr_text(name)
@@ -1308,27 +1446,66 @@ class DailyResourceTaskMixin:
             return "淬体"
         return None
 
-    def _claim_xianshi_weekly_resource_slot(self, runtime: Any, slot: str, expected_group: str):
-        yield from runtime.wait_click_then_view(247, slot, 316)
-        return (yield from self._claim_current_xianshi_weekly_resource_detail(runtime, expected_group, slot=slot))
+    def _claim_xianshi_weekly_resource_slot(self, context: Any, slot: str, expected_group: str):
+        yield from context.wait_click_then_scene(247, slot, 316)
+        return (yield from self._claim_current_xianshi_weekly_resource_detail(context, expected_group, slot=slot))
 
-    def _claim_current_xianshi_weekly_resource_detail(self, runtime: Any, expected_group: str, *, slot: str = "当前物品"):
-        name_text = runtime.ocr_text_in_shapes(316, ("物品名称",), padding=8)
-        group = self._classify_xianshi_weekly_resource_name(str(name_text or ""))
+    def _claim_current_xianshi_weekly_resource_detail(self, context: Any, expected_group: str, *, slot: str = "当前物品"):
+        observations: list[tuple[str, str | None]] = []
+        name_text = ""
+        group = None
+        for read_index in range(3):
+            name_text = str(context.ocr_text_in_shapes(316, ("物品名称",), padding=8) or "")
+            group = self._classify_xianshi_weekly_resource_name(name_text)
+            observations.append((name_text, group))
+            if group == expected_group:
+                break
+            known_groups = [item_group for _text, item_group in observations if item_group is not None]
+            if len(known_groups) >= 2 and known_groups[-2:] == [group, group]:
+                break
+            if read_index < 2:
+                self._log(
+                    "detail",
+                    f"仙市_每周资源：{slot} 第 {read_index + 1} 次商品名识别为「{name_text}」={group or '未知'}，等待遮挡消退后复核",
+                )
+                yield from context.wait_action_settle(1.0)
+
+        if group is None:
+            summary = " / ".join(text or "空" for text, _group in observations)
+            self._log("skip", f"仙市_每周资源：{slot} 三次商品名仍无法分类（{summary}），本轮结果未知")
+            yield from self._return_xianshi_weekly_resource_detail(context)
+            return {"status": "unknown", "item": None}
         if group != expected_group:
-            self._log("skip", f"仙市_每周资源：{slot} 识别到「{name_text}」={group or '未知'}，预期 {expected_group}，视为目标资源已领完")
-            yield from self._return_xianshi_weekly_resource_detail(runtime)
-            return None
-        yield from runtime.wait_click(316, "领取")
-        yield from runtime.wait_action_settle(1.2)
-        self._log("success", f"仙市_每周资源：已领取 {name_text}")
-        return str(name_text or expected_group)
+            agreeing = sum(1 for _text, item_group in observations if item_group == group)
+            if agreeing < 2:
+                self._log("skip", f"仙市_每周资源：{slot} 商品分类不稳定，无法确认 {expected_group} 已领完")
+                yield from self._return_xianshi_weekly_resource_detail(context)
+                return {"status": "unknown", "item": None}
+            self._log("skip", f"仙市_每周资源：{slot} 连续识别到 {group}，预期 {expected_group}，目标资源已领完")
+            yield from self._return_xianshi_weekly_resource_detail(context)
+            return {"status": "exhausted", "item": None}
+        for click_index in range(3):
+            yield from context.wait_click(316, "领取")
+            yield from context.wait_action_settle(1.2)
+            scene_id, _score, _frame = context.current_scene([247, 316], update=True)
+            if scene_id == 247:
+                self._log("success", f"仙市_每周资源：已领取 {name_text}，并确认返回列表")
+                return {"status": "claimed", "item": str(name_text or expected_group)}
+            if scene_id != 316:
+                raise RuntimeError(
+                    f"仙市_每周资源：点击领取后落点不是列表 #247 或详情 #316，而是 {scene_id}"
+                )
+            if click_index < 2:
+                self._log("detail", f"仙市_每周资源：点击领取后仍在详情页，重试 {click_index + 2}/3")
+        self._log("skip", f"仙市_每周资源：连续三次点击领取仍停在详情页，领取状态未确认")
+        yield from self._return_xianshi_weekly_resource_detail(context)
+        return {"status": "unknown", "item": None}
 
-    def _return_xianshi_weekly_resource_detail(self, runtime: Any):
+    def _return_xianshi_weekly_resource_detail(self, context: Any):
         last_error: Exception | None = None
         for shape_title in ("返回", "shape 3"):
             try:
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     316,
                     shape_title,
                     247,
@@ -1354,8 +1531,8 @@ class DailyResourceTaskMixin:
             raise RuntimeError("缺少日常_vip资产树路径，无法执行作业")
 
         task_label = "日常_vip"
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame = runtime.current_scene([34], update=True)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+        scene_id, _score, _frame = context.current_scene([34], update=True)
         if scene_id != 34:
             with self._lock:
                 self._set_status_locked(
@@ -1365,37 +1542,37 @@ class DailyResourceTaskMixin:
                     current_scene=scene_id,
                 )
                 self._log_locked("action", f"{task_label}：确认/恢复到 #34")
-            yield from runtime.goto_view(34)
-            yield from runtime.wait_view(34, label=f"{task_label}：等待世界 #34")
+            yield from context.go_scene(34)
+            yield from context.wait_scene(34, label=f"{task_label}：等待世界 #34")
 
         vip_shape = str(payload.get("vip_shape") or "[vip]")
         with self._lock:
             self._set_status_locked("running", f"{task_label}：点击 #34「{vip_shape}」", phase="daily_vip_click", current_scene=34)
             self._log_locked("action", f"{task_label}：点击 #34「{vip_shape}」")
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             34,
             vip_shape,
             timeout=float(payload.get("vip_click_timeout") or payload.get("shape_click_timeout") or 8.0),
         )
-        yield from runtime.wait_action_settle(float(payload.get("vip_settle_seconds") or 2.0))
+        yield from context.wait_action_settle(float(payload.get("vip_settle_seconds") or 2.0))
 
-        yield from runtime.wait_view(290, label=f"{task_label}：等待 VIP 月卡页 #290")
-        yield from runtime.wait_click(
+        yield from context.wait_scene(290, label=f"{task_label}：等待 VIP 月卡页 #290")
+        yield from context.wait_click(
             290,
             "每日限购",
             timeout=float(payload.get("daily_limit_click_timeout") or payload.get("shape_click_timeout") or 8.0),
         )
-        yield from runtime.wait_action_settle(float(payload.get("daily_limit_settle_seconds") or 1.5))
+        yield from context.wait_action_settle(float(payload.get("daily_limit_settle_seconds") or 1.5))
 
-        yield from runtime.wait_view(291, label=f"{task_label}：等待每日限购页 #291")
-        yield from runtime.wait_click(
+        yield from context.wait_scene(291, label=f"{task_label}：等待每日限购页 #291")
+        yield from context.wait_click(
             291,
             "修为",
             timeout=float(payload.get("xiuwei_click_timeout") or payload.get("shape_click_timeout") or 8.0),
         )
-        yield from runtime.wait_action_settle(float(payload.get("xiuwei_settle_seconds") or 1.5))
+        yield from context.wait_action_settle(float(payload.get("xiuwei_settle_seconds") or 1.5))
 
-        xiuwei_view = yield from runtime.wait_view(292, 291, label=f"{task_label}：等待修为限购页 #292")
+        xiuwei_view = yield from context.wait_scene(292, 291, label=f"{task_label}：等待修为限购页 #292")
         xiuwei_scene_id = int(xiuwei_view.id) if isinstance(xiuwei_view, View) and xiuwei_view.id is not None else int(xiuwei_view)
         if xiuwei_scene_id == 291:
             with self._lock:
@@ -1406,17 +1583,17 @@ class DailyResourceTaskMixin:
                     current_scene=291,
                 )
                 self._log_locked("skip", f"{task_label}：点击「修为」后仍在 #291，未见 #292 免费礼包页")
-            yield from self._return_daily_vip_to_world(runtime, payload, task_label=task_label, start_scene=291)
+            yield from self._return_daily_vip_to_world(context, payload, task_label=task_label, start_scene=291)
             self._record_daily_vip_done(payload, message="修为页未见免费礼包，已返回世界")
             return "success"
 
         free_status = yield from self._click_daily_vip_free_or_return(ctx, stop_event, payload, task_label=task_label)
         if free_status != "success":
-            yield from self._return_daily_vip_to_world(runtime, payload, task_label=task_label, start_scene=291)
+            yield from self._return_daily_vip_to_world(context, payload, task_label=task_label, start_scene=291)
             self._record_daily_vip_done(payload, message="修为免费礼包未匹配，已返回世界")
             return "success"
 
-        yield from self._return_daily_vip_to_world(runtime, payload, task_label=task_label, start_scene=292)
+        yield from self._return_daily_vip_to_world(context, payload, task_label=task_label, start_scene=292)
 
         self._record_daily_vip_done(payload, message="已点击修为免费礼包并返回世界")
         return "success"
@@ -1431,7 +1608,7 @@ class DailyResourceTaskMixin:
         self._daily_xianmeng_excluded_target_ids = set()
         self._daily_xianmeng_fallback_cooldowns = []
         target_rounds = int(payload.get("rounds") or payload.get("max_rounds") or 0)
-        runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         attacks = 0
         remaining_attack_count: int | None = None
         swallowed_clicks = 0
@@ -1442,7 +1619,7 @@ class DailyResourceTaskMixin:
         reward_score_checked = False
         reward_score_probe_failures = 0
         entry_scene = yield from self._enter_daily_xianmeng_attack_view(
-            runtime,
+            context,
             payload,
         )
         if entry_scene is None:
@@ -1450,19 +1627,19 @@ class DailyResourceTaskMixin:
         scene_id = int(entry_scene)
         while True:
             if target_rounds > 0 and attacks >= target_rounds:
-                yield from self._return_daily_xianmeng_to_world(runtime)
+                yield from self._return_daily_xianmeng_to_world(context)
                 self._record_daily_xianmeng_done(
                     payload,
                     message=f"已完成 {attacks} 轮攻击并返回 #34",
                 )
                 return "success"
             if scene_id == 317:
-                yield from self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                yield from self._record_daily_xianmeng_immunity_cd(context, payload)
                 return "skipped"
 
             if scene_id in (294, 295):
                 if scene_id == 294 and not reward_score_checked:
-                    reward_text = runtime.ocr_text_in_shapes(
+                    reward_text = context.ocr_text_in_shapes(
                         294,
                         ("个人积分",),
                         padding=int(payload.get("reward_score_ocr_padding") or 12),
@@ -1514,7 +1691,7 @@ class DailyResourceTaskMixin:
                                         "等待队友处理防护机制"
                                     ),
                                 )
-                                yield from self._return_daily_xianmeng_to_world(runtime)
+                                yield from self._return_daily_xianmeng_to_world(context)
                                 return "skipped"
                     else:
                         reward_score_probe_failures += 1
@@ -1527,13 +1704,13 @@ class DailyResourceTaskMixin:
                             )
                 # The control can be visually recognizable before the result
                 # popup has finished enabling input.
-                yield from runtime.wait_action_settle(
+                yield from context.wait_action_settle(
                     float(payload.get("result_click_ready_seconds") or 0.8)
                 )
-                runtime.click_shape_center(scene_id, "确定" if scene_id == 294 else "关闭")
-                yield from runtime.wait_action_settle(float(payload.get("result_close_settle_seconds") or 0.35))
+                context.click_shape_center(scene_id, "确定" if scene_id == 294 else "关闭")
+                yield from context.wait_action_settle(float(payload.get("result_close_settle_seconds") or 0.35))
                 scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(
-                    runtime,
+                    context,
                     payload,
                     result_min_elapsed=float(payload.get("result_close_retry_seconds") or 2.0),
                 )
@@ -1542,11 +1719,11 @@ class DailyResourceTaskMixin:
             if scene_id == 293:
                 if not attack_options_initialized:
                     triple_attack_enabled = yield from self._ensure_daily_xianmeng_attack_options(
-                        runtime,
+                        context,
                         payload,
                     )
                     remaining_attack_count = yield from self._read_daily_xianmeng_attack_count_once(
-                        runtime,
+                        context,
                         payload,
                     )
                     attack_options_initialized = True
@@ -1567,7 +1744,7 @@ class DailyResourceTaskMixin:
                     # attack is wasteful.  Probe near the estimated crossing
                     # point, then recompute from the fresh score.
                     triple_attack_enabled = yield from self._ensure_daily_xianmeng_attack_options(
-                        runtime,
+                        context,
                         payload,
                     )
                     single_attacks_since_option_probe = 0
@@ -1582,9 +1759,9 @@ class DailyResourceTaskMixin:
                         )
 
                 if remaining_attack_count is not None and remaining_attack_count <= 0:
-                        yield from self._return_daily_xianmeng_to_cover(runtime)
+                        yield from self._return_daily_xianmeng_to_cover(context)
                         claimed = yield from self._claim_daily_xianmeng_task_rewards(
-                            runtime,
+                            context,
                             payload,
                         )
                         if claimed > 0:
@@ -1594,7 +1771,7 @@ class DailyResourceTaskMixin:
                                 "重新进入战场清空新增体力",
                             )
                             next_scene = yield from self._enter_daily_xianmeng_attack_view(
-                                runtime,
+                                context,
                                 payload,
                             )
                             if next_scene is None:
@@ -1605,7 +1782,7 @@ class DailyResourceTaskMixin:
                             reward_score_checked = False
                             reward_score_probe_failures = 0
                             continue
-                        yield from self._return_daily_xianmeng_to_world(runtime)
+                        yield from self._return_daily_xianmeng_to_world(context)
                         self._record_daily_xianmeng_done(
                             payload,
                             message="任务已无可领且攻击次数为 0，已返回 #34",
@@ -1625,7 +1802,7 @@ class DailyResourceTaskMixin:
                     if self._daily_xianmeng_should_preserve_tail_before_triple_disable():
                         next_time = self._daily_xianmeng_event_tail_next_time(payload)
                         if next_time:
-                            yield from self._return_daily_xianmeng_to_world(runtime)
+                            yield from self._return_daily_xianmeng_to_world(context)
                             payload["_xianmeng_next_time"] = next_time
                             self._log(
                                 "success",
@@ -1634,22 +1811,22 @@ class DailyResourceTaskMixin:
                             )
                             return "skipped"
                     triple_attack_enabled = yield from self._disable_daily_xianmeng_triple_for_tail(
-                        runtime,
+                        context,
                         payload,
                         remaining_attempts=remaining_attack_count,
                     )
                     required_attempts = self._daily_xianmeng_required_attempts(triple_attack_enabled)
-                runtime.click_shape_center(293, "攻击")
-                yield from runtime.wait_action_settle(float(payload.get("attack_click_settle_seconds") or 0.25))
-                departed = yield from self._wait_daily_xianmeng_attack_departure(runtime, payload)
+                context.click_shape_center(293, "攻击")
+                yield from context.wait_action_settle(float(payload.get("attack_click_settle_seconds") or 0.25))
+                departed = yield from self._wait_daily_xianmeng_attack_departure(context, payload)
                 if not departed:
                     swallowed_clicks += 1
                     if swallowed_clicks >= 3:
                         # This is an exceptional checkpoint, not part of the hot
                         # loop. The old OCR immunity branch is intentionally paid
                         # only after repeated attack-state non-transitions.
-                        frame = runtime.cur_frame(update=True)
-                        immunity_text = runtime.ocr_text_in_shapes(
+                        frame = context.cur_frame(update=True)
+                        immunity_text = context.ocr_text_in_shapes(
                             317,
                             ("免战",),
                             padding=20,
@@ -1657,9 +1834,9 @@ class DailyResourceTaskMixin:
                             crop=True,
                         )
                         if "免战" in str(immunity_text or ""):
-                            yield from self._record_daily_xianmeng_immunity_cd(runtime, payload)
+                            yield from self._record_daily_xianmeng_immunity_cd(context, payload)
                             return "skipped"
-                        yield from self._return_daily_xianmeng_to_world(runtime)
+                        yield from self._return_daily_xianmeng_to_world(context)
                         self._schedule_daily_xianmeng_retry(
                             payload,
                             seconds=int(payload.get("attack_unconfirmed_retry_seconds") or 60),
@@ -1682,38 +1859,38 @@ class DailyResourceTaskMixin:
                         f"完成 {attacks} 轮，按本地计数剩余 {remaining_attack_count}",
                     )
                 scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(
-                    runtime,
+                    context,
                     payload,
                 )
                 continue
 
-            scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(runtime, payload)
+            scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(context, payload)
 
-    def _wait_daily_xianmeng_attack_departure(self, runtime: Any, payload: dict[str, Any]):
+    def _wait_daily_xianmeng_attack_departure(self, context: Any, payload: dict[str, Any]):
         """Confirm an attack from the attack control disappearing, not a guessed next popup."""
 
         timeout = float(payload.get("attack_departure_timeout_seconds") or 4.0)
         threshold = float(payload.get("fast_attack_shape_threshold") or self.overlay_threshold)
         start = time.monotonic()
         while True:
-            self._raise_if_stopped(runtime.stop_event or threading.Event())
-            self._clear_tick_frame(runtime.ctx)
+            self._raise_if_stopped(context.stop_event or threading.Event())
+            self._clear_tick_frame(context.ctx)
             yield BehaviorTreeStatus.RUNNING
-            frame = runtime.cur_frame(update=True)
-            if runtime.shape_score(293, "攻击", frame_data_url=frame) < threshold:
+            frame = context.cur_frame(update=True)
+            if context.shape_score(293, "攻击", frame_data_url=frame) < threshold:
                 return True
             if time.monotonic() - start >= timeout:
                 return False
-            yield from runtime.wait_action_settle(0.15)
+            yield from context.wait_action_settle(0.15)
 
-    def _read_daily_xianmeng_attack_count_once(self, runtime: Any, payload: dict[str, Any]):
+    def _read_daily_xianmeng_attack_count_once(self, context: Any, payload: dict[str, Any]):
         """Read the attack count once per attack stage; never per battle."""
 
         for attempt in range(3):
-            self._raise_if_stopped(runtime.stop_event or threading.Event())
-            self._clear_tick_frame(runtime.ctx)
+            self._raise_if_stopped(context.stop_event or threading.Event())
+            self._clear_tick_frame(context.ctx)
             yield BehaviorTreeStatus.RUNNING
-            numbers, text = runtime.ocr_numbers_in_shapes(
+            numbers, text = context.ocr_numbers_in_shapes(
                 293,
                 ("次数",),
                 padding=int(payload.get("attack_count_ocr_padding") or 20),
@@ -1722,7 +1899,7 @@ class DailyResourceTaskMixin:
             if numbers and int(numbers[0]) >= 0:
                 return int(numbers[0])
             self._log("warning", f"日常_仙盟：攻击次数 OCR 第 {attempt + 1}/3 次未命中：{text[:80]}")
-            yield from runtime.wait_action_settle(0.4)
+            yield from context.wait_action_settle(0.4)
         snapshot = self._read_daily_xianmeng_count_snapshot()
         if snapshot.get("ok") and snapshot.get("complete") and isinstance(snapshot.get("attack_count"), int):
             self._log("warning", "日常_仙盟：攻击次数 OCR 未命中，仅在阶段入口降级读取一次 Runtime")
@@ -1739,7 +1916,7 @@ class DailyResourceTaskMixin:
 
     def _wait_daily_xianmeng_fast_attack_scene(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         accept_results: bool = True,
@@ -1753,16 +1930,16 @@ class DailyResourceTaskMixin:
         threshold = float(payload.get("fast_attack_shape_threshold") or self.overlay_threshold)
         start = time.monotonic()
         while True:
-            self._raise_if_stopped(runtime.stop_event or threading.Event())
-            self._clear_tick_frame(runtime.ctx)
+            self._raise_if_stopped(context.stop_event or threading.Event())
+            self._clear_tick_frame(context.ctx)
             yield BehaviorTreeStatus.RUNNING
-            frame = runtime.cur_frame(update=True)
-            report_confirm_score = runtime.shape_score(294, "确定", frame_data_url=frame)
-            report_title_score = runtime.shape_score(294, "挑战成功", frame_data_url=frame)
+            frame = context.cur_frame(update=True)
+            report_confirm_score = context.shape_score(294, "确定", frame_data_url=frame)
+            report_title_score = context.shape_score(294, "挑战成功", frame_data_url=frame)
             scores = {
                 294: min(report_confirm_score, report_title_score),
-                295: runtime.shape_score(295, "关闭", frame_data_url=frame),
-                293: runtime.shape_score(293, "攻击", frame_data_url=frame),
+                295: context.shape_score(295, "关闭", frame_data_url=frame),
+                293: context.shape_score(293, "攻击", frame_data_url=frame),
             }
             # The reward rows vary, so their broad body anchor is deliberately
             # weaker than a normal control. Pair it with the exact 100% report
@@ -1784,7 +1961,7 @@ class DailyResourceTaskMixin:
                     "日常_仙盟：轻量攻击循环等待超时，"
                     + ", ".join(f"#{key}={value:.0f}%" for key, value in scores.items())
                 )
-            yield from runtime.wait_action_settle(0.25)
+            yield from context.wait_action_settle(0.25)
 
     def _read_daily_xianmeng_command_target_snapshot(self) -> dict[str, Any]:
         from backend.core.fanxiu.instrumentation.landcontend import (
@@ -1809,7 +1986,7 @@ class DailyResourceTaskMixin:
 
     def _click_daily_xianmeng_ocr(
         self,
-        runtime: Any,
+        context: Any,
         text: str,
         *,
         timeout: float,
@@ -1827,15 +2004,15 @@ class DailyResourceTaskMixin:
         deadline = time.monotonic() + max(0.1, float(timeout))
         last_error: Exception | None = None
         while True:
-            self._raise_if_stopped(runtime.stop_event or threading.Event())
+            self._raise_if_stopped(context.stop_event or threading.Event())
             try:
                 if max_center_y is not None:
                     if fuzzy:
                         raise ValueError("OCR 空间约束暂不支持模糊匹配")
-                    frame = runtime.cur_frame(update=True)
+                    frame = context.cur_frame(update=True)
                     matches = [
                         item
-                        for item in find_text_matches(runtime.ocr_tokens(frame), text)
+                        for item in find_text_matches(context.ocr_tokens(frame), text)
                         if item.y + item.h / 2 <= float(max_center_y)
                     ]
                     if len(matches) != 1:
@@ -1843,9 +2020,9 @@ class DailyResourceTaskMixin:
                             f"上方活动列表内「{text}」命中数为 {len(matches)}，拒绝点击"
                         )
                     match = matches[0]
-                    runtime.click_frame_point(66, *match.point())
+                    context.click_frame_point(66, *match.point())
                 else:
-                    match = runtime.click_ocr_text(
+                    match = context.click_ocr_text(
                         66,
                         text,
                         match_mode="fuzzy" if fuzzy else "exact",
@@ -1859,33 +2036,33 @@ class DailyResourceTaskMixin:
                 last_error = exc
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"日常_仙盟：等待并点击「{text}」超时：{last_error}")
-            self._clear_tick_frame(runtime.ctx)
+            self._clear_tick_frame(context.ctx)
             yield BehaviorTreeStatus.RUNNING
-            if (runtime.stop_event or threading.Event()).wait(1.0):
-                self._raise_if_stopped(runtime.stop_event or threading.Event())
+            if (context.stop_event or threading.Event()).wait(1.0):
+                self._raise_if_stopped(context.stop_event or threading.Event())
 
     @staticmethod
-    def _daily_xianmeng_claim_markers(runtime: Any) -> list[dict[str, Any]]:
-        frame = runtime.cur_frame(update=True)
+    def _daily_xianmeng_claim_markers(context: Any) -> list[dict[str, Any]]:
+        frame = context.cur_frame(update=True)
         return [
             item
-            for item in runtime.ocr_tokens(frame)
+            for item in context.ocr_tokens(frame)
             if str(item.get("text") or "").strip() == "领"
         ]
 
     @staticmethod
-    def _daily_xianmeng_first_task_fingerprint(runtime: Any) -> str:
-        frame = runtime.cur_frame(update=True)
+    def _daily_xianmeng_first_task_fingerprint(context: Any) -> str:
+        frame = context.cur_frame(update=True)
         tokens = [
             item
-            for item in runtime.ocr_tokens(frame)
+            for item in context.ocr_tokens(frame)
             if 60.0 <= float(item.get("x") or 0.0) <= 500.0
             and 275.0 <= float(item.get("y") or 0.0) <= 455.0
         ]
         return "".join(str(item.get("text") or "").strip() for item in tokens)
 
     @staticmethod
-    def _daily_xianmeng_transient_popup_metrics(runtime: Any, frame: str) -> dict[str, Any]:
+    def _daily_xianmeng_transient_popup_metrics(context: Any, frame: str) -> dict[str, Any]:
         """Recognize the broken dark business layer without inventing a scene.
 
         The 2026-08-16 production frame had no normal page chrome, an almost
@@ -1897,7 +2074,7 @@ class DailyResourceTaskMixin:
 
         from PIL import Image
 
-        raw = runtime.runner._decode_frame_data_url(frame)
+        raw = context.runner._decode_frame_data_url(frame)
         with Image.open(io.BytesIO(raw)) as source:
             image = source.convert("L")
             width, height = image.size
@@ -1924,12 +2101,12 @@ class DailyResourceTaskMixin:
             "close_bright_ratio": close_bright_ratio,
         }
 
-    def _close_daily_xianmeng_transient_popup(self, runtime: Any):
+    def _close_daily_xianmeng_transient_popup(self, context: Any):
         """Close and verify the high-confidence transient Xianmeng business layer."""
 
         try:
-            frame = runtime.cur_frame(update=True)
-            metrics = self._daily_xianmeng_transient_popup_metrics(runtime, frame)
+            frame = context.cur_frame(update=True)
+            metrics = self._daily_xianmeng_transient_popup_metrics(context, frame)
         except Exception as exc:
             self._log("detail", f"日常_仙盟：异常业务层帧判定失败：{exc}")
             return 0
@@ -1938,7 +2115,8 @@ class DailyResourceTaskMixin:
 
         evidence_root = codeyun_temp_root("fanxiu-evidence", "xianmeng-transient-popup")
         evidence_path = evidence_root / f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
-        evidence_path.write_bytes(runtime.runner._decode_frame_data_url(frame))
+        evidence_path.write_bytes(context.runner._decode_frame_data_url(frame))
+        prune_fanxiu_evidence(evidence_root.parent)
         self._log(
             "action",
             (
@@ -1950,10 +2128,10 @@ class DailyResourceTaskMixin:
         # #473 is only the canonical 900x1600 coordinate canvas here.  The
         # click is authorized by the current-frame predicate above, not by a
         # claim that the broken layer itself is scene #473.
-        runtime.click_frame_point(473, 790.0, 130.0)
-        yield from runtime.wait_action_settle(0.8)
+        context.click_frame_point(473, 790.0, 130.0)
+        yield from context.wait_action_settle(0.8)
         recovered_scene = yield from self._wait_daily_xianmeng_exact_view(
-            runtime,
+            context,
             473,
             474,
             timeout=8.0,
@@ -1963,29 +2141,29 @@ class DailyResourceTaskMixin:
 
     def _claim_daily_xianmeng_task_rewards(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
         """Claim the Xianmeng/cultivation ladders without touching item icons."""
 
-        yield from self._wait_daily_xianmeng_exact_view(runtime, 473, timeout=12.0)
-        cover_markers = self._daily_xianmeng_claim_markers(runtime)
+        yield from self._wait_daily_xianmeng_exact_view(context, 473, timeout=12.0)
+        cover_markers = self._daily_xianmeng_claim_markers(context)
         if not any(float(item.get("y") or 0.0) >= 1200.0 for item in cover_markers):
             return 0
 
-        runtime.click_shape_center(473, "任务")
-        yield from runtime.wait_action_settle(
+        context.click_shape_center(473, "任务")
+        yield from context.wait_action_settle(
             float(payload.get("task_settle_seconds") or 1.0)
         )
         try:
-            yield from self._wait_daily_xianmeng_exact_view(runtime, 474, timeout=12.0)
+            yield from self._wait_daily_xianmeng_exact_view(context, 474, timeout=12.0)
         except TimeoutError:
             # The task tab can remain unavailable during an otherwise active
             # qualifying battlefield.  Reward collection is optional and
             # must not block the challenge itself.  Only continue when a
             # fresh exact read proves the ignored tap left us on the cover;
             # any other landing remains a hard failure.
-            yield from self._wait_daily_xianmeng_exact_view(runtime, 473, timeout=3.0)
+            yield from self._wait_daily_xianmeng_exact_view(context, 473, timeout=3.0)
             self._log(
                 "skip",
                 "日常_仙盟：任务入口未响应且仍在封面 #473，跳过可选领奖并继续挑战",
@@ -1999,45 +2177,45 @@ class DailyResourceTaskMixin:
             ("修为页签", 300.0, 415.0),
         )
         for tab_shape, min_x, max_x in tabs:
-            markers = self._daily_xianmeng_claim_markers(runtime)
+            markers = self._daily_xianmeng_claim_markers(context)
             if not any(
                 float(item.get("y") or 0.0) < 300.0
                 and min_x <= float(item.get("x") or 0.0) <= max_x
                 for item in markers
             ):
                 continue
-            runtime.click_shape_center(474, tab_shape)
-            yield from runtime.wait_action_settle(0.8)
+            context.click_shape_center(474, tab_shape)
+            yield from context.wait_action_settle(0.8)
             for _index in range(max_claims):
-                markers = self._daily_xianmeng_claim_markers(runtime)
+                markers = self._daily_xianmeng_claim_markers(context)
                 if not any(
                     float(item.get("y") or 0.0) < 300.0
                     and min_x <= float(item.get("x") or 0.0) <= max_x
                     for item in markers
                 ):
                     break
-                before = self._daily_xianmeng_first_task_fingerprint(runtime)
+                before = self._daily_xianmeng_first_task_fingerprint(context)
                 if not before:
                     break
                 # The left text/progress area claims the completed first row.
                 # The right reward icons only open #250 item details and are a
                 # deliberate no-click region in both code and assets.
-                runtime.click_shape_center(474, "首条任务领取区")
-                yield from runtime.wait_action_settle(0.9)
-                recovered_scene = yield from self._close_daily_xianmeng_transient_popup(runtime)
+                context.click_shape_center(474, "首条任务领取区")
+                yield from context.wait_action_settle(0.9)
+                recovered_scene = yield from self._close_daily_xianmeng_transient_popup(context)
                 if recovered_scene == 473:
                     self._log(
                         "skip",
                         "日常_仙盟：领奖触发异常业务层并已恢复封面，停止可选领奖",
                     )
                     return claimed
-                after = self._daily_xianmeng_first_task_fingerprint(runtime)
+                after = self._daily_xianmeng_first_task_fingerprint(context)
                 if not after or after == before:
                     break
                 claimed += 1
                 self._log("detail", f"日常_仙盟：已领取第 {claimed} 档任务奖励")
 
-        markers = self._daily_xianmeng_claim_markers(runtime)
+        markers = self._daily_xianmeng_claim_markers(context)
         remaining_top_markers = [
             item
             for item in markers
@@ -2049,98 +2227,98 @@ class DailyResourceTaskMixin:
                 "日常_仙盟：任务页仍有领取标记但首行状态不再变化，"
                 "已安全停止，拒绝点击奖励图标",
             )
-        runtime.click_shape_center(474, "仙盟争霸")
-        yield from runtime.wait_action_settle(0.8)
-        yield from self._wait_daily_xianmeng_exact_view(runtime, 473, timeout=12.0)
+        context.click_shape_center(474, "仙盟争霸")
+        yield from context.wait_action_settle(0.8)
+        yield from self._wait_daily_xianmeng_exact_view(context, 473, timeout=12.0)
         if claimed:
             self._log("success", f"日常_仙盟：已领取 {claimed} 档任务奖励并返回封面")
         return claimed
 
-    def _return_daily_xianmeng_to_world(self, runtime: Any):
+    def _return_daily_xianmeng_to_world(self, context: Any):
         self._log("action", "日常_仙盟：返回世界 #34")
         scene_id = 0
-        if isinstance(getattr(runtime, "ctx", None), dict):
+        if isinstance(getattr(context, "ctx", None), dict):
             try:
                 scene_id = yield from self._wait_daily_xianmeng_exact_view(
-                    runtime, 293, 317, 294, 295, 471, 475, 476, 474, 473, 34, timeout=2.0
+                    context, 293, 317, 294, 295, 471, 475, 476, 474, 473, 34, timeout=2.0
                 )
             except TimeoutError:
                 scene_id = 0
         if scene_id == 294:
-            runtime.click_shape_center(294, "确定")
-            yield from runtime.wait_action_settle(0.8)
+            context.click_shape_center(294, "确定")
+            yield from context.wait_action_settle(0.8)
             scene_id = 293
         if scene_id == 295:
-            runtime.click_shape_center(295, "关闭")
-            yield from runtime.wait_action_settle(0.8)
+            context.click_shape_center(295, "关闭")
+            yield from context.wait_action_settle(0.8)
             scene_id = 293
         if scene_id in (293, 317):
-            runtime.click_shape_center(293, "返回")
-            yield from runtime.wait_action_settle(1.0)
+            context.click_shape_center(293, "返回")
+            yield from context.wait_action_settle(1.0)
             scene_id = 475
         if scene_id == 471:
-            runtime.click_shape_center(471, "返回")
-            yield from runtime.wait_action_settle(1.0)
-            yield from self._wait_daily_xianmeng_exact_view(runtime, 475, timeout=8.0)
+            context.click_shape_center(471, "返回")
+            yield from context.wait_action_settle(1.0)
+            yield from self._wait_daily_xianmeng_exact_view(context, 475, timeout=8.0)
             scene_id = 475
         if scene_id == 474:
-            runtime.click_shape_center(474, "返回")
-            yield from runtime.wait_action_settle(0.8)
+            context.click_shape_center(474, "返回")
+            yield from context.wait_action_settle(0.8)
             scene_id = 473
         if scene_id == 473:
-            runtime.click_shape_center(473, "返回")
-            yield from runtime.wait_action_settle(1.0)
+            context.click_shape_center(473, "返回")
+            yield from context.wait_action_settle(1.0)
             scene_id = 34
         if scene_id == 475:
-            runtime.click_shape_center(475, "离开")
-            yield from runtime.wait_action_settle(0.8)
-            yield from self._wait_daily_xianmeng_exact_view(runtime, 476, timeout=8.0)
+            context.click_shape_center(475, "离开")
+            yield from context.wait_action_settle(0.8)
+            yield from self._wait_daily_xianmeng_exact_view(context, 476, timeout=8.0)
             scene_id = 476
         if scene_id == 476:
-            runtime.click_shape_center(476, "确认")
-            yield from runtime.wait_action_settle(1.0)
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_view(34, timeout=30.0, label="日常_仙盟：确认返回世界 #34")
+            context.click_shape_center(476, "确认")
+            yield from context.wait_action_settle(1.0)
+        yield from context.go_scene(34)
+        yield from context.wait_scene(34, wait=30.0, label="日常_仙盟：确认返回世界 #34")
         return "success"
 
-    def _return_daily_xianmeng_to_cover(self, runtime: Any):
+    def _return_daily_xianmeng_to_cover(self, context: Any):
         """Return from any Xianmeng subview to the activity cover (#473)."""
-        yield from self._return_daily_xianmeng_to_world(runtime)
-        return (yield from self._enter_daily_xianmeng_cover(runtime))
+        yield from self._return_daily_xianmeng_to_world(context)
+        return (yield from self._enter_daily_xianmeng_cover(context))
 
-    def _enter_daily_xianmeng_cover(self, runtime: Any):
-        recovered_scene = yield from self._close_daily_xianmeng_transient_popup(runtime)
+    def _enter_daily_xianmeng_cover(self, context: Any):
+        recovered_scene = yield from self._close_daily_xianmeng_transient_popup(context)
         if recovered_scene == 473:
             return 473
         try:
-            yield from self._wait_daily_xianmeng_exact_view(runtime, 473, timeout=2.0)
+            yield from self._wait_daily_xianmeng_exact_view(context, 473, timeout=2.0)
             return 473
         except TimeoutError:
             pass
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_view(34, timeout=30.0, label="日常_仙盟：确认世界 #34")
-        yield from runtime.goto_view(66)
-        yield from runtime.wait_view(66, timeout=30.0, label="日常_仙盟：等待仙盟列表 #66")
+        yield from context.go_scene(34)
+        yield from context.wait_scene(34, wait=30.0, label="日常_仙盟：确认世界 #34")
+        yield from context.go_scene(66)
+        yield from context.wait_scene(66, wait=30.0, label="日常_仙盟：等待仙盟列表 #66")
         yield from self._click_daily_xianmeng_ocr(
-            runtime,
+            context,
             "仙盟争霸",
             timeout=20.0,
             max_center_y=800.0,
         )
-        yield from runtime.wait_action_settle(2.0)
-        yield from self._wait_daily_xianmeng_exact_view(runtime, 473, timeout=20.0)
+        yield from context.wait_action_settle(2.0)
+        yield from self._wait_daily_xianmeng_exact_view(context, 473, timeout=20.0)
         return 473
 
     def _advance_daily_xianmeng_after_immunity(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
         """Try the next damaged non-friendly pillar after a target-specific CD."""
 
         selection = getattr(self, "_daily_xianmeng_target_selection", {})
         if selection.get("mode") != "non-friendly-fallback":
-            yield from self._record_daily_xianmeng_immunity_cd(runtime, payload)
+            yield from self._record_daily_xianmeng_immunity_cd(context, payload)
             return None
 
         target = selection.get("target") if isinstance(selection.get("target"), dict) else {}
@@ -2176,8 +2354,8 @@ class DailyResourceTaskMixin:
                 f"日常_仙盟：{target.get('name') or target_id} 处于免战，"
                 f"顺延尝试下一根非友军柱子 {remaining[0].get('name')}",
             )
-            yield from self._return_daily_xianmeng_to_world(runtime)
-            return (yield from self._enter_daily_xianmeng_attack_view(runtime, payload))
+            yield from self._return_daily_xianmeng_to_world(context)
+            return (yield from self._enter_daily_xianmeng_attack_view(context, payload))
 
         if cooldowns:
             retry_seconds = min(int(item["seconds"]) for item in cooldowns)
@@ -2190,7 +2368,7 @@ class DailyResourceTaskMixin:
             seconds=max(5, retry_seconds),
             message=message,
         )
-        yield from self._return_daily_xianmeng_to_world(runtime)
+        yield from self._return_daily_xianmeng_to_world(context)
         self._log(
             "success",
             f"日常_仙盟：降级候选已全部顺延检查，工程调度时间 {next_time}",
@@ -2234,10 +2412,10 @@ class DailyResourceTaskMixin:
 
     def _wait_daily_xianmeng_command_target(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
-        self._raise_if_stopped(runtime.stop_event or threading.Event())
+        self._raise_if_stopped(context.stop_event or threading.Event())
         yield BehaviorTreeStatus.RUNNING
         try:
             snapshot = self._read_daily_xianmeng_command_target_snapshot()
@@ -2423,13 +2601,13 @@ class DailyResourceTaskMixin:
 
     def _enter_daily_xianmeng_attack_view(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
         current_scene = 0
         try:
             current_scene = yield from self._wait_daily_xianmeng_exact_view(
-                runtime,
+                context,
                 317,
                 293,
                 295,
@@ -2446,25 +2624,25 @@ class DailyResourceTaskMixin:
 
         if current_scene not in (471, 475):
             if current_scene != 473:
-                yield from self._enter_daily_xianmeng_cover(runtime)
+                yield from self._enter_daily_xianmeng_cover(context)
 
             # Rewards can directly replenish challenge stamina and clone counts.
             # Therefore every cover entry claims both ladders before evaluating or
             # consuming the battlefield resource.
-            yield from self._claim_daily_xianmeng_task_rewards(runtime, payload)
+            yield from self._claim_daily_xianmeng_task_rewards(context, payload)
             entry_attempts = max(1, int(payload.get("battlefield_entry_attempts") or 3))
             cover_reentries_left = max(
                 0,
                 int(payload.get("battlefield_cover_reentries") or 1),
             )
             for entry_attempt in range(1, entry_attempts + 1):
-                runtime.click_shape_center(473, "前往战场")
-                yield from runtime.wait_action_settle(
+                context.click_shape_center(473, "前往战场")
+                yield from context.wait_action_settle(
                     float(payload.get("entry_settle_seconds") or 2.0)
                 )
                 try:
                     current_scene = yield from self._wait_daily_xianmeng_exact_view(
-                        runtime,
+                        context,
                         475,
                         34,
                         timeout=float(payload.get("battlefield_entry_probe_timeout") or 8.0),
@@ -2485,7 +2663,7 @@ class DailyResourceTaskMixin:
                         "日常_仙盟：前往战场后活动页已关闭但落回 #34，"
                         "按正式入口有界重进一次",
                     )
-                    current_scene = yield from self._enter_daily_xianmeng_cover(runtime)
+                    current_scene = yield from self._enter_daily_xianmeng_cover(context)
                     continue
                 self._log(
                     "warning",
@@ -2497,15 +2675,15 @@ class DailyResourceTaskMixin:
                     f"最终场景 #{current_scene}"
                 )
         if current_scene == 475:
-            runtime.click_shape_center(475, "战场地图")
-            yield from runtime.wait_action_settle(
+            context.click_shape_center(475, "战场地图")
+            yield from context.wait_action_settle(
                 float(payload.get("map_settle_seconds") or 2.0)
             )
-            yield from self._wait_daily_xianmeng_exact_view(runtime, 471, timeout=20.0)
+            yield from self._wait_daily_xianmeng_exact_view(context, 471, timeout=20.0)
 
-        target = yield from self._wait_daily_xianmeng_command_target(runtime, payload)
+        target = yield from self._wait_daily_xianmeng_command_target(context, payload)
         if target is None:
-            yield from self._return_daily_xianmeng_to_world(runtime)
+            yield from self._return_daily_xianmeng_to_world(context)
             self._schedule_daily_xianmeng_retry(
                 payload,
                 seconds=int(payload.get("no_command_retry_seconds") or 1800),
@@ -2518,20 +2696,20 @@ class DailyResourceTaskMixin:
         target_slot = int(target.get("slot") or 0)
         if target_slot not in range(1, 9):
             raise RuntimeError(f"日常_仙盟：动态目标 {target_name} 缺少有效阵营槽位")
-        runtime.click_shape_center(471, f"阵营槽位{target_slot}")
+        context.click_shape_center(471, f"阵营槽位{target_slot}")
         self._log(
             "action",
             f"日常_仙盟：按动态 slot={target_slot} 选择 {target_name}({target_id})",
         )
-        yield from runtime.wait_action_settle(float(payload.get("target_settle_seconds") or 1.0))
+        yield from context.wait_action_settle(float(payload.get("target_settle_seconds") or 1.0))
         # 目标详情弹窗跟随柱子位置浮动，不能用一个固定 #472 坐标点击。
         # 目标决策仍完全来自动态 camp id/slot；OCR 只定位已打开弹窗的动作按钮。
-        yield from self._click_daily_xianmeng_ocr(runtime, "跳转", timeout=10.0)
+        yield from self._click_daily_xianmeng_ocr(context, "跳转", timeout=10.0)
         self._log("success", f"日常_仙盟：目标详情已打开并跳转 {target_name}({target_id})")
-        yield from runtime.wait_action_settle(float(payload.get("jump_settle_seconds") or 2.0))
+        yield from context.wait_action_settle(float(payload.get("jump_settle_seconds") or 2.0))
         return (
             yield from self._wait_daily_xianmeng_exact_view(
-                runtime,
+                context,
                 317,
                 293,
                 timeout=30.0,
@@ -2616,7 +2794,7 @@ class DailyResourceTaskMixin:
 
     def _ensure_daily_xianmeng_attack_options(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
     ):
         """Synchronize #293 toggles from Runtime facts before an attack.
@@ -2643,15 +2821,15 @@ class DailyResourceTaskMixin:
         changed: list[str] = []
 
         if bool(snapshot.get("skip_checked")) != desired_skip:
-            runtime.click_shape_center(293, "跳过")
+            context.click_shape_center(293, "跳过")
             changed.append("跳过")
-            yield from runtime.wait_action_settle(
+            yield from context.wait_action_settle(
                 float(payload.get("option_settle_seconds") or 0.35)
             )
         if bool(snapshot.get("triple_checked")) != desired_triple:
-            runtime.click_shape_center(293, "三连")
+            context.click_shape_center(293, "三连")
             changed.append("三连")
-            yield from runtime.wait_action_settle(
+            yield from context.wait_action_settle(
                 float(payload.get("option_settle_seconds") or 0.35)
             )
 
@@ -2685,15 +2863,15 @@ class DailyResourceTaskMixin:
 
     def _disable_daily_xianmeng_triple_for_tail(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         remaining_attempts: int,
     ):
         """Turn triple attack off so the final one or two attempts are consumed."""
 
-        runtime.click_shape_center(293, "三连")
-        yield from runtime.wait_action_settle(
+        context.click_shape_center(293, "三连")
+        yield from context.wait_action_settle(
             float(payload.get("option_settle_seconds") or 0.35)
         )
         verified = self._read_daily_xianmeng_attack_options_snapshot()
@@ -2766,7 +2944,7 @@ class DailyResourceTaskMixin:
         future = sorted(item for item in candidates if current < item < close_at)
         return future[0].strftime("%Y-%m-%d %H:%M:%S") if future else None
 
-    def _record_daily_xianmeng_immunity_cd(self, runtime: Any, payload: dict[str, Any]):
+    def _record_daily_xianmeng_immunity_cd(self, context: Any, payload: dict[str, Any]):
         try:
             snapshot = self._read_daily_xianmeng_immunity_snapshot()
         except Exception as exc:
@@ -2783,37 +2961,22 @@ class DailyResourceTaskMixin:
             seconds=retry_seconds,
             message=message,
         )
-        yield from self._return_daily_xianmeng_to_world(runtime)
+        yield from self._return_daily_xianmeng_to_world(context)
         self._log("success", f"日常_仙盟：免战分支已回到 #34，工程调度时间 {next_time}")
         return next_time
 
-    def _wait_daily_xianmeng_exact_view(self, runtime: Any, *scene_ids: int, timeout: float) -> int:
-        start = time.monotonic()
-        while True:
-            self._raise_if_stopped(runtime.stop_event or threading.Event())
-            self._clear_tick_frame(runtime.ctx)
-            yield BehaviorTreeStatus.RUNNING
-            scene_id, score, _frame = runtime.current_scene(
-                scene_ids,
-                update=True,
-                handle_interruptions=True,
-                include_popup_candidates=True,
-            )
-            if scene_id in scene_ids:
-                with self._lock:
-                    self._status.update({"current_scene": int(scene_id), "updated_at": time.time()})
-                self._log(
-                    "success",
-                    f"日常_仙盟：Layer0 精确命中 #{int(scene_id)} {float(score or 0.0):.0f}%",
-                )
-                return int(scene_id)
-            if time.monotonic() - start >= float(timeout):
-                expected = "/".join(f"#{int(scene_id)}" for scene_id in scene_ids)
-                raise TimeoutError(f"日常_仙盟：精确等待 {expected} 超时")
+    def _wait_daily_xianmeng_exact_view(self, context: Any, *scene_ids: int, timeout: float) -> int:
+        expected = "/".join(f"#{int(scene_id)}" for scene_id in scene_ids)
+        landing = yield from context.wait_scene(
+            *scene_ids,
+            wait=float(timeout),
+            label=f"日常_仙盟：等待 {expected}",
+        )
+        return int(getattr(landing, "id", landing))
 
     def _return_daily_vip_to_world(
         self,
-        runtime: Any,
+        context: Any,
         payload: dict[str, Any],
         *,
         task_label: str,
@@ -2832,9 +2995,9 @@ class DailyResourceTaskMixin:
                     current_scene=scene_id,
                 )
                 self._log_locked("action", f"{task_label}：点击 #{scene_id}「返回」")
-            runtime.click_shape_center(scene_id, "返回")
-            yield from runtime.wait_action_settle(settle_seconds)
-            target = yield from runtime.wait_view(*target_ids, timeout=wait_timeout, label=f"{task_label}：等待返回 {'/'.join(f'#{target_id}' for target_id in target_ids)}")
+            context.click_shape_center(scene_id, "返回")
+            yield from context.wait_action_settle(settle_seconds)
+            target = yield from context.wait_scene(*target_ids, wait=wait_timeout, label=f"{task_label}：等待返回 {'/'.join(f'#{target_id}' for target_id in target_ids)}")
             target_id = int(target.id) if isinstance(target, View) and target.id is not None else int(target)
             if target_id == 34:
                 return "success"
@@ -2847,9 +3010,9 @@ class DailyResourceTaskMixin:
                         current_scene=20,
                     )
                     self._log_locked("action", f"{task_label}：点击 #20「回到世界」")
-                runtime.click_shape_center(20, "回到世界")
-                yield from runtime.wait_action_settle(settle_seconds)
-                yield from runtime.wait_view(34, timeout=wait_timeout, label=f"{task_label}：等待返回 #34")
+                context.click_shape_center(20, "回到世界")
+                yield from context.wait_action_settle(settle_seconds)
+                yield from context.wait_scene(34, wait=wait_timeout, label=f"{task_label}：等待返回 #34")
                 return "success"
         return "success"
 
@@ -2862,7 +3025,7 @@ class DailyResourceTaskMixin:
         task_label: str,
     ) -> str:
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         timeout = float(payload.get("free_match_timeout_seconds") or 60.0)
         poll_seconds = float(payload.get("free_match_poll_seconds") or 1.0)
         threshold = float(payload.get("free_match_threshold") or self.overlay_threshold)
@@ -2870,8 +3033,8 @@ class DailyResourceTaskMixin:
         last_score = 0.0
         while time.monotonic() - start < timeout:
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            last_score = float(runtime.shape_score(292, "免费", frame_data_url=frame) or 0.0)
+            frame = context.cur_frame(update=True)
+            last_score = float(context.shape_score(292, "免费", frame_data_url=frame) or 0.0)
             if last_score >= threshold:
                 with self._lock:
                     self._set_status_locked(
@@ -2881,8 +3044,8 @@ class DailyResourceTaskMixin:
                         current_scene=292,
                     )
                     self._log_locked("action", f"{task_label}：点击 #292「免费」")
-                yield from runtime.wait_click(292, "免费", timeout=float(payload.get("free_click_timeout") or 8.0))
-                yield from runtime.wait_action_settle(float(payload.get("free_click_settle_seconds") or 1.5))
+                yield from context.wait_click(292, "免费", timeout=float(payload.get("free_click_timeout") or 8.0))
+                yield from context.wait_action_settle(float(payload.get("free_click_settle_seconds") or 1.5))
                 return "success"
             with self._lock:
                 self._set_status_locked(
@@ -2891,7 +3054,7 @@ class DailyResourceTaskMixin:
                     phase="daily_vip_wait_free",
                     current_scene=292,
                 )
-            yield from runtime.wait_action_settle(max(0.2, poll_seconds))
+            yield from context.wait_action_settle(max(0.2, poll_seconds))
 
         with self._lock:
             self._set_status_locked(
@@ -2901,6 +3064,6 @@ class DailyResourceTaskMixin:
                 current_scene=292,
             )
             self._log_locked("skip", f"{task_label}：#292「免费」未匹配，最后分数 {last_score:.0f}%")
-        runtime.click_shape_center(292, "返回")
-        yield from runtime.wait_action_settle(float(payload.get("return_click_settle_seconds") or 1.5))
+        context.click_shape_center(292, "返回")
+        yield from context.wait_action_settle(float(payload.get("return_click_settle_seconds") or 1.5))
         return "skipped"

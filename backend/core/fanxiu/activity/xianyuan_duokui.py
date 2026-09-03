@@ -265,7 +265,10 @@ def ensure_xianyuan_duokui_activity(session: Session) -> str:
         "period_close_panel_time": period["close_panel_time_ms"],
         "period_close_panel_date": period["close_panel_date"],
         "world_level": period["world_level"],
-        "rank_scope_activity_ids": {"personal": 46003, "plane": 46004},
+        "rank_scope_identities": {
+            "personal": {"runtime_rank_activity_id": 46003, "reward_activity_id": 46003},
+            "plane": {"runtime_rank_activity_id": 46004, "reward_activity_id": 46004},
+        },
         "refresh_status": {
             "rankings": "unavailable",
             "shop": "unavailable",
@@ -400,7 +403,10 @@ def collect_and_store_xianyuan_duokui_activity(
             "period_close_panel_time": period["close_panel_time_ms"],
             "period_close_panel_date": period["close_panel_date"],
             "world_level": period["world_level"],
-            "rank_scope_activity_ids": {"personal": 46003, "plane": 46004},
+            "rank_scope_identities": {
+                "personal": {"runtime_rank_activity_id": 46003, "reward_activity_id": 46003},
+                "plane": {"runtime_rank_activity_id": 46004, "reward_activity_id": 46004},
+            },
             "refresh_status": refresh_status,
             "shop": dict(shop.get("evidence") or {}),
             "currency_runtime": currency_evidence,

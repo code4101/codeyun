@@ -4,7 +4,7 @@ import json
 import pytest
 from pyxllib.autogui import View
 
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import BehaviorTreeRuntimeRunner
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 from backend.core.fanxiu.data_annotation.shape_inheritance import (
     INHERITANCE_HOST_SCENE_ID,
     INHERITANCE_SOURCE_SCENE_ID,
@@ -121,7 +121,7 @@ def test_effective_shape_maps_back_to_raw_annotation_owner():
 
 
 def test_runtime_graph_derives_child_jump_edge_from_effective_shapes():
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     tree = [
         _image(1, [_shape("go-home", "返回", sceneJumpTarget="34")]),
         _image(2, [], parents="1"),
@@ -137,7 +137,7 @@ def test_runtime_graph_derives_child_jump_edge_from_effective_shapes():
 
 
 def test_runtime_records_inherited_jump_history_on_raw_source(tmp_path):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     parent_shape = _shape("go-home", "返回", sceneJumpTarget="34")
     tree = [_image(1, [parent_shape]), _image(2, [], parents="1"), _image(34, [])]
     path = tmp_path / "asset-tree.json"

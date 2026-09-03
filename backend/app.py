@@ -28,9 +28,9 @@ from backend.core.services.monitor import init_service_monitor, shutdown_service
 from backend.core.access.service_tokens import ensure_legacy_service_tokens
 from backend.core.runtime.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
 from backend.core.runtime.management import (
-    ensure_data_annotation_behavior_tree_service_on_startup,
+    ensure_fanxiu_kernel_scheduler_service_on_startup,
     ensure_local_builtin_services_on_startup,
-    warm_runtime_status_caches_on_startup,
+    warm_execution_status_caches_on_startup,
 )
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
@@ -76,13 +76,13 @@ async def lifespan(app: FastAPI):
                 logger.warning("Skipping local builtin service startup %s: %s", service_key, result.get("error"))
     if not settings.is_test:
         try:
-            ensure_data_annotation_behavior_tree_service_on_startup()
+            ensure_fanxiu_kernel_scheduler_service_on_startup()
         except Exception as exc:
             # Startup must not fail just because the local game runtime is unavailable.
             logger.warning("Skipping Fanxiu behavior backend startup: %s", exc)
             pass
     if not settings.is_test:
-        warm_results = warm_runtime_status_caches_on_startup()
+        warm_results = warm_execution_status_caches_on_startup()
         for cache_key, result in warm_results.items():
             if isinstance(result, dict) and result.get("status") == "error":
                 logger.warning("Skipping runtime status warmup %s: %s", cache_key, result.get("error"))

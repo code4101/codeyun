@@ -16,7 +16,7 @@
   不是回 #356。单步 AI 调试只有在用户明确要求时才执行这项收尾动作。
 
 本模块本身不截图、不点击，只保存上述状态模型并解析 #357 的剩余次数；
-具体场景响应和短暂画面等待位于 ``BehaviorTreeRuntime``。
+具体场景响应和短暂画面等待位于 ``BehaviorTreeContext``。
 """
 
 from __future__ import annotations

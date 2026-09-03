@@ -8,30 +8,30 @@
     "viewBox": [1880, 700],
     "views": [
       {
-        "id": "primary-runtime-path",
+        "id": "primary-scheduler-path",
         "label": "一次作业如何运行",
-        "focus": ["runtime-ui", "control-api", "scheduler", "jupyter-kernel", "behavior-runtime", "adb-control", "mumu-game"],
-        "note": "从 Runtime 控制台或工程调度出发，最终只有普通 Python Cell 能进入唯一 Kernel 并驱动游戏。"
+        "focus": ["kernel-scheduler-ui", "control-api", "scheduler", "jupyter-kernel", "behavior-tree-executor", "adb-control", "mumu-game"],
+        "note": "从 Kernel 调度器或工程调度出发，最终只有普通 Python Cell 能进入唯一 Kernel 并驱动游戏。"
       },
       {
         "id": "recognition-and-action",
         "label": "识别与动作闭环",
-        "focus": ["behavior-runtime", "asset-tree", "adb-control", "mumu-game"],
+        "focus": ["behavior-tree-executor", "asset-tree", "adb-control", "mumu-game"],
         "note": "行为树用场景与 Shape 理解画面，经 ADB 操作 MuMu，再重新截图验证真实落点。"
       },
       {
-        "id": "readonly-runtime-facts",
-        "label": "只读运行态事实",
-        "focus": ["mumu-game", "readonly-instrumentation", "job-library", "behavior-runtime", "scheduler"],
+        "id": "readonly-game-runtime-facts",
+        "label": "只读游戏 Runtime 事实",
+        "focus": ["mumu-game", "readonly-instrumentation", "job-library", "behavior-tree-executor", "scheduler"],
         "note": "动态插桩只读取游戏进程与内存；业务事实供行为树决策，轻量巡检只负责更新作业 next_time。"
       }
     ]
   },
   "components": [
     {
-      "id": "runtime-ui",
+      "id": "kernel-scheduler-ui",
       "type": "frontend",
-      "label": "凡修 Runtime 控制台",
+      "label": "Kernel 调度器",
       "sublabel": "工程 / AI、作业、Cell、日志与巡检",
       "pos": [40, 120],
       "size": [180, 72]
@@ -63,9 +63,9 @@
       "size": [180, 72]
     },
     {
-      "id": "behavior-runtime",
+      "id": "behavior-tree-executor",
       "type": "backend",
-      "label": "行为树 Runtime",
+      "label": "行为树执行器",
       "sublabel": "task / guard / generator / ctx",
       "pos": [1310, 120],
       "size": [190, 72]
@@ -124,13 +124,13 @@
     {
       "kind": "region",
       "label": "CodeYun 控制平面",
-      "wraps": ["runtime-ui", "control-api", "scheduler", "scheduler-state"],
+      "wraps": ["kernel-scheduler-ui", "control-api", "scheduler", "scheduler-state"],
       "pad": 22
     },
     {
       "kind": "region",
       "label": "Kernel 执行平面",
-      "wraps": ["jupyter-kernel", "behavior-runtime", "job-library", "asset-tree"],
+      "wraps": ["jupyter-kernel", "behavior-tree-executor", "job-library", "asset-tree"],
       "pad": 22
     },
     {
@@ -149,7 +149,7 @@
   "connections": [
     {
       "id": "ui-to-api",
-      "from": "runtime-ui",
+      "from": "kernel-scheduler-ui",
       "to": "control-api",
       "label": "查看状态 / 提交控制",
       "variant": "emphasis"
@@ -169,15 +169,15 @@
       "variant": "emphasis"
     },
     {
-      "id": "kernel-to-runtime",
+      "id": "kernel-to-executor",
       "from": "jupyter-kernel",
-      "to": "behavior-runtime",
+      "to": "behavior-tree-executor",
       "label": "执行普通 Python Cell",
       "variant": "emphasis"
     },
     {
-      "id": "runtime-to-adb",
-      "from": "behavior-runtime",
+      "id": "executor-to-adb",
+      "from": "behavior-tree-executor",
       "to": "adb-control",
       "label": "识别后执行原子动作",
       "variant": "emphasis"
@@ -209,9 +209,9 @@
       "label": "注册并 bootstrap"
     },
     {
-      "id": "assets-to-runtime",
+      "id": "assets-to-executor",
       "from": "asset-tree",
-      "to": "behavior-runtime",
+      "to": "behavior-tree-executor",
       "label": "场景识别与导航先验"
     },
     {

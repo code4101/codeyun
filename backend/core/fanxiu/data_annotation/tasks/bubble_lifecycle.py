@@ -14,14 +14,14 @@ from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_world_facts,
     write_data_annotation_world_facts,
 )
-from backend.core.fanxiu.runtime.mumu_control import shake_mumu_device
+from backend.core.fanxiu.client.mumu_control import shake_mumu_device
 
 
 BUBBLE_WEEKLY_TASK_ID = "bubble-weekly-pills"
 BUBBLE_LIFECYCLE_FACT_KEY = "bubble_lifecycle"
 
 
-def bubble_sdk_overlay_scene(runtime: Any, *, frame: str) -> int | None:
+def bubble_sdk_overlay_scene(context: Any, *, frame: str) -> int | None:
     """Recognize only SDK-owned modal layers on one already-captured frame.
 
     The underlying game page is intentionally outside this candidate set.
@@ -30,7 +30,7 @@ def bubble_sdk_overlay_scene(runtime: Any, *, frame: str) -> int | None:
     """
 
     for scene_id in (592, 591, 590):
-        matched, _score, _matched_frame = runtime.match_view(
+        matched, _score, _matched_frame = context.match_view(
             scene_id,
             frame_data_url=frame,
         )
@@ -41,8 +41,8 @@ def bubble_sdk_overlay_scene(runtime: Any, *, frame: str) -> int | None:
     # scrolling, so retain the structural item evidence used by the claim
     # transaction. This still identifies the SDK overlay rather than the game
     # page underneath it.
-    finder = getattr(runtime, "find_floating_items_by_anchor_text", None)
-    fully_inside = getattr(runtime, "floating_item_field_is_fully_inside", None)
+    finder = getattr(context, "find_floating_items_by_anchor_text", None)
+    fully_inside = getattr(context, "floating_item_field_is_fully_inside", None)
     if callable(finder) and callable(fully_inside):
         for anchor_text in ("领取", "已领取"):
             items = finder(
@@ -190,7 +190,7 @@ class BubbleLifecycleTaskMixin:
 
     @staticmethod
     def _bubble_lifecycle_world_facts_path() -> Path:
-        from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
+        from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
             _data_annotation_world_facts_path,
         )
 
@@ -235,10 +235,10 @@ class BubbleLifecycleTaskMixin:
         return {"mode": "scheduled_weekly", "task_id": scheduled_task_id}
 
     def _ensure_bubble_visible_for_claim(
-        self, runtime: Any, *, payload: dict[str, Any]
+        self, context: Any, *, payload: dict[str, Any]
     ):
-        frame = runtime.cur_frame(update=True)
-        overlay_scene = bubble_sdk_overlay_scene(runtime, frame=frame)
+        frame = context.cur_frame(update=True)
+        overlay_scene = bubble_sdk_overlay_scene(context, frame=frame)
         if overlay_scene in {590, 591}:
             return {"result": "menu_open"}
         if overlay_scene == 592:
@@ -249,9 +249,9 @@ class BubbleLifecycleTaskMixin:
         # look-alike on an unrelated game page.  Establish the world page
         # before any shake, drag, or click; an already-open SDK transaction is
         # handled above and must not be disturbed by game navigation.
-        yield from runtime.go_scene(34)
-        frame = runtime.cur_frame(update=True)
-        match = runtime.shape_matches(421, "气泡", frame_data_url=frame)
+        yield from context.go_scene(34)
+        frame = context.cur_frame(update=True)
+        match = context.shape_matches(421, "气泡", frame_data_url=frame)
         resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
         if match is not None:
             if not isinstance(resolved, dict) or not bool(match.get("unique_match", True)):
@@ -269,17 +269,17 @@ class BubbleLifecycleTaskMixin:
         settle = max(0.2, min(2.0, float(payload.get("poll_seconds") or 0.75)))
         samples = max(2, min(12, int(payload.get("bubble_restore_samples") or 6)))
         for _sample in range(samples):
-            frame = runtime.cur_frame(update=True)
-            overlay_scene = bubble_sdk_overlay_scene(runtime, frame=frame)
+            frame = context.cur_frame(update=True)
+            overlay_scene = bubble_sdk_overlay_scene(context, frame=frame)
             if overlay_scene is not None:
                 raise RuntimeError(
                     f"气泡_每周丹药：摇一摇验证时出现 SDK 事务 #{overlay_scene}，拒绝继续"
                 )
-            match = runtime.shape_matches(421, "气泡", frame_data_url=frame)
+            match = context.shape_matches(421, "气泡", frame_data_url=frame)
             resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
             if match is not None and isinstance(resolved, dict) and bool(match.get("unique_match", True)):
                 return {"result": "restored"}
-            yield from runtime.wait_action_settle(settle)
+            yield from context.wait_action_settle(settle)
         raise RuntimeError("气泡_每周丹药：摇一摇后仍未唯一识别气泡，拒绝猜测点击")
 
     def _execute_bubble_weekly_task(
@@ -295,8 +295,8 @@ class BubbleLifecycleTaskMixin:
             asset_tree_path = ctx.get("asset_tree_path")
             if not isinstance(asset_tree_path, Path):
                 raise RuntimeError("气泡_每周丹药：缺少资产树路径")
-            runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-            yield from self._ensure_bubble_visible_for_claim(runtime, payload=payload)
+            context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+            yield from self._ensure_bubble_visible_for_claim(context, payload=payload)
             claim_result = yield from self._execute_bubble_claim_pills_task(ctx, stop_event, payload)
             completed_fact = read_bubble_lifecycle_fact(facts_path)
             if str(completed_fact.get("claimed_week") or "") != bubble_week_key(job_now()):

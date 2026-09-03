@@ -1,16 +1,18 @@
 from datetime import datetime
 
-from backend.core.fanxiu.data_annotation.scheduler_time import (
+import pytest
+
+from backend.core.fanxiu.data_annotation.kernel_scheduler_time import (
     effective_scheduler_time,
     scheduler_task_time_view,
     scheduler_time_bias_minutes,
 )
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
-from backend.core.fanxiu.behavior_tree.runtime import (
-    create_behavior_tree_runtime_runner,
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
+    create_behavior_tree_executor,
 )
 
 
@@ -58,15 +60,58 @@ def test_effective_time_is_derived_without_mutating_original_next_time():
 
 
 def test_mojie_raid_completion_sleeps_until_next_monday_at_ten():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     assert runner._next_mojie_raid_week_start_time_text(
         datetime(2026, 7, 30, 14, 0)
     ) == "2026-08-03 10:00:00"
 
 
+def test_mojie_raid_completion_requires_thursday_and_confirmed_zero(monkeypatch):
+    runner = create_behavior_tree_executor()
+    persisted: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        runner,
+        "_persist_scheduler_task_next_time",
+        lambda task_id, next_time: persisted.append((task_id, next_time)),
+    )
+
+    assert runner._mojie_raid_completion_window_open(datetime(2026, 7, 29, 23, 59)) is False
+    assert runner._mojie_raid_completion_window_open(datetime(2026, 7, 30, 0, 0)) is True
+    with pytest.raises(ValueError, match="周四起"):
+        runner._schedule_next_mojie_raid_week(
+            {},
+            reason="test",
+            confirmed_remaining=0,
+            confirmed_at=datetime(2026, 7, 29, 23, 59),
+        )
+    with pytest.raises(ValueError, match="剩余次数为 0"):
+        runner._schedule_next_mojie_raid_week(
+            {},
+            reason="test",
+            confirmed_remaining=1,
+            confirmed_at=datetime(2026, 7, 30, 10, 0),
+        )
+
+    assert runner._schedule_next_mojie_raid_week(
+        {},
+        reason="test",
+        confirmed_remaining=0,
+        confirmed_at=datetime(2026, 7, 30, 10, 0),
+    ) == "2026-08-03 10:00:00"
+    assert persisted == [("legacy-daily-mojie-raid", "2026-08-03 10:00:00")]
+
+
+def test_mojie_raid_zero_before_thursday_is_rechecked_on_thursday():
+    runner = create_behavior_tree_executor()
+
+    assert runner._next_mojie_raid_thursday_verification_time_text(
+        datetime(2026, 7, 27, 10, 0)
+    ) == "2026-07-30 10:00:00"
+
+
 def test_mojie_raid_followups_use_thirteen_and_twenty_one_thirty():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     assert runner._next_mojie_raid_followup_time_text(
         datetime(2026, 8, 3, 10, 5)
@@ -92,7 +137,7 @@ def test_business_time_primitive_supports_daily_and_weekday_rules():
 
 
 def test_default_jobs_have_one_time_fact_and_no_executable_trigger_type():
-    jobs = default_data_annotation_scheduler_tasks(datetime(2026, 7, 30, 9, 0))
+    jobs = default_kernel_scheduler_tasks(datetime(2026, 7, 30, 9, 0))
     forbidden = {
         "schedule_kind",
         "trigger_kind",
@@ -109,10 +154,10 @@ def test_default_jobs_have_one_time_fact_and_no_executable_trigger_type():
 
 
 def test_normal_job_return_is_always_a_success_terminal():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
-    assert runner._normalize_runtime_task_result("skipped") == ("success", "")
-    assert runner._normalize_runtime_task_result({
+    assert runner._normalize_task_result("skipped") == ("success", "")
+    assert runner._normalize_task_result({
         "result": "business_not_finished",
         "message": "已设置稍后复查",
     }) == ("success", "已设置稍后复查")

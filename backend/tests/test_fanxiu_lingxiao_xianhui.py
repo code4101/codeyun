@@ -394,7 +394,7 @@ def test_special_recharge_claims_only_runtime_first_free_offer_and_reads_back(mo
         def wait_click(self, scene, title, **_kwargs):
             yield ("click", scene, title)
 
-        def wait_view(self, scene, **_kwargs):
+        def wait_scene(self, scene, **_kwargs):
             yield ("view", scene)
             return scene
 
@@ -471,14 +471,14 @@ def test_lingxiao_executor_reenters_main_before_using_fuling_shape_after_special
         def ocr_text_in_shapes(self, *_args, **_kwargs): return next(self._free_labels)
         def wait_click(self, scene, title, **_kwargs):
             yield ("click", scene, title)
-        def wait_view(self, *scenes, **_kwargs):
+        def wait_scene(self, *scenes, **_kwargs):
             yield ("view", *scenes)
             return scenes[0]
-        def goto_view(self, scene):
+        def go_scene(self, scene):
             yield ("goto", scene)
 
     class Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs): return Runtime()
+        def _behavior_tree_context(self, *_args, **_kwargs): return Runtime()
         def _persist_scheduler_task_next_time(self, *_args): pass
         def _log(self, *_args): pass
 
@@ -510,13 +510,13 @@ def test_lingxiao_executor_resumes_cover_after_optional_popup_without_forcing_wo
         def ocr_tokens_in_shapes(self, *_args, **_kwargs): return []
         def ocr_text_in_shapes(self, *_args, **_kwargs): return next(self._free_labels)
         def wait_click(self, scene, title, **_kwargs): yield ("click", scene, title)
-        def wait_view(self, *scenes, **_kwargs):
+        def wait_scene(self, *scenes, **_kwargs):
             yield ("view", *scenes)
             return 574 if 574 in scenes and 34 in scenes else scenes[0]
-        def goto_view(self, scene): yield ("goto", scene)
+        def go_scene(self, scene): yield ("goto", scene)
 
     class Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs): return Runtime()
+        def _behavior_tree_context(self, *_args, **_kwargs): return Runtime()
         def _persist_scheduler_task_next_time(self, *_args): pass
         def _log(self, *_args): pass
 
@@ -544,12 +544,12 @@ def test_lingxiao_executor_recovers_a_residual_fuling_page_via_its_own_return(mo
         def ocr_tokens_in_shapes(self, *_args, **_kwargs): return []
         def ocr_text_in_shapes(self, *_args, **_kwargs): return next(self._free_labels)
         def wait_click(self, scene, title, **_kwargs): yield ("click", scene, title)
-        def wait_view(self, *scenes, **_kwargs):
+        def wait_scene(self, *scenes, **_kwargs):
             yield ("view", *scenes)
             return scenes[0]
 
     class Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs): return Runtime()
+        def _behavior_tree_context(self, *_args, **_kwargs): return Runtime()
         def _persist_scheduler_task_next_time(self, *_args): pass
         def _log(self, *_args): pass
 
@@ -575,7 +575,7 @@ def test_lingxiao_world_normalization_keeps_green_bottle_as_a_return_branch() ->
     )
 
     class Runtime:
-        def wait_view(self, *scenes, **_kwargs):
+        def wait_scene(self, *scenes, **_kwargs):
             yield ("view", *scenes)
             return 20 if 20 in scenes else 34
 
@@ -606,12 +606,12 @@ def test_lingxiao_executor_claims_the_complete_runtime_free_track_batch(monkeypa
         def wait_action_settle(self, *_args, **_kwargs):
             if False:
                 yield None
-        def wait_view(self, *scenes, **_kwargs):
+        def wait_scene(self, *scenes, **_kwargs):
             yield ("view", *scenes)
             return scenes[0]
 
     class Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs): return Runtime()
+        def _behavior_tree_context(self, *_args, **_kwargs): return Runtime()
         def _persist_scheduler_task_next_time(self, *_args): pass
         def _log(self, *_args): pass
 

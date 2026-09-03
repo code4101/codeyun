@@ -110,7 +110,7 @@ def _carry_same_process_activity_observations(
         "supplemental_activity_observation"
     )
     refreshed_runtime = dict(
-        dict(refreshed.get("source_evidence") or {}).get("runtime") or {}
+        dict(refreshed.get("source_evidence") or {}).get("context") or {}
     )
     if not isinstance(initial_source, Mapping) or not initial_source.get("complete"):
         return result
@@ -157,7 +157,7 @@ def _require_sync_result(
 
 
 def run_daily_activity_list_sync_flow(
-    runtime: Any,
+    context: Any,
     *,
     plan_reader: PlanReader | None = None,
     synchronizer: PlanSynchronizer | None = None,
@@ -189,11 +189,11 @@ def run_daily_activity_list_sync_flow(
         ):
             preheated = True
             try:
-                yield from _yield_from_maybe(runtime.goto_view(66))
+                yield from _yield_from_maybe(context.go_scene(66))
                 yield from _yield_from_maybe(
-                    runtime.wait_view(
+                    context.wait_scene(
                         66,
-                        timeout=float(view_timeout_seconds),
+                        wait=float(view_timeout_seconds),
                         label="活动_每日清单同步：等待正式日程页 #66",
                     )
                 )
@@ -255,11 +255,11 @@ def run_daily_activity_list_sync_flow(
         primary_error = exc
     finally:
         try:
-            yield from _yield_from_maybe(runtime.goto_view(34))
+            yield from _yield_from_maybe(context.go_scene(34))
             yield from _yield_from_maybe(
-                runtime.wait_view(
+                context.wait_scene(
                     34,
-                    timeout=float(view_timeout_seconds),
+                    wait=float(view_timeout_seconds),
                     label="活动_每日清单同步：返回世界 #34",
                 )
             )
@@ -292,8 +292,8 @@ def run_daily_activity_list_sync_flow(
             + ", ".join(retired_writes)
         )
     for task_id, next_time in desired_next_times.items():
-        runtime.set_job_next_time(task_id, next_time)
-    runtime.set_next_time(
+        context.set_job_next_time(task_id, next_time)
+    context.set_next_time(
         next_daily_activity_list_sync_time(current).strftime("%Y-%m-%d %H:%M:%S")
     )
     result["message"] = (
@@ -314,7 +314,7 @@ class DailyActivityListSyncTaskMixin:
         stop_event: Any,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,

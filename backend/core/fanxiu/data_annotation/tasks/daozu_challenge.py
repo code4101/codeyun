@@ -44,25 +44,25 @@ class DaozuChallengeTaskMixin:
     _DAOZU_CONFIGURED_DAILY_LIMIT = DAOZU_DAILY_LEVEL_LIMIT
 
     @staticmethod
-    def _daozu_realm_locked_score(runtime: Any, frame: str | None) -> float:
+    def _daozu_realm_locked_score(context: Any, frame: str | None) -> float:
         """Return the scoped #251 unlock-copy score; this is action eligibility, not quota."""
 
         if not frame:
             return 0.0
         return float(
-            runtime.shape_score(251, "境界未解锁", frame_data_url=frame) or 0.0
+            context.shape_score(251, "境界未解锁", frame_data_url=frame) or 0.0
         )
 
     def _finish_daozu_challenge(
         self,
-        runtime: Any,
+        context: Any,
         *,
         task_id: str,
         next_time: str,
         message: str,
     ) -> None:
         self._persist_scheduler_task_next_time(task_id, next_time)
-        runtime.set_completion_message(message)
+        context.set_completion_message(message)
 
     def _execute_daozu_challenge_task(
         self,
@@ -70,7 +70,7 @@ class DaozuChallengeTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -94,7 +94,7 @@ class DaozuChallengeTaskMixin:
                     "limit": state.get("daily_limit"),
                     "remaining": state.get("daily_remaining"),
                     "source": "runtime_memory",
-                    "runtime": state,
+                    "context": state,
                 }
 
             pass_count = _daozu_int(state.get("daily_pass_count"))
@@ -107,7 +107,7 @@ class DaozuChallengeTaskMixin:
                     "limit": limit,
                     "remaining": limit - pass_count,
                     "source": "runtime_memory_with_configured_limit",
-                    "runtime": state,
+                    "context": state,
                 }
 
             return {
@@ -115,7 +115,7 @@ class DaozuChallengeTaskMixin:
                 "available": False,
                 "source": "runtime_memory",
                 "reason": "runtime_incomplete_daily_pass_count_invalid_or_missing",
-                "runtime": state,
+                "context": state,
             }
 
         return {
@@ -123,25 +123,25 @@ class DaozuChallengeTaskMixin:
             "available": False,
             "source": "runtime_memory",
             "reason": str(state.get("reason") or "runtime_unavailable"),
-            "runtime": state,
+            "context": state,
         }
 
-    def 道祖挑战流程(self, runtime: Any):
+    def 道祖挑战流程(self, context: Any):
         from backend.core.fanxiu.data_annotation import (
-            behavior_tree_runtime as _behavior_tree_runtime,
+            behavior_tree_executor as _behavior_tree_executor,
         )
 
-        stop_event = runtime.stop_event or threading.Event()
-        payload = runtime.payload
+        stop_event = context.stop_event or threading.Event()
+        payload = context.payload
         task_id = str(payload.get("__scheduler_task_id") or "daozu-challenge")
         timeout = max(30.0, float(payload.get("monitor_timeout") or 1800.0))
         poll_interval = max(0.1, float(payload.get("monitor_poll_interval") or 1.0))
         next_time = next_daozu_challenge_time(
-            _behavior_tree_runtime._now()
+            _behavior_tree_executor._now()
         ).strftime("%Y-%m-%d %H:%M:%S")
 
         result_scene_ids = [DAOZU_ORDINARY_RESULT_SCENE_ID, DAOZU_DAILY_LIMIT_RESULT_SCENE_ID]
-        scene_id, _score, frame = runtime.current_scene([34, 251, *result_scene_ids], update=True)
+        scene_id, _score, frame = context.current_scene([34, 251, *result_scene_ids], update=True)
         chain_started = bool(payload.get(DAOZU_CHAIN_START_MARK))
         if scene_id is None and not chain_started:
             raise RuntimeError("道祖_挑战：当前为未知战斗/加载场景，拒绝导航或重复点击")
@@ -155,14 +155,14 @@ class DaozuChallengeTaskMixin:
                 )
             if state.get("ok") and int(state["remaining"]) <= 0:
                 self._finish_daozu_challenge(
-                    runtime,
+                    context,
                     task_id=task_id,
                     next_time=next_time,
                     message="道祖_挑战结束，事实显示今日剩余 0/20，未执行挑战",
                 )
                 return
-            frame = runtime.cur_frame(update=True)
-            panel_lines = runtime.ocr_fragments_in_shapes(
+            frame = context.cur_frame(update=True)
+            panel_lines = context.ocr_fragments_in_shapes(
                 34,
                 ["任务组队面板"],
                 frame_data_url=frame,
@@ -173,28 +173,28 @@ class DaozuChallengeTaskMixin:
                 " ".join(str(item.get("text") or "") for item in panel_lines),
             )
             if re.search(r"创建队伍|加入队伍", panel_text):
-                yield from runtime.wait_click(34, "任务")
-                yield from runtime.wait_action_settle(0.8)
+                yield from context.wait_click(34, "任务")
+                yield from context.wait_action_settle(0.8)
             elif "任务" not in panel_text:
-                yield from runtime.wait_click(34, "展开任务组队面板")
-                yield from runtime.wait_action_settle(0.8)
-                yield from runtime.wait_click(34, "任务")
-                yield from runtime.wait_action_settle(0.8)
-            yield from runtime.wait_click(34, "主线")
-            yield from runtime.wait_view(251, timeout=30.0, label="道祖_挑战：等待路线 #251")
+                yield from context.wait_click(34, "展开任务组队面板")
+                yield from context.wait_action_settle(0.8)
+                yield from context.wait_click(34, "任务")
+                yield from context.wait_action_settle(0.8)
+            yield from context.wait_click(34, "主线")
+            yield from context.wait_scene(251, wait=30.0, label="道祖_挑战：等待路线 #251")
             scene_id = 251
 
         if scene_id == 251:
-            _sid, _score, frame = runtime.current_scene([251], update=True)
+            _sid, _score, frame = context.current_scene([251], update=True)
             if _sid != 251:
                 raise RuntimeError("道祖_挑战：启动前未识别到 #251，拒绝点击")
-            realm_locked_score = self._daozu_realm_locked_score(runtime, frame)
+            realm_locked_score = self._daozu_realm_locked_score(context, frame)
             if realm_locked_score >= 55.0:
                 self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
                 payload.pop(DAOZU_CHAIN_START_MARK, None)
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 self._finish_daozu_challenge(
-                    runtime,
+                    context,
                     task_id=task_id,
                     next_time=next_time,
                     message="道祖_挑战幂等结束：#251 确认境界未达到解锁要求，当前无可执行挑战，已返回世界",
@@ -202,9 +202,9 @@ class DaozuChallengeTaskMixin:
                 return
             if state.get("ok") and int(state["remaining"]) <= 0:
                 self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 self._finish_daozu_challenge(
-                    runtime,
+                    context,
                     task_id=task_id,
                     next_time=next_time,
                     message="道祖_挑战结束，运行态显示今日剩余 0/20，已回到世界",
@@ -231,7 +231,7 @@ class DaozuChallengeTaskMixin:
             # The real #251 frame splits 挑/战 into two OCR tokens.  Use the
             # formal button Shape; it has no visual constraint, so Layer 0
             # performs no redundant full-frame precheck before this action.
-            yield from runtime.wait_click(251, "挑战")
+            yield from context.wait_click(251, "挑战")
         elif scene_id is None and chain_started:
             # The start mark proves that the single start click already happened.
             # Battle/loading frames intentionally have no GUI scene identity;
@@ -243,21 +243,21 @@ class DaozuChallengeTaskMixin:
         deadline = time.monotonic() + timeout
         while time.monotonic() <= deadline:
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = runtime.current_scene([251, *result_scene_ids], update=True)
+            scene_id, _score, frame = context.current_scene([251, *result_scene_ids], update=True)
             if scene_id == DAOZU_DAILY_LIMIT_RESULT_SCENE_ID:
-                yield from runtime.wait_click(DAOZU_DAILY_LIMIT_RESULT_SCENE_ID, "点击退出")
-                yield from runtime.wait_view(
+                yield from context.wait_click(DAOZU_DAILY_LIMIT_RESULT_SCENE_ID, "点击退出")
+                yield from context.wait_scene(
                     251,
-                    timeout=30.0,
+                    wait=30.0,
                     label="道祖_挑战：终局退出后等待路线 #251",
                 )
                 terminal_state = self._read_daozu_challenge_state()
                 if not terminal_state.get("ok") or _daozu_int(terminal_state.get("remaining")) != 0:
                     raise RuntimeError("道祖_挑战：终局退出后未取得 remaining=0 的权威运行态")
                 self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
                 self._finish_daozu_challenge(
-                    runtime,
+                    context,
                     task_id=task_id,
                     next_time=next_time,
                     message="道祖_挑战结束，已完成每日20层并从终局返回世界",
@@ -267,9 +267,9 @@ class DaozuChallengeTaskMixin:
                 route_state = self._read_daozu_challenge_state()
                 if route_state.get("ok") and _daozu_int(route_state.get("remaining")) == 0:
                     self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
-                    yield from runtime.goto_view(34)
+                    yield from context.go_scene(34)
                     self._finish_daozu_challenge(
-                        runtime,
+                        context,
                         task_id=task_id,
                         next_time=next_time,
                         message="道祖_挑战结束，路线运行态确认每日20层已完成并返回世界",
@@ -278,13 +278,13 @@ class DaozuChallengeTaskMixin:
                 # The first fresh frame after the start click may still be the
                 # launch page while the native dungeon is loading. Keep
                 # observing; the persisted start mark prevents a second click.
-                yield from runtime.wait_action_settle(poll_interval)
+                yield from context.wait_action_settle(poll_interval)
                 continue
             # The button and the countdown execute the same native transition.
             # It is an optional latency optimization: never click the generic
             # exit settlement and never make progress depend on this click.
             if scene_id == DAOZU_ORDINARY_RESULT_SCENE_ID:
-                yield from runtime.wait_click(DAOZU_ORDINARY_RESULT_SCENE_ID, "下一层")
-            yield from runtime.wait_action_settle(poll_interval)
+                yield from context.wait_click(DAOZU_ORDINARY_RESULT_SCENE_ID, "下一层")
+            yield from context.wait_action_settle(poll_interval)
 
         raise TimeoutError("道祖_挑战：自动链监控超时；防重复标记保留，禁止 Scheduler 重试点击")

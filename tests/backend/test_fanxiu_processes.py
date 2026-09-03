@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.core.fanxiu.runtime import processes as fanxiu_processes
+from backend.core.fanxiu.client import processes as fanxiu_processes
 from backend.core.runtime import local_script_processes
 
 

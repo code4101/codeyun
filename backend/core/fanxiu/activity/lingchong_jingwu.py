@@ -180,9 +180,15 @@ def build_lingchong_jingwu_activity_payload(
             "official_name": references.official_name,
             "user_alias": references.user_alias,
             "parent_activity_id": references.parent_activity_id,
-            "rank_scope_activity_ids": {
-                "personal": references.personal_rank_activity_id,
-                "plane": references.plane_rank_activity_id,
+            "rank_scope_identities": {
+                "personal": {
+                    "runtime_rank_activity_id": references.personal_rank_activity_id,
+                    "reward_activity_id": references.personal_rank_activity_id,
+                },
+                "plane": {
+                    "runtime_rank_activity_id": references.plane_rank_activity_id,
+                    "reward_activity_id": references.plane_rank_activity_id,
+                },
             },
             "worldline": dict(worldline),
         },
@@ -509,9 +515,15 @@ def collect_and_store_lingchong_jingwu_activity(
     evidence = dict(activity.evidence or {})
     evidence.update(
         {
-            "rank_scope_activity_ids": {
-                "personal": references.personal_rank_activity_id,
-                "plane": references.plane_rank_activity_id,
+            "rank_scope_identities": {
+                "personal": {
+                    "runtime_rank_activity_id": references.personal_rank_activity_id,
+                    "reward_activity_id": references.personal_rank_activity_id,
+                },
+                "plane": {
+                    "runtime_rank_activity_id": references.plane_rank_activity_id,
+                    "reward_activity_id": references.plane_rank_activity_id,
+                },
             },
             "rank_scope_completeness": {
                 "personal": {

@@ -59,7 +59,7 @@ class XianzangStandardJobSpec:
 
 
 def _optional_selection(
-    runtime: Any,
+    context: Any,
     runner: Any,
     *,
     already_on_optional_page: bool = False,
@@ -128,9 +128,9 @@ def _optional_selection(
         f"rule={choice.selection_reason}",
     )
     if not already_on_optional_page:
-        open_xianzang_optional_reward(runtime)
+        open_xianzang_optional_reward(context)
     result = complete_xianzang_optional_reward_selection(
-        runtime,
+        context,
         choice.candidate.column,
         # The selected column is already fixed by authoritative Runtime ids and
         # exact green-check geometry.  Full-frame OCR may omit the row fraction
@@ -158,11 +158,11 @@ def _optional_selection(
     }
 
 
-def _runtime(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
+def _behavior_tree_context(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("蓬莱仙藏作业缺少资产树路径")
-    return runner._fanxiu_runtime(
+    return runner._behavior_tree_context(
         ctx,
         asset_tree_path,
         stop_event=stop_event,
@@ -219,10 +219,10 @@ def _execute_xianzang_standard_job(
     is not advanced until #447[返回] has been clicked and #34 verified.
     """
 
-    runtime = _runtime(runner, ctx, stop_event)
+    context = _behavior_tree_context(runner, ctx, stop_event)
     resumed: dict[str, Any] = {}
-    if resume_draw_result_page and callable(getattr(runtime, "current_scene", None)):
-        scene_id, score, _frame = runtime.current_scene(
+    if resume_draw_result_page and callable(getattr(context, "current_scene", None)):
+        scene_id, score, _frame = context.current_scene(
             [XIANZANG_DRAW_RESULT_SCENE_ID],
             update=True,
         )
@@ -234,9 +234,9 @@ def _execute_xianzang_standard_job(
                 "info",
                 "蓬莱仙藏：启动现场为可靠 #451，先关闭已发生抽奖的结果页，不重复抽取",
             )
-            resumed["draw_result"] = close_xianzang_draw_result(runtime)
+            resumed["draw_result"] = close_xianzang_draw_result(context)
     if resume_optional_page:
-        current = read_xianzang_page(runtime, update=True)
+        current = read_xianzang_page(context, update=True)
         if (
             current is not None
             and current.page == "自选"
@@ -248,12 +248,12 @@ def _execute_xianzang_standard_job(
                 "蓬莱仙藏_配置：启动现场为可靠 #448，先按权威计划幂等续做自选",
             )
             resumed["optional"] = _optional_selection(
-                runtime,
+                context,
                 runner,
                 already_on_optional_page=True,
             )
     try:
-        enter_xianzang(runtime)
+        enter_xianzang(context)
     except XianzangActivityUnavailable as exc:
         return _unavailable_result(
             runner,
@@ -263,10 +263,10 @@ def _execute_xianzang_standard_job(
         )
 
     _record_availability(available=True, reason="已进入 #447")
-    details = workflow(runtime, runner, resumed)
+    details = workflow(context, runner, resumed)
     if isinstance(resumed.get("draw_result"), dict):
         details["resumed_draw_result"] = resumed["draw_result"]
-    final_scene, final_score = leave_xianzang(runtime)
+    final_scene, final_score = leave_xianzang(context)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError(
             f"{spec.task_label} 收尾未可靠回到 #34："
@@ -289,19 +289,19 @@ def _execute_xianzang_standard_job(
 
 
 def _run_xianzang_config_workflow(
-    runtime: Any,
+    context: Any,
     runner: Any,
     resumed: dict[str, Any],
 ) -> dict[str, Any]:
     optional = resumed.get("optional")
     if not isinstance(optional, dict):
-        optional = _optional_selection(runtime, runner)
-    store = complete_xianzang_store(runtime)
-    tasks = complete_xianzang_tasks(runtime)
+        optional = _optional_selection(context, runner)
+    store = complete_xianzang_store(context)
+    tasks = complete_xianzang_tasks(context)
     # The first phase consumes only complete ten-draw batches and preserves the
     # 0..9 remainder.  The 21:10 job claims late tasks, then switches between
     # ten/single draws as needed to exhaust the same Thursday-scoped instance.
-    lottery = complete_xianzang_config_ten_draws(runtime)
+    lottery = complete_xianzang_config_ten_draws(context)
     return {
         "optional": optional,
         "store_clicked_values": list(store.clicked_values),
@@ -312,12 +312,12 @@ def _run_xianzang_config_workflow(
 
 
 def _run_xianzang_lottery_workflow(
-    runtime: Any,
+    context: Any,
     _runner: Any,
     _resumed: dict[str, Any],
 ) -> dict[str, Any]:
-    tasks = complete_xianzang_tasks(runtime)
-    lottery = complete_xianzang_lottery(runtime)
+    tasks = complete_xianzang_tasks(context)
+    lottery = complete_xianzang_lottery(context)
     return {
         "task_clicked_count": tasks.clicked_count,
         "task_stop_reason": tasks.stop_reason,

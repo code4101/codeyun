@@ -1,1 +1,1 @@
-from backend.core.fanxiu.runtime.slimming import *  # noqa: F401,F403
+from backend.core.fanxiu.client.slimming import *  # noqa: F401,F403

@@ -2,16 +2,16 @@ from datetime import datetime
 import threading
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
 
 
 def test_mail_success_advances_its_daily_trigger(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     next_times = []
 
     monkeypatch.setitem(
@@ -35,7 +35,7 @@ def test_mail_success_advances_its_daily_trigger(monkeypatch):
 
 
 def test_plain_mail_debug_cell_does_not_change_scheduler(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     monkeypatch.setattr(
         runner,
         "_persist_scheduler_task_next_time",
@@ -47,14 +47,14 @@ def test_plain_mail_debug_cell_does_not_change_scheduler(monkeypatch):
 
 def test_mail_job_wrapper_preserves_business_summary_after_return_to_world():
     class Runtime:
-        def goto_view(self, scene_id):
+        def go_scene(self, scene_id):
             assert scene_id == 34
             if False:
                 yield None
             return 34
 
     class Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs):
+        def _behavior_tree_context(self, *_args, **_kwargs):
             return Runtime()
 
         def _execute_mail_selective_claim_task(self, *_args, **_kwargs):
@@ -69,7 +69,7 @@ def test_mail_job_wrapper_preserves_business_summary_after_return_to_world():
         def _finish_mail_selective_claim_schedule(self, _payload, message):
             return f"{message}，下次 2026-07-25 00:00:00"
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("mail_selective_claim")
     execution = definition.handler(Runner(), {}, {}, threading.Event())
     while True:
@@ -92,7 +92,7 @@ def test_mail_job_wrapper_preserves_business_summary_after_return_to_world():
 
 def test_mail_job_failure_does_not_advance_next_day():
     class Runtime:
-        def goto_view(self, _scene_id):
+        def go_scene(self, _scene_id):
             if False:
                 yield None
             return 34
@@ -100,7 +100,7 @@ def test_mail_job_failure_does_not_advance_next_day():
     class Runner:
         _mail_selective_claim_terminal_message = "上一轮旧摘要"
 
-        def _fanxiu_runtime(self, *_args, **_kwargs):
+        def _behavior_tree_context(self, *_args, **_kwargs):
             return Runtime()
 
         def _execute_mail_selective_claim_task(self, *_args, **_kwargs):
@@ -111,7 +111,7 @@ def test_mail_job_failure_does_not_advance_next_day():
         def _finish_mail_selective_claim_schedule(self, *_args, **_kwargs):
             raise AssertionError("失败不得推进次日")
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("mail_selective_claim")
     execution = definition.handler(
         Runner(),
@@ -130,7 +130,7 @@ def test_mail_job_final_world_failure_does_not_advance_next_day():
     class Runtime:
         calls = 0
 
-        def goto_view(self, _scene_id):
+        def go_scene(self, _scene_id):
             self.calls += 1
             if False:
                 yield None
@@ -143,7 +143,7 @@ def test_mail_job_final_world_failure_does_not_advance_next_day():
             self.runtime = Runtime()
             self.schedule_calls = []
 
-        def _fanxiu_runtime(self, *_args, **_kwargs):
+        def _behavior_tree_context(self, *_args, **_kwargs):
             return self.runtime
 
         def _execute_mail_selective_claim_task(self, *_args, **_kwargs):
@@ -160,7 +160,7 @@ def test_mail_job_final_world_failure_does_not_advance_next_day():
             return "不应调用"
 
     runner = Runner()
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("mail_selective_claim")
     execution = definition.handler(
         runner,

@@ -9,10 +9,18 @@ from xlsln.kq5034 import kqmain
 from xlsln.kq5034.kqmain import 考勤行为树
 
 
+def _online_groups():
+    return {
+        "念住闯关": ["d250106念住闯关"],
+        "觉观念住": ["d260801第43届念住", "d260801第49届觉观"],
+        "梵呗": ["d260809梵呗初阶"],
+        "禅宗": ["d260712禅宗12期二阶"],
+    }
+
+
 def test_data_updates_precede_daily_morning_course_task():
     root = 考勤行为树().build_tree()
     selector = root.children[0]
-
     action_names = []
     for child in selector.children:
         inner = getattr(getattr(child, "child", None), "child", None)
@@ -34,37 +42,29 @@ def test_fanbei_runs_only_in_daily_morning_course_task(monkeypatch):
             yield None
 
     monkeypatch.setattr(kqmain, "_执行课程清单", fake_execute_course_list)
+    monkeypatch.setattr(kqmain, "_读取在线课程分组", _online_groups)
     monkeypatch.setattr(kqmain, "尝试关闭重复页面", lambda **kwargs: None)
     monkeypatch.setattr(kqmain, "_yield_log", lambda message: iter(()))
     monkeypatch.setattr(kqmain, "_通知课程任务完成", lambda task_name: None)
 
     list(kqmain.每日早晨课程任务())
-
-    assert (tuple(kqmain.梵呗类型), "main", "每日早晨课程任务") in calls
+    assert (("d260809梵呗初阶",), "main", "每日早晨课程任务") in calls
 
 
 def test_zen12_stage2_runs_in_weekly_sunday_course_tasks(monkeypatch):
     calls = []
-
     from xlsln.kq5034.engine import job_runs
 
     monkeypatch.setattr(job_runs, "begin_job_run", lambda **kwargs: "run-test")
     monkeypatch.setattr(job_runs, "finish_job_run", lambda *args, **kwargs: {})
 
     def fake_execute_course_list(module_names, *, entry="main", task_name, weekday=None, continue_on_error=False, job_run_id=None):
-        calls.append(
-            {
-                "module_names": tuple(module_names),
-                "entry": entry,
-                "task_name": task_name,
-                "weekday": weekday,
-                "continue_on_error": continue_on_error,
-            }
-        )
+        calls.append({"module_names": tuple(module_names), "entry": entry, "weekday": weekday})
         if False:
             yield None
 
     monkeypatch.setattr(kqmain, "_执行课程清单", fake_execute_course_list)
+    monkeypatch.setattr(kqmain, "_读取在线课程分组", _online_groups)
     monkeypatch.setattr(kqmain, "尝试关闭重复页面", lambda **kwargs: None)
     monkeypatch.setattr(kqmain, "_yield_log", lambda message: iter(()))
     monkeypatch.setattr(kqmain, "_通知课程任务完成", lambda task_name: None)
@@ -73,48 +73,28 @@ def test_zen12_stage2_runs_in_weekly_sunday_course_tasks(monkeypatch):
     list(kqmain.每日早晨课程任务())
 
     course_name = "d260712禅宗12期二阶"
-    assert course_name in kqmain.禅宗类型
-    assert any(
-        course_name in call["module_names"] and call["entry"] == "main_a" and call["weekday"] == 7
-        for call in calls
-    )
-    assert any(
-        course_name in call["module_names"] and call["entry"] == "main_b" and call["weekday"] == 7
-        for call in calls
-    )
+    assert any(course_name in call["module_names"] and call["entry"] == "main_a" and call["weekday"] == 7 for call in calls)
+    assert any(course_name in call["module_names"] and call["entry"] == "main_b" and call["weekday"] == 7 for call in calls)
 
 
 def test_midnight_course_groups_do_not_block_each_other(monkeypatch):
     calls = []
     cleanup_reasons = []
     finished_runs = []
-
     from xlsln.kq5034.engine import job_runs
 
     monkeypatch.setattr(job_runs, "begin_job_run", lambda **kwargs: "run-test")
-    monkeypatch.setattr(
-        job_runs,
-        "finish_job_run",
-        lambda run_id, **kwargs: finished_runs.append((run_id, kwargs)) or {},
-    )
+    monkeypatch.setattr(job_runs, "finish_job_run", lambda run_id, **kwargs: finished_runs.append((run_id, kwargs)) or {})
 
     def fake_execute_course_list(module_names, *, entry="main", task_name, weekday=None, continue_on_error=False, job_run_id=None):
-        calls.append(
-            {
-                "module_names": tuple(module_names),
-                "entry": entry,
-                "task_name": task_name,
-                "weekday": weekday,
-                "continue_on_error": continue_on_error,
-                "job_run_id": job_run_id,
-            }
-        )
-        if module_names is kqmain.念住闯关类型:
+        calls.append({"module_names": tuple(module_names), "entry": entry, "task_name": task_name, "weekday": weekday, "continue_on_error": continue_on_error, "job_run_id": job_run_id})
+        if tuple(module_names) == ("d250106念住闯关",):
             raise RuntimeError("念住闯关故障")
         if False:
             yield None
 
     monkeypatch.setattr(kqmain, "_执行课程清单", fake_execute_course_list)
+    monkeypatch.setattr(kqmain, "_读取在线课程分组", _online_groups)
     monkeypatch.setattr(kqmain, "尝试关闭重复页面", lambda **kwargs: cleanup_reasons.append(kwargs["reason"]))
     monkeypatch.setattr(kqmain, "_yield_log", lambda message: iter(()))
     monkeypatch.setattr(kqmain, "_通知课程任务完成", lambda task_name: None)
@@ -123,23 +103,36 @@ def test_midnight_course_groups_do_not_block_each_other(monkeypatch):
         list(kqmain.每日凌晨课程任务())
 
     assert calls == [
-        {
-            "module_names": tuple(kqmain.念住闯关类型),
-            "entry": "main_a",
-            "task_name": "每日凌晨课程任务",
-            "weekday": None,
-            "continue_on_error": True,
-            "job_run_id": "run-test",
-        },
-        {
-            "module_names": tuple(kqmain.禅宗类型),
-            "entry": "main_a",
-            "task_name": "每日凌晨课程任务",
-            "weekday": 7,
-            "continue_on_error": True,
-            "job_run_id": "run-test",
-        },
+        {"module_names": ("d250106念住闯关",), "entry": "main_a", "task_name": "每日凌晨课程任务", "weekday": None, "continue_on_error": True, "job_run_id": "run-test"},
+        {"module_names": ("d260712禅宗12期二阶",), "entry": "main_a", "task_name": "每日凌晨课程任务", "weekday": 7, "continue_on_error": True, "job_run_id": "run-test"},
     ]
     assert cleanup_reasons == ["每日凌晨课程任务收尾"]
     assert finished_runs[0][0] == "run-test"
     assert finished_runs[0][1]["status"] == "failed"
+
+
+def test_online_course_groups_follow_incomplete_summary_rows():
+    class FakeClient:
+        def get_table(self, sheet):
+            assert (sheet.workbook_id, sheet.sheet_id) == (2, 4)
+            return {
+                "columns": ["课程类型", "在线考勤表", "考勤实际完成结点"],
+                "rows": [
+                    {"课程类型": "念住", "在线考勤表": {"value": "第43届念住"}, "考勤实际完成结点": ""},
+                    {"课程类型": "觉观", "在线考勤表": {"value": "第48届觉观"}, "考勤实际完成结点": "46229"},
+                    {"课程类型": "禅宗一阶", "在线考勤表": {"value": "修道班13期1阶"}, "考勤实际完成结点": ""},
+                    {"课程类型": "梵呗初阶", "在线考勤表": {"value": "20260809梵呗初阶"}, "考勤实际完成结点": ""},
+                ],
+            }
+
+    groups = kqmain._读取在线课程分组(
+        client=FakeClient(),
+        module_names=["d260801第43届念住", "d260701第48届觉观", "d260712禅宗13期一阶", "d260809梵呗初阶"],
+    )
+
+    assert groups == {
+        "念住闯关": [],
+        "觉观念住": ["d260801第43届念住"],
+        "梵呗": ["d260809梵呗初阶"],
+        "禅宗": ["d260712禅宗13期一阶"],
+    }

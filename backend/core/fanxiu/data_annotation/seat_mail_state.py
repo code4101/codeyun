@@ -49,7 +49,7 @@ _cursor_lock = threading.RLock()
 
 
 def seat_mail_cursor_state_path() -> Path:
-    path = get_settings().data_dir / "fanxiu" / "data-annotation" / "runtime"
+    path = get_settings().data_dir / "fanxiu" / "data-annotation" / "context"
     path.mkdir(parents=True, exist_ok=True)
     return path / "seat_mail_inspection_cursor.json"
 
@@ -104,7 +104,7 @@ def _task_id_for_domain(domain: str) -> str:
 
 
 def _read_scheduler_task_states() -> list[dict[str, Any]]:
-    from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
         read_scheduler_tasks,
     )
 

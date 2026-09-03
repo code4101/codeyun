@@ -6,10 +6,10 @@ import pytest
 
 from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
 
-from backend.core.fanxiu.behavior_tree.runtime import (
-    create_behavior_tree_runtime_runner,
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
+    create_behavior_tree_executor,
 )
-from backend.core.fanxiu.data_annotation import behavior_tree_runtime
+from backend.core.fanxiu.data_annotation import behavior_tree_executor
 
 
 def _drain(generator):
@@ -21,13 +21,13 @@ def _drain(generator):
 
 
 def test_changed_sanqing_target_does_not_claim_seat_success(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     actions: list[tuple] = []
     scheduled: list[tuple[str, str]] = []
 
     class Runtime:
-        def goto_view(self, scene_id):
-            actions.append(("goto_view", scene_id))
+        def go_scene(self, scene_id):
+            actions.append(("go_scene", scene_id))
             yield BehaviorTreeStatus.RUNNING
 
     def return_to_selection(_runtime, scene_id):
@@ -36,7 +36,7 @@ def test_changed_sanqing_target_does_not_claim_seat_success(monkeypatch) -> None
         return 296
 
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 8, 16, 15, 57, 4),
     )
@@ -59,7 +59,7 @@ def test_changed_sanqing_target_does_not_claim_seat_success(monkeypatch) -> None
     )
 
     assert result == "success"
-    assert actions == [("return_to_selection", 297), ("goto_view", 34)]
+    assert actions == [("return_to_selection", 297), ("go_scene", 34)]
     assert scheduled == [("daily-lundao-seat", "2026-08-16 16:07:04")]
     assert "已完成三清入座" not in "\n".join(
         str(item.get("message") or "") for item in runner.status().get("logs", [])
@@ -78,7 +78,7 @@ def test_sanqing_success_is_rejected_until_runtime_confirms_seated(
     monkeypatch,
     status,
 ) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     scheduled: list[tuple[str, str]] = []
     monkeypatch.setattr(
         runner,
@@ -100,7 +100,7 @@ def test_sanqing_success_is_rejected_until_runtime_confirms_seated(
 
 
 def test_sanqing_success_is_recorded_after_runtime_confirms_room_14(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     scheduled: list[tuple[str, str]] = []
     monkeypatch.setattr(
         runner,

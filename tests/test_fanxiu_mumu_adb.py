@@ -7,7 +7,7 @@ import subprocess
 
 from PIL import Image
 
-from backend.core.fanxiu.runtime import mumu_control as rotate
+from backend.core.fanxiu.client import mumu_control as rotate
 
 
 class _FakeSocket:

@@ -8,7 +8,7 @@
 - **资产树**：scene 与 Shape 的编辑和存储结构。
 - **识别图**：由 scene 身份关系和动作后继关系形成的运行模型。
 
-业务代码、公开 API 和日志优先使用 `scene`。view 是旧版兼容名称，只保留 `wait_view()` 等兼容入口；新代码使用 `wait_scene()` 和 `go_scene()`。
+业务代码、公开 API 和日志统一使用 `scene`。旧版 `view` 等价入口已删除；场景等待与导航分别使用 `wait_scene()` 和 `go_scene()`。
 
 ## 分组
 

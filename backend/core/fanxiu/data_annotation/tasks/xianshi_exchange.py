@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 import re
+import time
 from typing import Any, Iterable, Mapping
 
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
@@ -121,8 +122,8 @@ def plan_langyage_candidates(
     return candidates
 
 
-def _numbers(runtime: Any, scene_id: int, shape: str) -> tuple[list[int], str]:
-    values, text = runtime.ocr_numbers_in_shapes(scene_id, (shape,), padding=12)
+def _numbers(context: Any, scene_id: int, shape: str) -> tuple[list[int], str]:
+    values, text = context.ocr_numbers_in_shapes(scene_id, (shape,), padding=12)
     return [int(value) for value in values], str(text or "")
 
 
@@ -213,6 +214,27 @@ def exchange_row_action_x(list_box: Mapping[str, Any]) -> float:
 
 
 class XianshiExchangeTaskMixin:
+    def _read_common_shop_dialog(self, *, label: str, stage: str) -> dict[str, Any]:
+        """Read one authoritative dialog snapshot and expose its real latency.
+
+        The long-lived Kernel owns the process-local UI binding cache, so this
+        call-site timing is the representative measurement.  A standalone
+        Python probe would cold-discover memory and materially overstate the
+        latency seen by the actual Job.
+        """
+
+        started = time.perf_counter()
+        snapshot = read_common_shop_buy_dialog_snapshot()
+        elapsed = time.perf_counter() - started
+        logger = getattr(self, "_log", None)
+        if callable(logger):
+            logger(
+                "detail",
+                f"{label}：CommonShop Runtime {stage} 耗时 {elapsed:.3f}s，"
+                f"complete={snapshot.get('complete') is True}",
+            )
+        return snapshot
+
     """Execute both exchanges with strict scene and OCR closed-loop checks."""
 
     def _record_xianshi_exchange_done(
@@ -229,30 +251,30 @@ class XianshiExchangeTaskMixin:
         )
         return next_time
 
-    def _open_xianshi_exchange_home(self, runtime: Any, home_scene: int, menu_shape: str, *, label: str):
-        # goto_view and wait_view both use the framework's inner recognition
+    def _open_xianshi_exchange_home(self, context: Any, home_scene: int, menu_shape: str, *, label: str):
+        # go_scene and wait_scene both use the framework's inner recognition
         # polling.  A transient unknown is never treated as permission to click.
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_view(34, timeout=10.0, label=f"{label}：稳定确认世界 #34")
-        yield from runtime.click_shape_center_then_view(
+        yield from context.go_scene(34)
+        yield from context.wait_scene(34, wait=10.0, label=f"{label}：稳定确认世界 #34")
+        yield from context.click_shape_center_then_scene(
             34, "仙市", 247, timeout=15.0, label=f"{label}：进入仙市 #247"
         )
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             247, menu_shape, home_scene, timeout=15.0, label=f"{label}：进入{menu_shape}"
         )
 
-    def _select_exchange_candidate(self, runtime: Any, home_scene: int, detail_scene: int, row: Mapping[str, Any], *, label: str):
+    def _select_exchange_candidate(self, context: Any, home_scene: int, detail_scene: int, row: Mapping[str, Any], *, label: str):
         book = dict(row["book"])
         category = str(book.get("filter_category") or "")
         if category not in _CATEGORY_TABS:
             raise RuntimeError(f"{label}：功法 {book.get('name')} 的分类 {category!r} 不可导航")
-        runtime.click_shape_center(home_scene, category)
-        yield from runtime.wait_action_settle(0.8)
+        context.click_shape_center(home_scene, category)
+        yield from context.wait_action_settle(0.8)
 
         raw_name = str(row.get("name") or book.get("name") or "").strip()
         clean_name = re.sub(r"^(?:悟|心法)[·・]?", "", raw_name).strip()
         targets = tuple(dict.fromkeys(filter(None, (raw_name, raw_name.replace("·", ""), clean_name))))
-        match = yield from runtime.wait_ocr_any_text(
+        match = yield from context.wait_ocr_any_text(
             home_scene,
             targets,
             in_shapes=("商品列表",),
@@ -268,25 +290,25 @@ class XianshiExchangeTaskMixin:
             raise TimeoutError(f"{label}：商品列表未找到 {raw_name}")
         x, y = match.point(anchor="center")
         if detail_scene == LANGYAGE_DETAIL_SCENE:
-            list_shape = runtime.view(home_scene).get_shape("商品列表")
+            list_shape = context.view(home_scene).get_shape("商品列表")
             if list_shape is None:
                 raise RuntimeError(f"{label}：缺少 #{home_scene}「商品列表」Shape")
             # The title/icon area opens generic item information (#316).  The
             # right side of the same formal row is the exchange action surface.
             # OCR selects only the row y; the asset container supplies x.
             x = exchange_row_action_x(list_shape.box())
-        runtime.click_frame_point(home_scene, x, y)
-        yield from runtime.wait_action_settle(1.0)
+        context.click_frame_point(home_scene, x, y)
+        yield from context.wait_action_settle(1.0)
         if detail_scene == LANGYAGE_DETAIL_SCENE:
             predicate = lambda text: (
                     is_langyage_detail_text(text)
                     or is_langyage_product_detail_text(text, raw_name)
                 )
-            matched = yield from runtime.wait_any(
+            matched = yield from context.wait_any(
                 {
-                    "legacy_detail": runtime.view_visible(detail_scene),
-                    "common_shop_detail": runtime.view_visible(COMMON_SHOP_DETAIL_SCENE),
-                    "legacy_detail_text": runtime.ocr_matches(
+                    "legacy_detail": context.scene_visible(detail_scene),
+                    "common_shop_detail": context.scene_visible(COMMON_SHOP_DETAIL_SCENE),
+                    "legacy_detail_text": context.ocr_matches(
                         predicate,
                         label=f"{label}：等待商品详情 #{detail_scene} OCR",
                     ),
@@ -298,29 +320,39 @@ class XianshiExchangeTaskMixin:
                 return COMMON_SHOP_DETAIL_SCENE
             return detail_scene
         else:
-            yield from runtime.wait_view(
+            yield from context.wait_scene(
                 detail_scene,
-                timeout=15.0,
+                wait=15.0,
                 label=f"{label}：等待商品详情 #{detail_scene}",
             )
             return detail_scene
 
     def _buy_exchange_quantity(
         self,
-        runtime: Any,
+        context: Any,
         *,
         home_scene: int,
         detail_scene: int,
         quantity: int,
         unit_price: int,
         label: str,
+        initial_snapshot: Mapping[str, Any] | None = None,
     ):
         # The red quantity glyph is not a reliable OCR source.  The active
         # CommonShop dialog exposes showNum directly; GUI clicks only move that
         # value, and every batch is followed by a fresh authoritative read.
-        snapshot: dict[str, Any] = {}
+        # The caller has just read the active dialog to verify product price
+        # and currency.  Reuse that same immutable observation for the first
+        # quantity decision; no GUI action occurs between the two functions.
+        # Every click batch and the final high-risk exchange still receive a
+        # fresh Runtime read, so safety evidence is not weakened.
+        snapshot: dict[str, Any] = dict(initial_snapshot or {})
         for _attempt in range(12):
-            snapshot = read_common_shop_buy_dialog_snapshot()
+            if _attempt > 0 or not snapshot:
+                snapshot = self._read_common_shop_dialog(
+                    label=label,
+                    stage=f"数量复核{_attempt + 1}",
+                )
             if snapshot.get("complete") is not True:
                 raise RuntimeError(
                     f"{label}：CommonShop 购买框运行态不完整：{snapshot.get('reason') or snapshot!r}"
@@ -332,20 +364,20 @@ class XianshiExchangeTaskMixin:
             coarse, fine = divmod(abs(delta), 10)
             coarse_shape, fine_shape = (("+10", "+") if delta > 0 else ("-10", "-"))
             for _ in range(coarse):
-                runtime.click_shape_center(detail_scene, coarse_shape)
-                yield from runtime.wait_action_settle(0.5)
+                context.click_shape_center(detail_scene, coarse_shape)
+                yield from context.wait_action_settle(0.5)
             for _ in range(fine):
-                runtime.click_shape_center(detail_scene, fine_shape)
-                yield from runtime.wait_action_settle(0.5)
+                context.click_shape_center(detail_scene, fine_shape)
+                yield from context.wait_action_settle(0.5)
         else:
             raise RuntimeError(f"{label}：数量配置未在动作上限内收敛到 {quantity}")
 
-        snapshot = read_common_shop_buy_dialog_snapshot()
+        snapshot = self._read_common_shop_dialog(label=label, stage="兑换前最终复核")
         owned = validate_common_shop_dialog(snapshot, quantity=quantity, unit_price=unit_price)
         expected_price = quantity * unit_price
         exchange_shape = "兑换（高风险）" if int(detail_scene) == COMMON_SHOP_DETAIL_SCENE else "兑换"
 
-        yield from runtime.click_shape_center_then_view(
+        yield from context.click_shape_center_then_scene(
             detail_scene,
             exchange_shape,
             home_scene,
@@ -355,10 +387,10 @@ class XianshiExchangeTaskMixin:
         )
         return owned - expected_price
 
-    def _return_xianshi_exchange_to_world(self, runtime: Any, home_scene: int, *, label: str):
-        yield from runtime.wait_click_then_view(home_scene, "仙市", 247, timeout=15.0, label=f"{label}：返回仙市")
-        yield from runtime.wait_click_then_view(247, "返回", 34, timeout=15.0, label=f"{label}：返回世界")
-        yield from runtime.wait_view(34, timeout=10.0, label=f"{label}：稳定确认完成场景 #34")
+    def _return_xianshi_exchange_to_world(self, context: Any, home_scene: int, *, label: str):
+        yield from context.wait_click_then_scene(home_scene, "仙市", 247, timeout=15.0, label=f"{label}：返回仙市")
+        yield from context.wait_click_then_scene(247, "返回", 34, timeout=15.0, label=f"{label}：返回世界")
+        yield from context.wait_scene(34, wait=10.0, label=f"{label}：稳定确认完成场景 #34")
 
     def _execute_xianshi_exchange_task(
         self,
@@ -379,7 +411,7 @@ class XianshiExchangeTaskMixin:
         detail_scene = ZHENWUGE_DETAIL_SCENE if mode == "zhenwuge" else LANGYAGE_DETAIL_SCENE
         menu_shape = "真悟阁" if mode == "zhenwuge" else "琅琊阁"
         task_id = "xianshi-zhenwuge" if mode == "zhenwuge" else "xianshi-langya-rankings"
-        runtime = self._fanxiu_runtime(ctx, ctx["asset_tree_path"], stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, ctx["asset_tree_path"], stop_event=stop_event)
 
         atlas = read_gongfa_atlas_runtime()
         shop = read_exchange_shop_runtime()
@@ -404,7 +436,7 @@ class XianshiExchangeTaskMixin:
             )
             candidates = plan_zhenwuge_candidates(books, items)
 
-        yield from self._open_xianshi_exchange_home(runtime, home_scene, menu_shape, label=label)
+        yield from self._open_xianshi_exchange_home(context, home_scene, menu_shape, label=label)
         currency_remaining: dict[int, int] = {
             item_id: max(0, int(backpack_counts.get(item_id, 0)))
             for item_id in currency_ids
@@ -416,9 +448,12 @@ class XianshiExchangeTaskMixin:
             if currency_remaining.get(cost_item_id, 0) < unit_price:
                 continue
             active_detail_scene = yield from self._select_exchange_candidate(
-                runtime, home_scene, detail_scene, row, label=label
+                context, home_scene, detail_scene, row, label=label
             )
-            dialog = read_common_shop_buy_dialog_snapshot()
+            dialog = self._read_common_shop_dialog(
+                label=f"{label}/{row.get('name')}",
+                stage="商品详情初读",
+            )
             if dialog.get("complete") is not True:
                 raise RuntimeError(
                     f"{label}：CommonShop 购买框运行态不完整：{dialog.get('reason') or dialog!r}"
@@ -434,12 +469,13 @@ class XianshiExchangeTaskMixin:
             if quantity <= 0:
                 raise RuntimeError(f"{label}：进入详情后资源不足，前置背包读数与弹窗不一致")
             remaining = yield from self._buy_exchange_quantity(
-                runtime,
+                context,
                 home_scene=home_scene,
                 detail_scene=active_detail_scene,
                 quantity=quantity,
                 unit_price=unit_price,
                 label=f"{label}/{row.get('name')}",
+                initial_snapshot=dialog,
             )
             currency_remaining[cost_item_id] = remaining
             purchases.append({
@@ -450,7 +486,7 @@ class XianshiExchangeTaskMixin:
                 "cost_item_id": cost_item_id,
             })
 
-        yield from self._return_xianshi_exchange_to_world(runtime, home_scene, label=label)
+        yield from self._return_xianshi_exchange_to_world(context, home_scene, label=label)
         next_time = self._record_xianshi_exchange_done(payload, default_task_id=task_id)
         self._log("success", f"{label}：兑换 {len(purchases)} 种并返回 #34，下次 {next_time}")
         return {

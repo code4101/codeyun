@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
-    BehaviorTreeRuntime,
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
+    BehaviorTreeContext,
     FloatingItemInstance,
 )
 from pyxllib.autogui import Shape, View
@@ -31,7 +31,7 @@ def _geometry_fixture(*, item_y: float):
         anchor_box={"x": 25.0, "y": item_y + 5.0, "w": 30.0, "h": 10.0},
         item_box={"x": 20.0, "y": item_y, "w": 40.0, "h": 20.0},
     )
-    runtime = object.__new__(BehaviorTreeRuntime)
+    runtime = object.__new__(BehaviorTreeContext)
     return runtime, item, field, container
 
 

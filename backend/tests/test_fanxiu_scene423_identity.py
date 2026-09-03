@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from scripts.fanxiu_scene423_identity import IDENTITY_SPEC, refine_scene423_identity, validate_scene423_identity
 
 
@@ -54,7 +54,7 @@ def test_scene423_refinement_is_idempotent() -> None:
 
 def test_default_layer2_generic_continue_frame_no_longer_matches_scene423(monkeypatch) -> None:
     tree, _ = refine_scene423_identity(_tree())
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     ctx = {"asset_tree": tree, "images": runner._index_images(tree)}
 
     def match_shape(_ctx, _image, shape, frame, *, condition=None, **_kwargs):
@@ -64,8 +64,11 @@ def test_default_layer2_generic_continue_frame_no_longer_matches_scene423(monkey
     monkeypatch.setattr(runner, "_match_shape", match_shape)
     monkeypatch.setattr(runner, "_scene_discriminator_adjusted_score", lambda _ctx, _image, _frame, score: score)
 
-    assert runner._identify_scene_number_by_graph(ctx, "点击屏幕继续") == (None, 0.0, "no_match")
-    assert runner._identify_scene_number_by_graph(ctx, "仙宴圆满结束 点击屏幕继续") == (423, 100.0, "matched")
+    miss = runner._identify_scene_number_by_graph(ctx, "点击屏幕继续")
+    match = runner._identify_scene_number_by_graph(ctx, "仙宴圆满结束 点击屏幕继续")
+
+    assert (miss.scene_id, miss.score, miss.status, miss.matched_layer) == (None, 0.0, "no_match", None)
+    assert (match.scene_id, match.score, match.status, match.matched_layer) == (423, 100.0, "matched", 2)
 
 
 def test_scene423_identity_is_specific_against_scene659_and_other_generic_results() -> None:

@@ -290,12 +290,12 @@ def verify_spirit_stone_direct_use_delta(
 
 
 def _default_click_planner(
-    runtime: Any,
+    context: Any,
     snapshot: Mapping[str, Any],
     request: StorageBagDirectUseRequest,
 ) -> StorageBagItemClickPlan:
     return plan_current_random_box_click(
-        runtime,
+        context,
         snapshot,
         StorageBagRandomBoxRequest(
             request.base_id,
@@ -312,7 +312,7 @@ class StorageBagSpiritStoneGuiAdapter:
     def __init__(
         self,
         *,
-        runtime: Any,
+        context: Any,
         snapshot_reader: SnapshotReader,
         wallet_snapshot_reader: WalletSnapshotReader,
         click_planner: ClickPlanner = _default_click_planner,
@@ -322,7 +322,7 @@ class StorageBagSpiritStoneGuiAdapter:
         max_scrolls: int = 12,
         after_snapshot_retries: int = 5,
     ) -> None:
-        self.runtime = runtime
+        self.context = context
         self.snapshot_reader = snapshot_reader
         self.wallet_snapshot_reader = wallet_snapshot_reader
         self.click_planner = click_planner
@@ -335,7 +335,7 @@ class StorageBagSpiritStoneGuiAdapter:
         )
 
     def _ocr(self, scene: int, shape: str, frame: str) -> list[Mapping[str, Any]]:
-        return self.runtime.ocr_tokens_in_shapes(
+        return self.context.ocr_tokens_in_shapes(
             scene,
             (shape,),
             padding=6,
@@ -363,7 +363,7 @@ class StorageBagSpiritStoneGuiAdapter:
         retry_count = 0
         scroll_count = 0
         while True:
-            plan = self.click_planner(self.runtime, before, request)
+            plan = self.click_planner(self.context, before, request)
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:
@@ -372,7 +372,7 @@ class StorageBagSpiritStoneGuiAdapter:
                         f"#525 对齐有限重试后仍不唯一：{plan.status}；{plan.reason}"
                     )
                 retry_count += 1
-                yield from self.runtime.wait_action_settle(0.2)
+                yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
                 if scroll_count >= self.max_scrolls:
@@ -391,7 +391,7 @@ class StorageBagSpiritStoneGuiAdapter:
                 )
                 if directive.direction == "none":
                     raise StorageBagDirectUseBlocked("#525 滚动规划与不可见判定矛盾")
-                self.runtime.drag_shape_content(
+                self.context.drag_shape_content(
                     STORAGE_BAG_SCENE,
                     "窗口",
                     direction=directive.direction,
@@ -400,7 +400,7 @@ class StorageBagSpiritStoneGuiAdapter:
                 )
                 scroll_count += 1
                 retry_count = 0
-                yield from self.runtime.wait_action_settle(0.25)
+                yield from self.context.wait_action_settle(0.25)
                 continue
             raise StorageBagDirectUseBlocked(
                 f"#525 灵石定位失败：{plan.status}；{plan.reason}"
@@ -447,13 +447,13 @@ class StorageBagSpiritStoneGuiAdapter:
             max_age_seconds=self.max_wallet_age_seconds,
         )
 
-        self.runtime.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
-        yield from self.runtime.wait_view(
+        self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
+        yield from self.context.wait_scene(
             DIRECT_ITEM_DETAIL_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋灵石：等待 #610 普通物品详情",
         )
-        detail_frame = self.runtime.cur_frame(update=True)
+        detail_frame = self.context.cur_frame(update=True)
         detail = verify_storage_bag_item_detail(
             plan,
             expected_name=request.name,
@@ -469,17 +469,17 @@ class StorageBagSpiritStoneGuiAdapter:
                 "#610 物品标题或持有数量与 Runtime 灵石实例不一致"
             )
 
-        yield from self.runtime.wait_click(
+        yield from self.context.wait_click(
             DIRECT_ITEM_DETAIL_SCENE,
             "使用（高风险）",
             timeout=8.0,
         )
-        yield from self.runtime.wait_view(
+        yield from self.context.wait_scene(
             USE_QUANTITY_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋灵石：等待 #584 数量确认",
         )
-        quantity_frame = self.runtime.cur_frame(update=True)
+        quantity_frame = self.context.cur_frame(update=True)
         quantity_detail = verify_storage_bag_item_detail(
             plan,
             expected_name=request.name,
@@ -492,7 +492,7 @@ class StorageBagSpiritStoneGuiAdapter:
             label="持有数量",
         )
         current_quantity = read_confirmed_use_quantity(
-            self.runtime, quantity_frame
+            self.context, quantity_frame
         )
         if (
             not quantity_detail.confirmed
@@ -503,19 +503,19 @@ class StorageBagSpiritStoneGuiAdapter:
                 "#584 物品标题、持有数量或当前数量与 Runtime 灵石实例不一致"
             )
 
-        yield from self.runtime.wait_click(
+        yield from self.context.wait_click(
             USE_QUANTITY_SCENE, "使用", timeout=8.0
         )
-        landed = yield from self.runtime.wait_view(
+        landed = yield from self.context.wait_scene(
             STORAGE_BAG_SCENE,
             TRANSIENT_REWARD_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋灵石：等待结果或回到 #525",
         )
         if _view_id(landed) == TRANSIENT_REWARD_SCENE:
-            yield from self.runtime.wait_view(
+            yield from self.context.wait_scene(
                 STORAGE_BAG_SCENE,
-                timeout=8.0,
+                wait=8.0,
                 label="储物袋灵石：等待短暂结果层返回 #525",
             )
         elif _view_id(landed) != STORAGE_BAG_SCENE:
@@ -546,7 +546,7 @@ class StorageBagSpiritStoneGuiAdapter:
             except StorageBagDirectUseBlocked as exc:
                 last_error = exc
                 if attempt + 1 < self.after_snapshot_retries:
-                    yield from self.runtime.wait_action_settle(0.2)
+                    yield from self.context.wait_action_settle(0.2)
                     continue
                 break
             return StorageBagDirectUseExecution(

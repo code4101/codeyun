@@ -34,7 +34,7 @@ def resolve_wechat_db_storage_root() -> Path:
     env_path = (os.environ.get("CODEYUN_WECHAT_DB_STORAGE") or "").strip()
     if env_path:
         return Path(env_path).expanduser()
-    legacy_path = Path(r"D:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
+    legacy_path = Path(r"C:\home\chenkunze\data\d2605微信逆向\decrypted\db_storage")
     if legacy_path.exists():
         return legacy_path
     return get_settings().data_dir / "wechat_db" / "decrypted" / "db_storage"

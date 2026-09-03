@@ -65,18 +65,17 @@ from backend.core.attendance.behavior_tree_service import (
     start_attendance_behavior_tree_service,
     stop_attendance_behavior_tree_service,
 )
-from backend.core.fanxiu.behavior_tree.runtime import (
-    ensure_fanxiu_behavior_tree_service,
-    fanxiu_behavior_tree_runtime_dir,
-    fanxiu_behavior_tree_runtime_status,
-    fanxiu_behavior_tree_runtime_state_path,
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
+    ensure_fanxiu_kernel_scheduler_service,
+    fanxiu_kernel_scheduler_status,
+    fanxiu_kernel_execution_state_path,
     fanxiu_data_annotation_world_facts_path,
     resolve_fanxiu_entry,
     stop_fanxiu_behavior_tree_current_task,
 )
 from backend.core.fanxiu.behavior_tree.jupyter_kernel import fanxiu_kernel_manager_status
 from backend.core.fanxiu.behavior_tree.kernel import FanxiuKernel
-from backend.core.fanxiu.data_annotation.behavior_tree_control import ensure_doctor_watch_background, read_doctor_watch_latest
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import ensure_doctor_watch_background, read_doctor_watch_latest
 from backend.core.jobs.models import job_policy_payload
 from backend.core.services.policy import (
     command_service_group,
@@ -88,7 +87,7 @@ from backend.core.settings import get_settings
 from backend.models import Task as TaskModel, UserDevice
 
 BUILTIN_OCR_SERVICE_KEY = "ocr"
-FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
+FANXIU_KERNEL_SCHEDULER_SERVICE_KEY = "fanxiu-kernel-scheduler"
 _BUILTIN_SERVICES_STATUS_CACHE_TTL_SECONDS = 30.0
 _builtin_services_status_cache: tuple[float, tuple[bool, bool, bool], dict[str, Any]] | None = None
 _builtin_services_status_refresh_lock = threading.Lock()
@@ -98,8 +97,8 @@ _builtin_jobs_status_cache: tuple[float, dict[str, Any]] | None = None
 _builtin_jobs_status_refresh_lock = threading.Lock()
 _builtin_jobs_status_refreshing = False
 _ATTENDANCE_BEHAVIOR_TREE_HOST_HINT = "考勤行为树只在 codepc_mf 执行主机上管理"
-_FANXIU_BEHAVIOR_TREE_HOST_HINT = "凡修行为树未在当前机器启用；当前正式运行目标默认是 codepc_mf"
-_DEFAULT_FANXIU_BEHAVIOR_TREE_HOSTS = {"codepc_mf", "mf"}
+_FANXIU_KERNEL_SCHEDULER_HOST_HINT = "凡修 Kernel 调度器未在当前机器启用；当前正式运行目标默认是 codepc_mf"
+_DEFAULT_FANXIU_KERNEL_SCHEDULER_HOSTS = {"codepc_mf", "mf"}
 
 
 def _invalidate_builtin_services_status_cache() -> None:
@@ -118,7 +117,7 @@ def _env_enabled(value: str | None) -> bool | None:
     return value.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
-def _fanxiu_runtime_service_enabled(
+def _service_enabled_from_environment(
     service_key: str,
     aliases: set[str],
     env_name: str,
@@ -137,25 +136,25 @@ def _fanxiu_runtime_service_enabled(
 
 
 def _fanxiu_game_window_service_enabled() -> bool:
-    return _fanxiu_runtime_service_enabled(
+    return _service_enabled_from_environment(
         GAME_WINDOW_SERVICE_KEY,
         {"fanxiu_game_window", "game_window", "screen", "stream", "凡修画面流", "凡修游戏画面流"},
         "FX_GAME_WINDOW_SERVICE_ENABLED",
     )
 
 
-def is_fanxiu_behavior_tree_service_enabled() -> bool:
-    return _fanxiu_runtime_service_enabled(
-        FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
-        {"fanxiu_behavior_tree", "behavior_tree", "runtime", "scheduler", "凡修行为树"},
+def is_fanxiu_kernel_scheduler_service_enabled() -> bool:
+    return _service_enabled_from_environment(
+        FANXIU_KERNEL_SCHEDULER_SERVICE_KEY,
+        {"fanxiu_behavior_tree", "behavior_tree", "kernel_scheduler", "scheduler", "凡修 Kernel 调度器"},
         "FX_BEHAVIOR_TREE_SERVICE_ENABLED",
         default=socket.gethostname().replace("-", "_").split(".", 1)[0].strip().lower()
-        in _DEFAULT_FANXIU_BEHAVIOR_TREE_HOSTS,
+        in _DEFAULT_FANXIU_KERNEL_SCHEDULER_HOSTS,
     )
 
 
-def _fanxiu_behavior_tree_service_enabled() -> bool:
-    return is_fanxiu_behavior_tree_service_enabled()
+def _fanxiu_kernel_scheduler_service_enabled() -> bool:
+    return is_fanxiu_kernel_scheduler_service_enabled()
 
 
 def _model_dump(value: Any) -> dict[str, Any]:
@@ -309,7 +308,7 @@ def _format_record_duration(record: dict[str, Any]) -> str:
     return f"{hours}小时{minutes}分" if minutes else f"{hours}小时"
 
 
-def _runtime_status_label(status: Any) -> str:
+def _execution_status_label(status: Any) -> str:
     value = str(status or "").lower()
     return {
         "pending": "等待",
@@ -321,7 +320,7 @@ def _runtime_status_label(status: Any) -> str:
 
 
 def _format_runtime_record_line(record: dict[str, Any]) -> str:
-    status_label = _runtime_status_label(record.get("status"))
+    status_label = _execution_status_label(record.get("status"))
     duration = _format_record_duration(record)
     suffix = f" · {duration}" if duration else ""
     return f"{_format_record_time(record)} · {status_label}{suffix}"
@@ -348,7 +347,7 @@ def _build_builtin_runtime_log_lines(item: dict[str, Any], records: list[dict[st
             lines.append(f"- 阶段：{stage}")
         status = latest_run.get("status")
         if status:
-            lines.append(f"- 状态：{_runtime_status_label(status)}")
+            lines.append(f"- 状态：{_execution_status_label(status)}")
         for label, key in (
             ("创建", "created_at"),
             ("开始", "started_at"),
@@ -723,38 +722,33 @@ def _read_json_file(path: Path, default: Any) -> Any:
         return default
 
 
-def _data_annotation_runtime_dir() -> Path:
-    return fanxiu_behavior_tree_runtime_dir()
-
-
-def _get_data_annotation_behavior_tree_status() -> dict[str, Any]:
-    runtime_dir = _data_annotation_runtime_dir()
+def _get_fanxiu_kernel_scheduler_status() -> dict[str, Any]:
     live_status: dict[str, Any] = {}
     try:
-        live_status = fanxiu_behavior_tree_runtime_status()
+        live_status = fanxiu_kernel_scheduler_status()
     except Exception as exc:
         live_status = {"last_error": str(exc)}
-    runtime_state = live_status or _read_json_file(fanxiu_behavior_tree_runtime_state_path(), {})
+    execution_state = live_status or _read_json_file(fanxiu_kernel_execution_state_path(), {})
     world_facts = _read_json_file(fanxiu_data_annotation_world_facts_path(), {})
-    if not isinstance(runtime_state, dict):
-        runtime_state = {}
+    if not isinstance(execution_state, dict):
+        execution_state = {}
     if not isinstance(world_facts, dict):
         world_facts = {}
-    facts_runtime = world_facts.get("runtime") if isinstance(world_facts.get("runtime"), dict) else {}
+    facts_context = world_facts.get("context") if isinstance(world_facts.get("context"), dict) else {}
     facts_guard = world_facts.get("guard") if isinstance(world_facts.get("guard"), dict) else {}
 
-    current_scene = runtime_state.get("current_scene", facts_runtime.get("current_scene"))
-    current_task = runtime_state.get("current_task") or facts_runtime.get("current_task") or ""
-    phase = runtime_state.get("phase") or facts_runtime.get("phase") or ""
-    message = runtime_state.get("message") or facts_runtime.get("message") or ""
-    entry_id = runtime_state.get("entry_id") or facts_runtime.get("entry_id") or ""
-    guard_entry_id = runtime_state.get("guard_entry_id") or facts_guard.get("entry_id") or ""
+    current_scene = execution_state.get("current_scene", facts_context.get("current_scene"))
+    current_task = execution_state.get("current_task") or facts_context.get("current_task") or ""
+    phase = execution_state.get("phase") or facts_context.get("phase") or ""
+    message = execution_state.get("message") or facts_context.get("message") or ""
+    entry_id = execution_state.get("entry_id") or facts_context.get("entry_id") or ""
+    guard_entry_id = execution_state.get("guard_entry_id") or facts_guard.get("entry_id") or ""
     guard_enabled = bool(facts_guard.get("enabled"))
     guard_running = bool(facts_guard.get("running"))
-    service_running = bool(runtime_state.get("service_running") or facts_runtime.get("service_running"))
-    task_running = bool(runtime_state.get("running") or facts_runtime.get("running"))
+    service_running = bool(execution_state.get("service_running") or facts_context.get("service_running"))
+    task_running = bool(execution_state.get("running") or facts_context.get("running"))
     running = service_running
-    raw_status = str(runtime_state.get("status") or facts_runtime.get("status") or "")
+    raw_status = str(execution_state.get("status") or facts_context.get("status") or "")
     if raw_status == "error":
         state = "error"
         state_label = "错误"
@@ -771,8 +765,8 @@ def _get_data_annotation_behavior_tree_status() -> dict[str, Any]:
         state = "idle"
         state_label = "空闲"
     return {
-        "key": FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
-        "title": "凡修行为树",
+        "key": FANXIU_KERNEL_SCHEDULER_SERVICE_KEY,
+        "title": "凡修 Kernel 调度器",
         "running": running,
         "state": state,
         "state_label": state_label,
@@ -786,31 +780,31 @@ def _get_data_annotation_behavior_tree_status() -> dict[str, Any]:
         "guard_running": guard_running,
         "service_running": service_running,
         "task_running": task_running,
-        "updated_at": runtime_state.get("updated_at") or facts_runtime.get("updated_at") or world_facts.get("updated_at"),
-        "runtime_state_path": os.fspath(fanxiu_behavior_tree_runtime_state_path()),
+        "updated_at": execution_state.get("updated_at") or facts_context.get("updated_at") or world_facts.get("updated_at"),
+        "execution_state_path": os.fspath(fanxiu_kernel_execution_state_path()),
         "world_facts_path": os.fspath(fanxiu_data_annotation_world_facts_path()),
-        "route_path": "/fanxiu/data-annotation/runtime",
-        "logs": runtime_state.get("logs") if isinstance(runtime_state.get("logs"), list) else [],
+        "route_path": "/fanxiu/kernel-scheduler",
+        "logs": execution_state.get("logs") if isinstance(execution_state.get("logs"), list) else [],
     }
 
 
-def _resolve_data_annotation_runtime_entry(session: Session) -> UserDevice:
-    status = _get_data_annotation_behavior_tree_status()
+def _resolve_kernel_scheduler_entry(session: Session) -> UserDevice:
+    status = _get_fanxiu_kernel_scheduler_status()
     entry_candidates = [
         status.get("entry_id"),
         status.get("guard_entry_id"),
     ]
-    runtime_state = _read_json_file(fanxiu_behavior_tree_runtime_state_path(), {})
-    if isinstance(runtime_state, dict):
+    execution_state = _read_json_file(fanxiu_kernel_execution_state_path(), {})
+    if isinstance(execution_state, dict):
         entry_candidates.extend([
-            runtime_state.get("entry_id"),
-            runtime_state.get("guard_entry_id"),
+            execution_state.get("entry_id"),
+            execution_state.get("guard_entry_id"),
         ])
     world_facts = _read_json_file(fanxiu_data_annotation_world_facts_path(), {})
     if isinstance(world_facts, dict):
-        runtime = world_facts.get("runtime") if isinstance(world_facts.get("runtime"), dict) else {}
+        context = world_facts.get("context") if isinstance(world_facts.get("context"), dict) else {}
         guard = world_facts.get("guard") if isinstance(world_facts.get("guard"), dict) else {}
-        entry_candidates.extend([runtime.get("entry_id"), guard.get("entry_id")])
+        entry_candidates.extend([context.get("entry_id"), guard.get("entry_id")])
 
     for entry_id in entry_candidates:
         if not entry_id:
@@ -828,13 +822,13 @@ def _resolve_data_annotation_runtime_entry(session: Session) -> UserDevice:
     entry = session.exec(stmt).first()
     if entry is not None:
         return entry
-    raise HTTPException(status_code=404, detail="未找到可用于凡修行为树的本地设备入口")
+    raise HTTPException(status_code=404, detail="未找到可用于凡修 Kernel 调度器的本地设备入口")
 
 
-def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, Any]:
-    entry = _resolve_data_annotation_runtime_entry(session)
-    ensure_fanxiu_behavior_tree_service(entry=entry, entry_id=entry.entry_id)
-    result: dict[str, Any] = {"status": "started", "service": _get_data_annotation_behavior_tree_status()}
+def ensure_fanxiu_kernel_scheduler_managed_service(session: Session) -> dict[str, Any]:
+    entry = _resolve_kernel_scheduler_entry(session)
+    ensure_fanxiu_kernel_scheduler_service(entry=entry, entry_id=entry.entry_id)
+    result: dict[str, Any] = {"status": "started", "service": _get_fanxiu_kernel_scheduler_status()}
     if _fanxiu_doctor_watch_autostart_enabled():
         try:
             result["doctor_watch"] = ensure_doctor_watch_background()
@@ -843,11 +837,11 @@ def ensure_data_annotation_behavior_tree_service(session: Session) -> dict[str, 
     return result
 
 
-def ensure_data_annotation_behavior_tree_service_on_startup() -> dict[str, Any] | None:
-    if not _fanxiu_behavior_tree_service_enabled():
+def ensure_fanxiu_kernel_scheduler_service_on_startup() -> dict[str, Any] | None:
+    if not _fanxiu_kernel_scheduler_service_enabled():
         return None
     with Session(engine) as session:
-        return ensure_data_annotation_behavior_tree_service(session)
+        return ensure_fanxiu_kernel_scheduler_managed_service(session)
 
 
 def _fanxiu_doctor_watch_autostart_enabled() -> bool:
@@ -895,7 +889,7 @@ def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
     return results
 
 
-def warm_runtime_status_caches_on_startup() -> dict[str, Any]:
+def warm_execution_status_caches_on_startup() -> dict[str, Any]:
     results: dict[str, Any] = {}
     try:
         task_manager.scan_running_tasks()
@@ -919,16 +913,16 @@ def warm_runtime_status_caches_on_startup() -> dict[str, Any]:
     return results
 
 
-def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, Any]:
+def start_fanxiu_kernel_scheduler_managed_service(*, replace_existing: bool = True) -> dict[str, Any]:
     del replace_existing
     with Session(engine) as session:
-        return ensure_data_annotation_behavior_tree_service(session)
+        return ensure_fanxiu_kernel_scheduler_managed_service(session)
 
 
-def stop_data_annotation_behavior_tree_current_task(session: Session) -> dict[str, Any]:
-    entry = _resolve_data_annotation_runtime_entry(session)
+def stop_fanxiu_kernel_scheduler_current_task(session: Session) -> dict[str, Any]:
+    entry = _resolve_kernel_scheduler_entry(session)
     stop_fanxiu_behavior_tree_current_task(entry.entry_id)
-    return {"status": "stopped", "service": _get_data_annotation_behavior_tree_status()}
+    return {"status": "stopped", "service": _get_fanxiu_kernel_scheduler_status()}
 
 
 def _serialize_fanxiu_task_cell_item(job: dict[str, Any]) -> dict[str, Any]:
@@ -960,7 +954,7 @@ def _summarize_doctor_watch_latest(payload: dict[str, Any]) -> dict[str, Any]:
         "snapshot": {
             "checked_at": snapshot.get("checked_at"),
             "summary": snapshot.get("summary"),
-            "runtime": snapshot.get("runtime") if isinstance(snapshot.get("runtime"), dict) else {},
+            "execution": snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {},
             "maintenance": {
                 "severity": maintenance.get("severity"),
                 "summary": maintenance.get("summary"),
@@ -971,8 +965,8 @@ def _summarize_doctor_watch_latest(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def inspect_fanxiu_behavior_tree_service() -> dict[str, Any]:
-    status = _get_data_annotation_behavior_tree_status()
+def inspect_fanxiu_kernel_scheduler_service() -> dict[str, Any]:
+    status = _get_fanxiu_kernel_scheduler_status()
     return {
         "status": "ok",
         "service": status,
@@ -985,11 +979,11 @@ def restart_attendance_behavior_tree_service() -> dict[str, Any]:
     return start_attendance_behavior_tree_service(replace_existing=True)
 
 
-def wake_fanxiu_behavior_tree_service() -> dict[str, Any]:
-    status = _get_data_annotation_behavior_tree_status()
+def wake_fanxiu_kernel_scheduler_service() -> dict[str, Any]:
+    status = _get_fanxiu_kernel_scheduler_status()
     entry_id = str(status.get("entry_id") or status.get("guard_entry_id") or "")
-    request = ensure_fanxiu_behavior_tree_service(resolve_fanxiu_entry(entry_id), entry_id or None)
-    refreshed = _get_data_annotation_behavior_tree_status()
+    request = ensure_fanxiu_kernel_scheduler_service(resolve_fanxiu_entry(entry_id), entry_id or None)
+    refreshed = _get_fanxiu_kernel_scheduler_status()
     return {
         "status": "ok",
         "action": "wake",
@@ -998,12 +992,12 @@ def wake_fanxiu_behavior_tree_service() -> dict[str, Any]:
     }
 
 
-def restart_fanxiu_behavior_tree_service(*, timeout_seconds: float = 15.0, poll_seconds: float = 0.5) -> dict[str, Any]:
+def restart_fanxiu_kernel_scheduler_service(*, timeout_seconds: float = 15.0, poll_seconds: float = 0.5) -> dict[str, Any]:
     del poll_seconds
-    before = _get_data_annotation_behavior_tree_status()
+    before = _get_fanxiu_kernel_scheduler_status()
     entry_id = str(before.get("entry_id") or before.get("guard_entry_id") or "")
     restarted = FanxiuKernel(entry_id=entry_id).restart(timeout_seconds=max(1.0, float(timeout_seconds or 15.0)))
-    refreshed = _get_data_annotation_behavior_tree_status()
+    refreshed = _get_fanxiu_kernel_scheduler_status()
     return {
         "status": "ok",
         "action": "restart",
@@ -1012,7 +1006,7 @@ def restart_fanxiu_behavior_tree_service(*, timeout_seconds: float = 15.0, poll_
     }
 
 
-def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
+def _fanxiu_kernel_scheduler_description(status: dict[str, Any]) -> str:
     parts = [str(status.get("state_label") or "")]
     current_scene = status.get("current_scene")
     if current_scene is not None:
@@ -1028,7 +1022,7 @@ def _fanxiu_behavior_tree_description(status: dict[str, Any]) -> str:
     return " · ".join(part for part in parts if part)
 
 
-def _fanxiu_behavior_tree_action_metadata() -> dict[str, dict[str, str]]:
+def _fanxiu_kernel_scheduler_action_metadata() -> dict[str, dict[str, str]]:
     return {
         "labels": {
             "trigger": "确保 Kernel",
@@ -1040,49 +1034,49 @@ def _fanxiu_behavior_tree_action_metadata() -> dict[str, dict[str, str]]:
         "descriptions": {
             "trigger": "确保原生 Jupyter Kernel 存活并已加载凡修框架。",
             "stop": "原生 interrupt 当前 Cell，保留 Kernel namespace。",
-            "inspect": "分别读取 Kernel、Runtime、Scheduler 和 doctor 摘要。",
+            "inspect": "分别读取 Kernel、行为树执行、Scheduler 和 doctor 摘要。",
             "restart": "原生 restart Kernel，清空 namespace 并重新加载凡修框架。",
             "wake": "确保 Kernel 存活；Scheduler 仍在 Kernel 外部。",
         },
         "success_messages": {
-            "trigger": "已确保凡修行为树常驻服务",
+            "trigger": "已确保凡修 Kernel 调度器常驻服务",
             "stop": "已请求停止凡修当前任务",
             "inspect": "已刷新运行诊断",
-            "restart": "已重启凡修行为树",
+            "restart": "已重启凡修 Kernel 调度器",
             "wake": "已发送行为树唤醒请求",
         },
         "error_messages": {
-            "trigger": "确保凡修行为树失败",
+            "trigger": "确保凡修 Kernel 调度器失败",
             "stop": "停止凡修当前任务失败",
             "inspect": "刷新运行诊断失败",
-            "restart": "重启凡修行为树失败",
-            "wake": "唤醒凡修行为树失败",
+            "restart": "重启凡修 Kernel 调度器失败",
+            "wake": "唤醒凡修 Kernel 调度器失败",
         },
     }
 
 
-def _serialize_fanxiu_behavior_tree_service_item(
+def _serialize_fanxiu_kernel_scheduler_service_item(
     status: dict[str, Any] | None = None,
     *,
     include_logs: bool = False,
 ) -> dict[str, Any]:
-    payload = dict(status or _get_data_annotation_behavior_tree_status())
+    payload = dict(status or _get_fanxiu_kernel_scheduler_status())
     raw_payload = dict(payload)
     if not include_logs:
         raw_payload.pop("logs", None)
     running = bool(payload.get("running"))
     state = str(payload.get("state") or ("running" if running else "idle"))
-    action_metadata = _fanxiu_behavior_tree_action_metadata()
+    action_metadata = _fanxiu_kernel_scheduler_action_metadata()
     return {
-        "id": f"builtin:{FANXIU_BEHAVIOR_TREE_SERVICE_KEY}",
-        "key": FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
+        "id": f"builtin:{FANXIU_KERNEL_SCHEDULER_SERVICE_KEY}",
+        "key": FANXIU_KERNEL_SCHEDULER_SERVICE_KEY,
         "kind": "service",
         "source": "builtin",
         "group_id": "service:game",
         "group_title": "游戏服务",
-        "title": "凡修行为树",
-        "description": _fanxiu_behavior_tree_description(payload),
-        "command": "CodeYun backend /fanxiu/data-annotation/runtime",
+        "title": "凡修 Kernel 调度器",
+        "description": _fanxiu_kernel_scheduler_description(payload),
+        "command": "CodeYun backend /fanxiu/kernel-scheduler",
         "cwd": "",
         "schedule": "",
         "schedule_policy": None,
@@ -1104,7 +1098,7 @@ def _serialize_fanxiu_behavior_tree_service_item(
             "service_running": bool(payload.get("service_running")),
             "task_running": bool(payload.get("task_running")),
             "updated_at": payload.get("updated_at"),
-            "runtime_state_path": payload.get("runtime_state_path") or "",
+            "execution_state_path": payload.get("execution_state_path") or "",
             "world_facts_path": payload.get("world_facts_path") or "",
             "route_path": payload.get("route_path") or "",
             "last_error": payload.get("last_error") or "",
@@ -1120,7 +1114,7 @@ def _serialize_fanxiu_behavior_tree_service_item(
         "timeout_policy": "none",
         "timeout_seconds": None,
         "concurrency_scope": "unit",
-        "concurrency_key": FANXIU_BEHAVIOR_TREE_SERVICE_KEY,
+        "concurrency_key": FANXIU_KERNEL_SCHEDULER_SERVICE_KEY,
         "overlap_policy": "replace",
         "queue_key": None,
     }
@@ -1194,15 +1188,15 @@ def _serialize_game_window_service_item(status: dict[str, Any] | None = None) ->
 def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
     if item.get("key") == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         return build_attendance_behavior_tree_log_lines()
-    if item.get("key") == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
+    if item.get("key") == FANXIU_KERNEL_SCHEDULER_SERVICE_KEY:
         raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
         kernel = fanxiu_kernel_manager_status()
         doctor_watch = _summarize_doctor_watch_latest(read_doctor_watch_latest())
         lines = [
             f"名称：{item.get('title') or item.get('key')}",
             f"状态：{(item.get('status') or {}).get('state_label') or '-'}",
-            f"入口：{raw.get('route_path') or '/fanxiu/data-annotation/runtime'}",
-            f"Runtime 状态文件：{raw.get('runtime_state_path') or '-'}",
+            f"入口：{raw.get('route_path') or '/fanxiu/kernel-scheduler'}",
+            f"执行状态文件：{raw.get('execution_state_path') or '-'}",
             f"World Facts：{raw.get('world_facts_path') or '-'}",
             "动作语义：trigger=确保 Kernel 存活；stop=interrupt 当前 Cell；restart=原生重启 Kernel",
             f"Kernel：alive={bool(kernel.get('alive'))} pid={kernel.get('kernel_pid') or '-'} state={kernel.get('execution_state') or '-'}",
@@ -1305,8 +1299,8 @@ def _serialize_command_runtime_item(
     kind = "service"
     group_id, group_title = command_service_group(task)
     policy = resolve_service_policy(task)
-    runtime_status = status or task_manager.get_task_status(task.id)
-    status_payload = _model_dump(runtime_status)
+    execution_status = status or task_manager.get_task_status(task.id)
+    status_payload = _model_dump(execution_status)
     active = bool(status_payload.get("running"))
     next_run_at = _command_next_run_at(task)
     if next_run_at:
@@ -1452,7 +1446,7 @@ def _build_builtin_services_status(
     if enabled_signature[0]:
         items.append(_serialize_attendance_behavior_tree_service_item())
     if enabled_signature[1]:
-        items.append(_serialize_fanxiu_behavior_tree_service_item())
+        items.append(_serialize_fanxiu_kernel_scheduler_service_item())
     if enabled_signature[2]:
         items.append(_serialize_game_window_service_item())
     return {"items": items}
@@ -1503,7 +1497,7 @@ def _collect_builtin_services() -> dict[str, Any]:
     now = time.monotonic()
     enabled_signature = (
         is_attendance_behavior_tree_service_enabled(),
-        _fanxiu_behavior_tree_service_enabled(),
+        _fanxiu_kernel_scheduler_service_enabled(),
         _fanxiu_game_window_service_enabled(),
     )
     if _builtin_services_status_cache is not None:
@@ -1542,7 +1536,7 @@ def _compact_runtime_item_for_status_list(item: dict[str, Any]) -> dict[str, Any
     return compacted
 
 
-def build_runtime_status(session: Session, device_id: str | None = None) -> dict[str, Any]:
+def build_execution_status(session: Session, device_id: str | None = None) -> dict[str, Any]:
     target_device_id = device_id or get_device_id()
     local_device_id = get_device_id()
     runtime_device = device_manager.get_device(target_device_id)
@@ -1659,8 +1653,8 @@ def get_runtime_item_logs(
             (item for item in builtin_services.get("items", []) if item.get("key") == normalized_key),
             None,
         )
-        if service_item is not None and normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
-            service_item = _serialize_fanxiu_behavior_tree_service_item(include_logs=True)
+        if service_item is not None and normalized_key == FANXIU_KERNEL_SCHEDULER_SERVICE_KEY:
+            service_item = _serialize_fanxiu_kernel_scheduler_service_item(include_logs=True)
         if service_item is not None:
             return {
                 "source": "builtin",
@@ -1782,10 +1776,10 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             return start_attendance_behavior_tree_service(replace_existing=True)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
-        if not _fanxiu_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail=_FANXIU_BEHAVIOR_TREE_HOST_HINT)
-        return ensure_data_annotation_behavior_tree_service(session)
+    if normalized_key == FANXIU_KERNEL_SCHEDULER_SERVICE_KEY:
+        if not _fanxiu_kernel_scheduler_service_enabled():
+            raise HTTPException(status_code=404, detail=_FANXIU_KERNEL_SCHEDULER_HOST_HINT)
+        return ensure_fanxiu_kernel_scheduler_managed_service(session)
     return trigger_builtin_runtime_job(normalized_key, session)
 
 
@@ -1833,11 +1827,11 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         if not is_attendance_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail=_ATTENDANCE_BEHAVIOR_TREE_HOST_HINT)
         return stop_attendance_behavior_tree_service()
-    if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
-        if not _fanxiu_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail="凡修行为树未在当前机器启用")
+    if normalized_key == FANXIU_KERNEL_SCHEDULER_SERVICE_KEY:
+        if not _fanxiu_kernel_scheduler_service_enabled():
+            raise HTTPException(status_code=404, detail="凡修 Kernel 调度器未在当前机器启用")
         with Session(engine) as session:
-            return stop_data_annotation_behavior_tree_current_task(session)
+            return stop_fanxiu_kernel_scheduler_current_task(session)
     raise HTTPException(status_code=400, detail="该内置运行单元不支持停止")
 
 
@@ -1855,15 +1849,15 @@ def run_builtin_runtime_item_action(task_key: str, action_key: str) -> dict[str,
         if action == "reset":
             return reset_attendance_behavior_tree_state()
         raise HTTPException(status_code=400, detail="该运行单元不支持此动作")
-    if normalized_key == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
-        if not _fanxiu_behavior_tree_service_enabled():
-            raise HTTPException(status_code=404, detail=_FANXIU_BEHAVIOR_TREE_HOST_HINT)
+    if normalized_key == FANXIU_KERNEL_SCHEDULER_SERVICE_KEY:
+        if not _fanxiu_kernel_scheduler_service_enabled():
+            raise HTTPException(status_code=404, detail=_FANXIU_KERNEL_SCHEDULER_HOST_HINT)
         if action == "inspect":
-            return inspect_fanxiu_behavior_tree_service()
+            return inspect_fanxiu_kernel_scheduler_service()
         if action == "restart":
-            return restart_fanxiu_behavior_tree_service()
+            return restart_fanxiu_kernel_scheduler_service()
         if action == "wake":
-            return wake_fanxiu_behavior_tree_service()
+            return wake_fanxiu_kernel_scheduler_service()
         raise HTTPException(status_code=400, detail="该运行单元不支持此动作")
     raise HTTPException(status_code=400, detail="该运行单元不支持扩展动作")
 

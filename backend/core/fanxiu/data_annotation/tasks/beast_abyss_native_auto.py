@@ -9,12 +9,9 @@ Runtime-recognized scene; it does not provide a second command channel.
 
 from dataclasses import dataclass
 from enum import StrEnum
-import io
 import re
 from types import SimpleNamespace
 from typing import Any, Iterator
-
-from PIL import Image
 
 from backend.core.fanxiu.activity.beast_abyss_challenge_planning import (
     BEAST_ABYSS_MEASUREMENT_EXPLORES,
@@ -25,7 +22,7 @@ from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
     set_verified_integer_slider_count,
 )
 from backend.core.fanxiu.data_annotation.tasks.beast_abyss_task_rewards import (
-    claim_beast_abyss_cultivation_rewards,
+    claim_beast_abyss_task_rewards,
 )
 
 
@@ -39,10 +36,9 @@ class BeastAbyssAutoTerminal(StrEnum):
 
 @dataclass(frozen=True)
 class BeastAbyssToggleAsset:
+    alias: str
+    display_text: str
     action: str
-    selected: str
-    unselected: str
-    checkbox_box: tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -52,6 +48,8 @@ class BeastAbyssNativeAutoAssets:
     explore_scene_id: int
     help_view_scene_id: int
     terminal_scene_ids: tuple[int, ...]
+    completed_notice_scene_id: int = 662
+    completed_notice_confirm: str = "确定"
     home_scene_id: int = 535
     enter_activity: str = "进入活动"
     open_auto: str = "自动探查"
@@ -63,6 +61,8 @@ class BeastAbyssNativeAutoAssets:
     count_slider_thumb: str = "自动探查次数_滑块游标"
     count_slider_left_anchor: str = "自动探查次数_滑轨左端"
     count_slider_right_anchor: str = "自动探查次数_滑轨右端"
+    count_slider_left_center_offset: float = 8.75
+    count_slider_right_center_offset: float = 0.5
     cutscene_scene_id: int = 185
     skip_confirm_scene_id: int = 654
     npc_entry_scene_id: int = 655
@@ -85,16 +85,20 @@ class BeastAbyssNativeAutoRequest:
     auto_use_explore_items: bool
     measurement: bool = True
     requested_explores: int = BEAST_ABYSS_MEASUREMENT_EXPLORES
-    fairy_events: bool = True
+    maximum_explores: int | None = None
+    fairy_events: bool = False
     beast_events: bool = True
-    player_events: bool = False
-    stop_when_killed: bool = True
+    player_events: bool = True
+    stop_when_killed: bool = False
     fast_auto: bool = True
     skip_animation: bool = True
+    use_find_demon_talisman: bool = False
 
     def __post_init__(self) -> None:
         if self.measurement and self.requested_explores != BEAST_ABYSS_MEASUREMENT_EXPLORES:
-            raise ValueError("兽渊测速批次必须固定为10次")
+            raise ValueError("兽渊测速批次必须固定为100次")
+        if self.maximum_explores is not None and self.maximum_explores < self.requested_explores:
+            raise ValueError("兽渊自动探查目标超过当前资源上限")
 
 
 @dataclass(frozen=True)
@@ -106,6 +110,7 @@ class BeastAbyssNativeAutoOptions:
     stop_when_killed: bool
     fast_auto: bool
     skip_animation: bool
+    use_find_demon_talisman: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -116,6 +121,7 @@ class BeastAbyssNativeAutoOptions:
             "stop_when_killed": self.stop_when_killed,
             "fast_auto": self.fast_auto,
             "skip_animation": self.skip_animation,
+            "use_find_demon_talisman": self.use_find_demon_talisman,
         }
 
 
@@ -127,6 +133,24 @@ BEAST_ABYSS_PRODUCTION_OPTIONS = BeastAbyssNativeAutoOptions(
     stop_when_killed=False,
     fast_auto=True,
     skip_animation=True,
+    use_find_demon_talisman=False,
+)
+
+BEAST_ABYSS_AUTO_RECOVERY_CLEAR_OPTIONS = BeastAbyssNativeAutoOptions(
+    fairy_events=False,
+    beast_events=True,
+    player_events=True,
+    auto_use_explore_items=False,
+    stop_when_killed=False,
+    fast_auto=True,
+    skip_animation=True,
+    use_find_demon_talisman=False,
+)
+
+DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS = BeastAbyssNativeAutoAssets(
+    explore_scene_id=657,
+    help_view_scene_id=658,
+    terminal_scene_ids=(382,),
 )
 
 
@@ -136,16 +160,44 @@ class BeastAbyssNativeAutoResult:
     scene_id: int | None
     ocr_text: str
     settings: BeastAbyssAutoSettings
+    terminal_evidence: "BeastAbyssTerminalEvidence | None" = None
+
+
+@dataclass(frozen=True)
+class BeastAbyssTerminalEvidence:
+    """Values shown by the terminal itself, without reinterpreting merit as currency."""
+
+    terminal_total_score: int | None
+    terminal_total_merit: int | None
+    terminal_observed_explore_index: int | None
+
+
+def _terminal_number(text: str, label: str) -> int | None:
+    match = re.search(rf"{label}\s*[：:]?\s*([0-9][0-9,]*)", _compact(text))
+    return int(match.group(1).replace(",", "")) if match else None
+
+
+def parse_beast_abyss_terminal_evidence(text: str) -> BeastAbyssTerminalEvidence:
+    """Parse only the two labels proven on #382; neither value is 兽元."""
+
+    compact = _compact(text)
+    observed_indices = [int(value) for value in re.findall(r"第(\d+)次探查", compact)]
+    return BeastAbyssTerminalEvidence(
+        terminal_total_score=_terminal_number(text, "总共获得积分"),
+        terminal_total_merit=_terminal_number(text, "总共获得功勋"),
+        terminal_observed_explore_index=max(observed_indices, default=None),
+    )
 
 
 TOGGLES: dict[str, BeastAbyssToggleAsset] = {
-    "fairy_events": BeastAbyssToggleAsset("仙侣事件", "仙侣事件_已选", "仙侣事件_未选", (0.115, 0.455, 0.065, 0.025)),
-    "beast_events": BeastAbyssToggleAsset("妖兽事件", "妖兽事件_已选", "妖兽事件_未选", (0.115, 0.495, 0.065, 0.025)),
-    "player_events": BeastAbyssToggleAsset("玩家事件", "玩家事件_已选", "玩家事件_未选", (0.115, 0.535, 0.065, 0.025)),
-    "auto_use_explore_items": BeastAbyssToggleAsset("自动使用探查符", "自动使用探查符_已选", "自动使用探查符_未选", (0.255, 0.585, 0.06, 0.025)),
-    "stop_when_killed": BeastAbyssToggleAsset("被击杀停止", "被击杀停止_已选", "被击杀停止_未选", (0.255, 0.615, 0.06, 0.025)),
-    "fast_auto": BeastAbyssToggleAsset("快速自动", "快速自动_已选", "快速自动_未选", (0.255, 0.65, 0.06, 0.025)),
-    "skip_animation": BeastAbyssToggleAsset("跳过动画", "跳过动画_已选", "跳过动画_未选", (0.255, 0.685, 0.06, 0.025)),
+    "fairy_events": BeastAbyssToggleAsset("仙缘事件", "触发仙缘事件，跳过对话直接获得奖励", "仙侣事件"),
+    "beast_events": BeastAbyssToggleAsset("妖兽事件", "发现妖兽事件，自动挑战并跳过战斗", "妖兽事件"),
+    "player_events": BeastAbyssToggleAsset("玩家事件", "发现玩家事件，自动挑战并跳过战斗", "玩家事件"),
+    "auto_use_explore_items": BeastAbyssToggleAsset("探查符", "体力不足的时候使用探查符", "自动使用探查符"),
+    "stop_when_killed": BeastAbyssToggleAsset("击杀停止", "被其他玩家击杀停止自动取消", "被击杀停止"),
+    "fast_auto": BeastAbyssToggleAsset("快速探查", "开启快速自动探查", "快速自动"),
+    "skip_animation": BeastAbyssToggleAsset("跳过动画", "跳过动画", "跳过动画"),
+    "use_find_demon_talisman": BeastAbyssToggleAsset("寻妖符", "使用寻妖符", "寻妖符"),
 }
 
 
@@ -155,7 +207,9 @@ def _compact(text: str) -> str:
 
 def classify_beast_abyss_auto_terminal(text: str) -> BeastAbyssAutoTerminal:
     value = _compact(text)
-    if "已完成预设的自动探查次数" in value:
+    if "已完成预设的自动探查次数" in value or (
+        "探查结束" in value and "点击屏幕关闭" in value
+    ):
         return BeastAbyssAutoTerminal.COMPLETED
     if "探查体力和探查符不足" in value or "探查体力不足" in value:
         return BeastAbyssAutoTerminal.RESOURCE_EXHAUSTED
@@ -166,9 +220,9 @@ def classify_beast_abyss_auto_terminal(text: str) -> BeastAbyssAutoTerminal:
     return BeastAbyssAutoTerminal.UNKNOWN
 
 
-def _observe(runtime: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
-    scene_id, _score, frame = runtime.current_scene(list(scene_ids), update=True)
-    text = runtime.ocr_text(frame)
+def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
+    scene_id, _score, frame = context.current_scene(list(scene_ids), update=True)
+    text = context.ocr_text(frame)
     if scene_id not in scene_ids or not any(_compact(anchor) in _compact(text) for anchor in anchors):
         raise RuntimeError(
             f"兽渊 Runtime-GUI 对齐失败：scene={scene_id!r}, expected={scene_ids}, ocr={text!r}"
@@ -176,149 +230,149 @@ def _observe(runtime: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...])
     return int(scene_id), text
 
 
-def _shape_matches(runtime: Any, scene_id: int, title: str, *, frame: Any | None = None) -> bool:
-    view_factory = getattr(runtime, "view", None)
+def _shape_matches(context: Any, scene_id: int, title: str, *, frame: Any | None = None) -> bool:
+    view_factory = getattr(context, "view", None)
     if callable(view_factory):
         view = view_factory(scene_id)
         get_shape = getattr(view, "get_shape", None)
         if callable(get_shape) and get_shape(title) is None:
             return False
-    condition = runtime.shape_visible(scene_id, title)
+    condition = context.shape_visible(scene_id, title)
     if frame is None:
-        frame = runtime.cur_frame()
-    result = condition.check(runtime, frame)
+        frame = context.cur_frame()
+    result = condition.check(context, frame)
     return bool(result.matched)
 
 
-def _read_toggle(runtime: Any, scene_id: int, asset: BeastAbyssToggleAsset) -> bool:
-    # Read both visual states from one explicitly refreshed frame.  This avoids
-    # mixing pre/post-click observations when the UI is still repainting.
-    frame = runtime.cur_frame(update=True)
-    runner = getattr(runtime, "runner", None)
-    decode = getattr(runner, "_decode_frame_data_url", None)
-    if callable(decode):
-        raw = decode(frame)
-        with Image.open(io.BytesIO(raw)) as source:
-            rgb = source.convert("RGB")
-            width, height = rgb.size
-            x, y, w, h = asset.checkbox_box
-            crop = rgb.crop((round(x * width), round(y * height), round((x + w) * width), round((y + h) * height)))
-            pixels = list(crop.get_flattened_data())
-        if not pixels:
-            raise RuntimeError(f"兽渊开关「{asset.action}」复选框区域为空")
-        green = sum(1 for red, channel_green, blue in pixels if channel_green >= 105 and channel_green >= red * 1.25 and channel_green >= blue * 1.08)
-        return green / len(pixels) >= 0.08
-    selected = _shape_matches(runtime, scene_id, asset.selected, frame=frame)
-    unselected = _shape_matches(runtime, scene_id, asset.unselected, frame=frame)
-    if selected == unselected:
-        raise RuntimeError(f"兽渊开关「{asset.action}」状态无法唯一读回")
-    return selected
+def _read_runtime_options() -> dict[str, bool]:
+    from backend.core.fanxiu.instrumentation.beast_abyss_runtime import (
+        read_beast_abyss_auto_options_snapshot,
+    )
 
-
-def _set_toggle(runtime: Any, scene_id: int, asset: BeastAbyssToggleAsset, desired: bool) -> Iterator[Any]:
-    current = _read_toggle(runtime, scene_id, asset)
-    if current == desired:
-        return
-    runtime.click_shape_center(scene_id, asset.action)
-    for _attempt in range(10):
-        yield from runtime.wait_action_settle(0.5)
-        if _read_toggle(runtime, scene_id, asset) == desired:
-            return
-    raise RuntimeError(f"兽渊开关「{asset.action}」设置后在5秒内未收敛")
+    snapshot = read_beast_abyss_auto_options_snapshot()
+    raw = dict(snapshot.get("options") or {})
+    expected = set(TOGGLES)
+    if set(raw) != expected or any(type(raw[name]) is not bool for name in expected):
+        raise RuntimeError(f"兽渊 Runtime 自动选项快照不完整：{raw!r}")
+    return {name: raw[name] for name in TOGGLES}
 
 
 def configure_beast_abyss_native_auto_options(
-    runtime: Any,
+    context: Any,
     help_view_scene_id: int,
     options: BeastAbyssNativeAutoOptions,
 ) -> Iterator[Any]:
-    """Idempotently apply and verify the seven native auto-explore options."""
+    """Apply one Runtime-GUI aligned option batch, then verify it once."""
 
     desired = options.as_dict()
-    before = {
-        name: _read_toggle(runtime, help_view_scene_id, TOGGLES[name])
-        for name in desired
-    }
+    before = _read_runtime_options()
     for name, value in desired.items():
         if before[name] != value:
-            yield from _set_toggle(runtime, help_view_scene_id, TOGGLES[name], value)
-    after = {
-        name: _read_toggle(runtime, help_view_scene_id, TOGGLES[name])
-        for name in desired
-    }
+            context.click_shape_center(help_view_scene_id, TOGGLES[name].action)
+            yield from context.wait_action_settle(0.35)
+    after = _read_runtime_options()
     if after != desired:
-        raise RuntimeError(f"兽渊7项自动探查配置终态不一致：{after!r}")
+        raise RuntimeError(f"兽渊自动探查配置终态不一致：{after!r}")
     return after
 
 
-def _read_count(runtime: Any, assets: BeastAbyssNativeAutoAssets) -> int:
-    values, text = runtime.ocr_numbers_in_shapes(assets.help_view_scene_id, [assets.count_region])
+def _read_count(context: Any, assets: BeastAbyssNativeAutoAssets) -> int:
+    values, text = context.ocr_numbers_in_shapes(assets.help_view_scene_id, [assets.count_region])
     unique = sorted({int(value) for value in values if int(value) > 0})
     if len(unique) != 1:
         raise RuntimeError(f"兽渊自动探查次数无法唯一读回：{text!r}")
     return unique[0]
 
 
-def _read_stable_count(runtime: Any, assets: BeastAbyssNativeAutoAssets) -> Iterator[Any]:
+def read_beast_abyss_native_auto_settings(
+    context: Any,
+    assets: BeastAbyssNativeAutoAssets,
+    *,
+    measurement: bool,
+) -> BeastAbyssAutoSettings:
+    """Read back the complete #658 contract without changing GUI state."""
+
+    values = _read_runtime_options()
+    settings = BeastAbyssAutoSettings(
+        **values,
+        requested_explores=_read_count(context, assets),
+    )
+    validate_beast_abyss_auto_settings(settings, measurement=measurement)
+    return settings
+
+
+def _read_stable_count(context: Any, assets: BeastAbyssNativeAutoAssets) -> Iterator[Any]:
     previous: int | None = None
     for _poll in range(6):
-        current = _read_count(runtime, assets)
+        current = _read_count(context, assets)
         if current == previous:
             return current
         previous = current
-        yield from runtime.wait_action_settle(0.4)
+        yield from context.wait_action_settle(0.4)
     raise RuntimeError("兽渊自动探查次数在稳定读回窗口内仍持续变化")
 
 
-def _set_count(runtime: Any, assets: BeastAbyssNativeAutoAssets, desired: int) -> Iterator[Any]:
-    current = yield from _read_stable_count(runtime, assets)
-    if abs(int(desired) - current) > 100:
-        slider_assets = SimpleNamespace(
-            settings_scene_id=assets.help_view_scene_id,
-            count_region=assets.count_region,
-            count_decrease=assets.count_decrease,
-            count_increase=assets.count_increase,
-            count_slider_thumb=assets.count_slider_thumb,
-            count_slider_left_anchor=assets.count_slider_left_anchor,
-            count_slider_right_anchor=assets.count_slider_right_anchor,
-        )
-        adjustment = yield from set_verified_integer_slider_count(
-            runtime,
-            slider_assets,
-            int(desired),
-            max_adjustments=100,
-            force_bound_probe=True,
-            count_label="兽渊自动探查次数",
-        )
-        if int(adjustment["after"]) != int(desired):
-            raise RuntimeError(
-                f"兽渊自动探查次数滑轨回读异常："
-                f"expected={int(desired)}, actual={int(adjustment['after'])}"
-            )
-        return
-    for _attempt in range(5):
-        if current == desired:
-            return
-        action = assets.count_increase if current < desired else assets.count_decrease
-        delta = abs(desired - current)
-        if delta > 100:
-            raise RuntimeError(f"兽渊自动探查次数差值异常：current={current}, desired={desired}")
-        # The +/- control is deterministic.  Batch the known delta and perform
-        # one OCR readback afterwards; if the UI drops a click, the next bounded
-        # pass corrects only the residual instead of paying for OCR per click.
-        for _click in range(delta):
-            runtime.click_shape_center(assets.help_view_scene_id, action)
-            yield from runtime.wait_action_settle(0.08)
-        current = yield from _read_stable_count(runtime, assets)
-    raise RuntimeError("兽渊自动探查次数在5轮批量校正内未收敛")
-
-
-def prepare_beast_abyss_native_auto(
-    runtime: Any,
+def _set_count(
+    context: Any,
     assets: BeastAbyssNativeAutoAssets,
-    request: BeastAbyssNativeAutoRequest,
+    desired: int,
+    *,
+    maximum: int | None = None,
 ) -> Iterator[Any]:
-    """Navigate to native settings and read them back without starting exploration."""
+    from backend.core.fanxiu.instrumentation.beast_abyss_runtime import (
+        read_beast_abyss_auto_count_snapshot,
+    )
+
+    # ``maximum`` is the conservative resource capacity proved before entering
+    # #658.  It is a safety ceiling, not the slider's coordinate range: the
+    # native ``useMax`` may be much larger while the player is on a low-cost
+    # Beast Abyss layer.  Mixing the two makes a 100-run target land hundreds
+    # or thousands of runs away and then degrades into excessive +/- clicks.
+    if maximum is not None and int(desired) > int(maximum):
+        raise RuntimeError(
+            f"兽渊自动探查目标超过资源安全容量："
+            f"target={int(desired)}, capacity={int(maximum)}"
+        )
+    live_range = read_beast_abyss_auto_count_snapshot()
+    live_maximum = int(live_range.get("maximum") or 0)
+    if live_maximum < int(desired):
+        raise RuntimeError(
+            f"兽渊自动探查目标超过#658实时上限："
+            f"target={int(desired)}, useMax={live_maximum}"
+        )
+
+    slider_assets = SimpleNamespace(
+        settings_scene_id=assets.help_view_scene_id,
+        count_region=assets.count_region,
+        count_decrease=assets.count_decrease,
+        count_increase=assets.count_increase,
+        count_slider_thumb=assets.count_slider_thumb,
+        count_slider_left_anchor=assets.count_slider_left_anchor,
+        count_slider_right_anchor=assets.count_slider_right_anchor,
+        count_slider_left_center_offset=assets.count_slider_left_center_offset,
+        count_slider_right_center_offset=assets.count_slider_right_center_offset,
+    )
+    adjustment = yield from set_verified_integer_slider_count(
+        context,
+        slider_assets,
+        int(desired),
+        max_adjustments=10,
+        count_label="兽渊自动探查次数",
+        maximum=live_maximum,
+        runtime_count_reader=read_beast_abyss_auto_count_snapshot,
+    )
+    if int(adjustment["after"]) != int(desired):
+        raise RuntimeError(
+            f"兽渊自动探查次数滑轨回读异常："
+            f"expected={int(desired)}, actual={int(adjustment['after'])}"
+        )
+
+
+def enter_beast_abyss_explore(
+    context: Any,
+    assets: BeastAbyssNativeAutoAssets,
+) -> Iterator[Any]:
+    """Reusable entry unit: reach #657 without coupling reward collection."""
 
     entry_scenes = (
         assets.home_scene_id,
@@ -328,15 +382,39 @@ def prepare_beast_abyss_native_auto(
         assets.npc_entry_scene_id,
         assets.region_map_scene_id,
     )
-    scene_id, _score, _frame = runtime.current_scene(list(entry_scenes), update=True)
+    scene_id = None
+    for _entry_probe in range(6):
+        scene_id, _score, _frame = context.current_scene(
+            list(entry_scenes), update=True
+        )
+        if scene_id in entry_scenes:
+            break
+        if _entry_probe < 5:
+            yield from context.wait_action_settle(0.5)
+    if scene_id not in entry_scenes:
+        for _navigation_attempt in range(3):
+            yield from context.go_scene(assets.home_scene_id)
+            try:
+                yield from context.wait_scene(
+                    assets.home_scene_id,
+                    wait=8.0,
+                    label="兽渊：确认活动封面",
+                )
+            except TimeoutError:
+                if _navigation_attempt >= 2:
+                    raise
+                yield from context.wait_action_settle(1.0)
+                continue
+            scene_id = assets.home_scene_id
+            break
     if scene_id == assets.home_scene_id:
-        _observe(runtime, (assets.home_scene_id,), ("进入活动", "兽渊探秘"))
-        runtime.click_shape_center(assets.home_scene_id, assets.enter_activity)
-        yield from runtime.wait_action_settle(1.0)
+        _observe(context, (assets.home_scene_id,), ("进入活动", "兽渊探秘"))
+        context.click_shape_center(assets.home_scene_id, assets.enter_activity)
+        yield from context.wait_action_settle(1.0)
     elif scene_id != assets.explore_scene_id:
         raise RuntimeError(f"兽渊预检要求从活动页或探查页开始：scene={scene_id!r}")
     for _attempt in range(24):
-        scene_id, _score, _frame = runtime.current_scene(list(entry_scenes), update=True)
+        scene_id, _score, _frame = context.current_scene(list(entry_scenes), update=True)
         if scene_id == assets.explore_scene_id:
             break
         action = {
@@ -346,30 +424,48 @@ def prepare_beast_abyss_native_auto(
             assets.region_map_scene_id: assets.enter_outer_region,
         }.get(scene_id)
         if action:
-            runtime.click_shape_center(int(scene_id), action)
-        yield from runtime.wait_action_settle(1.0)
+            context.click_shape_center(int(scene_id), action)
+        yield from context.wait_action_settle(1.0)
     else:
         raise RuntimeError("兽渊首次进入动画在有界状态机内未到达探查页")
-    # This maintenance check belongs to every Beast Abyss invocation.  A
-    # target-tier idempotent short-circuit may skip exploration, but must not
-    # skip an independent, currently claimable cultivation reward.
-    yield from claim_beast_abyss_cultivation_rewards(runtime)
-    _observe(runtime, (assets.explore_scene_id,), ("自动探查", "快捷处理"))
-    auto_visible = _shape_matches(runtime, assets.explore_scene_id, assets.open_auto)
-    quick_visible = _shape_matches(runtime, assets.explore_scene_id, assets.open_quick)
+    _observe(context, (assets.explore_scene_id,), ("自动探查", "快捷处理"))
+    return assets.explore_scene_id
+
+
+def enter_beast_abyss_explore_and_claim_rewards(
+    context: Any,
+    assets: BeastAbyssNativeAutoAssets,
+) -> Iterator[Any]:
+    """Compatibility wrapper for legacy callers that explicitly need both actions."""
+
+    yield from enter_beast_abyss_explore(context, assets)
+    yield from claim_beast_abyss_task_rewards(context)
+    return assets.explore_scene_id
+
+
+def prepare_beast_abyss_native_auto(
+    context: Any,
+    assets: BeastAbyssNativeAutoAssets,
+    request: BeastAbyssNativeAutoRequest,
+) -> Iterator[Any]:
+    """Navigate to native settings and read them back without starting exploration."""
+
+    yield from enter_beast_abyss_explore(context, assets)
+    auto_visible = _shape_matches(context, assets.explore_scene_id, assets.open_auto)
+    quick_visible = _shape_matches(context, assets.explore_scene_id, assets.open_quick)
     if auto_visible == quick_visible:
         raise RuntimeError(
             "兽渊原生自动入口无法唯一读回：必须在「自动探查/快捷处理」中恰好命中一个"
         )
     entry_action = assets.open_quick if quick_visible else assets.open_auto
-    yield from runtime.wait_click_then_view(
+    yield from context.wait_click_then_scene(
         assets.explore_scene_id,
         entry_action,
         assets.help_view_scene_id,
         timeout=20.0,
         label=f"兽渊：点击「{entry_action}」后等待自动设置页",
     )
-    _observe(runtime, (assets.help_view_scene_id,), ("开启自动",))
+    _observe(context, (assets.help_view_scene_id,), ("开启自动",))
 
     options = BeastAbyssNativeAutoOptions(
         fairy_events=request.fairy_events,
@@ -379,44 +475,115 @@ def prepare_beast_abyss_native_auto(
         stop_when_killed=request.stop_when_killed,
         fast_auto=request.fast_auto,
         skip_animation=request.skip_animation,
+        use_find_demon_talisman=request.use_find_demon_talisman,
     )
     applied = yield from configure_beast_abyss_native_auto_options(
-        runtime,
+        context,
         assets.help_view_scene_id,
         options,
     )
-    yield from _set_count(runtime, assets, request.requested_explores)
+    yield from _set_count(
+        context,
+        assets,
+        request.requested_explores,
+        maximum=request.maximum_explores,
+    )
     settings = BeastAbyssAutoSettings(
         **applied,
-        requested_explores=_read_count(runtime, assets),
+        requested_explores=_read_count(context, assets),
     )
     validate_beast_abyss_auto_settings(settings, measurement=request.measurement)
     return settings
 
 
-def run_beast_abyss_native_auto(
-    runtime: Any,
+def run_prepared_beast_abyss_native_auto(
+    context: Any,
     assets: BeastAbyssNativeAutoAssets,
     request: BeastAbyssNativeAutoRequest,
+    settings: BeastAbyssAutoSettings,
     *,
-    terminal_polls: int = 300,
+    terminal_polls: int = 3600,
     poll_seconds: float = 1.0,
 ) -> Iterator[Any]:
-    """Drive the native GUI; callers submit this generator through the normal Cell path."""
+    """Start one already-read-back #658 configuration and await its terminal."""
 
-    settings = yield from prepare_beast_abyss_native_auto(runtime, assets, request)
+    validate_beast_abyss_auto_settings(settings, measurement=request.measurement)
+    if settings.requested_explores != request.requested_explores:
+        raise RuntimeError("兽渊已配置次数与本批请求不一致")
     if not assets.terminal_scene_ids:
-        raise RuntimeError("兽渊尚缺已验证的运行/终态场景资产，已停在设置页且未点击「开启自动」")
-    runtime.click_shape_center(assets.help_view_scene_id, assets.start_auto)
+        raise RuntimeError("兽渊尚缺已验证的运行/终态场景资产，未点击「开启自动」")
+    context.click_shape_center(assets.help_view_scene_id, assets.start_auto)
 
     last_scene: int | None = None
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
-        yield from runtime.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = runtime.current_scene(list(assets.terminal_scene_ids), update=True)
+        yield from context.wait_action_settle(poll_seconds)
+        scene_id, _score, frame = context.current_scene(
+            [assets.completed_notice_scene_id, *assets.terminal_scene_ids],
+            update=True,
+        )
+        if scene_id == assets.completed_notice_scene_id:
+            notice_text = context.ocr_text(frame)
+            notice_terminal = classify_beast_abyss_auto_terminal(notice_text)
+            if notice_terminal is BeastAbyssAutoTerminal.COMPLETED:
+                landed = yield from context.wait_click_then_scene(
+                    assets.completed_notice_scene_id,
+                    assets.completed_notice_confirm,
+                    *assets.terminal_scene_ids,
+                    timeout=20.0,
+                    label="兽渊自动探查完成：确认进入结果页",
+                )
+                scene_id = int(getattr(landed, "id", landed))
+                _confirmed, _score, frame = context.current_scene(
+                    list(assets.terminal_scene_ids), update=True
+                )
+                last_scene = (
+                    int(scene_id) if scene_id in assets.terminal_scene_ids else None
+                )
+                last_text = context.ocr_text(frame)
+                if last_scene is not None:
+                    return BeastAbyssNativeAutoResult(
+                        BeastAbyssAutoTerminal.COMPLETED,
+                        last_scene,
+                        last_text,
+                        settings,
+                        parse_beast_abyss_terminal_evidence(last_text),
+                    )
         last_scene = int(scene_id) if scene_id in assets.terminal_scene_ids else None
-        last_text = runtime.ocr_text(frame)
+        last_text = context.ocr_text(frame)
         terminal = classify_beast_abyss_auto_terminal(last_text)
         if last_scene is not None and terminal is not BeastAbyssAutoTerminal.UNKNOWN:
-            return BeastAbyssNativeAutoResult(terminal, last_scene, last_text, settings)
-    return BeastAbyssNativeAutoResult(BeastAbyssAutoTerminal.UNKNOWN, last_scene, last_text, settings)
+            return BeastAbyssNativeAutoResult(
+                terminal,
+                last_scene,
+                last_text,
+                settings,
+                parse_beast_abyss_terminal_evidence(last_text),
+            )
+    return BeastAbyssNativeAutoResult(
+        BeastAbyssAutoTerminal.UNKNOWN,
+        last_scene,
+        last_text,
+        settings,
+    )
+
+
+def run_beast_abyss_native_auto(
+    context: Any,
+    assets: BeastAbyssNativeAutoAssets,
+    request: BeastAbyssNativeAutoRequest,
+    *,
+    terminal_polls: int = 3600,
+    poll_seconds: float = 1.0,
+) -> Iterator[Any]:
+    """Drive the native GUI; callers submit this generator through the normal Cell path."""
+
+    settings = yield from prepare_beast_abyss_native_auto(context, assets, request)
+    return (yield from run_prepared_beast_abyss_native_auto(
+        context,
+        assets,
+        request,
+        settings,
+        terminal_polls=terminal_polls,
+        poll_seconds=poll_seconds,
+    ))

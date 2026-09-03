@@ -7,15 +7,15 @@ from backend.core.fanxiu.data_annotation.arena_schedule import (
     next_xianyuan_duel_trigger_at,
     xianyuan_duel_scheduler_in_window,
 )
-from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_runtime_runner
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
+from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     consolidate_arena_scheduler_instances,
-    default_data_annotation_scheduler_tasks,
+    default_kernel_scheduler_tasks,
 )
 
 
 def test_arena_businesses_each_have_one_dynamic_scheduler_job():
-    tasks = default_data_annotation_scheduler_tasks(now=datetime(2026, 8, 2, 10, 0, 0))
+    tasks = default_kernel_scheduler_tasks(now=datetime(2026, 8, 2, 10, 0, 0))
     daofa = [task for task in tasks if task["task_type"] == "daily_daofa"]
     xianyuan = [task for task in tasks if task["task_type"] == "daily_xianyuan_duel"]
 
@@ -47,7 +47,7 @@ def test_scheduler_migration_removes_retired_daily_gongfeng_instance():
     assert [task["id"] for task in tasks] == ["legacy-daily-assistant"]
 
 
-def test_scheduler_migration_promotes_legacy_gameplay_job_without_child_state():
+def test_scheduler_migration_retires_legacy_gameplay_job_while_family_is_hidden():
     tasks, changed = consolidate_arena_scheduler_instances([
         {
             "id": "magic-invasion-explore",
@@ -63,17 +63,10 @@ def test_scheduler_migration_promotes_legacy_gameplay_job_without_child_state():
     ], now=datetime(2026, 8, 21, 23, 0, 0))
 
     assert changed is True
-    assert len(tasks) == 1
-    task = tasks[0]
-    assert task["id"] == "ranking-lifecycle"
-    assert task["task_type"] == "ranking_lifecycle"
-    assert task["next_time"] == "2026-08-22 00:30:00"
-    assert task["label"] == "玩法榜"
-    assert task["payload"] == {"max_runtime_seconds": 10800}
-    assert "last_result" not in task
+    assert tasks == []
 
 
-def test_scheduler_migration_moves_only_earliest_child_time_into_existing_lifecycle():
+def test_scheduler_migration_removes_existing_hidden_gameplay_lifecycle():
     tasks, changed = consolidate_arena_scheduler_instances([
         {
             "id": "magic-invasion-explore",
@@ -85,7 +78,7 @@ def test_scheduler_migration_moves_only_earliest_child_time_into_existing_lifecy
             "id": "ranking-lifecycle",
             "task_type": "ranking_lifecycle",
             "next_time": "2026-08-22 19:00:00",
-            "payload": {"max_runtime_seconds": 10800, "owner": "parent"},
+            "payload": {"max_execution_seconds": 10800, "owner": "parent"},
         },
         {
             "id": "yunmeng-tail",
@@ -96,11 +89,7 @@ def test_scheduler_migration_moves_only_earliest_child_time_into_existing_lifecy
     ], now=datetime(2026, 8, 21, 23, 0, 0))
 
     assert changed is True
-    assert len(tasks) == 1
-    task = tasks[0]
-    assert task["id"] == "ranking-lifecycle"
-    assert task["next_time"] == "2026-08-22 10:01:00"
-    assert task["payload"] == {"max_runtime_seconds": 10800, "owner": "parent"}
+    assert tasks == []
 
 
 def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
@@ -129,9 +118,7 @@ def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
     )
 
     assert changed is True
-    assert [task["id"] for task in tasks] == ["ranking-lifecycle"]
-    assert tasks[0]["next_time"] == "2026-08-21 22:00:00"
-    assert tasks[0]["payload"] == {"max_runtime_seconds": 10800}
+    assert tasks == []
 
     rerun, rerun_changed = consolidate_arena_scheduler_instances(
         tasks,
@@ -141,8 +128,8 @@ def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
     assert rerun == tasks
 
 
-def test_default_scheduler_exposes_exactly_two_ranking_family_jobs() -> None:
-    tasks = default_data_annotation_scheduler_tasks(now=datetime(2026, 8, 21, 23, 0, 0))
+def test_default_scheduler_hides_gameplay_family_but_keeps_resource_family() -> None:
+    tasks = default_kernel_scheduler_tasks(now=datetime(2026, 8, 21, 23, 0, 0))
     gameplay_types = {
         "ranking_lifecycle",
         "magic_invasion_explore",
@@ -159,7 +146,6 @@ def test_default_scheduler_exposes_exactly_two_ranking_family_jobs() -> None:
 
     visible = [task for task in tasks if task["task_type"] in gameplay_types]
     assert [(task["id"], task["task_type"], task["label"]) for task in visible] == [
-        ("ranking-lifecycle", "ranking_lifecycle", "玩法榜"),
         ("resource-ranking", "resource_ranking", "资源榜"),
     ]
 
@@ -170,7 +156,7 @@ def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated()
             "id": "ranking-lifecycle",
             "task_type": "ranking_lifecycle",
             "next_time": "2026-08-22 19:00:00",
-            "payload": {"max_runtime_seconds": 10800, "magic_invasion_progress": {"step": 3}},
+            "payload": {"max_execution_seconds": 10800, "magic_invasion_progress": {"step": 3}},
         },
         {
             "id": "legacy-daily-xianmeng",
@@ -190,11 +176,9 @@ def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated()
     )
     assert changed is True
     by_id = {item["id"]: item for item in migrated}
-    assert set(by_id) == {"ranking-lifecycle", "resource-ranking"}
-    assert by_id["ranking-lifecycle"]["next_time"] == "2026-08-22 10:00:00"
+    assert set(by_id) == {"resource-ranking"}
     assert by_id["resource-ranking"]["next_time"] == "2026-08-22 00:30:00"
-    assert by_id["ranking-lifecycle"]["payload"] == {"max_runtime_seconds": 10800}
-    assert by_id["resource-ranking"]["payload"] == {"max_runtime_seconds": 10800}
+    assert by_id["resource-ranking"]["payload"] == {"max_execution_seconds": 10800}
 
     rerun, rerun_changed = consolidate_arena_scheduler_instances(
         migrated, now=datetime(2026, 8, 21, 23, 0, 0)
@@ -203,7 +187,7 @@ def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated()
     assert rerun == migrated
 
 
-def test_scheduler_migration_normalizes_existing_canonical_ranking_labels():
+def test_scheduler_migration_removes_hidden_gameplay_and_normalizes_resource_label():
     migrated, changed = consolidate_arena_scheduler_instances([
         {
             "id": "ranking-lifecycle",
@@ -226,12 +210,7 @@ def test_scheduler_migration_normalizes_existing_canonical_ranking_labels():
     ])
     assert changed is True
     by_id = {item["id"]: item for item in migrated}
-    assert (
-        by_id["ranking-lifecycle"]["task_type"],
-        by_id["ranking-lifecycle"]["label"],
-        by_id["ranking-lifecycle"]["template_id"],
-        by_id["ranking-lifecycle"]["template_label"],
-    ) == ("ranking_lifecycle", "玩法榜", "ranking_lifecycle", "玩法榜")
+    assert "ranking-lifecycle" not in by_id
     assert (
         by_id["resource-ranking"]["task_type"],
         by_id["resource-ranking"]["label"],
@@ -278,7 +257,7 @@ def test_old_sunday_instances_are_folded_into_the_single_jobs():
 
 
 def test_xianyuan_duel_admission_advances_stale_run_without_game_side_effects(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     persisted: list[tuple[str, str]] = []
     monkeypatch.setattr(
         runner,
@@ -302,7 +281,7 @@ def test_xianyuan_duel_admission_advances_stale_run_without_game_side_effects(mo
 
 
 def test_xianyuan_duel_uses_game_availability_not_strategy_trigger_as_window(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     monkeypatch.setitem(
         runner.daily_xianyuan_duel_admission.__func__.__globals__,
         "_now",

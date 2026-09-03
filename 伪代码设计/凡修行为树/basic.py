@@ -148,10 +148,10 @@ class Runtime:
             if view.is_match(self):
                 return view
 
-    def wait_view(self, *view_ids, timeout=None):
+    def wait_scene(self, *view_ids, wait=5):
         """
         等待指定view出现(可以是一组，只要有任意一个匹配出现就终止)
-        :timeout: 可以设置等待时间上限
+        :wait: 等待时间上限，默认 5 秒；传 0 时只识别一次
         """
         while True:
             for view_id in view_ids:
@@ -161,10 +161,10 @@ class Runtime:
                 time.sleep(1)  # 这里注意对timeout的判定相关功能实现，伪代码省略体现
                 yield 1
 
-    def goto_view(self, view_id):
+    def go_scene(self, view_id):
         """
         场景移动，从cur_view移动到目标view位置
 
         注意移动的路径，频数，需要更新到'场景跳转'属性中
-        为了稳定性，这个功能的实现过程中，应该也是要用到wait_view增强鲁棒性的，进行合理的等待
+        为了稳定性，这个功能的实现过程中，应该也是要用到wait_scene增强鲁棒性的，进行合理的等待
         """

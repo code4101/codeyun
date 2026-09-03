@@ -21,6 +21,14 @@ type ResourceActivityType =
   | 'lianti-faxiang'
   | 'dandao-wending'
 
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  initialActivityType?: ResourceActivityType | null
+}>(), {
+  embedded: false,
+  initialActivityType: null,
+})
+
 const activityOptions: { label: string; value: ResourceActivityType }[] = [
   { label: '灵装化道', value: 'lingzhuang-huadao' },
   { label: '瑶池花会', value: 'yaochi-flower-festival' },
@@ -32,16 +40,23 @@ const activityOptions: { label: string; value: ResourceActivityType }[] = [
 const route = useRoute()
 const router = useRouter()
 const resolvedDefaultType = ref<ResourceActivityType | null>(null)
+const embeddedType = ref<ResourceActivityType | null>(null)
 
 function isResourceActivityType(value: unknown): value is ResourceActivityType {
   return activityOptions.some(item => item.value === value)
 }
 
 const selectedType = computed<ResourceActivityType>({
-  get: () => isResourceActivityType(route.query.activity)
-    ? route.query.activity
-    : (resolvedDefaultType.value ?? activityOptions[0].value),
+  get: () => props.embedded
+    ? (embeddedType.value ?? props.initialActivityType ?? activityOptions[0].value)
+    : (isResourceActivityType(route.query.activity)
+      ? route.query.activity
+      : (resolvedDefaultType.value ?? activityOptions[0].value)),
   set(value) {
+    if (props.embedded) {
+      embeddedType.value = value
+      return
+    }
     void router.replace({
       query: {
         ...route.query,
@@ -50,6 +65,14 @@ const selectedType = computed<ResourceActivityType>({
     })
   },
 })
+
+watch(
+  () => props.initialActivityType,
+  value => {
+    if (props.embedded && isResourceActivityType(value)) embeddedType.value = value
+  },
+  { immediate: true },
+)
 
 const selectedPage = computed(() => ({
   'lingzhuang-huadao': LingzhuangHuadaoPage,
@@ -63,6 +86,7 @@ const selectedPage = computed(() => ({
 watch(
   () => route.query.activity,
   async value => {
+    if (props.embedded) return
     if (isResourceActivityType(value)) return
     const latest = await getLatestFanxiuExchangeActivitySnapshot(
       activityOptions.map(item => item.value),
@@ -77,14 +101,14 @@ watch(
 </script>
 
 <template>
-  <div class="resource-ranking-page">
-    <header class="page-header">
+  <div class="resource-ranking-page" :class="{ 'is-embedded': embedded }">
+    <header v-if="!embedded" class="page-header">
       <h2>资源榜</h2>
     </header>
 
     <component
       :is="selectedPage"
-      v-if="selectedPage && (isResourceActivityType(route.query.activity) || resolvedDefaultType)"
+      v-if="selectedPage && (embedded || isResourceActivityType(route.query.activity) || resolvedDefaultType)"
       embedded
     >
       <template #activity-type-control>
@@ -107,6 +131,11 @@ watch(
   flex-direction: column;
   gap: 12px;
   padding: 20px;
+}
+
+.resource-ranking-page.is-embedded {
+  gap: 0;
+  padding: 0;
 }
 
 .page-header h2 {

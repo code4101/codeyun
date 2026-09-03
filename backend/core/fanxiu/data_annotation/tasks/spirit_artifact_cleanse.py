@@ -274,20 +274,19 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
     def __init__(
         self,
-        runtime: Any,
+        context: Any,
         execute: Callable[[Any], Any],
         *,
         assets: SpiritArtifactCleanseGuiAssets | None = None,
     ) -> None:
-        self.runtime = runtime
+        self.context = context
         self.execute = execute
         self.assets = assets or SpiritArtifactCleanseGuiAssets()
 
     def current_scene_id(self) -> int | None:
-        scene_id, _score, _frame = self.runtime.current_scene(
+        scene_id, _score, _frame = self.context.current_scene(
             self.assets.observation_scene_ids,
             update=True,
-            handle_interruptions=False,
         )
         return int(scene_id) if scene_id is not None else None
 
@@ -310,7 +309,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
     ) -> Any:
         self._require_scene(source_scene_id, phase=phase)
         result = self.execute(
-            self.runtime.click_shape_center_then_view(
+            self.context.click_shape_center_then_scene(
                 source_scene_id,
                 shape,
                 *target_scene_ids,

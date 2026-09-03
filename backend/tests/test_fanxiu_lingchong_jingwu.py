@@ -271,9 +271,9 @@ def test_activity_payload_binds_worldline_identity_and_both_rank_scopes(
     assert payload["activity_type"] == "lingchong-jingwu"
     assert payload["start_date"] == "2026-08-12"
     assert payload["end_date"] == "2026-08-13"
-    assert payload["evidence"]["rank_scope_activity_ids"] == {
-        "personal": 42905,
-        "plane": 42906,
+    assert payload["evidence"]["rank_scope_identities"] == {
+        "personal": {"runtime_rank_activity_id": 42905, "reward_activity_id": 42905},
+        "plane": {"runtime_rank_activity_id": 42906, "reward_activity_id": 42906},
     }
 
 

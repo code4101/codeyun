@@ -136,7 +136,10 @@ def ensure_lianti_faxiang_activity(session: Session) -> str:
             "official_name": LIANTI_FAXIANG_OFFICIAL_NAME,
             "phase": "预赛",
             "same_server": True,
-            "rank_scope_activity_ids": {"personal": LIANTI_FAXIANG_ACTIVITY_ID},
+            "rank_scope_identities": {"personal": {
+                "runtime_rank_activity_id": LIANTI_FAXIANG_ACTIVITY_ID,
+                "reward_activity_id": LIANTI_FAXIANG_ACTIVITY_ID,
+            }},
             "worldline": dict(worldline),
             "worldline_fact": dict(record.evidence or {}),
         },

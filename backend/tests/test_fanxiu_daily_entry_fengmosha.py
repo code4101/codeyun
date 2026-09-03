@@ -3,8 +3,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from backend.core.fanxiu.data_annotation.behavior_tree_control import (
-    create_behavior_tree_runtime_runner,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+    create_behavior_tree_executor,
 )
 
 
@@ -47,8 +47,8 @@ class Runtime:
             yield None
         return self.scene
 
-    def wait_view(self, *scene_ids, **_kwargs):
-        self.actions.append(("wait_view", tuple(scene_ids), self.scene))
+    def wait_scene(self, *scene_ids, **_kwargs):
+        self.actions.append(("wait_scene", tuple(scene_ids), self.scene))
         assert self.scene in scene_ids
         if False:
             yield None
@@ -59,8 +59,8 @@ class Runtime:
             yield None
         return None
 
-    def goto_view(self, scene_id):
-        self.actions.append(("goto_view", scene_id, self.scene))
+    def go_scene(self, scene_id):
+        self.actions.append(("go_scene", scene_id, self.scene))
         assert self.scene == 34
         assert scene_id == 69
         self.scene = 69
@@ -72,14 +72,14 @@ class Runtime:
 def test_daily_entry_locally_closes_fengmosha_cover_then_reenters_daily(
     monkeypatch,
 ) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = Runtime(start_scene=477)
     ctx = {
         "entry": object(),
         "asset_tree_path": Path("asset-tree.json"),
         "images": {34: {"id": 34, "title": "世界", "shapes": []}},
     }
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: runtime)
 
     result = _drain(
         runner,
@@ -96,26 +96,26 @@ def test_daily_entry_locally_closes_fengmosha_cover_then_reenters_daily(
 
     assert result == 69
     assert ctx["_go_scene_known_scene_id"] == 34
-    assert [(a[0], *a[1:3]) for a in runtime.actions if a[0] in {"wait_click", "goto_view"}] == [
+    assert [(a[0], *a[1:3]) for a in runtime.actions if a[0] in {"wait_click", "go_scene"}] == [
         ("wait_click", 477, "返回"),
         ("wait_click", 66, "返回"),
-        ("goto_view", 69, 34),
+        ("go_scene", 69, 34),
     ]
-    assert ("wait_view", (66, 34), 66) in runtime.actions
-    assert ("wait_view", (34,), 34) in runtime.actions
+    assert ("wait_scene", (66, 34), 66) in runtime.actions
+    assert ("wait_scene", (34,), 34) in runtime.actions
 
 
 def test_daily_entry_can_resume_from_schedule_after_cover_was_already_closed(
     monkeypatch,
 ) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = Runtime(start_scene=66)
     ctx = {
         "entry": object(),
         "asset_tree_path": Path("asset-tree.json"),
         "images": {34: {"id": 34, "title": "世界", "shapes": []}},
     }
-    monkeypatch.setattr(runner, "_fanxiu_runtime", lambda *_args, **_kwargs: runtime)
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: runtime)
 
     result = _drain(
         runner,
@@ -132,4 +132,4 @@ def test_daily_entry_can_resume_from_schedule_after_cover_was_already_closed(
 
     assert result == 69
     assert ("wait_click", 66, "返回") in runtime.actions
-    assert ("goto_view", 69, 34) in runtime.actions
+    assert ("go_scene", 69, 34) in runtime.actions

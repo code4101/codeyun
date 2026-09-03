@@ -200,6 +200,24 @@ def get_fanxiu_activity_rank_snapshot(
     return fanxiu_instrumentation_service.activity_rank_snapshot(activity_id)
 
 
+@router.get("/dynamic-instrumentation/peakrace")
+def get_fanxiu_peakrace_snapshot(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _authorize(current_user, session)
+    return fanxiu_instrumentation_service.peakrace_snapshot()
+
+
+@router.get("/dynamic-instrumentation/peakrace/business-state")
+def get_fanxiu_peakrace_business_state_snapshot(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _authorize(current_user, session)
+    return fanxiu_instrumentation_service.peakrace_business_state_snapshot()
+
+
 @router.get("/dynamic-instrumentation/red-packet/pending")
 def get_fanxiu_red_packet_pending(
     current_user: User = Depends(get_current_active_user),

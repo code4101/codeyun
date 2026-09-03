@@ -5,13 +5,13 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks.prayer_daily_resource import (
     PrayerDailyResourceTaskMixin,
@@ -40,7 +40,7 @@ def _fragment(text: str, x: float, y: float, w: float = 40, h: float = 30):
 
 
 def test_prayer_daily_resource_is_one_daily_standard_job() -> None:
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("prayer_daily_resource")
     assert definition is not None
     assert definition.scheduler_supported is True
@@ -48,7 +48,7 @@ def test_prayer_daily_resource_is_one_daily_standard_job() -> None:
 
     tasks = [
         item
-        for item in default_data_annotation_scheduler_tasks(datetime(2026, 8, 7, 1, 0, 0))
+        for item in default_kernel_scheduler_tasks(datetime(2026, 8, 7, 1, 0, 0))
         if item["task_type"] == "prayer_daily_resource"
     ]
     assert len(tasks) == 1

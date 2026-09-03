@@ -89,20 +89,26 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
+    path: '/fanxiu/activity-list/top-activity',
+    redirect: '/fanxiu/schedule',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/fanxiu/activity-list/resource-ranking',
+    redirect: '/fanxiu/schedule',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
     path: '/fanxiu/activity-list/yunmeng-trial',
-    redirect: to => ({
-      path: '/fanxiu/activity-list/top-activity',
-      query: { ...to.query, activity: 'yunmeng-trial' },
-    }),
+    redirect: '/fanxiu/schedule',
     skipFeatureAccess: true,
   },
   {
     scope: 'main',
     path: '/fanxiu/activity-list/xutian-palace',
-    redirect: to => ({
-      path: '/fanxiu/activity-list/top-activity',
-      query: { ...to.query, activity: 'xutian-palace' },
-    }),
+    redirect: '/fanxiu/schedule',
     skipFeatureAccess: true,
   },
   {

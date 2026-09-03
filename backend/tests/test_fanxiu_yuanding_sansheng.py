@@ -4,16 +4,18 @@ from datetime import datetime
 from threading import Event
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks.yuanding_sansheng import (
+    YuandingSanshengTaskMixin,
     exact_fragment,
+    fragment_text,
     gift_tab_fragment,
     yuanding_page_state,
     yuanding_store_state,
@@ -33,7 +35,7 @@ def _fragment(text: str, x: float, y: float, w: float = 80, h: float = 35):
 
 
 def test_yuanding_sansheng_is_internal_under_resource_parent() -> None:
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "yuanding_sansheng_daily_gift"
     )
@@ -42,7 +44,7 @@ def test_yuanding_sansheng_is_internal_under_resource_parent() -> None:
 
     tasks = [
         item
-        for item in default_data_annotation_scheduler_tasks(datetime(2026, 8, 8, 18, 0, 0))
+        for item in default_kernel_scheduler_tasks(datetime(2026, 8, 8, 18, 0, 0))
         if item["task_type"] in {"yuanding_sansheng_daily_gift", "resource_ranking"}
     ]
     assert len(tasks) == 1
@@ -53,7 +55,7 @@ def test_yuanding_sansheng_is_internal_under_resource_parent() -> None:
 
 
 def test_yuanding_internal_wrapper_strips_forged_scheduler_authority() -> None:
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "yuanding_sansheng_daily_gift"
     )
@@ -96,6 +98,67 @@ def test_yuanding_entry_and_gift_tab_must_be_unique() -> None:
     tab = _fragment("礼包", 772, 1449, 54, 95)
     assert gift_tab_fragment([tab]) is tab
     assert gift_tab_fragment([_fragment("礼包", 300, 700)]) is None
+
+
+def test_yuanding_fragment_text_matches_runtime_compact_text_contract() -> None:
+    assert fragment_text([
+        _fragment(" 缘 定\n三 生 ", 0, 0),
+        _fragment("每日限购：1", 0, 0),
+        {"text": None},
+        None,
+    ]) == "缘定三生每日限购：1"
+
+
+def test_wait_yuanding_page_reuses_fragments_without_second_ocr_call() -> None:
+    class Task(YuandingSanshengTaskMixin):
+        def _raise_if_stopped(self, _stop_event):
+            return None
+
+    class Runtime:
+        def __init__(self):
+            self.ocr_fragment_calls = 0
+            self.ocr_text_calls = 0
+
+        def cur_frame(self, *, update):
+            assert update is True
+            return "frame"
+
+        def ocr_fragments(self, frame):
+            assert frame == "frame"
+            self.ocr_fragment_calls += 1
+            return [
+                _fragment("礼包", 772, 1449, 54, 95),
+                _fragment("缘宠三生", 300, 100),
+            ]
+
+        def ocr_text(self, _frame):
+            self.ocr_text_calls += 1
+            raise AssertionError("已有 fragments 时不应再调用 Runtime.ocr_text")
+
+        def current_scene(self, scenes, *, update):
+            assert 249 in scenes
+            assert update is False
+            return 249, 100.0, "frame"
+
+    runtime = Runtime()
+    operation = Task()._wait_yuanding_page(
+        runtime,
+        Event(),
+        "main",
+        timeout_seconds=1.0,
+    )
+
+    try:
+        next(operation)
+    except StopIteration as exc:
+        frame, fragments = exc.value
+    else:
+        raise AssertionError("首帧已命中 main，不应进入等待")
+
+    assert frame == "frame"
+    assert len(fragments) == 2
+    assert runtime.ocr_fragment_calls == 1
+    assert runtime.ocr_text_calls == 0
 
 
 def test_yuanding_store_state_distinguishes_free_and_claimed() -> None:

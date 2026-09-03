@@ -33,19 +33,19 @@ class MozuTaskMixin:
             "current_scene": None,
         })
 
-    def daily_mozu_flow(self, runtime: Any):
+    def daily_mozu_flow(self, context: Any):
         now = job_now()
         window_start = now.replace(hour=12, minute=30, second=0, microsecond=0)
         next_run_text = (window_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        yield from runtime.go_scene(34)
-        yield from runtime.wait_click_then_view(34, "日程", 66)
-        yield from runtime.wait_action_settle(3.0)
+        yield from context.go_scene(34)
+        yield from context.wait_click_then_scene(34, "日程", 66)
+        yield from context.wait_action_settle(3.0)
         try:
-            yield from select_schedule_activity(runtime, r"魔祖", enter=True)
+            yield from select_schedule_activity(context, r"魔祖", enter=True)
         except ScheduleActivityNotFoundError as exc:
             if not exc.exhaustive:
                 raise
-            runtime.set_next_time(next_run_text)
+            context.set_next_time(next_run_text)
             return {
                 "result": "success",
                 "message": (
@@ -58,12 +58,12 @@ class MozuTaskMixin:
                 "exit_confirmed": False,
                 "left_times": None,
             }
-        yield from runtime.wait_view(
-            336, timeout=20.0, label="日常_魔祖：等待已校验的活动卡片进入 #336"
+        yield from context.wait_scene(
+            336, wait=20.0, label="日常_魔祖：等待已校验的活动卡片进入 #336"
         )
-        yield from runtime.wait_click_then_view(336, "前往", 337)
+        yield from context.wait_click_then_scene(336, "前往", 337)
         before_snapshot = read_demon_boss_snapshot()
-        completed_view = yield from runtime.wait_click_then_view(337, "前往", [338, 34, 339])
+        completed_view = yield from context.wait_click_then_scene(337, "前往", [338, 34, 339])
         completed_scene_id = getattr(completed_view, "id", completed_view)
         after_entry_snapshot = read_demon_boss_snapshot()
         before_left_times = (
@@ -87,10 +87,10 @@ class MozuTaskMixin:
             # delayed battlefield transport. Do not turn that early #34 into
             # a false participation result.
             try:
-                delayed = yield from runtime.wait_view(
+                delayed = yield from context.wait_scene(
                     338,
                     339,
-                    timeout=20.0,
+                    wait=20.0,
                     label="日常_魔祖：等待延迟战场落点",
                 )
                 completed_scene_id = getattr(delayed, "id", delayed)
@@ -99,20 +99,35 @@ class MozuTaskMixin:
                 completed_scene_id = 34
 
         if entry_observed:
-            yield from runtime.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
-            # The battlefield can keep rendering an unlabelled animated map
-            # after the minimum participation time.  Wait for a routable
-            # landing instead of asking goto_view() to navigate from that
-            # transient frame immediately.
-            transition = yield from runtime.wait_view(
-                20,
-                34,
-                339,
-                timeout=120.0,
-                label="日常_魔祖：等待战场结束并落到可返回页面",
-            )
-            completed_scene_id = getattr(transition, "id", transition)
-        landed = yield from runtime.goto_view(34)
+            yield from context.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
+            # 活动战场本身可能持续二十多分钟；完成最低参战时间后使用已有
+            # 安全离开图标和通用确认框主动退出，不能把“等整场结束”当收尾。
+            scene_id, _score, _frame = context.current_scene([338, 557, 20, 34, 339], update=True)
+            if scene_id in {338, 557}:
+                transition = yield from context.wait_click_then_scene(
+                    scene_id,
+                    "离开",
+                    [86, 186, 339, 34],
+                    timeout=25.0,
+                    settle_seconds=1.5,
+                    label="日常_魔祖：最低参战时间完成后主动离开战场",
+                )
+                completed_scene_id = getattr(transition, "id", transition)
+                if completed_scene_id == 86:
+                    transition = yield from context.wait_click_then_scene(
+                        86,
+                        "确认",
+                        [186, 339, 34],
+                        timeout=30.0,
+                        settle_seconds=1.5,
+                        label="日常_魔祖：确认离开战场",
+                    )
+                    completed_scene_id = getattr(transition, "id", transition)
+            elif scene_id in {20, 34, 339}:
+                completed_scene_id = scene_id
+            else:
+                raise RuntimeError(f"日常_魔祖：最低参战时间后未识别到可退出战场，当前 #{scene_id or 'unknown'}")
+        landed = yield from context.go_scene(34)
         completed_scene_id = getattr(landed, "id", landed)
         exit_confirmed = completed_scene_id == 34
         final_snapshot = read_demon_boss_snapshot()
@@ -121,7 +136,7 @@ class MozuTaskMixin:
             if final_snapshot.get("complete")
             else after_left_times
         )
-        runtime.set_next_time(next_run_text)
+        context.set_next_time(next_run_text)
         evidence = (
             f"Runtime 剩余次数 {before_left_times}->{after_left_times}"
             if runtime_confirmed

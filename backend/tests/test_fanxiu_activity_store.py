@@ -79,6 +79,17 @@ def test_store_region_rejects_partial_box_inside_multi_character_token():
     assert scan.targets == ()
 
 
+def test_store_region_ignores_dynamic_attribute_bonus_in_store_region():
+    scan = scan_activity_store_region(
+        _tokens("气血+156兆", x=50, y=1100, line="floating-stat")
+        + _tokens("488", x=430, y=1140, line="price")
+    )
+
+    assert [(target.value, target.is_cash) for target in scan.targets] == [
+        (488, False),
+    ]
+
+
 @dataclass
 class _FakeTarget:
     value: int

@@ -277,15 +277,15 @@ def require_stable_storage_bag_plan_frame(
 
 
 def plan_current_random_box_click(
-    runtime: Any,
+    context: Any,
     snapshot: Mapping[str, Any],
     request: StorageBagRandomBoxRequest,
 ) -> StorageBagItemClickPlan:
     """Re-register one fresh #525 frame and resolve the exact instance."""
 
-    view = runtime.view(STORAGE_BAG_SCENE)
-    current_data_url = runtime.cur_frame(update=True)
-    scene_id, _score, _frame = runtime.observe_scene(
+    view = context.view(STORAGE_BAG_SCENE)
+    current_data_url = context.cur_frame(update=True)
+    scene_id, _score, _frame = context.current_scene(
         frame_data_url=current_data_url
     )
     if scene_id != STORAGE_BAG_SCENE:
@@ -294,8 +294,8 @@ def plan_current_random_box_click(
     if not reference_data_url:
         # Formal trees normally store reference frames as sibling PNG files,
         # not multi-megabyte data URLs inside asset-tree.json.
-        reference_data_url = runtime.runner._scene_frame_data_url_from_reference(
-            runtime.ctx, view.raw
+        reference_data_url = context.runner._scene_frame_data_url_from_reference(
+            context.ctx, view.raw
         )
     current = _decode_frame(current_data_url)
     reference = _decode_frame(reference_data_url)
@@ -303,7 +303,7 @@ def plan_current_random_box_click(
     if reference.shape[:2] != current.shape[:2]:
         raise StorageBagRandomBoxBlocked("#525 参考帧与当前帧尺寸不一致")
     shape_names = ("窗口", "第1行第1个", "第1行第2个", "第2行第1个", "行间隙")
-    shapes = {name: runtime.shape(STORAGE_BAG_SCENE, name).raw for name in shape_names}
+    shapes = {name: context.shape(STORAGE_BAG_SCENE, name).raw for name in shape_names}
     grid = StorageBagGrid.from_shapes(shapes, frame_width=width, frame_height=height)
     viewport = register_storage_bag_viewport(
         reference,
@@ -316,7 +316,7 @@ def plan_current_random_box_click(
             "insufficient_observations", viewport.reason
         )
     cells = visible_storage_bag_cells(grid, viewport)
-    tokens = runtime.full_frame_ocr_tokens(frame_data_url=current_data_url)
+    tokens = context.full_frame_ocr_tokens(frame_data_url=current_data_url)
     observations = quantity_observations_from_ocr(cells, tokens)
     plan = plan_storage_bag_item_click(
         snapshot,
@@ -333,18 +333,18 @@ def plan_current_random_box_click(
     if plan.viewport_runtime_start is None:
         return plan
     try:
-        before_signature = runtime.image_signature_bytes_in_shape(
+        before_signature = context.image_signature_bytes_in_shape(
             STORAGE_BAG_SCENE,
             "窗口",
             frame_data_url=current_data_url,
         )
-        verification_data_url = runtime.cur_frame(update=True)
-        after_signature = runtime.image_signature_bytes_in_shape(
+        verification_data_url = context.cur_frame(update=True)
+        after_signature = context.image_signature_bytes_in_shape(
             STORAGE_BAG_SCENE,
             "窗口",
             frame_data_url=verification_data_url,
         )
-        similarity = runtime.image_signature_similarity(
+        similarity = context.image_signature_similarity(
             before_signature,
             after_signature,
         )
@@ -385,10 +385,10 @@ def parse_confirmed_use_quantity(tokens: list[Mapping[str, Any]]) -> int:
     return int(values[0])
 
 
-def read_confirmed_use_quantity(runtime: Any, frame_data_url: str) -> int:
+def read_confirmed_use_quantity(context: Any, frame_data_url: str) -> int:
     """Read #584's small orange integer, with a bounded enlarged-ROI fallback."""
 
-    tokens = runtime.ocr_tokens_in_shapes(
+    tokens = context.ocr_tokens_in_shapes(
         USE_QUANTITY_SCENE,
         ("当前数量",),
         padding=4,
@@ -403,7 +403,7 @@ def read_confirmed_use_quantity(runtime: Any, frame_data_url: str) -> int:
     import cv2
 
     frame = _decode_frame(frame_data_url)
-    shape = runtime.shape(USE_QUANTITY_SCENE, "当前数量").raw
+    shape = context.shape(USE_QUANTITY_SCENE, "当前数量").raw
     height, width = frame.shape[:2]
     x1 = max(0, round(width * float(shape.get("x") or 0.0)))
     y1 = max(0, round(height * float(shape.get("y") or 0.0)))
@@ -477,7 +477,7 @@ class StorageBagRandomBoxGuiAdapter:
     def __init__(
         self,
         *,
-        runtime: Any,
+        context: Any,
         snapshot_reader: SnapshotReader,
         catalog_cards_by_id: Mapping[str, Mapping[str, Any]],
         recorder: ExecutionRecorder,
@@ -490,7 +490,7 @@ class StorageBagRandomBoxGuiAdapter:
         max_scrolls: int = 12,
         after_snapshot_retries: int = 4,
     ) -> None:
-        self.runtime = runtime
+        self.context = context
         self.snapshot_reader = snapshot_reader
         self.catalog_cards_by_id = catalog_cards_by_id
         self.click_planner = click_planner
@@ -537,7 +537,7 @@ class StorageBagRandomBoxGuiAdapter:
         retry_count = 0
         scroll_count = 0
         while True:
-            plan = self.click_planner(self.runtime, before, request)
+            plan = self.click_planner(self.context, before, request)
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:
@@ -546,7 +546,7 @@ class StorageBagRandomBoxGuiAdapter:
                         f"#525 对齐有限重试后仍不唯一：{plan.status}；{plan.reason}"
                     )
                 retry_count += 1
-                yield from self.runtime.wait_action_settle(0.2)
+                yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
                 if scroll_count >= self.max_scrolls:
@@ -560,7 +560,7 @@ class StorageBagRandomBoxGuiAdapter:
                 )
                 if directive.direction == "none":
                     raise StorageBagRandomBoxBlocked("#525 滚动规划与不可见判定矛盾")
-                self.runtime.drag_shape_content(
+                self.context.drag_shape_content(
                     STORAGE_BAG_SCENE,
                     "窗口",
                     direction=directive.direction,
@@ -569,20 +569,20 @@ class StorageBagRandomBoxGuiAdapter:
                 )
                 scroll_count += 1
                 retry_count = 0
-                yield from self.runtime.wait_action_settle(0.25)
+                yield from self.context.wait_action_settle(0.25)
                 continue
             raise StorageBagRandomBoxBlocked(
                 f"#525 目标定位失败：{plan.status}；{plan.reason}"
             )
 
-        self.runtime.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
-        yield from self.runtime.wait_view(
+        self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
+        yield from self.context.wait_scene(
             self.detail_scene_id,
-            timeout=8.0,
+            wait=8.0,
             label=f"储物袋{self.operation_label}：等待 #{self.detail_scene_id} 详情",
         )
-        detail_frame = self.runtime.cur_frame(update=True)
-        title_tokens = self.runtime.ocr_tokens_in_shapes(
+        detail_frame = self.context.cur_frame(update=True)
+        title_tokens = self.context.ocr_tokens_in_shapes(
             self.detail_scene_id,
             ("详情标题",),
             padding=6,
@@ -597,7 +597,7 @@ class StorageBagRandomBoxGuiAdapter:
         if not detail.confirmed:
             cleanup_error = ""
             try:
-                yield from self.runtime.wait_click_then_view(
+                yield from self.context.wait_click_then_scene(
                     self.detail_scene_id,
                     "右侧暗幕返回",
                     STORAGE_BAG_SCENE,
@@ -610,32 +610,32 @@ class StorageBagRandomBoxGuiAdapter:
                 f"#{self.detail_scene_id} 详情标题二次核验失败：{detail.reason}{cleanup_error}"
             )
 
-        yield from self.runtime.wait_click(
+        yield from self.context.wait_click(
             self.detail_scene_id, "打开", timeout=8.0
         )
-        yield from self.runtime.wait_view(
+        yield from self.context.wait_scene(
             USE_QUANTITY_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋随机箱：等待 #584 数量确认",
         )
-        quantity_frame = self.runtime.cur_frame(update=True)
-        confirmed_quantity = read_confirmed_use_quantity(self.runtime, quantity_frame)
+        quantity_frame = self.context.cur_frame(update=True)
+        confirmed_quantity = read_confirmed_use_quantity(self.context, quantity_frame)
         if confirmed_quantity != request.quantity:
             raise StorageBagRandomBoxBlocked(
                 f"#584 当前数量 {confirmed_quantity} != 目标 Runtime 数量 {request.quantity}，拒绝使用"
             )
 
-        yield from self.runtime.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
-        landed = yield from self.runtime.wait_view(
+        yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
+        landed = yield from self.context.wait_scene(
             STORAGE_BAG_SCENE,
             TRANSIENT_REWARD_SCENE,
-            timeout=8.0,
+            wait=8.0,
             label="储物袋随机箱：等待结果或回到 #525",
         )
         if _view_id(landed) == TRANSIENT_REWARD_SCENE:
-            yield from self.runtime.wait_view(
+            yield from self.context.wait_scene(
                 STORAGE_BAG_SCENE,
-                timeout=8.0,
+                wait=8.0,
                 label="储物袋随机箱：等待短暂结果层自动回到 #525",
             )
         elif _view_id(landed) != STORAGE_BAG_SCENE:
@@ -655,7 +655,7 @@ class StorageBagRandomBoxGuiAdapter:
                 after = candidate
                 break
             if attempt + 1 < self.after_snapshot_retries:
-                yield from self.runtime.wait_action_settle(0.2)
+                yield from self.context.wait_action_settle(0.2)
         if after is None:
             raise StorageBagRandomBoxBlocked("使用后未取得同进程、完整且已变化的 Runtime 快照")
 

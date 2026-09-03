@@ -19,12 +19,12 @@ if str(ROOT) not in sys.path:
 
 from backend.core.fanxiu.game.macro_annotation import _recognize_data_annotation_ocr_frame
 from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
-from backend.core.fanxiu.runtime.mumu_control import screencap_mumu_adb_png
+from backend.core.fanxiu.client.mumu_control import screencap_mumu_adb_png
 from backend.core.temp_paths import codeyun_temp_root
 
 
-DEFAULT_OLD_XIANFU_ROOT = Path(r"D:\home\chenkunze\data\m2508凡修\mainwin\仙府")
-DEFAULT_SCREENSHOT_DIR = Path(r"D:\home\chenkunze\data\m2508凡修\mainwin\截图")
+DEFAULT_OLD_XIANFU_ROOT = Path(r"C:\home\chenkunze\data\m2508凡修\mainwin\仙府")
+DEFAULT_SCREENSHOT_DIR = Path(r"C:\home\chenkunze\data\m2508凡修\mainwin\截图")
 DEFAULT_OLD_CROP = (0.0, 42.0, 476.0, 1037.0)
 
 SNAP_KEYWORDS: dict[str, tuple[str, ...]] = {

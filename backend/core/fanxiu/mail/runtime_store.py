@@ -98,7 +98,7 @@ def pending_runtime_mail_action_candidates(engine_getter: EngineGetter, policies
                 select(FanxiuMailRecord).where(
                     FanxiuMailRecord.source == "runtime_memory",
                     FanxiuMailRecord.present_in_runtime == True,  # noqa: E712
-                    FanxiuMailRecord.runtime_status == "unclaimed",
+                    FanxiuMailRecord.execution_status == "unclaimed",
                     FanxiuMailRecord.action_policy.in_(tuple(sorted(policies))),
                     FanxiuMailRecord.locked == False,  # noqa: E712
                 )

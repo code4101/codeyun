@@ -38,11 +38,11 @@ def test_invalid_effective_now_fails_before_job_business_runs() -> None:
             raise AssertionError("unreachable")
 
 
-def test_behavior_tree_runtime_clock_uses_job_effective_now() -> None:
-    from backend.core.fanxiu.data_annotation import behavior_tree_runtime
+def test_behavior_tree_executor_clock_uses_job_effective_now() -> None:
+    from backend.core.fanxiu.data_annotation import behavior_tree_executor
 
     with job_effective_time({"effective_now": "2026-08-13 21:31:00"}):
-        assert behavior_tree_runtime._now() == datetime(2026, 8, 13, 21, 31, 0)
+        assert behavior_tree_executor._now() == datetime(2026, 8, 13, 21, 31, 0)
 
 
 def test_registered_task_cell_applies_effective_now_to_handler() -> None:
@@ -68,16 +68,16 @@ def test_registered_task_cell_applies_effective_now_to_handler() -> None:
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value.get("result") or "success"), ""
 
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = Runner()
-    binding.runtime_ctx = {}
+    binding.execution_ctx = {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -132,16 +132,16 @@ def test_effective_clock_enters_window_before_cell_can_report_success() -> None:
             return 60.0
 
         @staticmethod
-        def _runtime_guard_override_from_payload(_payload):
+        def _guard_override_from_payload(_payload):
             return None
 
         @staticmethod
-        def _normalize_runtime_task_result(value):
+        def _normalize_task_result(value):
             return str(value.get("result") or "success"), str(value.get("message") or "")
 
     binding = object.__new__(FanxiuJupyterBinding)
     binding.runner = Runner()
-    binding.runtime_ctx = {}
+    binding.execution_ctx = {}
     binding.stop_event = threading.Event()
 
     def drain(value, **_kwargs):
@@ -176,16 +176,16 @@ def test_kernel_task_compiles_effective_now_into_the_single_cell_protocol() -> N
 
 def test_api_requests_expose_effective_now_without_requiring_payload_internals() -> None:
     from backend.core.fanxiu.data_annotation.models import (
-        FanxiuBehaviorTreeRuntimeTaskCellRequest,
-        FanxiuDataAnnotationSchedulerRunNowRequest,
+        FanxiuKernelSchedulerTaskCellRequest,
+        FanxiuKernelSchedulerRunNowRequest,
     )
 
-    task_cell = FanxiuBehaviorTreeRuntimeTaskCellRequest(
+    task_cell = FanxiuKernelSchedulerTaskCellRequest(
         entry_id="mumu-0",
         task_type="kunlun_secret_lottery",
         effective_now="2026-08-13 21:15:00",
     )
-    run_now = FanxiuDataAnnotationSchedulerRunNowRequest(
+    run_now = FanxiuKernelSchedulerRunNowRequest(
         entry_id="mumu-0",
         task_id="kunlun-secret-lottery",
         effective_now="2026-08-13 21:15:00",
@@ -198,22 +198,22 @@ def test_api_requests_expose_effective_now_without_requiring_payload_internals()
 def test_scheduler_run_now_api_forwards_planned_mode_to_the_common_entry(monkeypatch) -> None:
     from backend.api import fanxiu as fanxiu_api
     from backend.core.fanxiu.data_annotation.models import (
-        FanxiuDataAnnotationSchedulerRunNowRequest,
+        FanxiuKernelSchedulerRunNowRequest,
     )
 
     captured: dict = {}
-    monkeypatch.setattr(fanxiu_api, "_sync_behavior_tree_runtime_runner_to_core", lambda: None)
+    monkeypatch.setattr(fanxiu_api, "_sync_behavior_tree_executor_to_core", lambda: None)
 
     def run_now(**kwargs):
         captured.update(kwargs)
         return {"status": "success", "phase": "done", "message": "accepted"}
 
-    monkeypatch.setattr(fanxiu_api._behavior_tree_control, "run_now_scheduler_task", run_now)
+    monkeypatch.setattr(fanxiu_api._kernel_scheduler_control, "run_now_scheduler_task", run_now)
 
-    result = fanxiu_api._run_now_fanxiu_data_annotation_scheduler_task(
+    result = fanxiu_api._run_now_fanxiu_kernel_scheduler_task(
         object(),
         "entry-a",
-        FanxiuDataAnnotationSchedulerRunNowRequest(
+        FanxiuKernelSchedulerRunNowRequest(
             entry_id="entry-a",
             task_id="job-a",
             business_time_mode="planned",

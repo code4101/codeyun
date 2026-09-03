@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from backend.core.fanxiu.runtime.adb_device import (
+from backend.core.fanxiu.client.adb_device import (
     fanxiu_adb_device_service,
 )
 from backend.core.fanxiu.instrumentation.policy import (
@@ -522,6 +522,29 @@ class FanxiuInstrumentationService:
                 ),
             },
             {
+                "name": "peakrace.snapshot",
+                "kind": "query",
+                "implemented": True,
+                "validation_status": "adapter-tested",
+                "side_effect": "none",
+                "description": (
+                    "从已加载的 PeakraceMgr 本地模型读取当前轮次、个人排名、"
+                    "子活动分组和已竞猜目标；不会调用 Lua 方法或请求服务器。"
+                ),
+            },
+            {
+                "name": "peakrace.business_state.snapshot",
+                "kind": "query",
+                "implemented": True,
+                "validation_status": "adapter-tested",
+                "side_effect": "none",
+                "description": (
+                    "原子组合本期巅峰赛公共日程与 PeakraceMgr 个人态，"
+                    "校验进程身份后投影阶段、轮次、资格、榜单与完成阻塞项；"
+                    "竞猜策略未知时保持失败关闭。"
+                ),
+            },
+            {
                 "name": "activity_rank.lingzhuang_huadao.snapshot",
                 "kind": "query",
                 "implemented": True,
@@ -891,6 +914,24 @@ class FanxiuInstrumentationService:
         )
 
         return read_activity_rank_runtime_snapshot(int(activity_id))
+
+    def peakrace_snapshot(self) -> dict[str, Any]:
+        """Return the already-loaded strictly read-only Peak Race snapshot."""
+
+        from backend.core.fanxiu.instrumentation.peakrace import (
+            read_peakrace_runtime_snapshot,
+        )
+
+        return read_peakrace_runtime_snapshot()
+
+    def peakrace_business_state_snapshot(self) -> dict[str, Any]:
+        """Return one coherent schedule-plus-Runtime Peak Race projection."""
+
+        from backend.core.fanxiu.activity.peakrace_business_snapshot import (
+            read_peakrace_business_state_snapshot,
+        )
+
+        return read_peakrace_business_state_snapshot()
 
     def ensure_server(
         self,

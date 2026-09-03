@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from backend.core.fanxiu.data_annotation import scheduler_defaults
+from backend.core.fanxiu.data_annotation import kernel_scheduler_defaults as scheduler_defaults
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
@@ -167,7 +167,7 @@ def test_yaochi_opens_shared_gift_page_with_proven_family_shape(monkeypatch) -> 
         def click_shape_center(self, scene_id, title):
             self.clicks.append((scene_id, title))
 
-        def wait_view(self, scene_id, **_kwargs):
+        def wait_scene(self, scene_id, **_kwargs):
             if False:
                 yield None
             return scene_id
@@ -542,7 +542,7 @@ def test_resource_rank_aligns_multiday_bar_row_independently_from_start_column()
 
 
 def test_resource_gift_is_internal_and_resource_parent_is_the_only_job() -> None:
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "resource_rank_daily_free_gift"
     )
@@ -551,7 +551,7 @@ def test_resource_gift_is_internal_and_resource_parent_is_the_only_job() -> None
 
     jobs = [
         item
-        for item in scheduler_defaults.default_data_annotation_scheduler_tasks(
+        for item in scheduler_defaults.default_kernel_scheduler_tasks(
             now=datetime(2026, 8, 19, 12, 0)
         )
         if item["id"] in {RESOURCE_RANK_DAILY_GIFT_TASK_ID, "resource-ranking"}

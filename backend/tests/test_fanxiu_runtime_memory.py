@@ -1336,6 +1336,69 @@ def test_redpacket_rewarded_special_event_is_not_a_trigger_candidate(monkeypatch
     }
 
 
+def test_redpacket_unsupported_qmch_family_member_never_falls_through_to_ordinary(
+    monkeypatch,
+):
+    class FakeReader:
+        def __init__(self, _memory):
+            pass
+
+        def table(self, _address):
+            return {"fields": data}
+
+        def fields(self, value):
+            return value if isinstance(value, dict) else {}
+
+        def list_items(self, value):
+            return list(value or []), len(value or [])
+
+        def dictionary_fields(self, value):
+            return dict(value or {})
+
+        def long(self, _value):
+            return None
+
+    data = {
+        "_RedBagList": [
+            {"uid": 5017, "id": 5017, "channel": 104, "subChannelId": 0},
+            {"uid": 1222, "id": 1222, "channel": 4, "subChannelId": 0},
+        ],
+        "_RedBagDetailDic": {},
+        "_UserGrabRedBagDic": {},
+        "_HasOverdueUidDic": {},
+        "_BeLimitRedBagIdDic": {},
+        "_ReceiveRedBagList": [],
+        "_idIndependentMap": {},
+        "_eventMap": {},
+        "_MainUiRedBagShowList": [],
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.red_packet.LuaJitReader",
+        FakeReader,
+    )
+    memory = MumuProcessMemory(
+        pid=1,
+        process_start_ticks=2,
+        adb_serial="test",
+        regions=[],
+    )
+
+    result = _redpacket_snapshot(memory, 0x1234, cache_hit=True)
+
+    assert result["pending_count"] == 1
+    assert result["trigger_candidate_count"] == 1
+    assert [item["id"] for item in result["items"]] == [1222]
+    assert [item["id"] for item in result["structural_items"]] == [5017, 1222]
+    special = result["special_event_items"][0]
+    assert special["id"] == 5017
+    assert special["event_type"] == 9033
+    assert special["trigger_candidate"] is False
+    assert special["classification"] == "special_event_not_daily_chat_route"
+    assert special["exclusion_reasons"] == [
+        "special_event_not_daily_chat_route"
+    ]
+
+
 def test_redpacket_snapshot_preserves_all_real_list_rows_and_triggers_gui_deep_check(
     monkeypatch,
 ):

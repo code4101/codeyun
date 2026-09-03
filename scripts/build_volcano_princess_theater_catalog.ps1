@@ -1,6 +1,6 @@
 param(
     [string]$GameRoot = 'D:\SteamLibrary\steamapps\common\VolcanoPrincess',
-    [string]$ReverseRoot = 'D:\home\chenkunze\data\m2607火山的女儿逆向',
+    [string]$ReverseRoot = 'C:\home\chenkunze\data\m2607火山的女儿逆向',
     [string]$SteamManifest = 'D:\SteamLibrary\steamapps\appmanifest_1669980.acf'
 )
 

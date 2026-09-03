@@ -10,8 +10,13 @@ from backend.core.fanxiu.activity.rank_reward import (
 )
 
 
-def load_yunmeng_rank_reward_tiers(**kwargs: Any) -> list[dict[str, Any]]:
-    return load_activity_rank_reward_tiers(**kwargs)
+def load_yunmeng_rank_reward_tiers(
+    *, reward_activity_id: int, **kwargs: Any
+) -> list[dict[str, Any]]:
+    return load_activity_rank_reward_tiers(
+        reward_activity_id=reward_activity_id,
+        **kwargs,
+    )
 
 
 __all__ = [

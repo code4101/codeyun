@@ -219,7 +219,7 @@ def read_lingzhuang_huadao_snapshot() -> dict[str, Any]:
     memory: MumuProcessMemory | None = None
     try:
         reward_tiers = load_activity_rank_reward_tiers(
-            rank_activity_id=LINGZHUANG_HUADAO_RANK_ACTIVITY_ID,
+            reward_activity_id=LINGZHUANG_HUADAO_RANK_ACTIVITY_ID,
             event_date=datetime.now().astimezone().date().isoformat(),
         )
         memory = MumuProcessMemory.discover_cached(fallback_to_discovery=False)

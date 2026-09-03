@@ -396,7 +396,7 @@ export interface FanxiuGameWindow2MatchResponse {
   match_debug?: FanxiuGameWindow2MatchDebug;
 }
 
-export interface FanxiuBehaviorTreeRuntimeLogEntry {
+export interface FanxiuKernelSchedulerLogEntry {
   id: string;
   time: string;
   kind: string;
@@ -411,27 +411,27 @@ export interface FanxiuBehaviorTreeRuntimeLogEntry {
   ts?: string;
 }
 
-export interface FanxiuBehaviorTreeRuntimeLogResponse {
-  entries: FanxiuBehaviorTreeRuntimeLogEntry[];
+export interface FanxiuKernelSchedulerLogResponse {
+  entries: FanxiuKernelSchedulerLogEntry[];
   path: string;
 }
 
-export interface FanxiuBehaviorTreeRuntimeCellLog {
+export interface FanxiuKernelSchedulerCellLog {
   id: string;
   title: string;
   source_kind: string;
   source: string;
   started_at: string;
   ended_at: string;
-  entries: FanxiuBehaviorTreeRuntimeLogEntry[];
+  entries: FanxiuKernelSchedulerLogEntry[];
 }
 
-export interface FanxiuBehaviorTreeRuntimeCellLogResponse {
-  cells: FanxiuBehaviorTreeRuntimeCellLog[];
+export interface FanxiuKernelSchedulerCellLogResponse {
+  cells: FanxiuKernelSchedulerCellLog[];
   path: string;
 }
 
-export interface FanxiuBehaviorTreeRuntimeGuardItem {
+export interface FanxiuKernelSchedulerGuardItem {
   id: string;
   label: string;
   message?: string;
@@ -456,7 +456,7 @@ export interface FanxiuDataAnnotationDoctorWatchLatestResponse {
     active?: boolean;
     age_seconds?: number | null;
     stale_after_seconds?: number;
-    runtime_consistent?: boolean;
+    scheduler_consistent?: boolean;
     updated_at_text?: string;
     pid?: number;
     message?: string;
@@ -466,8 +466,8 @@ export interface FanxiuDataAnnotationDoctorWatchLatestResponse {
     severity?: string;
     summary?: string;
     owner_active?: boolean;
-    runtime_status?: string;
-    runtime_phase?: string;
+    execution_status?: string;
+    execution_phase?: string;
     scheduler_next_action?: string;
     due_task_count?: number;
     due_task_ids?: string[];
@@ -511,7 +511,7 @@ export interface FanxiuDataAnnotationDoctorWatchEnsureResponse {
   command?: string[];
 }
 
-export interface FanxiuBehaviorTreeRuntimeStatus {
+export interface FanxiuKernelSchedulerStatus {
   ok: boolean;
   behavior_tree_enabled?: boolean;
   running: boolean;
@@ -521,7 +521,7 @@ export interface FanxiuBehaviorTreeRuntimeStatus {
   guard_running?: boolean;
   guard_entry_id?: string;
   guard_interval_seconds?: number;
-  guard_items?: Record<string, FanxiuBehaviorTreeRuntimeGuardItem>;
+  guard_items?: Record<string, FanxiuKernelSchedulerGuardItem>;
   last_guard_event?: Record<string, unknown>;
   status: 'idle' | 'running' | 'stopping' | 'stopped' | 'success' | 'error' | string;
   entry_id: string;
@@ -542,7 +542,7 @@ export interface FanxiuBehaviorTreeRuntimeStatus {
   finished_at: number;
   error: string;
   logs: Array<{ time: string; kind: string; message: string }>;
-  cell_logs?: FanxiuBehaviorTreeRuntimeCellLog[];
+  cell_logs?: FanxiuKernelSchedulerCellLog[];
 }
 
 export interface FanxiuGameWindow2FrameStatus {
@@ -584,16 +584,16 @@ export interface FanxiuInfoWindowControlStatus {
   };
 }
 
-export interface FanxiuBehaviorTreeRuntimeDeviceRestartResponse {
+export interface FanxiuKernelSchedulerDeviceRestartResponse {
   ok: boolean;
   recovered: boolean;
   status: string;
   message: string;
   device: Record<string, unknown>;
-  runtime: FanxiuBehaviorTreeRuntimeStatus;
+  scheduler: FanxiuKernelSchedulerStatus;
 }
 
-export interface FanxiuDataAnnotationSchedulerTaskItem {
+export interface FanxiuKernelSchedulerTaskItem {
   id: string;
   task_type: string;
   label: string;
@@ -618,9 +618,9 @@ export interface FanxiuDataAnnotationSchedulerTaskItem {
   checkpoint?: Record<string, unknown> | null;
 }
 
-export interface FanxiuDataAnnotationSchedulerTasksResponse {
+export interface FanxiuKernelSchedulerTasksResponse {
   ok: boolean;
-  tasks: FanxiuDataAnnotationSchedulerTaskItem[];
+  tasks: FanxiuKernelSchedulerTaskItem[];
   job_group_enabled?: boolean;
   path: string;
 }
@@ -643,7 +643,7 @@ export interface FanxiuGameStateInspectionStatus {
   last_duration_ms?: number | null;
 }
 
-export interface FanxiuDataAnnotationSchedulerTimeSequenceItem {
+export interface FanxiuKernelSchedulerTimeSequenceItem {
   task_id: string;
   task_label: string;
   original_next_time?: string | null;
@@ -651,19 +651,19 @@ export interface FanxiuDataAnnotationSchedulerTimeSequenceItem {
   bias_minutes: number;
 }
 
-export interface FanxiuDataAnnotationSchedulerTimeSequenceGroup {
+export interface FanxiuKernelSchedulerTimeSequenceGroup {
   key: string;
   original_time: string;
   task_ids: string[];
-  items: FanxiuDataAnnotationSchedulerTimeSequenceItem[];
+  items: FanxiuKernelSchedulerTimeSequenceItem[];
 }
 
-export interface FanxiuDataAnnotationSchedulerTimeSequenceResponse {
+export interface FanxiuKernelSchedulerTimeSequenceResponse {
   ok: boolean;
-  groups: FanxiuDataAnnotationSchedulerTimeSequenceGroup[];
+  groups: FanxiuKernelSchedulerTimeSequenceGroup[];
 }
 
-export interface FanxiuDataAnnotationSchedulerPlanItem {
+export interface FanxiuKernelSchedulerPlanItem {
   id: string;
   task_type: string;
   label: string;
@@ -679,16 +679,16 @@ export interface FanxiuDataAnnotationSchedulerPlanItem {
   fact: Record<string, unknown>;
 }
 
-export interface FanxiuDataAnnotationSchedulerPlanResponse {
+export interface FanxiuKernelSchedulerPlanResponse {
   ok: boolean;
   next_action: string;
   message: string;
   job_group_enabled?: boolean;
   blocking_overlays?: Array<Record<string, unknown>>;
-  runtime: Record<string, unknown>;
+  context: Record<string, unknown>;
   facts_summary: Record<string, unknown>;
-  due_tasks: FanxiuDataAnnotationSchedulerPlanItem[];
-  tasks: FanxiuDataAnnotationSchedulerPlanItem[];
+  due_tasks: FanxiuKernelSchedulerPlanItem[];
+  tasks: FanxiuKernelSchedulerPlanItem[];
   path: string;
 }
 
@@ -773,7 +773,7 @@ export interface FanxiuDataAnnotationNavigationIncidentSummary {
   current_scene_id?: number | null;
   fallback_used?: boolean;
   trigger?: Record<string, unknown>;
-  runtime?: Record<string, unknown>;
+  context?: Record<string, unknown>;
   resolution?: Record<string, unknown> | null;
   timeline_count?: number;
 }
@@ -811,7 +811,7 @@ export interface FanxiuDataAnnotationNavigationIncident {
   fallback_used?: boolean;
   trigger?: { type?: string; label?: string; threshold?: Record<string, unknown> };
   policy?: Record<string, unknown>;
-  runtime?: {
+  context?: {
     task?: string | null;
     task_id?: string | null;
     task_type?: string | null;
@@ -2137,6 +2137,12 @@ export interface FanxiuExchangeActivityObservationPage {
 export interface FanxiuLatestExchangeActivitySnapshot {
   activity_type?: string | null;
   snapshot?: FanxiuExchangeActivitySnapshot | null;
+}
+
+export interface FanxiuScheduleRankingSnapshot {
+  business_date: string;
+  gameplay_rank: FanxiuLatestExchangeActivitySnapshot;
+  resource_rank: FanxiuLatestExchangeActivitySnapshot;
 }
 
 export interface FanxiuYuandingSanshengTaskMilestone {
@@ -4085,7 +4091,7 @@ export interface FanxiuMailRecord {
   create_time_ms?: number | null;
   source?: string;
   status?: string;
-  runtime_status?: 'unclaimed' | 'claimed' | 'claimed_absent' | 'no_attachment' | string;
+  execution_status?: 'unclaimed' | 'claimed' | 'claimed_absent' | 'no_attachment' | string;
   desired_status?: '锁定' | '留存' | '可领' | string;
   present_in_runtime?: boolean;
   reward_getted?: boolean | null;
@@ -5880,7 +5886,7 @@ export const getLocalScriptProcesses = () => {
 };
 
 export const terminateFanxiuProcesses = () => {
-  // Hard-stop helper for legacy Fanxiu script leftovers. Prefer runtime restart/wake actions for resident Kernel ops.
+  // Hard-stop helper for legacy Fanxiu script leftovers. Prefer Kernel scheduler restart/wake actions for resident Kernel ops.
   return api.post<FanxiuProcessTerminateResponse>('/fanxiu/processes/terminate').then(res => res.data);
 };
 
@@ -6035,7 +6041,7 @@ export const matchFanxiuGameWindow2Screenshot = (
   }).then(res => res.data);
 };
 
-export const getFanxiuBehaviorTreeRuntimeStatus = (
+export const getFanxiuKernelSchedulerStatus = (
   entryId = '',
   options: {
     includeCellLogs?: boolean;
@@ -6047,13 +6053,13 @@ export const getFanxiuBehaviorTreeRuntimeStatus = (
   if (options.includeCellLogs !== undefined) params.include_cell_logs = options.includeCellLogs;
   if (options.includeLogs !== undefined) params.include_logs = options.includeLogs;
   return api
-    .get<FanxiuBehaviorTreeRuntimeStatus>('/fanxiu/data-annotation/runtime/status', { params })
+    .get<FanxiuKernelSchedulerStatus>('/fanxiu/kernel-scheduler/status', { params })
     .then(res => res.data);
 };
 
 export const getFanxiuInfoWindowStatus = (entryId = '') => {
   return api
-    .get<FanxiuInfoWindowControlStatus>('/fanxiu/data-annotation/runtime/info-window', {
+    .get<FanxiuInfoWindowControlStatus>('/fanxiu/kernel-scheduler/info-window', {
       params: entryId ? { entry_id: entryId } : {},
     })
     .then(res => res.data);
@@ -6065,7 +6071,7 @@ export const setFanxiuInfoWindowSettings = (
 ) => {
   return api
     .post<FanxiuInfoWindowControlStatus>(
-      '/fanxiu/data-annotation/runtime/info-window/settings',
+      '/fanxiu/kernel-scheduler/info-window/settings',
       { entry_id: entryId, ...settings },
       { timeout: 10000 },
     )
@@ -6081,8 +6087,8 @@ export const submitFanxiuDataAnnotationTaskCell = (
   options: { timeoutSeconds?: number } = {},
 ) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/cells/task',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/cells/task',
       { entry_id: entryId, task_type: taskType, payload, timeout_seconds: options.timeoutSeconds ?? null },
       { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, ((options.timeoutSeconds ?? 30) * 1000) + 5000) },
     )
@@ -6096,8 +6102,8 @@ export const submitFanxiuDataAnnotationCodeCell = (
 ) => {
   const timeoutSeconds = options.timeoutSeconds ?? 120;
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/cells/code',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/cells/code',
       {
         entry_id: entryId,
         code,
@@ -6109,26 +6115,26 @@ export const submitFanxiuDataAnnotationCodeCell = (
     .then(res => res.data);
 };
 
-export const stopFanxiuBehaviorTreeRuntimeCurrentTask = (entryId?: string) => {
+export const stopFanxiuKernelSchedulerCurrentTask = (entryId?: string) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>('/fanxiu/data-annotation/runtime/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
+    .post<FanxiuKernelSchedulerStatus>('/fanxiu/kernel-scheduler/task/stop', { entry_id: entryId || null }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
-export const setFanxiuBehaviorTreeRuntimeBehaviorTree = (entryId: string, enabled: boolean) => {
+export const setFanxiuKernelSchedulerBehaviorTree = (entryId: string, enabled: boolean) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/behavior-tree/set',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/behavior-tree/set',
       { entry_id: entryId, enabled },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
     )
     .then(res => res.data);
 };
 
-export const restartFanxiuBehaviorTreeRuntimeKernel = (entryId: string, timeoutSeconds = 5) => {
+export const restartFanxiuKernelSchedulerKernel = (entryId: string, timeoutSeconds = 5) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/kernel/restart',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/kernel/restart',
       { entry_id: entryId, timeout_seconds: timeoutSeconds },
       { timeout: Math.max(FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT, (timeoutSeconds * 1000) + 10000) },
     )
@@ -6141,119 +6147,119 @@ export const syncFanxiuMailRuntime = () => {
     .then(res => res.data);
 };
 
-export const restartFanxiuBehaviorTreeRuntimeDevice = (entryId: string) => {
+export const restartFanxiuKernelSchedulerDevice = (entryId: string) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeDeviceRestartResponse>(
-      '/fanxiu/data-annotation/runtime/device/restart',
+    .post<FanxiuKernelSchedulerDeviceRestartResponse>(
+      '/fanxiu/kernel-scheduler/device/restart',
       { entry_id: entryId },
       { timeout: 240000 },
     )
     .then(res => res.data);
 };
 
-export const setFanxiuBehaviorTreeRuntimeGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'device_health') => {
+export const setFanxiuKernelSchedulerGuard = (entryId: string, enabled: boolean, intervalSeconds = 2, guardId = 'device_health') => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/guard/set',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/guard/set',
       { entry_id: entryId, guard_id: guardId, enabled, interval_seconds: intervalSeconds },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
     )
     .then(res => res.data);
 };
 
-export const setFanxiuBehaviorTreeRuntimeGuardGroup = (entryId: string, enabled: boolean) => {
+export const setFanxiuKernelSchedulerGuardGroup = (entryId: string, enabled: boolean) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/runtime/guard/group/set',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/guard/group/set',
       { entry_id: entryId, enabled },
       { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT },
     )
     .then(res => res.data);
 };
 
-export const getFanxiuBehaviorTreeRuntimeLogs = (limit = 80, scope = '', itemId = '') => {
+export const getFanxiuKernelSchedulerLogs = (limit = 80, scope = '', itemId = '') => {
   return api
-    .get<FanxiuBehaviorTreeRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs', { params: { limit, scope, item_id: itemId } })
+    .get<FanxiuKernelSchedulerLogResponse>('/fanxiu/kernel-scheduler/logs', { params: { limit, scope, item_id: itemId } })
     .then(res => res.data);
 };
 
-export const getFanxiuBehaviorTreeRuntimeCellLogs = (limit = 20, logLimit = 1000) => {
+export const getFanxiuKernelSchedulerCellLogs = (limit = 20, logLimit = 1000) => {
   return api
-    .get<FanxiuBehaviorTreeRuntimeCellLogResponse>('/fanxiu/data-annotation/runtime/cell-logs', { params: { limit, log_limit: logLimit } })
+    .get<FanxiuKernelSchedulerCellLogResponse>('/fanxiu/kernel-scheduler/cell-logs', { params: { limit, log_limit: logLimit } })
     .then(res => res.data);
 };
 
 export const getFanxiuDataAnnotationWorldFacts = () => {
   return api
-    .get<FanxiuDataAnnotationWorldFactsResponse>('/fanxiu/data-annotation/runtime/world-facts')
+    .get<FanxiuDataAnnotationWorldFactsResponse>('/fanxiu/kernel-scheduler/world-facts')
     .then(res => res.data);
 };
 
 export const getFanxiuDataAnnotationDoctorWatchLatest = () => {
   return api
-    .get<FanxiuDataAnnotationDoctorWatchLatestResponse>('/fanxiu/data-annotation/runtime/doctor-watch/latest')
+    .get<FanxiuDataAnnotationDoctorWatchLatestResponse>('/fanxiu/kernel-scheduler/doctor-watch/latest')
     .then(res => res.data);
 };
 
 export const ensureFanxiuDataAnnotationDoctorWatch = () => {
   return api
-    .post<FanxiuDataAnnotationDoctorWatchEnsureResponse>('/fanxiu/data-annotation/runtime/doctor-watch/ensure')
+    .post<FanxiuDataAnnotationDoctorWatchEnsureResponse>('/fanxiu/kernel-scheduler/doctor-watch/ensure')
     .then(res => res.data);
 };
 
-export const clearFanxiuBehaviorTreeRuntimeLogs = () => {
-  return api.delete<FanxiuBehaviorTreeRuntimeLogResponse>('/fanxiu/data-annotation/runtime/logs').then(res => res.data);
+export const clearFanxiuKernelSchedulerLogs = () => {
+  return api.delete<FanxiuKernelSchedulerLogResponse>('/fanxiu/kernel-scheduler/logs').then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationSchedulerTasks = () => {
-  return api.get<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks').then(res => res.data);
+export const getFanxiuKernelSchedulerTasks = () => {
+  return api.get<FanxiuKernelSchedulerTasksResponse>('/fanxiu/kernel-scheduler/tasks').then(res => res.data);
 };
 
 export const getFanxiuGameStateInspectionStatus = () => {
   return api
-    .get<FanxiuGameStateInspectionStatus>('/fanxiu/data-annotation/scheduler/state-inspection')
+    .get<FanxiuGameStateInspectionStatus>('/fanxiu/kernel-scheduler/state-inspection')
     .then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationSchedulerPlan = () => {
-  return api.get<FanxiuDataAnnotationSchedulerPlanResponse>('/fanxiu/data-annotation/scheduler/plan').then(res => res.data);
+export const getFanxiuKernelSchedulerPlan = () => {
+  return api.get<FanxiuKernelSchedulerPlanResponse>('/fanxiu/kernel-scheduler/plan').then(res => res.data);
 };
 
-export const getFanxiuDataAnnotationSchedulerTimeSequence = () => {
+export const getFanxiuKernelSchedulerTimeSequence = () => {
   return api
-    .get<FanxiuDataAnnotationSchedulerTimeSequenceResponse>('/fanxiu/data-annotation/scheduler/time-sequence')
+    .get<FanxiuKernelSchedulerTimeSequenceResponse>('/fanxiu/kernel-scheduler/time-sequence')
     .then(res => res.data);
 };
 
-export const saveFanxiuDataAnnotationSchedulerTimeSequence = (
+export const saveFanxiuKernelSchedulerTimeSequence = (
   groups: Array<{ key: string; task_ids: string[] }>,
 ) => {
   return api
-    .put<FanxiuDataAnnotationSchedulerTimeSequenceResponse>(
-      '/fanxiu/data-annotation/scheduler/time-sequence',
+    .put<FanxiuKernelSchedulerTimeSequenceResponse>(
+      '/fanxiu/kernel-scheduler/time-sequence',
       { groups },
     )
     .then(res => res.data);
 };
 
-export const saveFanxiuDataAnnotationSchedulerTasks = (
-  tasks: Array<Pick<FanxiuDataAnnotationSchedulerTaskItem, 'id'> & Partial<Pick<
-    FanxiuDataAnnotationSchedulerTaskItem,
+export const saveFanxiuKernelSchedulerTasks = (
+  tasks: Array<Pick<FanxiuKernelSchedulerTaskItem, 'id'> & Partial<Pick<
+    FanxiuKernelSchedulerTaskItem,
     'dispatch_level' | 'dispatch_order' | 'trigger_description' | 'error_retry_delay_seconds'
   >>>,
 ) => {
-  return api.put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/tasks', tasks).then(res => res.data);
+  return api.put<FanxiuKernelSchedulerTasksResponse>('/fanxiu/kernel-scheduler/tasks', tasks).then(res => res.data);
 };
 
-export const setFanxiuDataAnnotationSchedulerSettings = (jobGroupEnabled: boolean, entryId = '') => {
+export const setFanxiuKernelSchedulerSettings = (jobGroupEnabled: boolean, entryId = '') => {
   return api
-    .put<FanxiuDataAnnotationSchedulerTasksResponse>('/fanxiu/data-annotation/scheduler/settings', { job_group_enabled: jobGroupEnabled, entry_id: entryId })
+    .put<FanxiuKernelSchedulerTasksResponse>('/fanxiu/kernel-scheduler/settings', { job_group_enabled: jobGroupEnabled, entry_id: entryId })
     .then(res => res.data);
 };
 
 export type FanxiuSchedulerBusinessTimeMode = 'planned' | 'current';
 
-export const runNowFanxiuDataAnnotationSchedulerTask = (
+export const runNowFanxiuKernelSchedulerTask = (
   entryId: string,
   taskId: string,
   payload: Record<string, unknown> = {},
@@ -6261,8 +6267,8 @@ export const runNowFanxiuDataAnnotationSchedulerTask = (
   businessTimeMode: FanxiuSchedulerBusinessTimeMode = 'planned',
 ) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>(
-      '/fanxiu/data-annotation/scheduler/task/run-now',
+    .post<FanxiuKernelSchedulerStatus>(
+      '/fanxiu/kernel-scheduler/task/run-now',
       {
         entry_id: entryId,
         task_id: taskId,
@@ -6275,9 +6281,9 @@ export const runNowFanxiuDataAnnotationSchedulerTask = (
     .then(res => res.data);
 };
 
-export const runDueFanxiuDataAnnotationSchedulerTasks = (entryId: string) => {
+export const runDueFanxiuKernelSchedulerTasks = (entryId: string) => {
   return api
-    .post<FanxiuBehaviorTreeRuntimeStatus>('/fanxiu/data-annotation/scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
+    .post<FanxiuKernelSchedulerStatus>('/fanxiu/kernel-scheduler/run-due', { entry_id: entryId }, { timeout: FANXIU_DATA_ANNOTATION_CONTROL_TIMEOUT })
     .then(res => res.data);
 };
 
@@ -6314,23 +6320,23 @@ export const getFanxiuDataAnnotationRecognitionAmbiguity = (entryId: string, sig
     .then(res => res.data);
 };
 
-export const triggerOnceFanxiuDataAnnotationSchedulerTask = (entryId: string, taskId: string) => {
+export const triggerOnceFanxiuKernelSchedulerTask = (entryId: string, taskId: string) => {
   return api
     .post<{ ok: boolean; task_id: string; next_time: string }>(
-      '/fanxiu/data-annotation/scheduler/task/trigger-once',
+      '/fanxiu/kernel-scheduler/task/trigger-once',
       { entry_id: entryId, task_id: taskId },
     )
     .then(res => res.data);
 };
 
-export const setFanxiuDataAnnotationSchedulerTaskNextTime = (
+export const setFanxiuKernelSchedulerTaskNextTime = (
   entryId: string,
   taskId: string,
   nextTime: string | null,
 ) => {
   return api
     .put<{ ok: boolean; task_id: string; next_time: string | null }>(
-      '/fanxiu/data-annotation/scheduler/task/next-time',
+      '/fanxiu/kernel-scheduler/task/next-time',
       { entry_id: entryId, task_id: taskId, next_time: nextTime },
     )
     .then(res => res.data);
@@ -6718,6 +6724,12 @@ export const getLatestFanxiuExchangeActivitySnapshot = (activityTypes: string[])
   return api.get<FanxiuLatestExchangeActivitySnapshot>(
     '/fanxiu/activity-list/latest-exchange-event',
     { params: { activity_types: activityTypes.join(',') } },
+  ).then(res => res.data);
+};
+
+export const getFanxiuScheduleRankings = () => {
+  return api.get<FanxiuScheduleRankingSnapshot>(
+    '/fanxiu/schedule/rankings',
   ).then(res => res.data);
 };
 

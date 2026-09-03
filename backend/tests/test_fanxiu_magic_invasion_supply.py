@@ -100,7 +100,7 @@ def test_plan_fails_before_action_when_deterministic_boxes_are_insufficient() ->
 
 def test_sufficient_runtime_supply_does_not_load_choice_box_catalog() -> None:
     class _Runtime:
-        def goto_view(self, _scene):
+        def go_scene(self, _scene):
             yield None
 
         def wait_click(self, *_args, **_kwargs):
@@ -110,7 +110,7 @@ def test_sufficient_runtime_supply_does_not_load_choice_box_catalog() -> None:
             yield None
 
     class _Runner:
-        def _fanxiu_runtime(self, *_args, **_kwargs):
+        def _behavior_tree_context(self, *_args, **_kwargs):
             return _Runtime()
 
     def unavailable_catalog():

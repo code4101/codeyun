@@ -95,7 +95,7 @@ def test_supply_delta_requires_exact_tree_cost_and_box_gain() -> None:
 
 def test_supply_replay_passes_without_opening_shop_when_boxes_are_sufficient() -> None:
     class Runtime:
-        def goto_view(self, _scene):
+        def go_scene(self, _scene):
             if False:
                 yield None
 
@@ -103,7 +103,7 @@ def test_supply_replay_passes_without_opening_shop_when_boxes_are_sufficient() -
             if False:
                 yield None
 
-        def wait_view(self, *_args, **_kwargs):
+        def wait_scene(self, *_args, **_kwargs):
             if False:
                 yield None
 
@@ -161,7 +161,7 @@ def test_supply_accepts_direct_product_shop_after_using_tree(monkeypatch) -> Non
     monkeypatch.setattr(supply_module, "_exchange_quantity", lambda *_args: done())
 
     class Runtime:
-        def goto_view(self, _scene):
+        def go_scene(self, _scene):
             return done()
 
     result = _drain(

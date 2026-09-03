@@ -6,13 +6,14 @@
 
 - AI 接手整个仓库：先读 [AI_CONTEXT.md](./AI_CONTEXT.md)，再按其中链接进入具体业务域。
 - CodeYun 平台架构：进入 [platform/architecture](./platform/architecture/)；开发约定见 [platform/conventions](./platform/conventions/)。
-- 凡修：先读 [凡修文档地图](./domains/fanxiu/README.md)。
-- 考勤：进入 [domains/attendance](./domains/attendance/)。
-- 星图笔记：进入 [domains/notes](./domains/notes/)。
-- 星云表格：进入 [domains/spreadsheets](./domains/spreadsheets/)。
+- 凡修：先读 [凡修文档地图](./domains/fanxiu/README.md)；红包稳定路径与事故演进见 [凡修红包作业](./domains/fanxiu/jobs/凡修红包作业.md)，未实施的兽渊完整流程见 [兽渊探秘规划架构](./domains/fanxiu/plans/兽渊探秘规划架构.md)。
+- 考勤：先读 [考勤文档入口](./domains/attendance/README.md)。
+- 星图笔记：先读 [星图笔记文档入口](./domains/notes/README.md)；保存与低并发协同见 [轻量自动保存与协同编辑架构](./platform/architecture/轻量自动保存与协同编辑架构.md)。
+- 星云表格：先读 [星云表格文档入口](./domains/spreadsheets/README.md)；当前架构见 [轻量自动保存与协同编辑架构](./platform/architecture/轻量自动保存与协同编辑架构.md)，阶段性施工记录见 [轻量协同保存重构](./plans/星云表格轻量协同保存重构.md)。
 - 股票与账单：进入 [domains/finance](./domains/finance/)。
-- 外部数据与内容集成：进入 [domains/integrations](./domains/integrations/)。
-- 启动、排障和恢复：进入 [operations/runbooks](./operations/runbooks/)。
+- 外部数据与内容集成：进入 [外部数据与内容集成](./domains/integrations/README.md)；三组目录见 [媒体三组目录流转](./domains/integrations/architecture/媒体三组目录流转.md)。
+- 启动、排障和恢复：进入 [operations/runbooks](./operations/runbooks/)；本地开发与部署现状见 [CodeYun 本地开发与部署排障](./operations/runbooks/CodeYun本地开发与部署排障.md)。
+- DSP 静态资源：见 [DSP 静态资源同步](./domains/integrations/guides/DSP静态资源同步.md)。
 - 自动化设计与长期上下文：进入 [automation](./automation/)。
 - 产品能力概览：参见 [中文模块说明](./reference/modules.zh-CN.md) 或 [English modules](./reference/modules.md)。
 

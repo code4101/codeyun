@@ -16,7 +16,7 @@ from typing import Any
 
 
 DEFAULT_GAME_ROOT = Path(r"D:\SteamLibrary\steamapps\common\VolcanoPrincess")
-DEFAULT_REVERSE_ROOT = Path(r"D:\home\chenkunze\data\m2607火山的女儿逆向")
+DEFAULT_REVERSE_ROOT = Path(r"C:\home\chenkunze\data\m2607火山的女儿逆向")
 STEAM_MANIFEST = Path(r"D:\SteamLibrary\steamapps\appmanifest_1669980.acf")
 SCHEMA_VERSION = 1
 

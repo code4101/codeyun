@@ -202,7 +202,7 @@ def collect_and_store_yunmeng_exchange_activity(
     resolved_scopes: list[tuple[Any, int]] = []
     for scope_spec in spec.rank_scopes:
         try:
-            rank_id = scope_spec.activity_id.resolve(activity_follow=follow)
+            rank_id = scope_spec.runtime_rank_activity_id.resolve(activity_follow=follow)
         except ValueError:
             if scope_spec.required:
                 raise
@@ -311,7 +311,13 @@ def collect_and_store_yunmeng_exchange_activity(
         period_close_panel_date=period.get("close_panel_date"),
         world_level=period["world_level"],
         rank_activity_ids=list(follow),
-        rank_scope_activity_ids={scope.scope: rank_id for scope, rank_id in resolved_scopes},
+        rank_scope_identities={
+            scope.scope: {
+                "runtime_rank_activity_id": rank_id,
+                "reward_activity_id": rank_id if scope.reward_tiers_enabled else None,
+            }
+            for scope, rank_id in resolved_scopes
+        },
         current_related_ranking_scopes=sorted(ranking_merge.current_related_scopes),
         retained_related_ranking_scopes=sorted(ranking_merge.retained_related_scopes),
         refresh_status=refresh_status,

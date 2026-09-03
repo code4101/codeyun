@@ -18,7 +18,7 @@ from backend.core.notes.yuque_html import looks_like_legacy_yuque_lake_html, nor
 
 
 def default_data_dir() -> Path:
-    return Path(os.environ.get("CODEYUN_DATA_DIR", r"D:\home\chenkunze\data\m2603codeyun\codepc_mf"))
+    return Path(os.environ.get("CODEYUN_DATA_DIR", r"C:\home\chenkunze\data\m2603codeyun\codepc_mf"))
 
 
 def db_path(data_dir: Path) -> Path:

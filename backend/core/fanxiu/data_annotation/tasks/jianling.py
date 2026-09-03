@@ -14,7 +14,7 @@ class JianlingTaskMixin:
     ):
         """Raise 剑灵淬灵 to level 1000 inside the #349/#351 layer0 context."""
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(
+        context = self._behavior_tree_context(
             ctx,
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
@@ -30,7 +30,7 @@ class JianlingTaskMixin:
 
         cuiling_shapes = [
             shape
-            for shape in runtime.view(349).get_shapes()
+            for shape in context.view(349).get_shapes()
             if shape.title == "淬灵" and not bool(shape.raw.get("isSceneIdentity"))
         ]
         if len(cuiling_shapes) != 1:
@@ -38,7 +38,7 @@ class JianlingTaskMixin:
         cuiling_action = cuiling_shapes[0]
 
         def read_level(frame: str) -> tuple[int | None, str, bool]:
-            numbers, text = runtime.ocr_numbers_in_shapes(
+            numbers, text = context.ocr_numbers_in_shapes(
                 349,
                 ("等级",),
                 frame_data_url=frame,
@@ -54,14 +54,14 @@ class JianlingTaskMixin:
             if level is None or level < target_level or (scene_id != 349 and not level_context):
                 return None
             message = f"剑灵_淬灵：凝炼等级已达 {level}（圆满）"
-            runtime.set_completion_message(message)
+            context.set_completion_message(message)
             self._log("success", message)
             return "success"
 
         for round_index in range(1, max_rounds + 1):
             self._raise_if_stopped(stop_event)
-            frame = runtime.cur_frame(update=True)
-            scene_id, _score, _frame = runtime.current_scene([351, 349], frame_data_url=frame)
+            frame = context.cur_frame(update=True)
+            scene_id, _score, _frame = context.current_scene([351, 349], frame_data_url=frame)
 
             if scene_id == 351:
                 unknown_rounds = 0
@@ -72,8 +72,8 @@ class JianlingTaskMixin:
                         phase="jianling_cuiling_continue",
                         current_scene=351,
                     )
-                yield from runtime.wait_click(351, "继续")
-                yield from runtime.wait_action_settle(0.8)
+                yield from context.wait_click(351, "继续")
+                yield from context.wait_action_settle(0.8)
                 continue
 
             should_read_level = scene_id != 349 or presses_since_ocr >= ocr_every_presses
@@ -108,14 +108,14 @@ class JianlingTaskMixin:
                         phase="jianling_cuiling_wait_layer0",
                         current_scene=None,
                     )
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
                 continue
 
             if level is None:
                 unknown_rounds += 1
                 if unknown_rounds > max_unknown_rounds:
                     raise RuntimeError(f"剑灵_淬灵：无法识别 #349[等级]，OCR={str(level_text)[:120]!r}")
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
                 continue
 
             unknown_rounds = 0
@@ -127,12 +127,12 @@ class JianlingTaskMixin:
                     current_scene=349,
                 )
             try:
-                runtime.long_press_shape(349, cuiling_action, duration=press_seconds)
+                context.long_press_shape(349, cuiling_action, duration=press_seconds)
             except RuntimeError:
                 # The action shape disappears as soon as level 1000 is reached.
                 # Any action failure gets one authoritative terminal check; only
                 # a confirmed full level can convert that failure into success.
-                terminal_frame = runtime.cur_frame(update=True)
+                terminal_frame = context.cur_frame(update=True)
                 terminal_level, _terminal_text, terminal_context = read_level(terminal_frame)
                 terminal_result = finish_if_full(terminal_level, terminal_context, 349)
                 if terminal_result is not None:

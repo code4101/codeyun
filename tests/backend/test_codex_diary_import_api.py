@@ -976,7 +976,7 @@ def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
             "turn_records": [
                 {
                     "thread_id": "fanxiu:dongtian",
-                    "thread_title": "凡修行为树洞天任务",
+                    "thread_title": "凡修 Kernel 调度器洞天任务",
                     "project_label": "codeyun",
                     "user_request": "洞天福地领取后需要补 #279 返回并等待 #34 世界。",
                     "assistant_result": "在 daily_foundation.py 补 #279[返回] -> 等待 #34 世界，形成稳定回归锚点。",
@@ -2261,7 +2261,7 @@ def test_codex_diary_classification_ignores_agent_boilerplate_for_fanxiu_goal(
         "turn_records": [
             {
                 "thread_id": "fanxiu:mail-goal",
-                "thread_title": "凡修行为树，还有几个到期的作业没运行？",
+                "thread_title": "凡修 Kernel 调度器，还有几个到期的作业没运行？",
                 "project_label": "codeyun",
                 "user_request": (
                     "# AGENTS.md instructions for D:\\home\\chenkunze\\slns\\codeyun "

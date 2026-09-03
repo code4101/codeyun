@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.effective_time import job_now
-from backend.core.fanxiu.runtime.mumu_control import (
+from backend.core.fanxiu.client.mumu_control import (
     mark_mumu_device_startup_ready,
     mumu_device_health_check,
     recover_mumu_device,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     LOGIN_GAME_SCHEDULER_TASK_ID,
 )
 
@@ -42,7 +42,7 @@ class LoginGameTaskMixin:
         )
 
     @staticmethod
-    def _visible_bubble_proves_game_ready(runtime: Any, *, frame: str) -> bool:
+    def _visible_bubble_proves_game_ready(context: Any, *, frame: str) -> bool:
         """Accept the formal SDK bubble as direct post-login evidence.
 
         The bubble is an Android top-level overlay and can cover an arbitrary
@@ -58,13 +58,13 @@ class LoginGameTaskMixin:
         # coordinate-only ``进入游戏`` action Shape.  Action Shapes authorize
         # a click only after their owning scene has been recognized; they are
         # not visual evidence in their own right.
-        cover_matched, _cover_score, _cover_frame = runtime.match_view(
+        cover_matched, _cover_score, _cover_frame = context.match_view(
             18,
             frame_data_url=frame,
         )
         if cover_matched:
             return False
-        match = runtime.shape_matches(421, "气泡", frame_data_url=frame)
+        match = context.shape_matches(421, "气泡", frame_data_url=frame)
         resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
         return bool(
             match is not None
@@ -80,13 +80,13 @@ class LoginGameTaskMixin:
     ):
         """Defer scheduled business to login, retaining direct debug compatibility."""
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(
+        context = self._behavior_tree_context(
             ctx,
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
         )
-        scene_id, _score, frame = runtime.current_scene(self.login_game_scene_ids, update=True)
-        frame_text = runtime.ocr_text(frame)
+        scene_id, _score, frame = context.current_scene(self.login_game_scene_ids, update=True)
+        frame_text = context.ocr_text(frame)
         scene_id = self._resolve_login_scene(scene_id, frame_text)
         resource_loading = scene_id is None and self._is_resource_loading_frame(frame_text)
         if scene_id not in self.login_action_scene_ids and not resource_loading:
@@ -145,7 +145,7 @@ class LoginGameTaskMixin:
             if not device_started:
                 raise RuntimeError(f"登录游戏：模拟器未启动且标准恢复失败：{recovery}")
         asset_tree_path = ctx.get("asset_tree_path")
-        runtime = self._fanxiu_runtime(
+        context = self._behavior_tree_context(
             ctx,
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
@@ -153,20 +153,26 @@ class LoginGameTaskMixin:
         loading_started_at: float | None = None
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = runtime.current_scene(self.login_game_scene_ids, update=True)
-            frame_text = runtime.ocr_text(frame)
+            scene_id, score, frame = context.current_scene(self.login_game_scene_ids, update=True)
+            frame_text = context.ocr_text(frame)
             scene_id = self._resolve_login_scene(scene_id, frame_text)
             bubble_ready = bool(
                 scene_id is None
-                and self._visible_bubble_proves_game_ready(runtime, frame=frame)
+                and self._visible_bubble_proves_game_ready(context, frame=frame)
             )
-            # During the explicit Login Job, an unrecognized frame is not
-            # proof that the game is ready.  Resource initialization can be
-            # visually stable (and OCR may return no tokens) while Android and
-            # ADB remain perfectly healthy.  Keep the bounded startup wait for
-            # every unknown frame; recognized non-login game scenes still
-            # complete immediately without navigation.
-            resource_loading = scene_id is None and not bubble_ready
+            # Unknown and resource loading are different facts.  Only explicit
+            # loading OCR may enter the bounded loading wait; an arbitrary
+            # unknown frame must fail closed and must never authorize a MuMu
+            # restart.
+            resource_loading = (
+                scene_id is None
+                and not bubble_ready
+                and self._is_resource_loading_frame(frame_text)
+            )
+            if scene_id is None and not bubble_ready and not resource_loading:
+                raise RuntimeError(
+                    "登录游戏：当前画面未识别且无资源初始化证据；拒绝点击或重启模拟器"
+                )
             if resource_loading:
                 current = time.monotonic()
                 if loading_started_at is None:
@@ -180,34 +186,19 @@ class LoginGameTaskMixin:
                             phase="login_game_loading",
                             current_scene=None,
                         )
-                    yield from runtime.wait_action_settle(
+                    yield from context.wait_action_settle(
                         min(loading_poll, max(0.1, loading_timeout - elapsed))
                     )
                     continue
-                self._log(
-                    "warning",
-                    "登录游戏：资源初始化 5 分钟仍未完成，完整重启模拟器后重试",
+                raise RuntimeError(
+                    "登录游戏：已确认资源初始化画面，但等待超时；拒绝自动重启模拟器"
                 )
-                recovery = recover_mumu_device(
-                    vmindex=vmindex,
-                    reason="login_game_loading_timeout",
-                    force_restart=True,
-                )
-                if str(recovery.get("status") or "") != "healthy":
-                    raise RuntimeError(f"登录游戏：加载超时且模拟器重启失败：{recovery}")
-                runtime = self._fanxiu_runtime(
-                    ctx,
-                    asset_tree_path if isinstance(asset_tree_path, Path) else None,
-                    stop_event=stop_event,
-                )
-                loading_started_at = None
-                continue
             loading_started_at = None
             if scene_id == 611:
                 # #611 is a full-screen XuTian promotion overlay, not a stable
                 # business landing.  The universal lower-left return was
                 # verified in real Runtime to close it directly to #34.
-                result = runtime.goto_view(34)
+                result = context.go_scene(34)
                 if hasattr(result, "send"):
                     yield from result
                 continue
@@ -271,7 +262,7 @@ class LoginGameTaskMixin:
                     else:
                         raise RuntimeError("登录游戏：缺少气泡协调后置能力")
                 completion_message = f"登录游戏完成，已在 {location}；{bubble_outcome}"
-                runtime.set_completion_message(completion_message)
+                context.set_completion_message(completion_message)
                 # The standard login job does not use the generic daily-task
                 # wrapper that normally carries Runtime completion text back
                 # into Scheduler state.  Preserve the verified terminal here
@@ -302,25 +293,25 @@ class LoginGameTaskMixin:
                 )
 
             if scene_id == 14:
-                runtime.click_shape_center(14, "关闭公告")
-                yield from runtime.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
+                context.click_shape_center(14, "关闭公告")
+                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             if scene_id == 15:
-                runtime.click_shape_center(15, "登录")
-                yield from runtime.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
+                context.click_shape_center(15, "登录")
+                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             if scene_id == 16:
                 raise RuntimeError("登录游戏：进入 #16 挑选账号；为避免误登，请人工选择账号后重新运行")
             if scene_id == 17:
-                runtime.click_shape_center(17, "同意")
-                yield from runtime.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
+                context.click_shape_center(17, "同意")
+                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             if scene_id == 18:
-                runtime.click_shape_center(18, "进入游戏")
-                yield from runtime.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
+                context.click_shape_center(18, "进入游戏")
+                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             if scene_id == 661:
-                runtime.click_shape_center(661, "进入")
-                yield from runtime.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
+                context.click_shape_center(661, "进入")
+                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             raise RuntimeError(f"登录游戏：暂不支持从 #{scene_id} 继续")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from backend.core.fanxiu.runtime import mumu_control
+from backend.core.fanxiu.client import mumu_control
 
 
 def test_burst_frame_rejects_near_black_placeholder(tmp_path, monkeypatch):

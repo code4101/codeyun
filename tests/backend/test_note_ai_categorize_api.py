@@ -313,7 +313,7 @@ def test_ai_categorize_diary_note_reaggregates_same_date_category(client, sessio
     main_note = _attach_diary_fields(_make_note(
         "diary-fanxiu-main",
         auth_user.id,
-        "凡修行为树运行框架统一修复",
+        "凡修 Kernel 调度器运行框架统一修复",
         content="<ol><li><span>行为树主线完成</span></li></ol><p><strong>来源</strong>：旧</p>",
         primary_category="legacy_fanxiu",
         lifecycle_stage="done",

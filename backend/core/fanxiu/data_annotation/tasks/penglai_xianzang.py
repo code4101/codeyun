@@ -438,7 +438,7 @@ def parse_xianzang_row_selected_fraction(
 
 
 def ensure_xianzang_row_choices_selected(
-    runtime: Any,
+    context: Any,
     row: int,
     desired_columns: Sequence[int],
     *,
@@ -457,8 +457,8 @@ def ensure_xianzang_row_choices_selected(
     desired = tuple(sorted({int(column) for column in desired_columns}))
     if not desired or desired[0] < 1 or desired[-1] > count:
         raise ValueError(f"第 {row_number} 排候选范围必须为 1..{count}：{desired!r}")
-    target_view = runtime.view(int(scene_id))
-    current_scene, score, frame = runtime.current_scene([int(scene_id)], update=True)
+    target_view = context.view(int(scene_id))
+    current_scene, score, frame = context.current_scene([int(scene_id)], update=True)
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
             f"当前不是可靠的 #{scene_id}，拒绝勾选：scene={current_scene}, score={float(score or 0):.1f}"
@@ -471,7 +471,7 @@ def ensure_xianzang_row_choices_selected(
     click_points: list[tuple[float, float]] = []
     for column in click_columns:
         point = points[column - 1]
-        runtime.click_frame_point(target_view, *point)
+        context.click_frame_point(target_view, *point)
         click_points.append(point)
         time.sleep(0.25)
 
@@ -479,10 +479,10 @@ def ensure_xianzang_row_choices_selected(
     last_selected = before
     last_fraction: tuple[int, int] | None = None
     while True:
-        frame = runtime.cur_frame(update=True)
+        frame = context.cur_frame(update=True)
         last_selected = detect_xianzang_selected_columns(frame, points)
         last_fraction = parse_xianzang_row_selected_fraction(
-            runtime.ocr_text(frame), row_number, row_labels=row_labels
+            context.ocr_text(frame), row_number, row_labels=row_labels
         )
         expected_fraction = (len(desired), XIANZANG_ROW_SELECTION_LIMITS[row_number])
         fraction_closed = not require_fraction_ocr or (
@@ -506,7 +506,7 @@ def ensure_xianzang_row_choices_selected(
 
 
 def complete_xianzang_optional_reward_selection(
-    runtime: Any,
+    context: Any,
     treasure_column: int,
     *,
     prayer_category: str | None = None,
@@ -527,7 +527,7 @@ def complete_xianzang_optional_reward_selection(
     )
     row_results = tuple(
         ensure_xianzang_row_choices_selected(
-            runtime,
+            context,
             row,
             columns,
             scene_id=scene_id,
@@ -547,13 +547,13 @@ def complete_xianzang_optional_reward_selection(
             final_scene_score=100.0,
         )
 
-    current_scene, score, frame = runtime.current_scene([int(scene_id)], update=True)
+    current_scene, score, frame = context.current_scene([int(scene_id)], update=True)
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
             f"三排勾选后当前不是可靠的 #{scene_id}，拒绝确认："
             f"scene={current_scene}, score={float(score or 0):.1f}"
         )
-    runtime.click_shape(int(scene_id), "确认", frame_data_url=frame)
+    context.click_shape(int(scene_id), "确认", frame_data_url=frame)
 
     expected_after = tuple(int(value) for value in expected_after_scene_ids)
     deadline = time.monotonic() + max(1.0, float(timeout_seconds))
@@ -561,8 +561,8 @@ def complete_xianzang_optional_reward_selection(
     final_score = 100.0
     while True:
         candidates = [int(scene_id), *expected_after]
-        final_scene, final_score, _frame = runtime.current_scene(candidates, update=True)
-        final_text = runtime.ocr_text(_frame)
+        final_scene, final_score, _frame = context.current_scene(candidates, update=True)
+        final_text = context.ocr_text(_frame)
         landed_on_numbered_scene = (
             final_scene in expected_after
             and float(final_score or 0) >= 70.0

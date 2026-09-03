@@ -600,7 +600,7 @@ def test_xutian_refresh_uses_personal_total_rank_instead_of_inner_hall(
             "load_activity_rank_reward_tiers",
             lambda **kwargs: (
                 [{"rank_start": 17, "rank_end": 32, "rewards": []}]
-                if int(kwargs["rank_activity_id"]) == 83291
+                if int(kwargs["reward_activity_id"]) == 83291
                 else [
                     {"rank_start": 1, "rank_end": 1, "rewards": []},
                     {"rank_start": 2, "rank_end": 2, "rewards": []},
@@ -677,7 +677,7 @@ def test_xutian_runtime_rank_snapshot_keeps_full_rows_for_storage(monkeypatch) -
         lambda **kwargs: [
             {
                 "rank_start": 1,
-                "rank_end": 1 if int(kwargs["rank_activity_id"]) == 83291 else 2,
+                    "rank_end": 1 if int(kwargs["reward_activity_id"]) == 83291 else 2,
                 "rewards": [],
             }
         ],
@@ -833,7 +833,7 @@ def test_exchange_ranking_page_accepts_registered_team_scope(monkeypatch) -> Non
         subject="team",
         required=False,
         accepted_vo_types=("ActivityRankTeamVO",),
-        activity_id=RankActivityIdBinding(source="activity_follow", follow_index=1),
+        runtime_rank_activity_id=RankActivityIdBinding(source="activity_follow", follow_index=1),
         row_mode="full_observed",
         reward_tiers_enabled=False,
     )

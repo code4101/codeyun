@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 from backend.core.services import monitor as service_monitor
 from backend.core.services.monitor import CRITICAL_LOCAL_COMMAND_SERVICE_NAMES, ServiceMonitor
@@ -8,6 +9,40 @@ from backend.core.services.monitor import CRITICAL_LOCAL_COMMAND_SERVICE_NAMES, 
 
 def test_only_network_command_services_are_recovered_automatically():
     assert CRITICAL_LOCAL_COMMAND_SERVICE_NAMES == {"frpc", "nginx"}
+
+
+def test_network_service_root_override_rebinds_sibling_and_nested_executables(tmp_path):
+    old_sync = tmp_path / "old" / "sync"
+    new_sync = tmp_path / "new" / "sync"
+    old_host = old_sync / "codepc_mf"
+    new_host = new_sync / "codepc_mf"
+    new_frpc = new_sync / "frp" / "frpc.exe"
+    old_nginx_root = old_host / "nginx"
+    new_nginx_root = new_host / "nginx"
+    new_nginx = new_nginx_root / "nginx.exe"
+    new_frpc.parent.mkdir(parents=True)
+    new_nginx.parent.mkdir(parents=True)
+    new_frpc.touch()
+    new_nginx.touch()
+
+    frpc = SimpleNamespace(
+        name="frpc",
+        command=f'"{old_sync / "frp" / "frpc.exe"}" -c frpc.toml',
+        cwd=str(old_host),
+    )
+    nginx = SimpleNamespace(
+        name="nginx",
+        command=str(old_nginx_root / "nginx.exe"),
+        cwd=str(old_nginx_root),
+    )
+
+    frpc_command, frpc_cwd = service_monitor._network_service_root_override(frpc, new_host)
+    nginx_command, nginx_cwd = service_monitor._network_service_root_override(nginx, new_host)
+
+    assert str(new_frpc) in frpc_command
+    assert str(new_nginx) in nginx_command
+    assert frpc_cwd == str(new_host)
+    assert nginx_cwd == str(new_nginx_root)
 
 
 def test_service_monitor_checks_services_without_job_executor():

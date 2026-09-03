@@ -461,7 +461,7 @@ class FanxiuMailRecord(SQLModel, table=True):
     create_time_ms: Optional[int] = Field(default=None, index=True)
     source: str = Field(default="", index=True)
     status: str = Field(default="seen", index=True)
-    runtime_status: str = Field(default="", index=True)
+    execution_status: str = Field(default="", index=True)
     desired_status: str = Field(default="", index=True)
     present_in_runtime: bool = Field(default=False, index=True)
     reward_getted: Optional[bool] = Field(default=None, index=True)

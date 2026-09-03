@@ -100,7 +100,7 @@ class QuickSynthesisPolicy:
 
 
 def quick_synthesis_policy(level: int) -> QuickSynthesisPolicy:
-    """Return the verified synthesis policy without re-deriving it at runtime.
+    """Return the verified synthesis policy without re-deriving it at context.
 
     Real 2026-08-09 batches proved that failures consume the complete batch and
     produce no upgraded crystal (evidence route: ``docs/domains/fanxiu/jobs/凡修兽魂研究与自动配置.md``
@@ -187,8 +187,8 @@ def synthesis_gate(snapshot: dict[str, Any], level: int) -> dict[str, Any]:
     }
 
 
-def _settle(runtime: Any, seconds: float = 1.0):
-    yield from runtime.wait_action_settle(seconds)
+def _settle(context: Any, seconds: float = 1.0):
+    yield from context.wait_action_settle(seconds)
 
 
 def _require_high_level_quick_synthesis_state(
@@ -236,10 +236,10 @@ def _require_high_level_quick_synthesis_state(
     return snapshot
 
 
-def _enter_beast_soul_main(runtime: Any):
+def _enter_beast_soul_main(context: Any):
     """Enter #478 through the annotated #35 -> #483 -> #478 path."""
 
-    current_scene, _score, _frame = runtime.current_scene(
+    current_scene, _score, _frame = context.current_scene(
         views=[BEAST_SOUL_MAIN_SCENE],
         update=True,
     )
@@ -250,42 +250,42 @@ def _enter_beast_soul_main(runtime: Any):
     )
 
     yield from open_world_menu_function(
-        runtime,
+        context,
         4000,
         expected_scene_ids=(SPIRIT_BEAST_MAIN_SCENE,),
         timeout_seconds=20,
     )
-    yield from runtime.wait_click(SPIRIT_BEAST_MAIN_SCENE, "兽魂页签")
-    yield from runtime.wait_scene(
+    yield from context.wait_click(SPIRIT_BEAST_MAIN_SCENE, "兽魂页签")
+    yield from context.wait_scene(
         BEAST_SOUL_MAIN_SCENE,
-        timeout=12,
+        wait=12,
         label="兽魂更新：等待兽魂主页",
     )
 
 
-def _enter_quick_synthesis(runtime: Any):
-    yield from runtime.wait_click(BEAST_SOUL_MAIN_SCENE, "合成魂晶")
-    yield from runtime.wait_scene(
+def _enter_quick_synthesis(context: Any):
+    yield from context.wait_click(BEAST_SOUL_MAIN_SCENE, "合成魂晶")
+    yield from context.wait_scene(
         BEAST_SOUL_SYNTHESIS_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：等待魂晶合成",
     )
-    yield from runtime.wait_click(BEAST_SOUL_SYNTHESIS_SCENE, "快捷合成页签")
-    yield from runtime.wait_scene(
+    yield from context.wait_click(BEAST_SOUL_SYNTHESIS_SCENE, "快捷合成页签")
+    yield from context.wait_scene(
         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：等待快捷合成",
     )
 
 
-def _leave_quick_synthesis(runtime: Any):
+def _leave_quick_synthesis(context: Any):
     exit_views = [
         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
         BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
         BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE,
         BEAST_SOUL_MAIN_SCENE,
     ]
-    scene_id, _score, _frame = runtime.current_scene(
+    scene_id, _score, _frame = context.current_scene(
         views=exit_views,
         update=True,
     )
@@ -294,24 +294,24 @@ def _leave_quick_synthesis(runtime: Any):
         # after a valid delta, then the formal #346 appeared before the close
         # click.  Require one delayed second observation before treating #481
         # as the direct-return branch.
-        yield from _settle(runtime, 1.0)
-        scene_id, _score, _frame = runtime.current_scene(
+        yield from _settle(context, 1.0)
+        scene_id, _score, _frame = context.current_scene(
             views=exit_views,
             update=True,
         )
     if scene_id == BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE:
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE,
             "继续",
         )
-        yield from runtime.wait_scene(
+        yield from context.wait_scene(
             BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
             BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
             BEAST_SOUL_MAIN_SCENE,
-            timeout=10,
+            wait=10,
             label="兽魂更新：关闭合成结果",
         )
-        scene_id, _score, _frame = runtime.current_scene(
+        scene_id, _score, _frame = context.current_scene(
             views=[
                 BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                 BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
@@ -320,13 +320,13 @@ def _leave_quick_synthesis(runtime: Any):
             update=True,
         )
     if scene_id == BEAST_SOUL_MATERIAL_DROPDOWN_SCENE:
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
             "收起材料",
         )
-        yield from runtime.wait_scene(
+        yield from context.wait_scene(
             BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
-            timeout=8,
+            wait=8,
             label="兽魂更新：收起材料列表",
         )
         scene_id = BEAST_SOUL_QUICK_SYNTHESIS_SCENE
@@ -336,31 +336,31 @@ def _leave_quick_synthesis(runtime: Any):
         raise RuntimeError(
             f"兽魂更新：快捷合成退场前落在未支持场景 #{scene_id}"
         )
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
         "点击空白处关闭",
     )
-    yield from runtime.wait_scene(
+    yield from context.wait_scene(
         BEAST_SOUL_MAIN_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：关闭快捷合成",
     )
 
 
-def _select_material(runtime: Any, level: int):
+def _select_material(context: Any, level: int):
     label = LEVEL_LABELS[level]
     policy = quick_synthesis_policy(level)
     batch_size = policy.batch_size
     target = f"消耗所有{label}魂晶"
-    yield from runtime.wait_click(BEAST_SOUL_QUICK_SYNTHESIS_SCENE, "材料下拉")
-    yield from runtime.wait_scene(
+    yield from context.wait_click(BEAST_SOUL_QUICK_SYNTHESIS_SCENE, "材料下拉")
+    yield from context.wait_scene(
         BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：等待材料下拉",
     )
     for _ in range(12):
-        frame = runtime.cur_frame(update=True)
-        items = runtime.find_floating_items_by_anchor_text(
+        frame = context.cur_frame(update=True)
+        items = context.find_floating_items_by_anchor_text(
             BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
             "材料选项模板",
             "材料等级",
@@ -370,7 +370,7 @@ def _select_material(runtime: Any, level: int):
             match_mode="exact",
         )
         if not items:
-            items = runtime.find_floating_items_by_anchor_text(
+            items = context.find_floating_items_by_anchor_text(
                 BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
                 "材料选项模板",
                 "材料等级",
@@ -383,16 +383,16 @@ def _select_material(runtime: Any, level: int):
         items = [
             item
             for item in items
-            if runtime.floating_item_field_is_fully_inside(
+            if context.floating_item_field_is_fully_inside(
                 item,
                 "材料等级",
                 "材料选项列表",
             )
         ]
         if items:
-            runtime.click_floating_item_field(items[0], "材料等级")
+            context.click_floating_item_field(items[0], "材料等级")
             break
-        changed = yield from runtime.scroll_shape_content(
+        changed = yield from context.scroll_shape_content(
             BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
             "材料选项列表",
             direction="down",
@@ -406,12 +406,12 @@ def _select_material(runtime: Any, level: int):
             raise RuntimeError(f"兽魂更新：材料列表中找不到「{target}」")
     else:
         raise RuntimeError(f"兽魂更新：材料列表滚动超过上限，仍找不到「{target}」")
-    yield from runtime.wait_scene(
+    yield from context.wait_scene(
         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：材料选择完成",
     )
-    text = runtime.ocr_text_in_shapes(
+    text = context.ocr_text_in_shapes(
         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
         ("合成目标", "材料下拉"),
         padding=12,
@@ -428,8 +428,8 @@ def _select_material(runtime: Any, level: int):
         )
     if batch_size == 2:
         # Preserve the already-real-verified low-level image contract.
-        if not runtime.match_shape(
-            runtime.shape(BEAST_SOUL_QUICK_SYNTHESIS_SCENE, "每次消耗2")
+        if not context.match_shape(
+            context.shape(BEAST_SOUL_QUICK_SYNTHESIS_SCENE, "每次消耗2")
         ):
             raise RuntimeError("兽魂更新：快捷合成每次消耗数值不是已验证资产 2")
     else:
@@ -443,7 +443,7 @@ def _select_material(runtime: Any, level: int):
 
 
 def _capture_synthesis_evidence(
-    runtime: Any,
+    context: Any,
     frame_data_url: str,
     *,
     scene_id: int | None,
@@ -452,8 +452,8 @@ def _capture_synthesis_evidence(
 ) -> str:
     try:
         evidence = build_unknown_evidence(
-            runtime.runner,
-            runtime.ctx,
+            context.runner,
+            context.ctx,
             frame_data_url,
             label=label,
             expected_scene_ids=[],
@@ -553,17 +553,17 @@ def _synthesis_item_signature(snapshot: dict[str, Any]) -> tuple[tuple[Any, ...]
 
 
 def _execute_current_batch(
-    runtime: Any,
+    context: Any,
     before_snapshot: dict[str, Any],
     level: int,
 ):
     policy = quick_synthesis_policy(level)
-    yield from runtime.wait_click(
+    yield from context.wait_click(
         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
         "执行快捷合成",
     )
-    yield from _settle(runtime, 0.8)
-    scene_id, score, frame = runtime.observe_scene(
+    yield from _settle(context, 0.8)
+    scene_id, score, frame = context.current_scene(
         views=[
             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -577,8 +577,8 @@ def _execute_current_batch(
         # never treat the transient page as a completed synthesis or click a
         # generic popup/background while waiting.
         for _ in range(10):
-            yield from _settle(runtime, 0.5)
-            scene_id, score, frame = runtime.observe_scene(
+            yield from _settle(context, 0.5)
+            scene_id, score, frame = context.current_scene(
                 views=[
                     BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                     BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -595,8 +595,8 @@ def _execute_current_batch(
             # formal replay is allowed only when the authoritative item state
             # proves the first click produced no synthesis side effect.
             for _ in range(10):
-                yield from _settle(runtime, 0.5)
-                scene_id, score, frame = runtime.observe_scene(
+                yield from _settle(context, 0.5)
+                scene_id, score, frame = context.current_scene(
                     views=[
                         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -610,7 +610,7 @@ def _execute_current_batch(
                 unchanged = _snapshot()
                 if _synthesis_item_signature(unchanged) != _synthesis_item_signature(before_snapshot):
                     evidence = _capture_synthesis_evidence(
-                        runtime,
+                        context,
                         frame,
                         scene_id=scene_id,
                         score=score,
@@ -620,13 +620,13 @@ def _execute_current_batch(
                         "兽魂更新：首次快捷合成后物品状态已变化，拒绝重放；"
                         f"evidence={evidence}"
                     )
-                yield from runtime.wait_click(
+                yield from context.wait_click(
                     BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                     "执行快捷合成",
                 )
-                yield from _settle(runtime, 1.0)
+                yield from _settle(context, 1.0)
                 for _ in range(10):
-                    scene_id, score, frame = runtime.observe_scene(
+                    scene_id, score, frame = context.current_scene(
                         views=[
                             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -636,10 +636,10 @@ def _execute_current_batch(
                     )
                     if scene_id != BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
                         break
-                    yield from _settle(runtime, 0.5)
+                    yield from _settle(context, 0.5)
         if scene_id != BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE:
             evidence = _capture_synthesis_evidence(
-                runtime,
+                context,
                 frame,
                 scene_id=scene_id,
                 score=score,
@@ -649,14 +649,14 @@ def _execute_current_batch(
                 f"scene={scene_id}, evidence={evidence}"
             )
         identity_matches = {
-            title: runtime.match_shape(
-                runtime.shape(BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE, title)
+            title: context.match_shape(
+                context.shape(BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE, title)
             )
             for title in BEAST_SOUL_LOW_SUCCESS_REQUIRED_SHAPES
         }
         if not all(identity_matches.values()):
             evidence = _capture_synthesis_evidence(
-                runtime,
+                context,
                 frame,
                 scene_id=scene_id,
                 score=score,
@@ -669,23 +669,23 @@ def _execute_current_batch(
         # resolve_shape_selector enforces the formal action is unique.  The
         # same observer frame remains cached and is passed into the click; no
         # #47 background, checkbox, OCR coordinate or guessed point is used.
-        confirm_shape = runtime.shape(
+        confirm_shape = context.shape(
             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
             "确认",
         )
-        runtime.click_shape(
+        context.click_shape(
             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
             confirm_shape,
             frame_data_url=frame,
         )
-        yield from _settle(runtime, 1.0)
+        yield from _settle(context, 1.0)
     elif (
         policy.requires_precious_material_confirmation
         and scene_id == BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE
     ):
         identity_matches = {
-            title: runtime.match_shape(
-                runtime.shape(
+            title: context.match_shape(
+                context.shape(
                     BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
                     title,
                 )
@@ -694,7 +694,7 @@ def _execute_current_batch(
         }
         if not all(identity_matches.values()):
             evidence = _capture_synthesis_evidence(
-                runtime,
+                context,
                 frame,
                 scene_id=scene_id,
                 score=score,
@@ -704,22 +704,22 @@ def _execute_current_batch(
                 "兽魂更新：#529 三项 required 身份未在同帧全部命中，"
                 f"matches={identity_matches}, evidence={evidence}"
             )
-        confirm_shape = runtime.shape(
+        confirm_shape = context.shape(
             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
             "确认",
         )
-        runtime.click_shape(
+        context.click_shape(
             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
             confirm_shape,
             frame_data_url=frame,
         )
-        yield from _settle(runtime, 1.0)
+        yield from _settle(context, 1.0)
     elif (
         policy.requires_precious_material_confirmation
         and scene_id != BEAST_SOUL_QUICK_SYNTHESIS_SCENE
     ):
         evidence = _capture_synthesis_evidence(
-            runtime,
+            context,
             frame,
             scene_id=scene_id,
             score=score,
@@ -735,7 +735,7 @@ def _execute_current_batch(
         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
     ):
         evidence = _capture_synthesis_evidence(
-            runtime,
+            context,
             frame,
             scene_id=scene_id,
             score=score,
@@ -744,14 +744,14 @@ def _execute_current_batch(
             f"兽魂更新：100%策略意外出现确认弹窗，evidence={evidence}"
         )
 
-    result_scene, result_score, result_frame = runtime.observe_scene(update=True)
+    result_scene, result_score, result_frame = context.current_scene(update=True)
     if result_scene in (
         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
     ):
         for _ in range(10):
-            yield from _settle(runtime, 0.5)
-            result_scene, result_score, result_frame = runtime.observe_scene(update=True)
+            yield from _settle(context, 0.5)
+            result_scene, result_score, result_frame = context.current_scene(update=True)
             if result_scene not in (
                 BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                 BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -759,7 +759,7 @@ def _execute_current_batch(
                 break
     if result_scene != BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
         evidence = _capture_synthesis_evidence(
-            runtime,
+            context,
             result_frame,
             scene_id=result_scene,
             score=result_score,
@@ -777,7 +777,7 @@ def _execute_current_batch(
         )
     except RuntimeError as exc:
         evidence = _capture_synthesis_evidence(
-            runtime,
+            context,
             result_frame,
             scene_id=result_scene,
             score=result_score,
@@ -857,8 +857,8 @@ def _coarse_scroll_batch_size(
     return max(1, min(coarse, available))
 
 
-def _shape_center(runtime: Any, scene: int, selector: str) -> tuple[float, float]:
-    box = runtime.shape(scene, selector).box()
+def _shape_center(context: Any, scene: int, selector: str) -> tuple[float, float]:
+    box = context.shape(scene, selector).box()
     return (
         float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
         float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
@@ -866,7 +866,7 @@ def _shape_center(runtime: Any, scene: int, selector: str) -> tuple[float, float
 
 
 def _click_anchored_point(
-    runtime: Any,
+    context: Any,
     scene: int,
     container_selector: str,
     x: float,
@@ -874,7 +874,7 @@ def _click_anchored_point(
 ) -> None:
     """Click a dynamic grid point through its annotated container shape."""
 
-    box = runtime.shape(scene, container_selector).box()
+    box = context.shape(scene, container_selector).box()
     width = float(box.get("w") or 0)
     height = float(box.get("h") or 0)
     if width <= 0 or height <= 0:
@@ -886,7 +886,7 @@ def _click_anchored_point(
             f"兽魂更新：目标点不在资产容器 {container_selector} 内："
             f"x_ratio={x_ratio:.3f}, y_ratio={y_ratio:.3f}"
         )
-    runtime.click_shape_center(
+    context.click_shape_center(
         scene,
         container_selector,
         x_ratio=x_ratio,
@@ -894,19 +894,19 @@ def _click_anchored_point(
     )
 
 
-def _board_point(runtime: Any, cells: list[list[int]]) -> tuple[float, float]:
+def _board_point(context: Any, cells: list[list[int]]) -> tuple[float, float]:
     if not cells:
         raise RuntimeError("兽魂更新：已镶嵌魂晶没有占位格")
     row, column = map(int, sorted(cells)[0])
     if not 1 <= row <= 5 or not 1 <= column <= 6:
         raise RuntimeError(f"兽魂更新：棋盘格越界 row={row}, column={column}")
     left_x, bottom_y = _shape_center(
-        runtime,
+        context,
         BEAST_SOUL_MAIN_SCENE,
         "魂晶镶嵌盘/左下格",
     )
     right_x, top_y = _shape_center(
-        runtime,
+        context,
         BEAST_SOUL_MAIN_SCENE,
         "魂晶镶嵌盘/右上格",
     )
@@ -916,7 +916,7 @@ def _board_point(runtime: Any, cells: list[list[int]]) -> tuple[float, float]:
     )
 
 
-def _bag_card_position(runtime: Any, bag_index: int) -> tuple[float, float, int]:
+def _bag_card_position(context: Any, bag_index: int) -> tuple[float, float, int]:
     """Resolve one bag card from annotated grid anchors and a verified page."""
 
     index = int(bag_index)
@@ -928,17 +928,17 @@ def _bag_card_position(runtime: Any, bag_index: int) -> tuple[float, float, int]
             f"兽魂更新：背包第 {row + 1} 行尚无真实资产页验证，拒绝猜测坐标"
         )
     first_x, first_y = _shape_center(
-        runtime,
+        context,
         BEAST_SOUL_MAIN_SCENE,
         "魂晶背包/魂晶卡片模板",
     )
     last_x, _last_y = _shape_center(
-        runtime,
+        context,
         BEAST_SOUL_MAIN_SCENE,
         "魂晶背包/首行第五格",
     )
     _second_x, second_y = _shape_center(
-        runtime,
+        context,
         BEAST_SOUL_MAIN_SCENE,
         "魂晶背包/第二行第一格",
     )
@@ -950,7 +950,7 @@ def _bag_card_position(runtime: Any, bag_index: int) -> tuple[float, float, int]
 
 
 def _initial_bag_card_probe_points(
-    runtime: Any,
+    context: Any,
     *,
     row: int,
     column: int,
@@ -973,15 +973,15 @@ def _initial_bag_card_probe_points(
         raise ValueError(
             f"初始魂晶格越界 row={row_index}, column={column_index}"
         )
-    first_box = runtime.shape(
+    first_box = context.shape(
         BEAST_SOUL_MAIN_SCENE,
         "魂晶背包/魂晶卡片模板",
     ).box()
-    fifth_box = runtime.shape(
+    fifth_box = context.shape(
         BEAST_SOUL_MAIN_SCENE,
         "魂晶背包/首行第五格",
     ).box()
-    second_row_box = runtime.shape(
+    second_row_box = context.shape(
         BEAST_SOUL_MAIN_SCENE,
         "魂晶背包/第二行第一格",
     ).box()
@@ -1007,7 +1007,7 @@ def _initial_bag_card_probe_points(
     if row_index < 2:
         return points
 
-    bag_box = runtime.shape(BEAST_SOUL_MAIN_SCENE, "魂晶背包").box()
+    bag_box = context.shape(BEAST_SOUL_MAIN_SCENE, "魂晶背包").box()
     bag_x = float(bag_box.get("x") or 0)
     bag_y = float(bag_box.get("y") or 0)
     bag_width = float(bag_box.get("w") or 0)
@@ -1026,12 +1026,12 @@ def _initial_bag_card_probe_points(
     return (quarter_point,)
 
 
-def _first_bag_card_probe_points(runtime: Any) -> tuple[tuple[float, float], ...]:
-    return _initial_bag_card_probe_points(runtime, row=0, column=0)
+def _first_bag_card_probe_points(context: Any) -> tuple[tuple[float, float], ...]:
+    return _initial_bag_card_probe_points(context, row=0, column=0)
 
 
 def _open_initial_bag_card(
-    runtime: Any,
+    context: Any,
     *,
     row: int,
     column: int,
@@ -1039,20 +1039,20 @@ def _open_initial_bag_card(
 ):
     """Open one visible bag card with one or two bounded probes."""
 
-    points = _initial_bag_card_probe_points(runtime, row=row, column=column)
+    points = _initial_bag_card_probe_points(context, row=row, column=column)
     attempt_count = len(points)
     for attempt, (x, y) in enumerate(points, 1):
         _click_anchored_point(
-            runtime,
+            context,
             BEAST_SOUL_MAIN_SCENE,
             "魂晶背包",
             x,
             y,
         )
         try:
-            yield from runtime.wait_scene(
+            yield from context.wait_scene(
                 BEAST_SOUL_DETAIL_SCENE,
-                timeout=timeout,
+                wait=timeout,
                 label=(
                     f"兽魂更新：打开初始魂晶 row={row}, column={column}"
                     f"（探测{attempt}/{attempt_count}）"
@@ -1060,7 +1060,7 @@ def _open_initial_bag_card(
             )
             return {"attempt": attempt, "point": (x, y)}
         except (RuntimeError, TimeoutError):
-            scene, _score, _frame = runtime.observe_scene(
+            scene, _score, _frame = context.current_scene(
                 views=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
                 update=True,
             )
@@ -1074,12 +1074,12 @@ def _open_initial_bag_card(
     )
 
 
-def _open_initial_first_bag_card(runtime: Any, *, timeout: float = 3.0):
+def _open_initial_first_bag_card(context: Any, *, timeout: float = 3.0):
     """Open the initial first bag card with at most two bounded probes."""
 
     return (
         yield from _open_initial_bag_card(
-            runtime,
+            context,
             row=0,
             column=0,
             timeout=timeout,
@@ -1088,11 +1088,11 @@ def _open_initial_first_bag_card(runtime: Any, *, timeout: float = 3.0):
 
 
 def _detail_identity(
-    runtime: Any,
+    context: Any,
 ) -> tuple[tuple[int, int | None, int | None, int | None], str]:
     """Read the open detail's side-effect-free identity fingerprint."""
 
-    text = runtime.ocr_text_in_shapes(
+    text = context.ocr_text_in_shapes(
         BEAST_SOUL_DETAIL_SCENE,
         ("魂晶等级标题", "总评分"),
         padding=8,
@@ -1112,7 +1112,7 @@ def _detail_identity(
     )
     score_match = re.search(r"总评分[:：]?([0-9,]+)", text)
     score = int(score_match.group(1).replace(",", "")) if score_match else None
-    basic_text = runtime.ocr_text_in_shapes(
+    basic_text = context.ocr_text_in_shapes(
         BEAST_SOUL_DETAIL_SCENE,
         ("基础属性",),
         padding=96,
@@ -1235,7 +1235,7 @@ def _target_signature_accepts(expected, observed) -> bool:
 
 
 def _beast_soul_main_identity(
-    runtime: Any,
+    context: Any,
     *,
     frame_data_url: str | None = None,
 ) -> bool:
@@ -1256,7 +1256,7 @@ def _beast_soul_main_identity(
         ("合成魂晶", "合成魂晶"),
         ("词条预览", "词条预览"),
     ):
-        text = runtime.ocr_text_in_shapes(
+        text = context.ocr_text_in_shapes(
             BEAST_SOUL_MAIN_SCENE,
             (shape_title,),
             padding=12,
@@ -1304,7 +1304,7 @@ def _ordered_bag_identity_sequence(
 
 
 def _probe_visible_bag_identity(
-    runtime: Any,
+    context: Any,
     *,
     row: int,
     column: int,
@@ -1316,7 +1316,7 @@ def _probe_visible_bag_identity(
     require_time_budget()
     try:
         yield from _open_initial_bag_card(
-            runtime,
+            context,
             row=row,
             column=column,
             timeout=3.0,
@@ -1333,7 +1333,7 @@ def _probe_visible_bag_identity(
         ) from exc
     require_time_budget()
     try:
-        identity, _text = _detail_identity(runtime)
+        identity, _text = _detail_identity(context)
         if not identity[0] or identity[1] is None:
             raise RuntimeError(
                 f"兽魂更新：可见格 row={row}, column={column} 详情签名不完整"
@@ -1341,14 +1341,14 @@ def _probe_visible_bag_identity(
         return identity
     finally:
         # Every observational detail probe is closed before another slot or
-        # scroll is attempted.  No probe leaves the runtime on #479.
-        yield from _close_item_detail(runtime)
+        # scroll is attempted.  No probe leaves the context on #479.
+        yield from _close_item_detail(context)
         verify_order()
         require_time_budget()
 
 
 def _anchor_visible_bag_start(
-    runtime: Any,
+    context: Any,
     identities: list[tuple[int, int | None] | None],
     *,
     require_time_budget,
@@ -1364,7 +1364,7 @@ def _anchor_visible_bag_start(
     for row, column in probe_slots:
         relative_index = row * 5 + column
         observed = yield from _probe_visible_bag_identity(
-            runtime,
+            context,
             row=row,
             column=column,
             require_time_budget=require_time_budget,
@@ -1405,7 +1405,7 @@ def _anchor_visible_bag_start(
 
     direction = diagnostic_direction()
     if direction is not None:
-        changed = yield from runtime.scroll_shape_content(
+        changed = yield from context.scroll_shape_content(
             BEAST_SOUL_MAIN_SCENE,
             "魂晶背包",
             recognition_shape="魂晶背包/魂晶卡片模板",
@@ -1427,7 +1427,7 @@ def _anchor_visible_bag_start(
         extended = []
         for row, column, old_relative in overlap_slots:
             observed = yield from _probe_visible_bag_identity(
-                runtime,
+                context,
                 row=row,
                 column=column,
                 require_time_budget=require_time_budget,
@@ -1448,7 +1448,7 @@ def _anchor_visible_bag_start(
             extended.append((
                 row * 5 + column,
                 (yield from _probe_visible_bag_identity(
-                    runtime,
+                    context,
                     row=row,
                     column=column,
                     require_time_budget=require_time_budget,
@@ -1458,7 +1458,7 @@ def _anchor_visible_bag_start(
         winner, extended_ranked = _rank_viewport_candidates(identities, extended)
         if winner is not None:
             restore_direction = "down" if direction == "up" else "up"
-            restored = yield from runtime.scroll_shape_content(
+            restored = yield from context.scroll_shape_content(
                 BEAST_SOUL_MAIN_SCENE,
                 "魂晶背包",
                 recognition_shape="魂晶背包/魂晶卡片模板",
@@ -1479,7 +1479,7 @@ def _anchor_visible_bag_start(
             )
             for row, column, extended_relative in restore_slots:
                 restored_observed = yield from _probe_visible_bag_identity(
-                    runtime,
+                    context,
                     row=row,
                     column=column,
                     require_time_budget=require_time_budget,
@@ -1508,7 +1508,7 @@ def _anchor_visible_bag_start(
 
 
 def _open_bag_item_detail(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
     item_id: str,
     *,
@@ -1556,7 +1556,7 @@ def _open_bag_item_detail(
     while scroll_count <= max_scrolls:
         require_time_budget()
         viewport_start, _observations = yield from _anchor_visible_bag_start(
-            runtime,
+            context,
             identities,
             require_time_budget=require_time_budget,
             verify_order=verify_order,
@@ -1598,7 +1598,7 @@ def _open_bag_item_detail(
             # to #478; the final open is not a probe and is consumed by the
             # caller's lock action.
             actual_identity = yield from _probe_visible_bag_identity(
-                runtime,
+                context,
                 row=row,
                 column=column,
                 require_time_budget=require_time_budget,
@@ -1611,7 +1611,7 @@ def _open_bag_item_detail(
                     f"actual={actual_identity}",
                 )
             yield from _open_initial_bag_card(
-                runtime,
+                context,
                 row=row,
                 column=column,
                 timeout=3.0,
@@ -1620,9 +1620,9 @@ def _open_bag_item_detail(
             # This second #479 is the one that will carry the lock action.
             # Revalidate it independently; the preceding observational detail
             # was deliberately closed and cannot authorize a later click.
-            carrier_identity, _carrier_text = _detail_identity(runtime)
+            carrier_identity, _carrier_text = _detail_identity(context)
             if not _target_signature_accepts(expected_identity, carrier_identity):
-                yield from _close_item_detail(runtime)
+                yield from _close_item_detail(context)
                 raise BeastSoulTargetNotFoundError(
                     item_id,
                     f"兽魂更新：承载锁动作的详情签名不一致，"
@@ -1632,7 +1632,7 @@ def _open_bag_item_detail(
                 verify_order()
                 require_time_budget()
             except Exception:
-                yield from _close_item_detail(runtime)
+                yield from _close_item_detail(context)
                 raise
             return item
 
@@ -1648,7 +1648,7 @@ def _open_bag_item_detail(
             break
         changed_count = 0
         for _batch_index in range(batch_size):
-            changed = yield from runtime.scroll_shape_content(
+            changed = yield from context.scroll_shape_content(
                 BEAST_SOUL_MAIN_SCENE,
                 "魂晶背包",
                 recognition_shape="魂晶背包/魂晶卡片模板",
@@ -1659,7 +1659,7 @@ def _open_bag_item_detail(
             if not changed:
                 break
             changed_count += 1
-            scene, _score, _frame = runtime.observe_scene(
+            scene, _score, _frame = context.current_scene(
                 views=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
                 update=True,
             )
@@ -1682,7 +1682,7 @@ def _open_bag_item_detail(
 
 
 def _open_item_detail(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
     item_id: str,
     *,
@@ -1703,9 +1703,9 @@ def _open_item_detail(
             from backend.core.fanxiu.beast_spirit_optimizer import board_placements
 
             cells = board_placements(snapshot.get("boards") or []).get(str(item_id))
-        x, y = _board_point(runtime, cells or [])
+        x, y = _board_point(context, cells or [])
         _click_anchored_point(
-            runtime,
+            context,
             BEAST_SOUL_MAIN_SCENE,
             "魂晶镶嵌盘",
             x,
@@ -1713,17 +1713,17 @@ def _open_item_detail(
         )
     else:
         return (yield from _open_bag_item_detail(
-            runtime,
+            context,
             snapshot,
             item_id,
             locate_deadline=locate_deadline,
         ))
-    yield from runtime.wait_scene(
+    yield from context.wait_scene(
         BEAST_SOUL_DETAIL_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：等待魂晶详情",
     )
-    actual_identity, _text = _detail_identity(runtime)
+    actual_identity, _text = _detail_identity(context)
     expected_identity = _expected_identity(snapshot, item_id)
     if not _target_signature_accepts(expected_identity, actual_identity):
         raise RuntimeError(
@@ -1733,17 +1733,17 @@ def _open_item_detail(
     return item
 
 
-def _close_item_detail(runtime: Any):
-    yield from runtime.wait_click(BEAST_SOUL_DETAIL_SCENE, "关闭详情")
-    yield from runtime.wait_scene(
+def _close_item_detail(context: Any):
+    yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "关闭详情")
+    yield from context.wait_scene(
         BEAST_SOUL_MAIN_SCENE,
-        timeout=8,
+        wait=8,
         label="兽魂更新：关闭魂晶详情",
     )
 
 
 def _toggle_item_lock(
-    runtime: Any,
+    context: Any,
     snapshot: dict[str, Any],
     item_id: str,
     *,
@@ -1755,13 +1755,13 @@ def _toggle_item_lock(
         for item in snapshot.get("items") or []
     }
     yield from _open_item_detail(
-        runtime,
+        context,
         snapshot,
         item_id,
         locate_deadline=locate_deadline,
     )
-    yield from runtime.wait_click(BEAST_SOUL_DETAIL_SCENE, "锁定切换")
-    yield from _settle(runtime)
+    yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "锁定切换")
+    yield from _settle(context)
     updated = _snapshot()
     target = _item(updated, item_id)
     target_ok = (
@@ -1769,7 +1769,7 @@ def _toggle_item_lock(
         and bool(target.get("excluded_from_quick_synthesis")) is expected_locked
     )
     if target_ok:
-        yield from _close_item_detail(runtime)
+        yield from _close_item_detail(context)
         return updated
 
     changed_ids = [
@@ -1781,17 +1781,17 @@ def _toggle_item_lock(
     # Reopen the item that actually changed before rolling it back.  This avoids
     # assuming that a misplaced card click left the intended detail on screen.
     if len(changed_ids) == 1 and changed_ids[0] != str(item_id):
-        yield from _close_item_detail(runtime)
+        yield from _close_item_detail(context)
         yield from _open_item_detail(
-            runtime,
+            context,
             updated,
             changed_ids[0],
             locate_deadline=locate_deadline,
         )
-        yield from runtime.wait_click(BEAST_SOUL_DETAIL_SCENE, "锁定切换")
-        yield from _settle(runtime)
+        yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "锁定切换")
+        yield from _settle(context)
         rolled_back = _snapshot()
-        yield from _close_item_detail(runtime)
+        yield from _close_item_detail(context)
         rollback_state = {
             str(item["item_id"]): bool(item.get("locked"))
             for item in rolled_back.get("items") or []
@@ -1801,14 +1801,14 @@ def _toggle_item_lock(
                 f"兽魂更新：误点魂晶 {changed_ids[0]} 且回滚锁定状态失败"
             )
     else:
-        yield from _close_item_detail(runtime)
+        yield from _close_item_detail(context)
     raise RuntimeError(
         f"兽魂更新：魂晶 {item_id} 锁定切换未命中目标，"
         f"expected_locked={expected_locked}, changed={changed_ids}"
     )
 
 
-def _sync_protected_items(runtime: Any, snapshot: dict[str, Any]):
+def _sync_protected_items(context: Any, snapshot: dict[str, Any]):
     actions: list[dict[str, str]] = []
     max_actions = len(snapshot.get("items") or []) + 4
     refresh_used = False
@@ -1843,7 +1843,7 @@ def _sync_protected_items(runtime: Any, snapshot: dict[str, Any]):
         require_locate_budget(target_id)
         try:
             snapshot = yield from _toggle_item_lock(
-                runtime,
+                context,
                 snapshot,
                 target_id,
                 expected_locked=expected_locked,
@@ -1866,7 +1866,7 @@ def _sync_protected_items(runtime: Any, snapshot: dict[str, Any]):
                 # bag_index stayed stable. Retry exactly once with the fresh
                 # identity and position; a second miss is a real scan defect.
                 snapshot = yield from _toggle_item_lock(
-                    runtime,
+                    context,
                     refreshed,
                     target_id,
                     expected_locked=expected_locked,
@@ -1898,23 +1898,23 @@ def _sync_protected_items(runtime: Any, snapshot: dict[str, Any]):
         )
 
 
-def _apply_layout(runtime: Any, snapshot: dict[str, Any]):
+def _apply_layout(context: Any, snapshot: dict[str, Any]):
     actions: list[dict[str, Any]] = []
     plan = (snapshot.get("layout") or {}).get("transition_plan") or {}
     for action in plan.get("takeoff") or []:
         item_id = str(action["item_id"])
-        yield from _open_item_detail(runtime, snapshot, item_id)
-        detail_action = runtime.ocr_text_in_shapes(
+        yield from _open_item_detail(context, snapshot, item_id)
+        detail_action = context.ocr_text_in_shapes(
             BEAST_SOUL_DETAIL_SCENE,
             ("镶嵌或卸下",),
             padding=8,
         )
         if "卸下" not in re.sub(r"\s+", "", str(detail_action or "")):
             raise RuntimeError(f"兽魂更新：魂晶 {item_id} 详情未出现卸下按钮")
-        yield from runtime.wait_click(BEAST_SOUL_DETAIL_SCENE, "镶嵌或卸下")
-        yield from runtime.wait_scene(
+        yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "镶嵌或卸下")
+        yield from context.wait_scene(
             BEAST_SOUL_MAIN_SCENE,
-            timeout=8,
+            wait=8,
             label="兽魂更新：等待卸下完成",
         )
         snapshot = _snapshot()
@@ -1927,18 +1927,18 @@ def _apply_layout(runtime: Any, snapshot: dict[str, Any]):
     for action in plan.get("embed") or []:
         item_id = str(action["item_id"])
         expected_cells = sorted(action.get("cells") or [])
-        yield from _open_item_detail(runtime, snapshot, item_id)
-        detail_action = runtime.ocr_text_in_shapes(
+        yield from _open_item_detail(context, snapshot, item_id)
+        detail_action = context.ocr_text_in_shapes(
             BEAST_SOUL_DETAIL_SCENE,
             ("镶嵌或卸下",),
             padding=8,
         )
         if "镶嵌" not in re.sub(r"\s+", "", str(detail_action or "")):
             raise RuntimeError(f"兽魂更新：魂晶 {item_id} 详情未出现镶嵌按钮")
-        yield from runtime.wait_click(BEAST_SOUL_DETAIL_SCENE, "镶嵌或卸下")
-        yield from runtime.wait_scene(
+        yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "镶嵌或卸下")
+        yield from context.wait_scene(
             BEAST_SOUL_MAIN_SCENE,
-            timeout=8,
+            wait=8,
             label="兽魂更新：等待镶嵌完成",
         )
         snapshot = _snapshot()
@@ -1962,25 +1962,25 @@ def execute_beast_spirit_update_task(
 ):
     """Lock protected souls, synthesize disposables, and apply the optimum."""
 
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
     max_level = min(8, max(1, int(payload.get("max_source_level") or 8)))
     snapshot = _snapshot()
-    yield from _enter_beast_soul_main(runtime)
+    yield from _enter_beast_soul_main(context)
     # v_showList is created by BeastSpiritSlotGridPanel only after the page is
     # active.  Refresh here so every bag action uses the exact current UI order.
     snapshot = _snapshot()
-    snapshot, lock_actions = yield from _sync_protected_items(runtime, snapshot)
+    snapshot, lock_actions = yield from _sync_protected_items(context, snapshot)
 
     batches: list[dict[str, Any]] = []
     if not any(
         synthesis_gate(snapshot, level)["allowed"]
         for level in range(1, max_level + 1)
     ):
-        snapshot, layout_actions = yield from _apply_layout(runtime, snapshot)
+        snapshot, layout_actions = yield from _apply_layout(context, snapshot)
         layout = snapshot.get("layout") or {}
         score_gain = int(layout.get("score_gain") or 0)
         if score_gain == 0:
@@ -2009,18 +2009,18 @@ def execute_beast_spirit_update_task(
         gate = synthesis_gate(snapshot, level)
         if not gate["allowed"]:
             continue
-        yield from _enter_quick_synthesis(runtime)
-        yield from _select_material(runtime, level)
-        result = yield from _execute_current_batch(runtime, snapshot, level)
-        yield from _leave_quick_synthesis(runtime)
+        yield from _enter_quick_synthesis(context)
+        yield from _select_material(context, level)
+        result = yield from _execute_current_batch(context, snapshot, level)
+        yield from _leave_quick_synthesis(context)
         batches.append({"level": level, **result})
         snapshot = _snapshot()
-        snapshot, new_lock_actions = yield from _sync_protected_items(runtime, snapshot)
+        snapshot, new_lock_actions = yield from _sync_protected_items(context, snapshot)
         lock_actions.extend(new_lock_actions)
         if not result.get("ok"):
             break
 
-    snapshot, layout_actions = yield from _apply_layout(runtime, snapshot)
+    snapshot, layout_actions = yield from _apply_layout(context, snapshot)
     layout = snapshot.get("layout") or {}
     score_gain = int(layout.get("score_gain") or 0)
     outcome = "complete" if score_gain == 0 else "layout_update_required"

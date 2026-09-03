@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from filelock import FileLock
-from pyxllib.autogui import image_number as runtime_image_number
+from pyxllib.autogui import image_number as parse_image_number
 
 from backend.core.settings import get_settings
 from backend.core.fanxiu.data_annotation.state import write_data_annotation_json
@@ -190,10 +190,10 @@ def _image_suffix_from_bytes(data: bytes) -> str | None:
 
 
 def _filename_number(filename: str) -> int | None:
-    # Scene identity is defined by the Runtime parser, including prefixed
+    # Scene identity is defined by the behavior-tree parser, including prefixed
     # assets such as ``lingxiao-preview-580.png``.  Scanning only pure numeric
     # filenames forgets real IDs and can allocate an already-used scene.
-    return runtime_image_number({"filename": Path(str(filename or "")).name})
+    return parse_image_number({"filename": Path(str(filename or "")).name})
 
 
 def _asset_tree_image_numbers(entry_id: str | None = None) -> list[int]:

@@ -282,16 +282,16 @@ def preflight_storage_bag_auto_claim_task(
     """Prove the selected batch is supported before any aggregate mutation."""
 
     del payload
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
-    yield from runtime.goto_view(WORLD_SCENE)
-    yield from runtime.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
-    yield from runtime.wait_scene(
+    yield from context.go_scene(WORLD_SCENE)
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
+    yield from context.wait_scene(
         STORAGE_BAG_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="资源_自动使用/储物袋预检：等待储物袋主页",
     )
     before = dict(snapshot_reader())
@@ -301,10 +301,10 @@ def preflight_storage_bag_auto_claim_task(
         session_factory=session_factory,
         spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
     )
-    yield from runtime.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
-    yield from runtime.wait_scene(
+    yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
+    yield from context.wait_scene(
         WORLD_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="资源_自动使用/储物袋预检：返回世界",
     )
     return {
@@ -335,16 +335,16 @@ def execute_storage_bag_auto_claim_task(
 ) -> Generator[Any, Any, dict[str, Any]]:
     """Execute the current persisted selection through reusable UI families."""
 
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
-    yield from runtime.goto_view(WORLD_SCENE)
-    yield from runtime.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
-    yield from runtime.wait_scene(
+    yield from context.go_scene(WORLD_SCENE)
+    yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
+    yield from context.wait_scene(
         STORAGE_BAG_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="资源_自动使用/储物袋勾选：等待储物袋主页",
     )
 
@@ -362,26 +362,26 @@ def execute_storage_bag_auto_claim_task(
             session.commit()
 
     random_adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=runtime,
+        context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
         recorder=recorder,
         wallet_snapshot_reader=read_wallet_currency_snapshot,
     )
     fixed_adapter = StorageBagFixedBoxGuiAdapter(
-        runtime=runtime,
+        context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
         recorder=recorder,
         wallet_snapshot_reader=read_wallet_currency_snapshot,
     )
     choice_adapter = StorageBagChoiceBoxGuiAdapter(
-        runtime=runtime,
+        context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
     )
     spirit_stone_adapter = StorageBagSpiritStoneGuiAdapter(
-        runtime=runtime,
+        context=context,
         snapshot_reader=snapshot_reader,
         wallet_snapshot_reader=read_wallet_currency_snapshot,
     )
@@ -410,10 +410,10 @@ def execute_storage_bag_auto_claim_task(
             "verified": result is not None,
         })
 
-    yield from runtime.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
-    yield from runtime.wait_scene(
+    yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
+    yield from context.wait_scene(
         WORLD_SCENE,
-        timeout=10.0,
+        wait=10.0,
         label="资源_自动使用/储物袋勾选：返回世界",
     )
     return {

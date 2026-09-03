@@ -6105,6 +6105,268 @@ def v108_unify_fanxiu_ranking_activity_instances(session: Session):
     session.commit()
 
 
+def v109_merge_split_xutian_occurrence_roots(session: Session):
+    """Merge Xutian roots split only by an unstable Runtime row id."""
+
+    root_table = "fanxiuexchangeactivity"
+    if not _table_exists(session, root_table):
+        return
+    rows = session.execute(text(
+        f'SELECT * FROM "{root_table}" WHERE activity_type = :activity_type '
+        'AND game_activity_id IS NOT NULL AND start_at != \'\' AND end_at != \'\''
+    ), {"activity_type": "xutian-palace"}).mappings().all()
+    groups: dict[tuple[Any, ...], list[Any]] = {}
+    for row in rows:
+        key = (
+            int(row["game_activity_id"]),
+            int(row["cross_count"]),
+            str(row["start_at"]),
+            str(row["end_at"]),
+        )
+        groups.setdefault(key, []).append(row)
+
+    child_specs = (
+        ("fanxiuexchangeshopitem", ("goods_id",)),
+        ("fanxiuexchangeranking", ("ranking_scope", "rank", "role_key")),
+        ("fanxiuexchangeactivityobservation", ("fingerprint",)),
+    )
+    from backend.core.fanxiu.activity.xutian_palace_instrumentation import (
+        resolve_xutian_palace_reward_activity_id,
+    )
+
+    for (game_activity_id, cross_count, start_at, end_at), cohort in groups.items():
+        stable_key = (
+            f"activity:xutian-palace:{game_activity_id}:{start_at}:{end_at}"
+        )
+        canonical = next(
+            (row for row in cohort if str(row["instance_key"]) == stable_key),
+            None,
+        )
+        if canonical is None:
+            canonical = cohort[0]
+            session.execute(text(
+                f'UPDATE "{root_table}" SET instance_key=:instance_key WHERE id=:id'
+            ), {"instance_key": stable_key, "id": canonical["id"]})
+        canonical_id = str(canonical["id"])
+        canonical_evidence = _load_json_value(canonical["evidence"], {})
+        canonical_instance_data = _load_json_value(canonical["instance_data"], {})
+        runtime_scope_ids = {
+            "personal": 80000 + int(cross_count) * 100 + 91,
+            "plane": 80000 + int(cross_count) * 100 + 71,
+        }
+        reward_scope_ids = {
+            scope: resolve_xutian_palace_reward_activity_id(
+                cross_count=int(cross_count), ranking_scope=scope
+            )
+            for scope in ("personal", "plane")
+        }
+        canonical_evidence["rank_scope_activity_ids"] = runtime_scope_ids
+        canonical_evidence["reward_scope_activity_ids"] = reward_scope_ids
+        canonical_instance_data["rank_scope_activity_ids"] = runtime_scope_ids
+        canonical_instance_data["reward_scope_activity_ids"] = reward_scope_ids
+        merged_roots = list(canonical_evidence.get("merged_instance_roots") or [])
+        for source in cohort:
+            source_id = str(source["id"])
+            if source_id == canonical_id:
+                continue
+            merged_roots.append({
+                "id": source_id,
+                "instance_key": str(source["instance_key"] or ""),
+                "runtime_id": str(source["runtime_id"] or ""),
+                "evidence": _load_json_value(source["evidence"], {}),
+            })
+            for table_name, unique_columns in child_specs:
+                if not _table_exists(session, table_name):
+                    continue
+                child_rows = session.execute(text(
+                    f'SELECT * FROM "{table_name}" WHERE activity_id=:activity_id'
+                ), {"activity_id": source_id}).mappings().all()
+                for child in child_rows:
+                    predicates = " AND ".join(
+                        f'"{column}" = :{column}' for column in unique_columns
+                    )
+                    params = {
+                        "activity_id": canonical_id,
+                        **{column: child[column] for column in unique_columns},
+                    }
+                    duplicate = session.execute(text(
+                        f'SELECT id FROM "{table_name}" WHERE '
+                        f'activity_id=:activity_id AND {predicates} LIMIT 1'
+                    ), params).first()
+                    if duplicate is None:
+                        session.execute(text(
+                            f'UPDATE "{table_name}" SET activity_id=:activity_id '
+                            'WHERE id=:id'
+                        ), {"activity_id": canonical_id, "id": child["id"]})
+                    else:
+                        session.execute(text(
+                            f'DELETE FROM "{table_name}" WHERE id=:id'
+                        ), {"id": child["id"]})
+            session.execute(text(
+                f'DELETE FROM "{root_table}" WHERE id=:id'
+            ), {"id": source_id})
+        if merged_roots:
+            canonical_evidence["merged_instance_roots"] = merged_roots
+        session.execute(text(
+            f'UPDATE "{root_table}" SET game_rank_activity_id=:rank_id, '
+            'evidence=:evidence, instance_data=:instance_data WHERE id=:id'
+        ), {
+            "id": canonical_id,
+            "rank_id": runtime_scope_ids["personal"],
+            "evidence": _dump_json_value(canonical_evidence),
+            "instance_data": _dump_json_value(canonical_instance_data),
+        })
+    session.commit()
+
+
+def v110_backfill_xutian_rank_reward_namespaces(session: Session):
+    """Backfill namespace maps for databases that already applied early V109."""
+
+    v109_merge_split_xutian_occurrence_roots(session)
+
+
+def v111_unify_rank_scope_identity_namespaces(session: Session):
+    """Replace parallel ambiguous rank-id maps with one typed JSON contract."""
+
+    table_name = "fanxiuexchangeactivity"
+    if not _table_exists(session, table_name):
+        return
+    from backend.core.fanxiu.activity.exchange_activity_spec import (
+        RankScopeIdentity,
+        deserialize_rank_scope_identities,
+        serialize_rank_scope_identities,
+    )
+
+    rows = session.execute(text(
+        f'SELECT id, game_rank_activity_id, instance_data, evidence FROM "{table_name}"'
+    )).mappings().all()
+    for row in rows:
+        instance_data = _load_json_value(row["instance_data"], {})
+        evidence = _load_json_value(row["evidence"], {})
+        identities = deserialize_rank_scope_identities(instance_data, evidence)
+        primary_runtime_id = int(row["game_rank_activity_id"] or 0)
+        if not identities and primary_runtime_id > 0:
+            identities = {
+                "personal": RankScopeIdentity(
+                    scope="personal",
+                    runtime_rank_activity_id=primary_runtime_id,
+                    reward_activity_id=primary_runtime_id,
+                )
+            }
+        if not identities:
+            continue
+        canonical = serialize_rank_scope_identities(identities)
+        for container in (instance_data, evidence):
+            container["rank_scope_identities"] = canonical
+            container.pop("rank_scope_activity_ids", None)
+            container.pop("reward_scope_activity_ids", None)
+        session.execute(text(
+            f'UPDATE "{table_name}" SET instance_data=:instance_data, '
+            'evidence=:evidence WHERE id=:id'
+        ), {
+            "id": row["id"],
+            "instance_data": _dump_json_value(instance_data),
+            "evidence": _dump_json_value(evidence),
+        })
+    session.commit()
+
+
+def v112_complete_rank_scope_identities(session: Session):
+    """Complete partial canonical maps from the registered occurrence contract."""
+
+    table_name = "fanxiuexchangeactivity"
+    if not _table_exists(session, table_name):
+        return
+    from backend.core.fanxiu.activity.exchange_activity_registry import (
+        get_exchange_activity_spec,
+        resolve_registered_occurrence_rank_identities,
+    )
+    from backend.core.fanxiu.activity.exchange_activity_spec import (
+        deserialize_rank_scope_identities,
+        serialize_rank_scope_identities,
+    )
+
+    rows = session.execute(text(
+        f'SELECT id, activity_type, game_activity_id, game_rank_activity_id, cross_count, '
+        f'instance_data, evidence FROM "{table_name}"'
+    )).mappings().all()
+    for row in rows:
+        activity_type = str(row["activity_type"])
+        game_activity_id = int(row["game_activity_id"] or 0)
+        if game_activity_id <= 0 and activity_type != "xutian-palace":
+            continue
+        instance_data = _load_json_value(row["instance_data"], {})
+        evidence = _load_json_value(row["evidence"], {})
+        existing = deserialize_rank_scope_identities(instance_data, evidence)
+        follow = tuple(int(value) for value in evidence.get("rank_activity_ids") or ())
+        try:
+            spec = get_exchange_activity_spec(activity_type)
+            primary_scope = next(
+                item.scope
+                for item in spec.rank_scopes
+                if item.effective_role == "primary"
+            )
+            resolved = resolve_registered_occurrence_rank_identities(
+                activity_type=activity_type,
+                # Xutian's scope identity is cross-count based.  Very early
+                # imported roots legitimately lack the worldline Activity id;
+                # do not invent and persist one merely to complete rank scopes.
+                game_activity_id=game_activity_id or 1,
+                cross_count=int(row["cross_count"] or 1),
+                activity_follow=follow,
+            )
+        except ValueError:
+            continue
+        merged = dict(existing)
+        for scope, identity in resolved.items():
+            previous = existing.get(scope)
+            if previous is not None and activity_type != "xutian-palace":
+                identity = type(identity)(
+                    scope=scope,
+                    runtime_rank_activity_id=previous.runtime_rank_activity_id,
+                    reward_activity_id=(
+                        previous.reward_activity_id
+                        if previous.reward_activity_id is not None
+                        else identity.reward_activity_id
+                    ),
+                )
+            if (
+                scope == primary_scope
+                and int(row["game_rank_activity_id"] or 0) > 0
+                and activity_type != "xutian-palace"
+            ):
+                identity = type(identity)(
+                    scope=scope,
+                    runtime_rank_activity_id=int(row["game_rank_activity_id"]),
+                    reward_activity_id=identity.reward_activity_id,
+                )
+            merged[scope] = identity
+        canonical = serialize_rank_scope_identities(merged)
+        instance_data["rank_scope_identities"] = canonical
+        evidence["rank_scope_identities"] = canonical
+        session.execute(text(
+            f'UPDATE "{table_name}" SET instance_data=:instance_data, '
+            'evidence=:evidence WHERE id=:id'
+        ), {
+            "id": row["id"],
+            "instance_data": _dump_json_value(instance_data),
+            "evidence": _dump_json_value(evidence),
+        })
+    session.commit()
+
+
+def v113_complete_legacy_xutian_rank_scope_identities(session: Session):
+    """Complete Xutian roots imported before game_activity_id was persisted."""
+
+    v112_complete_rank_scope_identities(session)
+
+
+def v114_preserve_observed_rank_scope_identities(session: Session):
+    """Repair rows where V112 overrode an observed Runtime manager identity."""
+
+    v112_complete_rank_scope_identities(session)
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -6214,6 +6476,12 @@ MIGRATIONS = [
     (106, "Add Fanxiu storage-bag usage ledger", v106_add_fanxiu_storage_bag_usage_ledger),
     (107, "Add Fanxiu player battle observations", v107_add_fanxiu_player_profile_battle_observations),
     (108, "Unify Fanxiu ranking activity instances", v108_unify_fanxiu_ranking_activity_instances),
+    (109, "Merge split Xutian occurrence roots", v109_merge_split_xutian_occurrence_roots),
+    (110, "Backfill Xutian rank and reward namespaces", v110_backfill_xutian_rank_reward_namespaces),
+    (111, "Unify gameplay rank scope identity namespaces", v111_unify_rank_scope_identity_namespaces),
+    (112, "Complete registered rank scope identities", v112_complete_rank_scope_identities),
+    (113, "Complete legacy Xutian rank scope identities", v113_complete_legacy_xutian_rank_scope_identities),
+    (114, "Preserve observed rank scope identities", v114_preserve_observed_rank_scope_identities),
 ]
 
 def get_current_version(session: Session) -> int:

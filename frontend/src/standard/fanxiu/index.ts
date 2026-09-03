@@ -9,16 +9,15 @@ import drawCalculatorPage from './draw-calc'
 import fanxiuKunlunSecretPage from './kunlun-secret'
 import fanxiuLabelmePage from './labelme'
 import fanxiuDataAnnotationPage from './data-annotation'
-import fanxiuBehaviorTreeRuntimeLogsPage from './data-annotation-runtime-logs'
-import fanxiuBehaviorTreeRuntimePage from './data-annotation-runtime'
+import fanxiuBehaviorTreeContextLogsPage from './kernel-scheduler-logs'
+import fanxiuBehaviorTreeContextPage from './kernel-scheduler'
 import fanxiuLotteryModelPage from './lottery-model'
 import fanxiuGongfaAtlasPage from './gongfa-atlas'
 import magicTreasureHallPage from './magic-treasure-hall'
 import magicTreasureFormationsPage from './magic-treasure-formations'
 import fanxiuQijiZhumoPage from './qiji-zhumo'
 import fanxiuRechargePage from './recharge'
-import fanxiuResourceRankingPage from './resource-ranking'
-import fanxiuTopActivityPage from './top-activity'
+import fanxiuSchedulePage from './schedule'
 import spiritArtifactHallPage from './spirit-artifact-hall'
 import spiritBeastHallPage from './spirit-beast-hall'
 import wardrobeHallPage from './wardrobe-hall'
@@ -28,12 +27,11 @@ import xianzhouRacePage from './xianzhou-race'
 const pages: AppPageDefinition[] = [
   fanxiuWikiPage,
   fanxiuDataAnnotationPage,
-  fanxiuBehaviorTreeRuntimePage,
-  fanxiuBehaviorTreeRuntimeLogsPage,
+  fanxiuBehaviorTreeContextPage,
+  fanxiuBehaviorTreeContextLogsPage,
   fanxiuActivityListPage,
   fanxiuKunlunSecretPage,
-  fanxiuTopActivityPage,
-  fanxiuResourceRankingPage,
+  fanxiuSchedulePage,
   fanxiuDivineResourcePage,
   fanxiuQijiZhumoPage,
   fanxiuLabelmePage,

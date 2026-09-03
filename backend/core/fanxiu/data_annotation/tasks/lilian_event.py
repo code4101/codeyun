@@ -113,7 +113,7 @@ def select_lilian_event_option(
             prompt,
             options,
         )
-    except Exception:  # noqa: BLE001 - runtime knowledge remains the safe fallback
+    except Exception:  # noqa: BLE001 - context knowledge remains the safe fallback
         catalog_match = None
     if catalog_match is not None:
         selection = ChoiceSelection(
@@ -140,9 +140,9 @@ def _view_id(value: Any) -> int | None:
         return None
 
 
-def _read_lilian_options(runtime: Any, payload: dict[str, Any]) -> tuple[str, list[str]]:
-    frame = runtime.cur_frame(update=True)
-    fragments = runtime.ocr_fragments_in_shapes(
+def _read_lilian_options(context: Any, payload: dict[str, Any]) -> tuple[str, list[str]]:
+    frame = context.cur_frame(update=True)
+    fragments = context.ocr_fragments_in_shapes(
         436,
         ("选项",),
         padding=int(payload.get("lilian_option_padding") or 8),
@@ -157,7 +157,7 @@ def _read_lilian_options(runtime: Any, payload: dict[str, Any]) -> tuple[str, li
 
 
 def _choose_lilian_option(
-    runtime: Any,
+    context: Any,
     *,
     selection: ChoiceSelection,
     payload: dict[str, Any],
@@ -167,7 +167,7 @@ def _choose_lilian_option(
     max_attempts = max(1, int(payload.get("lilian_option_click_attempts") or 3))
     timeout = float(payload.get("lilian_result_timeout") or 30.0)
     for attempt in range(max_attempts):
-        scene_id, _score, _frame = runtime.current_scene(
+        scene_id, _score, _frame = context.current_scene(
             [436, 437, 438],
             update=True,
         )
@@ -177,7 +177,7 @@ def _choose_lilian_option(
             raise LilianEventFlowError(
                 f"历练_事件：选择前不再是正式 #436，而是 #{scene_id or 'unknown'}"
             )
-        option_frame, visible_options = _read_lilian_options(runtime, payload)
+        option_frame, visible_options = _read_lilian_options(context, payload)
         normalized_target = normalize_choice_text(selection.text)
         if sum(
             normalize_choice_text(option) == normalized_target
@@ -186,21 +186,21 @@ def _choose_lilian_option(
             raise LilianEventFlowError(
                 f"历练_事件：#436 当前选项不再唯一包含「{selection.text}」"
             )
-        runtime.click_ocr_text(
+        context.click_ocr_text(
             436,
             selection.text,
             in_shapes=("选项",),
             frame_data_url=option_frame,
         )
         try:
-            landed = yield from runtime.wait_view(
+            landed = yield from context.wait_scene(
                 437,
                 438,
-                timeout=timeout,
+                wait=timeout,
                 label=f"历练_事件：等待事件结果（{attempt + 1}/{max_attempts}）",
             )
         except TimeoutError:
-            scene_id, _score, _frame = runtime.current_scene(
+            scene_id, _score, _frame = context.current_scene(
                 [436, 437, 438],
                 update=True,
             )
@@ -217,10 +217,10 @@ def _choose_lilian_option(
     )
 
 
-def _click_lilian_partner_action(runtime: Any, target_name: str, payload: dict[str, Any]):
+def _click_lilian_partner_action(context: Any, target_name: str, payload: dict[str, Any]):
     """Find an arbitrary-length partner name and click its same-row action."""
 
-    match = yield from runtime.wait_ocr_text(
+    match = yield from context.wait_ocr_text(
         435,
         target_name,
         in_shapes=("窗口",),
@@ -233,25 +233,25 @@ def _click_lilian_partner_action(runtime: Any, target_name: str, payload: dict[s
         raise LilianEventFlowError(
             f"历练_事件：#435[窗口] 未找到仙侣「{target_name}」"
         )
-    target_view = runtime.view(435)
-    status_shape = runtime.shape(435, "状态")
-    frame_width, _frame_height = runtime.runner._frame_size(target_view.raw)
+    target_view = context.view(435)
+    status_shape = context.shape(435, "状态")
+    frame_width, _frame_height = context.runner._frame_size(target_view.raw)
     status_x = (
         float(status_shape.raw.get("x") or 0)
         + float(status_shape.raw.get("w") or 0) / 2
     ) * frame_width
     _name_x, name_y = match.point()
-    runtime.click_frame_point(435, status_x, name_y)
-    yield from runtime.wait_action_settle(
+    context.click_frame_point(435, status_x, name_y)
+    yield from context.wait_action_settle(
         float(payload.get("lilian_partner_settle_seconds") or 1.0)
     )
 
 
-def _fill_lilian_team_after_first_member(runtime: Any, payload: dict[str, Any]):
+def _fill_lilian_team_after_first_member(context: Any, payload: dict[str, Any]):
     """Fill the remaining four slots without replacing the first member."""
 
     for _index in range(4):
-        match = yield from runtime.wait_ocr_text(
+        match = yield from context.wait_ocr_text(
             435,
             "上阵",
             in_shapes=("窗口",),
@@ -265,14 +265,14 @@ def _fill_lilian_team_after_first_member(runtime: Any, payload: dict[str, Any]):
             raise LilianEventFlowError(
                 "历练_事件：#435[窗口] 无法找到足够的可上阵仙侣"
             )
-        runtime.click_frame_point(435, *match.point())
-        yield from runtime.wait_action_settle(
+        context.click_frame_point(435, *match.point())
+        yield from context.wait_action_settle(
             float(payload.get("lilian_partner_settle_seconds") or 1.0)
         )
 
 
 def _prepare_lilian_special_team(
-    runtime: Any,
+    context: Any,
     *,
     prompt: str,
     payload: dict[str, Any],
@@ -294,12 +294,12 @@ def _prepare_lilian_special_team(
     resolved_partner_snapshot = partner_snapshot
     if special_condition.startswith(("IncludeXianLv|", "CaptainSex|", "CaptainCareer|")):
         snapshot = partner_snapshot or read_lilian_partner_snapshot()
-        condition_before = runtime.ocr_text_in_shapes(
+        condition_before = context.ocr_text_in_shapes(
             435,
             ("特殊条件",),
             padding=int(payload.get("lilian_condition_padding") or 8),
         )
-        visible_text = runtime.ocr_text_in_shapes(
+        visible_text = context.ocr_text_in_shapes(
             435,
             ("窗口",),
             padding=int(payload.get("lilian_partner_visible_padding") or 4),
@@ -326,22 +326,22 @@ def _prepare_lilian_special_team(
                     f"历练_事件：条件 {special_condition} 未能确定上阵仙侣"
                 )
             yield from _click_lilian_partner_action(
-                runtime,
+                context,
                 str(selected_partner["name"]),
                 payload,
             )
-        yield from _fill_lilian_team_after_first_member(runtime, payload)
+        yield from _fill_lilian_team_after_first_member(context, payload)
     else:
-        yield from runtime.wait_click(
+        yield from context.wait_click(
             435,
             "一键上阵",
             timeout=float(payload.get("lilian_team_timeout") or 20.0),
         )
-        yield from runtime.wait_action_settle(
+        yield from context.wait_action_settle(
             float(payload.get("lilian_partner_settle_seconds") or 1.0)
         )
 
-    condition_text = runtime.ocr_text_in_shapes(
+    condition_text = context.ocr_text_in_shapes(
         435,
         ("特殊条件",),
         padding=int(payload.get("lilian_condition_padding") or 8),
@@ -356,7 +356,7 @@ def _prepare_lilian_special_team(
 
 
 def _finish_lilian_event_reward(
-    runtime: Any,
+    context: Any,
     *,
     scene_id: int,
     payload: dict[str, Any],
@@ -368,7 +368,7 @@ def _finish_lilian_event_reward(
         if scene_id == 425:
             return scene_id
         if scene_id == 437:
-            landed = yield from runtime.wait_click_then_view(
+            landed = yield from context.wait_click_then_scene(
                 437,
                 "领取奖励",
                 438,
@@ -381,7 +381,7 @@ def _finish_lilian_event_reward(
                 )
             continue
         if scene_id == 438:
-            landed = yield from runtime.wait_click_then_view(
+            landed = yield from context.wait_click_then_scene(
                 438,
                 "关闭",
                 425,
@@ -414,12 +414,12 @@ def execute_lilian_event_task(
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("历练_事件：缺少资产树路径，无法执行")
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         asset_tree_path,
         stop_event=stop_event,
     )
-    scene_id, _score, _frame = runtime.current_scene(
+    scene_id, _score, _frame = context.current_scene(
         [34],
         update=True,
     )
@@ -428,7 +428,7 @@ def execute_lilian_event_task(
             f"历练_事件：作业入口必须是 #34，而是 #{scene_id or 'unknown'}"
         )
 
-    landed = yield from runtime.wait_click_then_view(
+    landed = yield from context.wait_click_then_scene(
         34,
         "大地图",
         425,
@@ -436,7 +436,7 @@ def execute_lilian_event_task(
     )
     scene_id = _view_id(landed)
     if scene_id == 425:
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             425,
             "历练按钮",
             427,
@@ -444,7 +444,7 @@ def execute_lilian_event_task(
         )
         scene_id = _view_id(landed)
     if scene_id == 427:
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             427,
             "事件",
             428,
@@ -468,7 +468,7 @@ def execute_lilian_event_task(
                 f"历练_事件：连续处理 {len(processed_events)} 个事件后仍显示 #428，"
                 "拒绝误报完成"
             )
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             428,
             "前往",
             434,
@@ -477,12 +477,12 @@ def execute_lilian_event_task(
         if _view_id(landed) != 434:
             raise LilianEventFlowError("历练_事件：#428 前往后未进入 #434")
 
-        prompt = runtime.ocr_text_in_shapes(
+        prompt = context.ocr_text_in_shapes(
             434,
             ("事件",),
             padding=int(payload.get("lilian_prompt_padding") or 8),
         )
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             434,
             "历练",
             435,
@@ -492,12 +492,12 @@ def execute_lilian_event_task(
             raise LilianEventFlowError("历练_事件：#434 历练后未进入 #435")
 
         catalog_event, selected_partner, partner_snapshot = yield from _prepare_lilian_special_team(
-            runtime,
+            context,
             prompt=prompt,
             payload=payload,
             partner_snapshot=partner_snapshot,
         )
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             435,
             "派遣",
             436,
@@ -506,7 +506,7 @@ def execute_lilian_event_task(
         if _view_id(landed) != 436:
             raise LilianEventFlowError("历练_事件：派遣后未进入 #436")
 
-        _option_frame, observed_options = _read_lilian_options(runtime, payload)
+        _option_frame, observed_options = _read_lilian_options(context, payload)
         with Session(engine) as session:
             knowledge, selection = select_lilian_event_option(
                 session,
@@ -519,7 +519,7 @@ def execute_lilian_event_task(
             knowledge_id = knowledge.id
 
         scene_id = yield from _choose_lilian_option(
-            runtime,
+            context,
             selection=selection,
             payload=payload,
         )
@@ -529,7 +529,7 @@ def execute_lilian_event_task(
             )
 
         yield from _finish_lilian_event_reward(
-            runtime,
+            context,
             scene_id=scene_id,
             payload=payload,
         )
@@ -544,7 +544,7 @@ def execute_lilian_event_task(
             }
         )
 
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             425,
             "历练按钮",
             427,
@@ -552,7 +552,7 @@ def execute_lilian_event_task(
         )
         if _view_id(landed) != 427:
             raise LilianEventFlowError("历练_事件：处理事件后重新进入历练面板失败")
-        landed = yield from runtime.wait_click_then_view(
+        landed = yield from context.wait_click_then_scene(
             427,
             "事件",
             428,
@@ -566,7 +566,7 @@ def execute_lilian_event_task(
             f"历练_事件：处理事件后未进入 #428/#429，而是 #{scene_id or 'unknown'}"
         )
 
-    landed = yield from runtime.wait_click_then_view(
+    landed = yield from context.wait_click_then_scene(
         429,
         "关闭事件页",
         425,
@@ -575,10 +575,10 @@ def execute_lilian_event_task(
     if _view_id(landed) != 425:
         raise RuntimeError("历练_事件：关闭 #429 后未进入 #425")
 
-    runtime.click_frame_point(425, 80, 1480)
-    landed = yield from runtime.wait_view(
+    context.click_frame_point(425, 80, 1480)
+    landed = yield from context.wait_scene(
         34,
-        timeout=float(payload.get("lilian_return_world_timeout") or 20.0),
+        wait=float(payload.get("lilian_return_world_timeout") or 20.0),
         label="历练_事件：返回世界",
     )
     if _view_id(landed) != 34:

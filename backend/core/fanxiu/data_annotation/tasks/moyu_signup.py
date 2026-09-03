@@ -41,9 +41,9 @@ class MoyuSignupTaskMixin:
             "魔狱封阵" in compact and "挑战" in compact
         )
 
-    def moyu_signup_flow(self, runtime: Any):
-        yield from runtime.wait_click_then_view(34, "日常", 69)
-        entry_result = yield from runtime.open_daily_entry(
+    def moyu_signup_flow(self, context: Any):
+        yield from context.wait_click_then_scene(34, "日常", 69)
+        entry_result = yield from context.open_daily_entry(
             label="魔狱_报名",
             title_pattern=r"魔狱|封阵",
             progress_can_mark_done=False,
@@ -53,8 +53,8 @@ class MoyuSignupTaskMixin:
         if entry_result != "open":
             raise RuntimeError("魔狱_报名：#69 日常列表未找到“魔狱/封阵”入口")
 
-        payload = getattr(runtime, "attrs", {}).get("payload", {})
-        yield from runtime.wait_view_or_ocr(
+        payload = getattr(context, "attrs", {}).get("payload", {})
+        yield from context.wait_scene_or_ocr(
             400,
             lambda text: (
                 "大道外域" in re.sub(r"\s+", "", str(text or ""))
@@ -63,15 +63,15 @@ class MoyuSignupTaskMixin:
             timeout=float(payload.get("moyu_entry_travel_timeout") or 180.0),
             label="魔狱_报名：等待自动寻路抵达大道外域 #400",
         )
-        yield from runtime.wait_click_then_view(400, "封阵", 401)
+        yield from context.wait_click_then_scene(400, "封阵", 401)
 
-        text = runtime.ocr_text(update=True)
+        text = context.ocr_text(update=True)
         already_signed = self._moyu_signup_text_is_signed(text)
         if not already_signed:
-            yield from runtime.wait_click(401, "报名")
-            yield from runtime.wait_any(
+            yield from context.wait_click(401, "报名")
+            yield from context.wait_any(
                 {
-                    "已报名": runtime.ocr_matches(
+                    "已报名": context.ocr_matches(
                         self._moyu_signup_text_is_signed,
                         label="魔狱_报名：报名结果 OCR",
                     )
@@ -79,10 +79,10 @@ class MoyuSignupTaskMixin:
                 label="魔狱_报名：确认报名成功",
             )
 
-        yield from runtime.wait_click_then_view(401, "返回", 400)
-        yield from runtime.wait_click_then_view(400, "返回", 34)
+        yield from context.wait_click_then_scene(401, "返回", 400)
+        yield from context.wait_click_then_scene(400, "返回", 34)
         next_time = self._next_moyu_signup_time()
-        runtime.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
+        context.set_next_time(next_time.strftime("%Y-%m-%d %H:%M:%S"))
         return {
             "result": "success",
             "current_scene": 34,

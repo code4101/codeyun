@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from scripts.fanxiu_scene620_identity import IDENTITY_SPECS, refine_scene620_identity, validate_scene620_identity
 
 
@@ -84,7 +84,7 @@ def test_default_layer2_recognition_does_not_misidentify_scene659_as_scene620(mo
         ],
     }
     tree.append(scene659)
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     ctx = {"asset_tree": tree, "images": runner._index_images(tree)}
     frame_texts = {"仙宴", "点击屏幕继续"}
 
@@ -100,8 +100,10 @@ def test_default_layer2_recognition_does_not_misidentify_scene659_as_scene620(mo
         lambda _ctx, _image, _frame, score: score,
     )
 
-    assert runner._identify_scene_number_by_graph(ctx, "saved-0659-frame") == (
+    recognition = runner._identify_scene_number_by_graph(ctx, "saved-0659-frame")
+    assert (recognition.scene_id, recognition.score, recognition.status, recognition.matched_layer) == (
         659,
         100.0,
         "matched",
+        2,
     )

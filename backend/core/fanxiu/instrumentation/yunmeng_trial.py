@@ -133,7 +133,7 @@ def read_yunmeng_trial_status_snapshot(
     )
 
     reward_tiers = load_yunmeng_rank_reward_tiers(
-        rank_activity_id=int(rank_activity_id),
+        reward_activity_id=int(rank_activity_id),
         event_date=event_date,
     )
     wallet_root: int | None = None

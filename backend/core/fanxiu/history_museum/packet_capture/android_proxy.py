@@ -11,7 +11,7 @@ from backend.core.services.launcher import run_quiet
 
 
 DEFAULT_ADB_CANDIDATES = (
-    r"D:\TapTap\Support\android_emulator\engine\nx_device\12.0\shell\adb.exe",
+    r"C:\TapTap\Support\android_emulator\engine\nx_device\12.0\shell\adb.exe",
     r"D:\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",
     r"D:\MuMuPlayer-12.0\shell\adb.exe",
     r"C:\Program Files\Netease\MuMuPlayer-12.0\shell\adb.exe",

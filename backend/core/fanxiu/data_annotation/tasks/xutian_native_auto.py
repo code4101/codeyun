@@ -5,14 +5,14 @@ from __future__ import annotations
 Production safety boundary
 --------------------------
 The game's native Xutian auto loop can hang the Android container and leave
-ADB frames black.  A production batch must therefore monitor device health in
-addition to Heaven Runtime progress.  Persistent black/ADB failure invalidates
+ADB frames black.  A production batch therefore samples a fresh frame while
+monitoring Heaven Runtime progress.  Persistent black/ADB failure invalidates
 the pre-restart GUI transaction and requires a full MuMu recovery.  The
 ``xutian_native_auto_started`` marker must survive that recovery: a retry may
 only close the batch from exact Runtime completion plus a unique positive
 wallet delta, and must never click Start again merely because the emulator was
-restarted.  Device-health monitoring/recovery remains a required follow-up
-before this job is considered production-complete.
+restarted.  The shared Runtime capture path owns black-frame detection and
+recovery; this job deliberately lets its restart-required exception propagate.
 """
 
 from copy import deepcopy
@@ -47,6 +47,7 @@ XUTIAN_NATIVE_AUTO_TASK_TYPE = "xutian_palace_native_auto"
 XUTIAN_NATIVE_AUTO_TASK_ID = "xutian-palace-native-auto"
 XUTIAN_NATIVE_AUTO_START_MARK = "xutian_native_auto_started"
 XUTIAN_NATIVE_AUTO_BATCHES_KEY = "xutian_native_auto_batches"
+XUTIAN_DEVICE_FRAME_CHECK_INTERVAL_SECONDS = 5.0
 
 _QUALITY_LABELS = {
     3: "上品怪物",
@@ -105,6 +106,8 @@ def validate_xutian_auto_settings(
     snapshot: Mapping[str, Any],
     *,
     requested_challenges: int,
+    allow_item_refill: bool = True,
+    allow_boost_items: bool = True,
 ) -> list[str]:
     """Return exact Runtime mismatches for the user's persistent policy."""
 
@@ -130,16 +133,20 @@ def validate_xutian_auto_settings(
         if desired:
             fields = dict(raw.get(str(key)) or {})
             for field in ("use_item", "use_item_3", "use_item_4"):
-                if fields.get(field) is not True:
-                    mismatches.append(f"{name}.{field} 应开启")
+                expected = bool(allow_boost_items)
+                actual = fields.get(field)
+                mismatch = actual is not True if expected else actual is True
+                if mismatch:
+                    suffix = "应开启" if expected else "应关闭"
+                    mismatches.append(f"{name}.{field} {suffix}")
     special = dict(snapshot.get("special_options") or {})
     if special.get("find_demon_selected") is not False:
         mismatches.append("寻妖符应关闭")
     if special.get("native_soul_lock_selected") is not False:
         mismatches.append("本命魂锁应关闭")
     required_switches = {
-        "refill_challenge": True,
-        "refill_explore": True,
+        "refill_challenge": bool(allow_item_refill),
+        "refill_explore": bool(allow_item_refill),
         "quick_auto": True,
         "skip_animation": True,
     }
@@ -244,7 +251,7 @@ def _runtime_identity(snapshot: Mapping[str, Any]) -> tuple[int, int, int]:
 
 
 def _wait_scene(
-    runtime: Any,
+    context: Any,
     targets: tuple[int, ...],
     *,
     timeout_seconds: float,
@@ -254,95 +261,145 @@ def _wait_scene(
     last_score = 0.0
     last_frame = ""
     while time.monotonic() < deadline:
-        last_scene, last_score, last_frame = runtime.current_scene(
+        last_scene, last_score, last_frame = context.current_scene(
             list(targets), update=True
         )
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_frame
         time.sleep(0.25)
-    text = runtime.ocr_text(last_frame) if last_frame else ""
+    text = context.ocr_text(last_frame) if last_frame else ""
     raise RuntimeError(
         f"等待虚天场景超时：targets={targets}, scene={last_scene}, "
         f"score={float(last_score):.1f}, ocr={text[:120]}"
     )
 
 
-def _enter_xutian_map(runtime: Any) -> Iterator[Any]:
+def _enter_xutian_map(context: Any) -> Iterator[Any]:
     from datetime import datetime
 
     from backend.core.fanxiu.data_annotation.schedule_navigation import (
         select_schedule_activity,
     )
 
-    yield from runtime.goto_view(66)
+    current_scene, current_score, _frame = context.current_scene(
+        [
+            XUTIAN_TUTORIAL_SCENE_ID,
+            XUTIAN_SETTINGS_SCENE_ID,
+            XUTIAN_MAP_SCENE_ID,
+        ],
+        update=True,
+    )
+    if (
+        int(current_scene or 0) == XUTIAN_TUTORIAL_SCENE_ID
+        and float(current_score) >= 80.0
+    ):
+        context.click_shape_center(XUTIAN_TUTORIAL_SCENE_ID, "点击空白关闭")
+        _wait_scene(context, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
+        return
+    if (
+        int(current_scene or 0) in {XUTIAN_SETTINGS_SCENE_ID, XUTIAN_MAP_SCENE_ID}
+        and float(current_score) >= 80.0
+    ):
+        return
+    yield from context.go_scene(66)
     yield from select_schedule_activity(
-        runtime,
+        context,
         r"虚天(殿)?",
         enter=True,
         require_runtime_alignment=True,
         now=datetime.now().astimezone(),
     )
     scene, _score, frame = _wait_scene(
-        runtime,
+        context,
         (XUTIAN_ACTIVITY_SCENE_ID, XUTIAN_MAP_SCENE_ID),
         timeout_seconds=30.0,
     )
     if scene == XUTIAN_ACTIVITY_SCENE_ID:
-        runtime.click_shape_center(XUTIAN_ACTIVITY_SCENE_ID, "前往")
-        _wait_scene(runtime, (XUTIAN_ENTER_CONFIRM_SCENE_ID,), timeout_seconds=15.0)
+        context.click_shape_center(XUTIAN_ACTIVITY_SCENE_ID, "前往")
+        _wait_scene(context, (XUTIAN_ENTER_CONFIRM_SCENE_ID,), timeout_seconds=15.0)
         # This confirmation may enter the map even if the following transition
         # animation is visually unknown.  It is authorized once and never
         # repeated from an unknown frame.
-        runtime.click_shape_center(XUTIAN_ENTER_CONFIRM_SCENE_ID, "确认")
+        context.click_shape_center(XUTIAN_ENTER_CONFIRM_SCENE_ID, "确认")
         scene, _score, frame = _wait_scene(
-            runtime,
+            context,
             (XUTIAN_MAP_SCENE_ID, XUTIAN_TUTORIAL_SCENE_ID),
-            timeout_seconds=45.0,
+            timeout_seconds=75.0,
+        )
+        # The tutorial can be scheduled a moment after the map first becomes
+        # visible.  Let that delayed overlay settle before deciding the entry
+        # is complete.
+        yield from context.wait_action_settle(2.0)
+        scene, _score, frame = context.current_scene(
+            [XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID], update=True
         )
     if scene == XUTIAN_TUTORIAL_SCENE_ID:
-        runtime.click_shape_center(XUTIAN_TUTORIAL_SCENE_ID, "点击空白关闭")
-        _wait_scene(runtime, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
+        context.click_shape_center(XUTIAN_TUTORIAL_SCENE_ID, "点击空白关闭")
+        _wait_scene(context, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
 
 
 def _find_setting_label(
-    runtime: Any,
+    context: Any,
     label: str,
     *,
     region: str,
     max_scrolls: int = 10,
+    exact_identity: bool = False,
 ) -> Iterator[Any]:
-    match = yield from runtime.wait_ocr_text(
-        XUTIAN_SETTINGS_SCENE_ID,
-        label,
-        in_shapes=(region,),
-        timeout_seconds=20.0,
-        poll_seconds=0.5,
-        max_scrolls_per_direction=max_scrolls,
-        search_direction="down",
-        match_mode="fuzzy",
-        min_similarity=82.0,
-        ambiguity_margin=4.0,
-        crop_fallback=True,
+    pane = context.resolve_shape_selector(
+        context.view(XUTIAN_SETTINGS_SCENE_ID), region
     )
-    if match is None:
-        raise RuntimeError(f"虚天自动设置未找到配置行：{label}")
-    return match
+    mode = "exact" if exact_identity else "fuzzy"
+    for direction in ("up", "down"):
+        for scroll_index in range(max(0, int(max_scrolls)) + 1):
+            frame = context.cur_frame(update=True)
+            match = context.find_ocr_text(
+                XUTIAN_SETTINGS_SCENE_ID,
+                label,
+                in_shapes=(region,),
+                frame_data_url=frame,
+                match_mode=mode,
+                min_similarity=82.0,
+                ambiguity_margin=4.0,
+                crop=False,
+            )
+            if match is not None:
+                return match
+            if scroll_index >= max_scrolls:
+                break
+            # The generic change detector is intentionally not used here: the
+            # retained pane has large static areas and can report “unchanged”
+            # after a real but small scroll.  This loop is bounded, and OCR
+            # target identity remains the only completion condition.
+            context.drag_shape_content(
+                pane, direction=direction, ratio=0.5, duration=0.6
+            )
+            yield from context.wait_action_settle(0.8)
+    raise RuntimeError(f"虚天自动设置未找到配置行：{label}")
 
 
-def _click_checkbox_for_label(runtime: Any, match: Any) -> None:
-    # The checked square is one text-height immediately left of every label in
-    # the retained #615 real frame.  The OCR box authorizes the row; Runtime,
-    # never the checkmark pixels, authorizes and verifies the state change.
-    x, y = match.point(
-        anchor="top_left",
-        offset=(-1.0, 0.5),
-        offset_unit="height",
-    )
-    runtime.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, x, y)
+def _click_checkbox_for_label(context: Any, match: Any, *, region: str) -> None:
+    # The label may start at either “自动挑战” or only the coloured quality
+    # name, so its own width/left edge is not a stable checkbox anchor.  The
+    # checkbox column is stable relative to the retained scroll pane while OCR
+    # supplies the live row.  Runtime, never checkbox pixels, verifies the
+    # resulting state change immediately after the action.
+    pane = context.resolve_shape_selector(
+        context.view(XUTIAN_SETTINGS_SCENE_ID), region
+    ).box()
+    pane_x = float(pane.get("x") or 0)
+    pane_w = float(pane.get("w") or 0)
+    if pane_w <= 0:
+        raise RuntimeError(f"虚天自动设置区域「{region}」缺少有效宽度")
+    x = pane_x + pane_w * 0.04
+    _match_x, y = match.point(anchor="top_left", offset=(0.0, 0.5), offset_unit="height")
+    if not (pane_x <= x <= pane_x + pane_w and float(pane.get("y") or 0) <= y <= float(pane.get("y") or 0) + float(pane.get("h") or 0)):
+        raise RuntimeError(f"虚天自动设置行不在区域「{region}」内")
+    context.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, x, y)
 
 
 def _reconcile_quality_toggle(
-    runtime: Any,
+    context: Any,
     *,
     key: int,
     desired: bool,
@@ -356,10 +413,10 @@ def _reconcile_quality_toggle(
         return
     label = _QUALITY_LABELS[key]
     match = yield from _find_setting_label(
-        runtime, label, region="上组配置滚动区"
+        context, label, region="上组配置滚动区", exact_identity=True
     )
-    _click_checkbox_for_label(runtime, match)
-    yield from runtime.wait_action_settle(0.7)
+    _click_checkbox_for_label(context, match, region="上组配置滚动区")
+    yield from context.wait_action_settle(0.7)
     after = _read_auto_snapshot()
     if _runtime_identity(after) != identity:
         raise RuntimeError("虚天品质设置后 Runtime 身份发生变化")
@@ -367,23 +424,22 @@ def _reconcile_quality_toggle(
         raise RuntimeError(f"虚天品质「{label}」点击后 Runtime 未变为 {desired}")
 
 
-def _find_boost_row_after_quality(runtime: Any, quality_label: str, boost_label: str) -> Any:
+def _find_boost_row_after_quality(context: Any, quality_label: str, boost_label: str) -> Any:
     from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
 
-    frame = runtime.cur_frame(update=True)
-    quality = runtime.find_ocr_text(
+    frame = context.cur_frame(update=True)
+    quality = context.find_ocr_text(
         XUTIAN_SETTINGS_SCENE_ID,
         quality_label,
         in_shapes=("上组配置滚动区",),
         frame_data_url=frame,
-        match_mode="fuzzy",
-        min_similarity=82.0,
+        match_mode="exact",
     )
     if quality is None:
         return None
     quality_y = quality.y + quality.h / 2
     candidates = []
-    for fragment in group_ocr_tokens(runtime.full_frame_ocr_tokens(frame)):
+    for fragment in group_ocr_tokens(context.full_frame_ocr_tokens(frame)):
         text = _compact(fragment.get("text") or "")
         center_y = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
         if _compact(boost_label) == text and quality_y < center_y < quality_y + 220:
@@ -394,7 +450,7 @@ def _find_boost_row_after_quality(runtime: Any, quality_label: str, boost_label:
 
 
 def _reconcile_quality_boosts(
-    runtime: Any,
+    context: Any,
     *,
     key: int,
     identity: tuple[int, int, int],
@@ -416,19 +472,20 @@ def _reconcile_quality_boosts(
         # required after every scroll and every click.
         for _attempt in range(8):
             match = yield from _find_setting_label(
-                runtime,
+                context,
                 quality_label,
                 region="上组配置滚动区",
                 max_scrolls=6,
+                exact_identity=True,
             )
-            row = _find_boost_row_after_quality(runtime, quality_label, boost_label)
+            row = _find_boost_row_after_quality(context, quality_label, boost_label)
             if row is not None:
                 break
-            changed = yield from runtime.scroll_shape_content(
-                runtime.resolve_shape_selector(
-                    runtime.view(XUTIAN_SETTINGS_SCENE_ID), "上组配置滚动区"
+            changed = yield from context.scroll_shape_content(
+                context.resolve_shape_selector(
+                    context.view(XUTIAN_SETTINGS_SCENE_ID), "上组配置滚动区"
                 ),
-                direction="down",
+                direction="up",
             )
             if not changed:
                 break
@@ -442,8 +499,8 @@ def _reconcile_quality_boosts(
         # The #615 retained frame proves the right-hand “开” column center at
         # x≈700 for all three boost rows.  Runtime is re-read immediately after
         # the action; a mis-hit therefore fails closed instead of being trusted.
-        runtime.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, 700.0, center_y)
-        yield from runtime.wait_action_settle(0.7)
+        context.click_frame_point(XUTIAN_SETTINGS_SCENE_ID, 700.0, center_y)
+        yield from context.wait_action_settle(0.7)
         after = _read_auto_snapshot()
         after_fields = dict((after.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
         if _runtime_identity(after) != identity or after_fields.get(field) is not True:
@@ -453,7 +510,7 @@ def _reconcile_quality_boosts(
 
 
 def _reconcile_lower_switch(
-    runtime: Any,
+    context: Any,
     *,
     name: str,
     desired: bool,
@@ -465,13 +522,13 @@ def _reconcile_lower_switch(
     if before["auto_settings"].get(name) is desired:
         return
     match = yield from _find_setting_label(
-        runtime,
+        context,
         _LOWER_SWITCH_LABELS[name],
         region="下组配置滚动区",
         max_scrolls=6,
     )
-    _click_checkbox_for_label(runtime, match)
-    yield from runtime.wait_action_settle(0.7)
+    _click_checkbox_for_label(context, match, region="下组配置滚动区")
+    yield from context.wait_action_settle(0.7)
     after = _read_auto_snapshot()
     if (
         _runtime_identity(after) != identity
@@ -481,14 +538,20 @@ def _reconcile_lower_switch(
 
 
 def _configure_and_run_batch(
-    runtime: Any,
+    context: Any,
     *,
     requested_challenges: int,
     stop_event: threading.Event,
+    allow_item_refill: bool = False,
+    allow_boost_items: bool = False,
     before_start: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Iterator[Any]:
-    runtime.click_shape_center(XUTIAN_MAP_SCENE_ID, "自动挑战")
-    _wait_scene(runtime, (XUTIAN_SETTINGS_SCENE_ID,), timeout_seconds=15.0)
+    scene, score, _frame = context.current_scene(
+        [XUTIAN_SETTINGS_SCENE_ID], update=True
+    )
+    if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
+        context.click_shape_center(XUTIAN_MAP_SCENE_ID, "自动挑战")
+        _wait_scene(context, (XUTIAN_SETTINGS_SCENE_ID,), timeout_seconds=15.0)
     initial = _read_auto_snapshot()
     identity = _runtime_identity(initial)
     special = dict(initial.get("special_options") or {})
@@ -501,23 +564,40 @@ def _configure_and_run_batch(
                 raise RuntimeError("虚天玩家目标开关已开启但当前没有安全定位资产")
             continue
         yield from _reconcile_quality_toggle(
-            runtime,
+            context,
             key=key,
             desired=key in targets,
             identity=identity,
         )
     for key in sorted(targets):
-        yield from _reconcile_quality_boosts(runtime, key=key, identity=identity)
+        if allow_boost_items:
+            yield from _reconcile_quality_boosts(context, key=key, identity=identity)
+        else:
+            current = _read_auto_snapshot()
+            fields = dict(
+                (current.get("evidence") or {})
+                .get("auto_settings_raw", {})
+                .get(str(key))
+                or {}
+            )
+            enabled = [field for field in _BOOST_FIELDS if fields.get(field) is True]
+            if _runtime_identity(current) != identity or enabled:
+                raise RuntimeError(
+                    f"虚天品质 {_QUALITY_LABELS[key]} 的增益道具已开启但未授权：{enabled}"
+                )
     for name in _LOWER_SWITCH_LABELS:
+        desired = True
+        if name in {"refill_challenge", "refill_explore"}:
+            desired = bool(allow_item_refill)
         yield from _reconcile_lower_switch(
-            runtime, name=name, desired=True, identity=identity
+            context, name=name, desired=desired, identity=identity
         )
 
     count_assets = IntegerSliderAssets(
         settings_scene_id=XUTIAN_SETTINGS_SCENE_ID,
     )
     yield from _set_count(
-        runtime,
+        context,
         count_assets,
         int(requested_challenges),
         max_adjustments=min(100, max(20, int(requested_challenges) // 5)),
@@ -526,22 +606,29 @@ def _configure_and_run_batch(
     mismatches = validate_xutian_auto_settings(
         final_settings,
         requested_challenges=int(requested_challenges),
+        allow_item_refill=allow_item_refill,
+        allow_boost_items=allow_boost_items,
     )
     if _runtime_identity(final_settings) != identity or mismatches:
         raise RuntimeError(f"虚天自动设置 Runtime 复验失败：{mismatches}")
-    if _read_count(runtime, count_assets) != int(requested_challenges):
+    if _read_count(context, count_assets) != int(requested_challenges):
         raise RuntimeError("虚天挑战次数 GUI 与 Runtime 未对齐")
     if before_start is not None:
         before_start(final_settings)
     auto_started_at = time.monotonic()
-    runtime.click_shape_center(XUTIAN_SETTINGS_SCENE_ID, "开启自动")
+    context.click_shape_center(XUTIAN_SETTINGS_SCENE_ID, "开启自动")
 
     deadline = time.monotonic() + max(60.0, int(requested_challenges) * 2.0)
     observed_running = False
+    last_frame_check = float("-inf")
     while time.monotonic() < deadline:
         if stop_event.is_set():
             raise InterruptedError()
-        yield from runtime.wait_action_settle(0.5)
+        yield from context.wait_action_settle(0.5)
+        now = time.monotonic()
+        if now - last_frame_check >= XUTIAN_DEVICE_FRAME_CHECK_INTERVAL_SECONDS:
+            context.cur_frame(update=True)
+            last_frame_check = now
         progress = _read_auto_snapshot()
         if _runtime_identity(progress) != identity:
             raise RuntimeError("虚天自动挑战期间 Runtime 身份发生变化")
@@ -549,7 +636,7 @@ def _configure_and_run_batch(
         observed_running = observed_running or bool(state.get("running"))
         completed = int(state.get("completed_challenges") or 0)
         if not bool(state.get("running")) and completed == int(requested_challenges):
-            _wait_scene(runtime, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
+            _wait_scene(context, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
             terminal = dict(progress)
             terminal["batch_elapsed_seconds"] = time.monotonic() - auto_started_at
             return terminal
@@ -652,6 +739,13 @@ def _current_xutian_activity(session: Any, *, today: Any = None) -> Any:
         for activity in _xutian_activities(session)
         if str(activity.start_date) <= current_day <= str(activity.end_date)
     ]
+    stable = [
+        activity
+        for activity in candidates
+        if str(activity.instance_key or "").startswith("activity:xutian-palace:")
+    ]
+    if len(stable) == 1:
+        return stable[0]
     if len(candidates) > 1:
         raise RuntimeError("虚天殿当前活动 occurrence 不唯一，拒绝不可逆动作")
     return candidates[0] if candidates else None
@@ -788,6 +882,34 @@ def _validate_pending_batch_terminal(
             "保留标记和现场，禁止再次点击开启自动"
         )
     marked_wallet = dict(marker.get("wallet_before") or {})
+    if marker.get("wallet_before_unloaded") is True:
+        current = int(wallet_after["exchange_currency"])
+        cumulative = int(wallet_after["cumulative_currency"])
+        if current < 0 or cumulative < 0:
+            raise RuntimeError("虚天钱包引导批次后绝对钱包无效")
+        before_resource = dict(marker.get("resource_before") or {})
+        return {
+            "requested_challenges": requested,
+            "completed_challenges": requested,
+            "currency_before": current,
+            "currency_after": current,
+            "currency_delta": 0,
+            "elapsed_seconds": 0.0,
+            "challenge_count_before": int(
+                dict(before_resource.get("challenge") or {}).get("count") or 0
+            ),
+            "challenge_count_after": int(
+                dict(resource_after.get("challenge") or {}).get("count") or 0
+            ),
+            "explore_count_before": int(
+                dict(before_resource.get("explore") or {}).get("count") or 0
+            ),
+            "explore_count_after": int(
+                dict(resource_after.get("explore") or {}).get("count") or 0
+            ),
+            "wallet_bootstrap": True,
+            "yield_eligible": False,
+        }
     current_delta = int(wallet_after["exchange_currency"]) - int(
         marked_wallet.get("exchange_currency") or 0
     )
@@ -905,6 +1027,11 @@ def execute_xutian_native_auto_job(
     )
 
     requested = int(payload.get("requested_challenges") or XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES)
+    allow_item_refill = bool(payload.get("allow_item_refill", False))
+    allow_boost_items = bool(payload.get("allow_boost_items", False))
+    allow_unloaded_wallet_bootstrap = bool(
+        payload.get("allow_unloaded_wallet_bootstrap", False)
+    )
     pending_batch = _load_pending_xutian_batch()
     pending_activity_id = pending_batch[0] if pending_batch is not None else ""
     existing_mark = pending_batch[1] if pending_batch is not None else None
@@ -914,34 +1041,40 @@ def execute_xutian_native_auto_job(
         requested = int(existing_mark.get("requested_challenges") or 0)
     if not 1 <= requested <= 500:
         raise ValueError("虚天原生自动挑战单批必须在 1..500 次内")
-    wallet_before = read_wallet_currency_snapshot(12, allow_discovery=True)
-    resource_before = read_xutian_resource_snapshot()
-    runtime = runner._fanxiu_runtime(ctx)
+    context = runner._behavior_tree_context(ctx)
     if isinstance(existing_mark, dict):
-        progress = dict(resource_before.get("auto_progress") or {})
+        # A persisted marker plus Runtime facts is sufficient to settle an
+        # already-started batch.  Do not navigate back into Xutian first: the
+        # native result overlay may be intentionally unclassified, and any GUI
+        # navigation is unnecessary before exact read-only reconciliation.
+        resource_after = read_xutian_resource_snapshot()
+        progress = dict(resource_after.get("auto_progress") or {})
         if bool(progress.get("running")):
             deadline = time.monotonic() + max(60.0, requested * 2.0)
+            last_frame_check = float("-inf")
             while time.monotonic() < deadline:
                 if stop_event.is_set():
                     raise InterruptedError()
-                yield from runtime.wait_action_settle(0.5)
+                yield from context.wait_action_settle(0.5)
+                now = time.monotonic()
+                if now - last_frame_check >= XUTIAN_DEVICE_FRAME_CHECK_INTERVAL_SECONDS:
+                    context.cur_frame(update=True)
+                    last_frame_check = now
                 current = _read_auto_snapshot()
-                current_progress = dict(current.get("auto_progress") or {})
-                if not bool(current_progress.get("running")):
-                    resource_before = read_xutian_resource_snapshot()
-                    progress = dict(resource_before.get("auto_progress") or {})
+                if not bool(dict(current.get("auto_progress") or {}).get("running")):
+                    resource_after = read_xutian_resource_snapshot()
                     break
-        wallet_before = read_wallet_currency_snapshot(12, allow_discovery=False)
+        wallet_after = read_wallet_currency_snapshot(12, allow_discovery=False)
         recovered_observation = _validate_pending_batch_terminal(
             existing_mark,
-            resource_after=resource_before,
-            wallet_after=wallet_before,
+            resource_after=resource_after,
+            wallet_after=wallet_after,
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         activity_id = _settle_pending_xutian_batch(
             pending_activity_id,
             str(existing_mark.get("batch_id") or ""),
-            wallet_after=wallet_before,
+            wallet_after=wallet_after,
             observation=recovered_observation,
         )
         message = (
@@ -953,10 +1086,76 @@ def execute_xutian_native_auto_job(
             "message": message,
             "activity_id": activity_id,
             "observation": recovered_observation,
+            "wallet_bootstrap": recovered_observation.get("wallet_bootstrap") is True,
             "recovered": True,
             "final_scene": 34,
         }
-    yield from _enter_xutian_map(runtime)
+    # The Heaven Runtime model is lazily initialized by entering the activity.
+    yield from _enter_xutian_map(context)
+    if not isinstance(existing_mark, dict):
+        scene, score, _frame = context.current_scene(
+            [XUTIAN_SETTINGS_SCENE_ID], update=True
+        )
+        if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
+            context.click_shape_center(XUTIAN_MAP_SCENE_ID, "自动挑战")
+            _wait_scene(context, (XUTIAN_SETTINGS_SCENE_ID,), timeout_seconds=15.0)
+    wallet_before_unloaded = False
+    try:
+        wallet_before = read_wallet_currency_snapshot(12, allow_discovery=True)
+    except Exception as exc:
+        if isinstance(existing_mark, dict) or not allow_unloaded_wallet_bootstrap:
+            raise
+        from backend.core.fanxiu.instrumentation.runtime_memory import (
+            FanxiuRuntimeMemoryError,
+        )
+
+        if not isinstance(exc, FanxiuRuntimeMemoryError):
+            raise
+        from sqlmodel import Session
+        from backend.db import engine
+
+        with Session(engine) as session:
+            activity = _current_xutian_activity(session)
+            evidence = dict(activity.evidence or {}) if activity is not None else {}
+            batches = list(evidence.get(XUTIAN_NATIVE_AUTO_BATCHES_KEY) or ())
+            currency_stale = bool(
+                dict(evidence.get("refresh_status") or {}).get("currency_stale")
+            )
+            safe_bootstrap = (
+                activity is not None
+                and not batches
+                and (
+                    currency_stale
+                    or (
+                        int(activity.current_currency or 0) == 0
+                        and int(activity.cumulative_currency or 0) == 0
+                    )
+                )
+            )
+        if not safe_bootstrap:
+            raise RuntimeError(
+                "虚天首次钱包未加载且活动聚合不能证明可引导状态，拒绝启动探针"
+            ) from exc
+        wallet_before = {
+            "exchange_currency": 0,
+            "cumulative_currency": 0,
+            "currency_type": 12,
+            "source": "occurrence_zero_bootstrap",
+        }
+        wallet_before_unloaded = True
+        requested = 1
+    resource_before = read_xutian_resource_snapshot()
+    if not allow_item_refill:
+        capacity = dict(resource_before.get("capacity") or {})
+        natural_capacity = min(
+            int(capacity.get("explore_without_items") or 0),
+            int(capacity.get("challenge_without_items") or 0),
+        )
+        if requested > natural_capacity:
+            raise RuntimeError(
+                "虚天自动挑战未授权使用补充道具，"
+                f"requested={requested}, natural_capacity={natural_capacity}"
+            )
 
     armed_activity_id = ""
     armed_batch_id = ""
@@ -989,6 +1188,7 @@ def execute_xutian_native_auto_job(
                 "exchange_currency": int(wallet_before["exchange_currency"]),
                 "cumulative_currency": int(wallet_before["cumulative_currency"]),
             },
+            "wallet_before_unloaded": wallet_before_unloaded,
             "resource_before": {
                 "challenge": dict(resource_before.get("challenge") or {}),
                 "explore": dict(resource_before.get("explore") or {}),
@@ -999,24 +1199,45 @@ def execute_xutian_native_auto_job(
         armed_batch_id = str(persisted_marker["batch_id"])
 
     terminal = yield from _configure_and_run_batch(
-        runtime,
+        context,
         requested_challenges=requested,
         stop_event=stop_event,
+        allow_item_refill=allow_item_refill,
+        allow_boost_items=allow_boost_items,
         before_start=persist_start_mark,
     )
     elapsed = float(terminal.get("batch_elapsed_seconds") or 0.0)
-    wallet_after = read_wallet_currency_snapshot(12, allow_discovery=False)
-    resource_after = read_xutian_resource_snapshot()
-    observation = build_xutian_batch_observation(
-        requested_challenges=requested,
-        before_resource=resource_before,
-        after_resource=resource_after,
-        currency_before=int(wallet_before["exchange_currency"]),
-        currency_after=int(wallet_after["exchange_currency"]),
-        elapsed_seconds=elapsed,
+    wallet_after = read_wallet_currency_snapshot(
+        12,
+        allow_discovery=wallet_before_unloaded,
     )
-    yield from runtime.goto_view(34)
-    scene, score, _frame = runtime.current_scene([34], update=True)
+    resource_after = read_xutian_resource_snapshot()
+    if wallet_before_unloaded:
+        observation = _validate_pending_batch_terminal(
+            {
+                "requested_challenges": requested,
+                "runtime_batch_identity": {
+                    "current_heaven": int(resource_before.get("current_heaven") or 0),
+                },
+                "wallet_before": wallet_before,
+                "wallet_before_unloaded": True,
+                "resource_before": resource_before,
+            },
+            resource_after=resource_after,
+            wallet_after=wallet_after,
+        )
+        observation["elapsed_seconds"] = elapsed
+    else:
+        observation = build_xutian_batch_observation(
+            requested_challenges=requested,
+            before_resource=resource_before,
+            after_resource=resource_after,
+            currency_before=int(wallet_before["exchange_currency"]),
+            currency_after=int(wallet_after["exchange_currency"]),
+            elapsed_seconds=elapsed,
+        )
+    yield from context.go_scene(34)
+    scene, score, _frame = context.current_scene([34], update=True)
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天自动挑战收尾未可靠回到 #34：scene={scene}, score={score}"
@@ -1027,16 +1248,24 @@ def execute_xutian_native_auto_job(
         wallet_after=wallet_after,
         observation=observation,
     )
-    message = (
-        f"虚天殿_自动挑战：完成 {requested} 次，纳元晶 +{observation['currency_delta']}，"
-        f"{observation['seconds_per_challenge']:.3f}秒/次，已回到世界"
-    )
+    if wallet_before_unloaded:
+        message = (
+            f"虚天殿_自动挑战：完成 {requested} 次钱包引导，"
+            "已建立纳元晶绝对基线并回到世界"
+        )
+    else:
+        message = (
+            f"虚天殿_自动挑战：完成 {requested} 次，"
+            f"纳元晶 +{observation['currency_delta']}，"
+            f"{observation['seconds_per_challenge']:.3f}秒/次，已回到世界"
+        )
     runner._log("success", message)
     return {
         "result": "success",
         "message": message,
         "activity_id": activity_id,
         "observation": observation,
+        "wallet_bootstrap": wallet_before_unloaded,
         "final_scene": 34,
     }
 

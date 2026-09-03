@@ -15,14 +15,14 @@ from backend.core.fanxiu.instrumentation.bothdraw import read_bothdraw_task_runt
 
 
 def complete_kunlun_tasks(
-    runtime: Any, *, retry_seconds: float = 1.0, max_clicks: int = 20
+    context: Any, *, retry_seconds: float = 1.0, max_clicks: int = 20
 ) -> XianzangTaskCompletionResult:
     clicked_count = 0
     snapshot = read_bothdraw_task_runtime()
     if not snapshot.get("complete"):
         raise RuntimeError(str(snapshot.get("reason") or "活动任务状态不完整"))
     if not snapshot.get("claimable"):
-        current_page = read_kunlun_page(runtime, update=True)
+        current_page = read_kunlun_page(context, update=True)
         if current_page is None:
             raise RuntimeError("任务已全部领取，但当前不在可靠的昆仑秘藏页面")
         return XianzangTaskCompletionResult(
@@ -32,7 +32,7 @@ def complete_kunlun_tasks(
             final_page=current_page,
         )
 
-    page = open_kunlun_tab(runtime, "任务")
+    page = open_kunlun_tab(context, "任务")
     if page.scene_id != KUNLUN_TASK_SCENE_ID or page.score < 80.0:
         raise RuntimeError("未可靠进入 #543 昆仑秘藏任务页，拒绝点击")
     pending_task_id: int | None = None
@@ -51,17 +51,17 @@ def complete_kunlun_tasks(
             break
         if clicked_count >= max(1, int(max_clicks)):
             raise RuntimeError("昆仑秘藏任务领取未在预算内收敛")
-        scene_id, score, frame = runtime.current_scene([KUNLUN_TASK_SCENE_ID], update=True)
+        scene_id, score, frame = context.current_scene([KUNLUN_TASK_SCENE_ID], update=True)
         if int(scene_id or 0) != KUNLUN_TASK_SCENE_ID or float(score or 0) < 80.0:
             raise RuntimeError("领取前未可靠识别 #543，拒绝点击")
-        runtime.click_shape(KUNLUN_TASK_SCENE_ID, "进度", frame_data_url=frame)
+        context.click_shape(KUNLUN_TASK_SCENE_ID, "进度", frame_data_url=frame)
         clicked_count += 1
         pending_task_id = int(claimable[0].get("task_id") or 0)
         time.sleep(max(0.0, float(retry_seconds)))
         snapshot = read_bothdraw_task_runtime()
         if not snapshot.get("complete"):
             raise RuntimeError(str(snapshot.get("reason") or "活动任务状态不完整"))
-    final_page = open_kunlun_tab(runtime, "昆仑秘藏")
+    final_page = open_kunlun_tab(context, "昆仑秘藏")
     return XianzangTaskCompletionResult(
         clicked_count=clicked_count,
         stop_reason="all_claimed",

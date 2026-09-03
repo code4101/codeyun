@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.core.fanxiu.activity.peakrace_schedule import (
+    enrich_schedule_with_peakrace,
+)
 from backend.core.fanxiu.instrumentation.activity_runtime import (
     read_worldline_activity_runtime_snapshot,
 )
@@ -18,12 +21,13 @@ def read_fanxiu_activity_runtime_schedule(
         allow_discovery=allow_discovery,
         force_refresh=force_refresh,
     )
-    return {
+    schedule = {
         **snapshot,
         "available": bool(snapshot.get("available")),
         "created_at": str(snapshot.get("captured_at") or ""),
         "runtime_current": bool(snapshot.get("available") and snapshot.get("complete")),
     }
+    return enrich_schedule_with_peakrace(schedule)
 
 
 def get_cached_fanxiu_activity_runtime_schedule(**_kwargs: Any) -> dict[str, Any]:

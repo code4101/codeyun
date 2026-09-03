@@ -20,6 +20,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     resolve_lua_global_manager_root,
 )
 from backend.core.fanxiu.mail.visual_alignment import mail_snapshot_fingerprint
+from backend.core.fanxiu.instrumentation.item_config import read_loaded_item_metadata
 
 
 _MAIL_METHODS = frozenset(
@@ -142,6 +143,36 @@ def _snapshot(
             }
         )
 
+    item_ids = {
+        int(reward["code"])
+        for item in items
+        for reward in item.get("rewards") or []
+        if reward.get("type") == 0 and reward.get("code") is not None
+    }
+    try:
+        item_metadata, item_metadata_evidence = read_loaded_item_metadata(
+            item_ids,
+            memory=memory,
+            reader=reader,
+            state_address=state_address,
+        )
+    except Exception as exc:
+        item_metadata = {}
+        item_metadata_evidence = {
+            "complete": False,
+            "source": "DBMgr.ConfigDic[Item.Item]",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "requested_count": len(item_ids),
+            "resolved_count": 0,
+        }
+    for item in items:
+        for reward in item.get("rewards") or []:
+            if reward.get("type") != 0:
+                continue
+            metadata = item_metadata.get(int(reward.get("code") or 0))
+            if metadata:
+                reward.update(metadata)
+
     decoded_mail_count = len(items)
     decoded_lock_count = len(locked_ids)
     complete = (
@@ -175,6 +206,7 @@ def _snapshot(
             "environment_address": f"0x{environment_address:x}",
             "root_address": f"0x{root_address:x}",
             "root_cache_hit": root_cache_hit,
+            "item_metadata": item_metadata_evidence,
         },
     }
 

@@ -18,7 +18,7 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
     recover_redpacket_runtime_snapshot,
     refresh_redpacket_runtime_snapshot,
 )
-from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
     advance_scheduler_task_from_fact,
     set_scheduler_task_next_time,
     task_payload_with_meta,
@@ -31,7 +31,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
 )
 from backend.core.fanxiu.data_annotation.state import (
-    normalize_data_annotation_scheduler_task,
+    normalize_kernel_scheduler_task,
 )
 
 
@@ -116,7 +116,7 @@ def test_game_state_inspection_only_allows_runtime_sources():
 
 def test_async_recovery_keeps_idle_and_two_minute_production_runway(monkeypatch):
     from backend.core.fanxiu.data_annotation import game_state_inspection
-    from backend.core.fanxiu.data_annotation import behavior_tree_control
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control
     from backend.core.fanxiu.behavior_tree import jupyter_kernel
 
     monkeypatch.setattr(game_state_inspection, "_scheduler_job_group_enabled", lambda: True)
@@ -125,7 +125,7 @@ def test_async_recovery_keeps_idle_and_two_minute_production_runway(monkeypatch)
         "fanxiu_kernel_manager_status",
         lambda: {"alive": True, "execution_state": "busy"},
     )
-    monkeypatch.setattr(behavior_tree_control, "read_scheduler_tasks", lambda: [])
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda: [])
     allowed, reason = game_state_inspection._inspection_recovery_allowed()
     assert allowed is False
     assert reason == "Kernel 正忙"
@@ -136,7 +136,7 @@ def test_async_recovery_keeps_idle_and_two_minute_production_runway(monkeypatch)
         lambda: {"alive": True, "execution_state": "idle"},
     )
     monkeypatch.setattr(
-        behavior_tree_control,
+        kernel_scheduler_control,
         "read_scheduler_tasks",
         lambda: [{
             "id": "production-job",
@@ -247,7 +247,7 @@ def test_scheduler_payload_never_transports_inspection_business_context():
 
 
 def test_scheduler_normalization_removes_legacy_inspection_business_context():
-    task = normalize_data_annotation_scheduler_task({
+    task = normalize_kernel_scheduler_task({
         "id": "daily-redpacket",
         "task_type": "daily_redpacket",
         "scheduler_meta": {
@@ -733,6 +733,70 @@ def test_redpacket_probe_schedules_live_main_ui_queue(monkeypatch):
                 "chat": {
                     "pending_count": 1,
                     "main_ui_queue_count": 1,
+                },
+            },
+        },
+    )
+
+    result = inspect_redpacket_game_state()
+
+    assert result["due_task_ids"] == ["daily-redpacket"]
+
+
+def test_redpacket_probe_suppresses_exact_visually_verified_uid_set(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.redpacket_state._read_redpacket_visual_verification",
+        lambda: {"verified_uids": ["old-uid"]},
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
+        lambda: {
+            "ok": True,
+            "available": True,
+            "pending": True,
+            "pending_count": 1,
+            "trigger_ready": True,
+            "sources": {
+                "chat": {
+                    "pending_count": 1,
+                    "main_ui_queue_count": 0,
+                    "items": [{
+                        "uid": "old-uid",
+                        "id": 1222,
+                        "channel": 4,
+                        "sub_channel_id": 0,
+                    }],
+                },
+            },
+        },
+    )
+
+    result = inspect_redpacket_game_state()
+
+    assert result["due_task_ids"] == []
+
+
+def test_redpacket_probe_new_uid_bypasses_visual_verification_cursor(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.redpacket_state._read_redpacket_visual_verification",
+        lambda: {"verified_uids": ["old-uid"]},
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
+        lambda: {
+            "ok": True,
+            "available": True,
+            "pending": True,
+            "pending_count": 2,
+            "trigger_ready": True,
+            "sources": {
+                "chat": {
+                    "pending_count": 2,
+                    "main_ui_queue_count": 0,
+                    "items": [
+                        {"uid": "old-uid", "id": 1222, "channel": 4, "sub_channel_id": 0},
+                        {"uid": "new-uid", "id": 1223, "channel": 4, "sub_channel_id": 0},
+                    ],
                 },
             },
         },

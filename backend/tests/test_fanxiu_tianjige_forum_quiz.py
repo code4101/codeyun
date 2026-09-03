@@ -5,8 +5,8 @@ from datetime import datetime
 import pytest
 
 from backend.core.fanxiu import tianjige_forum_quiz as crawler
-from backend.core.fanxiu.data_annotation.behavior_tree_control import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks import tianjige_forum_quiz as task
 from backend.core.fanxiu.tianjige_forum_quiz import (
@@ -317,6 +317,39 @@ def test_current_quiz_thread_accepts_relative_time_and_tuesday_title_without_day
     assert matched is True
     assert "有奖竞答" in title
 
+
+def test_current_quiz_thread_accepts_campaign_day_independent_of_weekday() -> None:
+    class Thread:
+        @staticmethod
+        def ele(selector, timeout=0.2):
+            text = (
+                "有奖竞答丨‘百炼成仙’主题有奖竞答DAY5"
+                if "sq-thread-title" in selector
+                else "43分钟前\n100\n20\n3"
+            )
+            return type("Ele", (), {"text": text})()
+
+    matched, title = crawler._is_current_quiz_thread(Thread(), "2026-09-02")
+
+    assert matched is True
+    assert "DAY5" in title
+
+
+def test_current_quiz_thread_rejects_stale_campaign_day() -> None:
+    class Thread:
+        @staticmethod
+        def ele(selector, timeout=0.2):
+            text = (
+                "有奖竞答 DAY5"
+                if "sq-thread-title" in selector
+                else "2026-09-01 18:00:00\n100\n20\n3"
+            )
+            return type("Ele", (), {"text": text})()
+
+    matched, _title = crawler._is_current_quiz_thread(Thread(), "2026-09-02")
+
+    assert matched is False
+
 @pytest.mark.parametrize(
     ("current", "expected"),
     [
@@ -423,7 +456,7 @@ def test_uncertain_submission_is_not_retried(monkeypatch) -> None:
 def test_tianjige_forum_quiz_is_one_standard_job() -> None:
     jobs = [
         item
-        for item in default_data_annotation_scheduler_tasks(now=datetime(2026, 8, 5, 13, 0))
+        for item in default_kernel_scheduler_tasks(now=datetime(2026, 8, 5, 13, 0))
         if item["task_type"] == "tianjige_forum_quiz"
     ]
 

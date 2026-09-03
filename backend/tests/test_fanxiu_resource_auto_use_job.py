@@ -6,13 +6,13 @@ from datetime import datetime
 import pytest
 
 from backend.core.fanxiu.data_annotation import default_jobs
-from backend.core.fanxiu.data_annotation import behavior_tree_control
+from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     consolidate_arena_scheduler_instances,
-    default_data_annotation_scheduler_tasks,
+    default_kernel_scheduler_tasks,
 )
 from backend.core.fanxiu.data_annotation.tasks import resource_auto_use
 
@@ -363,7 +363,7 @@ def test_unadapted_selected_items_skip_broad_quick_operation_but_run_safe_execut
 
 
 def test_resource_auto_use_is_single_manual_standard_job():
-    default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    default_jobs.register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "resource_auto_use"
     )
@@ -373,7 +373,7 @@ def test_resource_auto_use_is_single_manual_standard_job():
     assert definition.standard_job_id == "resource-auto-use"
     assert definition.standard_job_description == "手动"
 
-    tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 14, 2, 0))
+    tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 14, 2, 0))
     matches = [task for task in tasks if task["id"] == "resource-auto-use"]
     assert len(matches) == 1
     assert matches[0]["task_type"] == "resource_auto_use"
@@ -387,12 +387,12 @@ def test_resource_auto_use_is_single_manual_standard_job():
 def test_resource_auto_use_failure_does_not_install_an_automatic_retry():
     task = next(
         item
-        for item in default_data_annotation_scheduler_tasks()
+        for item in default_kernel_scheduler_tasks()
         if item["id"] == "resource-auto-use"
     )
     task["next_time"] = "2026-08-14 03:30:00"
 
-    behavior_tree_control.schedule_failed_task_retry(
+    kernel_scheduler_control.schedule_failed_task_retry(
         task,
         datetime(2026, 8, 14, 3, 31, 0),
     )
@@ -401,7 +401,7 @@ def test_resource_auto_use_failure_does_not_install_an_automatic_retry():
 
 
 def test_successful_manual_job_explicitly_restores_none_next_time(monkeypatch):
-    default_jobs.register_fanxiu_data_annotation_default_runtime_jobs()
+    default_jobs.register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "resource_auto_use"
     )

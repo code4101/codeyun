@@ -3,7 +3,6 @@ from __future__ import annotations
 import datetime as dt
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session, select
@@ -17,7 +16,6 @@ COURSE_COMPLETION_RUN_TIME = "06:20"
 ATTENDANCE_SUMMARY_SHEET_ID = 4
 MONTHLY_NIANZHU_JUEGUAN_COURSE_TYPES = {"念住", "觉观"}
 FANBEI_COURSE_TYPES = {"梵呗初阶", "梵呗增益"}
-KQMAIN_ACTIVE_LIST_NAME = "觉观念住类型"
 EXCEL_SERIAL_UNIX_EPOCH = 25569
 
 
@@ -111,26 +109,6 @@ def _parse_relative_date_formula(value: Any, *, base_date: dt.date | None) -> dt
     if match.group("operator") == "-":
         days = -days
     return base_date + dt.timedelta(days=days)
-
-
-def _course_module_suffix(module_name: str) -> str:
-    return re.sub(r"^d?\d{6}", "", _normalize_text(module_name))
-
-
-def _course_name_matches_module(course_name: str, module_name: str) -> bool:
-    course = _normalize_text(course_name)
-    module = _normalize_text(module_name)
-    if not course or not module:
-        return False
-    normalized_course = course.removeprefix("20")
-    normalized_module = module.removeprefix("d")
-    return (
-        course == module
-        or normalized_course == normalized_module
-        or course == _course_module_suffix(module)
-        or course in module
-        or _course_module_suffix(module) in course
-    )
 
 
 def _is_monthly_nianzhu_jueguan_course(course_type: str, course_name: str) -> bool:
@@ -264,6 +242,7 @@ def _refresh_fanbei_summary_stats_from_attendance_sheet(
         session=session,
         sheet_id=attendance_sheet_id,
         course_name=course_name,
+        commit=False,
     )
     return _refresh_summary_money_fields_from_attendance_sheet(
         session,
@@ -432,17 +411,33 @@ def _archive_due_summary_rows(
         )
         if current_row_index is None:
             continue
-        next_document, stats_summary = _refresh_summary_stats_from_attendance_sheet(
-            session,
-            next_document,
-            row_index=current_row_index,
-            course_type=course_type,
-            course_name=course_name,
-            attendance_sheet_id=attendance_sheet_id,
-        )
-        rows = [_normalize_row(current_row, column_count) for current_row in (next_document.get("rows") or [])]
-        row = rows[current_row_index]
-        ready, reason = _summary_row_ready_for_completion(row, columns)
+        try:
+            with session.begin_nested():
+                candidate_document, stats_summary = _refresh_summary_stats_from_attendance_sheet(
+                    session,
+                    next_document,
+                    row_index=current_row_index,
+                    course_type=course_type,
+                    course_name=course_name,
+                    attendance_sheet_id=attendance_sheet_id,
+                )
+                candidate_rows = [
+                    _normalize_row(current_row, column_count)
+                    for current_row in (candidate_document.get("rows") or [])
+                ]
+                candidate_row = candidate_rows[current_row_index]
+                ready, reason = _summary_row_ready_for_completion(candidate_row, columns)
+        except Exception as exc:
+            skipped.append(
+                {
+                    "row_index": row_index,
+                    "course_type": course_type,
+                    "course_name": course_name,
+                    "course_end_date": end_date.isoformat(),
+                    "reason": f"刷新课程统计失败：{exc}",
+                }
+            )
+            continue
         if not ready:
             skipped.append(
                 {
@@ -454,6 +449,7 @@ def _archive_due_summary_rows(
                 }
             )
             continue
+        next_document = candidate_document
         completion_date = end_date + dt.timedelta(days=1)
         next_document, next_row_index = _set_attendance_summary_row_completed(
             next_document,
@@ -477,55 +473,11 @@ def _archive_due_summary_rows(
     return next_document, archived, skipped
 
 
-def _update_kqmain_active_courses(kqmain_path: Path, archived_courses: list[dict[str, Any]]) -> dict[str, Any]:
-    if not archived_courses:
-        return {"path": str(kqmain_path), "removed": [], "changed": False, "missing": False}
-    if not kqmain_path.exists():
-        return {"path": str(kqmain_path), "removed": [], "changed": False, "missing": True}
-
-    source = kqmain_path.read_text(encoding="utf-8")
-    pattern = re.compile(
-        rf"(?P<prefix>^{re.escape(KQMAIN_ACTIVE_LIST_NAME)}\s*=\s*\[\n)(?P<body>.*?)(?P<suffix>^\])",
-        re.S | re.M,
-    )
-    match = pattern.search(source)
-    if not match:
-        return {"path": str(kqmain_path), "removed": [], "changed": False, "missing": False, "list_missing": True}
-
-    raw_items = re.findall(r'^\s*["\'](?P<name>[^"\']+)["\'],?\s*$', match.group("body"), re.M)
-    removed: list[str] = []
-    kept: list[str] = []
-    for item in raw_items:
-        if any(_course_name_matches_module(str(course.get("course_name") or ""), item) for course in archived_courses):
-            removed.append(item)
-        else:
-            kept.append(item)
-
-    if not removed:
-        return {"path": str(kqmain_path), "removed": [], "changed": False, "missing": False}
-
-    body = "".join(f'    "{item}",\n' for item in kept)
-    next_source = source[:match.start()] + match.group("prefix") + body + match.group("suffix") + source[match.end():]
-    kqmain_path.write_text(next_source, encoding="utf-8", newline="")
-    return {"path": str(kqmain_path), "removed": removed, "changed": True, "missing": False}
-
-
-def default_kqmain_path() -> Path:
-    from backend.core.settings import get_settings
-    from backend.core.attendance_behavior_tree_service import get_attendance_project_root
-
-    configured = str(getattr(get_settings(), "kqmain_path", "") or "").strip()
-    if configured:
-        return Path(configured)
-    return get_attendance_project_root() / "kqmain.py"
-
-
 def run_attendance_course_completion_job(
     session: Session,
     *,
     today: dt.date | None = None,
     sheet_id: int = ATTENDANCE_SUMMARY_SHEET_ID,
-    kqmain_path: Path | None = None,
 ) -> dict[str, Any]:
     today = today or dt.date.today()
     sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == int(sheet_id))).first()
@@ -541,7 +493,6 @@ def run_attendance_course_completion_job(
         sheet.updated_at = time.time()
         session.add(sheet)
 
-    kqmain_result = _update_kqmain_active_courses(kqmain_path or default_kqmain_path(), archived)
     return {
         "sheet_id": sheet_id,
         "today": today.isoformat(),
@@ -550,20 +501,21 @@ def run_attendance_course_completion_job(
         "skipped_count": len(skipped),
         "skipped_courses": skipped,
         "sheet_changed": sheet_changed,
-        "kqmain": kqmain_result,
     }
 
 
 def _run_attendance_course_completion_job_in_session() -> dict[str, Any]:
-    from backend.db import engine
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
 
-    with Session(engine) as session:
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.db import get_engine
+
+    with Session(get_engine()) as session:
         result = run_attendance_course_completion_job(session)
         session.commit()
         print(
             "Attendance course completion finished: "
-            f"archived={result['archived_count']} "
-            f"kqmain_removed={len(result.get('kqmain', {}).get('removed') or [])}"
+            f"archived={result['archived_count']}"
         )
         return result
 

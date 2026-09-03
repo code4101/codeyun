@@ -13,7 +13,7 @@ class XianqiaoTrialTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -22,16 +22,16 @@ class XianqiaoTrialTaskMixin:
             flow=self.xianqiao_trial_flow,
         )
 
-    def xianqiao_trial_flow(self, runtime: Any):
+    def xianqiao_trial_flow(self, context: Any):
         """从 #34 进入玩法，消耗当天免费次数，再稳定回到 #34。"""
 
-        payload = runtime.payload
+        payload = context.payload
         purchase_target = payload.get("target_daily_purchases")
-        entry = yield from runtime.enter_xianqiao_trial(
+        entry = yield from context.enter_xianqiao_trial(
             max_daily_scrolls=int(payload.get("max_daily_scrolls") or 30),
             settle_seconds=float(payload.get("settle_seconds") or 0.8),
         )
-        daily = yield from runtime.run_xianqiao_trial_daily(
+        daily = yield from context.run_xianqiao_trial_daily(
             target_daily_purchases=(
                 int(purchase_target) if purchase_target is not None else 0
             ),
@@ -39,5 +39,5 @@ class XianqiaoTrialTaskMixin:
             settle_seconds=float(payload.get("settle_seconds") or 0.8),
             battle_timeout=float(payload.get("battle_timeout") or 360.0),
         )
-        runtime.set_next_time(self._next_daily_boss_reset_time_text())
+        context.set_next_time(self._next_daily_boss_reset_time_text())
         return {**daily, "entry": entry}

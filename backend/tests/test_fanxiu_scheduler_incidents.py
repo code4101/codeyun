@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from backend.core.fanxiu.data_annotation.scheduler_incidents import (
+from backend.core.fanxiu.data_annotation.kernel_scheduler_incidents import (
     detect_scheduler_environment_circuit,
     list_scheduler_incidents,
     record_scheduler_incident,
@@ -36,7 +36,7 @@ def test_scheduler_window_expiry_persists_ai_review_evidence(tmp_path) -> None:
         attempt_id="attempt-a",
         entry_id="entry-a",
         occurred_at=datetime(2026, 7, 31, 9, 22, 0),
-        runtime_status={
+        execution_status={
             "status": "error",
             "phase": "wait_scene",
             "message": "等待挑战结果超时",
@@ -93,7 +93,7 @@ def test_scheduler_incident_excludes_logs_from_earlier_jobs(tmp_path) -> None:
         attempt_id="attempt-prayer",
         entry_id="entry-a",
         occurred_at=datetime(2026, 8, 13, 0, 42, 28),
-        runtime_status={
+        execution_status={
             "logs": [
                 {"time": "00:35:24", "message": "上一项邮件完成"},
                 {"time": "00:40:45", "message": "本轮祈愿开始"},

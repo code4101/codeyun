@@ -12,7 +12,7 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
     segment_ocr_tokens,
     select_text_match,
 )
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 
 
 def _tokens(text: str, *, x: float = 0, y: float = 10, width: float = 20, height: float = 20, line_id: str | None = None, line_order: int = 0):
@@ -191,7 +191,7 @@ def test_spatial_ocr_excludes_character_below_thirty_percent_even_when_center_in
 
 
 def test_shape_match_keeps_exact_token_box():
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image = {"id": 34, "width": 900, "height": 1600}
     shape = {
         "title": "左侧菜单",
@@ -221,7 +221,7 @@ def test_shape_match_keeps_exact_token_box():
 
 
 def test_shape_ocr_reuses_one_token_cache_for_multiple_shapes(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image = {"id": 322, "width": 900, "height": 1600}
     first = {"title": "前半", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "是否创建", "ocrMatchMode": "contains", "x": 0.08, "y": 0.29, "w": 0.2, "h": 0.06}
     second = {"title": "整句", "imageMatchRole": "off", "ocrMatchRole": "required", "ocrText": "是否创建队伍", "ocrMatchMode": "contains", "x": 0.08, "y": 0.29, "w": 0.4, "h": 0.06}
@@ -240,7 +240,7 @@ def test_shape_ocr_reuses_one_token_cache_for_multiple_shapes(monkeypatch):
 
 
 def test_runtime_fragments_use_cached_native_lines_not_token_geometry(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     native_lines = [
         {"line_id": "line-0", "order": 0, "text": "盟玉清道宗12/12", "x": 71, "y": 883, "w": 359, "h": 31, "source": "paddle"},
         {"line_id": "line-1", "order": 1, "text": "太明玉墟", "x": 638, "y": 886, "w": 116, "h": 31, "source": "paddle"},

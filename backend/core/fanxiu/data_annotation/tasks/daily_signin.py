@@ -304,7 +304,7 @@ class DailySigninTaskMixin:
             for start, end, item in spans:
                 expanded.append(
                     {
-                        "key": f"runtime-joined:{item.index}:{fragment.get('parent_line_id', '')}",
+                        "key": f"context-joined:{item.index}:{fragment.get('parent_line_id', '')}",
                         "text": str(item.name),
                         "x": x + width * start / len(text),
                         "y": float(fragment["y"]),
@@ -316,7 +316,7 @@ class DailySigninTaskMixin:
 
     def _daily_signin_click_menu_target(
         self,
-        runtime: Any,
+        context: Any,
         *,
         scene_id: int,
         menu_kind: str,
@@ -339,7 +339,7 @@ class DailySigninTaskMixin:
         attempt_count = max(1, int(attempts))
         last_reason = "未开始对齐"
         for attempt in range(attempt_count):
-            current_scene, _score, frame = runtime.current_scene(
+            current_scene, _score, frame = context.current_scene(
                 [scene_id],
                 update=True,
             )
@@ -359,14 +359,14 @@ class DailySigninTaskMixin:
                 # order.  Keep the world-list path full-frame because it has
                 # no equivalent narrow per-item action ROI.
                 tokens = (
-                    runtime.ocr_tokens_in_shapes(
+                    context.ocr_tokens_in_shapes(
                         scene_id,
                         list(ocr_shape_names),
                         frame_data_url=frame,
                         padding=0,
                     )
                     if ocr_shape_names
-                    else runtime.ocr_tokens(frame)
+                    else context.ocr_tokens(frame)
                 )
                 gui_candidates, candidate_error = self._daily_signin_menu_gui_candidates(
                     tokens,
@@ -383,7 +383,7 @@ class DailySigninTaskMixin:
                             "wait",
                             f"{label}暂未安全对齐，刷新重试 {attempt + 1}/{attempt_count - 1}：{last_reason}",
                         )
-                        yield from runtime.wait_action_settle(max(0.0, retry_wait_seconds))
+                        yield from context.wait_action_settle(max(0.0, retry_wait_seconds))
                     continue
                 plan = plan_activity_menu_click(
                     before,
@@ -411,20 +411,48 @@ class DailySigninTaskMixin:
                         for item in gui_candidates
                         if str(item.get("key") or "").startswith("daily-signin-alias:")
                     ]
+                    direct_shape_names = ocr_shape_names
+                    direct_crop = False
+                    # The popup grid reflows when monthly cards change.  The
+                    # narrow action ROI can then miss the visible sign-in tile
+                    # at exactly the moment ActivityBtnGroup is not materialized.
+                    # Broaden geometry only to the formally marked #403 grid;
+                    # authorization still requires the same unique short title
+                    # on two fresh frames below.
+                    if len(direct) != 1 and fallback_ocr_shape_names:
+                        broad_tokens = context.ocr_tokens_in_shapes(
+                            scene_id,
+                            list(fallback_ocr_shape_names),
+                            frame_data_url=frame,
+                            padding=0,
+                            crop=True,
+                        )
+                        broad_candidates, broad_error = self._daily_signin_menu_gui_candidates(
+                            broad_tokens, target
+                        )
+                        if broad_error is None:
+                            direct = [
+                                item
+                                for item in broad_candidates
+                                if str(item.get("key") or "").startswith("daily-signin-alias:")
+                            ]
+                            direct_shape_names = fallback_ocr_shape_names
+                            direct_crop = True
                     if len(direct) == 1:
                         candidate = direct[0]
                         point = (
                             float(candidate["x"]) + float(candidate["w"]) / 2.0,
                             float(candidate["y"]) - float(candidate["h"]),
                         )
-                        fresh_scene, _fresh_score, fresh_frame = runtime.current_scene(
+                        fresh_scene, _fresh_score, fresh_frame = context.current_scene(
                             [scene_id], update=True
                         )
-                        fresh_tokens = runtime.ocr_tokens_in_shapes(
+                        fresh_tokens = context.ocr_tokens_in_shapes(
                             scene_id,
-                            list(ocr_shape_names),
+                            list(direct_shape_names),
                             frame_data_url=fresh_frame,
                             padding=0,
+                            crop=direct_crop,
                         )
                         fresh_candidates, fresh_error = self._daily_signin_menu_gui_candidates(
                             fresh_tokens, target
@@ -445,7 +473,7 @@ class DailySigninTaskMixin:
                                     "info",
                                     f"{label}：Runtime 列表未物化，使用可靠 #403 与双帧唯一‘每日签到’动作",
                                 )
-                                runtime.click_frame_point(scene_id, *fresh_point)
+                                context.click_frame_point(scene_id, *fresh_point)
                                 return plan
                     last_reason = "incomplete_runtime/双帧唯一‘每日签到’动作未成立"
                 if (
@@ -459,7 +487,7 @@ class DailySigninTaskMixin:
                     # the same Runtime sequence; the broader OCR contributes
                     # geometry only and remains subject to the strict unique
                     # short-signin/ordered-grid checks below.
-                    fallback_tokens = runtime.ocr_tokens_in_shapes(
+                    fallback_tokens = context.ocr_tokens_in_shapes(
                         scene_id,
                         list(fallback_ocr_shape_names),
                         frame_data_url=frame,
@@ -506,7 +534,7 @@ class DailySigninTaskMixin:
                             minimum_anchor_score=minimum_anchor_score,
                         )
                         if verified.ready and verified.point == plan.point:
-                            runtime.click_frame_point(
+                            context.click_frame_point(
                                 scene_id,
                                 float(verified.point[0]),
                                 float(verified.point[1]),
@@ -525,7 +553,7 @@ class DailySigninTaskMixin:
                     "wait",
                     f"{label}暂未安全对齐，刷新重试 {attempt + 1}/{attempt_count - 1}：{last_reason}",
                 )
-                yield from runtime.wait_action_settle(max(0.0, retry_wait_seconds))
+                yield from context.wait_action_settle(max(0.0, retry_wait_seconds))
         raise RuntimeError(f"{label}连续 {attempt_count} 次未安全对齐：{last_reason}")
 
     @staticmethod
@@ -573,19 +601,19 @@ class DailySigninTaskMixin:
         return signed_days
 
     @staticmethod
-    def _daily_signin_click_offset(runtime: Any, scene_id: int, box: dict[str, float], y_heights: float) -> None:
-        runtime.click_frame_point(
+    def _daily_signin_click_offset(context: Any, scene_id: int, box: dict[str, float], y_heights: float) -> None:
+        context.click_frame_point(
             scene_id,
             float(box["x"]) + float(box["w"]) / 2,
             float(box["y"]) + float(box["h"]) * float(y_heights),
         )
 
     @staticmethod
-    def _daily_signin_read_claimed(runtime: Any, *, attempts: int = 3) -> tuple[int, int]:
+    def _daily_signin_read_claimed(context: Any, *, attempts: int = 3) -> tuple[int, int]:
         claimed: tuple[int, int] | None = None
         for _attempt in range(max(1, int(attempts))):
-            frame = runtime.cur_frame(update=True)
-            tokens = runtime.ocr_tokens_in_shapes(
+            frame = context.cur_frame(update=True)
+            tokens = context.ocr_tokens_in_shapes(
                 404,
                 ["已领"],
                 frame_data_url=frame,
@@ -596,7 +624,7 @@ class DailySigninTaskMixin:
                 # The small red fraction may be absent from shared OCR while
                 # the claimed-reward animation is settling.  Retry the tight
                 # crop, then obtain a genuinely fresh frame on the next pass.
-                tokens = runtime.ocr_tokens_in_shapes(
+                tokens = context.ocr_tokens_in_shapes(
                     404,
                     ["已领"],
                     frame_data_url=frame,
@@ -615,7 +643,7 @@ class DailySigninTaskMixin:
 
     def _daily_signin_read_claimed_after_animation(
         self,
-        runtime: Any,
+        context: Any,
         *,
         attempts: int = 3,
         retry_wait_seconds: float = 0.45,
@@ -626,17 +654,17 @@ class DailySigninTaskMixin:
         last_error: RuntimeError | None = None
         for attempt in range(attempt_count):
             try:
-                return self._daily_signin_read_claimed(runtime, attempts=1)
+                return self._daily_signin_read_claimed(context, attempts=1)
             except RuntimeError as exc:
                 last_error = exc
                 if attempt + 1 < attempt_count:
-                    yield from runtime.wait_action_settle(max(0.0, float(retry_wait_seconds)))
+                    yield from context.wait_action_settle(max(0.0, float(retry_wait_seconds)))
         assert last_error is not None
         raise last_error
 
     def _daily_signin_claim_available_milestones(
         self,
-        runtime: Any,
+        context: Any,
         *,
         reached_days: int,
         total_days: int,
@@ -652,7 +680,7 @@ class DailySigninTaskMixin:
         if snapshot.total_days != total_days or snapshot.signed_day_count != reached_days:
             raise RuntimeError(
                 "日常_签到：累签 Runtime 与页面进度不一致："
-                f"runtime={snapshot.signed_day_count}/{snapshot.total_days}, "
+                f"context={snapshot.signed_day_count}/{snapshot.total_days}, "
                 f"page={reached_days}/{total_days}"
             )
         days = tuple(item.day for item in snapshot.milestones)
@@ -665,8 +693,8 @@ class DailySigninTaskMixin:
         for milestone in snapshot.milestones:
             if not milestone.can_get_reward:
                 continue
-            frame = runtime.cur_frame(update=True)
-            tokens = runtime.ocr_tokens_in_shapes(
+            frame = context.cur_frame(update=True)
+            tokens = context.ocr_tokens_in_shapes(
                 404,
                 ["累签奖励"],
                 frame_data_url=frame,
@@ -698,11 +726,11 @@ class DailySigninTaskMixin:
 
             if milestone.day == total_days:
                 self._log("action", "日常_签到：领取第28天最终累签大奖")
-                runtime.click_shape_center(404, "最终大奖。")
+                context.click_shape_center(404, "最终大奖。")
             else:
                 self._log("action", f"日常_签到：领取第{milestone.day}天累签奖励")
-                self._daily_signin_click_offset(runtime, 404, matches[0], -4.0)
-            yield from runtime.wait_action_settle(settle_seconds)
+                self._daily_signin_click_offset(context, 404, matches[0], -4.0)
+            yield from context.wait_action_settle(settle_seconds)
 
             after = self._daily_signin_read_milestone_snapshot()
             after_item = next(
@@ -721,8 +749,8 @@ class DailySigninTaskMixin:
                     f"日常_签到：第{milestone.day}天累签奖励点击后 Runtime 未收敛"
                 )
             if milestone.day < total_days:
-                after_frame = runtime.cur_frame(update=True)
-                after_tokens = runtime.ocr_tokens_in_shapes(
+                after_frame = context.cur_frame(update=True)
+                after_tokens = context.ocr_tokens_in_shapes(
                     404,
                     ["累签奖励"],
                     frame_data_url=after_frame,
@@ -785,7 +813,7 @@ class DailySigninTaskMixin:
 
     def _daily_signin_return_from_404(
         self,
-        runtime: Any,
+        context: Any,
         *,
         settle_seconds: float,
         timeout: float,
@@ -793,9 +821,9 @@ class DailySigninTaskMixin:
         # A reward popup may consume the first click at the real #404 return
         # coordinate.  A second bounded click then performs the actual return.
         for _attempt in range(2):
-            runtime.click_shape_center(404, "返回")
-            yield from runtime.wait_action_settle(settle_seconds)
-            scene_id, _score, _frame = runtime.current_scene([34, 404], update=True)
+            context.click_shape_center(404, "返回")
+            yield from context.wait_action_settle(settle_seconds)
+            scene_id, _score, _frame = context.current_scene([34, 404], update=True)
             if scene_id == 34:
                 return
             if scene_id != 404:
@@ -806,12 +834,12 @@ class DailySigninTaskMixin:
                 # entrance to #20.  Let the formal scene graph perform the
                 # remaining bounded navigation instead.
                 break
-        yield from runtime.goto_view(34)
-        yield from runtime.wait_view(34, timeout=timeout, label="日常_签到：等待返回世界 #34")
+        yield from context.go_scene(34)
+        yield from context.wait_scene(34, wait=timeout, label="日常_签到：等待返回世界 #34")
 
     def _daily_signin_finish_from_404(
         self,
-        runtime: Any,
+        context: Any,
         outcome: str,
         message: str,
         *,
@@ -844,7 +872,7 @@ class DailySigninTaskMixin:
         )
         try:
             yield from self._daily_signin_return_from_404(
-                runtime,
+                context,
                 settle_seconds=settle_seconds,
                 timeout=timeout,
             )
@@ -866,7 +894,7 @@ class DailySigninTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_签到资产树路径，无法执行作业")
 
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         view_timeout = float(payload.get("view_timeout") or 12.0)
         popup_wait_seconds = float(payload.get("popup_wait_seconds") or 3.0)
         return_settle_seconds = float(payload.get("return_settle_seconds") or 1.0)
@@ -876,7 +904,7 @@ class DailySigninTaskMixin:
         # it never interprets #403/#404 as a persisted step from an older run.
         for entry_attempt in range(2):
             yield from self._daily_signin_click_menu_target(
-                runtime,
+                context,
                 scene_id=34,
                 menu_kind="world_left",
                 target=_DAILY_SIGNIN_WORLD_TARGET,
@@ -886,24 +914,24 @@ class DailySigninTaskMixin:
                 retry_wait_seconds=return_settle_seconds,
             )
             try:
-                yield from runtime.wait_view(
+                yield from context.wait_scene(
                     403,
-                    timeout=view_timeout,
+                    wait=view_timeout,
                     label="日常_签到：等待特惠页 #403",
                 )
                 break
             except TimeoutError:
-                scene_id, _score, _frame = runtime.current_scene([34, 403], update=True)
+                scene_id, _score, _frame = context.current_scene([34, 403], update=True)
                 if scene_id != 34 or entry_attempt >= 1:
                     raise
                 self._log(
                     "wait",
                     "日常_签到：特惠入口首次点击未生效且仍可靠位于 #34，重读菜单后再试一次",
                 )
-                yield from runtime.wait_action_settle(return_settle_seconds)
+                yield from context.wait_action_settle(return_settle_seconds)
 
         yield from self._daily_signin_click_menu_target(
-            runtime,
+            context,
             scene_id=403,
             menu_kind="group_popup",
             target=_DAILY_SIGNIN_ENTRY_TARGET,
@@ -915,7 +943,7 @@ class DailySigninTaskMixin:
             ocr_shape_names=("每日签到",),
             fallback_ocr_shape_names=("特惠活动网格",),
         )
-        yield from runtime.wait_view(404, timeout=view_timeout, label="日常_签到：等待签到页 #404")
+        yield from context.wait_scene(404, wait=view_timeout, label="日常_签到：等待签到页 #404")
 
         effective_now = job_now()
         business_date = effective_now.date().isoformat()
@@ -949,7 +977,7 @@ class DailySigninTaskMixin:
         )
         fraction_available = True
         try:
-            claimed_before, total_days = yield from self._daily_signin_read_claimed_after_animation(runtime)
+            claimed_before, total_days = yield from self._daily_signin_read_claimed_after_animation(context)
         except RuntimeError as exc:
             # The floating assistant can cover just the red X/28 fraction.
             # Keep the error as evidence; a direct current-day check below can
@@ -969,17 +997,17 @@ class DailySigninTaskMixin:
             raise RuntimeError(
                 "日常_签到：页面分数与 Runtime 已签到集合不一致："
                 f"page={claimed_before}/{total_days}, "
-                f"runtime={snapshot_before.signed_day_count}/{snapshot_before.total_days}"
+                f"context={snapshot_before.signed_day_count}/{snapshot_before.total_days}"
             )
         if fraction_available and claimed_before == total_days and calendar_day >= total_days:
             milestones_claimed = yield from self._daily_signin_claim_available_milestones(
-                runtime,
+                context,
                 reached_days=claimed_before,
                 total_days=total_days,
                 settle_seconds=popup_wait_seconds,
             )
             return (yield from self._daily_signin_finish_from_404(
-                runtime,
+                context,
                 "milestone_claimed" if milestones_claimed else "already_claimed",
                 f"日常_签到：已领 {claimed_before}/{total_days}"
                 + (f"，补领累签第{','.join(map(str, milestones_claimed))}天" if milestones_claimed else "，累签奖励已收敛"),
@@ -997,13 +1025,13 @@ class DailySigninTaskMixin:
             milestones_claimed = ()
             if fraction_available:
                 milestones_claimed = yield from self._daily_signin_claim_available_milestones(
-                    runtime,
+                    context,
                     reached_days=claimed_before,
                     total_days=total_days,
                     settle_seconds=popup_wait_seconds,
                 )
             return (yield from self._daily_signin_finish_from_404(
-                runtime,
+                context,
                 "milestone_claimed" if milestones_claimed else "outside_daily_reward_days",
                 f"日常_签到：今天是{calendar_day}日，普通签到仅开放1-{total_days}日"
                 + (f"；补领累签第{','.join(map(str, milestones_claimed))}天" if milestones_claimed else ""),
@@ -1022,13 +1050,13 @@ class DailySigninTaskMixin:
             )
         if calendar_day in signed_days_before:
             milestones_claimed = yield from self._daily_signin_claim_available_milestones(
-                runtime,
+                context,
                 reached_days=snapshot_before.signed_day_count,
                 total_days=total_days,
                 settle_seconds=popup_wait_seconds,
             )
             return (yield from self._daily_signin_finish_from_404(
-                runtime,
+                context,
                 "milestone_claimed" if milestones_claimed else "already_claimed",
                 f"日常_签到：今天第{calendar_day}天奖励已领取（{snapshot_before.signed_day_count}/{total_days}）"
                 + (
@@ -1047,8 +1075,8 @@ class DailySigninTaskMixin:
             ))
 
         target_day = calendar_day
-        date_frame = runtime.cur_frame(update=True)
-        date_tokens = runtime.ocr_tokens_in_shapes(
+        date_frame = context.cur_frame(update=True)
+        date_tokens = context.ocr_tokens_in_shapes(
             404,
             ["日期"],
             frame_data_url=date_frame,
@@ -1067,20 +1095,20 @@ class DailySigninTaskMixin:
             {**target_box, "day": target_day},
         )
 
-        self._daily_signin_click_offset(runtime, 404, target_box, 2.0)
-        yield from runtime.wait_action_settle(popup_wait_seconds)
+        self._daily_signin_click_offset(context, 404, target_box, 2.0)
+        yield from context.wait_action_settle(popup_wait_seconds)
 
         # Clicking an unclaimed day opens #250 (reward details).  The previous
         # implementation kept reading #404[已领] behind that popup, so OCR was
         # guaranteed to be empty and the task failed while visibly stuck on
         # the sign-in flow.  Claim first, then return to #404 before verifying.
-        post_click_scene, _score, _frame = runtime.current_scene([250, 404], update=True)
+        post_click_scene, _score, _frame = context.current_scene([250, 404], update=True)
         if post_click_scene == 250:
             self._log("action", "日常_签到：#250 奖励页点击「领取」")
-            runtime.click_shape_center(250, "领取")
-            yield from runtime.wait_action_settle(popup_wait_seconds)
-            yield from runtime.goto_view(404)
-            yield from runtime.wait_view(404, timeout=view_timeout, label="日常_签到：领奖后回到签到页 #404")
+            context.click_shape_center(250, "领取")
+            yield from context.wait_action_settle(popup_wait_seconds)
+            yield from context.go_scene(404)
+            yield from context.wait_scene(404, wait=view_timeout, label="日常_签到：领奖后回到签到页 #404")
 
         snapshot_after = self._daily_signin_read_milestone_snapshot()
         signed_days_after = self._daily_signin_validate_snapshot(
@@ -1104,8 +1132,8 @@ class DailySigninTaskMixin:
         claimed_after = snapshot_after.signed_day_count
         refreshed_total = snapshot_after.total_days
         after_green_ratio: float | None = None
-        verify_frame = runtime.cur_frame(update=True)
-        verify_tokens = runtime.ocr_tokens_in_shapes(
+        verify_frame = context.cur_frame(update=True)
+        verify_tokens = context.ocr_tokens_in_shapes(
             404,
             ["日期"],
             frame_data_url=verify_frame,
@@ -1118,7 +1146,7 @@ class DailySigninTaskMixin:
                 {**verify_box, "day": target_day},
             )
         if fraction_available:
-            page_claimed_after, page_total_after = yield from self._daily_signin_read_claimed_after_animation(runtime)
+            page_claimed_after, page_total_after = yield from self._daily_signin_read_claimed_after_animation(context)
             if (
                 page_claimed_after != claimed_after
                 or page_total_after != refreshed_total
@@ -1126,7 +1154,7 @@ class DailySigninTaskMixin:
                 raise RuntimeError(
                     "日常_签到：领取后页面分数与 Runtime 已签到集合不一致："
                     f"page={page_claimed_after}/{page_total_after}, "
-                    f"runtime={claimed_after}/{refreshed_total}"
+                    f"context={claimed_after}/{refreshed_total}"
                 )
         signed_after_fingerprint = self._daily_signin_signed_days_fingerprint(
             signed_days_after
@@ -1166,14 +1194,14 @@ class DailySigninTaskMixin:
             )
 
         milestones_claimed = yield from self._daily_signin_claim_available_milestones(
-            runtime,
+            context,
             reached_days=claimed_after,
             total_days=total_days,
             settle_seconds=popup_wait_seconds,
         )
 
         return (yield from self._daily_signin_finish_from_404(
-            runtime,
+            context,
             "claimed",
             f"日常_签到：已领取今天第{target_day}天奖励（累计 {claimed_after}/{total_days}）",
             payload=payload,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""One-shot Beast Abyss batch measurement and resource planning."""
+"""Beast Abyss batch measurement, scatter modeling and tier planning."""
 
 from dataclasses import dataclass
 from fractions import Fraction
@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
-BEAST_ABYSS_MEASUREMENT_EXPLORES = 10
+BEAST_ABYSS_MEASUREMENT_EXPLORES = 100
 
 
 def build_beast_abyss_shop_snapshot_key(
@@ -68,6 +68,7 @@ class BeastAbyssResourceLedger:
     challenge_points: int
     challenge_items: int
     personal_score: int
+    personal_rank_object_identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -87,11 +88,29 @@ class BeastAbyssBatchMeasurement:
     currency_per_explore: Fraction
     seconds_per_explore: float
     challenge_per_explore: Fraction
+    ending_hierarchy: int | None = None
+    duration_reliable: bool = True
+
+
+@dataclass(frozen=True)
+class BeastAbyssYieldScatterModel:
+    """Occurrence-bound dual-y model; shop/layer fields are audit context only."""
+
+    activity_instance_id: str
+    shop_snapshot_key: str
+    hierarchy: int
+    points: tuple[tuple[int, int, int], ...]
+    currency_per_explore: Fraction
+    personal_score_per_explore: Fraction
+    seconds_per_explore: float
+    challenge_per_explore: Fraction
+    hierarchy_transitions: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
 class BeastAbyssChallengePlan:
     target_tier: str
+    remaining_target_explores: int
     requested_explores: int
     target_new_currency: int
     estimated_new_currency: int
@@ -111,6 +130,21 @@ class BeastAbyssAutoSettings:
     fast_auto: bool | None
     skip_animation: bool | None
     requested_explores: int | None
+    use_find_demon_talisman: bool | None = False
+
+    def option_values(self) -> dict[str, bool | None]:
+        """Return toggle state by stable semantic key, independent of UI order."""
+
+        return {
+            "fairy_events": self.fairy_events,
+            "beast_events": self.beast_events,
+            "player_events": self.player_events,
+            "auto_use_explore_items": self.auto_use_explore_items,
+            "stop_when_killed": self.stop_when_killed,
+            "fast_auto": self.fast_auto,
+            "skip_animation": self.skip_animation,
+            "use_find_demon_talisman": self.use_find_demon_talisman,
+        }
 
 
 def validate_beast_abyss_auto_settings(
@@ -120,33 +154,36 @@ def validate_beast_abyss_auto_settings(
 ) -> None:
     """Validate GUI-read settings before clicking ``开启自动``."""
 
-    values = (
-        settings.fairy_events,
-        settings.beast_events,
-        settings.player_events,
-        settings.auto_use_explore_items,
-        settings.stop_when_killed,
-        settings.fast_auto,
-        settings.skip_animation,
-    )
-    if any(value is None for value in values) or settings.requested_explores is None:
+    values = settings.option_values()
+    if any(value is None for value in values.values()) or settings.requested_explores is None:
         raise ValueError("兽渊自动探查开关未完整读回")
     if int(settings.requested_explores) <= 0:
         raise ValueError("兽渊自动探查次数必须为正数")
     if settings.skip_animation and not settings.fast_auto:
         raise ValueError("兽渊跳过动画必须同时启用快速自动")
     if measurement:
-        if not settings.stop_when_killed:
-            raise ValueError("兽渊测速必须开启被击杀停止")
-        if settings.player_events:
-            raise ValueError("兽渊测速禁止自动处理玩家事件")
+        expected = {
+            "fairy_events": False,
+            "beast_events": True,
+            "player_events": True,
+            "auto_use_explore_items": True,
+            "stop_when_killed": False,
+            "fast_auto": True,
+            "skip_animation": True,
+            "use_find_demon_talisman": False,
+        }
+        if values != expected:
+            mismatches = {
+                key: {"expected": desired, "actual": values.get(key)}
+                for key, desired in expected.items()
+                if values.get(key) is not desired
+            }
+            raise ValueError(f"兽渊首轮测速配置不一致：{mismatches!r}")
         if settings.requested_explores != BEAST_ABYSS_MEASUREMENT_EXPLORES:
-            raise ValueError("兽渊测速 GUI 必须回读为10次")
-        if settings.auto_use_explore_items:
-            raise ValueError("兽渊测速禁止自动使用探查符")
+            raise ValueError("兽渊测速 GUI 必须回读为100次")
 
 
-def measure_beast_abyss_batch(
+def measure_beast_abyss_completed_batch(
     before: BeastAbyssResourceLedger,
     after: BeastAbyssResourceLedger,
     *,
@@ -154,6 +191,7 @@ def measure_beast_abyss_batch(
     completed_explores: int,
     duration_seconds: float,
     challenge_item_automatic: int = 0,
+    duration_reliable: bool = True,
 ) -> BeastAbyssBatchMeasurement:
     if not before.activity_instance_id or (
         before.activity_instance_id != after.activity_instance_id
@@ -163,17 +201,20 @@ def measure_beast_abyss_batch(
         before.shop_snapshot_key != after.shop_snapshot_key
     ):
         raise ValueError("兽渊测速前后兑换购买进度快照不一致")
-    if before.hierarchy <= 0 or before.hierarchy != after.hierarchy:
-        raise ValueError("兽渊测速前后当前层级不一致")
-    if requested_explores != BEAST_ABYSS_MEASUREMENT_EXPLORES:
-        raise ValueError("兽渊测速必须使用一次完整的10次原生批次")
+    if before.hierarchy <= 0 or after.hierarchy <= 0:
+        raise ValueError("兽渊测速前后缺少层级观测")
+    if requested_explores <= 0:
+        raise ValueError("兽渊批次目标次数必须为正数")
     if completed_explores != requested_explores:
-        raise ValueError("兽渊测速未完整完成10次，拒绝外推")
+        raise ValueError("兽渊批次未完整完成目标次数，拒绝更新模型")
     if duration_seconds <= 0:
         raise ValueError("兽渊测速耗时必须为正数")
     new_currency = after.cumulative_currency - before.cumulative_currency
     if new_currency <= 0:
         raise ValueError("兽渊测速没有得到正数累计兽元增量")
+    personal_score_delta = after.personal_score - before.personal_score
+    if personal_score_delta < 0:
+        raise ValueError("兽渊测速前后排行积分倒退")
     explore_items_used = max(0, before.explore_items - after.explore_items)
     challenge_items_used = max(
         0, before.challenge_items - after.challenge_items
@@ -193,7 +234,7 @@ def measure_beast_abyss_batch(
         duration_seconds=float(duration_seconds),
         new_currency=new_currency,
         balance_delta=after.current_currency - before.current_currency,
-        personal_score_delta=after.personal_score - before.personal_score,
+        personal_score_delta=personal_score_delta,
         explore_items_used=explore_items_used,
         challenge_items_used=challenge_items_used,
         challenge_capacity_used=challenge_capacity_used,
@@ -202,15 +243,126 @@ def measure_beast_abyss_batch(
         challenge_per_explore=Fraction(
             challenge_capacity_used, completed_explores
         ),
+        ending_hierarchy=after.hierarchy,
+        duration_reliable=bool(duration_reliable),
     )
 
 
+def measure_beast_abyss_batch(
+    before: BeastAbyssResourceLedger,
+    after: BeastAbyssResourceLedger,
+    *,
+    requested_explores: int,
+    completed_explores: int,
+    duration_seconds: float,
+    challenge_item_automatic: int = 0,
+    duration_reliable: bool = True,
+) -> BeastAbyssBatchMeasurement:
+    """Measure one initialization sample using the shared 100-run batch."""
+
+    if requested_explores != BEAST_ABYSS_MEASUREMENT_EXPLORES:
+        raise ValueError("兽渊测速必须使用一次完整的100次原生批次")
+    if completed_explores != requested_explores:
+        raise ValueError("兽渊测速未完整完成100次，拒绝外推")
+    return measure_beast_abyss_completed_batch(
+        before,
+        after,
+        requested_explores=requested_explores,
+        completed_explores=completed_explores,
+        duration_seconds=duration_seconds,
+        challenge_item_automatic=challenge_item_automatic,
+        duration_reliable=duration_reliable,
+    )
+
+
+def build_beast_abyss_yield_scatter_model(
+    measurements: Iterable[BeastAbyssBatchMeasurement],
+) -> BeastAbyssYieldScatterModel:
+    """Fit an origin-anchored model without mixing activity occurrences."""
+
+    rows = tuple(measurements)
+    if not rows:
+        raise ValueError("兽渊散点模型没有有效测速点")
+    first = rows[0]
+    for row in rows:
+        if row.activity_instance_id != first.activity_instance_id:
+            raise ValueError("兽渊散点模型混入了其他活动实例")
+        if (
+            row.requested_explores <= 0
+            or row.completed_explores != row.requested_explores
+            or row.new_currency <= 0
+        ):
+            raise ValueError("兽渊散点模型包含无效测速点")
+    # x is the configured batch size. Completion proof only authorizes that
+    # configured value; result-page counters are deliberately not model data.
+    denominator = sum(row.requested_explores ** 2 for row in rows)
+    currency_numerator = sum(
+        row.requested_explores * row.new_currency for row in rows
+    )
+    score_numerator = sum(
+        row.requested_explores * row.personal_score_delta for row in rows
+    )
+    challenge_numerator = sum(
+        row.requested_explores * row.challenge_capacity_used for row in rows
+    )
+    timed_rows = tuple(row for row in rows if row.duration_reliable)
+    if not timed_rows:
+        raise ValueError("兽渊散点模型没有可信的批次耗时")
+    seconds_denominator = sum(row.requested_explores ** 2 for row in timed_rows)
+    seconds_numerator = sum(
+        row.requested_explores * row.duration_seconds for row in timed_rows
+    )
+    return BeastAbyssYieldScatterModel(
+        activity_instance_id=first.activity_instance_id,
+        shop_snapshot_key=first.shop_snapshot_key,
+        hierarchy=first.hierarchy,
+        points=tuple(
+            (row.requested_explores, row.new_currency, row.personal_score_delta)
+            for row in rows
+        ),
+        currency_per_explore=Fraction(currency_numerator, denominator),
+        personal_score_per_explore=Fraction(score_numerator, denominator),
+        seconds_per_explore=seconds_numerator / seconds_denominator,
+        challenge_per_explore=Fraction(challenge_numerator, denominator),
+        hierarchy_transitions=tuple(
+            (row.hierarchy, row.ending_hierarchy or row.hierarchy) for row in rows
+        ),
+    )
+
+
+def is_beast_abyss_currency_yield_stable(
+    previous: BeastAbyssBatchMeasurement,
+    current: BeastAbyssBatchMeasurement,
+    *,
+    maximum_change: Fraction = Fraction(1, 2),
+) -> bool:
+    """Return whether adjacent occurrence-bound batch yields vary by at most 50%."""
+
+    if previous.activity_instance_id != current.activity_instance_id:
+        raise ValueError("兽渊稳定性比较混入了其他活动实例")
+    if previous.completed_explores != current.completed_explores:
+        raise ValueError("兽渊稳定性比较必须使用等大批次")
+    if previous.new_currency <= 0 or current.new_currency <= 0:
+        raise ValueError("兽渊稳定性比较缺少正数兑币产出")
+    if maximum_change < 0:
+        raise ValueError("兽渊稳定性阈值无效")
+    return (
+        Fraction(abs(current.new_currency - previous.new_currency), previous.new_currency)
+        <= maximum_change
+    )
 def plan_beast_abyss_measurement_batch(
     snapshot: BeastAbyssResourceLedger,
     *,
     hierarchy_consume: int,
+    explore_item_automatic: int = 0,
+    challenge_item_automatic: int = 0,
 ) -> int:
-    """Fail closed unless a 10-explore sample needs no supplement items."""
+    """Prove that exploration resources can finish the configured 100-run batch.
+
+    Challenge events are stochastic and do not consume one challenge point per
+    exploration.  Their actual usage belongs in the completed batch sample;
+    treating them as a one-to-one prerequisite incorrectly blocks valid runs.
+    """
 
     if hierarchy_consume <= 0:
         raise ValueError("兽渊当前层探索消耗无效")
@@ -219,16 +371,19 @@ def plan_beast_abyss_measurement_batch(
     required_explore_points = (
         BEAST_ABYSS_MEASUREMENT_EXPLORES * hierarchy_consume
     )
-    if snapshot.explore_points < required_explore_points:
-        raise ValueError("兽渊现有探索点不足以完成不使用探查符的10次测速")
-    if snapshot.challenge_points < BEAST_ABYSS_MEASUREMENT_EXPLORES:
-        raise ValueError("兽渊现有挑战点不足以为10次测速保留保守容量")
+    explore_capacity = (
+        snapshot.explore_points
+        + snapshot.explore_items * max(0, int(explore_item_automatic))
+    )
+    if explore_capacity < required_explore_points:
+        raise ValueError("兽渊探索资源不足以完成100次测速")
+    del challenge_item_automatic
     return BEAST_ABYSS_MEASUREMENT_EXPLORES
 
 
 def plan_beast_abyss_challenge_once(
     snapshot: BeastAbyssResourceLedger,
-    measurement: BeastAbyssBatchMeasurement,
+    measurement: BeastAbyssBatchMeasurement | BeastAbyssYieldScatterModel,
     *,
     other_discount_new_currency: int,
     closing_goods_new_currency: int,
@@ -236,15 +391,12 @@ def plan_beast_abyss_challenge_once(
     challenge_item_automatic: int = 0,
     hierarchy_consume: int = 1,
     challenge_margin_percent: int = 25,
+    batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
 ) -> BeastAbyssChallengePlan:
     """Produce one post-measurement plan; callers must not roll it forward."""
 
     if snapshot.activity_instance_id != measurement.activity_instance_id:
         raise ValueError("兽渊计划实例与测速实例不一致")
-    if snapshot.shop_snapshot_key != measurement.shop_snapshot_key:
-        raise ValueError("兽渊购买进度已变化，旧测速计划不得继续使用")
-    if snapshot.hierarchy != measurement.hierarchy:
-        raise ValueError("兽渊当前层级已变化，旧测速计划不得继续使用")
     if hierarchy_consume <= 0 or explore_item_automatic < 0:
         raise ValueError("兽渊资源换算配置无效")
     if measurement.currency_per_explore <= 0:
@@ -280,21 +432,23 @@ def plan_beast_abyss_challenge_once(
     if closing_goods_explores <= resource_capacity:
         tier = "收尾道具"
         target_currency = max(0, closing_goods_new_currency)
-        requested = closing_goods_explores
+        remaining = closing_goods_explores
         reason = "当前三账本按测速上界可覆盖收尾道具"
     elif other_discount_explores <= resource_capacity:
         tier = "其他折扣"
         target_currency = max(0, other_discount_new_currency)
-        requested = other_discount_explores
+        remaining = other_discount_explores
         reason = "资源不足覆盖收尾道具，按固定顺序完成其他折扣"
     else:
         tier = "尽量接近其他折扣"
         target_currency = max(0, other_discount_new_currency)
-        requested = resource_capacity
+        remaining = resource_capacity
         reason = "资源不足覆盖其他折扣，使用一次性安全容量尽可能接近"
+    requested = plan_beast_abyss_next_batch(remaining, batch_size=batch_size)
     estimated = floor(measurement.currency_per_explore * requested)
     return BeastAbyssChallengePlan(
         target_tier=tier,
+        remaining_target_explores=remaining,
         requested_explores=requested,
         target_new_currency=target_currency,
         estimated_new_currency=estimated,
@@ -305,15 +459,77 @@ def plan_beast_abyss_challenge_once(
     )
 
 
+def plan_beast_abyss_formal_batch(
+    snapshot: BeastAbyssResourceLedger,
+    model: BeastAbyssYieldScatterModel,
+    exchange_plan: Mapping[str, Any],
+    *,
+    explore_item_automatic: int,
+    challenge_item_automatic: int = 0,
+    hierarchy_consume: int = 1,
+    challenge_margin_percent: int = 25,
+    batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
+) -> BeastAbyssChallengePlan:
+    """Plan only the next formal batch from the latest shop and yield model."""
+
+    plan = dict(exchange_plan or {})
+    if not bool(plan.get("budget_ready")):
+        raise ValueError("兽渊正式规划要求同窗口最新兑换宝阁与钱包事实")
+    budgets = dict(plan.get("target_budgets") or {})
+
+    def required_currency(tier: str) -> int:
+        row = dict(budgets.get(tier) or {})
+        value = int(row.get("required_new_currency") or 0)
+        if value < 0:
+            raise ValueError(f"兽渊{tier}档次所需兑币不能为负数")
+        return value
+
+    return plan_beast_abyss_challenge_once(
+        snapshot,
+        model,
+        other_discount_new_currency=required_currency("其他折扣"),
+        closing_goods_new_currency=required_currency("收尾道具"),
+        explore_item_automatic=explore_item_automatic,
+        challenge_item_automatic=challenge_item_automatic,
+        hierarchy_consume=hierarchy_consume,
+        challenge_margin_percent=challenge_margin_percent,
+        batch_size=batch_size,
+    )
+
+
+def plan_beast_abyss_next_batch(
+    remaining_explores: int,
+    *,
+    batch_size: int = BEAST_ABYSS_MEASUREMENT_EXPLORES,
+) -> int:
+    """Run the final small remainder, otherwise only half before replanning."""
+
+    remaining = int(remaining_explores)
+    threshold = int(batch_size)
+    if remaining < 0:
+        raise ValueError("兽渊剩余目标次数不能为负数")
+    if threshold <= 0:
+        raise ValueError("兽渊统一批次阈值必须为正数")
+    if remaining <= threshold:
+        return remaining
+    return ceil(Fraction(remaining, 2))
+
+
 __all__ = [
     "BEAST_ABYSS_MEASUREMENT_EXPLORES",
     "BeastAbyssBatchMeasurement",
+    "BeastAbyssYieldScatterModel",
     "BeastAbyssChallengePlan",
     "BeastAbyssResourceLedger",
     "BeastAbyssAutoSettings",
     "build_beast_abyss_shop_snapshot_key",
+    "build_beast_abyss_yield_scatter_model",
+    "is_beast_abyss_currency_yield_stable",
+    "measure_beast_abyss_completed_batch",
     "measure_beast_abyss_batch",
     "plan_beast_abyss_measurement_batch",
+    "plan_beast_abyss_formal_batch",
+    "plan_beast_abyss_next_batch",
     "plan_beast_abyss_challenge_once",
     "validate_beast_abyss_auto_settings",
 ]

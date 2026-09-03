@@ -368,7 +368,7 @@ def _resolve_resource_rank_schedule_target(
 
 
 def _enter_adapter_from_schedule(
-    runtime: Any,
+    context: Any,
     adapter: ResourceRankGiftAdapter,
     *,
     activity_id: int,
@@ -392,17 +392,17 @@ def _enter_adapter_from_schedule(
     # finish rendering.  Refresh a bounded number of frames so that this
     # transient state cannot turn an open activity into a false negative.
     for attempt in range(3):
-        runtime.runner._raise_if_stopped(runtime.stop_event)
-        frame = runtime.cur_frame(update=True)
-        scene, score, _ = runtime.current_scene([SCHEDULE_SCENE_ID], update=False)
+        context.runner._raise_if_stopped(context.stop_event)
+        frame = context.cur_frame(update=True)
+        scene, score, _ = context.current_scene([SCHEDULE_SCENE_ID], update=False)
         if scene != SCHEDULE_SCENE_ID or score < 90:
             raise RuntimeError(
                 f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：#66 身份无效 {scene}/{score:.0f}"
             )
-        header_lines = runtime.ocr_fragments_in_shapes(
+        header_lines = context.ocr_fragments_in_shapes(
             SCHEDULE_SCENE_ID, [HEADER_SHAPE], frame_data_url=frame
         )
-        calendar_lines = runtime.ocr_fragments_in_shapes(
+        calendar_lines = context.ocr_fragments_in_shapes(
             SCHEDULE_SCENE_ID, [CALENDAR_SHAPE], frame_data_url=frame
         )
         try:
@@ -418,33 +418,33 @@ def _enter_adapter_from_schedule(
             last_alignment_error = exc
         if attempt == 2:
             break
-        yield from runtime.wait_action_settle(1.0)
+        yield from context.wait_action_settle(1.0)
     if target is None or entry_date is None:
         raise RuntimeError(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：Runtime 确认活动 {activity_id} 正在开放，"
             f"但 #66 连续三帧未把{adapter.label}对齐到唯一任务行；"
             f"{last_alignment_error or '无可用 OCR 候选'}"
         )
-    runtime.runner._raise_if_stopped(runtime.stop_event)
-    runtime.runner._click_frame_point(
-        runtime.ctx,
-        runtime.view(SCHEDULE_SCENE_ID).raw,
+    context.runner._raise_if_stopped(context.stop_event)
+    context.runner._click_frame_point(
+        context.ctx,
+        context.view(SCHEDULE_SCENE_ID).raw,
         target.x,
         target.y,
     )
-    runtime.clear_frame()
+    context.clear_frame()
     targets = [*adapter.page_scene_ids]
     if adapter.intro_scene_id is not None:
         targets.insert(0, adapter.intro_scene_id)
-    return (yield from runtime.wait_scene(
+    return (yield from context.wait_scene(
         *targets,
-        timeout=30.0,
+        wait=30.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}页面",
     ))
 
 
 def open_resource_rank_activity_page(
-    runtime: Any,
+    context: Any,
     adapter: ResourceRankGiftAdapter,
     *,
     activity_id: int,
@@ -452,7 +452,7 @@ def open_resource_rank_activity_page(
 ):
     """Open one active resource-ranking occurrence and return its main scene."""
 
-    scene, _score, _frame = runtime.current_scene(
+    scene, _score, _frame = context.current_scene(
         [34, 66, *(adapter.page_scene_ids), *(
             (adapter.intro_scene_id,) if adapter.intro_scene_id is not None else ()
         )],
@@ -460,21 +460,21 @@ def open_resource_rank_activity_page(
     )
     if scene not in adapter.page_scene_ids:
         if scene != 66:
-            result = runtime.go_scene(66)
+            result = context.go_scene(66)
             if hasattr(result, "send"):
                 yield from result
         waited = yield from _enter_adapter_from_schedule(
-            runtime,
+            context,
             adapter,
             activity_id=activity_id,
             now=now,
         )
         scene = int(getattr(waited, "id", waited))
     if adapter.intro_scene_id is not None and scene == adapter.intro_scene_id:
-        runtime.click_shape_center(adapter.intro_scene_id, "查看详情")
-        waited = yield from runtime.wait_scene(
+        context.click_shape_center(adapter.intro_scene_id, "查看详情")
+        waited = yield from context.wait_scene(
             *adapter.page_scene_ids,
-            timeout=20.0,
+            wait=20.0,
             label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}榜单",
         )
         scene = int(getattr(waited, "id", waited))
@@ -486,35 +486,35 @@ def open_resource_rank_activity_page(
 
 
 def _open_adapter_gift_page(
-    runtime: Any,
+    context: Any,
     adapter: ResourceRankGiftAdapter,
     *,
     activity_id: int,
     now: datetime,
 ):
-    scene, _score, _frame = runtime.current_scene([605], update=True)
+    scene, _score, _frame = context.current_scene([605], update=True)
     if scene == 605:
         return
     scene = yield from open_resource_rank_activity_page(
-        runtime,
+        context,
         adapter,
         activity_id=activity_id,
         now=now,
     )
     gift_shape_scene_id = int(adapter.gift_shape_scene_id or scene)
-    runtime.click_shape_center(gift_shape_scene_id, "礼包")
+    context.click_shape_center(gift_shape_scene_id, "礼包")
     # #605 is the first real shared ActivityRankGiftView asset.  Additional
     # activities reuse this scene only after their own positive/negative replay.
-    yield from runtime.wait_view(
+    yield from context.wait_scene(
         605,
-        timeout=20.0,
+        wait=20.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}礼包页",
     )
     return True
 
 
 def _reenter_adapter_gift_page(
-    runtime: Any,
+    context: Any,
     adapter: ResourceRankGiftAdapter,
     *,
     activity_id: int,
@@ -522,17 +522,17 @@ def _reenter_adapter_gift_page(
 ):
     """Refresh #605 so claimed rows move behind still-claimable free rows."""
 
-    runtime.click_shape_center(605, "返回")
+    context.click_shape_center(605, "返回")
     targets = [66, *adapter.page_scene_ids]
     if adapter.intro_scene_id is not None:
         targets.append(adapter.intro_scene_id)
-    yield from runtime.wait_scene(
+    yield from context.wait_scene(
         *targets,
-        timeout=20.0,
+        wait=20.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：退出礼包页以刷新排序",
     )
     yield from _open_adapter_gift_page(
-        runtime,
+        context,
         adapter,
         activity_id=activity_id,
         now=now,
@@ -541,7 +541,7 @@ def _reenter_adapter_gift_page(
 
 
 def run_resource_rank_daily_gift_flow(
-    runtime: Any,
+    context: Any,
     *,
     now: datetime | None = None,
     manage_schedule: bool = False,
@@ -582,7 +582,7 @@ def run_resource_rank_daily_gift_flow(
     )
     if not active:
         if manage_schedule:
-            runtime.set_next_time(next_time)
+            context.set_next_time(next_time)
         return {
             "result": "success",
             "current_scene": 34,
@@ -610,7 +610,7 @@ def run_resource_rank_daily_gift_flow(
         # visual interaction; the calendar entry can already be absent after
         # the activity was completed earlier today.
         if manage_schedule:
-            runtime.set_next_time(next_time)
+            context.set_next_time(next_time)
         return {
             "result": "success",
             "current_scene": None,
@@ -624,7 +624,7 @@ def run_resource_rank_daily_gift_flow(
         }
 
     yield from _open_adapter_gift_page(
-        runtime,
+        context,
         adapter,
         activity_id=activity_id,
         now=current,
@@ -643,8 +643,8 @@ def run_resource_rank_daily_gift_flow(
             # clicked again after every free configuration is exhausted.
             boundary = "runtime_all_free_claimed"
             break
-        frame = runtime.cur_frame(update=True)
-        lines = runtime.ocr_fragments_in_shapes(
+        frame = context.cur_frame(update=True)
+        lines = context.ocr_fragments_in_shapes(
             605, ["礼包列表窗口"], frame_data_url=frame
         )
         actions = project_resource_rank_gift_list_actions(lines)
@@ -655,25 +655,25 @@ def run_resource_rank_daily_gift_flow(
         if free_action is not None:
             empty_action_count = 0
             before = runtime_snapshot
-            runtime.runner._raise_if_stopped(runtime.stop_event)
-            runtime.runner._click_frame_point(
-                runtime.ctx,
-                runtime.view(605).raw,
+            context.runner._raise_if_stopped(context.stop_event)
+            context.runner._click_frame_point(
+                context.ctx,
+                context.view(605).raw,
                 free_action.x,
                 free_action.y,
             )
-            runtime.clear_frame()
-            yield from runtime.wait_action_settle(1.0)
-            landed = yield from runtime.wait_scene(
+            context.clear_frame()
+            yield from context.wait_action_settle(1.0)
+            landed = yield from context.wait_scene(
                 605,
                 578,
-                timeout=10.0,
+                wait=10.0,
                 label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待领取反馈",
             )
             if int(getattr(landed, "id", landed)) == 578:
-                yield from runtime.wait_scene(
+                yield from context.wait_scene(
                     605,
-                    timeout=12.0,
+                    wait=12.0,
                     label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待奖励提示消失",
                 )
             after = read_activity_gift_runtime_snapshot([activity_id])
@@ -695,7 +695,7 @@ def run_resource_rank_daily_gift_flow(
                     f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：刷新礼包页 20 次仍未见付费边界"
                 )
             yield from _reenter_adapter_gift_page(
-                runtime,
+                context,
                 adapter,
                 activity_id=activity_id,
                 now=current,
@@ -708,7 +708,7 @@ def run_resource_rank_daily_gift_flow(
                 f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：连续两次未识别到顶部免费或付费动作，拒绝假完成"
             )
         yield from _reenter_adapter_gift_page(
-            runtime,
+            context,
             adapter,
             activity_id=activity_id,
             now=current,
@@ -720,9 +720,9 @@ def run_resource_rank_daily_gift_flow(
         )
 
     if manage_schedule:
-        runtime.set_next_time(next_time)
+        context.set_next_time(next_time)
     try:
-        result = runtime.go_scene(34)
+        result = context.go_scene(34)
         if hasattr(result, "send"):
             yield from result
     except (InterruptedError, GeneratorExit):
@@ -767,7 +767,7 @@ class ResourceRankDailyGiftTaskMixin:
         stop_event: Any,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,

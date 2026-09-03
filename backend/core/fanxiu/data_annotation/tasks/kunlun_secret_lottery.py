@@ -140,7 +140,7 @@ def _read_coherent_state() -> dict[str, Any]:
 
 
 def ensure_kunlun_draw_mode(
-    runtime: Any,
+    context: Any,
     *,
     ten_draw: bool,
     timeout_seconds: float = 8.0,
@@ -166,8 +166,8 @@ def ensure_kunlun_draw_mode(
     if bool(before["ten_draw_enabled"]) == bool(ten_draw):
         return {"result": "already_set", "ten_draw_enabled": bool(ten_draw)}
 
-    frame = runtime.cur_frame(update=True)
-    runtime.click_shape(
+    frame = context.cur_frame(update=True)
+    context.click_shape(
         KUNLUN_MAIN_SCENE_ID,
         KUNLUN_TEN_DRAW_TOGGLE_SHAPE,
         frame_data_url=frame,
@@ -211,8 +211,8 @@ def _record_snapshot(snapshot: dict[str, Any], *, instance_id: str) -> None:
         )
 
 
-def _open_main(runtime: Any) -> Any:
-    return open_kunlun_tab(runtime, "昆仑秘藏")
+def _open_main(context: Any) -> Any:
+    return open_kunlun_tab(context, "昆仑秘藏")
 
 
 def _record_for_spec(snapshot: dict[str, Any], instance_id: str) -> None:
@@ -230,7 +230,7 @@ def _spec() -> BothdrawLotterySpec:
         draw_result_close_shape="继续",
         main_page_name="昆仑秘藏",
         open_main_page=_open_main,
-        read_page=lambda runtime: read_kunlun_page(runtime, update=True),
+        read_page=lambda context: read_kunlun_page(context, update=True),
         read_lottery=read_bothdraw_lottery_runtime,
         read_cumulative_rewards=read_bothdraw_cumulative_rewards_runtime,
         resolve_instance_id=kunlun_week_instance_id,
@@ -239,14 +239,14 @@ def _spec() -> BothdrawLotterySpec:
 
 
 def draw_kunlun_once(
-    runtime: Any,
+    context: Any,
     *,
     timeout_seconds: float = 45.0,
     poll_seconds: float = 0.5,
     requested_batch_size: int | None = None,
 ) -> dict[str, Any]:
     return draw_bothdraw_once(
-        runtime,
+        context,
         _spec(),
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
@@ -255,14 +255,14 @@ def draw_kunlun_once(
 
 
 def claim_kunlun_cumulative_rewards(
-    runtime: Any,
+    context: Any,
     *,
     timeout_seconds: float = 15.0,
     poll_seconds: float = 0.5,
     max_clicks: int = 16,
 ) -> dict[str, Any]:
     return claim_bothdraw_cumulative_rewards(
-        runtime,
+        context,
         _spec(),
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
@@ -271,13 +271,13 @@ def claim_kunlun_cumulative_rewards(
 
 
 def close_kunlun_draw_result(
-    runtime: Any,
+    context: Any,
     *,
     timeout_seconds: float = 30.0,
     poll_seconds: float = 0.25,
 ) -> dict[str, Any]:
     return close_bothdraw_result(
-        runtime,
+        context,
         _spec(),
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
@@ -285,14 +285,14 @@ def close_kunlun_draw_result(
 
 
 def complete_kunlun_lottery(
-    runtime: Any,
+    context: Any,
     *,
     max_rounds: int = 256,
     allow_single_draws: bool = True,
 ) -> dict[str, Any]:
     spec = _spec()
     spec.require_executable_assets()
-    spec.open_main_page(runtime)
+    spec.open_main_page(context)
     rounds: list[dict[str, Any]] = []
     for round_index in range(max(1, int(max_rounds))):
         state = _read_coherent_state()
@@ -301,7 +301,7 @@ def complete_kunlun_lottery(
             allow_single_draws=allow_single_draws,
         )
         if decision.action == "claim_rewards":
-            claim = claim_kunlun_cumulative_rewards(runtime)
+            claim = claim_kunlun_cumulative_rewards(context)
             rounds.append({"round": round_index + 1, "action": "claim_rewards", "claim": claim})
             continue
         if decision.action.startswith("stop_"):
@@ -314,15 +314,15 @@ def complete_kunlun_lottery(
             }
 
         expected = int(decision.expected_batch_size)
-        mode = ensure_kunlun_draw_mode(runtime, ten_draw=expected == 10)
-        draw = draw_kunlun_once(runtime, requested_batch_size=expected)
+        mode = ensure_kunlun_draw_mode(context, ten_draw=expected == 10)
+        draw = draw_kunlun_once(context, requested_batch_size=expected)
         if int(draw.get("dx") or 0) != expected:
             raise RuntimeError(
                 f"昆仑鉴宝实际批次与已复验开关不一致：expected={expected}, "
                 f"actual={int(draw.get('dx') or 0)}"
             )
-        close = close_kunlun_draw_result(runtime)
-        claim = claim_kunlun_cumulative_rewards(runtime)
+        close = close_kunlun_draw_result(context)
+        claim = claim_kunlun_cumulative_rewards(context)
         rounds.append(
             {
                 "round": round_index + 1,

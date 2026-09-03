@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
@@ -66,7 +66,7 @@ def test_store_increment_requires_one_offer_and_exact_wallet_delta() -> None:
 
 
 def test_holy_wood_prayer_is_one_manual_standard_job() -> None:
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(HOLY_WOOD_TASK_TYPE)
     assert definition is not None
     assert definition.standard_job is True
@@ -86,7 +86,7 @@ def test_holy_wood_public_job_first_normalizes_to_world() -> None:
 
     class Runner:
         @staticmethod
-        def _fanxiu_runtime(*_args, **_kwargs):
+        def _behavior_tree_context(*_args, **_kwargs):
             return Runtime()
 
     generator = execute_holy_wood_prayer_task(

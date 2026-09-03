@@ -47,9 +47,9 @@ def _apply_kernel_iopub_status(state: dict[str, Any], message: dict[str, Any]) -
 
 
 def fanxiu_jupyter_connection_path() -> Path:
-    from backend.core.fanxiu.behavior_tree.runtime import fanxiu_behavior_tree_runtime_dir
+    from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_kernel_scheduler_dir
 
-    return fanxiu_behavior_tree_runtime_dir() / "jupyter-kernel.json"
+    return fanxiu_kernel_scheduler_dir() / "jupyter-kernel.json"
 
 
 def fanxiu_kernel_child_env() -> dict[str, str]:
@@ -86,8 +86,8 @@ class FanxiuJupyterBinding:
         self.execution_lock = getattr(runner, "_cell_execution_lock", threading.RLock())
         self._cell_lock_acquired = False
         self.stop_event = threading.Event()
-        self.runtime_ctx: dict[str, Any] = {}
-        self.runtime: Any = None
+        self.execution_ctx: dict[str, Any] = {}
+        self.context: Any = None
         self.ctx: Any = None
         self._asset_signature: tuple[int, int] | None = None
         self._asset_revision = ""
@@ -157,11 +157,11 @@ class FanxiuJupyterBinding:
         stop_event: threading.Event | None = None,
         force_assets: bool = False,
     ) -> bool:
-        from backend.core.fanxiu.data_annotation.debug_eval import BehaviorTreeRuntimeDebugContext
+        from backend.core.fanxiu.data_annotation.debug_eval import BehaviorTreeDebugContext
 
         reloaded = self._load_assets_if_needed(force=force_assets)
-        self.runtime_ctx.clear()
-        self.runtime_ctx.update({
+        self.execution_ctx.clear()
+        self.execution_ctx.update({
             "entry": self.entry,
             "entry_id": self.entry_id,
             "asset_tree": self._cached_tree,
@@ -171,20 +171,20 @@ class FanxiuJupyterBinding:
             "images": self._cached_images,
         })
         self.stop_event = stop_event or threading.Event()
-        self.runtime = self.runner._fanxiu_runtime(
-            self.runtime_ctx,
+        self.context = self.runner._behavior_tree_context(
+            self.execution_ctx,
             self.asset_tree_path,
             stop_event=self.stop_event,
         )
         if self.ctx is None:
-            self.ctx = BehaviorTreeRuntimeDebugContext(
+            self.ctx = BehaviorTreeDebugContext(
                 self.runner,
-                self.runtime_ctx,
+                self.execution_ctx,
                 self.stop_event,
                 readonly=False,
             )
         else:
-            self.ctx.rebind(self.runtime_ctx, self.stop_event, readonly=False)
+            self.ctx.rebind(self.execution_ctx, self.stop_event, readonly=False)
         return reloaded
 
     def _sync_shell_namespace(self) -> None:
@@ -288,14 +288,14 @@ class FanxiuJupyterBinding:
         from backend.core.fanxiu.choice_knowledge.catalog import (
             choice_knowledge_catalog,
         )
-        from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
-            set_data_annotation_scheduler_task_trigger_time,
+        from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
+            set_kernel_scheduler_task_trigger_time,
         )
 
         return {
             "fanxiu": self,
             "runner": self.runner,
-            "runtime": self.runtime,
+            "context": self.context,
             "ctx": self.ctx,
             "choice_bank": choice_knowledge_catalog,
             "run": self.run,
@@ -304,8 +304,8 @@ class FanxiuJupyterBinding:
             "refresh_assets": self.refresh_assets,
             "refresh": self.refresh,
             "sleep": self.sleep,
-            "set_trigger_time": set_data_annotation_scheduler_task_trigger_time,
-            "设置触发时间": set_data_annotation_scheduler_task_trigger_time,
+            "set_trigger_time": set_kernel_scheduler_task_trigger_time,
+            "设置触发时间": set_kernel_scheduler_task_trigger_time,
         }
 
     @staticmethod
@@ -325,21 +325,21 @@ class FanxiuJupyterBinding:
         *,
         label: str = "Jupyter cell",
         tick_seconds: float = 0.2,
-        max_runtime_seconds: float = 21600.0,
+        max_execution_seconds: float = 21600.0,
         guard_override: bool | None = None,
     ) -> Any:
         if callable(value) and not isinstance(value, GeneratorType):
             value = value()
         if not isinstance(value, GeneratorType):
             return value
-        return self.runner._run_runtime_behavior_tree(
-            runtime_ctx=self.runtime_ctx,
+        return self.runner._run_behavior_tree(
+            execution_ctx=self.execution_ctx,
             asset_tree_path=self.asset_tree_path,
             stop_event=self.stop_event,
             action=lambda: value,
             label=label,
             tick_seconds=tick_seconds,
-            max_runtime_seconds=max_runtime_seconds,
+            max_execution_seconds=max_execution_seconds,
             guard_override=guard_override,
         )
 
@@ -380,7 +380,7 @@ class FanxiuJupyterBinding:
     def run_task(self, task_type: str, payload: dict[str, Any] | None = None) -> Any:
         from backend.core.fanxiu.data_annotation.effective_time import job_effective_time
         from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
-        from backend.core.fanxiu.data_annotation.task_context import runtime_task_payload
+        from backend.core.fanxiu.data_annotation.task_context import execution_task_payload
 
         definition = get_fanxiu_data_annotation_task_cell_definition(str(task_type or ""))
         if definition is None:
@@ -429,13 +429,17 @@ class FanxiuJupyterBinding:
                         terminal["scheduler_incident"] = admission_result["scheduler_incident"]
                     return terminal
                 # Bind the ordinary Scheduler Cell payload to the shared
-                # Runtime context for the complete handler/generator lifetime.
+                # behavior-tree execution context for the complete handler/generator lifetime.
                 # Business completion points can therefore identify their
                 # exact Scheduler Job without globals or label-based fallback.
-                with runtime_task_payload(self.runtime_ctx, normalized):
+                with execution_task_payload(
+                    self.execution_ctx,
+                    normalized,
+                    require_scheduling_decision=True,
+                ):
                     value = definition.handler(
                         self.runner,
-                        self.runtime_ctx,
+                        self.execution_ctx,
                         normalized,
                         self.stop_event,
                     )
@@ -448,7 +452,7 @@ class FanxiuJupyterBinding:
                 # the handler persisted (``now`` means immediately due again).
                 # A trigger/execution failure must raise and is handled by the
                 # exception path below.
-                _result_name, message = self.runner._normalize_runtime_task_result(value)
+                _result_name, message = self.runner._normalize_task_result(value)
                 terminal = {"result": "success", "message": message}
                 if isinstance(value, dict) and isinstance(value.get("scheduler_incident"), dict):
                     terminal["scheduler_incident"] = value["scheduler_incident"]
@@ -471,7 +475,7 @@ class FanxiuJupyterBinding:
 
                 if isinstance(exc, FanxiuMaintenanceDetected):
                     # The first ordinary Job that discovers maintenance opens
-                    # the persistent gate inside the Runtime.  Convert that
+                    # the persistent gate inside the behavior-tree executor. Convert that
                     # expected availability outcome into a normal Scheduler
                     # terminal after moving this Job to the next maintenance
                     # wake; otherwise the technical error retry loops on the
@@ -497,8 +501,8 @@ class FanxiuJupyterBinding:
                 value,
                 label=definition.label,
                 tick_seconds=max(0.1, float(normalized.get("__tick_seconds") or 1.0)),
-                max_runtime_seconds=self.runner._task_timeout_seconds(normalized),
-                guard_override=self.runner._runtime_guard_override_from_payload(normalized),
+                max_execution_seconds=self.runner._task_timeout_seconds(normalized),
+                guard_override=self.runner._guard_override_from_payload(normalized),
             )
 
     def run_task_cell(self, task_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -575,7 +579,7 @@ class FanxiuJupyterBinding:
             self.runner._persist_status()
             raise
         else:
-            result_name, message = self.runner._normalize_runtime_task_result(result)
+            result_name, message = self.runner._normalize_task_result(result)
             with self.runner._lock:
                 existing_message = str(self.runner._status.get("message") or "")
             business_message = (
@@ -588,7 +592,7 @@ class FanxiuJupyterBinding:
             if isinstance(result, dict) and isinstance(result.get("scheduler_incident"), dict):
                 terminal["scheduler_incident"] = result["scheduler_incident"]
             # Many production handlers persist their precise business outcome
-            # through the Runtime status and return the framework-level string
+            # through the executor status and return the framework-level string
             # ``success``.  Preserve that already-established message in the
             # Cell terminal payload so Scheduler history can distinguish the
             # business terminal from a generic execution success.
@@ -624,11 +628,11 @@ class FanxiuJupyterBinding:
 def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
     """Load the Fanxiu framework into the current, real IPython kernel."""
     install_child_process_no_window_default()
-    from backend.core.fanxiu.behavior_tree.runtime import (
+    from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
         data_annotation_asset_tree_path,
-        get_behavior_tree_runtime_runner,
+        get_behavior_tree_executor,
         resolve_fanxiu_entry,
-        ensure_behavior_tree_runtime_jobs_registered,
+        ensure_behavior_tree_jobs_registered,
     )
 
     shell = get_ipython()  # type: ignore[name-defined]
@@ -637,8 +641,8 @@ def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
     resolved_entry_id = str(entry_id)
     entry = resolve_fanxiu_entry(resolved_entry_id)
     asset_tree_path = data_annotation_asset_tree_path(resolved_entry_id)
-    runner = get_behavior_tree_runtime_runner()
-    ensure_behavior_tree_runtime_jobs_registered()
+    runner = get_behavior_tree_executor()
+    ensure_behavior_tree_jobs_registered()
     from sqlmodel import Session
 
     from backend.core.fanxiu.choice_knowledge.catalog import (
@@ -656,7 +660,7 @@ def bootstrap_fanxiu_jupyter_kernel(entry_id: str) -> dict[str, Any]:
     shell.events.register("post_run_cell", binding.end_cell)
     return {
         "entry_id": resolved_entry_id,
-        "runtime_loaded": binding.runtime is not None,
+        "context_loaded": binding.context is not None,
         "ctx_loaded": binding.ctx is not None,
         "choice_knowledge_loaded": choice_count,
     }
@@ -740,7 +744,7 @@ def run_fanxiu_jupyter_kernel_service(*, entry_id: str, tick_seconds: float = 1.
     del tick_seconds  # Scheduling is external; the kernel has no resident polling loop.
     install_child_process_no_window_default()
     from jupyter_client import KernelManager
-    from backend.core.fanxiu.runtime.code_signature import (
+    from backend.core.fanxiu.behavior_tree.code_signature import (
         fanxiu_behavior_tree_code_signature,
     )
 

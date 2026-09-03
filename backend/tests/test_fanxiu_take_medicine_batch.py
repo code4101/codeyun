@@ -38,7 +38,7 @@ class _Runtime:
     def current_scene(self, _scene_ids, update=False):
         return self.scene, 95.0, "frame"
 
-    def click_shape_center_then_view(self, scene_id, shape, *_targets, **_kwargs):
+    def click_shape_center_then_scene(self, scene_id, shape, *_targets, **_kwargs):
         self.clicks.append((scene_id, shape))
         self.scene = 593
         return _done(type("View", (), {"id": self.scene})())
@@ -50,7 +50,7 @@ class _Runtime:
         elif (scene_id, shape) == (594, "确认"):
             self.scene = self.landing_after_confirm
 
-    def wait_view(self, *scene_ids, **_kwargs):
+    def wait_scene(self, *scene_ids, **_kwargs):
         assert self.scene in scene_ids
         return _done(type("View", (), {"id": self.scene})())
 
@@ -77,7 +77,7 @@ class _Runner(TakeMedicineBatchTaskMixin):
         self.stopped_checks = 0
         self.raise_stopped = False
 
-    def _fanxiu_runtime(self, *_args, **_kwargs):
+    def _behavior_tree_context(self, *_args, **_kwargs):
         return self.runtime
 
     def _persist_scheduler_task_next_time(self, task_id, next_time):

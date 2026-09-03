@@ -11,9 +11,9 @@ from backend.core.fanxiu.data_annotation.tasks.kunlun_secret_navigation import (
 )
 
 
-def complete_kunlun_store(runtime: Any) -> ActivityStoreOperationResult:
+def complete_kunlun_store(context: Any) -> ActivityStoreOperationResult:
     return operate_activity_store_region(
-        runtime,
+        context,
         scene_id=KUNLUN_STORE_SCENE_ID,
         region_title="区域",
         select_targets=lambda scan: tuple(

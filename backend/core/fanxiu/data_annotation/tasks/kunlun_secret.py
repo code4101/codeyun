@@ -118,7 +118,7 @@ def decide_kunlun_first_row(
 
 
 def complete_kunlun_optional_reward_selection(
-    runtime: Any, decision: KunlunFirstRowDecision
+    context: Any, decision: KunlunFirstRowDecision
 ) -> XianzangSelectionCompletionResult:
     """Reuse the identical three-row geometry after a validated first-row decision."""
 
@@ -126,7 +126,7 @@ def complete_kunlun_optional_reward_selection(
         raise KunlunFirstRowUndecided("拒绝用未验证的第一排决策打开或确认自选")
 
     return complete_xianzang_optional_reward_selection(
-        runtime,
+        context,
         int(decision.column),
         scene_id=KUNLUN_OPTIONAL_REWARD_SCENE_ID,
         expected_after_scene_ids=(KUNLUN_MAIN_SCENE_ID,),

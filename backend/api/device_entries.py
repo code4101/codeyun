@@ -133,7 +133,7 @@ from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.access.feature_access_guard import ensure_any_feature_access, ensure_feature_access
 from backend.core.runtime.management import (
     add_builtin_runtime_job,
-    build_runtime_status,
+    build_execution_status,
     configure_builtin_runtime_job_schedule,
     delete_builtin_runtime_job,
     delete_builtin_runtime_queue_task,
@@ -1518,14 +1518,14 @@ def associate_process_for_entry(
 
 
 @router.get("/{entry_id}/runtime/status")
-def get_runtime_status_for_entry(
+def get_execution_status_for_entry(
     entry_id: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if _is_local_runtime_entry(entry):
-        return build_runtime_status(session, entry.device_id)
+        return build_execution_status(session, entry.device_id)
     return _proxy_request(entry, "GET", "/runtime/status")
 
 
@@ -4146,7 +4146,11 @@ def delete_file_for_entry(
             req.path,
             absolute_path=req.absolute_path,
             recursive=req.recursive,
-    )
+            metadata={
+                "entry_id": entry.entry_id,
+                "device_id": entry.device_id,
+            },
+        )
     return _proxy_request(entry, "POST", "/fs/delete", json_body=_filesystem_payload(req), timeout=15 * 60)
 
 

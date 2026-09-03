@@ -36,18 +36,18 @@ def _view_id(view: Any) -> int:
 
 
 def _return_home(
-    runtime: Any,
+    context: Any,
     current_scene_id: int,
     *,
     assets: GameplayRankTaskAssets,
     label: str,
 ) -> Generator[Any, None, None]:
-    runtime.click_shape_center(current_scene_id, assets.home_shape)
-    yield from runtime.wait_action_settle(0.8)
+    context.click_shape_center(current_scene_id, assets.home_shape)
+    yield from context.wait_action_settle(0.8)
 
 
 def claim_gameplay_rank_task_tabs(
-    runtime: Any,
+    context: Any,
     *,
     assets: GameplayRankTaskAssets,
     reader: TaskRewardReader,
@@ -60,7 +60,7 @@ def claim_gameplay_rank_task_tabs(
         raise RuntimeError(f"{assets.activity_label}没有配置任务奖励页签")
 
     target_scenes = list(dict.fromkeys(int(tab.scene_id) for tab in tabs))
-    current_view = yield from runtime.wait_click_then_view(
+    current_view = yield from context.wait_click_then_scene(
         int(assets.home_scene_id),
         assets.task_entry_shape,
         target_scenes,
@@ -79,7 +79,7 @@ def claim_gameplay_rank_task_tabs(
         or not current_snapshot.get("complete")
     ):
         yield from _return_home(
-            runtime,
+            context,
             current_scene_id,
             assets=assets,
             label=f"{assets.activity_label}：任务事实不完整，返回活动主页",
@@ -101,7 +101,7 @@ def claim_gameplay_rank_task_tabs(
     ]
     if unknown:
         yield from _return_home(
-            runtime,
+            context,
             current_scene_id,
             assets=assets,
             label=f"{assets.activity_label}：任务类型未知，返回活动主页",
@@ -112,7 +112,7 @@ def claim_gameplay_rank_task_tabs(
 
     if not authorized:
         yield from _return_home(
-            runtime,
+            context,
             current_scene_id,
             assets=assets,
             label=f"{assets.activity_label}：任务奖励已幂等完成，返回活动主页",
@@ -131,7 +131,7 @@ def claim_gameplay_rank_task_tabs(
     for tab in tabs:
         target_scene_id = int(tab.scene_id)
         if current_scene_id != target_scene_id:
-            current_view = yield from runtime.wait_click_then_view(
+            current_view = yield from context.wait_click_then_scene(
                 current_scene_id,
                 tab.tab_shape,
                 [target_scene_id],
@@ -155,8 +155,8 @@ def claim_gameplay_rank_task_tabs(
             if not remaining_in_tab:
                 break
             expected = remaining_in_tab[0]
-            runtime.click_shape_center(current_scene_id, assets.first_row_claim_shape)
-            yield from runtime.wait_action_settle(settle_seconds)
+            context.click_shape_center(current_scene_id, assets.first_row_claim_shape)
+            yield from context.wait_action_settle(settle_seconds)
             after = reader(expected_claimed_task_id=expected)
             after_claimed = {int(value) for value in after.get("claimed_task_ids") or []}
             remaining_after = [
@@ -179,7 +179,7 @@ def claim_gameplay_rank_task_tabs(
             current_snapshot = dict(after)
 
     yield from _return_home(
-        runtime,
+        context,
         current_scene_id,
         assets=assets,
         label=f"{assets.activity_label}：任务领取后返回活动主页",

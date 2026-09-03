@@ -29,7 +29,7 @@ from backend.core.notes.sheet_inline_links import (
 DEFAULT_COURSES_DIR = Path(
     os.environ.get(
         "CODEYUN_KQ5034_COURSES_DIR",
-        r"D:\home\chenkunze\slns\kq5034\courses",
+        r"C:\home\chenkunze\slns\kq5034\courses",
     )
 )
 ONLINE_SHEET_FIELD = "在线考勤表"

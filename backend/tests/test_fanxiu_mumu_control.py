@@ -6,10 +6,24 @@ import threading
 import pytest
 
 import backend.core.fanxiu.game.window_actions as window_actions
-import backend.core.fanxiu.runtime.mumu_control as mumu
+import backend.core.fanxiu.client.mumu_control as mumu
 
 _REAL_SCHEDULE_LOGIN_AFTER_RESTART = mumu._schedule_login_job_after_mumu_restart
 _REAL_ENSURE_MUMU_ADB_ROOT = mumu.ensure_mumu_adb_root
+
+
+def _registered_prepared_probe(
+    serial: str = "192.168.31.181:5555",
+    adb_size: str = "Physical size: 900x1600",
+) -> dict[str, object]:
+    token, verified_at = mumu._issue_mumu_adb_prepared_probe(serial, adb_size)
+    return {
+        "input": "adb-cli",
+        "adb_serial": serial,
+        "adb_size": adb_size,
+        "adb_prepared_probe_token": token,
+        "adb_verified_at_monotonic": verified_at,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -41,18 +55,22 @@ def _patch_mumu_device_health_logs(monkeypatch, tmp_path):
     with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
         mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
         mumu._MUMU_MANAGER_VM_INDEX_CACHE.clear()
+    with mumu._MUMU_ADB_PREPARED_PROBE_LOCK:
+        mumu._MUMU_ADB_PREPARED_PROBES.clear()
     yield
     with mumu._MUMU_MANAGER_ADB_SERIAL_CACHE_LOCK:
         mumu._MUMU_MANAGER_ADB_SERIAL_CACHE.clear()
         mumu._MUMU_MANAGER_VM_INDEX_CACHE.clear()
+    with mumu._MUMU_ADB_PREPARED_PROBE_LOCK:
+        mumu._MUMU_ADB_PREPARED_PROBES.clear()
 
 
 def test_successful_mumu_restart_only_makes_login_job_due(monkeypatch):
-    from backend.core.fanxiu.data_annotation import behavior_tree_control
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 
     calls = []
     monkeypatch.setattr(
-        behavior_tree_control,
+        kernel_scheduler_control,
         "schedule_login_job_first",
         lambda **kwargs: calls.append(kwargs) or "2026-08-03 12:30:00",
     )
@@ -418,6 +436,274 @@ def test_run_mumu_adb_input_connects_tcp_serial_before_shell(monkeypatch):
     assert result["adb_serial"] == "192.168.31.181:5555"
 
 
+def test_parse_adb_wm_size_prefers_active_override_resolution():
+    assert mumu._parse_adb_wm_size(
+        "Physical size: 900x1600\nOverride size: 1080x1920"
+    ) == (1080, 1920)
+
+
+def test_run_mumu_adb_input_reuses_fresh_probe_without_rechecking_transport(monkeypatch):
+    commands = []
+    events = []
+    serial = "192.168.31.181:5555"
+    probe = _registered_prepared_probe(serial)
+
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: [serial])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(
+        mumu,
+        "_ensure_mumu_adb_port_available",
+        lambda: pytest.fail("fresh probe must skip the duplicate socket check"),
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_append_mumu_device_health_event",
+        lambda event, payload: events.append((event, payload)),
+    )
+    monkeypatch.setattr(
+        mumu,
+        "run_quiet",
+        lambda command, **_kwargs: commands.append(command)
+        or SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    result = mumu._run_mumu_adb_input("input tap 1 2", prepared_probe=probe)
+
+    assert commands == [["D:\\adb.exe", "-s", serial, "shell", "input tap 1 2"]]
+    assert result["adb_size"] == "Physical size: 900x1600"
+    timing = events[0][1]
+    assert timing["attempts"][0]["prepared_probe_reuse"] is True
+    assert set(timing["attempts"][0]["stages_seconds"]) == {"input"}
+    assert "ensure" not in timing["stages_seconds"]
+
+
+def test_run_mumu_adb_input_expired_probe_falls_back_to_full_verification(monkeypatch):
+    commands = []
+    serial = "192.168.31.181:5555"
+    probe = _registered_prepared_probe(serial)
+    expired_at = (
+        mumu.time.monotonic()
+        - mumu._MUMU_ADB_PREPARED_PROBE_TTL_SECONDS
+        - 1
+    )
+    token = str(probe["adb_prepared_probe_token"])
+    with mumu._MUMU_ADB_PREPARED_PROBE_LOCK:
+        mumu._MUMU_ADB_PREPARED_PROBES[token] = (
+            serial,
+            str(probe["adb_size"]),
+            expired_at,
+        )
+
+    monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: [serial])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[-2:] == ["wm", "size"]:
+            return SimpleNamespace(returncode=0, stdout="Physical size: 900x1600", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    mumu._run_mumu_adb_input("input tap 1 2", prepared_probe=probe)
+
+    assert [command[1] for command in commands] == ["connect", "-s", "-s"]
+
+
+def test_run_mumu_adb_input_failed_probe_reuse_reconnects_and_rechecks_size(monkeypatch):
+    commands = []
+    serial = "192.168.31.181:5555"
+    probe = _registered_prepared_probe(serial)
+
+    monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: [serial])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.time, "sleep", lambda _seconds: None)
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[-2:] == ["wm", "size"]:
+            return SimpleNamespace(returncode=0, stdout="Physical size: 900x1600", stderr="")
+        if command[-1] == "input tap 1 2":
+            attempts = sum(item[-1] == "input tap 1 2" for item in commands)
+            return SimpleNamespace(
+                returncode=0 if attempts == 2 else 1,
+                stdout="",
+                stderr="transport reset" if attempts == 1 else "",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    result = mumu._run_mumu_adb_input("input tap 1 2", prepared_probe=probe)
+
+    assert result["adb_serial"] == serial
+    assert [command[1] for command in commands] == ["-s", "disconnect", "connect", "-s", "-s"]
+    assert sum(command[-1] == "input tap 1 2" for command in commands) == 2
+
+
+def test_prepared_probe_token_can_only_be_consumed_once(monkeypatch):
+    serial = "192.168.31.181:5555"
+    probe = _registered_prepared_probe(serial)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: [serial])
+
+    assert mumu._validated_mumu_adb_prepared_probe(probe) is not None
+    assert mumu._validated_mumu_adb_prepared_probe(probe) is None
+
+
+def test_prepared_probe_token_has_only_one_concurrent_consumer(monkeypatch):
+    serial = "192.168.31.181:5555"
+    probe = _registered_prepared_probe(serial)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: [serial])
+    barrier = threading.Barrier(3)
+    results = []
+
+    def consume():
+        barrier.wait()
+        results.append(mumu._validated_mumu_adb_prepared_probe(probe))
+
+    threads = [threading.Thread(target=consume) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(result is not None for result in results) == 1
+
+
+def test_close_mumu_adb_session_invalidates_outstanding_probe(monkeypatch):
+    serial = "192.168.31.181:5555"
+    probe = _registered_prepared_probe(serial)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: [serial])
+
+    mumu._close_mumu_adb_session()
+
+    assert mumu._validated_mumu_adb_prepared_probe(probe) is None
+
+
+def test_tap_mumu_adb_passes_its_probe_as_immediate_verification(monkeypatch):
+    calls = []
+    probe = {
+        "input": "adb-cli",
+        "adb_serial": "192.168.31.181:5555",
+        "adb_size": "Physical size: 900x1600",
+        "adb_verified_at_monotonic": mumu.time.monotonic(),
+    }
+
+    def fake_input(command, **kwargs):
+        calls.append((command, kwargs))
+        return probe if command == "echo ok" else {"input": "adb-cli"}
+
+    monkeypatch.setattr(mumu, "_run_mumu_adb_input", fake_input)
+
+    mumu._tap_mumu_adb(10, 20, frame_width=900, frame_height=1600)
+
+    assert calls == [
+        ("echo ok", {}),
+        ("input tap 10 20", {"prepared_probe": probe}),
+    ]
+
+
+def test_run_mumu_adb_input_logs_retry_stage_timings_without_changing_commands(monkeypatch):
+    commands = []
+    events = []
+
+    monkeypatch.setattr(mumu, "_ensure_mumu_adb_port_available", lambda: None)
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["192.168.31.181:5555"])
+    monkeypatch.setattr(mumu.fanxiu_adb_device_service, "adb_path", lambda: Path("D:/adb.exe"))
+    monkeypatch.setattr(mumu.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        mumu,
+        "_append_mumu_device_health_event",
+        lambda event, payload: events.append((event, payload)),
+    )
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[1] in {"connect", "disconnect"}:
+            return SimpleNamespace(returncode=0, stdout="connected", stderr="")
+        if command[-1] == "wm size":
+            return SimpleNamespace(returncode=0, stdout="Physical size: 900x1600", stderr="")
+        input_attempts = sum(1 for item in commands if item[-1] == "input tap 1 2")
+        return SimpleNamespace(
+            returncode=0 if input_attempts > 1 else 1,
+            stdout="",
+            stderr="temporary failure" if input_attempts == 1 else "",
+        )
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    result = mumu._run_mumu_adb_input("input tap 1 2")
+
+    assert result["adb_serial"] == "192.168.31.181:5555"
+    assert [command[1] for command in commands] == [
+        "connect",
+        "-s",
+        "-s",
+        "disconnect",
+        "connect",
+        "-s",
+        "-s",
+    ]
+    assert len(events) == 1
+    event, timing = events[0]
+    assert event == "adb_input_timing"
+    assert timing["command_kind"] == "input_tap"
+    assert "command" not in timing
+    assert timing["outcome"] == "success"
+    assert timing["stages_seconds"]["ensure"] >= 0
+    assert len(timing["attempts"]) == 2
+    assert timing["attempts"][0]["outcome"] == "failed"
+    assert timing["attempts"][0]["failed_stage"] == "input"
+    assert set(timing["attempts"][0]["stages_seconds"]) == {
+        "connect",
+        "wm_size",
+        "input",
+    }
+    assert timing["attempts"][1]["outcome"] == "success"
+    assert set(timing["attempts"][1]["stages_seconds"]) == {
+        "disconnect",
+        "retry_settle",
+        "connect",
+        "wm_size",
+        "input",
+    }
+
+
+def test_run_mumu_adb_input_logs_ensure_failure_before_adb(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        mumu,
+        "_ensure_mumu_adb_port_available",
+        lambda: (_ for _ in ()).throw(RuntimeError("port unavailable")),
+    )
+    monkeypatch.setattr(
+        mumu,
+        "run_quiet",
+        lambda *_args, **_kwargs: pytest.fail("ensure failure must stop before adb"),
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_append_mumu_device_health_event",
+        lambda event, payload: events.append((event, payload)),
+    )
+
+    with pytest.raises(RuntimeError, match="port unavailable"):
+        mumu._run_mumu_adb_input("input tap 1 2")
+
+    assert len(events) == 1
+    event, timing = events[0]
+    assert event == "adb_input_timing"
+    assert timing["command_kind"] == "input_tap"
+    assert timing["outcome"] == "failed"
+    assert timing["stages_seconds"]["ensure"] >= 0
+    assert timing["attempts"] == []
+    assert "port unavailable" in timing["error"]
+
+
 def test_run_mumu_adb_input_falls_back_to_manager_when_adb_cannot_inject(monkeypatch):
     commands = []
 
@@ -453,6 +739,67 @@ def test_run_mumu_adb_input_falls_back_to_manager_when_adb_cannot_inject(monkeyp
             {"serial": "192.168.31.181:5555", "timeout_s": 7},
         )
     ]
+
+
+def test_text_mumu_adb_uses_manager_unicode_input_for_chinese(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:7555"])
+    monkeypatch.setattr(
+        mumu,
+        "_run_mumu_manager_input",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or {"input": "mumu-manager-sh", "adb_serial": kwargs["serial"], "vmindex": "1"},
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_run_mumu_adb_input",
+        lambda _command: pytest.fail("中文不得走 Android input text"),
+    )
+
+    result = mumu.text_mumu_adb("启学逢秋")
+
+    assert calls == [("input_text 启学逢秋", {"serial": "127.0.0.1:7555", "timeout_s": 5})]
+    assert result["unicode_input"] is True
+    assert result["text_length"] == 4
+
+
+def test_keyevents_mumu_adb_uses_manager_for_unicode_text_clear(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mumu, "_mumu_adb_serial_candidates", lambda: ["127.0.0.1:7555"])
+    monkeypatch.setattr(
+        mumu,
+        "_run_mumu_manager_input",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or {"input": "mumu-manager-sh", "adb_serial": kwargs["serial"], "vmindex": "1"},
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_run_mumu_adb_input",
+        lambda _command: pytest.fail("中文清空不得走批量 Android keyevent"),
+    )
+
+    result = mumu.keyevents_mumu_adb(["KEYCODE_MOVE_END", "KEYCODE_DEL", "KEYCODE_DEL"])
+
+    assert calls == [
+        ("key_delete", {"serial": "127.0.0.1:7555", "timeout_s": 5}),
+        ("key_delete", {"serial": "127.0.0.1:7555", "timeout_s": 5}),
+    ]
+    assert result["unicode_delete"] is True
+    assert result["delete_count"] == 2
+
+
+def test_text_mumu_adb_keeps_ascii_on_android_input(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        mumu,
+        "_run_mumu_adb_input",
+        lambda command: calls.append(command) or {"input": "adb"},
+    )
+
+    result = mumu.text_mumu_adb("ABC 123")
+
+    assert calls == ["input text ABC%s123"]
+    assert result["text_length"] == 7
 
 
 def test_mumu_adb_port_check_recovers_local_port(monkeypatch):
@@ -822,6 +1169,47 @@ def test_mumu_device_health_reports_starting_before_android_started(monkeypatch)
     result = mumu.mumu_device_health_check(force=True)
 
     assert result["status"] == "starting"
+
+
+def test_mumu_manager_launch_breaks_away_from_caller_job(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mumu, "_mumu_manager_path", lambda: Path("MuMuManager.exe"))
+    monkeypatch.setattr(
+        mumu,
+        "background_popen_kwargs",
+        lambda *, independent: {"creationflags": 0x01000000 if independent else 0},
+    )
+    monkeypatch.setattr(
+        mumu.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or SimpleNamespace(returncode=0, stdout="{}", stderr=""),
+    )
+
+    mumu._mumu_manager_control("1", "launch")
+
+    assert calls[0][0] == ["MuMuManager.exe", "control", "--vmindex", "1", "launch"]
+    assert calls[0][1]["creationflags"] & 0x01000000
+
+
+def test_mumu_manager_non_launch_control_stays_in_caller_lifecycle(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mumu, "_mumu_manager_path", lambda: Path("MuMuManager.exe"))
+    monkeypatch.setattr(
+        mumu,
+        "run_quiet",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or SimpleNamespace(returncode=0, stdout="{}", stderr=""),
+    )
+    monkeypatch.setattr(
+        mumu.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("ordinary control must not break away"),
+    )
+
+    mumu._mumu_manager_control("1", "shutdown")
+
+    assert calls[0][0] == ["MuMuManager.exe", "control", "--vmindex", "1", "shutdown"]
 
 
 def test_mumu_manager_discovery_is_cached_across_hot_path_calls(monkeypatch):

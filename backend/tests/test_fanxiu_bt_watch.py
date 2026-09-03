@@ -16,20 +16,20 @@ def _file_fingerprint(path):
     return hashlib.sha256(payload).hexdigest(), path.stat().st_mtime_ns, len(payload)
 
 
-def test_doctor_report_keeps_scheduler_runtime_and_world_state_byte_exact(monkeypatch, tmp_path):
-    from backend.core.fanxiu.data_annotation import behavior_tree_control
+def test_doctor_report_keeps_scheduler_execution_and_world_state_byte_exact(monkeypatch, tmp_path):
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control
 
     scheduler_path = tmp_path / "scheduler_tasks.json"
-    runtime_path = tmp_path / "runtime_state.json"
+    execution_path = tmp_path / "execution_state.json"
     world_facts_path = tmp_path / "world_facts.json"
     scheduler_path.write_text('[{"id":"legacy"}]', encoding="utf-8")
-    runtime_path.write_text('{"status":"success"}', encoding="utf-8")
+    execution_path.write_text('{"status":"success"}', encoding="utf-8")
     world_facts_path.write_text('{"seed":1}', encoding="utf-8")
-    paths = (scheduler_path, runtime_path, world_facts_path)
+    paths = (scheduler_path, execution_path, world_facts_path)
     before = tuple(_file_fingerprint(path) for path in paths)
 
     monkeypatch.setattr(
-        behavior_tree_control,
+        kernel_scheduler_control,
         "consolidate_arena_scheduler_instances",
         lambda raw: (raw, True),
     )
@@ -38,32 +38,32 @@ def test_doctor_report_keeps_scheduler_runtime_and_world_state_byte_exact(monkey
         facts["derived"] = True
         return raw, True
 
-    monkeypatch.setattr(behavior_tree_control, "repair_data_annotation_scheduler_tasks", fake_repair)
-    monkeypatch.setattr(behavior_tree_control, "default_data_annotation_scheduler_tasks", lambda: [])
+    monkeypatch.setattr(kernel_scheduler_control, "repair_kernel_scheduler_tasks", fake_repair)
+    monkeypatch.setattr(kernel_scheduler_control, "default_kernel_scheduler_tasks", lambda: [])
     monkeypatch.setattr(
-        behavior_tree_control,
+        kernel_scheduler_control,
         "read_scheduler_settings",
         lambda **_kwargs: {"job_group_enabled": True, "time_sequence": {}},
     )
-    monkeypatch.setattr(behavior_tree_control, "scheduler_tasks_for_dispatch", lambda tasks, **_kwargs: tasks)
-    monkeypatch.setattr(behavior_tree_control, "behavior_tree_runtime_runner_status", lambda: {})
+    monkeypatch.setattr(kernel_scheduler_control, "scheduler_tasks_for_dispatch", lambda tasks, **_kwargs: tasks)
+    monkeypatch.setattr(kernel_scheduler_control, "behavior_tree_executor_status", lambda: {})
     monkeypatch.setattr(
-        behavior_tree_control,
-        "build_data_annotation_scheduler_plan",
+        kernel_scheduler_control,
+        "build_kernel_scheduler_plan",
         lambda *_args, **_kwargs: {"next_action": "idle", "message": "idle"},
     )
     monkeypatch.setattr(fanxiu_bt, "fanxiu_kernel_manager_status", lambda: {"entry_id": "entry"})
     monkeypatch.setattr(
         fanxiu_bt,
-        "fanxiu_behavior_tree_runtime_status",
-        lambda: json.loads(runtime_path.read_text(encoding="utf-8")),
+        "fanxiu_kernel_scheduler_status",
+        lambda: json.loads(execution_path.read_text(encoding="utf-8")),
     )
     monkeypatch.setattr(fanxiu_bt, "resolve_fanxiu_entry", lambda _entry_id: object())
     monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda _entry_id: None)
     monkeypatch.setattr(
         fanxiu_bt,
         "build_scheduler_plan",
-        lambda **_kwargs: behavior_tree_control.build_scheduler_plan(
+        lambda **_kwargs: kernel_scheduler_control.build_scheduler_plan(
             scheduler_state_path=scheduler_path,
             world_facts_path=world_facts_path,
             include_blocking_overlays=False,
@@ -72,7 +72,7 @@ def test_doctor_report_keeps_scheduler_runtime_and_world_state_byte_exact(monkey
     monkeypatch.setattr(
         fanxiu_bt,
         "read_scheduler_tasks",
-        lambda: behavior_tree_control.read_scheduler_tasks(
+        lambda: kernel_scheduler_control.read_scheduler_tasks(
             scheduler_state_path=scheduler_path,
             world_facts_path=world_facts_path,
         ),
@@ -87,7 +87,7 @@ def test_doctor_report_keeps_scheduler_runtime_and_world_state_byte_exact(monkey
 
 
 def test_background_doctor_watch_does_not_capture_screenshots_by_default():
-    from backend.core.fanxiu.data_annotation.behavior_tree_control import ensure_doctor_watch_background
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import ensure_doctor_watch_background
 
     assert inspect.signature(ensure_doctor_watch_background).parameters["include_screenshot"].default is False
 
@@ -107,13 +107,13 @@ def test_ensure_watch_doctor_has_no_second_dispatch_mode(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(
-    ("kernel_state", "runtime_running"),
+    ("kernel_state", "execution_running"),
     [("busy", False), ("idle", True)],
 )
 def test_ensure_watch_doctor_defers_code_replacement_while_dispatch_is_active(
     monkeypatch,
     kernel_state,
-    runtime_running,
+    execution_running,
 ):
     terminated: list[dict] = []
     monkeypatch.setattr(
@@ -122,7 +122,7 @@ def test_ensure_watch_doctor_defers_code_replacement_while_dispatch_is_active(
         lambda: {
             "pid": 123,
             "age_seconds": 1.0,
-            "runtime_consistent": True,
+            "scheduler_consistent": True,
             "code_signature": "old",
         },
     )
@@ -134,8 +134,8 @@ def test_ensure_watch_doctor_defers_code_replacement_while_dispatch_is_active(
     )
     monkeypatch.setattr(
         fanxiu_bt,
-        "fanxiu_behavior_tree_runtime_status",
-        lambda: {"running": runtime_running, "current_task_id": "task", "phase": "scheduler_task"},
+        "fanxiu_kernel_scheduler_status",
+        lambda: {"running": execution_running, "current_task_id": "task", "phase": "scheduler_task"},
     )
     monkeypatch.setattr(
         fanxiu_bt,
@@ -153,7 +153,7 @@ def test_ensure_watch_doctor_defers_code_replacement_while_dispatch_is_active(
     )
 
     assert result["started"] is False
-    assert result["reason"] == "replacement_deferred_active_runtime"
+    assert result["reason"] == "replacement_deferred_active_execution"
     assert terminated == []
 
 
@@ -164,7 +164,7 @@ def test_doctor_report_defers_expensive_blocking_overlay_check_to_real_dispatch(
         "fanxiu_kernel_manager_status",
         lambda: {"alive": True, "execution_state": "idle", "entry_id": "entry"},
     )
-    monkeypatch.setattr(fanxiu_bt, "fanxiu_behavior_tree_runtime_status", lambda: {})
+    monkeypatch.setattr(fanxiu_bt, "fanxiu_kernel_scheduler_status", lambda: {})
     monkeypatch.setattr(fanxiu_bt, "resolve_fanxiu_entry", lambda _entry_id: object())
     monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda _entry_id: None)
     monkeypatch.setattr(
@@ -185,6 +185,50 @@ def test_doctor_report_defers_expensive_blocking_overlay_check_to_real_dispatch(
     assert captured["include_blocking_overlays"] is False
 
 
+def test_doctor_report_reuses_kernel_snapshot_from_execution_status(monkeypatch):
+    direct_kernel_calls = []
+    execution_kernel = {
+        "alive": True,
+        "execution_state": "idle",
+        "entry_id": "entry-from-execution",
+    }
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "fanxiu_kernel_manager_status",
+        lambda: direct_kernel_calls.append(True) or {"entry_id": "duplicate-probe"},
+    )
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "fanxiu_kernel_scheduler_status",
+        lambda: {"kernel": execution_kernel},
+    )
+    resolved_entry_ids = []
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "resolve_fanxiu_entry",
+        lambda entry_id: resolved_entry_ids.append(entry_id) or object(),
+    )
+    monkeypatch.setattr(fanxiu_bt, "data_annotation_asset_tree_path", lambda _entry_id: None)
+    monkeypatch.setattr(
+        fanxiu_bt,
+        "build_scheduler_plan",
+        lambda **_kwargs: {
+            "next_action": "idle",
+            "message": "idle",
+            "job_group_enabled": True,
+        },
+    )
+    monkeypatch.setattr(fanxiu_bt, "read_scheduler_tasks", lambda: [])
+    monkeypatch.setattr(fanxiu_bt, "_doctor_relevant_logs", lambda _limit: [])
+    monkeypatch.setattr(fanxiu_bt, "_build_maintenance_summary", lambda _report: {})
+
+    report = fanxiu_bt._build_doctor_report(log_limit=1, include_screenshot=False)
+
+    assert report["kernel"] == execution_kernel
+    assert resolved_entry_ids == ["entry-from-execution"]
+    assert direct_kernel_calls == []
+
+
 def test_external_patrol_only_requires_engineering_ownership():
     report = _report()
     report["scheduler"]["due_tasks"] = []
@@ -200,7 +244,7 @@ def test_external_patrol_only_requires_engineering_ownership():
     assert fanxiu_bt._watch_should_run_game_state_inspection(report) is False
 
 
-def test_external_patrol_calls_runtime_probe_without_kernel_cell_or_payload(monkeypatch):
+def test_external_patrol_calls_game_runtime_probe_without_kernel_cell_or_payload(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.game_state_inspection.inspect_game_state_once",
@@ -218,10 +262,10 @@ def test_external_patrol_calls_runtime_probe_without_kernel_cell_or_payload(monk
 
 def test_game_state_inspection_is_not_a_kernel_task_cell():
     from backend.core.fanxiu.data_annotation.default_jobs import (
-        _DEFAULT_RUNTIME_JOB_TYPES,
+        _DEFAULT_BEHAVIOR_TREE_JOB_TYPES,
     )
 
-    assert "game_state_inspection" not in _DEFAULT_RUNTIME_JOB_TYPES
+    assert "game_state_inspection" not in _DEFAULT_BEHAVIOR_TREE_JOB_TYPES
 
 
 @pytest.mark.parametrize(
@@ -243,7 +287,7 @@ def test_scheduler_cli_rejects_removed_second_mode_switches(monkeypatch, argv):
 def _report(*task_ids: str) -> dict:
     return {
         "kernel": {"entry_id": "entry", "execution_state": "idle"},
-        "runtime": {"status": "idle"},
+        "execution": {"status": "idle"},
         "maintenance": {"severity": "attention", "automation_safe": True},
         "scheduler": {
             "next_action": "run_due",
@@ -292,7 +336,7 @@ def test_watch_due_batch_does_not_let_failed_first_task_starve_later_tasks(monke
 def test_watch_waits_for_transient_failure_cleanup_without_starting_a_new_batch(monkeypatch):
     cleanup = _report("mail", "boss")
     cleanup["kernel"]["execution_state"] = "idle"
-    cleanup["runtime"] = {"status": "running", "phase": "scheduler_failure_cleanup"}
+    cleanup["execution"] = {"status": "running", "phase": "scheduler_failure_cleanup"}
     cleanup["scheduler"]["due_tasks"][0].update({
         "last_result": "running",
         "attempt_id": "attempt-mail",
@@ -313,14 +357,14 @@ def test_watch_waits_for_transient_failure_cleanup_without_starting_a_new_batch(
         timeout_seconds=30,
     )
 
-    assert result["runtime"]["status"] == "idle"
+    assert result["execution"]["status"] == "idle"
     assert fanxiu_bt._watch_should_auto_run_due(result) is True
 
 
 def test_watch_does_not_wait_after_scheduler_has_recorded_terminal_failure(monkeypatch):
     terminal = _report("level-one")
     terminal["kernel"]["execution_state"] = "idle"
-    terminal["runtime"] = {"status": "running", "phase": "scheduler_failure_cleanup"}
+    terminal["execution"] = {"status": "running", "phase": "scheduler_failure_cleanup"}
     terminal["scheduler"]["due_tasks"][0].update({
         "last_result": "error",
         "attempt_id": None,
@@ -343,7 +387,7 @@ def test_watch_does_not_wait_after_scheduler_has_recorded_terminal_failure(monke
 
 def test_plain_business_error_does_not_become_annotation_blocker():
     report = {
-        "runtime": {
+        "execution": {
             "status": "error",
             "message": "邮件_选择性领取：分红发放点击后未完成可靠的领取闭环",
         },
@@ -370,7 +414,7 @@ def test_plain_business_error_does_not_become_annotation_blocker():
 
 def test_maintenance_summary_reports_real_running_attempt_instead_of_missing_dispatch():
     report = _report("mail", "boss")
-    report["runtime"] = {
+    report["execution"] = {
         "running": True,
         "status": "running",
         "current_task": "日常_玄荒",
@@ -385,7 +429,7 @@ def test_maintenance_summary_reports_real_running_attempt_instead_of_missing_dis
 
 def test_explicit_missing_annotation_error_blocks_only_its_job():
     report = {
-        "runtime": {
+        "execution": {
             "status": "error",
             "message": "邮件_选择性领取：缺少可靠标注，请人工补标/修标",
         },
@@ -413,15 +457,15 @@ def test_explicit_missing_annotation_error_blocks_only_its_job():
 def test_stale_failure_cleanup_does_not_block_when_kernel_is_idle():
     report = _report("mail", "boss")
     report["kernel"]["execution_state"] = "idle"
-    report["runtime"] = {"status": "running", "phase": "scheduler_failure_cleanup"}
+    report["execution"] = {"status": "running", "phase": "scheduler_failure_cleanup"}
 
     assert fanxiu_bt._watch_should_auto_run_due(report) is True
 
 
-def test_stale_scheduler_runtime_does_not_block_when_kernel_is_idle():
+def test_stale_scheduler_execution_does_not_block_when_kernel_is_idle():
     report = _report("mail", "boss")
     report["kernel"]["execution_state"] = "idle"
-    report["runtime"] = {"status": "running", "phase": "scheduler_task"}
+    report["execution"] = {"status": "running", "phase": "scheduler_task"}
     report["scheduler"]["scheduled_tasks"] = [
         {"id": "redpacket", "last_result": "success", "attempt_id": None},
     ]
@@ -432,7 +476,7 @@ def test_stale_scheduler_runtime_does_not_block_when_kernel_is_idle():
 def test_real_running_attempt_still_blocks_when_kernel_is_idle():
     report = _report("mail", "boss")
     report["kernel"]["execution_state"] = "idle"
-    report["runtime"] = {"status": "running", "phase": "scheduler_task"}
+    report["execution"] = {"status": "running", "phase": "scheduler_task"}
     report["scheduler"]["scheduled_tasks"] = [
         {"id": "redpacket", "last_result": "running", "attempt_id": "attempt-redpacket"},
     ]

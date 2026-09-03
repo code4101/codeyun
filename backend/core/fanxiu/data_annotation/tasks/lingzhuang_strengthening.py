@@ -86,7 +86,7 @@ def execute_lingzhuang_strengthening_task(
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("灵装化道_强化：缺少资产树路径，无法执行")
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         ctx,
         asset_tree_path,
         stop_event=stop_event,
@@ -110,7 +110,7 @@ def execute_lingzhuang_strengthening_task(
             (getattr(activity, "evidence", None) or {}).get("game_activity_id") or 0
         ) or None
         result = yield from complete_equipment_strengthening_tasks(
-            runtime,
+            context,
             activity_id=activity.id,
             target_progress=target_progress,
             target_tier=target_tier,

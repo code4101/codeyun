@@ -330,7 +330,7 @@ def plan_exchange_tail_physical_actions(
 
 
 def verify_exchange_detail(
-    runtime: Any,
+    context: Any,
     *,
     expected_name: str,
     expected_price: int,
@@ -338,10 +338,10 @@ def verify_exchange_detail(
     label: str = "玩法榜_收尾",
 ) -> None:
     compact_name = _compact(expected_name)
-    title = runtime.ocr_text_in_shapes(scene_id, ("商品标题",), padding=10)
+    title = context.ocr_text_in_shapes(scene_id, ("商品标题",), padding=10)
     if not compact_name or compact_name not in _compact(title):
         raise RuntimeError(f"{label}：Runtime 行未对齐 GUI 商品详情 {expected_name}")
-    prices, price_text = runtime.ocr_numbers_in_shapes(scene_id, ("价格",), padding=8)
+    prices, price_text = context.ocr_numbers_in_shapes(scene_id, ("价格",), padding=8)
     if not ocr_contains_amount(prices, price_text, expected_price):
         raise RuntimeError(
             f"{label}：{expected_name} GUI 单价与 Runtime {expected_price} 不一致：{price_text}"

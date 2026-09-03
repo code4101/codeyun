@@ -60,7 +60,7 @@ CATEGORY_HINTS = {
 
 
 def default_data_dir() -> Path:
-    return Path(os.environ.get("CODEYUN_DATA_DIR", r"D:\home\chenkunze\data\m2603codeyun\codepc_mf"))
+    return Path(os.environ.get("CODEYUN_DATA_DIR", r"C:\home\chenkunze\data\m2603codeyun\codepc_mf"))
 
 
 def default_output_dir(year: int) -> Path:

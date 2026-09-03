@@ -926,20 +926,20 @@ const runtimeActionErrorMessage = (item: RuntimeItem | null | undefined, actionK
 const runtimeInspectLabel = (item: RuntimeItem | null | undefined) => {
   if (!item) return '查看诊断';
   if (item.key === 'attendance-behavior-tree') return runtimeActionLabel(item, 'inspect', '查看调度');
-  if (item.key === 'fanxiu-behavior-tree') return runtimeActionLabel(item, 'inspect', '运行诊断');
+  if (item.key === 'fanxiu-kernel-scheduler') return runtimeActionLabel(item, 'inspect', '运行诊断');
   return runtimeActionLabel(item, 'inspect', '查看诊断');
 };
 
 const runtimeWakeLabel = (item: RuntimeItem | null | undefined) => {
   if (!item) return '唤醒服务';
-  if (item.key === 'fanxiu-behavior-tree') return runtimeActionLabel(item, 'wake', '唤醒行为树');
+  if (item.key === 'fanxiu-kernel-scheduler') return runtimeActionLabel(item, 'wake', '唤醒 Kernel');
   return runtimeActionLabel(item, 'wake', '唤醒服务');
 };
 
 const runtimeRestartLabel = (item: RuntimeItem | null | undefined) => {
   if (!item) return '重启服务';
   if (item.key === 'attendance-behavior-tree') return runtimeActionLabel(item, 'restart', '重启调度器');
-  if (item.key === 'fanxiu-behavior-tree') return runtimeActionLabel(item, 'restart', '重启行为树');
+  if (item.key === 'fanxiu-kernel-scheduler') return runtimeActionLabel(item, 'restart', '重启 Kernel');
   return runtimeActionLabel(item, 'restart', '重启服务');
 };
 

@@ -21,7 +21,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     table_ref,
     _parse_process_start_ticks,
 )
-from backend.core.fanxiu.runtime import mumu_control
+from backend.core.fanxiu.client import mumu_control
 
 
 _ROOT_KEYS = frozenset(

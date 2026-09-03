@@ -100,7 +100,7 @@ class BothdrawLotterySpec:
 
 
 def draw_bothdraw_once(
-    runtime: Any,
+    context: Any,
     spec: BothdrawLotterySpec,
     *,
     timeout_seconds: float = 45.0,
@@ -110,7 +110,7 @@ def draw_bothdraw_once(
     """Draw exactly once and persist only the observed cumulative delta."""
 
     spec.require_executable_assets()
-    spec.open_main_page(runtime)
+    spec.open_main_page(context)
     before = spec.read_lottery()
     if not before.get("complete"):
         raise RuntimeError(str(before.get("reason") or "抽奖前运行态数据不完整"))
@@ -137,8 +137,8 @@ def draw_bothdraw_once(
     instance_id = spec.resolve_instance_id(str(before["captured_at"]))
     spec.record_snapshot(before, instance_id)
 
-    frame = runtime.cur_frame(update=True)
-    runtime.click_shape(spec.main_scene_id, spec.draw_shape, frame_data_url=frame)
+    frame = context.cur_frame(update=True)
+    context.click_shape(spec.main_scene_id, spec.draw_shape, frame_data_url=frame)
 
     deadline = time.monotonic() + max(1.0, float(timeout_seconds))
     last: dict[str, Any] | None = None
@@ -250,17 +250,17 @@ def _merge_draw_observation(
 
 
 def claim_bothdraw_cumulative_rewards(
-    runtime: Any,
+    context: Any,
     spec: BothdrawLotterySpec,
     *,
     timeout_seconds: float = 15.0,
     poll_seconds: float = 0.5,
     max_clicks: int = 16,
 ) -> dict[str, Any]:
-    """Claim only milestones proven claimable by the read-only runtime model."""
+    """Claim only milestones proven claimable by the read-only context model."""
 
     spec.require_cumulative_claim_assets()
-    spec.open_main_page(runtime)
+    spec.open_main_page(context)
     clicks: list[dict[str, int]] = []
     activity_id: int | None = None
     for _attempt in range(max(1, int(max_clicks))):
@@ -298,7 +298,7 @@ def claim_bothdraw_cumulative_rewards(
             action_id=claim_action_id,
             action_phase="before_claim",
         )
-        runtime.click_shape_center(
+        context.click_shape_center(
             spec.main_scene_id,
             spec.cumulative_reward_shape,
             x_ratio=x_ratio,
@@ -348,10 +348,10 @@ def _record_claim_observation_if_supported(
     action_id: str,
     action_phase: str,
 ) -> str | None:
-    """Persist claim phases when the runtime supplies the joined lottery state.
+    """Persist claim phases when the context supplies the joined lottery state.
 
     Older test fixtures and saved resource snapshots predate the selected-prize
-    fields.  They remain readable, but only a current joined runtime snapshot is
+    fields.  They remain readable, but only a current joined context snapshot is
     eligible to become a new action observation.
     """
 
@@ -372,7 +372,7 @@ def _record_claim_observation_if_supported(
 
 
 def close_bothdraw_result(
-    runtime: Any,
+    context: Any,
     spec: BothdrawLotterySpec,
     *,
     timeout_seconds: float = 30.0,
@@ -395,7 +395,7 @@ def close_bothdraw_result(
     clicked_count = 0
     last_click_at: float | None = None
     while time.monotonic() < deadline:
-        last_scene, last_score, frame = runtime.current_scene(
+        last_scene, last_score, frame = context.current_scene(
             [result_scene_id], update=True
         )
         if int(last_scene or 0) == result_scene_id and float(last_score or 0) >= 90.0:
@@ -407,14 +407,14 @@ def close_bothdraw_result(
                     or now - last_click_at >= max(0.25, float(retry_click_seconds))
                 )
             ):
-                runtime.click_shape(
+                context.click_shape(
                     result_scene_id,
                     spec.draw_result_close_shape,
                     frame_data_url=frame,
                 )
                 clicked_count += 1
                 last_click_at = now
-        page = spec.read_page(runtime)
+        page = spec.read_page(context)
         if page is not None and page.page == spec.main_page_name:
             return {
                 "result": "success",
@@ -436,7 +436,7 @@ def close_bothdraw_result(
 
 
 def complete_bothdraw_lottery(
-    runtime: Any,
+    context: Any,
     spec: BothdrawLotterySpec,
     *,
     max_rounds: int = 256,
@@ -446,12 +446,12 @@ def complete_bothdraw_lottery(
     # Fail before navigation or any consumptive action when a new activity has
     # not yet supplied its independently verified result-page asset.
     spec.require_executable_assets()
-    spec.open_main_page(runtime)
+    spec.open_main_page(context)
     return run_draw_claim_cycle(
         read_snapshot=spec.read_cumulative_rewards,
-        draw_once=lambda: draw_bothdraw_once(runtime, spec),
-        close_draw_result=lambda: close_bothdraw_result(runtime, spec),
-        claim_rewards=lambda: claim_bothdraw_cumulative_rewards(runtime, spec),
+        draw_once=lambda: draw_bothdraw_once(context, spec),
+        close_draw_result=lambda: close_bothdraw_result(context, spec),
+        claim_rewards=lambda: claim_bothdraw_cumulative_rewards(context, spec),
         max_rounds=max_rounds,
     )
 

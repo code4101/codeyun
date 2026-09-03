@@ -2,8 +2,8 @@ import threading
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
-    BehaviorTreeRuntimeRunner,
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
+    BehaviorTreeExecutor,
 )
 from backend.core.fanxiu.data_annotation.dongtian_seating_click import (
     build_dongtian_seating_place_authorization,
@@ -62,7 +62,7 @@ def _authorized_probe():
 
 
 def _run_wrapper(monkeypatch, authorization, fresh_probe):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     locator_calls = []
 
     def locator(_runtime, _stop_event, names, **kwargs):
@@ -179,7 +179,7 @@ def test_seating_click_calls_low_level_locator_once_after_fresh_exact_match(monk
 
 
 def test_enemy_clear_can_still_reuse_low_level_locator_with_explicit_wrapper(monkeypatch):
-    runner = BehaviorTreeRuntimeRunner()
+    runner = BehaviorTreeExecutor()
     calls = []
 
     def locator(_runtime, _stop_event, names, **kwargs):

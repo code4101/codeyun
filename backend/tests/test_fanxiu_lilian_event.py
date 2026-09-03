@@ -10,7 +10,7 @@ import pytest
 import backend.core.fanxiu.instrumentation.lilian_event as lilian_instrumentation
 import backend.core.fanxiu.data_annotation.tasks.lilian_event as lilian_task
 from backend.core.fanxiu.data_annotation.default_jobs import (
-    register_fanxiu_data_annotation_default_runtime_jobs,
+    register_fanxiu_default_jobs,
 )
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
@@ -21,10 +21,10 @@ from backend.core.fanxiu.data_annotation.tasks.lilian_event import (
     record_lilian_choice_reward_outcome,
     select_lilian_event_option,
 )
-from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-    default_data_annotation_scheduler_tasks,
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
 )
-from backend.core.fanxiu.data_annotation.behavior_tree_control import read_scheduler_tasks
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_tasks
 from backend.core.fanxiu.choice_knowledge.store import question_from_record
 from backend.core.fanxiu.instrumentation.lilian_event import (
     LILIAN_SUCCESS_ITEM_ID,
@@ -64,10 +64,10 @@ class _Runtime:
         self.actions.append(("current_scene", tuple(views), update))
         return self.scene_id, 100.0, "frame"
 
-    def wait_click_then_view(self, scene, shape, *targets, **options):
+    def wait_click_then_scene(self, scene, shape, *targets, **options):
         self.actions.append(
             (
-                "wait_click_then_view",
+                "wait_click_then_scene",
                 scene,
                 shape,
                 targets,
@@ -128,14 +128,14 @@ class _Runtime:
         self.actions.append(("click_ocr_text", scene, target, options))
         self.scene_id = self.landings.pop(0)
 
-    def wait_view(self, *views, **options):
-        self.actions.append(("wait_view", views, options))
+    def wait_scene(self, *views, **options):
+        self.actions.append(("wait_scene", views, options))
         if False:
             yield None
         return SimpleNamespace(id=self.scene_id)
 
-    def goto_view(self, scene_id):
-        self.actions.append(("goto_view", int(scene_id)))
+    def go_scene(self, scene_id):
+        self.actions.append(("go_scene", int(scene_id)))
         self.scene_id = int(scene_id)
         if False:
             yield None
@@ -149,7 +149,7 @@ class _Runner:
         self.scheduled = []
         self.runtime_asset_tree_paths = []
 
-    def _fanxiu_runtime(self, *args, **_kwargs):
+    def _behavior_tree_context(self, *args, **_kwargs):
         self.runtime_asset_tree_paths.append(
             args[1] if len(args) > 1 else kwargs.get("asset_tree_path")
         )
@@ -167,7 +167,7 @@ def _ctx():
 
 
 def test_lilian_event_job_is_registered_and_in_default_checklist():
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
 
     definition = get_fanxiu_data_annotation_task_cell_definition(
         "lilian_event"
@@ -182,7 +182,7 @@ def test_lilian_event_job_is_registered_and_in_default_checklist():
     assert not hasattr(definition, "lifecycle")
     task = next(
         task
-        for task in default_data_annotation_scheduler_tasks(datetime(2026, 7, 30, 17, 30))
+        for task in default_kernel_scheduler_tasks(datetime(2026, 7, 30, 17, 30))
         if task["task_type"] == "lilian_event"
     )
     assert task["id"] == "lilian-event"
@@ -192,7 +192,7 @@ def test_lilian_event_job_is_registered_and_in_default_checklist():
 
 
 def test_lilian_event_success_clears_next_time(monkeypatch):
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("lilian_event")
     assert definition is not None
     runner = _Runner(_Runtime(34), datetime(2026, 8, 6, 6, 0))
@@ -206,7 +206,7 @@ def test_lilian_event_success_clears_next_time(monkeypatch):
 
 
 def test_lilian_event_failure_leaves_next_time_for_scheduler_retry(monkeypatch):
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("lilian_event")
     assert definition is not None
     runtime = _Runtime(429)
@@ -221,7 +221,7 @@ def test_lilian_event_failure_leaves_next_time_for_scheduler_retry(monkeypatch):
         _drain(definition.handler(runner, _ctx(), {}, threading.Event()))
 
     assert runner.scheduled == []
-    assert ("goto_view", 34) in runtime.actions
+    assert ("go_scene", 34) in runtime.actions
 
 
 def test_lilian_complete_reward_updates_selected_option():
@@ -406,7 +406,7 @@ def test_lilian_event_executor_rejects_cross_attempt_intermediate_scene(scene_id
             threading.Event(),
         ))
 
-    assert not any(action[0] == "wait_click_then_view" for action in runtime.actions)
+    assert not any(action[0] == "wait_click_then_scene" for action in runtime.actions)
 
 
 def test_lilian_event_handles_438_to_437_inside_one_job_attempt():
@@ -436,7 +436,7 @@ def test_lilian_event_handles_438_to_437_inside_one_job_attempt():
     reward_actions = [
         (action[1], action[2], action[3])
         for action in runtime.actions
-        if action[0] == "wait_click_then_view"
+        if action[0] == "wait_click_then_scene"
         and action[1] in (437, 438)
     ]
     assert reward_actions == [
@@ -447,7 +447,7 @@ def test_lilian_event_handles_438_to_437_inside_one_job_attempt():
 
 
 def test_lilian_standard_job_normalizes_437_to_world_before_whole_run(monkeypatch):
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("lilian_event")
     assert definition is not None
     runtime = _Runtime(437)
@@ -464,7 +464,7 @@ def test_lilian_standard_job_normalizes_437_to_world_before_whole_run(monkeypatc
 
     assert result == "success"
     assert executor_entry_scenes == [34]
-    assert runtime.actions == [("goto_view", 34), ("goto_view", 34)]
+    assert runtime.actions == [("go_scene", 34), ("go_scene", 34)]
 
 
 def test_lilian_event_428_runs_full_base_flow(monkeypatch):
@@ -507,7 +507,7 @@ def test_lilian_event_428_runs_full_base_flow(monkeypatch):
     assert [
         (action[1], action[2])
         for action in runtime.actions
-        if action[0] == "wait_click_then_view"
+        if action[0] == "wait_click_then_scene"
     ] == [
         (34, "大地图"),
         (425, "历练按钮"),
@@ -554,8 +554,8 @@ def test_lilian_event_same_attempt_retries_choice_after_confirmed_436_timeout(
             if self.click_count == 2:
                 self.scene_id = 438
 
-        def wait_view(self, *views, **options):
-            self.actions.append(("wait_view", views, options))
+        def wait_scene(self, *views, **options):
+            self.actions.append(("wait_scene", views, options))
             if False:
                 yield None
             if self.click_count == 1:
@@ -667,7 +667,7 @@ def test_lilian_event_enters_from_world_before_base_flow(monkeypatch):
     assert [
         (action[1], action[2], action[3])
         for action in runtime.actions
-        if action[0] == "wait_click_then_view"
+        if action[0] == "wait_click_then_scene"
     ] == [
         (34, "大地图", (425,)),
         (425, "历练按钮", (427,)),
@@ -715,11 +715,11 @@ def test_lilian_event_processes_every_event_until_fresh_429(monkeypatch):
     assert result["processed_event_count"] == 2
     assert len(result["processed_events"]) == 2
     assert sum(
-        action[:3] == ("wait_click_then_view", 428, "前往")
+        action[:3] == ("wait_click_then_scene", 428, "前往")
         for action in runtime.actions
     ) == 2
     assert (
-        "wait_click_then_view",
+        "wait_click_then_scene",
         429,
         "关闭事件页",
         (425,),

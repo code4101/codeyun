@@ -11,12 +11,14 @@ interface AutoSaveDraftPayload<T> {
 export interface AutoSaveDraftCandidate<T> {
   updatedAt: number;
   snapshot: T;
+  baselineSnapshot: T | null;
   hasConflict: boolean;
 }
 
 interface UseAutoSaveOptions<T> {
   debounceMs?: number;
   draftTtlMs?: number;
+  retryDelayMs?: number;
   clone?: (value: T) => T;
   equals: (left: T, right: T) => boolean;
   save: (snapshot: T) => Promise<T | void | null>;
@@ -33,6 +35,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   const clone = options.clone ?? defaultClone<T>;
   const debounceMs = options.debounceMs ?? 2000;
   const draftTtlMs = options.draftTtlMs ?? 1000 * 60 * 60 * 24 * 7;
+  const retryDelayMs = options.retryDelayMs ?? 1500;
 
   const saveStatus = ref<AutoSaveStatus>('saved');
   const lastDraftAt = ref<number | null>(null);
@@ -103,6 +106,11 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   const clearDraft = () => persistDraft(null);
 
   const hasUnsavedChanges = computed(() => {
+    // baselineSnapshot/latestSnapshot are intentionally non-reactive payloads.
+    // saveStatus is their reactive revision signal; without this dependency the
+    // computed value is cached at its initial false value and prop refreshes can
+    // discard every newly written draft before the server debounce fires.
+    void saveStatus.value;
     if (!latestSnapshot || !baselineSnapshot) return false;
     return !options.equals(latestSnapshot, baselineSnapshot);
   });
@@ -162,6 +170,9 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
         const pendingDraft: AutoSaveDraftCandidate<T> = {
           updatedAt: draftPayload.updatedAt,
           snapshot: clone(draftPayload.snapshot),
+          baselineSnapshot: draftPayload.baselineSnapshot
+            ? clone(draftPayload.baselineSnapshot)
+            : null,
           hasConflict: draftPayload.baselineSnapshot
             ? !options.equals(draftPayload.baselineSnapshot, baselineSnapshot)
             : true
@@ -269,7 +280,11 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     saveStatus.value = 'unsaved';
 
     const delayMs = markOptions.immediate ? 0 : Math.max(0, markOptions.delayMs ?? debounceMs);
-    scheduleDraftPersist(Math.min(delayMs, 600));
+    // The debounce controls server traffic, not durability. Persist the latest
+    // edit synchronously so a refresh/crash immediately after input can recover
+    // it even when the server request has not started yet.
+    clearDraftPersistTimer();
+    persistDraft(latestSnapshot);
     saveTimer = setTimeout(() => {
       void flush();
     }, delayMs);
@@ -313,6 +328,12 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
           saveStatus.value = 'unsaved';
           scheduleDraftPersist(0);
           options.onError?.(error);
+          if (retryDelayMs >= 0) {
+            clearSaveTimer();
+            saveTimer = setTimeout(() => {
+              void flush();
+            }, retryDelayMs);
+          }
           return false;
         }
       }

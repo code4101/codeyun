@@ -14,15 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.core.fanxiu.behavior_tree.runtime import (
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
     DEFAULT_FANXIU_ENTRY_ID,
-    create_behavior_tree_runtime_runner,
+    create_behavior_tree_executor,
     data_annotation_asset_tree_path,
 )
-from backend.core.fanxiu.data_annotation.behavior_tree_runtime import (
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
     _parse_xianfu_visit_cd_seconds,
 )
-from backend.core.fanxiu.data_annotation.behavior_tree_control import read_scheduler_tasks
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_tasks
 from backend.core.temp_paths import codeyun_temp_root
 from scripts.fanxiu_xianfu_migration_probe import (
     DEFAULT_OLD_XIANFU_ROOT,
@@ -359,7 +359,7 @@ def main() -> int:
     def run_prepare() -> dict[str, Any]:
         result = _run_xianfu_runtime_task(
             entry_id=str(args.entry_id),
-            timeout_seconds=float(args.runtime_timeout_seconds or 180.0),
+            timeout_seconds=float(args.execution_timeout_seconds or 180.0),
         )
         prepare_results.append(result)
         return result
@@ -370,7 +370,7 @@ def main() -> int:
             _print_json({"ok": False, "reason": "prepare_runtime_failed", "prepare_runtime": prepare_result, "prepare_results": prepare_results})
             return 1
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     tree = runner._load_asset_tree(asset_tree)
     ctx = {
         "entry": _LocalEntry(),
@@ -433,7 +433,7 @@ def main() -> int:
                     raise RuntimeError("--run-runtime-after-install 需要同时启用 --install")
                 runtime_result = _run_runtime_after_install(
                     entry_id=str(args.entry_id),
-                    timeout_seconds=float(args.runtime_timeout_seconds or 180.0),
+                    timeout_seconds=float(args.execution_timeout_seconds or 180.0),
                 )
             _print_json({
                 "ok": True,

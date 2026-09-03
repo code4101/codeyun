@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
-from backend.core.fanxiu.runtime import mumu_control
+from backend.core.fanxiu.client import mumu_control
 from backend.core.temp_paths import codeyun_temp_root
 
 
@@ -867,6 +867,78 @@ class LuaJitReader:
                 continue
             key = self.string(key_address)
             if key not in wanted:
+                continue
+            result[key] = self.value(value_raw)
+            if len(result) == len(wanted):
+                break
+        return result
+
+    def numeric_fields(
+        self,
+        address: int,
+        keys: frozenset[int],
+    ) -> dict[int, Any]:
+        """Read selected integer-valued keys without decoding a whole table.
+
+        Large packed config tables can contain tens of thousands of rows.  A
+        full ``table()`` decode needlessly expands every row reference when a
+        caller only needs a handful of known ids.
+        """
+
+        wanted = frozenset(int(key) for key in keys)
+        if not wanted:
+            return {}
+        header = self.memory.read(int(address), 64)
+        node_address = struct.unpack_from("<Q", header, 40)[0]
+        array_size, hash_mask = struct.unpack_from("<II", header, 48)
+        if hash_mask > _MAX_LUA_TABLE_HASH_MASK:
+            raise FanxiuRuntimeMemoryError(
+                f"Lua table 结构越界：0x{int(address):x}"
+            )
+        result: dict[int, Any] = {}
+        # Lua arrays are zero-based in this reader while integer keys are
+        # one-based in Lua table semantics.
+        array_keys = {key for key in wanted if 1 <= key <= array_size}
+        if array_keys:
+            array_address = struct.unpack_from("<Q", header, 16)[0]
+            for key in array_keys:
+                value_raw = struct.unpack(
+                    "<Q", self.memory.read(array_address + (key - 1) * 8, 8)
+                )[0]
+                if self.tag(value_raw) != _LUA_NIL_TAG:
+                    result[key] = self.value(value_raw)
+        remaining = wanted - result.keys()
+        if not remaining:
+            return result
+        node_count = hash_mask + 1
+        if self.memory.readable_region(node_address, node_count * 24) is None:
+            raise FanxiuRuntimeMemoryError(
+                f"Lua table node 地址无效：0x{node_address:x}"
+            )
+        raw_nodes = self.memory.read(node_address, node_count * 24)
+        for index in range(node_count):
+            value_raw, key_raw, _ = struct.unpack_from(
+                "<QQQ", raw_nodes, index * 24
+            )
+            key_tag = self.tag(key_raw)
+            if self.tag(value_raw) == _LUA_NIL_TAG or key_tag in {
+                _LUA_NIL_TAG,
+                _LUA_FALSE_TAG,
+                _LUA_TRUE_TAG,
+                _LUA_STRING_TAG,
+                _LUA_TABLE_TAG,
+                _LUA_USERDATA_TAG,
+                _LUA_FUNCTION_TAG,
+            }:
+                continue
+            if key_tag == _LUA_INT_TAG:
+                key = struct.unpack("<i", struct.pack("<I", key_raw & 0xFFFFFFFF))[0]
+            else:
+                number = struct.unpack("<d", struct.pack("<Q", key_raw))[0]
+                if not number.is_integer():
+                    continue
+                key = int(number)
+            if key not in remaining:
                 continue
             result[key] = self.value(value_raw)
             if len(result) == len(wanted):

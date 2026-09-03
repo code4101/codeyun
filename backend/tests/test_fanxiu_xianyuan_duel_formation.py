@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from backend.core.fanxiu.data_annotation.duel_strategy import best_xianyuan_partner_order, plan_swaps
-from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
 
 
 def _drain(generator):
@@ -23,7 +23,7 @@ def _team(partner_ids: list[int], power: int) -> dict:
 
 
 def test_formation_skips_all_visual_work_at_two_times_power(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     logs: list[str] = []
     monkeypatch.setattr(runner, "_log", lambda _kind, message: logs.append(message))
     monkeypatch.setitem(
@@ -53,7 +53,7 @@ def test_formation_skips_all_visual_work_at_two_times_power(monkeypatch) -> None
 
 
 def test_formation_hydrates_details_only_below_power_shortcut(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     monkeypatch.setattr(runner, "_log", lambda *_args: None)
     my_ids = [16, 23, 9, 2, 1]
     enemy_ids = [28, 2, 1, 30, 9]
@@ -114,7 +114,7 @@ def test_formation_hydrates_details_only_below_power_shortcut(monkeypatch) -> No
 
 
 def test_formation_drags_exact_slots_from_structured_partner_ids(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     monkeypatch.setattr(runner, "_log", lambda *_args: None)
     my_ids = [16, 23, 9, 2, 1]
     enemy_ids = [28, 2, 1, 30, 9]

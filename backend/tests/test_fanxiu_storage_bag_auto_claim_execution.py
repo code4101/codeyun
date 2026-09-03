@@ -32,7 +32,7 @@ class _Runtime:
     def __init__(self):
         self.clicks = []
 
-    def goto_view(self, scene_id):
+    def go_scene(self, scene_id):
         return _yielding(scene_id)
 
     def wait_click(self, scene_id, title, **_kwargs):
@@ -47,7 +47,7 @@ class _Runner:
     def __init__(self, runtime):
         self.runtime = runtime
 
-    def _fanxiu_runtime(self, *_args, **_kwargs):
+    def _behavior_tree_context(self, *_args, **_kwargs):
         return self.runtime
 
 

@@ -48,6 +48,11 @@ RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
 DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
+XUTIAN_ACTIVE_KIND = "xutian_active_1000"
+BEAST_ABYSS_INITIALIZATION_KIND = "beast_abyss_initialization_1000"
+BEAST_ABYSS_FORMAL_KIND = "beast_abyss_formal_1005"
+BEAST_ABYSS_AUTO_CLEAR_KIND = "beast_abyss_auto_clear_2045"
+BEAST_ABYSS_MANUAL_CLEAR_KIND = "beast_abyss_manual_clear_2150"
 XIANMENG_ACTIVE_KIND = "xianmeng_active_1000"
 TIANDI_YIJU_ACTIVE_KIND = "tiandi_yiju_active_1005"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
@@ -56,6 +61,20 @@ YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 30)
 XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
+XUTIAN_ACTIVE_TIME = time(10, 0)
+BEAST_ABYSS_INITIALIZATION_TIME = time(10, 0)
+BEAST_ABYSS_FORMAL_TIME = time(10, 5)
+BEAST_ABYSS_AUTO_CLEAR_TIME = time(20, 45)
+BEAST_ABYSS_MANUAL_CLEAR_TIME = time(21, 50)
+BEAST_ABYSS_AUTO_WINDOW_END = time(21, 30)
+# Beast Abyss active execution is still under live R&D.  Keep its checkpoint
+# identities and executors available for explicit AI validation, but do not
+# publish them into the engineering Scheduler until the full branches pass.
+PRODUCTION_BEAST_ABYSS_ACTIVE_KINDS: frozenset[str] = frozenset()
+# Keep the read-only 00:30 reconcile and exchange-tail executors available for
+# explicit R&D, but publish neither through the disabled gameplay-ranking Job
+# until the full Beast Abyss lifecycle has passed live acceptance.
+PRODUCTION_BEAST_ABYSS_EXCHANGE_TAIL_ENABLED = False
 XIANMENG_ACTIVE_TIME = time(10, 0)
 TIANDI_YIJU_ACTIVE_TIME = time(10, 5)
 RESOURCE_FREE_GIFT_TIME = time(5, 10)
@@ -67,6 +86,7 @@ YUANDING_GIFT_TIME = time(5, 0)
 # lifecycle owns the timing; each adapter still owns navigation and purchase
 # verification for its page family.
 EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
+    "beast-abyss",
     "magic-invasion",
     "yunmeng-trial",
     "xianyuan-duokui",
@@ -82,7 +102,7 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
 })
 
 RANKING_CAPABILITY_STATUS = {
-    "beast-abyss": "observed_reconcile_only",
+    "beast-abyss": "live_rnd_initialization_only",
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
 }
 
@@ -108,6 +128,18 @@ class RankingOccurrence:
 
     @property
     def instance_key(self) -> str:
+        # Xutian's Runtime row id is not a stable occurrence identity.  The
+        # same open activity has been observed changing from the early
+        # cross-server suffix to the settled server suffix without changing
+        # its activity id or interval.  Keep the checkpoint row stable across
+        # that refresh while leaving every other activity's established key
+        # contract untouched.
+        if self.activity_type == "xutian-palace":
+            return (
+                f"activity:xutian-palace:{self.activity_id}:"
+                f"{self.start_at.isoformat(timespec='seconds')}:"
+                f"{self.end_at.isoformat(timespec='seconds')}"
+            )
         return (
             f"runtime:{self.runtime_id}:activity:{self.activity_id}:"
             f"{self.start_at.isoformat(timespec='seconds')}:"
@@ -341,10 +373,14 @@ def checkpoints_for_occurrence(
     if not occurrence_relevant_on(occurrence, business_day):
         return ()
     checkpoints = []
-    if not (
+    daily_reconcile_enabled = not (
         occurrence.activity_type == "tiandi-yiju"
         and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
-    ):
+    ) and not (
+        occurrence.activity_type == "beast-abyss"
+        and business_day != occurrence.start_at.date()
+    )
+    if daily_reconcile_enabled:
         checkpoints.append(RankingCheckpoint(
             instance_key=occurrence.instance_key,
             activity_type=occurrence.activity_type,
@@ -365,6 +401,10 @@ def checkpoints_for_occurrence(
     if (
         occurrence.family == "gameplay_rank"
         and occurrence.activity_type in EXCHANGE_TAIL_ACTIVITY_TYPES
+        and not (
+            occurrence.activity_type == "beast-abyss"
+            and not PRODUCTION_BEAST_ABYSS_EXCHANGE_TAIL_ENABLED
+        )
         and not (
             occurrence.activity_type == "tiandi-yiju"
             and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
@@ -401,6 +441,51 @@ def checkpoints_for_occurrence(
                 due_at=magic_at,
             )
         )
+    xutian_at = _at(business_day, XUTIAN_ACTIVE_TIME, occurrence.start_at.tzinfo)
+    if (
+        occurrence.activity_type == "xutian-palace"
+        and occurrence.start_at <= xutian_at <= occurrence.end_at
+    ):
+        checkpoints.append(
+            RankingCheckpoint(
+                instance_key=occurrence.instance_key,
+                activity_type=occurrence.activity_type,
+                family=occurrence.family,
+                runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id,
+                checkpoint_kind=XUTIAN_ACTIVE_KIND,
+                business_date=business_day.isoformat(),
+                due_at=xutian_at,
+            )
+        )
+    beast_checkpoints = (
+        (BEAST_ABYSS_INITIALIZATION_KIND, BEAST_ABYSS_INITIALIZATION_TIME),
+        (BEAST_ABYSS_FORMAL_KIND, BEAST_ABYSS_FORMAL_TIME),
+        (BEAST_ABYSS_AUTO_CLEAR_KIND, BEAST_ABYSS_AUTO_CLEAR_TIME),
+        (BEAST_ABYSS_MANUAL_CLEAR_KIND, BEAST_ABYSS_MANUAL_CLEAR_TIME),
+    )
+    if occurrence.activity_type == "beast-abyss":
+        for checkpoint_kind, checkpoint_time in beast_checkpoints:
+            if checkpoint_kind not in PRODUCTION_BEAST_ABYSS_ACTIVE_KINDS:
+                continue
+            due_at = _at(
+                business_day,
+                checkpoint_time,
+                occurrence.start_at.tzinfo,
+            )
+            if occurrence.start_at <= due_at <= occurrence.end_at:
+                checkpoints.append(
+                    RankingCheckpoint(
+                        instance_key=occurrence.instance_key,
+                        activity_type=occurrence.activity_type,
+                        family=occurrence.family,
+                        runtime_id=occurrence.runtime_id,
+                        activity_id=occurrence.activity_id,
+                        checkpoint_kind=checkpoint_kind,
+                        business_date=business_day.isoformat(),
+                        due_at=due_at,
+                    )
+                )
     xianmeng_at = _at(business_day, XIANMENG_ACTIVE_TIME, occurrence.start_at.tzinfo)
     if (
         occurrence.activity_type == "xianmeng-competition"
@@ -510,12 +595,27 @@ def due_ranking_checkpoints(
                 if checkpoint.checkpoint_kind
                 in {
                     MAGIC_ACTIVE_KIND,
+                    XUTIAN_ACTIVE_KIND,
+                    BEAST_ABYSS_FORMAL_KIND,
+                    BEAST_ABYSS_INITIALIZATION_KIND,
+                    BEAST_ABYSS_AUTO_CLEAR_KIND,
+                    BEAST_ABYSS_MANUAL_CLEAR_KIND,
                     XIANMENG_ACTIVE_KIND,
                     TIANDI_YIJU_ACTIVE_KIND,
                     RESOURCE_FREE_GIFT_KIND,
                     DANDAO_REWARDS_KIND,
                     YUANDING_GIFT_KIND,
                 }
+                and not (
+                    checkpoint.checkpoint_kind
+                    in {
+                        BEAST_ABYSS_INITIALIZATION_KIND,
+                        BEAST_ABYSS_FORMAL_KIND,
+                        BEAST_ABYSS_AUTO_CLEAR_KIND,
+                    }
+                    and local_now.timetz().replace(tzinfo=None)
+                    >= BEAST_ABYSS_AUTO_WINDOW_END
+                )
             )
     return tuple(
         sorted(
@@ -565,10 +665,15 @@ def next_ranking_lifecycle_time(
 
 
 __all__ = [
+    "BEAST_ABYSS_AUTO_CLEAR_KIND",
+    "BEAST_ABYSS_FORMAL_KIND",
+    "BEAST_ABYSS_INITIALIZATION_KIND",
+    "BEAST_ABYSS_MANUAL_CLEAR_KIND",
     "DAILY_RECONCILE_KIND",
     "EXCHANGE_TAIL_ACTIVITY_TYPES",
     "EXCHANGE_TAIL_KIND",
     "MAGIC_ACTIVE_KIND",
+    "XUTIAN_ACTIVE_KIND",
     "XIANMENG_ACTIVE_KIND",
     "TIANDI_YIJU_ACTIVE_KIND",
     "TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS",

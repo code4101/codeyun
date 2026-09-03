@@ -16,9 +16,9 @@ from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_f
 
 FANXIU_APK_UNPACKED_ROOT_ENV = "FANXIU_APK_UNPACKED_ROOT"
 DEFAULT_FANXIU_APK_UNPACKED_ROOT = Path(
-    r"D:\TapTap\Support\android_emulator\games\308550\apk\1023295_unpacked"
+    r"C:\TapTap\Support\android_emulator\games\308550\apk\1023295_unpacked"
 )
-DEFAULT_TAPTAP_DOWNLOAD_DAT_PATH = Path(r"D:\TapTap\Support\android_emulator\download\101000000.dat")
+DEFAULT_TAPTAP_DOWNLOAD_DAT_PATH = Path(r"C:\TapTap\Support\android_emulator\download\101000000.dat")
 
 APK_INDEX_DEFAULT_KEYWORDS = (
     "UnityPlayerActivity",

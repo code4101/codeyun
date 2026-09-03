@@ -14,7 +14,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
 )
 
 
-_DEFAULT_RUNTIME_JOB_TYPES = (
+_DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "detect_scene",
     "manual_tick",
     "maintenance_recovery",
@@ -108,6 +108,8 @@ _DEFAULT_RUNTIME_JOB_TYPES = (
     "yunmeng_trial_auto_challenge",
     "magic_invasion_explore",
     "ranking_lifecycle",
+    "beast_abyss_initialization_rnd",
+    "beast_abyss_rank_refresh_rnd",
     "resource_ranking",
     "yunmeng_tail",
 )
@@ -123,8 +125,8 @@ def _run_manual_standard_job(runner: Any, task_id: str, operation: Any):
     return result
 
 
-def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
-    if all(get_fanxiu_data_annotation_task_cell_definition(task_type) is not None for task_type in _DEFAULT_RUNTIME_JOB_TYPES):
+def register_fanxiu_default_jobs() -> None:
+    if all(get_fanxiu_data_annotation_task_cell_definition(task_type) is not None for task_type in _DEFAULT_BEHAVIOR_TREE_JOB_TYPES):
         return
 
     def _compact_detect_scene_trace(trace: list[dict[str, Any]], *, max_candidates: int = 12) -> list[dict[str, Any]]:
@@ -224,7 +226,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="login-game",
         standard_job_description="手动",
-        standard_job_payload={"unbounded_runtime": True},
+        standard_job_payload={"unbounded_execution": True},
     )
     def _run_data_annotation_login_game_task_cell(
         runner: Any,
@@ -328,7 +330,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return (yield from runner._execute_daily_runtime_task(
+        return (yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -349,7 +351,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        result = yield from runner._execute_daily_runtime_task(
+        result = yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -357,8 +359,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             label="\u65e5\u5e38_\u9547\u90aa",
             flow=runner.daily_zhenxie_flow,
         )
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_activity", "日常_活跃度", scheduler_supported=True)
@@ -368,10 +370,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_activity_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -403,10 +405,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_weekly_activity_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_redpacket", "日常_红包", scheduler_supported=True)
@@ -416,15 +418,17 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
         yield from runner._prepare_daily_redpacket_world(
-            runtime,
+            context,
             transition_timeout=transition_timeout,
         )
-        result = yield from runner._execute_daily_redpacket_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
-        return result
+        # Every red-packet terminal owns and verifies its own return-to-world
+        # transaction.  A second generic goto here can race with the world's
+        # auto-battle cinematic and turn a confirmed rewarded UID into a false
+        # Scheduler error after the business result was already persisted.
+        return (yield from runner._execute_daily_redpacket_task(ctx, stop_event, payload))
 
     @register_fanxiu_data_annotation_task_cell("daily_signup", "日常_报名", scheduler_supported=True)
     def _run_data_annotation_daily_signup_task_cell(
@@ -433,9 +437,9 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
-        result = yield from runner._execute_daily_runtime_task(
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
+        result = yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -443,7 +447,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             label="日常_报名",
             flow=runner.日常报名流程,
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -458,9 +462,9 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
-        result = yield from runner._execute_daily_runtime_task(
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
+        result = yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -468,7 +472,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             label="魔狱_报名",
             flow=runner.moyu_signup_flow,
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -483,7 +487,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return (yield from runner._execute_daily_runtime_task(
+        return (yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -512,8 +516,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         # The Job owns its business completion point and best-effort departure.
         # A wrapper-level second goto can turn an already-complete run into an
         # error during a long exit animation and must not replay cleanup.
@@ -541,7 +545,11 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_jianling_cuiling_task(ctx, stop_event, payload)
+        return _run_manual_standard_job(
+            runner,
+            "jianling-cuiling",
+            lambda: runner._execute_jianling_cuiling_task(ctx, stop_event, payload),
+        )
 
     @register_fanxiu_data_annotation_task_cell(
         "lingzhuang_strengthening",
@@ -553,7 +561,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job_payload={
             "target_tier": 10,
             "max_clicks": 200,
-            "max_runtime_seconds": 7200,
+            "max_execution_seconds": 7200,
         },
     )
     def _run_data_annotation_lingzhuang_strengthening_task_cell(
@@ -567,11 +575,11 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             execute_lingzhuang_strengthening_task,
         )
 
-        runtime = runner._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         current_fact_scene_ids = (445, 446)
-        current_scene_id, _score, _frame = runtime.current_scene(current_fact_scene_ids, update=True)
+        current_scene_id, _score, _frame = context.current_scene(current_fact_scene_ids, update=True)
         if current_scene_id not in current_fact_scene_ids:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
         result = yield from _run_manual_standard_job(
             runner,
             STANDARD_JOB_ID,
@@ -582,7 +590,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
                 stop_event,
             ),
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -606,7 +614,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             next_beast_spirit_update_at,
         )
 
-        runtime = runner._fanxiu_runtime(
+        context = runner._behavior_tree_context(
             ctx,
             ctx.get("asset_tree_path"),
             stop_event=stop_event,
@@ -617,7 +625,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             payload,
             stop_event,
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         runner._persist_scheduler_task_next_time(
             STANDARD_JOB_ID,
             next_beast_spirit_update_at().strftime("%Y-%m-%d %H:%M:%S"),
@@ -802,7 +810,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job_payload={
             "max_rounds": 100,
             "max_scrolls": 100,
-            "max_runtime_seconds": 3600,
+            "max_execution_seconds": 3600,
         },
     )
     def _run_data_annotation_xianyan_host_baihua_task_cell(
@@ -826,7 +834,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="xianyan-participation",
         standard_job_description="手动",
-        standard_job_payload={"max_rounds": 100, "max_scrolls": 100, "max_runtime_seconds": 3600},
+        standard_job_payload={"max_rounds": 100, "max_scrolls": 100, "max_execution_seconds": 3600},
     )
     def _run_data_annotation_xianyan_participation_task_cell(
         runner: Any,
@@ -869,14 +877,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from _run_manual_standard_job(
             runner,
             "legacy-daily-youli",
             lambda: runner._execute_daily_youli_task(ctx, stop_event, payload),
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_lingta", "日常_灵塔", scheduler_supported=False)
@@ -901,7 +909,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job_id="lingta-challenge",
         standard_job_description="每日",
         standard_job_payload={
-            "max_runtime_seconds": 5400,
+            "max_execution_seconds": 5400,
             "monitor_timeout_seconds": 3600,
             "monitor_poll_seconds": 2,
             "max_scrolls": 30,
@@ -938,14 +946,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from _run_manual_standard_job(
             runner,
             "legacy-daily-shuangxiu",
             lambda: runner._execute_daily_shuangxiu_task(ctx, stop_event, payload),
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_yaowang", "日常_妖王来袭", scheduler_supported=False)
@@ -978,8 +986,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         result = yield from runner._execute_daily_xianyuan_task(ctx, stop_event, payload)
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -989,7 +997,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="daozu-challenge",
         standard_job_description="每日",
-        standard_job_payload={"max_runtime_seconds": 1800},
+        standard_job_payload={"max_execution_seconds": 1800},
     )
     def _run_data_annotation_daozu_challenge_task_cell(
         runner: Any,
@@ -1023,7 +1031,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         # The business handler owns entry normalization and the complete
-        # #266 -> #265 -> #264 -> #34 return stack.  Repeating goto_view here
+        # #266 -> #265 -> #264 -> #34 return stack.  Repeating go_scene here
         # can turn a confirmed拜谒 into an error while the world transition is
         # still visually unknown.
         result = yield from runner._execute_daily_baiye_task(ctx, stop_event, payload)
@@ -1044,10 +1052,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_green_bottle_baiye_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_yihuo", "日常_异火", scheduler_supported=True)
@@ -1057,9 +1065,9 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
-        result = yield from runner._execute_daily_runtime_task(
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
+        result = yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -1067,7 +1075,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             label="日常_异火",
             flow=runner.日常异火流程,
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     # 日常_助手的一键执行已经覆盖供奉；保留 Cell 实现用于调试，但不再作为
@@ -1079,9 +1087,9 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
-        result = yield from runner._execute_daily_runtime_task(
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
+        result = yield from runner._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -1089,7 +1097,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             label="日常_供奉",
             flow=runner.日常供奉流程,
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_xianshi", "仙市_秘藏阁", scheduler_supported=True)
@@ -1117,11 +1125,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_xianshi_weekly_resources_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
-        return result
+        yield from context.go_scene(34)
+        if result == "skipped":
+            message = "仙市_每周资源：未确认业务终态，已保留本周期并写入短重试"
+        else:
+            message = "仙市_每周资源：已确认当前免费资源集合达到业务终态，并写入下一周期"
+        return {"result": result, "message": message}
 
     @register_fanxiu_data_annotation_task_cell(
         "xianshi_zhenwuge",
@@ -1176,16 +1188,16 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         current_fact_scene_ids = (
             69, 296, 297, 298, 371, 372, 373, 375, 295,
             329, 301, 302, 303, 304, 391, 52, 53, 54,
         )
-        current_scene_id, _score, _frame = runtime.current_scene(current_fact_scene_ids, update=True)
+        current_scene_id, _score, _frame = context.current_scene(current_fact_scene_ids, update=True)
         if current_scene_id not in current_fact_scene_ids:
-            yield from runtime.goto_view(34)
+            yield from context.go_scene(34)
         result = yield from runner._execute_daily_lundao_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1218,23 +1230,27 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_xianyuan_duel_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
-    @register_fanxiu_data_annotation_task_cell("daily_mojie_raid", "日常_奇袭魔界", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell(
+        "daily_mojie_raid",
+        "日常_奇袭魔界",
+        scheduler_supported=True,
+    )
     def _run_data_annotation_daily_mojie_raid_task_cell(
         runner: Any,
         ctx: dict[str, Any],
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_mojie_raid_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_weekly_dungeon", "日常_周本", scheduler_supported=True)
@@ -1244,10 +1260,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_weekly_dungeon_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("weekly_hanli", "周常_韩立", scheduler_supported=True)
@@ -1257,10 +1273,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_weekly_hanli_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1310,8 +1326,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         result = yield from runner._execute_daily_lingquan_task(ctx, stop_event, payload)
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1327,8 +1343,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         result = yield from runner._execute_weekly_shengzu_task(ctx, stop_event, payload)
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_vip", "日常_vip", scheduler_supported=True)
@@ -1338,10 +1354,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_vip_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_signin", "日常_签到", scheduler_supported=True)
@@ -1351,15 +1367,15 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         # A new attempt never inherits a previous attempt's UI step.  Normalize
         # every start through the generic navigation graph, then run the whole
         # idempotent business operation from its stable entry.
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         # Every successful sign-in branch closes through
         # ``_daily_signin_finish_from_404``.  That helper owns the one bounded
         # departure attempt after the business postcondition is committed.
-        # Repeating ``goto_view(34)`` here used to mistake the text-free world
+        # Repeating ``go_scene(34)`` here used to mistake the text-free world
         # transition for an actionable unknown page and run the generic return
         # fallback a second time.
         return (yield from runner._execute_daily_signin_task(ctx, stop_event, payload))
@@ -1390,10 +1406,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_dongtian_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1408,10 +1424,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_dongtian_clear_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1421,7 +1437,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="dongtian-seating",
         standard_job_description="动态",
-        standard_job_payload={"max_runtime_seconds": 900},
+        standard_job_payload={"max_execution_seconds": 900},
     )
     def _run_data_annotation_dongtian_seating_task_cell(
         runner: Any,
@@ -1452,10 +1468,12 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        # Lingmai owns resumable stable states such as the occupied-seat page
+        # #588. Let the business task finish those states before the generic
+        # world-page normalization runs.
         result = yield from runner._execute_daily_lingmai_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1470,10 +1488,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_lingmai_clear_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1491,14 +1509,14 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from _run_manual_standard_job(
             runner,
             "legacy-daily-dungeon",
             lambda: runner._execute_daily_dungeon_task(ctx, stop_event, payload),
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_assistant", "日常_助手", scheduler_supported=True)
@@ -1508,10 +1526,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_daily_assistant_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1532,8 +1550,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             execute_lilian_claim_task,
         )
 
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from _run_manual_standard_job(
             runner,
             "lilian-claim",
@@ -1544,7 +1562,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
                 stop_event,
             ),
         )
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1568,7 +1586,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             FanxiuEmulatorRestartRequired,
         )
 
-        runtime = runner._fanxiu_runtime(
+        context = runner._behavior_tree_context(
             ctx,
             ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None,
             stop_event=stop_event,
@@ -1576,7 +1594,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         # A Job attempt does not persist a previous generator's local state.
         # Normalize through the shared scene graph, then run the whole
         # idempotent business transaction from its stable #34 entry.
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         try:
             result = yield from _run_manual_standard_job(
                 runner,
@@ -1592,7 +1610,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             raise
         except Exception as primary_error:
             try:
-                yield from runtime.goto_view(34)
+                yield from context.go_scene(34)
             except (InterruptedError, GeneratorExit, FanxiuEmulatorRestartRequired):
                 raise
             except Exception as cleanup_error:
@@ -1601,7 +1619,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
                     f"{type(cleanup_error).__name__}: {cleanup_error}"
                 )
             raise
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1612,7 +1630,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job_id="activity-quiz",
         standard_job_description="手动",
         standard_job_payload={
-            "max_runtime_seconds": 240,
+            "max_execution_seconds": 240,
             "native_snapshot_max_age_seconds": 2,
             "native_prompt_match_threshold": 82,
             "match_score_threshold": 82,
@@ -1644,7 +1662,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job_id="activity-quiz-final",
         standard_job_description="手动",
         standard_job_payload={
-            "max_runtime_seconds": 900,
+            "max_execution_seconds": 900,
             "start_wait_seconds": 180,
             "idle_after_click_seconds": 15,
             "scene_exit_grace_seconds": 8,
@@ -1694,10 +1712,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_xianqiao_trial_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell("mail_selective_claim", "邮件_选择性领取", scheduler_supported=True)
@@ -1707,8 +1725,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         is_scan = bool(
             payload.get("observe_only")
             or payload.get("scan_only")
@@ -1725,7 +1743,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             business_message = str(
                 getattr(runner, "_mail_selective_claim_terminal_message", "") or ""
             ).strip()
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         if not is_scan:
             if result != "success":
                 raise RuntimeError(
@@ -1751,7 +1769,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="mail-claim-law",
         standard_job_description="动态",
-        standard_job_payload={"max_runtime_seconds": 10800},
+        standard_job_payload={"max_execution_seconds": 10800},
     )
     def _run_data_annotation_mail_claim_law_task_cell(
         runner: Any,
@@ -1843,8 +1861,8 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         # 业务函数的所有正常终态都经专属链路回到世界；包装器若再做一次
         # 世界场景导航，会重复整帧识别/规划并拉长短作业。异常终态原本也
         # 不会执行这里的尾部清理，因此只保留起点归一化。
@@ -1857,10 +1875,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from runner._execute_xianfu_learn_skill_task(ctx, stop_event, payload)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1898,10 +1916,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             execute_xianzang_lottery_job,
         )
 
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = execute_xianzang_lottery_job(runner, ctx, payload, stop_event)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -1945,7 +1963,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="lingxiao-xianhui",
         standard_job_description="动态",
-        standard_job_payload={"max_runtime_seconds": 180},
+        standard_job_payload={"max_execution_seconds": 180},
     )
     def _run_data_annotation_lingxiao_xianhui_task_cell(
         runner: Any,
@@ -1966,7 +1984,7 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         standard_job=True,
         standard_job_id="wanbao-zhenbao",
         standard_job_description="手动",
-        standard_job_payload={"max_runtime_seconds": 600},
+        standard_job_payload={"max_execution_seconds": 600},
     )
     def _run_data_annotation_wanbao_zhenbao_task_cell(
         runner: Any,
@@ -2007,10 +2025,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
             execute_xutian_palace_rankings_job,
         )
 
-        runtime = runner._fanxiu_runtime(ctx, stop_event=stop_event)
-        yield from runtime.goto_view(34)
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
         result = yield from execute_xutian_palace_rankings_job(runner, ctx, payload, stop_event)
-        yield from runtime.goto_view(34)
+        yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
@@ -2091,11 +2109,10 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "ranking_lifecycle",
         "玩法榜",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="ranking-lifecycle",
-        standard_job_description="动态",
-        standard_job_payload={"max_runtime_seconds": 10800},
+        scheduler_supported=False,
+        # Keep the explicit Cell for isolated R&D, but do not publish the
+        # unfinished gameplay-ranking lifecycle as a production Job.
+        standard_job=False,
     )
     def _run_data_annotation_ranking_lifecycle_task_cell(
         runner: Any,
@@ -2117,13 +2134,59 @@ def register_fanxiu_data_annotation_default_runtime_jobs() -> None:
         )
 
     @register_fanxiu_data_annotation_task_cell(
+        "beast_abyss_initialization_rnd",
+        "兽渊_初始化研发",
+        scheduler_supported=False,
+        standard_job=False,
+    )
+    def _run_data_annotation_beast_abyss_initialization_rnd_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import (
+            execute_beast_abyss_initialization_rnd_cell,
+        )
+
+        return (yield from execute_beast_abyss_initialization_rnd_cell(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+        ))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "beast_abyss_rank_refresh_rnd",
+        "兽渊_榜单刷新研发",
+        scheduler_supported=False,
+        standard_job=False,
+    )
+    def _run_data_annotation_beast_abyss_rank_refresh_rnd_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import (
+            execute_beast_abyss_rank_refresh_rnd_cell,
+        )
+
+        return (yield from execute_beast_abyss_rank_refresh_rnd_cell(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+        ))
+
+    @register_fanxiu_data_annotation_task_cell(
         "resource_ranking",
         "资源榜",
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="resource-ranking",
         standard_job_description="动态",
-        standard_job_payload={"max_runtime_seconds": 10800},
+        standard_job_payload={"max_execution_seconds": 10800},
     )
     def _run_data_annotation_resource_ranking_task_cell(
         runner: Any,

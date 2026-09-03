@@ -235,7 +235,7 @@ def execute_dongtian_seating_runtime_job(
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("洞天_上座：缺少资产树路径")
-    runtime = runner._fanxiu_runtime(
+    context = runner._behavior_tree_context(
         dict(ctx),
         asset_tree_path,
         stop_event=stop_event,
@@ -270,9 +270,9 @@ def execute_dongtian_seating_runtime_job(
         probe = dict(probe_reader(excluded_mine_ids=excluded))
         authorization = build_dongtian_seating_place_authorization(probe)
 
-        yield from runtime.goto_view(279)
+        yield from context.go_scene(279)
         yield from runner._daily_dongtian_click_seating_target(
-            runtime,
+            context,
             stop_event,
             authorization,
             max_scrolls=int((payload or {}).get("max_scrolls") or 24),
@@ -283,13 +283,13 @@ def execute_dongtian_seating_runtime_job(
             int(target["seat_id"]),
             group=int(target["config_group"]),
         )
-        runtime.click_frame_point(341, *geometry.point)
-        yield from runtime.wait_scene(
+        context.click_frame_point(341, *geometry.point)
+        yield from context.wait_scene(
             343,
-            timeout=15,
+            wait=15,
             label="洞天_上座：打开空侍从席队伍确认",
         )
-        yield from runtime.wait_click_then_view(
+        yield from context.wait_click_then_scene(
             343,
             "占领",
             341,

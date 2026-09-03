@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from backend.core.fanxiu.data_annotation import behavior_tree_runtime
+from backend.core.fanxiu.data_annotation import behavior_tree_executor
 from backend.core.fanxiu.data_annotation.tasks.daily_foundation import DailyFoundationTaskMixin
 
 
@@ -41,7 +41,7 @@ def test_daily_job_admission_owns_window_and_next_time(
     now,
     expected_next_time,
 ):
-    monkeypatch.setattr(behavior_tree_runtime, "_now", lambda: now)
+    monkeypatch.setattr(behavior_tree_executor, "_now", lambda: now)
     runner = _Runner()
 
     result = getattr(runner, method_name)({"__scheduler_task_id": task_id})
@@ -55,7 +55,7 @@ def test_daily_job_admission_owns_window_and_next_time(
 
 def test_daily_job_admission_allows_business_only_inside_window(monkeypatch):
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 7, 29, 21, 45, 0),
     )
@@ -71,7 +71,7 @@ def test_daily_job_admission_allows_business_only_inside_window(monkeypatch):
 
 def test_daily_job_admission_missing_scheduler_task_id_fails_closed(monkeypatch):
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 7, 29, 22, 0, 0),
     )
@@ -85,7 +85,7 @@ def test_daily_job_admission_missing_scheduler_task_id_fails_closed(monkeypatch)
 
 def test_dongtian_clear_debug_override_is_explicit(monkeypatch):
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 7, 29, 12, 0, 0),
     )

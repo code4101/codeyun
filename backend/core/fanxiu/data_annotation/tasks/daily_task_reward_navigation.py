@@ -68,11 +68,11 @@ def _scene_id(value: Any) -> int | None:
         return None
 
 
-def _finish_lundao_cover(runtime: Any, scene_id: int) -> Any:
+def _finish_lundao_cover(context: Any, scene_id: int) -> Any:
     """Normalize only known entry blockers to a day/night Lundao cover."""
 
     if scene_id == 391:
-        waited = yield from runtime.wait_click_then_view(
+        waited = yield from context.wait_click_then_scene(
             391,
             "确认",
             [296, 549, 304],
@@ -81,7 +81,7 @@ def _finish_lundao_cover(runtime: Any, scene_id: int) -> Any:
         )
         scene_id = _scene_id(waited)
     if scene_id == 304:
-        waited = yield from runtime.wait_click_then_view(
+        waited = yield from context.wait_click_then_scene(
             304,
             "返回",
             [296, 549, 34, 69],
@@ -97,9 +97,9 @@ def _finish_lundao_cover(runtime: Any, scene_id: int) -> Any:
     return scene_id
 
 
-def _finish_qixi_cover(runtime: Any, scene_id: int) -> Any:
+def _finish_qixi_cover(context: Any, scene_id: int) -> Any:
     if scene_id == 330:
-        waited = yield from runtime.wait_click_then_view(
+        waited = yield from context.wait_click_then_scene(
             330,
             "确定",
             [319],
@@ -115,14 +115,14 @@ def _finish_qixi_cover(runtime: Any, scene_id: int) -> Any:
     return 319
 
 
-def _finish_lingmai_cover(runtime: Any, scene_id: int) -> Any:
+def _finish_lingmai_cover(context: Any, scene_id: int) -> Any:
     if scene_id == 312:
         # Do not include the source popup in the post-click candidate set: a
         # still-rendered animation frame must not be mistaken for completion.
-        yield from runtime.wait_click(312, "确认")
-        waited = yield from runtime.wait_scene(
+        yield from context.wait_click(312, "确认")
+        waited = yield from context.wait_scene(
             285,
-            timeout=8.0,
+            wait=8.0,
             label="日常_任务奖励/灵脉：确认入口弹窗后等待 #285",
         )
         scene_id = _scene_id(waited)
@@ -139,7 +139,7 @@ def navigate_to_daily_task_reward_cover(
     ctx: dict[str, Any],
     stop_event: threading.Event,
     payload: dict[str, Any],
-    runtime: Any,
+    context: Any,
     domain: str,
 ) -> Any:
     """Navigate from #34/#69 to one reward-bearing activity cover.
@@ -155,9 +155,9 @@ def navigate_to_daily_task_reward_cover(
         raise ValueError(f"未知日常任务奖励域：{domain}") from exc
 
     candidates = [spec.target_scene_id, *spec.landing_scene_ids, 69, 34]
-    scene_id, _score, frame = runtime.current_scene(candidates, update=True)
+    scene_id, _score, frame = context.current_scene(candidates, update=True)
     scene_id = _scene_id(scene_id)
-    text = runtime.ocr_text(frame)
+    text = context.ocr_text(frame)
 
     # A retry may already be on the target or one of its known entry blockers.
     # Handle those before touching the shared daily list.
@@ -165,7 +165,7 @@ def navigate_to_daily_task_reward_cover(
         if scene_id != 69:
             scene_id = yield from owner._enter_daily_from_world_like(
                 ctx,
-                runtime,
+                context,
                 stop_event,
                 frame,
                 scene_id,
@@ -189,19 +189,19 @@ def navigate_to_daily_task_reward_cover(
             raise RuntimeError(
                 f"日常_任务奖励/{domain}：#69 动态入口未打开，status={status!r}"
             )
-        waited = yield from runtime.wait_scene(
+        waited = yield from context.wait_scene(
             *spec.landing_scene_ids,
-            timeout=25.0,
+            wait=25.0,
             label=f"日常_任务奖励/{domain}：等待活动封面",
         )
         scene_id = _scene_id(waited)
 
     if domain == "lundao":
-        target = yield from _finish_lundao_cover(runtime, scene_id)
+        target = yield from _finish_lundao_cover(context, scene_id)
     elif domain == "qixi_mojie":
-        target = yield from _finish_qixi_cover(runtime, scene_id)
+        target = yield from _finish_qixi_cover(context, scene_id)
     else:
-        target = yield from _finish_lingmai_cover(runtime, scene_id)
+        target = yield from _finish_lingmai_cover(context, scene_id)
     return {
         "ok": True,
         "domain": domain,

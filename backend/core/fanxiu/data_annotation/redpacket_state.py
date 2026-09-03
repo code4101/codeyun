@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from backend.core.fanxiu.instrumentation.red_packet import (
     read_cached_chat_red_packet_pending,
     read_red_packet_pending,
 )
+from backend.core.temp_paths import codeyun_temp_root
 REDPACKET_STATE_PROBE_ID = "red-packet"
 REDPACKET_SCHEDULER_TASK_ID = "daily-redpacket"
 QMCH_REWARD_EVENT_TYPE = 9033
@@ -18,6 +22,59 @@ QMCH_REWARD_CHANNEL = 101
 # events.  Patrol therefore projects those passive server facts by stable UID.
 # Process addresses are transient diagnostic evidence only, never business
 # identity.  Do not turn this read-only probe into a Lua call/bridge.
+
+
+def _redpacket_visual_verification_path() -> Path:
+    return codeyun_temp_root("fanxiu-runtime-memory") / "redpacket-visual-verification.json"
+
+
+def record_redpacket_visual_verification(
+    snapshot: dict[str, Any],
+    *,
+    valid_until: str,
+) -> None:
+    """Remember the exact UID set a successful GUI Job just inspected."""
+
+    chat = (snapshot.get("sources") or {}).get("chat") or {}
+    uids = sorted({
+        str(item.get("uid"))
+        for item in chat.get("items") or snapshot.get("items") or []
+        if isinstance(item, dict) and item.get("uid") is not None
+    })
+    path = _redpacket_visual_verification_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "verified_uids": uids,
+                "valid_until": str(valid_until),
+                "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _read_redpacket_visual_verification() -> dict[str, Any]:
+    path = _redpacket_visual_verification_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    try:
+        valid_until = datetime.strptime(
+            str(payload.get("valid_until") or ""),
+            "%Y-%m-%d %H:%M:%S",
+        )
+    except ValueError:
+        return {}
+    if valid_until <= datetime.now():
+        return {}
+    return payload
 
 
 def refresh_redpacket_runtime_snapshot() -> dict[str, Any]:
@@ -46,19 +103,19 @@ def read_current_redpacket_state(
     """Return the current read-only Runtime projection."""
 
     del max_age_seconds  # Compatibility only; every patrol performs a fresh hot-path read.
-    runtime = refresh_redpacket_runtime_snapshot()
-    return classify_redpacket_runtime_snapshot(runtime)
+    context = refresh_redpacket_runtime_snapshot()
+    return classify_redpacket_runtime_snapshot(context)
 
 
-def classify_redpacket_runtime_snapshot(runtime: dict[str, Any]) -> dict[str, Any]:
+def classify_redpacket_runtime_snapshot(context: dict[str, Any]) -> dict[str, Any]:
     """Classify one fresh read into evidence levels without action authority."""
 
-    result = dict(runtime)
-    chat = (runtime.get("sources") or {}).get("chat") or {}
-    items = list(chat.get("items") or runtime.get("items") or [])
+    result = dict(context)
+    chat = (context.get("sources") or {}).get("chat") or {}
+    items = list(chat.get("items") or context.get("items") or [])
     structural_complete = bool(
-        runtime.get("available")
-        and runtime.get("complete")
+        context.get("available")
+        and context.get("complete")
         and chat
         and chat.get("available", True)
         and chat.get("complete")
@@ -261,12 +318,23 @@ def inspect_redpacket_game_state() -> dict[str, Any]:
     nonterminal_items = [
         item for item in items if not _is_rewarded_qmch_terminal(item)
     ]
+    verification = _read_redpacket_visual_verification()
+    verified_uids = {
+        str(uid)
+        for uid in verification.get("verified_uids") or []
+        if str(uid).strip()
+    }
+    unverified_items = [
+        item
+        for item in nonterminal_items
+        if str(item.get("uid") or "") not in verified_uids
+    ]
     # RedbagData is the authoritative passive chat fact for patrol.  Do not
-    # suppress a non-empty chat set with MainUI's transient display queue: the
-    # latter can be empty while the current UI still exposes claimable red
-    # packets.  Patrol only advances next_time; the Job independently repeats
-    # its #395/#332/#30 visual guards before any click, so false-positive
-    # candidates remain safe while false-negative scheduling is avoided.
+    # suppress a newly observed UID merely because MainUI's transient display
+    # queue is empty.  Once the GUI Job has successfully inspected that exact
+    # UID set, however, the level-triggered Runtime list may retain stale rows.
+    # The verification cursor prevents the minute patrol from defeating the
+    # Job's own next_time while any newly observed UID still triggers at once.
     # A claimed 9033/5022 item remains in RedbagData until the activity expires.
     # Keeping it in the structural projection is useful for the Job's idempotent
     # postcondition, but it must not make the one-minute patrol advance the same
@@ -274,7 +342,7 @@ def inspect_redpacket_game_state() -> dict[str, Any]:
     # packets, a new QMCH UID, and a live receive queue still trigger normally.
     immediate_chat_pending = bool(
         receive_queue_count > 0
-        or nonterminal_items
+        or unverified_items
         or (pending_count > 0 and not items)
     )
     return {

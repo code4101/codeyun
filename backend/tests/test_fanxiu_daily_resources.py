@@ -1,4 +1,4 @@
-from backend.core.fanxiu.data_annotation import behavior_tree_runtime  # noqa: F401
+from backend.core.fanxiu.data_annotation import behavior_tree_executor  # noqa: F401
 from datetime import datetime
 
 from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
@@ -78,13 +78,13 @@ def test_xianshi_weekly_resource_leaves_world_like_internal_scene_first():
         def click_shape_center(self, view_id, title):
             events.append(("leave", view_id, title))
 
-        def wait_view(self, view_id, **_options):
+        def wait_scene(self, view_id, **_options):
             events.append(("wait", view_id))
             if False:
                 yield
             return view_id
 
-        def wait_click_then_view(self, *args, **_options):
+        def wait_click_then_scene(self, *args, **_options):
             events.append(("confirm",) + args)
             if False:
                 yield

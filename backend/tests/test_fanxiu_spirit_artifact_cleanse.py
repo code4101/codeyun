@@ -328,7 +328,7 @@ class _RuntimeGui:
         matched = self.scene if self.scene in set(candidates) else None
         return matched, 100.0 if matched is not None else 0.0, "frame"
 
-    def click_shape_center_then_view(
+    def click_shape_center_then_scene(
         self, source, shape, *targets, timeout=None, label=None
     ):
         def transition():

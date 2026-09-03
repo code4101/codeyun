@@ -1726,6 +1726,13 @@ export const useNoteStore = defineStore('notes', () => {
     return getNoteById(note.id) || note;
   };
 
+  const applyLocalNoteDraft = (note: NoteNode) => {
+    mergeNoteSummaries([note]);
+    mergeNoteDetails([note]);
+    pruneCaches();
+    return getNoteById(note.id) || note;
+  };
+
   const applySyncedNoteUpdate = (note: NoteNode) => {
     const existing = getNoteById(note.id);
     if (existing?.updated_at && note.updated_at && note.updated_at < existing.updated_at) {
@@ -2325,7 +2332,6 @@ export const useNoteStore = defineStore('notes', () => {
     } catch (error) {
       console.error('Failed to update note:', error);
       if (axios.isAxiosError(error) && error.response?.status === 409) {
-        ElMessage.warning('文档中本次编辑的字段已发生变化，已保留本地草稿');
         throw error;
       }
       ElMessage.error('保存任务失败');
@@ -2612,6 +2618,7 @@ export const useNoteStore = defineStore('notes', () => {
     setActiveTab,
     getTabSession,
     updateTabViewState,
+    applyLocalNoteDraft,
     getTabNotes,
     getTabEdges,
     getNoteById,

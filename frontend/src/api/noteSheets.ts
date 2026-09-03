@@ -257,12 +257,15 @@ export interface NoteSheetExcelImportResponse {
   imported_count: number
   preserved_row_count: number
   skipped_duplicate_count: number
+  matched_existing_row_count: number
+  removed_existing_row_count: number
+  preserved_existing_cell_count: number
   extra_columns: string[]
   warnings: string[]
   mapping_notes: string[]
 }
 
-export type NoteSheetExcelImportMode = 'append' | 'reset'
+export type NoteSheetExcelImportMode = 'append' | 'reset' | 'sync'
 
 const NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_MS = 930_000
 const NOTE_SHEET_ACTION_TIMEOUT_MS = 180_000

@@ -566,10 +566,10 @@ def build_bothdraw_revenue_task_snapshot(
                 status = _TASK_STATUS_CLAIMED
                 state = "claimed"
             else:
-                runtime_task_id = int(server.get("taskId") or 0)
-                if runtime_task_id != task_id:
+                execution_task_id = int(server.get("taskId") or 0)
+                if execution_task_id != task_id:
                     raise FanxiuRuntimeMemoryError(
-                        f"活动 {int(activity_id)} 的任务 {task_id} Runtime 身份不一致：{runtime_task_id}"
+                        f"活动 {int(activity_id)} 的任务 {task_id} Runtime 身份不一致：{execution_task_id}"
                     )
                 status = int(server.get("status") or 0)
                 state = (

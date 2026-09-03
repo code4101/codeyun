@@ -18,7 +18,7 @@ import psutil
 
 from backend.core.fanxiu.history_museum.packet_capture.activity_sync import sync_fanxiu_activity_packets
 from backend.core.fanxiu.history_museum.packet_capture.insights import (
-    decode_and_sync_fanxiu_runtime_capture,
+    decode_and_sync_behavior_tree_context_capture,
     sync_fanxiu_packet_business_for_decode_result,
     sync_fanxiu_packet_runtime_insights_for_decode_result,
 )
@@ -323,7 +323,7 @@ def _host_commit_pressure_for_packet_decode() -> dict[str, Any]:
 
             commit = _windows_commit_snapshot()
         except (ImportError, AttributeError):
-            from backend.core.fanxiu.runtime.mumu_control import _collect_windows_commit_snapshot
+            from backend.core.fanxiu.client.mumu_control import _collect_windows_commit_snapshot
 
             commit = _collect_windows_commit_snapshot()
     except Exception:
@@ -1121,7 +1121,7 @@ def _decode_runtime_capture_direct(
     data_dir: str | Path | None = None,
     max_streams: int,
 ) -> dict[str, Any]:
-    return decode_and_sync_fanxiu_runtime_capture(
+    return decode_and_sync_behavior_tree_context_capture(
         path,
         data_dir=data_dir,
         max_streams=max(1, int(max_streams)),

@@ -70,7 +70,7 @@ def _merge_runtime_mail_payload(
     return merged
 
 
-def _runtime_status(item: dict[str, Any]) -> str:
+def _execution_status(item: dict[str, Any]) -> str:
     if bool(item.get("reward_getted")):
         return "claimed"
     if bool(item.get("has_attachment")):
@@ -78,14 +78,14 @@ def _runtime_status(item: dict[str, Any]) -> str:
     return "no_attachment"
 
 
-def _display_status(*, runtime_status: str, locked: bool) -> str:
+def _display_status(*, execution_status: str, locked: bool) -> str:
     if locked:
         return "锁定"
-    if runtime_status == "claimed":
+    if execution_status == "claimed":
         return "已领"
-    if runtime_status == "no_attachment":
+    if execution_status == "no_attachment":
         return "无附件"
-    if runtime_status == "absent":
+    if execution_status == "absent":
         return "已离开清单"
     return "留存"
 
@@ -110,7 +110,24 @@ def _runtime_rewards(
         if isinstance(catalog_item, dict):
             item.update(catalog_item)
         item.update({"item_id": item_id, "amount": raw.get("amount"), "type": raw.get("type")})
-        for key in ("content", "extra_mark", "client_content"):
+        for key in (
+            "content",
+            "extra_mark",
+            "client_content",
+            "item_name",
+            "runtime_name_id",
+            "item_type",
+            "item_type_id",
+            "item_sub_type_id",
+            "quality",
+            "icon",
+            "small_icon",
+            "use_condition",
+            "break_obtain",
+            "item_resolved",
+            "policy_resolution",
+            "name_source",
+        ):
             if raw.get(key) not in (None, ""):
                 item[key] = raw.get(key)
         normalized.append(item)
@@ -226,8 +243,8 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
         # lock-icon observation is only historical visual evidence and must
         # never remove a Runtime-unlocked mail from the claim target set.
         locked = bool(raw_item.get("locked"))
-        runtime_status = _runtime_status(raw_item)
-        if locked or runtime_status != "unclaimed":
+        execution_status = _execution_status(raw_item)
+        if locked or execution_status != "unclaimed":
             action_policy = ""
         create_time_ms = raw_item.get("create_time")
         try:
@@ -255,15 +272,15 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
             create_time_ms=create_time_ms,
             source="runtime_memory",
             action_policy=action_policy,
-            status=_display_status(runtime_status=runtime_status, locked=locked),
+            status=_display_status(execution_status=execution_status, locked=locked),
             locked=locked,
             payload=payload,
             evidence={"runtime_memory": snapshot.get("evidence") or {}, "captured_at": captured_at},
             seen_capture_at=captured_at,
         )
         record.source = "runtime_memory"
-        record.status = _display_status(runtime_status=runtime_status, locked=locked)
-        record.runtime_status = runtime_status
+        record.status = _display_status(execution_status=execution_status, locked=locked)
+        record.execution_status = execution_status
         record.desired_status = "锁定" if locked else desired_status
         record.action_policy = action_policy
         record.present_in_runtime = True
@@ -290,8 +307,8 @@ def _sync_fanxiu_mail_runtime_snapshot_once(
         if str(record.mail_id or "") in present_ids:
             continue
         record.present_in_runtime = False
-        directly_claimed = record.runtime_status == "claimed" or record.reward_getted is True
-        record.runtime_status = "claimed" if directly_claimed else "claimed_absent"
+        directly_claimed = record.execution_status == "claimed" or record.reward_getted is True
+        record.execution_status = "claimed" if directly_claimed else "claimed_absent"
         record.status = "已领"
         record.action_policy = ""
         record.runtime_index = None

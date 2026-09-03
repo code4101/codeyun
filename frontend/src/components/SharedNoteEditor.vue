@@ -423,17 +423,23 @@ import {
   buildEditableNotePatch,
   buildEditableNoteExpectedFields,
   buildNoteDraftStorageKey,
+  buildScopedNoteDraftStorageKey,
   cloneEditableNoteSnapshot,
   convertNoteCustomFieldValue,
   createEditableNoteSnapshot,
   createNoteCustomFieldItem,
+  getEditableNoteChangedFields,
+  isEditableNoteSaveConflict,
+  mergeEditableNoteDraft,
   noteCustomFieldItemsToList,
   noteCustomFieldsToItems,
   noteSnapshotToNode,
   normalizeNoteCustomFieldType,
   type EditableNotePatch,
   type EditableNoteExpectedFields,
+  type EditableNoteFieldName,
   type EditableNoteSnapshot,
+  type EditableNoteSaveResult,
   type NoteCustomFieldItem,
   type NoteCustomFieldType
 } from '@/utils/noteAutoSave';
@@ -441,13 +447,14 @@ import {
   evaluateCompletionProgressExpr,
   getCompletionProgressExprFromCustomFields,
   isDefaultFullCompletionProgressExpr,
+  mergeEditableCustomFieldsWithSystemFields,
   normalizeCompletionProgressExpr,
   resolveCompletionProgressFillRatio,
   stripNoteSystemCustomFields,
-  upsertCompletionProgressExprInCustomFields,
 } from '@/utils/noteProgress';
 import { NOTE_WEIGHT_DEFAULT, NOTE_WEIGHT_MIN, normalizeNoteWeight } from '@/utils/noteWeight';
-import { useAutoSave } from '@/utils/useAutoSave';
+import { useAutoSave, type AutoSaveDraftCandidate } from '@/utils/useAutoSave';
+import { getSaveClientInstanceId } from '@/utils/saveMutationIdentity';
 import { derivePrimaryNodeType, getNodeStatusConfig, getNodeTypeConfig, normalizeNoteTypeAssignments } from '@/utils/nodeConfig';
 import { useSortableList } from '@/utils/useSortableList';
 import {
@@ -476,7 +483,7 @@ const props = defineProps<{
   editorLayout?: 'fill' | 'flow';
   editorMinHeight?: number;
   draftStorageKey?: string | null;
-  onSave?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => Promise<NoteNode | void>;
+  onSave?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => Promise<EditableNoteSaveResult>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch, expectedFields?: EditableNoteExpectedFields) => void;
 }>();
 
@@ -485,6 +492,8 @@ const effectiveEditorLayout = computed(() => props.editorLayout || 'fill');
 const emit = defineEmits<{
   (e: 'update:modelValue', note: NoteNode): void;
   (e: 'change', note: NoteNode): void;
+  (e: 'draft-change', note: NoteNode): void;
+  (e: 'dirty-change', dirty: boolean): void;
 }>();
 
 interface InheritedFieldItem {
@@ -505,8 +514,10 @@ interface DraftDiffRow {
   draftText: string;
 }
 
-const CONTENT_SAVE_DELAY_MS = 0;
-const META_SAVE_DELAY_MS = 0;
+const CONTENT_SAVE_DELAY_MS = 1000;
+const META_SAVE_DELAY_MS = 500;
+const SAVE_CONFLICT_RETRY_LIMIT = 4;
+const INTERACTIVE_CONFLICT_FIELDS = new Set<EditableNoteFieldName>(['title', 'content', 'custom_fields']);
 const LOCAL_NOTE_UNDO_STACK_LIMIT = 40;
 const EMPTY_RICH_TEXT_HTML_VALUES = new Set(['', '<p><br></p>', '<p></p>']);
 const CUSTOM_FIELD_KEY_WIDTH_MIN = 96;
@@ -568,7 +579,7 @@ const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedFieldSource = ref<NoteNode['inherited_fields'] | null>(null);
 const timeInputString = ref('');
 const currentDraftKey = ref<string | null>(null);
-let loadRequestToken = 0;
+const legacyDraftKey = ref<string | null>(null);
 let customFieldKeyResizePointerId: number | null = null;
 let customFieldKeyResizeStartX = 0;
 let customFieldKeyResizeStartWidth = customFieldKeyWidth.value;
@@ -577,6 +588,9 @@ let selectedSourceImageElement: HTMLImageElement | null = null;
 let suppressLocalHistory = false;
 let activeLocalEditHistoryEntry: LocalNoteHistoryEntry | null = null;
 let activeLocalEditHistoryCommitted = false;
+let pendingDraftResolutionNoteId: string | null = null;
+let pendingDraftResolutionServerNote: NoteNode | null = null;
+let draftResolutionSequence = 0;
 
 const removeLocalDraftByKey = (draftKey: string | null) => {
   if (!draftKey || typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
@@ -751,7 +765,7 @@ const persistSourceHtmlEditorContent = (options: { immediate?: boolean } = {}) =
   const sanitizedHtml = sanitizeSourcePreviewHtml(element.innerHTML);
   if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
   if (currentNote.value.content !== sanitizedHtml) currentNote.value.content = sanitizedHtml;
-  queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: false, delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const showSourceImageMenu = (image: HTMLImageElement, event: MouseEvent) => {
@@ -824,7 +838,7 @@ const handleSourceHtmlInput = () => {
   hideSourceImageMenu();
   currentNote.value.content = element.innerHTML;
   recordLocalEditHistory('content');
-  queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: false, delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const handleSourceHtmlClick = (event: MouseEvent) => {
@@ -867,7 +881,7 @@ const handleSourceHtmlBlur = () => {
   if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
   if (currentNote.value.content !== sanitizedHtml) {
     currentNote.value.content = sanitizedHtml;
-    queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
+    queueAutoSave({ immediate: false, delayMs: CONTENT_SAVE_DELAY_MS });
   }
 };
 
@@ -892,7 +906,8 @@ const startDateProxy = computed<Date | undefined>({
   }
 });
 
-const buildStoredCustomFields = () => upsertCompletionProgressExprInCustomFields(
+const buildStoredCustomFields = () => mergeEditableCustomFieldsWithSystemFields(
+  currentNote.value?.custom_fields,
   noteCustomFieldItemsToList(customFieldsList.value),
   currentNote.value?.completion_progress_expr ?? null
 );
@@ -1097,39 +1112,55 @@ const diffValueText = (snapshot: EditableNoteSnapshot, key: keyof EditableNoteSn
 
 const buildDraftDiffRows = (
   draftSnapshot: EditableNoteSnapshot,
-  serverSnapshot: EditableNoteSnapshot
+  serverSnapshot: EditableNoteSnapshot,
+  fieldNames: EditableNoteFieldName[] = getEditableNoteChangedFields(serverSnapshot, draftSnapshot)
 ): DraftDiffRow[] => {
-  const fields: Array<[keyof EditableNoteSnapshot, string]> = [
+  const fieldLabels: Record<EditableNoteFieldName, string> = {
+    title: '标题',
+    content: '正文',
+    weight: '权重',
+    start_at: '起始时间',
+    note_categories: '分类',
+    primary_category: '主分类',
+    note_form: '形态',
+    lifecycle_stage: '阶段',
+    color: '颜色',
+    private_level: '私密',
+    custom_fields: '自定义属性'
+  };
+  const fields: Array<[EditableNoteFieldName, string]> = [
     ['title', '标题'],
     ['content', '正文'],
     ['weight', '权重'],
     ['start_at', '起始时间'],
     ['note_categories', '分类'],
+    ['primary_category', '主分类'],
     ['note_form', '形态'],
     ['lifecycle_stage', '阶段'],
+    ['color', '颜色'],
     ['private_level', '私密'],
     ['custom_fields', '自定义属性']
-  ];
+  ].filter(([key]) => fieldNames.includes(key));
 
   return fields
     .map(([key, label]) => {
       const serverText = diffValueText(serverSnapshot, key);
-      const draftText = diffValueText(draftSnapshot, key);
-      return normalizeDiffText(serverText) === normalizeDiffText(draftText)
-        ? null
-        : { label, serverText, draftText };
+      let draftText = diffValueText(draftSnapshot, key);
+      if (normalizeDiffText(serverText) === normalizeDiffText(draftText)) {
+        draftText = `${draftText || '空'}（底层${fieldLabels[key]}结构不同）`;
+      }
+      return { label, serverText, draftText };
     })
     .filter((item): item is DraftDiffRow => Boolean(item));
 };
 
 const buildDraftRestoreMessage = (
-  pendingDraft: { updatedAt: number; snapshot: EditableNoteSnapshot; hasConflict: boolean },
-  serverSnapshot: EditableNoteSnapshot
+  pendingDraft: AutoSaveDraftCandidate<EditableNoteSnapshot>,
+  serverSnapshot: EditableNoteSnapshot,
+  conflictingFields: EditableNoteFieldName[]
 ) => {
-  const rows = buildDraftDiffRows(pendingDraft.snapshot, serverSnapshot);
-  const summary = pendingDraft.hasConflict
-    ? `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿，且服务器版本之后还有更新。`
-    : `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿。`;
+  const rows = buildDraftDiffRows(pendingDraft.snapshot, serverSnapshot, conflictingFields);
+  const summary = `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的未保存编辑，服务器也修改了相同字段。`;
 
   return h('div', { class: 'draft-restore-message' }, [
     h('p', { class: 'draft-restore-summary' }, summary),
@@ -1306,34 +1337,90 @@ useSortableList({
 });
 
 const autoSave = useAutoSave<EditableNoteSnapshot>({
-  debounceMs: 0,
+  debounceMs: CONTENT_SAVE_DELAY_MS,
+  retryDelayMs: 1500,
   equals: areEditableNoteSnapshotsEqual,
   storageKey: () => currentDraftKey.value,
   save: async snapshot => {
     if (!props.onSave) return snapshot;
-    const baseline = autoSave.getBaselineSnapshot();
-    const patch = buildEditableNotePatch(snapshot, baseline);
-    if (!Object.keys(patch).length) return snapshot;
-    const expectedFields = buildEditableNoteExpectedFields(patch, baseline);
-    const updatedNote = await props.onSave(noteSnapshotToNode(currentNote.value, snapshot), patch, expectedFields);
-    const normalizedSavedNote = updatedNote ? normalizeIncomingNote(updatedNote) : null;
-    const canonicalSnapshot = createEditableNoteSnapshot(normalizedSavedNote || noteSnapshotToNode(currentNote.value, snapshot)) ?? snapshot;
-    if (currentNote.value?.id === snapshot.id) {
-      const latestSnapshot = buildCurrentSnapshot() ?? autoSave.getLatestSnapshot();
-      const hasNewerLocalDraft = latestSnapshot
-        ? !areEditableNoteSnapshotsEqual(latestSnapshot, snapshot)
-        : false;
-      syncCurrentNoteFromSnapshot(
-        hasNewerLocalDraft && latestSnapshot ? latestSnapshot : canonicalSnapshot,
-        normalizedSavedNote
+    let baseline = autoSave.getBaselineSnapshot();
+    let candidateSnapshot = cloneEditableNoteSnapshot(snapshot);
+    let sourceNote = currentNote.value;
+    let keepLocalConflictFields = false;
+
+    for (let attempt = 0; attempt <= SAVE_CONFLICT_RETRY_LIMIT; attempt += 1) {
+      const patch = buildEditableNotePatch(candidateSnapshot, baseline);
+      if (!Object.keys(patch).length) return candidateSnapshot;
+      const expectedFields = buildEditableNoteExpectedFields(patch, baseline);
+      const saveResult = await props.onSave(
+        noteSnapshotToNode(sourceNote, candidateSnapshot),
+        patch,
+        expectedFields
       );
-      emit('change', currentNote.value);
+
+      if (!isEditableNoteSaveConflict(saveResult)) {
+        const normalizedSavedNote = saveResult ? normalizeIncomingNote(saveResult) : null;
+        const canonicalSnapshot = createEditableNoteSnapshot(
+          normalizedSavedNote || noteSnapshotToNode(sourceNote, candidateSnapshot)
+        ) ?? candidateSnapshot;
+        if (currentNote.value?.id === snapshot.id) {
+          const latestSnapshot = buildCurrentSnapshot() ?? autoSave.getLatestSnapshot();
+          const hasNewerLocalDraft = latestSnapshot
+            ? !areEditableNoteSnapshotsEqual(latestSnapshot, snapshot)
+            : false;
+          syncCurrentNoteFromSnapshot(
+            hasNewerLocalDraft && latestSnapshot ? latestSnapshot : canonicalSnapshot,
+            normalizedSavedNote
+          );
+          emit('change', currentNote.value!);
+        }
+        return canonicalSnapshot;
+      }
+
+      const latestNote = normalizeIncomingNote(saveResult.latestNote);
+      const latestServerSnapshot = createEditableNoteSnapshot(latestNote);
+      if (!latestServerSnapshot) throw new Error('无法读取服务器最新版本');
+      const merge = mergeEditableNoteDraft(candidateSnapshot, baseline, latestServerSnapshot);
+      const interactiveConflicts = merge.conflictingFields.filter(field => INTERACTIVE_CONFLICT_FIELDS.has(field));
+
+      if (interactiveConflicts.length > 0 && !keepLocalConflictFields) {
+        const pendingDraft: AutoSaveDraftCandidate<EditableNoteSnapshot> = {
+          updatedAt: Date.now(),
+          snapshot: cloneEditableNoteSnapshot(candidateSnapshot),
+          baselineSnapshot: baseline ? cloneEditableNoteSnapshot(baseline) : null,
+          hasConflict: true
+        };
+        try {
+          await ElMessageBox.confirm(
+            buildDraftRestoreMessage(pendingDraft, latestServerSnapshot, interactiveConflicts),
+            '合并同时发生的编辑',
+            {
+              confirmButtonText: '保留我的编辑',
+              cancelButtonText: '使用服务器版本',
+              customClass: 'draft-restore-dialog',
+              type: 'warning'
+            }
+          );
+          keepLocalConflictFields = true;
+        } catch {
+          syncCurrentNoteFromSnapshot(latestServerSnapshot, latestNote);
+          ElMessage.info('已使用服务器版本');
+          return latestServerSnapshot;
+        }
+      }
+
+      candidateSnapshot = merge.mergedSnapshot;
+      baseline = latestServerSnapshot;
+      sourceNote = latestNote;
+      syncCurrentNoteFromSnapshot(candidateSnapshot, latestNote);
+      emit('draft-change', noteSnapshotToNode(latestNote, candidateSnapshot));
     }
-    return canonicalSnapshot;
+
+    throw new Error('当前修改暂未同步，系统将继续重试');
   },
   onError: error => {
     console.error(error);
-    ElMessage.error('文档保存失败');
+    ElMessage.warning({ message: '修改已保留，正在继续同步', grouping: true });
   },
   saveOnPageHide: (snapshot, baselineSnapshot) => {
     if (!props.onSaveKeepalive) return;
@@ -1345,16 +1432,34 @@ const autoSave = useAutoSave<EditableNoteSnapshot>({
 });
 
 watch(autoSave.saveStatus, value => { saveStatus.value = value; });
+watch(autoSave.hasUnsavedChanges, value => { emit('dirty-change', value); }, { immediate: true });
+
+const migrateLegacyDraftToCurrentTab = () => {
+  const sourceKey = legacyDraftKey.value;
+  const targetKey = currentDraftKey.value;
+  if (!sourceKey || !targetKey || sourceKey === targetKey || typeof window === 'undefined') return;
+  try {
+    if (window.localStorage.getItem(targetKey) != null) return;
+    const legacyDraft = window.localStorage.getItem(sourceKey);
+    if (legacyDraft == null) return;
+    window.localStorage.setItem(targetKey, legacyDraft);
+    window.localStorage.removeItem(sourceKey);
+  } catch {
+    // Draft storage is best-effort; autosave continues in memory when unavailable.
+  }
+};
 
 watch(() => props.modelValue, async newVal => {
-  const requestToken = ++loadRequestToken;
-
   if (currentNote.value && autoSave.hasUnsavedChanges.value && (!newVal || currentNote.value.id !== newVal.id)) {
     await autoSave.flush();
   }
 
   if (!newVal) {
+    draftResolutionSequence += 1;
+    pendingDraftResolutionNoteId = null;
+    pendingDraftResolutionServerNote = null;
     currentDraftKey.value = null;
+    legacyDraftKey.value = null;
     currentNote.value = undefined;
     customFieldsList.value = [];
     inheritedFieldSource.value = null;
@@ -1367,7 +1472,22 @@ watch(() => props.modelValue, async newVal => {
   const note = normalizeIncomingNote(newVal);
   const serverSnapshot = createEditableNoteSnapshot(note);
   if (!serverSnapshot) return;
-  currentDraftKey.value = props.draftStorageKey ?? buildNoteDraftStorageKey(note.id, note.title);
+  legacyDraftKey.value = props.draftStorageKey ?? buildNoteDraftStorageKey(note.id, note.title);
+  currentDraftKey.value = buildScopedNoteDraftStorageKey(
+    legacyDraftKey.value,
+    getSaveClientInstanceId()
+  );
+  migrateLegacyDraftToCurrentTab();
+
+  // A reactive store refresh may arrive while the recovery dialog is open.
+  // Keep one recovery decision per document and advance its server snapshot
+  // instead of starting another modal from the same local draft.
+  if (pendingDraftResolutionNoteId === String(note.id)) {
+    pendingDraftResolutionServerNote = note;
+    syncCurrentNoteFromSnapshot(serverSnapshot, note);
+    return;
+  }
+
   if ((!currentNote.value || currentNote.value.id !== note.id) && note.inherited_fields == null) {
     inheritedFieldSource.value = null;
   }
@@ -1392,37 +1512,96 @@ watch(() => props.modelValue, async newVal => {
     return;
   }
 
-  const { snapshot: loadedSnapshot, pendingDraft, expiredDraft } = autoSave.loadSnapshot(serverSnapshot);
-  let activeSnapshot = loadedSnapshot ?? serverSnapshot;
+  const { pendingDraft, expiredDraft } = autoSave.loadSnapshot(serverSnapshot);
+
+  // Establish the new document identity before any asynchronous recovery UI.
+  // Otherwise every store refresh still sees the previous document and opens
+  // another copy of the same dialog.
+  syncCurrentNoteFromSnapshot(serverSnapshot, note);
+  resetLocalUndoHistory();
+  saveStatus.value = autoSave.saveStatus.value;
+  showHistory.value = false;
 
   if (expiredDraft) ElMessage.info('发现过期本地草稿，已忽略');
 
   if (pendingDraft) {
+    const initialMerge = mergeEditableNoteDraft(
+      pendingDraft.snapshot,
+      pendingDraft.baselineSnapshot,
+      serverSnapshot
+    );
+
+    // A draft with no local delta is a stale recovery artifact, not user work.
+    if (initialMerge.localChangedFields.length === 0) {
+      autoSave.loadSnapshot(serverSnapshot, { draftStrategy: 'discard' });
+      return;
+    }
+
+    // Mature optimistic editors rebase independent fields automatically. The
+    // backend enforces the same field-level preconditions on the actual write.
+    if (initialMerge.conflictingFields.length === 0) {
+      autoSave.loadSnapshot(serverSnapshot, { draftStrategy: 'discard' });
+      syncCurrentNoteFromSnapshot(initialMerge.mergedSnapshot, note);
+      autoSave.markDirty(initialMerge.mergedSnapshot, {
+        immediate: false,
+        delayMs: CONTENT_SAVE_DELAY_MS
+      });
+      ElMessage.info('已恢复未保存的本地编辑');
+      return;
+    }
+
     const draftKeyForPrompt = currentDraftKey.value;
+    const promptNoteId = String(note.id);
+    const promptSequence = ++draftResolutionSequence;
+    pendingDraftResolutionNoteId = promptNoteId;
+    pendingDraftResolutionServerNote = note;
 
     try {
-      await ElMessageBox.confirm(buildDraftRestoreMessage(pendingDraft, serverSnapshot), '恢复本地草稿', {
-        confirmButtonText: '恢复草稿',
+      await ElMessageBox.confirm(
+        buildDraftRestoreMessage(pendingDraft, serverSnapshot, initialMerge.conflictingFields),
+        '合并未保存的编辑',
+        {
+        confirmButtonText: '保留本地编辑',
         cancelButtonText: '使用服务器版本',
         customClass: 'draft-restore-dialog',
-        type: pendingDraft.hasConflict ? 'warning' : 'info'
+        type: 'warning'
       });
 
-      if (requestToken !== loadRequestToken || props.modelValue?.id !== note.id) return;
-      autoSave.restoreDraft(pendingDraft.snapshot);
-      activeSnapshot = pendingDraft.snapshot;
-      ElMessage.warning(pendingDraft.hasConflict ? '已恢复本地草稿，请留意与服务器版本的差异' : '已恢复本地草稿');
+      if (
+        promptSequence !== draftResolutionSequence
+        || String(props.modelValue?.id ?? '') !== promptNoteId
+      ) return;
+      const latestServerNote = pendingDraftResolutionServerNote ?? note;
+      const latestServerSnapshot = createEditableNoteSnapshot(latestServerNote) ?? serverSnapshot;
+      const latestMerge = mergeEditableNoteDraft(
+        pendingDraft.snapshot,
+        pendingDraft.baselineSnapshot,
+        latestServerSnapshot
+      );
+      autoSave.loadSnapshot(latestServerSnapshot, { draftStrategy: 'discard' });
+      syncCurrentNoteFromSnapshot(latestMerge.mergedSnapshot, latestServerNote);
+      autoSave.markDirty(latestMerge.mergedSnapshot, {
+        immediate: false,
+        delayMs: CONTENT_SAVE_DELAY_MS
+      });
+      ElMessage.warning('已保留本地编辑，正在基于服务器最新版重新保存');
     } catch {
       removeLocalDraftByKey(draftKeyForPrompt);
-      if (requestToken !== loadRequestToken || props.modelValue?.id !== note.id) return;
-      autoSave.clearDraft();
+      if (
+        promptSequence !== draftResolutionSequence
+        || String(props.modelValue?.id ?? '') !== promptNoteId
+      ) return;
+      const latestServerNote = pendingDraftResolutionServerNote ?? note;
+      const latestServerSnapshot = createEditableNoteSnapshot(latestServerNote) ?? serverSnapshot;
+      const { snapshot: cleanSnapshot } = autoSave.loadSnapshot(latestServerSnapshot, { draftStrategy: 'discard' });
+      syncCurrentNoteFromSnapshot(cleanSnapshot ?? latestServerSnapshot, latestServerNote);
+    } finally {
+      if (promptSequence === draftResolutionSequence) {
+        pendingDraftResolutionNoteId = null;
+        pendingDraftResolutionServerNote = null;
+      }
     }
   }
-
-  syncCurrentNoteFromSnapshot(activeSnapshot, note);
-  resetLocalUndoHistory();
-  saveStatus.value = autoSave.saveStatus.value;
-  showHistory.value = false;
 }, { immediate: true });
 
 watch(
@@ -1462,10 +1641,13 @@ const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) 
   if (!snapshot) return;
   currentNote.value!.custom_fields = snapshot.custom_fields;
   autoSave.markDirty(snapshot, options);
+  if (options.immediate) void autoSave.flush();
+  emit('draft-change', noteSnapshotToNode(currentNote.value, snapshot));
 };
 
 const queueMetaAutoSave = (options: { immediate?: boolean } = {}) => {
-  queueAutoSave({ immediate: options.immediate ?? true, delayMs: options.immediate === false ? META_SAVE_DELAY_MS : 0 });
+  const immediate = options.immediate ?? false;
+  queueAutoSave({ immediate, delayMs: immediate ? 0 : META_SAVE_DELAY_MS });
 };
 
 const handleTitleInput = () => {
@@ -1476,7 +1658,7 @@ const handleTitleInput = () => {
 const handleContentChange = (html: string) => {
   if (!currentNote.value || effectiveReadonly.value) return;
   currentNote.value.content = html;
-  queueAutoSave({ immediate: true, delayMs: CONTENT_SAVE_DELAY_MS });
+  queueAutoSave({ immediate: false, delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const syncCustomFields = (options: { immediate?: boolean } = {}) => {
@@ -1532,7 +1714,7 @@ const onPrivateLevelChange = (value: number | undefined) => {
     pushLocalUndoSnapshot('private-level');
     currentNote.value.private_level = nextPrivateLevel;
   }
-  if (hasChangedFromBaseline) queueMetaAutoSave();
+  if (hasChangedFromBaseline) queueMetaAutoSave({ immediate: true });
 };
 
 const onPrivateLevelBlur = () => { if (currentNote.value) onPrivateLevelChange(currentNote.value.private_level); };

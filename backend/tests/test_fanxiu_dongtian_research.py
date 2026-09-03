@@ -39,7 +39,7 @@ class _Runner:
         self.start_scene_id = start_scene_id
         self.actions: list[tuple] = []
 
-    def _fanxiu_runtime(self, _ctx, *, stop_event):
+    def _behavior_tree_context(self, _ctx, *, stop_event):
         assert isinstance(stop_event, threading.Event)
         return self.runtime
 
@@ -174,13 +174,13 @@ def test_dongtian_research_helper_rejects_unproven_start_scene():
 
 def test_dongtian_research_helper_is_not_registered_as_a_task_cell():
     from backend.core.fanxiu.data_annotation.default_jobs import (
-        register_fanxiu_data_annotation_default_runtime_jobs,
+        register_fanxiu_default_jobs,
     )
     from backend.core.fanxiu.data_annotation.jobs import (
         list_fanxiu_data_annotation_task_cell_definitions,
     )
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
 
     assert "洞天_研究入口" not in {
         definition.label

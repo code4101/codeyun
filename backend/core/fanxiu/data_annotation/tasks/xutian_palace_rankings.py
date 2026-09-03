@@ -22,15 +22,15 @@ XUTIAN_SCENE_IDS = (
 )
 
 
-def _runtime(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
+def _behavior_tree_context(runner: Any, ctx: dict[str, Any], stop_event: threading.Event) -> Any:
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("虚天殿榜单作业缺少资产树路径")
-    return runner._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+    return runner._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
 
 
 def _wait_scene(
-    runtime: Any,
+    context: Any,
     target: int,
     *,
     timeout_seconds: float = 10.0,
@@ -41,10 +41,10 @@ def _wait_scene(
     last_score = 0.0
     last_text = ""
     while True:
-        last_scene, last_score, frame = runtime.current_scene(
+        last_scene, last_score, frame = context.current_scene(
             list(XUTIAN_SCENE_IDS), update=True
         )
-        last_text = runtime.ocr_text(frame)
+        last_text = context.ocr_text(frame)
         if int(last_scene or 0) == int(target) and float(last_score) >= minimum_score:
             return int(last_scene), float(last_score), last_text
         if time.monotonic() >= deadline:
@@ -56,15 +56,15 @@ def _wait_scene(
 
 
 def _wait_one_of(
-    runtime: Any, targets: tuple[int, ...], *, timeout_seconds: float = 10.0
+    context: Any, targets: tuple[int, ...], *, timeout_seconds: float = 10.0
 ) -> tuple[int, float, str]:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     last_scene: int | None = None
     last_score = 0.0
     last_text = ""
     while True:
-        last_scene, last_score, frame = runtime.current_scene(list(targets), update=True)
-        last_text = runtime.ocr_text(frame)
+        last_scene, last_score, frame = context.current_scene(list(targets), update=True)
+        last_text = context.ocr_text(frame)
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_text
         if time.monotonic() >= deadline:
@@ -75,35 +75,35 @@ def _wait_one_of(
         time.sleep(0.25)
 
 
-def _enter_rankings(runtime: Any) -> None:
-    scene, score, _frame = runtime.current_scene(
+def _enter_rankings(context: Any) -> None:
+    scene, score, _frame = context.current_scene(
         [34, 66, *XUTIAN_SCENE_IDS], update=True
     )
     if int(scene or 0) not in XUTIAN_SCENE_IDS:
         if int(scene or 0) != 66:
-            result = runtime.go_scene(66)
+            result = context.go_scene(66)
             if hasattr(result, "send"):
                 yield from result
-        scene, score, _frame = runtime.current_scene([66], update=True)
+        scene, score, _frame = context.current_scene([66], update=True)
         if int(scene or 0) != 66 or float(score) < 90.0:
             raise RuntimeError(
                 f"#66 未可靠识别日程页：scene={scene}, score={float(score):.1f}"
             )
         yield from select_schedule_activity(
-            runtime, r"虚天(殿)?", enter=True
+            context, r"虚天(殿)?", enter=True
         )
-        _wait_scene(runtime, XUTIAN_MAIN_SCENE_ID)
+        _wait_scene(context, XUTIAN_MAIN_SCENE_ID)
 
-    scene, _score, frame = runtime.current_scene(list(XUTIAN_SCENE_IDS), update=True)
+    scene, _score, frame = context.current_scene(list(XUTIAN_SCENE_IDS), update=True)
     if int(scene or 0) == XUTIAN_PERSONAL_RANK_SCENE_ID:
         return
     if int(scene or 0) == XUTIAN_PLANE_RANK_SCENE_ID:
-        runtime.click_shape(XUTIAN_PLANE_RANK_SCENE_ID, "个人", frame_data_url=frame)
-        _wait_scene(runtime, XUTIAN_PERSONAL_RANK_SCENE_ID)
+        context.click_shape(XUTIAN_PLANE_RANK_SCENE_ID, "个人", frame_data_url=frame)
+        _wait_scene(context, XUTIAN_PERSONAL_RANK_SCENE_ID)
         return
-    frame = runtime.cur_frame(update=True)
-    runtime.click_shape(XUTIAN_MAIN_SCENE_ID, "虚天榜", frame_data_url=frame)
-    _wait_scene(runtime, XUTIAN_PERSONAL_RANK_SCENE_ID)
+    frame = context.cur_frame(update=True)
+    context.click_shape(XUTIAN_MAIN_SCENE_ID, "虚天榜", frame_data_url=frame)
+    _wait_scene(context, XUTIAN_PERSONAL_RANK_SCENE_ID)
 
 
 def _store_rankings() -> tuple[str, int, int]:
@@ -134,22 +134,22 @@ def _store_rankings() -> tuple[str, int, int]:
         return activity.id, personal, plane
 
 
-def _return_world(runtime: Any) -> tuple[int, float]:
-    scene, _score, frame = runtime.current_scene(list(XUTIAN_SCENE_IDS), update=True)
+def _return_world(context: Any) -> tuple[int, float]:
+    scene, _score, frame = context.current_scene(list(XUTIAN_SCENE_IDS), update=True)
     if int(scene or 0) != XUTIAN_MAIN_SCENE_ID:
-        runtime.click_shape(int(scene), "返回", frame_data_url=frame)
-        scene, score, _text = _wait_one_of(runtime, (34, 66, XUTIAN_MAIN_SCENE_ID))
-        frame = runtime.cur_frame()
+        context.click_shape(int(scene), "返回", frame_data_url=frame)
+        scene, score, _text = _wait_one_of(context, (34, 66, XUTIAN_MAIN_SCENE_ID))
+        frame = context.cur_frame()
     else:
         score = 0.0
     if int(scene or 0) == XUTIAN_MAIN_SCENE_ID:
-        runtime.click_shape(XUTIAN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
-        scene, score, _text = _wait_one_of(runtime, (34, 66))
+        context.click_shape(XUTIAN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
+        scene, score, _text = _wait_one_of(context, (34, 66))
     if int(scene or 0) != 34:
-        result = runtime.go_scene(34)
+        result = context.go_scene(34)
         if hasattr(result, "send"):
             yield from result
-        scene, score, _frame = runtime.current_scene([34], update=True)
+        scene, score, _frame = context.current_scene([34], update=True)
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天殿榜单作业收尾未可靠回到 #34：scene={scene}, score={float(score):.1f}"
@@ -164,16 +164,16 @@ def execute_xutian_palace_rankings_job(
     stop_event: threading.Event,
 ) -> dict[str, Any]:
     del payload
-    runtime = _runtime(runner, ctx, stop_event)
-    yield from _enter_rankings(runtime)
+    context = _behavior_tree_context(runner, ctx, stop_event)
+    yield from _enter_rankings(context)
 
     # Both tabs are opened and verified deliberately.  The memory reader then
     # consumes the stable ActivityrankMgr model; OCR is navigation evidence only.
-    frame = runtime.cur_frame(update=True)
-    runtime.click_shape(XUTIAN_PERSONAL_RANK_SCENE_ID, "位面", frame_data_url=frame)
-    _wait_scene(runtime, XUTIAN_PLANE_RANK_SCENE_ID)
+    frame = context.cur_frame(update=True)
+    context.click_shape(XUTIAN_PERSONAL_RANK_SCENE_ID, "位面", frame_data_url=frame)
+    _wait_scene(context, XUTIAN_PLANE_RANK_SCENE_ID)
     activity_id, personal_count, plane_count = _store_rankings()
-    final_scene, final_score = yield from _return_world(runtime)
+    final_scene, final_score = yield from _return_world(context)
 
     message = (
         f"虚天殿_榜单数据：个人榜 {personal_count} 条、位面榜 {plane_count} 条已更新"

@@ -2,6 +2,7 @@ from datetime import datetime
 from threading import Event
 from zoneinfo import ZoneInfo
 
+import pytest
 from sqlmodel import Session, create_engine, select
 
 import backend.core.fanxiu.activity.runtime_schedule as runtime_schedule
@@ -60,6 +61,87 @@ def _resource_occurrence() -> RankingOccurrence:
         close_at=datetime(2026, 8, 23, 23, 59, 59, tzinfo=TZ),
         cross_count=1,
     )
+
+
+def _xutian_occurrence() -> RankingOccurrence:
+    return RankingOccurrence(
+        activity_type="xutian-palace",
+        family="gameplay_rank",
+        runtime_id="4080001400004",
+        activity_id=4080001,
+        start_at=datetime(2026, 8, 31, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 1, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 31, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 2, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+
+def _beast_occurrence() -> RankingOccurrence:
+    return RankingOccurrence(
+        activity_type="beast-abyss",
+        family="gameplay_rank",
+        runtime_id="8150001400004",
+        activity_id=8150001,
+        start_at=datetime(2026, 9, 3, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 3, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 2, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 4, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+
+def test_beast_initialization_rnd_cell_runs_only_the_current_occurrence(monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import beast_abyss_active
+
+    monkeypatch.setattr(
+        lifecycle_job,
+        "job_now",
+        lambda: datetime(2026, 9, 3, 10, 0, tzinfo=TZ),
+    )
+    monkeypatch.setattr(
+        runtime_schedule,
+        "read_fanxiu_activity_runtime_schedule",
+        lambda **_kwargs: {"available": True, "complete": True},
+    )
+    monkeypatch.setattr(
+        lifecycle_job,
+        "discover_ranking_occurrences",
+        lambda _schedule: (_beast_occurrence(),),
+    )
+    seen = []
+
+    def execute(*_args, occurrence, **_kwargs):
+        seen.append(occurrence.instance_key)
+        if False:
+            yield None
+        return {"status": "completed", "phase": "initialization"}
+
+    monkeypatch.setattr(
+        beast_abyss_active,
+        "execute_beast_abyss_initialization_checkpoint",
+        execute,
+    )
+
+    result = _drain(lifecycle_job.execute_beast_abyss_initialization_rnd_cell(
+        object(), {}, {}, Event()
+    ))
+
+    assert result["phase"] == "initialization"
+    assert seen == [_beast_occurrence().instance_key]
+
+
+def test_beast_initialization_rnd_cell_refuses_closed_window(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle_job,
+        "job_now",
+        lambda: datetime(2026, 9, 3, 9, 59, tzinfo=TZ),
+    )
+
+    with pytest.raises(RuntimeError, match="10:00-21:30"):
+        _drain(lifecycle_job.execute_beast_abyss_initialization_rnd_cell(
+            object(), {}, {}, Event()
+        ))
 
 
 def _arrange(monkeypatch, *, reconcile):
@@ -136,13 +218,100 @@ def test_job_isolates_checkpoint_error_and_schedules_retry(monkeypatch) -> None:
     with Session(engine) as session:
         row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
     assert row.status == "error"
-    assert row.retry_at == "2026-08-21T00:40:00+08:00"
+    assert row.retry_at == "2026-08-21T10:00:00+08:00"
     assert runner.next_times == [
         ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 0, 40, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ)),
     ]
     assert result["result"] == "success"
     assert "待重试 1" in result["message"]
+
+
+def test_job_schedules_default_retry_for_first_blocked_business_checkpoint(
+    monkeypatch,
+) -> None:
+    engine = _arrange(
+        monkeypatch,
+        reconcile=lambda *_args, **_kwargs: {
+            "status": "blocked",
+            "message": "兑换宝阁本次未刷新",
+        },
+    )
+    runner = _Runner()
+
+    result = _drain(
+        lifecycle_job.execute_ranking_lifecycle_job(
+            runner,
+            {"scheduler_task_id": "ranking-lifecycle"},
+            {},
+            Event(),
+        )
+    )
+
+    with Session(engine) as session:
+        row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
+    assert row.status == "blocked"
+    assert row.completed_at == ""
+    assert row.retry_at == "2026-08-21T10:00:00+08:00"
+    assert runner.next_times[-1] == (
+        "ranking-lifecycle",
+        datetime(2026, 8, 21, 10, tzinfo=TZ),
+    )
+    assert "待重试 1" in result["message"]
+
+
+def test_job_defers_future_occurrence_to_its_start_instead_of_spinning(
+    monkeypatch,
+) -> None:
+    engine = _arrange(
+        monkeypatch,
+        reconcile=lambda *_args, **_kwargs: {
+            "status": "blocked",
+            "message": "活动尚未开始",
+        },
+    )
+    future = RankingOccurrence(
+        activity_type="magic-invasion",
+        family="gameplay_rank",
+        runtime_id="future-beast",
+        activity_id=110001,
+        start_at=datetime(2026, 8, 21, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 22, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 21, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 23, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+    monkeypatch.setattr(
+        lifecycle_job, "discover_ranking_occurrences", lambda _schedule: (future,)
+    )
+    runner = _Runner()
+
+    _drain(lifecycle_job.execute_ranking_lifecycle_job(runner, {}, {}, Event()))
+
+    with Session(engine) as session:
+        row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
+    assert row.status == "blocked"
+    assert row.retry_at == "2026-08-21T10:00:00+08:00"
+    assert runner.next_times[-1][1] == datetime(2026, 8, 21, 10, tzinfo=TZ)
+
+
+def test_job_terminalizes_implicit_retry_after_three_attempts(monkeypatch) -> None:
+    del monkeypatch
+    occurrence = _occurrence()
+    checkpoint = next(iter(lifecycle_job.due_ranking_checkpoints(
+        (_occurrence(),),
+        now=datetime(2026, 8, 21, 0, 30, tzinfo=TZ),
+        completed_keys=set(),
+    )))
+    status, retry_at = lifecycle_job._default_retry_policy(
+        status="blocked",
+        checkpoint=checkpoint,
+        occurrence=occurrence,
+        now=datetime(2026, 8, 21, 10, tzinfo=TZ),
+        prior_attempt_count=2,
+    )
+    assert status == "unavailable"
+    assert retry_at is None
 
 
 def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
@@ -193,6 +362,47 @@ def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
     }
 
 
+def test_xutian_active_dispatches_the_unified_checkpoint(monkeypatch) -> None:
+    seen = {}
+
+    def execute(runner, ctx, payload, stop_event, *, occurrence):
+        seen.update(
+            runner=runner,
+            ctx=ctx,
+            payload=payload,
+            stop_event=stop_event,
+            occurrence=occurrence,
+        )
+        if False:
+            yield None
+        return {"status": "pending", "retry_at": "2026-08-31T20:45:00+08:00"}
+
+    monkeypatch.setattr(lifecycle_job, "_execute_xutian_active_checkpoint", execute)
+    runner = _Runner()
+    ctx = {"scheduler_task_id": "ranking-lifecycle"}
+    payload = {"expected": "xutian"}
+    stop_event = Event()
+    occurrence = _xutian_occurrence()
+
+    result = _drain(
+        lifecycle_job._execute_xutian_active_checkpoint(
+            runner, ctx, payload, stop_event, occurrence=occurrence
+        )
+    )
+
+    assert result == {
+        "status": "pending",
+        "retry_at": "2026-08-31T20:45:00+08:00",
+    }
+    assert seen == {
+        "runner": runner,
+        "ctx": ctx,
+        "payload": payload,
+        "stop_event": stop_event,
+        "occurrence": occurrence,
+    }
+
+
 def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     monkeypatch,
 ) -> None:
@@ -231,12 +441,12 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     ]
     assert result["family"] == "gameplay_rank"
     assert rows[0].completed_at == ""
-    assert rows[0].retry_at == "2026-08-21T00:40:00+08:00"
+    assert rows[0].retry_at == "2026-08-21T10:00:00+08:00"
     assert result["result"] == "success"
     assert "成功 0，待重试 1" in result["message"]
     assert runner.next_times == [
         ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 0, 40, tzinfo=TZ))
+        ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ))
     ]
 
 

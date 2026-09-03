@@ -165,6 +165,20 @@ def _independent_attendance_wjx_sheet_ref() -> SimpleNamespace:
     )
 
 
+def is_independent_attendance_wjx_sheet_reference(
+    sheet_id: int,
+    workbook_id: int | None = None,
+) -> bool:
+    """Return whether a CodeYun shell reference targets questionnaire data."""
+    return (
+        int(sheet_id) == ATTENDANCE_WJX_DATA_SHEET_ID
+        and (
+            workbook_id is None
+            or int(workbook_id) == ATTENDANCE_WJX_DATA_WORKBOOK_ID
+        )
+    )
+
+
 def _load_independent_attendance_sheet(
     sheet_id: int,
     *,
@@ -235,7 +249,7 @@ def _mutate_independent_attendance_wjx_sheet(mutator) -> SimpleNamespace:
 def reconcile_independent_attendance_wjx_course_fields() -> SimpleNamespace:
     """Align questionnaire course links and owners with the current course sheet.
 
-    Questionnaire course metadata is derived from workbook 2 / sheet 4.  Keep
+    Questionnaire course metadata is derived from workbook 2 / sheet 4. Keep
     the reconciliation in the attendance provider so every consumer updates the
     attendance-owned document instead of reviving the retired CodeYun copy.
     Courses no longer present in the current source sheet retain their stored
@@ -256,12 +270,46 @@ def reconcile_independent_attendance_wjx_course_fields() -> SimpleNamespace:
             course_link_map,
             course_owner_map,
         )
-        # Rebuild grid/entity projections after changing row values so every
-        # table representation exposes the same owner.
         next_document = _normalize_attendance_wjx_sheet_document(next_document)
         return next_document, next_document != current_document
 
     return _mutate_independent_attendance_wjx_sheet(reconcile)
+
+
+def correct_independent_attendance_wjx_course(
+    *,
+    seq: int,
+    course_name: str,
+) -> SimpleNamespace:
+    """Correct one questionnaire course and rebuild all derived course fields."""
+    normalized_course_name = _normalize_attendance_wjx_sheet_cell(course_name)
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(None)
+    if normalized_course_name not in (course_link_map or {}):
+        raise HTTPException(status_code=400, detail=f"当前课程清单不存在：{normalized_course_name}")
+
+    def correct(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        current_document = dict(document_json or {})
+        next_document = _normalize_attendance_wjx_sheet_document(current_document)
+        row_index = _find_attendance_wjx_sheet_row_index(next_document, int(seq))
+        if row_index is None:
+            raise HTTPException(status_code=404, detail=f"问卷数据不存在：{seq}")
+        columns = list(next_document["columns"])
+        row = next_document["rows"][row_index]
+        _set_attendance_wjx_sheet_cell(row, columns, "课程", normalized_course_name)
+        _sync_attendance_wjx_sheet_course_info_for_row(
+            next_document,
+            row_index=row_index,
+            row=row,
+            columns=columns,
+            course_link_map=course_link_map,
+            course_owner_map=course_owner_map,
+        )
+        next_document = _normalize_attendance_wjx_sheet_document(next_document)
+        return next_document, next_document != current_document
+
+    return _mutate_independent_attendance_wjx_sheet(correct)
+
+
 ORDER_HISTORY_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"(?P<year>\d{4})[/-](?P<month>\d{1,2})[/-](?P<day>\d{1,2})\s+"
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
@@ -426,6 +474,7 @@ class AttendanceFeedbackResolvedCourse(BaseModel):
     name: str = ""
     link_url: str = ""
     strong_context: bool = False
+    identity_confirmed: bool = False
 
 
 class AttendanceWjxDataUpdateRequest(BaseModel):
@@ -2229,6 +2278,25 @@ def _get_feedback_course_maps_from_summary_sheet(
     )
 
 
+def _get_feedback_course_catalog_from_summary_sheet(
+    session: Session,
+) -> tuple[
+    list[AttendanceFeedbackCourseOption],
+    dict[str, str] | None,
+    dict[str, str] | None,
+]:
+    source_sheet = _load_independent_attendance_sheet(
+        FEEDBACK_COURSE_SOURCE_SHEET_ID,
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+    )
+    document_json = dict(source_sheet.document_json or {})
+    return (
+        _extract_feedback_course_options_from_sheet(document_json),
+        _extract_feedback_course_link_map_from_sheet(document_json),
+        _extract_feedback_course_owner_map_from_sheet(document_json),
+    )
+
+
 def _get_feedback_course_link_map_from_summary_sheet(session: Session) -> dict[str, str] | None:
     course_link_map, _course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
     return course_link_map
@@ -2413,19 +2481,9 @@ def _submitted_refund_month_dir_names(attendance_document: SheetDocument | None 
 
 
 def _load_submitted_refund_amounts_from_csv(attendance_document: SheetDocument | None = None) -> dict[str, float]:
-    roots: list[Path] = []
-    try:
-        from backend.core.attendance_behavior_tree_service import get_attendance_data_root
+    from backend.core.attendance_behavior_tree_service import get_attendance_work_root
 
-        roots.append(Path(get_attendance_data_root()) / "返款表")
-    except Exception:
-        pass
-
-    roots.extend([
-        Path.home() / "data" / "m2112kq5034" / "返款表",
-        Path("D:/home/chenkunze/data/m2112kq5034/返款表"),
-        Path("C:/home/chenkunze/data/m2112kq5034/返款表"),
-    ])
+    roots = [get_attendance_work_root() / "返款表"]
 
     result: dict[str, float] = {}
     month_names = _submitted_refund_month_dir_names(attendance_document)
@@ -3117,9 +3175,101 @@ def _select_feedback_course_name(
     stale or mismatched page context must never silently move a questionnaire
     submission into another course.
     """
+    if resolved_course.identity_confirmed and resolved_course.name:
+        return resolved_course.name, resolved_course.link_url
     if _is_generic_feedback_course_name(submitted_course_name):
         return resolved_course.name, resolved_course.link_url
     return submitted_course_name, ""
+
+
+def _normalize_feedback_student_number(value: Any) -> str:
+    return "-".join(str(int(part)) for part in re.findall(r"\d+", _normalize_wjx_data_text(value)))
+
+
+def _normalize_feedback_student_name(value: Any) -> str:
+    return re.sub(r"\s+", "", _normalize_wjx_data_text(value))
+
+
+def _parse_feedback_course_sheet_reference(value: Any) -> tuple[int | None, int | None]:
+    text = _normalize_wjx_data_text(value)
+    if not text:
+        return None, None
+    parsed = urlparse(text)
+    workbook_match = re.search(r"/workbook/(\d+)", parsed.path)
+    sheet_match = re.search(r"/(?:attendance/)?sheet/(\d+)", parsed.path)
+    query = parse_qs(parsed.query)
+    workbook_id = int(workbook_match.group(1)) if workbook_match else None
+    sheet_id = int(sheet_match.group(1)) if sheet_match else None
+    if sheet_id is None:
+        sheet_values = query.get("sheet") or []
+        if sheet_values and str(sheet_values[0]).isdigit():
+            sheet_id = int(sheet_values[0])
+    return workbook_id, sheet_id
+
+
+def resolve_feedback_course_from_current_enrollment(
+    course_options: list[AttendanceFeedbackCourseOption],
+    *,
+    student_id_text: str,
+    student_name: str,
+) -> AttendanceFeedbackResolvedCourse:
+    """Resolve a unique current course from registration identity facts."""
+    student_number = _normalize_feedback_student_number(student_id_text)
+    normalized_name = _normalize_feedback_student_name(student_name)
+    if not student_number or not normalized_name or not course_options:
+        return AttendanceFeedbackResolvedCourse()
+
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import AttendanceStorageError, LocalAttendanceSheetClient
+
+    client = LocalAttendanceSheetClient()
+    matches: dict[str, str] = {}
+    for option in course_options:
+        course_name = option.name
+        course_link = option.attendance_sheet_url
+        workbook_id, sheet_id = _parse_feedback_course_sheet_reference(course_link)
+        if workbook_id is None and sheet_id is None:
+            continue
+        try:
+            if workbook_id is None and sheet_id is not None:
+                attendance_sheet = client.get_document(SimpleNamespace(sheet_id=sheet_id))
+                workbook_id = int(attendance_sheet.get("workbook_id") or 0) or None
+            if workbook_id is None:
+                continue
+            workbook = client.get_workbook_document(workbook_id)
+            registration_sheet = next(
+                (item for item in workbook.get("sheets", []) if item.get("title") == "报名表"),
+                None,
+            )
+            if registration_sheet is None:
+                return AttendanceFeedbackResolvedCourse()
+            table = client.get_table(SimpleNamespace(
+                workbook_id=workbook_id,
+                sheet_id=int(registration_sheet["id"]),
+            ))
+        except AttendanceStorageError:
+            return AttendanceFeedbackResolvedCourse()
+
+        for row in table.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            row_number = _normalize_feedback_student_number(row.get("学号") or row.get("序号"))
+            row_name = _normalize_feedback_student_name(row.get("姓名"))
+            if row_number == student_number and row_name == normalized_name:
+                matches[str(course_name)] = str(course_link or "")
+                break
+
+    if len(matches) != 1:
+        return AttendanceFeedbackResolvedCourse()
+    course_name, course_link = next(iter(matches.items()))
+    return AttendanceFeedbackResolvedCourse(
+        name=course_name,
+        link_url=course_link,
+        strong_context=True,
+        identity_confirmed=True,
+    )
 
 
 def _normalize_feedback_workbook_course_title(value: Any) -> str:
@@ -3294,23 +3444,34 @@ def _persist_attendance_feedback_submission(
     payload: AttendanceFeedbackSubmitRequest,
     request: Request,
 ) -> AttendanceWjxDataEntry:
-    course_name = _normalize_required_feedback_text(payload.course_name, field_name="所属课程")
-    course_link_url = ""
-    resolved_course = AttendanceFeedbackResolvedCourse()
-    if _is_generic_feedback_course_name(course_name) or payload.workbook_id is not None or payload.sheet_id is not None:
-        resolved_course = _resolve_feedback_course_from_context(session, payload)
-    course_name, course_link_url = _select_feedback_course_name(course_name, resolved_course)
-    if not course_name:
-        raise HTTPException(status_code=400, detail="所属课程不能是考勤表，请从课程或工作簿名称提交")
+    submitted_course_name = _normalize_required_feedback_text(payload.course_name, field_name="所属课程")
     student_id_text = _normalize_required_feedback_text(payload.student_id_text, field_name="学号")
     student_name = _normalize_required_feedback_text(payload.student_name, field_name="姓名")
     correction_request = _normalize_required_feedback_text(payload.correction_request, field_name="修正需求")
     extra_note = _normalize_wjx_data_text(payload.extra_note)
 
+    course_options, course_link_map, course_owner_map = _get_feedback_course_catalog_from_summary_sheet(session)
+    resolved_course = resolve_feedback_course_from_current_enrollment(
+        course_options,
+        student_id_text=student_id_text,
+        student_name=student_name,
+    )
+    if not resolved_course.identity_confirmed and (
+        _is_generic_feedback_course_name(submitted_course_name)
+        or payload.workbook_id is not None
+        or payload.sheet_id is not None
+    ):
+        resolved_course = _resolve_feedback_course_from_context(session, payload)
+    course_name, course_link_url = _select_feedback_course_name(
+        submitted_course_name,
+        resolved_course,
+    )
+    if not course_name:
+        raise HTTPException(status_code=400, detail="所属课程不能是考勤表，请从课程或工作簿名称提交")
+
     now = time.time()
     submitted_at_text = _format_feedback_submitted_at(now)
     source_ip = _resolve_feedback_client_ip(request)
-    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
     if course_link_url and course_name:
         course_link_map = dict(course_link_map or {})
         course_link_map[_normalize_attendance_wjx_sheet_cell(course_name)] = course_link_url

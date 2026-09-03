@@ -248,8 +248,8 @@ def _is_pressure_reclaimable_process(cmdline: str, process_name: str = "") -> bo
         return True
     if ".venv/scripts/pytest.exe" in normalized and (
         "backend/tests/test_fanxiu_mumu_control.py" in normalized
-        or "backend/tests/test_fanxiu_data_annotation_runtime_guard.py" in normalized
-        or "tests/test_fanxiu_data_annotation_scheduler.py" in normalized
+        or "backend/tests/test_fanxiu_kernel_scheduler_guard.py" in normalized
+        or "tests/test_fanxiu_kernel_scheduler_integration.py" in normalized
     ):
         return True
     if "scripts/fanxiu_bt.py" in normalized:

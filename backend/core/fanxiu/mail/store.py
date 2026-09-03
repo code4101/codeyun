@@ -226,7 +226,7 @@ def ensure_fanxiu_mail_table() -> None:
             columns = {str(row[1]) for row in session.exec(text("PRAGMA table_info(fanxiumailrecord)")).all()}
             migrations = {
                 "locked": ("BOOLEAN NOT NULL DEFAULT 0", True),
-                "runtime_status": ("VARCHAR NOT NULL DEFAULT ''", True),
+                "execution_status": ("VARCHAR NOT NULL DEFAULT ''", True),
                 "desired_status": ("VARCHAR NOT NULL DEFAULT ''", True),
                 "present_in_runtime": ("BOOLEAN NOT NULL DEFAULT 0", True),
                 "reward_getted": ("BOOLEAN", True),

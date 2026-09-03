@@ -58,14 +58,14 @@ def claim_first_row_until_clear(
     *,
     domain: str,
     scene_id: int,
-    runtime: Any,
+    context: Any,
     reader: FastTaskRewardReader,
     initial_snapshot: dict[str, Any] | None = None,
     click_x: float = 560.0,
     click_y: float = 365.0,
     max_claims: int = 24,
 ) -> dict[str, Any]:
-    """Claim a removing first-row task list with strict Runtime verification.
+    """Claim a removing first-row task list with strict behavior-tree verification.
 
     Activity ``RankTaskItem`` removes a row after a successful claim, so the
     next authorized task moves into the same safe body coordinate.  The reward
@@ -86,8 +86,8 @@ def claim_first_row_until_clear(
             return {"ok": False, "claimed_task_ids": claimed_now, "reason": reason}
         authorized = list(before["authorized_claim_task_ids"])
         expected = int(authorized[0])
-        runtime.click_frame_point(scene_id, click_x, click_y)
-        yield from runtime.wait_action_settle(1.2)
+        context.click_frame_point(scene_id, click_x, click_y)
+        yield from context.wait_action_settle(1.2)
         after = reader(domain, expected_claimed_task_id=expected)
         claimed_after = set(after.get("claimed_task_ids") or [])
         remaining_after = list(after.get("authorized_claim_task_ids") or [])
@@ -275,7 +275,7 @@ class DailyTaskRewardsTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> str:
-        return self._execute_daily_runtime_task(
+        return self._execute_daily_task(
             ctx,
             stop_event,
             payload,
@@ -284,9 +284,9 @@ class DailyTaskRewardsTaskMixin:
             flow=self.日常任务奖励流程,
         )
 
-    def 日常任务奖励流程(self, runtime: Any):
-        stop_event = runtime.stop_event or threading.Event()
-        payload = runtime.payload
+    def 日常任务奖励流程(self, context: Any):
+        stop_event = context.stop_event or threading.Event()
+        payload = context.payload
         batch = read_all_activity_task_reward_snapshots()
         initial = batch.get("domains") if isinstance(batch, dict) else None
         if not isinstance(initial, dict):
@@ -317,10 +317,10 @@ class DailyTaskRewardsTaskMixin:
                 any_ui_attempted = True
                 navigation = yield from navigate_to_daily_task_reward_cover(
                     self,
-                    runtime.ctx,
+                    context.ctx,
                     stop_event,
                     payload,
-                    runtime,
+                    context,
                     domain,
                 )
                 cover_scene_id = int(navigation["scene_id"])
@@ -328,7 +328,7 @@ class DailyTaskRewardsTaskMixin:
                     raise RuntimeError(
                         f"{domain} 奖励入口落在未授权封面 #{cover_scene_id}"
                     )
-                yield from runtime.wait_click_then_view(
+                yield from context.wait_click_then_scene(
                     cover_scene_id,
                     gui["entry_shape"],
                     [gui["task_scene_id"]],
@@ -339,7 +339,7 @@ class DailyTaskRewardsTaskMixin:
                 claim_result = yield from claim_first_row_until_clear(
                     domain=domain,
                     scene_id=gui["task_scene_id"],
-                    runtime=runtime,
+                    context=context,
                     reader=read_activity_task_reward_fast_snapshot,
                     initial_snapshot=snapshot,
                     click_x=click_x,
@@ -359,7 +359,7 @@ class DailyTaskRewardsTaskMixin:
             finally:
                 if ui_attempted:
                     try:
-                        yield from runtime.goto_view(34)
+                        yield from context.go_scene(34)
                     except (InterruptedError, GeneratorExit):
                         raise
                     except Exception as exc:
@@ -388,15 +388,15 @@ class DailyTaskRewardsTaskMixin:
             raise RuntimeError(f"日常_任务奖励部分域未完成：{summary}")
 
         next_time = next_daily_task_reward_time().strftime("%Y-%m-%d %H:%M:%S")
-        runtime.set_next_time(next_time)
+        context.set_next_time(next_time)
         claimed_count = sum(len(row.get("claimed_task_ids") or []) for row in domain_results)
-        runtime.set_completion_message(
+        context.set_completion_message(
             f"日常_任务奖励：三域幂等完成，本次领取 {claimed_count} 项；"
             "洞天05:00未取收益由邮件自动承接"
         )
         return {
             # A fully idempotent run deliberately performs no GUI read, so it
-            # must not fabricate #34 as a visual fact in Runtime status.
+            # must not fabricate #34 as a visual fact in behavior-tree status.
             "current_scene": 34 if any_ui_attempted else None,
             "domains": domain_results,
         }

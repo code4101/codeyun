@@ -23,7 +23,7 @@ from backend.core.fanxiu.instrumentation.xianqiao import (
     select_xianqiao_trial_drop_element,
 )
 from backend.core.fanxiu.instrumentation.runtime_memory import LuaRef
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 
 
 def _finish(generator):
@@ -56,8 +56,8 @@ def test_current_trial_difficulty_parser_uses_the_live_display_text():
 
 
 def test_trial_settings_orchestration_keeps_the_business_order(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
         stop_event=threading.Event(),
     )
@@ -85,12 +85,12 @@ def test_trial_settings_orchestration_keeps_the_business_order(monkeypatch):
             yield None
         return {"final_level": target_level}
 
-    monkeypatch.setattr(runtime, "configure_xianqiao_trial_drop_element", configure_drop)
-    monkeypatch.setattr(runtime, "allocate_balanced_points", allocate)
-    monkeypatch.setattr(runtime, "read_current_trial_difficulty", read)
-    monkeypatch.setattr(runtime, "configure_even_trial_difficulty", configure)
+    monkeypatch.setattr(context, "configure_xianqiao_trial_drop_element", configure_drop)
+    monkeypatch.setattr(context, "allocate_balanced_points", allocate)
+    monkeypatch.setattr(context, "read_current_trial_difficulty", read)
+    monkeypatch.setattr(context, "configure_even_trial_difficulty", configure)
 
-    result = _finish(runtime.prepare_xianqiao_trial_settings(358))
+    result = _finish(context.prepare_xianqiao_trial_settings(358))
 
     assert events == ["drop_water", "five_elements", "read_current", "configure_26"]
     assert result["drop_element"]["element"] == "水"
@@ -100,8 +100,8 @@ def test_trial_settings_orchestration_keeps_the_business_order(monkeypatch):
 
 
 def test_trial_settings_accepts_absolute_target_after_a_failed_higher_configuration(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
         stop_event=threading.Event(),
     )
@@ -123,16 +123,16 @@ def test_trial_settings_accepts_absolute_target_after_a_failed_higher_configurat
             yield None
         return {"element": "水"}
 
-    monkeypatch.setattr(runtime, "configure_xianqiao_trial_drop_element", configure_drop)
-    monkeypatch.setattr(runtime, "allocate_balanced_points", allocate)
+    monkeypatch.setattr(context, "configure_xianqiao_trial_drop_element", configure_drop)
+    monkeypatch.setattr(context, "allocate_balanced_points", allocate)
     monkeypatch.setattr(
-        runtime,
+        context,
         "read_current_trial_difficulty",
         lambda *_args, **_kwargs: ObservedTrialDifficulty(level=40, text="当前难度为40级"),
     )
-    monkeypatch.setattr(runtime, "configure_even_trial_difficulty", configure)
+    monkeypatch.setattr(context, "configure_even_trial_difficulty", configure)
 
-    result = _finish(runtime.prepare_xianqiao_trial_settings(358, target_level=36))
+    result = _finish(context.prepare_xianqiao_trial_settings(358, target_level=36))
 
     assert result["current_level"] == 40
     assert result["target_level"] == 36
@@ -140,14 +140,17 @@ def test_trial_settings_accepts_absolute_target_after_a_failed_higher_configurat
 
 
 def test_trial_settings_retries_transient_current_difficulty_in_same_transaction(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
         stop_event=threading.Event(),
     )
     reads = iter(
         (
-            RuntimeError("未从当前画面读取到“当前难度为 N 级”"),
+            RuntimeError("公告遮挡"),
+            RuntimeError("公告遮挡"),
+            RuntimeError("公告遮挡"),
+            RuntimeError("公告遮挡"),
             ObservedTrialDifficulty(level=25, text="当前难度为25级"),
         )
     )
@@ -175,19 +178,19 @@ def test_trial_settings_retries_transient_current_difficulty_in_same_transaction
         if False:
             yield None
 
-    monkeypatch.setattr(runtime, "configure_xianqiao_trial_drop_element", no_op_generator)
-    monkeypatch.setattr(runtime, "allocate_balanced_points", no_op_generator)
-    monkeypatch.setattr(runtime, "read_current_trial_difficulty", read)
-    monkeypatch.setattr(runtime, "configure_even_trial_difficulty", configure)
-    monkeypatch.setattr(runtime, "wait_action_settle", settle)
+    monkeypatch.setattr(context, "configure_xianqiao_trial_drop_element", no_op_generator)
+    monkeypatch.setattr(context, "allocate_balanced_points", no_op_generator)
+    monkeypatch.setattr(context, "read_current_trial_difficulty", read)
+    monkeypatch.setattr(context, "configure_even_trial_difficulty", configure)
+    monkeypatch.setattr(context, "wait_action_settle", settle)
     monkeypatch.setattr(runner, "_log", lambda kind, message: logs.append((kind, message)))
 
-    result = _finish(runtime.prepare_xianqiao_trial_settings(358, settle_seconds=0.25))
+    result = _finish(context.prepare_xianqiao_trial_settings(358, settle_seconds=0.25))
 
     assert result["current_level"] == 25
     assert result["target_level"] == 26
-    assert waits == [0.25]
-    assert any("原地刷新重试 2/3" in message for _kind, message in logs)
+    assert waits == [2.0, 2.0, 2.0, 2.0]
+    assert any("原地刷新重试 5/8" in message for _kind, message in logs)
 
 
 def test_xianqiao_trial_drop_element_uses_least_desired_equipped_count():
@@ -288,7 +291,7 @@ def test_xianqiao_snapshot_counts_only_worn_items_in_newest_active_system(monkey
 
 
 def test_current_trial_difficulty_falls_back_to_existing_bounded_shape(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image358 = {
         "id": 358,
         "title": "设置难度",
@@ -296,7 +299,7 @@ def test_current_trial_difficulty_falls_back_to_existing_bounded_shape(monkeypat
         "height": 1600,
         "shapes": [{"id": "current", "title": "当前难度", "x": 0.58, "y": 0.17, "w": 0.28, "h": 0.03}],
     }
-    runtime = runner._fanxiu_runtime({"images": {358: image358}}, stop_event=threading.Event())
+    context = runner._behavior_tree_context({"images": {358: image358}}, stop_event=threading.Event())
     source = Image.new("RGB", (900, 1600), color="white")
     buffer = io.BytesIO()
     source.save(buffer, format="PNG")
@@ -319,7 +322,7 @@ def test_current_trial_difficulty_falls_back_to_existing_bounded_shape(monkeypat
     monkeypatch.setattr(runner, "_ocr_fragments_in_shapes", bounded_fragments)
     monkeypatch.setattr(runner, "_ocr_frame", recognize_crop)
 
-    observation = runtime.read_current_trial_difficulty(358, frame_data_url=frame)
+    observation = context.read_current_trial_difficulty(358, frame_data_url=frame)
 
     assert observation == ObservedTrialDifficulty(level=52, text="当前难度为52级")
     assert calls == [
@@ -328,8 +331,8 @@ def test_current_trial_difficulty_falls_back_to_existing_bounded_shape(monkeypat
 
 
 def test_xianqiao_trial_drop_element_keeps_verified_current_target(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
         stop_event=threading.Event(),
     )
@@ -344,9 +347,9 @@ def test_xianqiao_trial_drop_element_keeps_verified_current_target(monkeypatch):
             "element_counts_by_id": {1: 9, 3: 3, 4: 4},
         },
     )
-    monkeypatch.setattr(runtime, "find_ocr_text", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(context, "find_ocr_text", lambda *_args, **_kwargs: object())
 
-    result = _finish(runtime.configure_xianqiao_trial_drop_element())
+    result = _finish(context.configure_xianqiao_trial_drop_element())
 
     assert result["element"] == "水"
     assert result["changed"] is False
@@ -357,8 +360,8 @@ def test_xianqiao_trial_drop_element_keeps_verified_current_target(monkeypatch):
 
 
 def test_xianqiao_trial_drop_element_clicks_only_runtime_decided_ocr_option(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
         stop_event=threading.Event(),
     )
@@ -375,11 +378,11 @@ def test_xianqiao_trial_drop_element_clicks_only_runtime_decided_ocr_option(monk
     )
     reads = iter((None, SimpleNamespace(point=lambda: (700.0, 600.0)), object()))
     clicks: list[tuple[object, ...]] = []
-    monkeypatch.setattr(runtime, "find_ocr_text", lambda *_args, **_kwargs: next(reads))
-    monkeypatch.setattr(runtime, "click_shape", lambda *args, **_kwargs: clicks.append(("shape", *args)))
-    monkeypatch.setattr(runtime, "click_frame_point", lambda *args, **_kwargs: clicks.append(("point", *args)))
+    monkeypatch.setattr(context, "find_ocr_text", lambda *_args, **_kwargs: next(reads))
+    monkeypatch.setattr(context, "click_shape", lambda *args, **_kwargs: clicks.append(("shape", *args)))
+    monkeypatch.setattr(context, "click_frame_point", lambda *args, **_kwargs: clicks.append(("point", *args)))
 
-    result = _finish(runtime.configure_xianqiao_trial_drop_element(settle_seconds=0))
+    result = _finish(context.configure_xianqiao_trial_drop_element(settle_seconds=0))
 
     assert result["element"] == "水"
     assert result["changed"] is True
@@ -389,8 +392,8 @@ def test_xianqiao_trial_drop_element_clicks_only_runtime_decided_ocr_option(monk
 
 
 def test_trial_difficulty_final_verification_tolerates_a_transient_empty_ocr_frame(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
         stop_event=threading.Event(),
     )
@@ -419,7 +422,7 @@ def test_trial_difficulty_final_verification_tolerates_a_transient_empty_ocr_fra
             ]
         },
     )
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "frame")
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "frame")
 
     def set_slider(*_args, **_kwargs):
         if False:
@@ -437,19 +440,19 @@ def test_trial_difficulty_final_verification_tolerates_a_transient_empty_ocr_fra
         if False:
             yield None
 
-    monkeypatch.setattr(runtime, "set_slider_value", set_slider)
-    monkeypatch.setattr(runtime, "read_current_trial_difficulty", read)
-    monkeypatch.setattr(runtime, "wait_action_settle", settle)
+    monkeypatch.setattr(context, "set_slider_value", set_slider)
+    monkeypatch.setattr(context, "read_current_trial_difficulty", read)
+    monkeypatch.setattr(context, "wait_action_settle", settle)
 
-    result = _finish(runtime.configure_even_trial_difficulty(358, 25, settle_seconds=0.4))
+    result = _finish(context.configure_even_trial_difficulty(358, 25, settle_seconds=0.4))
 
     assert result["final_level"] == 25
-    assert waits == [0.4]
+    assert waits == [2.0]
 
 
 def test_trial_scroll_can_use_safe_cross_axis_band(monkeypatch):
-    runner = create_behavior_tree_runtime_runner()
-    runtime = runner._fanxiu_runtime(
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
         {
             "images": {
                 358: {
@@ -472,7 +475,7 @@ def test_trial_scroll_can_use_safe_cross_axis_band(monkeypatch):
         lambda _ctx, _view, x1, y1, x2, y2, **_kwargs: points.append((x1, y1, x2, y2)),
     )
 
-    runtime.drag_shape_content(
+    context.drag_shape_content(
         358,
         "难度窗口",
         direction="down",
@@ -486,8 +489,8 @@ def test_trial_scroll_can_use_safe_cross_axis_band(monkeypatch):
     assert points[0][2] == pytest.approx(expected_x)
 
 
-def _trial_challenge_runtime():
-    runner = create_behavior_tree_runtime_runner()
+def _trial_challenge_context():
+    runner = create_behavior_tree_executor()
     images = {
         scene_id: {
             "id": scene_id,
@@ -510,63 +513,63 @@ def _trial_challenge_runtime():
         "height": 1600,
         "shapes": [],
     }
-    return runner._fanxiu_runtime({"images": images}, stop_event=threading.Event())
+    return runner._behavior_tree_context({"images": images}, stop_event=threading.Event())
 
 
 def test_trial_challenge_reacts_to_each_scene_instead_of_difficulty_history(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((357, 357, 359, 359, 360))
     clicks: list[tuple[int, str]] = []
     claims: list[tuple[int, ...]] = []
 
     def current_scene(*_args, **_kwargs):
-        claims.append(runtime.active_business_view_ids())
+        claims.append(context.active_business_view_ids())
         return next(observations), 100.0, "frame"
 
     monkeypatch.setattr(
-        runtime,
+        context,
         "current_scene",
         current_scene,
     )
     monkeypatch.setattr(
-        runtime,
+        context,
         "click_shape",
         lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
     )
-    result = _finish(runtime.start_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.start_xianqiao_trial_challenge(settle_seconds=0))
 
     assert clicks == [(357, "挑战"), (359, "开始挑战"), (360, "继续挑战")]
     assert claims == [(359, 360, 366, 227, 367)] * 5
-    assert runtime.active_business_view_ids() == ()
+    assert context.active_business_view_ids() == ()
     assert result["exit_reason"] == "continue_confirmed"
 
 
 def test_trial_challenge_can_resume_directly_from_optional_confirmation(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((359, 360))
     clicks: list[tuple[int, str]] = []
 
     monkeypatch.setattr(
-        runtime,
+        context,
         "current_scene",
         lambda *_args, **_kwargs: (next(observations), 100.0, "frame"),
     )
     monkeypatch.setattr(
-        runtime,
+        context,
         "click_shape",
         lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
     )
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "reward-frame")
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "reward-frame")
 
-    result = _finish(runtime.start_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.start_xianqiao_trial_challenge(settle_seconds=0))
 
     assert clicks == [(359, "开始挑战"), (360, "继续挑战")]
     assert result["exit_reason"] == "continue_confirmed"
 
 
 def test_trial_challenge_handles_sweep_as_an_observed_branch(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         227: {
             "id": 227,
             "title": "副本扫荡结果",
@@ -582,32 +585,32 @@ def test_trial_challenge_handles_sweep_as_an_observed_branch(monkeypatch):
     delays: list[float] = []
 
     monkeypatch.setattr(
-        runtime,
+        context,
         "current_scene",
         lambda *_args, **_kwargs: (next(observations), 100.0, "frame"),
     )
     monkeypatch.setattr(
-        runtime,
+        context,
         "click_shape",
         lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
     )
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "reward-frame")
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "reward-frame")
 
     def wait_home(*_args, **_kwargs):
         if False:
             yield None
-        return runtime.view(next(landed))
+        return context.view(next(landed))
 
     def settle(seconds):
         delays.append(float(seconds))
         if False:
             yield None
 
-    monkeypatch.setattr(runtime, "wait_view", wait_home)
-    monkeypatch.setattr(runtime, "wait_action_settle", settle)
+    monkeypatch.setattr(context, "wait_scene", wait_home)
+    monkeypatch.setattr(context, "wait_action_settle", settle)
 
     result = _finish(
-        runtime.start_xianqiao_trial_challenge(
+        context.start_xianqiao_trial_challenge(
             settle_seconds=0,
             sweep_result_delay=5,
         )
@@ -625,23 +628,23 @@ def test_trial_challenge_handles_sweep_as_an_observed_branch(monkeypatch):
 
 
 def test_trial_challenge_accepts_direct_entry_when_no_confirmation_appears(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((357, None, None, None))
     clicks: list[tuple[int, str]] = []
 
     monkeypatch.setattr(
-        runtime,
+        context,
         "current_scene",
         lambda *_args, **_kwargs: (next(observations), 0.0, "frame"),
     )
     monkeypatch.setattr(
-        runtime,
+        context,
         "click_shape",
         lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
     )
 
     result = _finish(
-        runtime.start_xianqiao_trial_challenge(
+        context.start_xianqiao_trial_challenge(
             stable_departure_polls=3,
             settle_seconds=0,
         )
@@ -652,8 +655,8 @@ def test_trial_challenge_accepts_direct_entry_when_no_confirmation_appears(monke
 
 
 def test_trial_result_treats_362_as_battle_and_waits_for_success_exit(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         361: {
             "id": 361,
             "title": "成功结算",
@@ -679,18 +682,18 @@ def test_trial_result_treats_362_as_battle_and_waits_for_success_exit(monkeypatc
     events: list[str] = []
     waited = iter((362, 361))
 
-    def wait_view(*_args, **_kwargs):
+    def wait_scene(*_args, **_kwargs):
         value = next(waited)
         events.append("entered_362" if value == 362 else "result_361")
         if False:
             yield None
-        return runtime.view(value)
+        return context.view(value)
 
-    monkeypatch.setattr(runtime, "wait_view", wait_view)
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "result-frame")
-    monkeypatch.setattr(runtime, "ocr_text", lambda **_kwargs: "挑战成功 点击退出")
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "result-frame")
+    monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "挑战成功 点击退出")
 
-    result = _finish(runtime.wait_xianqiao_trial_result(result_settle_seconds=0))
+    result = _finish(context.wait_xianqiao_trial_result(result_settle_seconds=0))
 
     assert events == ["entered_362", "result_361"]
     assert result["outcome"] == "success"
@@ -698,8 +701,8 @@ def test_trial_result_treats_362_as_battle_and_waits_for_success_exit(monkeypatc
 
 
 def test_trial_result_recognizes_failure_by_scene_identity(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         361: {"id": 361, "title": "成功结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
         362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
         365: {"id": 365, "title": "失败结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
@@ -709,15 +712,15 @@ def test_trial_result_recognizes_failure_by_scene_identity(monkeypatch):
     def immediate_wait(*_args, **_kwargs):
         if False:
             yield None
-        return runtime.view(next(waited))
+        return context.view(next(waited))
 
-    monkeypatch.setattr(runtime, "wait_view", immediate_wait)
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "failure-frame")
-    monkeypatch.setattr(runtime, "ocr_text", lambda **_kwargs: "挑战失败")
+    monkeypatch.setattr(context, "wait_scene", immediate_wait)
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "failure-frame")
+    monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "挑战失败")
     clicks: list[tuple[int, str]] = []
-    monkeypatch.setattr(runtime, "click_shape", lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))))
+    monkeypatch.setattr(context, "click_shape", lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))))
 
-    result = _finish(runtime.wait_xianqiao_trial_result(result_settle_seconds=0))
+    result = _finish(context.wait_xianqiao_trial_result(result_settle_seconds=0))
 
     assert result["outcome"] == "failure"
     assert result["result_scene"] == 365
@@ -726,8 +729,8 @@ def test_trial_result_recognizes_failure_by_scene_identity(monkeypatch):
 
 
 def test_complete_trial_challenge_clicks_exit_only_for_known_success(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         361: {"id": 361, "title": "成功结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
         362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
         365: {"id": 365, "title": "失败结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
@@ -747,14 +750,14 @@ def test_complete_trial_challenge_clicks_exit_only_for_known_success(monkeypatch
     def wait_home(*_args, **_kwargs):
         if False:
             yield None
-        return runtime.view(357)
+        return context.view(357)
 
-    monkeypatch.setattr(runtime, "start_xianqiao_trial_challenge", started)
-    monkeypatch.setattr(runtime, "wait_xianqiao_trial_result", finished)
-    monkeypatch.setattr(runtime, "wait_view", wait_home)
-    monkeypatch.setattr(runtime, "click_shape", lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))))
+    monkeypatch.setattr(context, "start_xianqiao_trial_challenge", started)
+    monkeypatch.setattr(context, "wait_xianqiao_trial_result", finished)
+    monkeypatch.setattr(context, "wait_scene", wait_home)
+    monkeypatch.setattr(context, "click_shape", lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))))
 
-    result = _finish(runtime.complete_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.complete_xianqiao_trial_challenge(settle_seconds=0))
 
     assert clicks == [(361, "退出")]
     assert result["returned_home"] is True
@@ -763,8 +766,8 @@ def test_complete_trial_challenge_clicks_exit_only_for_known_success(monkeypatch
 
 
 def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         361: {"id": 361, "title": "成功结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
         362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
         365: {"id": 365, "title": "失败结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
@@ -785,7 +788,7 @@ def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monk
         events.append(("wait", tuple(int(view) for view in views)))
         if False:
             yield None
-        return runtime.view(34)
+        return context.view(34)
 
     def reenter(**kwargs):
         events.append(("reenter", int(kwargs["trial_view"])))
@@ -793,17 +796,17 @@ def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monk
             yield None
         return {"terminal_scene": 357}
 
-    monkeypatch.setattr(runtime, "start_xianqiao_trial_challenge", started)
-    monkeypatch.setattr(runtime, "wait_xianqiao_trial_result", finished)
-    monkeypatch.setattr(runtime, "wait_view", wait_landing)
-    monkeypatch.setattr(runtime, "enter_xianqiao_trial", reenter)
+    monkeypatch.setattr(context, "start_xianqiao_trial_challenge", started)
+    monkeypatch.setattr(context, "wait_xianqiao_trial_result", finished)
+    monkeypatch.setattr(context, "wait_scene", wait_landing)
+    monkeypatch.setattr(context, "enter_xianqiao_trial", reenter)
     monkeypatch.setattr(
-        runtime,
+        context,
         "click_shape",
         lambda view, shape, **_kwargs: events.append(("click", int(view), str(shape))),
     )
 
-    result = _finish(runtime.complete_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.complete_xianqiao_trial_challenge(settle_seconds=0))
 
     assert events == [
         ("click", 365, "退出"),
@@ -816,7 +819,7 @@ def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monk
 
 
 def test_complete_trial_challenge_reenters_after_unobserved_result(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     reentries: list[int] = []
 
     def started(**_kwargs):
@@ -835,11 +838,11 @@ def test_complete_trial_challenge_reenters_after_unobserved_result(monkeypatch):
             yield None
         return {"terminal_scene": 357}
 
-    monkeypatch.setattr(runtime, "start_xianqiao_trial_challenge", started)
-    monkeypatch.setattr(runtime, "wait_xianqiao_trial_result", expired)
-    monkeypatch.setattr(runtime, "enter_xianqiao_trial", reenter)
+    monkeypatch.setattr(context, "start_xianqiao_trial_challenge", started)
+    monkeypatch.setattr(context, "wait_xianqiao_trial_result", expired)
+    monkeypatch.setattr(context, "enter_xianqiao_trial", reenter)
 
-    result = _finish(runtime.complete_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.complete_xianqiao_trial_challenge(settle_seconds=0))
 
     assert reentries == [357]
     assert result["result"]["outcome"] == "result_expired"
@@ -848,43 +851,43 @@ def test_complete_trial_challenge_reenters_after_unobserved_result(monkeypatch):
 
 
 def test_complete_trial_challenge_treats_returned_sweep_as_terminal(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
 
     def swept(**_kwargs):
         if False:
             yield None
         return {"exit_reason": "sweep_completed", "last_scene": 357, "actions": []}
 
-    monkeypatch.setattr(runtime, "start_xianqiao_trial_challenge", swept)
+    monkeypatch.setattr(context, "start_xianqiao_trial_challenge", swept)
     monkeypatch.setattr(
-        runtime,
+        context,
         "wait_xianqiao_trial_result",
         lambda **_kwargs: (_ for _ in ()).throw(AssertionError("扫荡后不应等待战斗结算")),
     )
 
-    result = _finish(runtime.complete_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.complete_xianqiao_trial_challenge(settle_seconds=0))
 
     assert result["result"] == {"outcome": "sweep", "result_scene": 357}
     assert result["returned_home"] is True
 
 
 def test_trial_result_reports_auto_expired_popup_when_game_returns_to_world(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         361: {"id": 361, "title": "成功结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
         362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
         365: {"id": 365, "title": "失败结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
     })
     waited = iter((362, 34))
 
-    def wait_view(*_args, **_kwargs):
+    def wait_scene(*_args, **_kwargs):
         if False:
             yield None
-        return runtime.view(next(waited))
+        return context.view(next(waited))
 
-    monkeypatch.setattr(runtime, "wait_view", wait_view)
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
 
-    result = _finish(runtime.wait_xianqiao_trial_result())
+    result = _finish(context.wait_xianqiao_trial_result())
 
     assert result["outcome"] == "result_expired"
     assert result["result_scene"] == 34
@@ -901,10 +904,10 @@ def test_trial_attempt_parser():
 
 
 def test_trial_home_observation_reuses_one_frame_for_attempts_and_sweep(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     seen_frames: list[str] = []
 
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "home-frame")
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "home-frame")
 
     def read_attempts(*_args, **kwargs):
         seen_frames.append(kwargs["frame_data_url"])
@@ -914,10 +917,10 @@ def test_trial_home_observation_reuses_one_frame_for_attempts_and_sweep(monkeypa
         seen_frames.append(kwargs["frame_data_url"])
         return 93.0
 
-    monkeypatch.setattr(runtime, "read_xianqiao_trial_attempts", read_attempts)
-    monkeypatch.setattr(runtime, "shape_score", score)
+    monkeypatch.setattr(context, "read_xianqiao_trial_attempts", read_attempts)
+    monkeypatch.setattr(context, "shape_score", score)
 
-    observed = runtime.observe_xianqiao_trial_home()
+    observed = context.observe_xianqiao_trial_home()
 
     assert seen_frames == ["home-frame", "home-frame"]
     assert observed.sweep_available is True
@@ -925,7 +928,7 @@ def test_trial_home_observation_reuses_one_frame_for_attempts_and_sweep(monkeypa
 
 
 def test_trial_probe_uses_sweep_button_to_increment_and_rolls_back_after_failure(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((
         ObservedTrialHomeState(
             attempts=ObservedTrialAttempts(remaining=2, capacity=5, text="奖励次数:2/5"),
@@ -945,9 +948,9 @@ def test_trial_probe_uses_sweep_button_to_increment_and_rolls_back_after_failure
     outcomes = iter(("success", "failure"))
     adjustments: list[int] = []
 
-    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
-    monkeypatch.setattr(runtime, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
-    monkeypatch.setattr(runtime, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(attempts_after))
+    monkeypatch.setattr(context, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
+    monkeypatch.setattr(context, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(attempts_after))
 
     def adjust(increment, **_kwargs):
         adjustments.append(increment)
@@ -960,10 +963,10 @@ def test_trial_probe_uses_sweep_button_to_increment_and_rolls_back_after_failure
             yield None
         return {"result": {"outcome": next(outcomes)}, "returned_home": True}
 
-    monkeypatch.setattr(runtime, "adjust_xianqiao_trial_level", adjust)
-    monkeypatch.setattr(runtime, "complete_xianqiao_trial_challenge", challenge)
+    monkeypatch.setattr(context, "adjust_xianqiao_trial_level", adjust)
+    monkeypatch.setattr(context, "complete_xianqiao_trial_challenge", challenge)
 
-    result = _finish(runtime.probe_xianqiao_trial_until_failure())
+    result = _finish(context.probe_xianqiao_trial_until_failure())
 
     assert adjustments == [1, 1, -1]
     assert result["exit_reason"] == "failure_found"
@@ -977,7 +980,7 @@ def test_trial_probe_uses_sweep_button_to_increment_and_rolls_back_after_failure
 
 
 def test_trial_probe_treats_missing_result_without_sweep_as_failure_once(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((
         ObservedTrialHomeState(
             attempts=ObservedTrialAttempts(remaining=1, capacity=5, text="奖励次数:1/5"),
@@ -993,10 +996,10 @@ def test_trial_probe_treats_missing_result_without_sweep_as_failure_once(monkeyp
     adjustments: list[int] = []
     challenge_count = 0
 
-    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
-    monkeypatch.setattr(runtime, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
+    monkeypatch.setattr(context, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
     monkeypatch.setattr(
-        runtime,
+        context,
         "read_xianqiao_trial_attempts",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("结算丢失后应复用战后主页观察")),
     )
@@ -1018,10 +1021,10 @@ def test_trial_probe_treats_missing_result_without_sweep_as_failure_once(monkeyp
             "reentered_from_world": True,
         }
 
-    monkeypatch.setattr(runtime, "adjust_xianqiao_trial_level", adjust)
-    monkeypatch.setattr(runtime, "complete_xianqiao_trial_challenge", challenge)
+    monkeypatch.setattr(context, "adjust_xianqiao_trial_level", adjust)
+    monkeypatch.setattr(context, "complete_xianqiao_trial_challenge", challenge)
 
-    result = _finish(runtime.probe_xianqiao_trial_until_failure())
+    result = _finish(context.probe_xianqiao_trial_until_failure())
 
     assert challenge_count == 1
     assert adjustments == [-1]
@@ -1033,7 +1036,7 @@ def test_trial_probe_treats_missing_result_without_sweep_as_failure_once(monkeyp
 
 
 def test_trial_probe_treats_all_successful_attempts_as_normal_daily_completion(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((
         ObservedTrialHomeState(
             attempts=ObservedTrialAttempts(remaining=1, capacity=5, text="奖励次数:1/5"),
@@ -1049,9 +1052,9 @@ def test_trial_probe_treats_all_successful_attempts_as_normal_daily_completion(m
     attempts_after = iter((ObservedTrialAttempts(remaining=0, capacity=5, text="奖励次数:0/5"),))
     adjustments: list[int] = []
 
-    monkeypatch.setattr(runtime, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
-    monkeypatch.setattr(runtime, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
-    monkeypatch.setattr(runtime, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(attempts_after))
+    monkeypatch.setattr(context, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
+    monkeypatch.setattr(context, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(attempts_after))
 
     def adjust(increment, **_kwargs):
         adjustments.append(increment)
@@ -1064,10 +1067,10 @@ def test_trial_probe_treats_all_successful_attempts_as_normal_daily_completion(m
             yield None
         return {"result": {"outcome": "success"}, "returned_home": True}
 
-    monkeypatch.setattr(runtime, "adjust_xianqiao_trial_level", adjust)
-    monkeypatch.setattr(runtime, "complete_xianqiao_trial_challenge", challenge)
+    monkeypatch.setattr(context, "adjust_xianqiao_trial_level", adjust)
+    monkeypatch.setattr(context, "complete_xianqiao_trial_challenge", challenge)
 
-    result = _finish(runtime.probe_xianqiao_trial_until_failure())
+    result = _finish(context.probe_xianqiao_trial_until_failure())
 
     assert adjustments == []
     assert result["exit_reason"] == "attempts_exhausted"
@@ -1076,7 +1079,7 @@ def test_trial_probe_treats_all_successful_attempts_as_normal_daily_completion(m
 
 
 def test_trial_daily_skips_purchase_by_default_then_uses_ui_driven_progression(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     events: list[str] = []
 
     def purchase(target, **_kwargs):
@@ -1097,11 +1100,11 @@ def test_trial_daily_skips_purchase_by_default_then_uses_ui_driven_progression(m
             yield None
         return {"terminal_scene": 34}
 
-    monkeypatch.setattr(runtime, "purchase_xianqiao_trial_attempts", purchase)
-    monkeypatch.setattr(runtime, "probe_xianqiao_trial_until_failure", progress)
-    monkeypatch.setattr(runtime, "leave_xianqiao_trial", leave)
+    monkeypatch.setattr(context, "purchase_xianqiao_trial_attempts", purchase)
+    monkeypatch.setattr(context, "probe_xianqiao_trial_until_failure", progress)
+    monkeypatch.setattr(context, "leave_xianqiao_trial", leave)
 
-    result = _finish(runtime.run_xianqiao_trial_daily(settle_seconds=0))
+    result = _finish(context.run_xianqiao_trial_daily(settle_seconds=0))
 
     assert events == ["progress", "leave"]
     assert result["purchase"]["exit_reason"] == "purchase_disabled"
@@ -1111,7 +1114,7 @@ def test_trial_daily_skips_purchase_by_default_then_uses_ui_driven_progression(m
 
 
 def test_trial_daily_sweeps_remaining_attempts_after_failure_then_leaves(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     events: list[str] = []
 
     def purchase(*_args, **_kwargs):
@@ -1138,13 +1141,13 @@ def test_trial_daily_sweeps_remaining_attempts_after_failure_then_leaves(monkeyp
             yield None
         return {"terminal_scene": 34}
 
-    monkeypatch.setattr(runtime, "purchase_xianqiao_trial_attempts", purchase)
-    monkeypatch.setattr(runtime, "probe_xianqiao_trial_until_failure", progress)
-    monkeypatch.setattr(runtime, "sweep_remaining_xianqiao_trial_attempts", sweep)
-    monkeypatch.setattr(runtime, "leave_xianqiao_trial", leave)
+    monkeypatch.setattr(context, "purchase_xianqiao_trial_attempts", purchase)
+    monkeypatch.setattr(context, "probe_xianqiao_trial_until_failure", progress)
+    monkeypatch.setattr(context, "sweep_remaining_xianqiao_trial_attempts", sweep)
+    monkeypatch.setattr(context, "leave_xianqiao_trial", leave)
 
     result = _finish(
-        runtime.run_xianqiao_trial_daily(
+        context.run_xianqiao_trial_daily(
             target_daily_purchases=3,
             settle_seconds=0,
         )
@@ -1156,7 +1159,7 @@ def test_trial_daily_sweeps_remaining_attempts_after_failure_then_leaves(monkeyp
 
 
 def test_sweep_remaining_trial_attempts_requires_real_count_progress(monkeypatch):
-    runtime = _trial_challenge_runtime()
+    context = _trial_challenge_context()
     observations = iter((
         ObservedTrialHomeState(
             attempts=ObservedTrialAttempts(remaining=2, capacity=5, text="奖励次数:2/5"),
@@ -1174,43 +1177,43 @@ def test_sweep_remaining_trial_attempts_requires_real_count_progress(monkeypatch
         ObservedTrialAttempts(remaining=0, capacity=5, text="奖励次数:0/5"),
     ))
 
-    monkeypatch.setattr(runtime, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
-    monkeypatch.setattr(runtime, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(after))
+    monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
+    monkeypatch.setattr(context, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(after))
 
     def sweep_once(**_kwargs):
         if False:
             yield None
         return {"result": {"outcome": "sweep"}, "returned_home": True}
 
-    monkeypatch.setattr(runtime, "complete_xianqiao_trial_challenge", sweep_once)
+    monkeypatch.setattr(context, "complete_xianqiao_trial_challenge", sweep_once)
 
-    result = _finish(runtime.sweep_remaining_xianqiao_trial_attempts(settle_seconds=0))
+    result = _finish(context.sweep_remaining_xianqiao_trial_attempts(settle_seconds=0))
 
     assert result["remaining_attempts"] == 0
     assert len(result["sweeps"]) == 2
 
 
 def test_trial_result_can_resume_directly_from_failure_popup(monkeypatch):
-    runtime = _trial_challenge_runtime()
-    runtime.ctx["images"].update({
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
         361: {"id": 361, "title": "成功结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
         362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
         365: {"id": 365, "title": "失败结算", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
     })
     wait_calls = 0
 
-    def wait_view(*_args, **_kwargs):
+    def wait_scene(*_args, **_kwargs):
         nonlocal wait_calls
         wait_calls += 1
         if False:
             yield None
-        return runtime.view(365)
+        return context.view(365)
 
-    monkeypatch.setattr(runtime, "wait_view", wait_view)
-    monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "failure-frame")
-    monkeypatch.setattr(runtime, "ocr_text", lambda **_kwargs: "变强途径 退出")
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "failure-frame")
+    monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "变强途径 退出")
 
-    result = _finish(runtime.wait_xianqiao_trial_result(result_settle_seconds=0))
+    result = _finish(context.wait_xianqiao_trial_result(result_settle_seconds=0))
 
     assert wait_calls == 1
     assert result["outcome"] == "failure"

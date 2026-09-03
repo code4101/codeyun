@@ -19,7 +19,7 @@ from backend.core.fanxiu.data_annotation.maintenance import (
     open_maintenance_gate,
     read_maintenance_gate,
 )
-from backend.core.fanxiu.runtime.mumu_control import (
+from backend.core.fanxiu.client.mumu_control import (
     mark_mumu_device_startup_ready,
     mumu_device_health_check,
     recover_mumu_device,
@@ -36,34 +36,34 @@ class MaintenanceTaskMixin:
     def _maintenance_scene_proves_available(scene_id: int | None) -> bool:
         return scene_id is not None and scene_id not in {14, 15, 16, 17, 18, 415, 546}
 
-    def _observe_maintenance_scene(self, runtime: Any, *, update: bool = True):
+    def _observe_maintenance_scene(self, context: Any, *, update: bool = True):
         """Observe startup state without invoking the ordinary-job maintenance guard."""
 
-        if hasattr(runtime, "ctx") and hasattr(runtime, "cur_frame"):
-            frame = runtime.cur_frame(update=update)
+        if hasattr(context, "ctx") and hasattr(context, "cur_frame"):
+            frame = context.cur_frame(update=update)
             candidate_ids = list(self.maintenance_probe_scene_ids)
-            candidate_provider = getattr(self, "_runtime_scene_candidate_ids", None)
+            candidate_provider = getattr(self, "_scene_candidate_ids", None)
             if callable(candidate_provider):
                 candidate_ids = list(dict.fromkeys([
                     *candidate_ids,
-                    *candidate_provider(runtime.ctx),
+                    *candidate_provider(context.ctx),
                 ]))
             scene_id, score = self._identify_scene_number(
-                runtime.ctx,
+                context.ctx,
                 frame,
                 candidate_ids,
             )
         else:
-            # Lightweight test/runtime adapters may expose only the public view.
-            scene_id, score, frame = runtime.current_scene(
+            # Lightweight test/context adapters may expose only the public view.
+            scene_id, score, frame = context.current_scene(
                 self.maintenance_probe_scene_ids,
                 update=update,
             )
-        text = runtime.ocr_text(frame)
+        text = context.ocr_text(frame)
         return infer_game_startup_scene(scene_id, text), score, frame, text
 
     def _maintenance_world_facts_path(self):
-        from backend.core.fanxiu.behavior_tree.runtime import fanxiu_data_annotation_world_facts_path
+        from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_data_annotation_world_facts_path
 
         return fanxiu_data_annotation_world_facts_path()
 
@@ -98,7 +98,7 @@ class MaintenanceTaskMixin:
 
     def _wait_for_game_startup_page(
         self,
-        runtime: Any,
+        context: Any,
         stop_event: threading.Event,
         *,
         timeout: float = GAME_STARTUP_TIMEOUT_SECONDS,
@@ -113,7 +113,7 @@ class MaintenanceTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame, last_text = self._observe_maintenance_scene(runtime, update=True)
+            scene_id, score, frame, last_text = self._observe_maintenance_scene(context, update=True)
             last_scene_id = scene_id
             if scene_id in {14, 18, 415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID} or self._maintenance_scene_proves_available(scene_id):
                 return {
@@ -141,7 +141,7 @@ class MaintenanceTaskMixin:
                     phase="maintenance_wait_startup",
                     current_scene=scene_id,
                 )
-            yield from runtime.wait_action_settle(min(poll_seconds, max(0.1, timeout - elapsed)))
+            yield from context.wait_action_settle(min(poll_seconds, max(0.1, timeout - elapsed)))
 
     def _execute_maintenance_recovery_task(
         self,
@@ -155,15 +155,15 @@ class MaintenanceTaskMixin:
             self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
             return {"result": "success", "message": "维护门闩未开启，无需恢复检查"}
 
-        runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-        scene_id, score, frame, _text = self._observe_maintenance_scene(runtime, update=True)
+        context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        scene_id, score, frame, _text = self._observe_maintenance_scene(context, update=True)
         if scene_id == 34:
             clear_maintenance_gate(
                 self._maintenance_world_facts_path(),
                 evidence={"stage": "preflight", "scene_id": 34, "score": score},
             )
             self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
-            runtime.set_completion_message("维护已结束；当前已在 #34 世界，无需重启模拟器")
+            context.set_completion_message("维护已结束；当前已在 #34 世界，无需重启模拟器")
             return {"result": "success", "message": "维护已结束，当前已在 #34 世界"}
 
         if self._maintenance_scene_proves_available(scene_id):
@@ -173,7 +173,7 @@ class MaintenanceTaskMixin:
                 evidence={"stage": "business_scene_available", "scene_id": scene_id, "score": score},
             )
             self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
-            runtime.set_completion_message(f"维护已结束；正式业务场景 #{scene_id} 可用")
+            context.set_completion_message(f"维护已结束；正式业务场景 #{scene_id} 可用")
             return {"result": "success", "message": f"维护已结束，正式业务场景 #{scene_id} 可用"}
 
         probe_interval = max(
@@ -195,14 +195,14 @@ class MaintenanceTaskMixin:
                 self._raise_if_stopped(stop_event)
                 if scene_id != 14:
                     break
-                runtime.click_shape_center(14, "关闭公告")
-                yield from runtime.wait_action_settle(2.0)
-                scene_id, _score, frame, _text = self._observe_maintenance_scene(runtime, update=True)
+                context.click_shape_center(14, "关闭公告")
+                yield from context.wait_action_settle(2.0)
+                scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
 
             if scene_id == 18:
                 for attempt in range(1, probe_attempts + 1):
                     self._raise_if_stopped(stop_event)
-                    runtime.click_shape_center(18, "进入游戏")
+                    context.click_shape_center(18, "进入游戏")
                     with self._lock:
                         self._set_status_locked(
                             "running",
@@ -210,8 +210,8 @@ class MaintenanceTaskMixin:
                             phase="maintenance_probe",
                             current_scene=18,
                         )
-                    yield from runtime.wait_action_settle(probe_interval)
-                    scene_id, _score, frame, _text = self._observe_maintenance_scene(runtime, update=True)
+                    yield from context.wait_action_settle(probe_interval)
+                    scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
                     if self._maintenance_scene_proves_available(scene_id):
                         break
                     if scene_id in {415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID}:
@@ -225,7 +225,7 @@ class MaintenanceTaskMixin:
                         "scene_id": scene_id,
                         "attempts": probe_attempts if scene_id in {18, None} else 0,
                         "duration_seconds": probe_duration,
-                        "ocr": runtime.ocr_text(frame)[:160],
+                        "ocr": context.ocr_text(frame)[:160],
                     },
                 )
                 return {
@@ -251,7 +251,7 @@ class MaintenanceTaskMixin:
                 evidence={"stage": "recovered", "scene_id": 34},
             )
             self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
-            runtime.set_completion_message("维护结束，轻量点击已进入 #34 世界；普通作业恢复调度")
+            context.set_completion_message("维护结束，轻量点击已进入 #34 世界；普通作业恢复调度")
             self._log("success", "维护恢复：轻量点击已确认进入 #34 世界，解除维护门闩")
             return {"result": "success", "message": "维护结束，已进入 #34 世界"}
 
@@ -318,9 +318,9 @@ class MaintenanceTaskMixin:
                     "message": f"维护复查：模拟器重启未就绪，休眠至 {next_time}",
                 }
 
-            runtime = self._fanxiu_runtime(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+            context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
             startup = yield from self._wait_for_game_startup_page(
-                runtime,
+                context,
                 stop_event,
                 timeout=startup_timeout,
                 poll_seconds=startup_poll,
@@ -333,7 +333,7 @@ class MaintenanceTaskMixin:
             )
             continue
 
-        assert runtime is not None
+        assert context is not None
         # A restart commonly opens #14. Closing it only exposes the cover and
         # must never be treated as proof that service has recovered.
         scene_id = startup.get("scene_id")
@@ -341,16 +341,16 @@ class MaintenanceTaskMixin:
         for _ in range(8):
             self._raise_if_stopped(stop_event)
             if scene_id == 14:
-                runtime.click_shape_center(14, "关闭公告")
-                yield from runtime.wait_action_settle(2.0)
-                scene_id, _score, frame, _text = self._observe_maintenance_scene(runtime, update=True)
+                context.click_shape_center(14, "关闭公告")
+                yield from context.wait_action_settle(2.0)
+                scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
                 continue
             break
 
         if scene_id in {415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID}:
             next_time = self._defer_maintenance_recovery(
                 scene_id=scene_id,
-                evidence={"stage": "post_restart", "scene_id": scene_id, "ocr": runtime.ocr_text(frame)[:160]},
+                evidence={"stage": "post_restart", "scene_id": scene_id, "ocr": context.ocr_text(frame)[:160]},
             )
             return {"result": "success", "message": f"维护页 #415 仍在，休眠至 {next_time}"}
 
@@ -359,7 +359,7 @@ class MaintenanceTaskMixin:
         if scene_id == 18:
             for attempt in range(1, probe_attempts + 1):
                 self._raise_if_stopped(stop_event)
-                runtime.click_shape_center(18, "进入游戏")
+                context.click_shape_center(18, "进入游戏")
                 with self._lock:
                     self._set_status_locked(
                         "running",
@@ -367,8 +367,8 @@ class MaintenanceTaskMixin:
                         phase="maintenance_probe",
                         current_scene=18,
                     )
-                yield from runtime.wait_action_settle(probe_interval)
-                scene_id, _score, frame, _text = self._observe_maintenance_scene(runtime, update=True)
+                yield from context.wait_action_settle(probe_interval)
+                scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
                 if scene_id in {415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID}:
                     break
                 # A click can briefly produce an unrecognized loading frame.
@@ -385,7 +385,7 @@ class MaintenanceTaskMixin:
                     "scene_id": scene_id,
                     "attempts": probe_attempts,
                     "duration_seconds": probe_duration,
-                    "ocr": runtime.ocr_text(frame)[:160],
+                    "ocr": context.ocr_text(frame)[:160],
                 },
             )
             return {
@@ -416,6 +416,6 @@ class MaintenanceTaskMixin:
             evidence={"stage": "recovered", "scene_id": 34},
         )
         self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
-        runtime.set_completion_message("维护结束，已进入 #34 世界；普通作业恢复调度")
+        context.set_completion_message("维护结束，已进入 #34 世界；普通作业恢复调度")
         self._log("success", "维护恢复：已确认进入 #34 世界，解除维护门闩")
         return {"result": "success", "message": "维护结束，已进入 #34 世界"}

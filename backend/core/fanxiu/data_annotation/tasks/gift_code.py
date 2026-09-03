@@ -175,14 +175,14 @@ class GiftCodeTaskMixin:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少每周_礼包码资产树路径，无法打开设置页")
-        runtime = self._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
+        context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         with self._lock:
             self._set_status_locked("running", "对齐 #49 设置页", phase="align_settings")
-        yield from self._open_settings_page(runtime)
+        yield from self._open_settings_page(context)
         return (
             yield from self._redeem_gift_codes_from_settings(
                 ctx,
-                runtime,
+                context,
                 codes,
                 stop_event,
                 on_codes_processed=on_codes_processed,
@@ -192,7 +192,7 @@ class GiftCodeTaskMixin:
     def _redeem_gift_codes_from_settings(
         self,
         ctx: dict[str, Any],
-        runtime: Any,
+        context: Any,
         codes: list[str],
         stop_event: threading.Event,
         *,
@@ -222,7 +222,7 @@ class GiftCodeTaskMixin:
         with self._lock:
             self._set_status_locked("running", "礼包码处理完成，返回 #34", phase="finish_back")
         try:
-            yield from self._leave_settings_page(runtime)
+            yield from self._leave_settings_page(context)
         except InterruptedError:
             # Cell cancellation is control flow, not a recoverable business
             # departure failure. GeneratorExit/KeyboardInterrupt likewise do

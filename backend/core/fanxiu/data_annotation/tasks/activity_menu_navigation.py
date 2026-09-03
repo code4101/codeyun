@@ -50,7 +50,7 @@ def _same_menu_snapshot(
 
 
 def open_loaded_activity_menu_item(
-    runtime: Any,
+    context: Any,
     target: str | int,
     *,
     kind: ActivityMenuKind,
@@ -82,8 +82,8 @@ def open_loaded_activity_menu_item(
     if not snapshot.complete:
         raise RuntimeError(f"活动菜单尚未完整加载：{snapshot.reason}")
 
-    frame = runtime.cur_frame(update=True)
-    tokens = runtime.ocr_tokens_in_shapes(
+    frame = context.cur_frame(update=True)
+    tokens = context.ocr_tokens_in_shapes(
         source_scene,
         shapes,
         frame_data_url=frame,
@@ -101,11 +101,11 @@ def open_loaded_activity_menu_item(
     if not _same_menu_snapshot(snapshot, refreshed):
         raise RuntimeError("活动菜单在定位后发生变化，拒绝点击旧坐标")
 
-    runtime.click_frame_point(source_scene, *plan.point)
+    context.click_frame_point(source_scene, *plan.point)
     return (
-        yield from runtime.wait_scene(
+        yield from context.wait_scene(
             *expected,
-            timeout=timeout_seconds,
+            wait=timeout_seconds,
             label=f"活动菜单：等待 {target} 后继",
         )
     )

@@ -184,6 +184,23 @@ export const upsertCompletionProgressExprInCustomFields = (
   return nextFields;
 };
 
+export const mergeEditableCustomFieldsWithSystemFields = (
+  sourceCustomFields: unknown,
+  editableCustomFields: unknown,
+  completionProgressExpr: unknown,
+): GenericCustomFieldTuple[] => {
+  const systemFields = toCustomFieldTuples(sourceCustomFields).filter(
+    ([key]) => isNoteSystemCustomFieldKey(key) && key !== NOTE_COMPLETION_PROGRESS_EXPR_FIELD,
+  );
+  const userFields = toCustomFieldTuples(editableCustomFields).filter(
+    ([key]) => !isNoteSystemCustomFieldKey(key),
+  );
+  return upsertCompletionProgressExprInCustomFields(
+    [...systemFields, ...userFields],
+    completionProgressExpr,
+  );
+};
+
 export const stripNoteSystemCustomFields = (customFields: unknown): GenericCustomFieldTuple[] => (
   toCustomFieldTuples(customFields).filter(([key]) => !isNoteSystemCustomFieldKey(key))
 );

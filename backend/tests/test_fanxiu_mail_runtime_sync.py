@@ -88,11 +88,11 @@ def test_runtime_snapshot_persists_exact_claim_and_attachment_facts(monkeypatch)
     assert sequence_snapshot["sequence_fingerprint"] == result["sequence_fingerprint"]
     assert [item["mail_id"] for item in sequence_snapshot["items"]] == ["101", "102"]
     assert rows["101"].status == "锁定"
-    assert rows["101"].runtime_status == "unclaimed"
+    assert rows["101"].execution_status == "unclaimed"
     assert rows["101"].present_in_runtime is True
     assert rows["101"].attachment_count == 1
     assert rows["102"].status == "已领"
-    assert rows["102"].runtime_status == "claimed"
+    assert rows["102"].execution_status == "claimed"
     assert rows["102"].reward_getted is True
     assert rows["102"].action_policy == ""
 
@@ -164,7 +164,7 @@ def test_complete_snapshot_keeps_disappeared_mail_as_inferred_claimed_history(mo
     row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "gone")).one()
 
     assert result["absent"] == 1
-    assert row.runtime_status == "claimed_absent"
+    assert row.execution_status == "claimed_absent"
     assert row.status == "已领"
     assert row.present_in_runtime is False
     assert row.reward_getted is False
@@ -256,7 +256,7 @@ def test_directly_claimed_mail_keeps_direct_evidence_after_leaving_list(monkeypa
     runtime_sync.sync_fanxiu_mail_runtime_snapshot(session, _snapshot())
     row = session.exec(select(FanxiuMailRecord).where(FanxiuMailRecord.mail_id == "claimed")).one()
 
-    assert row.runtime_status == "claimed"
+    assert row.execution_status == "claimed"
     assert row.status == "已领"
     assert row.present_in_runtime is False
     assert row.reward_getted is True

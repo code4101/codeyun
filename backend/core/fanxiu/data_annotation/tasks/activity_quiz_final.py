@@ -384,13 +384,13 @@ def _retire_final_ai_hint(question: FinalQuizQuestionState | None) -> None:
 
 
 def final_quiz_hint_point(
-    runtime: Any,
+    context: Any,
     option: FinalQuizOption,
 ) -> tuple[float, float] | None:
     """Project a live option row into the user-annotated #61[外框] hint lane."""
 
-    view = runtime.view(FINAL_SCENE_ID)
-    outer = runtime.shape(FINAL_SCENE_ID, "外框")
+    view = context.view(FINAL_SCENE_ID)
+    outer = context.shape(FINAL_SCENE_ID, "外框")
     width = float(view.raw.get("width") or 0)
     height = float(view.raw.get("height") or 0)
     if width <= 0 or height <= 0:
@@ -416,8 +416,8 @@ def execute_activity_quiz_final_task(
     asset_tree_path = ctx.get("asset_tree_path")
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("活动_答题决赛：缺少资产树路径")
-    runtime = runner._fanxiu_runtime(ctx, asset_tree_path, stop_event=stop_event)
-    max_runtime = float(payload.get("max_runtime_seconds") or 900.0)
+    context = runner._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
+    max_execution_seconds = float(payload.get("max_execution_seconds") or 900.0)
     start_wait = float(payload.get("start_wait_seconds") or 180.0)
     idle_after_click = float(payload.get("idle_after_click_seconds") or 15.0)
     scene_exit_grace = float(payload.get("scene_exit_grace_seconds") or 8.0)
@@ -434,8 +434,8 @@ def execute_activity_quiz_final_task(
     # not exact text: it is that the match resolves to an existing authoritative
     # bank record and that its answer uniquely maps to one current visual row.
     match_threshold = float(payload.get("match_score_threshold") or 82.0)
-    deadline = time.monotonic() + max_runtime
-    start_deadline = time.monotonic() + min(start_wait, max_runtime)
+    deadline = time.monotonic() + max_execution_seconds
+    start_deadline = time.monotonic() + min(start_wait, max_execution_seconds)
     current: FinalQuizQuestionState | None = None
     scene_seen = False
     last_complete_observation: float | None = None
@@ -463,8 +463,8 @@ def execute_activity_quiz_final_task(
                 max_age_seconds=native_max_age
             )
         now = time.monotonic()
-        frame = runtime.cur_frame(update=True)
-        prompt_tokens = runtime.ocr_tokens_in_shapes(
+        frame = context.cur_frame(update=True)
+        prompt_tokens = context.ocr_tokens_in_shapes(
             FINAL_SCENE_ID,
             ("题目",),
             padding=8,
@@ -493,7 +493,7 @@ def execute_activity_quiz_final_task(
             time.sleep(max(0.02, poll_seconds))
             continue
 
-        option_tokens = runtime.ocr_tokens_in_shapes(
+        option_tokens = context.ocr_tokens_in_shapes(
             FINAL_SCENE_ID,
             ("选项",),
             padding=8,
@@ -569,7 +569,7 @@ def execute_activity_quiz_final_task(
             )
             if native_position is not None:
                 target = current.options[native_position]
-                runtime.click_frame_point_fast(FINAL_SCENE_ID, target.x, target.y)
+                context.click_frame_point_fast(FINAL_SCENE_ID, target.x, target.y)
                 current.clicked = True
                 current.click_source = "native"
                 current.clicked_at = time.monotonic()
@@ -610,7 +610,7 @@ def execute_activity_quiz_final_task(
                 target_position = resolve_final_quiz_target(matched, current.options)
             if target_position is not None:
                 target = current.options[target_position]
-                runtime.click_frame_point_fast(FINAL_SCENE_ID, target.x, target.y)
+                context.click_frame_point_fast(FINAL_SCENE_ID, target.x, target.y)
                 current.clicked = True
                 current.click_source = "knowledge"
                 current.clicked_at = time.monotonic()
@@ -647,11 +647,11 @@ def execute_activity_quiz_final_task(
                 )
             ):
                 hint_point = final_quiz_hint_point(
-                    runtime,
+                    context,
                     current.options[decision.position],
                 )
                 if hint_point is not None:
-                    runtime.click_frame_point_fast(FINAL_SCENE_ID, *hint_point)
+                    context.click_frame_point_fast(FINAL_SCENE_ID, *hint_point)
                     current.last_hint_at = time.monotonic()
                     current.hint_click_count += 1
                     hint_clicks += 1

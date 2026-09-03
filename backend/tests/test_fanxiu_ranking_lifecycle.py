@@ -8,12 +8,17 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
 from backend.core.fanxiu.activity.ranking_lifecycle import (
+    BEAST_ABYSS_AUTO_CLEAR_KIND,
+    BEAST_ABYSS_FORMAL_KIND,
+    BEAST_ABYSS_INITIALIZATION_KIND,
+    BEAST_ABYSS_MANUAL_CLEAR_KIND,
     DAILY_RECONCILE_KIND,
     EXCHANGE_TAIL_KIND,
     MAGIC_ACTIVE_KIND,
     RANKING_CAPABILITY_STATUS,
     RESOURCE_FREE_GIFT_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
+    XUTIAN_ACTIVE_KIND,
     RankingActivityIdentity,
     RankingOccurrence,
     checkpoints_for_occurrence,
@@ -501,6 +506,115 @@ def test_magic_1900_is_extra_checkpoint_not_a_parallel_job() -> None:
         completed_keys=completed,
     )
     assert [item.checkpoint_kind for item in active_due] == [MAGIC_ACTIVE_KIND]
+
+
+def test_xutian_1000_is_one_occurrence_scoped_checkpoint() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="xutian-palace",
+        family="gameplay_rank",
+        runtime_id="4080001400020",
+        activity_id=4080001,
+        start_at=datetime(2026, 8, 31, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 1, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 31, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 2, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+    before_open = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 31, 9, 59, tzinfo=TZ)
+    )
+    completed = {item.key for item in before_open}
+
+    assert next_ranking_lifecycle_time(
+        (occurrence,),
+        now=datetime(2026, 8, 31, 9, 59, tzinfo=TZ),
+        completed_keys=completed,
+    ) == datetime(2026, 8, 31, 10, tzinfo=TZ)
+    at_open = due_ranking_checkpoints(
+        (occurrence,),
+        now=datetime(2026, 8, 31, 10, tzinfo=TZ),
+        completed_keys=completed,
+    )
+    assert [item.checkpoint_kind for item in at_open] == [XUTIAN_ACTIVE_KIND]
+
+
+def test_unverified_beast_abyss_only_publishes_first_day_read_only_reconcile() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="beast-abyss",
+        family="gameplay_rank",
+        runtime_id="4150001400008",
+        activity_id=4150001,
+        start_at=datetime(2026, 8, 24, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 25, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 24, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 26, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    first_day = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 8, 24, tzinfo=TZ).date(),
+    )
+    assert [(item.checkpoint_kind, item.due_at.strftime("%H:%M")) for item in first_day] == [
+        (DAILY_RECONCILE_KIND, "00:30"),
+    ]
+
+    tail_day = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
+    )
+    assert tail_day == ()
+
+
+def test_unverified_beast_abyss_active_slots_stay_unpublished_next_day() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="beast-abyss",
+        family="gameplay_rank",
+        runtime_id="4150001400008",
+        activity_id=4150001,
+        start_at=datetime(2026, 8, 24, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 27, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 24, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 28, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    after_auto_window = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 25, 21, 30, tzinfo=TZ)
+    )
+    assert {
+        BEAST_ABYSS_INITIALIZATION_KIND,
+        BEAST_ABYSS_FORMAL_KIND,
+        BEAST_ABYSS_AUTO_CLEAR_KIND,
+    }.isdisjoint(item.checkpoint_kind for item in after_auto_window)
+
+    next_day_open = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 26, 10, 0, tzinfo=TZ)
+    )
+    assert {
+        BEAST_ABYSS_INITIALIZATION_KIND,
+        BEAST_ABYSS_FORMAL_KIND,
+        BEAST_ABYSS_AUTO_CLEAR_KIND,
+        BEAST_ABYSS_MANUAL_CLEAR_KIND,
+    }.isdisjoint(item.checkpoint_kind for item in next_day_open)
+
+
+def test_xutian_instance_key_survives_runtime_id_drift() -> None:
+    common = dict(
+        activity_type="xutian-palace",
+        family="gameplay_rank",
+        activity_id=4080001,
+        start_at=datetime(2026, 8, 31, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 1, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 31, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 2, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+    early = RankingOccurrence(runtime_id="4080001400020", **common)
+    settled = RankingOccurrence(runtime_id="4080001400004", **common)
+
+    assert early.instance_key == settled.instance_key
+    assert early.instance_key.startswith("activity:xutian-palace:4080001:")
 
 
 def test_checkpoint_store_is_occurrence_scoped_and_idempotently_updates_one_row() -> None:

@@ -18,7 +18,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     resolve_manager_root,
 )
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
-from backend.core.fanxiu.runtime import mumu_control
+from backend.core.fanxiu.client import mumu_control
 from backend.core.temp_paths import codeyun_temp_root
 
 

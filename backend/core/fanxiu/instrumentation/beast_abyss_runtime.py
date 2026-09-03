@@ -16,6 +16,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     as_int,
     manager_index_fields,
     resolve_lua_global_manager_root,
+    table_ref,
 )
 
 
@@ -36,6 +37,16 @@ _HIERARCHY_FIELDS = (
     "back_tip_locale_id", "forward_score", "cool_time", "reward_preview",
     "consume", "description_locale_id",
 )
+
+_AUTO_OPTION_TYPE_IDS = {
+    "fairy_events": 102,
+    "beast_events": 101,
+    "player_events": 103,
+    "auto_use_explore_items": 201,
+    "stop_when_killed": 202,
+    "fast_auto": 9999,
+    "skip_animation": 99999,
+}
 
 
 def _fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:
@@ -107,6 +118,29 @@ def _decode_hierarchy_candidates(
     if not candidates:
         raise FanxiuRuntimeMemoryError("兽渊 Runtime hierarchyMap 中没有有效层级")
     return candidates
+
+
+def _decode_personal_rank(
+    reader: LuaJitReader,
+    data: dict[Any, Any],
+) -> dict[str, Any]:
+    """Read the Beast-owned live rank VO used by the visible info panel."""
+
+    rank_ref = table_ref(data.get("_RankPersonalVO"))
+    if rank_ref is None:
+        raise FanxiuRuntimeMemoryError("兽渊 Runtime 尚未同步个人排行")
+    fields = _fields(reader, rank_ref)
+    score = as_int(fields.get("score"))
+    rank = as_int(fields.get("rank"))
+    if score is None or score < 0:
+        raise FanxiuRuntimeMemoryError(f"兽渊个人积分无效：{score!r}")
+    if rank is None:
+        raise FanxiuRuntimeMemoryError(f"兽渊个人排名无效：{rank!r}")
+    return {
+        "score": int(score),
+        "rank": int(rank),
+        "runtime_object_identity": f"0x{rank_ref.address:x}",
+    }
 
 
 def _decode_hierarchy_map(
@@ -281,6 +315,7 @@ def read_beast_abyss_resource_snapshot() -> dict[str, Any]:
             f"兽渊当前层级缺少已加载配置：hierarchy={current_hierarchy}"
         )
     info = _fields(reader, data.get("_BeastExplodeInfo"))
+    personal_rank = _decode_personal_rank(reader, data)
     return {
         "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "runtime_memory",
@@ -289,6 +324,7 @@ def read_beast_abyss_resource_snapshot() -> dict[str, Any]:
         "challenge": counts[2],
         "point_get": max(0, as_int(info.get("pointGet")) or 0),
         "quick_check": bool(info.get("quickCheck")),
+        "personal_rank": personal_rank,
         "hierarchy_candidates": hierarchy_candidates,
         "current_user_id": current_user_id,
         "current_hierarchy": current_hierarchy,
@@ -300,6 +336,7 @@ def read_beast_abyss_resource_snapshot() -> dict[str, Any]:
             "process_start_ticks": memory.process_start_ticks,
             "beast_root": f"0x{beast_root:x}",
             "beast_root_cache_hit": beast_cache_hit,
+            "personal_rank_object_identity": personal_rank["runtime_object_identity"],
             "entity_root": f"0x{entity_root:x}",
             "entity_root_cache_hit": entity_cache_hit,
             "db_root": f"0x{db_root:x}",
@@ -328,6 +365,15 @@ def read_beast_abyss_budget_snapshot() -> dict[str, Any]:
         raise FanxiuRuntimeMemoryError(
             f"兽渊当前层级探索消耗无效：hierarchy={current_hierarchy}, consume={explore_cost}"
         )
+    hierarchy_costs = [
+        int(value)
+        for config in dict(snapshot.get("hierarchy_configs") or {}).values()
+        if (value := as_int(dict(config or {}).get("consume"))) is not None
+        and int(value) > 0
+    ]
+    if not hierarchy_costs:
+        raise FanxiuRuntimeMemoryError("兽渊层级配置没有可用的探索消耗")
+    max_explore_cost = max(hierarchy_costs)
     item_ids = {
         int(config.get("supplement_item_id") or 0)
         for config in snapshot["count_configs"].values()
@@ -346,6 +392,7 @@ def read_beast_abyss_budget_snapshot() -> dict[str, Any]:
     snapshot["capacity"] = {
         "current_hierarchy": int(current_hierarchy),
         "explore_cost": int(explore_cost),
+        "max_explore_cost": int(max_explore_cost),
         "explore_points_without_items": int(snapshot["explore"]["count"]),
         "explore_points_with_items": (
             int(snapshot["explore"]["count"])
@@ -353,13 +400,13 @@ def read_beast_abyss_budget_snapshot() -> dict[str, Any]:
             * int(explore_config.get("automatic") or 0)
         ),
         "explore_attempts_without_items": (
-            int(snapshot["explore"]["count"]) // explore_cost
+            int(snapshot["explore"]["count"]) // max_explore_cost
         ),
         "explore_attempts_with_items": (
             int(snapshot["explore"]["count"])
             + int(counts.get(explore_item_id, 0))
             * int(explore_config.get("automatic") or 0)
-        ) // explore_cost,
+        ) // max_explore_cost,
         "challenge_without_items": int(snapshot["challenge"]["count"]),
         "challenge_with_items": (
             int(snapshot["challenge"]["count"])
@@ -370,7 +417,197 @@ def read_beast_abyss_budget_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def read_beast_abyss_auto_count_snapshot() -> dict[str, Any]:
+    """Read the live #658 ``useNum`` field used for OCR fallback.
+
+    Beast Abyss does not use Heaven's ``_AutoFightData[10]`` model.  Its
+    loaded settings panel owns the integer as ``useNum``; panel identity is
+    proven by the complete Beast-specific sibling field set below.
+    """
+
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+        active_ui_component_objects,
+        read_ui_object_field,
+        read_ui_runtime_snapshot,
+    )
+
+    required = frozenset({
+        "useNum",
+        "useMax",
+        "SliderNum",
+        "btnConfirm",
+        "BeastexplodeHelpTypeItem1",
+        "BeastexplodeHelpTypeItem2",
+        "OnSliderChangedFunID",
+    })
+
+    def read_panel(context):
+        candidates = []
+        for component in active_ui_component_objects(context):
+            fields = context.reader.fields(component)
+            if required.issubset(fields):
+                candidates.append(component)
+        if len(candidates) != 1:
+            raise FanxiuRuntimeMemoryError(
+                f"active 兽渊自动探查设置面板数量为 {len(candidates)}"
+            )
+        panel = candidates[0]
+        current = as_int(read_ui_object_field(context, panel.address, "useNum"))
+        maximum = as_int(read_ui_object_field(context, panel.address, "useMax"))
+        if current is None or current < 1:
+            raise FanxiuRuntimeMemoryError(f"兽渊自动探查 useNum 无效：{current!r}")
+        if maximum is None or maximum < current:
+            raise FanxiuRuntimeMemoryError(
+                f"兽渊自动探查 useMax 无效：current={current!r}, maximum={maximum!r}"
+            )
+        return {
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "active_beast_abyss_auto_panel",
+            "read_only": True,
+            "current": int(current),
+            "minimum": 1,
+            "maximum": int(maximum),
+            "evidence": {
+                "pid": context.binding.pid,
+                "process_start_ticks": context.binding.process_start_ticks,
+                "panel_address": f"0x{panel.address:x}",
+                "field": "useNum",
+            },
+        }
+
+    return read_ui_runtime_snapshot(required, read_panel, fast=True)
+
+
+def read_beast_abyss_auto_options_snapshot() -> dict[str, Any]:
+    """Read all eight #658 option facts in one Runtime observation.
+
+    The seven ordinary toggles are authoritative members of
+    ``BeastexplodeData._AutoFightList``.  The optional special-item toggle is
+    local setting data keyed by the one special-item row currently rendered
+    in ``V_UseItemList``.  GUI code uses this snapshot only to decide which
+    fixed semantic Shapes to click, then reads one more snapshot to verify the
+    batch result.
+    """
+
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+        active_ui_component_objects,
+        read_ui_object_field,
+        read_ui_runtime_snapshot,
+    )
+
+    required = frozenset({
+        "useNum",
+        "useMax",
+        "tbHelpItem",
+        "V_UseItemList",
+        "BeastexplodeHelpTypeItem1",
+        "OnSliderChangedFunID",
+    })
+
+    def decode_auto_types(reader: LuaJitReader, root_address: int) -> tuple[int, ...]:
+        data = _beast_data_fields(reader, root_address)
+        values, declared_count = reader.list_items(data.get("_AutoFightList"))
+        if declared_count is None:
+            raise FanxiuRuntimeMemoryError("兽渊自动选项列表尚未加载")
+        return tuple(
+            sorted({
+                value
+                for raw in values
+                if (value := as_int(raw)) is not None
+            })
+        )
+
+    def read_panel(context):
+        candidates = []
+        for component in active_ui_component_objects(context):
+            fields = context.reader.fields(component)
+            if required.issubset(fields):
+                candidates.append(component)
+        if len(candidates) != 1:
+            raise FanxiuRuntimeMemoryError(
+                f"active 兽渊自动探查设置面板数量为 {len(candidates)}"
+            )
+        panel = candidates[0]
+
+        beast_root, cache_hit, _environment = resolve_lua_global_manager_root(
+            context.memory,
+            manager_key="beast-abyss-auto-options",
+            state_address=context.binding.state_address,
+            global_name="BeastexplodeMgr",
+            required_methods=_BEAST_METHODS,
+            validate=decode_auto_types,
+        )
+        selected_type_ids = set(decode_auto_types(context.reader, beast_root))
+        data = _beast_data_fields(context.reader, beast_root)
+
+        special_list = table_ref(
+            read_ui_object_field(context, panel.address, "V_UseItemList")
+        )
+        if special_list is None:
+            raise FanxiuRuntimeMemoryError("兽渊特殊道具选项列表尚未加载")
+        special_values, special_count = context.reader.list_items(special_list)
+        special_rows = [table_ref(value) for value in special_values]
+        special_rows = [value for value in special_rows if value is not None]
+        if special_count != 1 or len(special_rows) != 1:
+            raise FanxiuRuntimeMemoryError(
+                "兽渊特殊道具选项无法唯一确定："
+                f"declared={special_count!r}, loaded={len(special_rows)}"
+            )
+        special_data = table_ref(
+            read_ui_object_field(context, special_rows[0].address, "V_Data")
+        )
+        if special_data is None:
+            raise FanxiuRuntimeMemoryError("兽渊特殊道具选项缺少 V_Data")
+        # Generated BeastExplodeUse rows are compact positional arrays rather
+        # than named tables: [1]=id, [2]=itemId.
+        special_array = list(context.reader.table(special_data.address).get("array", ()))
+        special_config_id = as_int(
+            special_array[1] if len(special_array) > 1 else None
+        )
+        special_item_id = as_int(
+            special_array[2] if len(special_array) > 2 else None
+        )
+        if special_config_id is None or special_config_id <= 0:
+            raise FanxiuRuntimeMemoryError("兽渊特殊道具选项缺少有效配置 id")
+
+        setting_rows = context.reader.dictionary_fields(data.get("_AutoSettingData"))
+        special_setting = None
+        for raw_key, raw_value in setting_rows.items():
+            if as_int(raw_key) == special_config_id:
+                special_setting = context.reader.fields(raw_value)
+                break
+        special_selected = bool(
+            special_setting and special_setting.get("toggle") is True
+        )
+
+        options = {
+            name: type_id in selected_type_ids
+            for name, type_id in _AUTO_OPTION_TYPE_IDS.items()
+        }
+        options["use_find_demon_talisman"] = special_selected
+        return {
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "active_beast_abyss_auto_panel",
+            "read_only": True,
+            "options": options,
+            "evidence": {
+                "pid": context.binding.pid,
+                "process_start_ticks": context.binding.process_start_ticks,
+                "panel_address": f"0x{panel.address:x}",
+                "beast_root": f"0x{beast_root:x}",
+                "beast_root_cache_hit": cache_hit,
+                "selected_type_ids": sorted(selected_type_ids),
+                "special_config_id": special_config_id,
+                "special_item_id": special_item_id,
+            },
+        }
+
+    return read_ui_runtime_snapshot(required, read_panel, fast=True)
+
+
 __all__ = [
+    "read_beast_abyss_auto_count_snapshot",
+    "read_beast_abyss_auto_options_snapshot",
     "read_beast_abyss_budget_snapshot",
     "read_beast_abyss_resource_snapshot",
 ]

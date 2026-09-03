@@ -57,21 +57,21 @@ def 领取邮件(runtime, 邮件: View邮件):
     :param 邮件: 要领取的邮件
     """
     邮件.标题shape.click(runtime)
-    yield from runtime.wait_view(122, 123)
+    yield from runtime.wait_scene(122, 123)
     View(122).get_shape("领取").click(runtime)
     # 不用区分#123['删除']，这两个按钮位置一样的，操作都一样
     # 领取资源类的，会有一个领取的弹窗过度页，不用管，等待回到121就行
-    yield from runtime.wait_view(121)
+    yield from runtime.wait_scene(121)
 
 
 def 打开邮件菜单页(runtime):
-    runtime.goto_view(34)
+    runtime.go_scene(34)
     if View(68).get_shape('邮件').is_match(runtime):
         View(68).get_shape('邮件').click(runtime)
     else:
         View(34).get_shape('打开下方菜单').click(runtime)
         View(35).get_shape('邮件').wait_click(runtime)
-    yield from runtime.wait_view(121)
+    yield from runtime.wait_scene(121)
 
 def 普通作业_清理邮件(runtime: Runtime):
     # 1 到达121

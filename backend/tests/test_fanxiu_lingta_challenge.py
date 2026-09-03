@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.core.fanxiu.behavior_tree.runtime import create_behavior_tree_runtime_runner
+from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from backend.core.fanxiu.data_annotation.tasks import lingta_challenge as lingta_challenge_module
 
 from backend.core.fanxiu.data_annotation.tasks.lingta_challenge import (
@@ -51,14 +51,14 @@ def test_lingta_admission_is_side_effect_free_before_0700() -> None:
 
 
 def test_lingta_runtime_admission_uses_planned_business_clock(monkeypatch) -> None:
-    from backend.core.fanxiu.data_annotation import behavior_tree_runtime
+    from backend.core.fanxiu.data_annotation import behavior_tree_executor
 
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 8, 12, 7, 1),
     )
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     persisted: list[tuple] = []
     runner._persist_admission_decision = (
         lambda payload, decision: persisted.append(
@@ -110,7 +110,7 @@ def test_current_card_relation_handles_old_left_and_current_right_samples() -> N
 
 
 def test_lingta_crop_ocr_rebases_progress_box_to_full_frame(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     image = {
         "type": "image",
         "filename": "0194.png",
@@ -161,7 +161,7 @@ def test_lingta_crop_ocr_rebases_progress_box_to_full_frame(monkeypatch) -> None
 def test_lingta_unknown_settlement_evidence_is_saved_to_standard_temp_pipeline(
     monkeypatch,
 ) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     calls: list[tuple] = []
 
     def fake_build(bound_runner, ctx, frame, **kwargs):
@@ -207,18 +207,18 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
         def __init__(self) -> None:
             self.actions: list[tuple] = []
 
-        def goto_view(self, scene_id):
+        def go_scene(self, scene_id):
             self.actions.append(("goto", scene_id))
             if False:
                 yield None
 
-        def wait_click_then_view(self, source, shape, target, **kwargs):
+        def wait_click_then_scene(self, source, shape, target, **kwargs):
             self.actions.append(("wait_click", source, shape, target, kwargs.get("label")))
             if False:
                 yield None
             return target
 
-        def view_visible(self, scene_id):
+        def scene_visible(self, scene_id):
             return ("view", scene_id)
 
         def shape_visible(self, scene_id, shape):
@@ -244,8 +244,8 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
                 yield None
             return "open"
 
-        def wait_view(self, *scene_ids, **kwargs):
-            self.actions.append(("wait_view", scene_ids, kwargs.get("label"), kwargs.get("timeout")))
+        def wait_scene(self, *scene_ids, **kwargs):
+            self.actions.append(("wait_scene", scene_ids, kwargs.get("label"), kwargs.get("wait")))
             if False:
                 yield None
             if scene_ids == (193, 194):
@@ -281,7 +281,7 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
         def click_frame_point(self, scene_id, x, y):
             self.actions.append(("click_point", scene_id, x, y))
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = RouteRuntime()
 
     progress = _drain(runner._open_lingta_current_floor_detail(runtime))
@@ -290,7 +290,7 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
     open_call = next(action for action in runtime.actions if action[0] == "open_daily_entry")
     assert open_call[1]["progress_can_mark_done"] is False
     assert open_call[1]["title_pattern"] == r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔"
-    assert ("wait_view", (193, 194), "灵塔_挑战：等待 #193/#194", 60.0) in runtime.actions
+    assert ("wait_scene", (193, 194), "灵塔_挑战：等待 #193/#194", 60.0) in runtime.actions
     assert ("click_point", 194, 631.0, 663.0) in runtime.actions
     wait_any_call = next(action for action in runtime.actions if action[0] == "wait_any")
     assert wait_any_call[1] == ("current_floor", "jump")
@@ -312,11 +312,11 @@ def test_lingta_route_accepts_current_card_landing_directly_on_532() -> None:
         def __init__(self) -> None:
             self.actions: list[tuple] = []
 
-        def goto_view(self, scene_id):
+        def go_scene(self, scene_id):
             if False:
                 yield None
 
-        def wait_click_then_view(self, source, shape, target, **_kwargs):
+        def wait_click_then_scene(self, source, shape, target, **_kwargs):
             self.actions.append(("wait_click", source, shape, target))
             if False:
                 yield None
@@ -328,7 +328,7 @@ def test_lingta_route_accepts_current_card_landing_directly_on_532() -> None:
                 yield None
             return "open"
 
-        def wait_view(self, *scene_ids, **_kwargs):
+        def wait_scene(self, *scene_ids, **_kwargs):
             if False:
                 yield None
             return 194 if scene_ids == (193, 194) else 532
@@ -342,7 +342,7 @@ def test_lingta_route_accepts_current_card_landing_directly_on_532() -> None:
         def click_frame_point(self, scene_id, x, y):
             self.actions.append(("click_point", scene_id, x, y))
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = DirectRuntime()
 
     _drain(runner._open_lingta_current_floor_detail(runtime))
@@ -359,17 +359,17 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
         def __init__(self) -> None:
             self.actions: list[tuple] = []
 
-        def goto_view(self, _scene_id):
+        def go_scene(self, _scene_id):
             if False:
                 yield None
 
-        def wait_click_then_view(self, source, shape, target, **_kwargs):
+        def wait_click_then_scene(self, source, shape, target, **_kwargs):
             self.actions.append(("wait_click", source, shape, target))
             if False:
                 yield None
             return target
 
-        def view_visible(self, scene_id):
+        def scene_visible(self, scene_id):
             return ("view", scene_id)
 
         def shape_visible(self, scene_id, shape):
@@ -386,7 +386,7 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
                 yield None
             return "open"
 
-        def wait_view(self, *scene_ids, **_kwargs):
+        def wait_scene(self, *scene_ids, **_kwargs):
             if False:
                 yield None
             return 194 if scene_ids == (193, 194) else 531
@@ -400,7 +400,7 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
         def click_frame_point(self, _scene_id, _x, _y):
             return None
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = LateDirectRuntime()
 
     progress = _drain(runner._open_lingta_current_floor_detail(runtime))
@@ -413,24 +413,24 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
     ]
 
 
-def test_lingta_route_aligns_runtime_loaded_overview_with_stable_jump_anchor(monkeypatch) -> None:
+def test_lingta_route_aligns_context_loaded_overview_with_stable_jump_anchor(monkeypatch) -> None:
     class RuntimeAlignedOverview:
         payload = {}
 
         def __init__(self) -> None:
             self.actions: list[tuple] = []
 
-        def goto_view(self, _scene_id):
+        def go_scene(self, _scene_id):
             if False:
                 yield None
 
-        def wait_click_then_view(self, source, shape, target, **_kwargs):
+        def wait_click_then_scene(self, source, shape, target, **_kwargs):
             self.actions.append(("wait_click", source, shape, target))
             if False:
                 yield None
             return target
 
-        def view_visible(self, scene_id):
+        def scene_visible(self, scene_id):
             return ("view", scene_id)
 
         def shape_visible(self, scene_id, shape):
@@ -447,7 +447,7 @@ def test_lingta_route_aligns_runtime_loaded_overview_with_stable_jump_anchor(mon
                 yield None
             return "open"
 
-        def wait_view(self, *scene_ids, **_kwargs):
+        def wait_scene(self, *scene_ids, **_kwargs):
             if False:
                 yield None
             if scene_ids == (193, 194):
@@ -470,7 +470,7 @@ def test_lingta_route_aligns_runtime_loaded_overview_with_stable_jump_anchor(mon
             self.actions.append(("ocr_shapes", scene_id, tuple(shape_titles)))
             return "挑战"
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     monkeypatch.setattr(
         runner,
         "_read_lingta_challenge_snapshot",
@@ -496,17 +496,17 @@ def test_lingta_route_propagates_overview_race_timeout_without_clicking() -> Non
         def __init__(self) -> None:
             self.actions: list[tuple] = []
 
-        def goto_view(self, _scene_id):
+        def go_scene(self, _scene_id):
             if False:
                 yield None
 
-        def wait_click_then_view(self, source, shape, target, **_kwargs):
+        def wait_click_then_scene(self, source, shape, target, **_kwargs):
             self.actions.append(("wait_click", source, shape, target))
             if False:
                 yield None
             return target
 
-        def view_visible(self, scene_id):
+        def scene_visible(self, scene_id):
             return ("view", scene_id)
 
         def shape_visible(self, scene_id, shape):
@@ -523,7 +523,7 @@ def test_lingta_route_propagates_overview_race_timeout_without_clicking() -> Non
                 yield None
             return "open"
 
-        def wait_view(self, *scene_ids, **_kwargs):
+        def wait_scene(self, *scene_ids, **_kwargs):
             if False:
                 yield None
             return 194 if scene_ids == (193, 194) else 531
@@ -537,7 +537,7 @@ def test_lingta_route_propagates_overview_race_timeout_without_clicking() -> Non
         def click_frame_point(self, _scene_id, _x, _y):
             return None
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = MissingBranchRuntime()
 
     with pytest.raises(TimeoutError, match="#532 与前往当前层均未出现"):
@@ -565,19 +565,19 @@ def test_lingta_settlement_classifier_separates_countdown_from_level_gate() -> N
 
 def test_lingta_challenge_is_one_daily_0700_standard_job() -> None:
     from backend.core.fanxiu.data_annotation.default_jobs import (
-        register_fanxiu_data_annotation_default_runtime_jobs,
+        register_fanxiu_default_jobs,
     )
     from backend.core.fanxiu.data_annotation.jobs import (
         get_fanxiu_data_annotation_task_cell_definition,
     )
-    from backend.core.fanxiu.data_annotation.scheduler_defaults import (
-        default_data_annotation_scheduler_tasks,
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+        default_kernel_scheduler_tasks,
     )
-    from backend.core.fanxiu.data_annotation.behavior_tree_control import (
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
         sort_scheduler_tasks_for_dispatch,
     )
 
-    register_fanxiu_data_annotation_default_runtime_jobs()
+    register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("lingta_challenge")
     assert definition is not None
     assert definition.label == "灵塔_挑战"
@@ -585,7 +585,7 @@ def test_lingta_challenge_is_one_daily_0700_standard_job() -> None:
     assert definition.standard_job is True
     assert definition.standard_job_id == "lingta-challenge"
     assert definition.standard_job_description == "每日"
-    tasks = default_data_annotation_scheduler_tasks(datetime(2026, 8, 12, 1, 0))
+    tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 12, 1, 0))
     matches = [item for item in tasks if item["task_type"] == "lingta_challenge"]
     assert len(matches) == 1
     assert matches[0]["id"] == "lingta-challenge"
@@ -653,8 +653,8 @@ class _FakeLingtaRuntime:
     def ocr_text(self, _frame):
         return self._ocr_text
 
-    def wait_click_then_view(self, source, shape, target, **_kwargs):
-        self.actions.append(("wait_click_then_view", source, shape, target))
+    def wait_click_then_scene(self, source, shape, target, **_kwargs):
+        self.actions.append(("wait_click_then_scene", source, shape, target))
         if False:
             yield None
         return target
@@ -670,7 +670,7 @@ class _FakeLingtaRuntime:
         if False:
             yield None
 
-    def goto_view(self, scene_id):
+    def go_scene(self, scene_id):
         self.actions.append(("goto", scene_id))
         if False:
             yield None
@@ -689,8 +689,11 @@ def _patch_lingta_open(runner, *, passed: int = 73, total: int = 500) -> None:
 
 
 def test_lingta_flow_refuses_challenge_when_start_mark_persistence_fails() -> None:
-    runner = create_behavior_tree_runtime_runner()
-    runtime = _FakeLingtaRuntime((34,))
+    runner = create_behavior_tree_executor()
+    runtime = _FakeLingtaRuntime(
+        (34,),
+        payload={"__scheduler_task_id": "test-lingta-start-mark-failure"},
+    )
     _patch_lingta_open(runner)
     runner._read_lingta_challenge_snapshot = lambda: {
         "ok": True,
@@ -706,7 +709,7 @@ def test_lingta_flow_refuses_challenge_when_start_mark_persistence_fails() -> No
 
 
 def test_lingta_flow_continues_from_already_open_532_without_reopening_route() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((532, 365))
     runner._open_lingta_current_floor_detail = lambda *_args: (_ for _ in ()).throw(
         AssertionError("already-open #532 must not navigate away")
@@ -735,7 +738,7 @@ def test_lingta_flow_continues_from_already_open_532_without_reopening_route() -
 
 
 def test_lingta_flow_waits_through_stale_detail_frame_then_treats_failure_as_normal_terminal() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, 532, 365))
     _patch_lingta_open(runner)
     snapshots = iter(
@@ -770,18 +773,18 @@ def test_lingta_flow_waits_through_stale_detail_frame_then_treats_failure_as_nor
     ]
     assert persisted and cleared == [("lingta-challenge", "lingta_auto_chain_started")]
     assert ("settle", 0.5) in runtime.actions
-    assert ("wait_click_then_view", 365, "退出", [34, 532]) in runtime.actions
+    assert ("wait_click_then_scene", 365, "退出", [34, 532]) in runtime.actions
 
 
 def test_lingta_failure_landing_on_current_floor_returns_world_before_success() -> None:
     class FailureLandingRuntime(_FakeLingtaRuntime):
-        def wait_click_then_view(self, source, shape, target, **_kwargs):
-            self.actions.append(("wait_click_then_view", source, shape, target))
+        def wait_click_then_scene(self, source, shape, target, **_kwargs):
+            self.actions.append(("wait_click_then_scene", source, shape, target))
             if False:
                 yield None
             return SimpleNamespace(id=532)
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = FailureLandingRuntime((365,))
     runner._set_scheduler_task_payload_flag = lambda *_args: True
     runner._clear_scheduler_task_payload_flag = lambda *_args: None
@@ -790,19 +793,19 @@ def test_lingta_failure_landing_on_current_floor_returns_world_before_success() 
 
     assert result["outcome"] == "power_limit"
     assert runtime.actions == [
-        ("wait_click_then_view", 365, "退出", [34, 532]),
+        ("wait_click_then_scene", 365, "退出", [34, 532]),
         ("goto", 34),
     ]
 
 
 def test_lingta_failure_persists_terminal_mark_before_exit_error() -> None:
     class ExitErrorRuntime(_FakeLingtaRuntime):
-        def wait_click_then_view(self, *_args, **_kwargs):
+        def wait_click_then_scene(self, *_args, **_kwargs):
             if False:
                 yield None
             raise TimeoutError("exit landed on #532")
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = ExitErrorRuntime((365,))
     persisted: list[tuple] = []
     runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
@@ -818,7 +821,7 @@ def test_lingta_failure_persists_terminal_mark_before_exit_error() -> None:
 
 def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
     class DynamicCurrentFloorRuntime(_FakeLingtaRuntime):
-        def wait_click_then_view(self, *_args, **_kwargs):
+        def wait_click_then_scene(self, *_args, **_kwargs):
             if False:
                 yield None
             raise TimeoutError("dynamic #532 identity")
@@ -833,13 +836,13 @@ def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
         def click_frame_point(self, scene_id, x, y):
             self.actions.append(("click_point", scene_id, x, y))
 
-        def wait_view(self, *scene_ids, **kwargs):
-            self.actions.append(("wait_view", scene_ids, kwargs.get("label")))
+        def wait_scene(self, *scene_ids, **kwargs):
+            self.actions.append(("wait_scene", scene_ids, kwargs.get("label")))
             if False:
                 yield None
             return SimpleNamespace(id=194)
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = DynamicCurrentFloorRuntime((365,))
     runner._read_lingta_challenge_snapshot = lambda: {"complete": True}
     runner._set_scheduler_task_payload_flag = lambda *_args: True
@@ -854,7 +857,7 @@ def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
 
 
 def test_lingta_retry_from_532_power_limit_mark_never_reclicks_challenge() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (532,),
         payload={
@@ -878,14 +881,14 @@ def test_lingta_retry_from_532_power_limit_mark_never_reclicks_challenge() -> No
 
 
 def test_lingta_flow_treats_zero_pass_failure_as_normal_terminal(monkeypatch) -> None:
-    from backend.core.fanxiu.data_annotation import behavior_tree_runtime
+    from backend.core.fanxiu.data_annotation import behavior_tree_executor
 
     monkeypatch.setattr(
-        behavior_tree_runtime,
+        behavior_tree_executor,
         "_now",
         lambda: datetime(2026, 8, 12, 7, 1),
     )
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeLingtaRuntime((365,))
     persisted: list[tuple] = []
@@ -902,7 +905,7 @@ def test_lingta_flow_treats_zero_pass_failure_as_normal_terminal(monkeypatch) ->
     assert updates[0] == ("lingta-challenge", "2026-08-13 07:00:00")
     assert persisted[-1][2]["terminal_outcome"] == "power_limit"
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert ("wait_click_then_view", 365, "退出", [34, 532]) in runtime.actions
+    assert ("wait_click_then_scene", 365, "退出", [34, 532]) in runtime.actions
     assert not [action for action in runtime.actions if action[0] == "click_ocr"]
 
 
@@ -910,7 +913,7 @@ def test_lingta_flow_treats_zero_pass_failure_as_normal_terminal(monkeypatch) ->
 def test_lingta_flow_finishes_marked_chain_from_stable_scene_without_reclick(
     stable_scene: int,
 ) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     start_mark = {
         "started_at": "2026-08-12T07:00:10",
@@ -944,7 +947,7 @@ def test_lingta_flow_finishes_marked_chain_from_stable_scene_without_reclick(
 
 
 def test_lingta_flow_keeps_start_mark_when_stable_scene_has_no_advance_proof() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34,),
         payload={
@@ -970,7 +973,7 @@ def test_lingta_flow_keeps_start_mark_when_stable_scene_has_no_advance_proof() -
 
 
 def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     _capture_next_time(runner)
     runtime = _FakeLingtaRuntime(
         (34,),
@@ -1001,7 +1004,7 @@ def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale
 
 
 def test_lingta_flow_does_not_treat_preexisting_max_config_as_progress() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeLingtaRuntime(
         (34,),
@@ -1034,7 +1037,7 @@ def test_lingta_flow_does_not_treat_preexisting_max_config_as_progress() -> None
 
 
 def test_lingta_flow_recovers_only_after_advancing_beyond_config_boundary() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeLingtaRuntime(
         (34,),
@@ -1067,7 +1070,7 @@ def test_lingta_flow_recovers_only_after_advancing_beyond_config_boundary() -> N
 
 
 def test_lingta_flow_finishes_daily_limit_settlement_without_reclick() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeLingtaRuntime(
         (533,),
@@ -1089,13 +1092,13 @@ def test_lingta_flow_finishes_daily_limit_settlement_without_reclick() -> None:
     assert "已挑战 20 层" in result["message"]
     assert "next_time" not in result
     assert updates[0][1].endswith("07:00:00")
-    assert ("wait_click_then_view", 533, "点击退出", [34, 534]) in runtime.actions
+    assert ("wait_click_then_scene", 533, "点击退出", [34, 534]) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
     assert not [action for action in runtime.actions if action[0] == "click_ocr"]
 
 
 def test_lingta_flow_finishes_auto_closed_daily_limit_detail_without_reclick() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (534,),
         payload={
@@ -1114,18 +1117,18 @@ def test_lingta_flow_finishes_auto_closed_daily_limit_detail_without_reclick() -
 
     assert result["outcome"] == "daily_limit"
     assert "20/20" in result["message"]
-    assert ("wait_click_then_view", 534, "返回灵塔列表", 194) in runtime.actions
+    assert ("wait_click_then_scene", 534, "返回灵塔列表", 194) in runtime.actions
     assert ("goto", 34) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
     assert not [action for action in runtime.actions if action[0] == "click_ocr"]
 
 
 def test_lingta_flow_follows_daily_limit_exit_into_detail_page() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     class DetailLandingRuntime(_FakeLingtaRuntime):
-        def wait_click_then_view(self, source, shape, target, **_kwargs):
-            self.actions.append(("wait_click_then_view", source, shape, target))
+        def wait_click_then_scene(self, source, shape, target, **_kwargs):
+            self.actions.append(("wait_click_then_scene", source, shape, target))
             if False:
                 yield None
             if source == 533:
@@ -1149,14 +1152,14 @@ def test_lingta_flow_follows_daily_limit_exit_into_detail_page() -> None:
     result = _drain(runner.灵塔挑战流程(runtime))
 
     assert result["outcome"] == "daily_limit"
-    assert ("wait_click_then_view", 533, "点击退出", [34, 534]) in runtime.actions
-    assert ("wait_click_then_view", 534, "返回灵塔列表", 194) in runtime.actions
+    assert ("wait_click_then_scene", 533, "点击退出", [34, 534]) in runtime.actions
+    assert ("wait_click_then_scene", 534, "返回灵塔列表", 194) in runtime.actions
     assert ("goto", 34) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
 
 def test_lingta_flow_finishes_persisted_daily_limit_terminal_from_world() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34,),
         payload={
@@ -1185,7 +1188,7 @@ def test_lingta_flow_finishes_persisted_daily_limit_terminal_from_world() -> Non
 
 
 def test_lingta_flow_exits_observed_daily_limit_after_one_challenge() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, 533))
     _patch_lingta_open(runner)
     snapshots = iter(({"ok": True, "current_tower_id": 1426, "chain_pass_count": 0},))
@@ -1201,12 +1204,12 @@ def test_lingta_flow_exits_observed_daily_limit_after_one_challenge() -> None:
     assert [action for action in runtime.actions if action[0] == "click_ocr"] == [
         ("click_ocr", 532, "挑战", ("挑战文字",), "exact")
     ]
-    assert ("wait_click_then_view", 533, "点击退出", [34, 534]) in runtime.actions
+    assert ("wait_click_then_scene", 533, "点击退出", [34, 534]) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
 
 
 def test_lingta_flow_finishes_persisted_win_when_live_model_was_unloaded() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34,),
         payload={
@@ -1238,7 +1241,7 @@ def test_lingta_flow_finishes_persisted_win_when_live_model_was_unloaded() -> No
 
 
 def test_lingta_flow_preserves_start_mark_on_level_gated_victory() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34, None),
         ocr_text="胜利 下一层 点击退出",
@@ -1263,7 +1266,7 @@ def test_lingta_flow_preserves_start_mark_on_level_gated_victory() -> None:
 
 
 def test_lingta_flow_consumes_countdown_victory_locally_then_confirms_world() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, 548, 34))
     _patch_lingta_open(runner)
     snapshots = iter(
@@ -1291,7 +1294,7 @@ def test_lingta_flow_consumes_countdown_victory_locally_then_confirms_world() ->
 
 
 def test_lingta_flow_uses_unique_ui_progress_when_runtime_root_is_unavailable() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     _capture_next_time(runner)
     runtime = _FakeLingtaRuntime((34, 548, 34))
     _patch_lingta_open(runner, passed=149, total=500)
@@ -1314,7 +1317,7 @@ def test_lingta_flow_uses_unique_ui_progress_when_runtime_root_is_unavailable() 
 
 
 def test_lingta_countdown_click_timeout_reidentifies_returned_detail() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
 
     class VanishedCountdownRuntime(_FakeLingtaRuntime):
         def wait_click(self, source, shape, **kwargs):
@@ -1343,7 +1346,7 @@ def test_lingta_countdown_click_timeout_reidentifies_returned_detail() -> None:
 
 
 def test_lingta_retry_uses_list_progress_to_close_interrupted_chain() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34,),
         payload={
@@ -1383,7 +1386,7 @@ def test_lingta_retry_uses_list_progress_to_close_interrupted_chain() -> None:
 
 
 def test_lingta_flow_distinguishes_returned_532_after_confirmed_launch() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, None, 532))
     _patch_lingta_open(runner)
     snapshots = iter(
@@ -1410,8 +1413,35 @@ def test_lingta_flow_distinguishes_returned_532_after_confirmed_launch() -> None
     assert ("goto", 34) in runtime.actions
 
 
+def test_lingta_flow_closes_returned_532_after_confirmed_victories() -> None:
+    runner = create_behavior_tree_executor()
+    runtime = _FakeLingtaRuntime(
+        (34, None, 548, 532),
+        payload={"__scheduler_task_id": "test-lingta-returned-detail"},
+    )
+    _patch_lingta_open(runner)
+    runner._read_lingta_challenge_snapshot = lambda: {
+        "ok": True,
+        "current_tower_id": 1426,
+        "chain_pass_count": 0,
+    }
+    persisted: list[tuple] = []
+    runner._set_scheduler_task_payload_flag = lambda *args: persisted.append(args) or True
+    cleared: list[tuple] = []
+    runner._clear_scheduler_task_payload_flag = lambda *args: cleared.append(args)
+    next_times = _capture_next_time(runner)
+
+    result = _drain(runner.灵塔挑战流程(runtime))
+
+    assert result["outcome"] == "no_next_floor"
+    assert "#548 胜利页确认本轮通过 1 层" in result["message"]
+    assert cleared == [("test-lingta-returned-detail", "lingta_auto_chain_started")]
+    assert ("goto", 34) in runtime.actions
+    assert next_times and next_times[0][0] == "test-lingta-returned-detail"
+
+
 def test_lingta_flow_retry_keeps_marker_for_confirmed_returned_532() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (532,),
         payload={
@@ -1431,7 +1461,7 @@ def test_lingta_flow_retry_keeps_marker_for_confirmed_returned_532() -> None:
 
 
 def test_lingta_flow_preserves_special_failure_summary_for_real_asset_capture() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34, None),
         ocr_text=(
@@ -1464,7 +1494,7 @@ def test_lingta_flow_preserves_special_failure_summary_for_real_asset_capture() 
 
 
 def test_lingta_flow_preserves_last_floor_settlement_when_config_is_exhausted() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime((34, None), ocr_text="胜利 点击退出")
     _patch_lingta_open(runner)
     snapshots = iter(
@@ -1498,7 +1528,7 @@ def test_lingta_flow_preserves_last_floor_settlement_when_config_is_exhausted() 
 
 
 def test_lingta_flow_accepts_server_exit_after_twenty_wins_as_daily_limit() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeLingtaRuntime((34, 34))
     _patch_lingta_open(runner)
@@ -1526,7 +1556,7 @@ def test_lingta_flow_accepts_server_exit_after_twenty_wins_as_daily_limit() -> N
 
 
 def test_lingta_flow_classifies_early_stable_exit_as_no_next_floor() -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     updates = _capture_next_time(runner)
     runtime = _FakeLingtaRuntime((34, 34))
     _patch_lingta_open(runner)
@@ -1575,7 +1605,7 @@ def _prepare_lingta_stuck_after_click(runner, runtime, monkeypatch):
 
 
 def test_lingta_stuck_532_cleanup_success_keeps_marker_and_primary_error(monkeypatch) -> None:
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = _FakeLingtaRuntime(
         (34, 532),
         payload={
@@ -1596,13 +1626,13 @@ def test_lingta_stuck_532_cleanup_success_keeps_marker_and_primary_error(monkeyp
 
 def test_lingta_stuck_532_cleanup_failure_does_not_replace_primary_error(monkeypatch) -> None:
     class CleanupFailureRuntime(_FakeLingtaRuntime):
-        def goto_view(self, scene_id):
+        def go_scene(self, scene_id):
             self.actions.append(("goto", scene_id))
             if False:
                 yield None
             raise RuntimeError("cleanup route unavailable")
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = CleanupFailureRuntime(
         (34, 532),
         payload={
@@ -1637,13 +1667,13 @@ def test_lingta_stuck_532_cleanup_control_flow_errors_propagate(
     cleanup_error,
 ) -> None:
     class InterruptedCleanupRuntime(_FakeLingtaRuntime):
-        def goto_view(self, scene_id):
+        def go_scene(self, scene_id):
             self.actions.append(("goto", scene_id))
             if False:
                 yield None
             raise cleanup_error
 
-    runner = create_behavior_tree_runtime_runner()
+    runner = create_behavior_tree_executor()
     runtime = InterruptedCleanupRuntime(
         (34, 532),
         payload={
