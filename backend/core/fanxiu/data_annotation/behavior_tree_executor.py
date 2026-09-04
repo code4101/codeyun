@@ -28,7 +28,6 @@ from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     ensure_behavior_tree_jobs_registered,
-    fanxiu_data_annotation_mail_scan_state_path as _core_data_annotation_mail_scan_state_path,
     fanxiu_kernel_execution_state_path as _core_kernel_execution_state_path,
     fanxiu_kernel_scheduler_state_path as _core_kernel_scheduler_state_path,
     fanxiu_kernel_scheduler_settings_path as _core_kernel_scheduler_settings_path,
@@ -632,8 +631,6 @@ class BehaviorTreeContext(AutomationContext):
         self,
         layer0: Iterable[View | int] | View | int | None = None,
         wait: float = 5.0,
-        *,
-        handle_interruptions: bool = True,
     ):
         """Run the layered recognition engine used by :meth:`wait_scene`.
 
@@ -672,7 +669,7 @@ class BehaviorTreeContext(AutomationContext):
             ]))
         business_id_set = set(business_ids)
 
-        popup_candidates = self.popup_candidates() if handle_interruptions else []
+        popup_candidates = self.popup_candidates()
         popup_by_scene_id = {
             int(scene_id): candidate
             for candidate in popup_candidates
@@ -739,8 +736,6 @@ class BehaviorTreeContext(AutomationContext):
                         "recognized_scene_id": 546,
                     },
                 )
-            if layer0_scene_id in business_id_set:
-                return commit(layer0_recognition, frame, scope="business")
             if layer0_scene_id in popup_by_scene_id:
                 if len(handled_popup_ids) >= 9:
                     sequence = " -> ".join(f"#{item}" for item in handled_popup_ids)
@@ -758,6 +753,8 @@ class BehaviorTreeContext(AutomationContext):
                 # Popup handling is inserted into the business flow. A new
                 # frame may only be observed on the next behavior-tree tick.
                 continue
+            if layer0_scene_id in business_id_set:
+                return commit(layer0_recognition, frame, scope="business")
 
             has_business_layer0 = layer0 is not None and bool(business_ids)
             if has_business_layer0 and elapsed < wait_seconds:
@@ -1693,7 +1690,6 @@ class BehaviorTreeContext(AutomationContext):
         scenes: list[int],
         wait: float = 5.0,
         *,
-        handle_interruptions: bool = True,
         label: str = "等待场景",
     ):
         """Return the first scene recognized by the complete layered flow.
@@ -1748,7 +1744,6 @@ class BehaviorTreeContext(AutomationContext):
         match, score, frame = yield from self._recognize_scene_layers(
             view_ids,
             wait=wait_timeout,
-            handle_interruptions=handle_interruptions,
         )
         identify_elapsed = time.monotonic() - identify_started_at
         if identify_elapsed >= 1.0:
@@ -1775,7 +1770,6 @@ class BehaviorTreeContext(AutomationContext):
             match, score, frame = yield from self._recognize_scene_layers(
                 view_ids,
                 wait=0.0,
-                handle_interruptions=handle_interruptions,
             )
             if match is not None:
                 return finish(match, score)
@@ -6561,10 +6555,6 @@ def _kernel_scheduler_settings_path() -> Path:
     return _core_kernel_scheduler_settings_path()
 
 
-def _data_annotation_mail_scan_state_path() -> Path:
-    return _core_data_annotation_mail_scan_state_path()
-
-
 def _persist_kernel_scheduler_status(status: dict[str, Any]) -> None:
     _persist_kernel_scheduler_status_core(
         _kernel_execution_state_path(),
@@ -7426,8 +7416,6 @@ class BehaviorTreeExecutor(
             target = (payload or {}).get("target_scene_id") or (payload or {}).get("target")
             if target:
                 label = f"到场景 #{target}"
-        if task_type == "mail_selective_claim" and (payload or {}).get("observe_only"):
-            label = "邮件_选择性领取"
         return label
 
     def _behavior_tree_context(

@@ -458,7 +458,6 @@ from backend.core.fanxiu.behavior_tree.kernel_scheduler import (
     create_behavior_tree_executor,
     data_annotation_asset_tree_path as _core_data_annotation_asset_tree_path,
     fanxiu_data_annotation_dir as _core_data_annotation_dir,
-    fanxiu_data_annotation_mail_scan_state_path as _core_mail_scan_state_path,
     fanxiu_kernel_scheduler_dir as _core_behavior_tree_executor_dir,
     fanxiu_kernel_scheduler_logs as _core_kernel_scheduler_logs,
     fanxiu_kernel_scheduler_status as _core_kernel_scheduler_status,
@@ -3782,10 +3781,6 @@ def _kernel_scheduler_state_path() -> Path:
 
 def _kernel_scheduler_settings_path() -> Path:
     return _core_scheduler_settings_path()
-
-
-def _data_annotation_mail_scan_state_path() -> Path:
-    return _core_mail_scan_state_path()
 
 
 def _read_data_annotation_world_facts() -> dict[str, Any]:

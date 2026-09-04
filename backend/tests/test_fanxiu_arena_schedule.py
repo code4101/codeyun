@@ -8,6 +8,12 @@ from backend.core.fanxiu.data_annotation.arena_schedule import (
     xianyuan_duel_scheduler_in_window,
 )
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.default_jobs import (
+    register_fanxiu_default_jobs,
+)
+from backend.core.fanxiu.data_annotation.jobs import (
+    get_fanxiu_data_annotation_task_cell_definition,
+)
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     consolidate_arena_scheduler_instances,
     default_kernel_scheduler_tasks,
@@ -161,6 +167,14 @@ def test_default_scheduler_publishes_one_owner_per_ranking_family() -> None:
         ("ranking-lifecycle", "ranking_lifecycle", "玩法榜"),
         ("resource-ranking", "resource_ranking", "资源榜"),
     ]
+
+
+def test_retired_magic_child_has_no_direct_callable_task_cell() -> None:
+    register_fanxiu_default_jobs()
+
+    assert get_fanxiu_data_annotation_task_cell_definition(
+        "magic_invasion_explore"
+    ) is None
 
 
 def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated():

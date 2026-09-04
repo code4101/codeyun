@@ -26,7 +26,7 @@ from backend.core.fanxiu.mail.store import (
     format_fanxiu_mail_time_ms,
     upsert_fanxiu_mail_fact,
 )
-from backend.core.fanxiu.mail.visual_alignment import mail_snapshot_fingerprint
+from backend.core.fanxiu.runtime_gui.mail import mail_snapshot_fingerprint
 from backend.models import FanxiuMailRecord
 
 

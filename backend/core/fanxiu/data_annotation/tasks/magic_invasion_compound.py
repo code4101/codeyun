@@ -8,16 +8,13 @@ from typing import Any
 from backend.core.fanxiu.activity.magic_invasion_explore import (
     MAGIC_INVASION_EXPLORE_BATCH_SIZE,
     MAGIC_INVASION_TARGET_BATCHES,
+    TIANYAN_ITEM_ID,
 )
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
     execute_magic_invasion_explore_job,
     load_magic_invasion_occurrence_progress,
-)
-from backend.core.fanxiu.data_annotation.tasks.magic_invasion_supply import (
-    TIANYAN_ITEM_ID,
-    ensure_magic_tianyan_supply,
 )
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_task_rewards import (
     claim_magic_invasion_task_rewards,
@@ -71,7 +68,7 @@ def execute_magic_invasion_compound_checkpoint(
     *,
     occurrence: RankingOccurrence,
 ):
-    """One activity visit: task rewards → needed supply → 3×500 exploration."""
+    """Run one occurrence: enter → ensure supply → 3×500 → claim rewards."""
 
     required_tianyan = _remaining_tianyan_requirement(payload, occurrence)
 
@@ -101,11 +98,7 @@ def execute_magic_invasion_compound_checkpoint(
     yield from context.wait_scene(
         [509],
         wait=30.0,
-        label="魔道入侵：等待活动主页领取任务",
-    )
-    task_result = yield from claim_magic_invasion_task_rewards(
-        context,
-        activity_id=occurrence.activity_id,
+        label="魔道入侵：等待活动主页",
     )
     counts, inventory_evidence = read_backpack_item_counts(
         (TIANYAN_ITEM_ID,),
@@ -132,18 +125,12 @@ def execute_magic_invasion_compound_checkpoint(
         }
         already_on_main_scene = True
     else:
-        supply_result = yield from ensure_magic_tianyan_supply(
-            runner,
-            ctx,
-            stop_event,
-            required_tianyan=required_tianyan,
+        raise RuntimeError(
+            "魔道入侵天眼符不足："
+            f"需要 {required_tianyan}，当前 {tianyan_before_supply}；"
+            "旧版“玩法榜甄选·魔道”补给路径已删除，"
+            "天雷竹神物兑换尚未接入正式复合作业"
         )
-        supply_result = {
-            **dict(supply_result),
-            "activity_page_tianyan_before": tianyan_before_supply,
-            "activity_page_inventory_evidence": inventory_evidence,
-        }
-        already_on_main_scene = False
 
     explore_payload = {
         **{
@@ -184,11 +171,32 @@ def execute_magic_invasion_compound_checkpoint(
         raise RuntimeError(
             "魔道探查缺少同一 occurrence 的 3×500 完成证据，拒绝提交复合 checkpoint"
         )
+
+    # 探查任务奖励属于本轮探查的后置收尾。首次进入 #509 时不领取，
+    # 避免把上一阶段的领取动作错误写进“进入当前挑战页”节点。
+    yield from context.go_scene(66)
+    yield from select_schedule_activity(
+        context,
+        r"魔道入侵",
+        enter=True,
+        runtime_schedule=schedule,
+        require_runtime_alignment=True,
+        now=job_now(),
+    )
+    yield from context.wait_scene(
+        [509],
+        wait=30.0,
+        label="魔道入侵：探查完成后等待活动主页领取任务",
+    )
+    task_result = yield from claim_magic_invasion_task_rewards(
+        context,
+        activity_id=occurrence.activity_id,
+    )
     return {
         "status": "completed",
         "message": (
-            f"魔道 occurrence {occurrence.runtime_id}：任务、补给、"
-            "3×500 探查闭环完成"
+            f"魔道 occurrence {occurrence.runtime_id}：补给、3×500 探查、"
+            "任务奖励闭环完成"
         ),
         "tasks": task_result,
         "supply": supply_result,

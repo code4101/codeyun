@@ -7,6 +7,7 @@ from typing import Iterable
 MAGIC_INVASION_FAMILY_KEY = "magic-invasion"
 MAGIC_INVASION_EXPLORE_BATCH_SIZE = 500
 MAGIC_INVASION_TARGET_BATCHES = 3
+TIANYAN_ITEM_ID = 1_010_004
 WHITE_DRAGON_EFFECT_ALIASES = (
     "御灵·白龙马",
     "白龙马",
@@ -161,6 +162,7 @@ __all__ = [
     "MAGIC_INVASION_EXPLORE_BATCH_SIZE",
     "MAGIC_INVASION_FAMILY_KEY",
     "MAGIC_INVASION_TARGET_BATCHES",
+    "TIANYAN_ITEM_ID",
     "WHITE_DRAGON_EFFECT_ALIASES",
     "MagicInvasionEffectObservation",
     "MagicInvasionExploreEvidence",

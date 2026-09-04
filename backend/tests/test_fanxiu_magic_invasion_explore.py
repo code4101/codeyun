@@ -19,6 +19,10 @@ from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
     _resolve_exact_magic_calendar_fallback,
     _ui_calendar_day_offset,
 )
+from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
+    parse_available_explore_count,
+    parse_magic_invasion_result_explore_count,
+)
 
 def test_batches_accumulate_across_runs_but_not_activity_instances() -> None:
     evidence = [
@@ -47,6 +51,13 @@ def test_result_bonus_count_does_not_create_extra_base_batches() -> None:
     assert completed_magic_invasion_batches(evidence, activity_instance_id="server") == 1
 
 
+def test_bonus_inclusive_result_proves_one_500_base_batch() -> None:
+    assert parse_magic_invasion_result_explore_count(
+        "快速探索655次，发现了：",
+        batch_index=1,
+    ) == 655
+
+
 def test_partial_confirmed_counts_accumulate_across_runs() -> None:
     evidence = [
         MagicInvasionExploreEvidence(250, activity_instance_id="server", run_id="run-a"),
@@ -63,6 +74,42 @@ def test_topup_only_fills_current_map_count_to_500() -> None:
 
     assert plan.topup_count == 499
     assert plan.should_explore is True
+
+
+def test_initial_39_available_explores_only_consumes_461_tianyan() -> None:
+    current = parse_available_explore_count("可用探查次数 39/120")
+
+    plan = plan_magic_invasion_explore(
+        [],
+        activity_instance_id="server",
+        current_map_count=current,
+        gameplay_available=True,
+    )
+
+    assert current == 39
+    assert plan.topup_count == 461
+    assert current + plan.topup_count == 500
+
+
+def test_bonus_result_below_one_base_batch_is_rejected() -> None:
+    try:
+        parse_magic_invasion_result_explore_count(
+            "快速探索499次，发现了：",
+            batch_index=2,
+        )
+    except RuntimeError as exc:
+        assert "少于 500 次" in str(exc)
+    else:
+        raise AssertionError("不足一批的结果不能记为完成")
+
+
+def test_result_without_explore_count_is_rejected() -> None:
+    try:
+        parse_magic_invasion_result_explore_count("探索完成", batch_index=3)
+    except RuntimeError as exc:
+        assert "没有探索次数证据" in str(exc)
+    else:
+        raise AssertionError("缺少次数证据不能记为完成")
 
 
 def test_manual_gameplay_blocks_all_explore_clicks_by_default() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Mapping
 
 from sqlmodel import Session, col, select
@@ -71,36 +71,183 @@ def _runtime_currency_snapshot(*, cross_count: int) -> dict[str, Any]:
     )
 
 
-def _runtime_period(session: Session, *, cross_count: int | None = None) -> dict[str, Any]:
+def _period_from_item(
+    item: Mapping[str, Any],
+    *,
+    captured_at: str,
+    record_id: str,
+    packet_id: str,
+    source_kind: str,
+) -> dict[str, Any] | None:
+    """Normalize one Magic Invasion occurrence from Runtime or history."""
+
+    try:
+        activity_type = int(item.get("activityType") or 0)
+        game_activity_id = int(item.get("activityId") or 0)
+        start_ms = int(item.get("startTime") or 0)
+        end_ms = int(item.get("endTime") or 0)
+        prepare_ms = int(item.get("prepareEndTime") or start_ms)
+        close_ms = int(item.get("closePanelTime") or end_ms)
+        server_count = max(1, int(item.get("serverCount") or 1))
+    except (TypeError, ValueError):
+        return None
+    is_magic = (
+        str(item.get("class") or "") == "MagicInvadeActivityVO"
+        or activity_type == 7
+        and str(item.get("name") or "") == "魔道入侵"
+    )
+    if (
+        not is_magic
+        or game_activity_id <= 0
+        or start_ms <= 0
+        or end_ms < start_ms
+        or prepare_ms <= 0
+        or close_ms < end_ms
+    ):
+        return None
+    start_at = datetime.fromtimestamp(start_ms / 1000).astimezone()
+    end_at = datetime.fromtimestamp(end_ms / 1000).astimezone()
+    prepare_at = datetime.fromtimestamp(prepare_ms / 1000).astimezone()
+    close_at = datetime.fromtimestamp(close_ms / 1000).astimezone()
+    return {
+        "runtime_id": str(item.get("id") or ""),
+        "game_activity_id": game_activity_id,
+        "cross_count": server_count,
+        "start_time_ms": start_ms,
+        "end_time_ms": end_ms,
+        "prepare_time_ms": prepare_ms,
+        "close_panel_time_ms": close_ms,
+        "start_at": start_at.isoformat(timespec="seconds"),
+        "end_at": end_at.isoformat(timespec="seconds"),
+        "prepare_at": prepare_at.isoformat(timespec="seconds"),
+        "close_at": close_at.isoformat(timespec="seconds"),
+        "start_date": start_at.date().isoformat(),
+        "end_date": end_at.date().isoformat(),
+        "close_panel_date": close_at.date().isoformat(),
+        "captured_at": captured_at,
+        "record_id": record_id,
+        "packet_id": packet_id,
+        "world_level": int(item.get("avgWorldLevel") or 0),
+        "source_kind": source_kind,
+    }
+
+
+def _runtime_period(
+    session: Session,
+    *,
+    cross_count: int | None = None,
+    target_date: date | None = None,
+    expected_runtime_id: str | None = None,
+    expected_game_activity_id: int | None = None,
+) -> dict[str, Any]:
+    """Resolve one exact occurrence, preferring the current Runtime schedule."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+
+    def select_unique(
+        candidates: list[dict[str, Any]],
+        *,
+        source_label: str,
+        prefer_active: bool,
+    ) -> dict[str, Any] | None:
+        filtered = [
+            period
+            for period in candidates
+            if (cross_count is None or int(period["cross_count"]) == int(cross_count))
+            and (
+                expected_runtime_id is None
+                or str(period.get("runtime_id") or "") == str(expected_runtime_id)
+            )
+            and (
+                expected_game_activity_id is None
+                or int(period["game_activity_id"]) == int(expected_game_activity_id)
+            )
+            and (
+                target_date is None
+                or period["start_date"] <= target_date.isoformat() <= period["close_panel_date"]
+            )
+        ]
+        unique = {
+            (
+                str(period.get("runtime_id") or ""),
+                int(period["game_activity_id"]),
+                int(period["cross_count"]),
+                int(period["start_time_ms"]),
+                int(period["end_time_ms"]),
+            ): period
+            for period in filtered
+        }
+        if len(unique) > 1 and prefer_active:
+            now = datetime.now().astimezone()
+            active = {
+                identity: period
+                for identity, period in unique.items()
+                if datetime.fromisoformat(period["prepare_at"])
+                <= now
+                <= datetime.fromisoformat(period["close_at"])
+            }
+            if len(active) == 1:
+                unique = active
+        if len(unique) > 1:
+            raise ValueError(f"魔道入侵{source_label}命中多个运行时实例")
+        return next(iter(unique.values()), None)
+
+    schedule = read_fanxiu_activity_runtime_schedule()
+    runtime_candidates = [
+        period
+        for raw in schedule.get("items") or ()
+        if isinstance(raw, Mapping)
+        and (
+            period := _period_from_item(
+                raw,
+                captured_at=str(schedule.get("captured_at") or schedule.get("created_at") or ""),
+                record_id=f"runtime:{raw.get('id') or raw.get('activityId') or ''}",
+                packet_id="",
+                source_kind=str(schedule.get("source_kind") or "worldline_activity_runtime_memory"),
+            )
+        ) is not None
+    ]
+    selected = select_unique(
+        runtime_candidates,
+        source_label="当前日程",
+        prefer_active=True,
+    )
+    if selected is not None:
+        return selected
+    if bool(schedule.get("available") and schedule.get("complete")):
+        # A complete current schedule disproves stale packet rows.  Falling
+        # through here would resurrect a previous occurrence as today's page.
+        raise ValueError("当前 Runtime 日程未找到匹配的魔道入侵实例")
+
+    # Saved packets are historical evidence and remain available when Runtime
+    # itself is unavailable. Exact selectors keep this fallback fail-closed.
     rows = session.exec(
         select(FanxiuPacketBusinessRecord)
         .where(FanxiuPacketBusinessRecord.domain == "worldline_activity")
         .order_by(col(FanxiuPacketBusinessRecord.captured_at).desc())
     ).all()
+    packet_candidates: list[dict[str, Any]] = []
     for row in rows:
         payload = dict(row.payload or {})
         item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
-        if str(item.get("class") or "") != "MagicInvadeActivityVO":
-            continue
-        server_count = int(item.get("serverCount") or 1)
-        if cross_count is not None and server_count != int(cross_count):
-            continue
-        start_ms = int(item.get("startTime") or 0)
-        end_ms = int(item.get("endTime") or 0)
-        if start_ms <= 0 or end_ms < start_ms:
-            continue
-        start_at = datetime.fromtimestamp(start_ms / 1000).astimezone()
-        end_at = datetime.fromtimestamp(end_ms / 1000).astimezone()
-        return {
-            "game_activity_id": int(item.get("activityId") or 0),
-            "cross_count": server_count,
-            "start_date": start_at.date().isoformat(),
-            "end_date": end_at.date().isoformat(),
-            "captured_at": row.captured_at,
-            "record_id": row.id,
-            "packet_id": row.packet_id,
-            "world_level": int(item.get("avgWorldLevel") or 0),
-        }
+        period = _period_from_item(
+            item,
+            captured_at=row.captured_at,
+            record_id=row.id,
+            packet_id=row.packet_id,
+            source_kind="activity_packet_business_record",
+        )
+        if period is not None:
+            packet_candidates.append(period)
+    selected = select_unique(
+        packet_candidates,
+        source_label="历史记录",
+        prefer_active=False,
+    )
+    if selected is not None:
+        return selected
     raise ValueError("未找到魔道入侵运行时活动实例")
 
 
@@ -197,10 +344,30 @@ def collect_and_store_magic_invasion_activity(
             or str(period["runtime_id"]) != expected_runtime_id
         ):
             raise ValueError("历史魔道周期绑定与持久化 occurrence 不一致")
+        period.setdefault("start_at", existing.start_at)
+        period.setdefault("end_at", existing.end_at)
+        period.setdefault("prepare_at", existing.prepare_at or existing.start_at)
+        period.setdefault("close_at", existing.close_at or existing.end_at)
+        period.setdefault("source_kind", "explicit_occurrence_context")
     else:
         period = _runtime_period(
             session,
             cross_count=existing.cross_count if existing is not None else None,
+            target_date=(
+                date.fromisoformat(existing.end_date)
+                if existing is not None
+                else None
+            ),
+            expected_runtime_id=(
+                str(existing.runtime_id)
+                if existing is not None and existing.runtime_id
+                else None
+            ),
+            expected_game_activity_id=(
+                int(existing.game_activity_id)
+                if existing is not None and existing.game_activity_id is not None
+                else None
+            ),
         )
     if existing is not None and (
         existing.start_date != period["start_date"]
@@ -233,36 +400,43 @@ def collect_and_store_magic_invasion_activity(
         (scope.scope, rank_id) for scope, rank_id in resolved_scopes
         if scope.effective_role == "comparative"
     )
-    if runtime_period_override is not None and collect_runtime_shop:
+    rank_refresh_reason = ""
+    if collect_runtime_shop:
         from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
             prepare_activity_rank_runtime,
             read_activity_rank_runtime_snapshot,
         )
 
-        runtime_rank = read_activity_rank_runtime_snapshot(personal_rank_id)
-        if (
-            not runtime_rank.get("ok")
-            and runtime_rank.get("error_code")
-            in {"process_cache_miss", "root_cache_miss"}
-        ):
-            recovery = prepare_activity_rank_runtime([personal_rank_id])
-            if not recovery.get("ok"):
-                raise ActivityObservationUnavailable(
-                    str(recovery.get("reason") or "魔道入侵榜单 Runtime 恢复失败")
-                )
+        try:
             runtime_rank = read_activity_rank_runtime_snapshot(personal_rank_id)
-        if not runtime_rank.get("ok") or not runtime_rank.get("complete"):
-            raise ActivityObservationUnavailable(
-                str(runtime_rank.get("reason") or "魔道入侵榜单 Runtime 尚未加载")
+            if (
+                not runtime_rank.get("ok")
+                and runtime_rank.get("error_code")
+                in {"process_cache_miss", "root_cache_miss"}
+            ):
+                recovery = prepare_activity_rank_runtime([personal_rank_id])
+                if not recovery.get("ok"):
+                    raise ActivityObservationUnavailable(
+                        str(recovery.get("reason") or "魔道入侵榜单 Runtime 恢复失败")
+                    )
+                runtime_rank = read_activity_rank_runtime_snapshot(personal_rank_id)
+            if not runtime_rank.get("ok") or not runtime_rank.get("complete"):
+                raise ActivityObservationUnavailable(
+                    str(runtime_rank.get("reason") or "魔道入侵榜单 Runtime 尚未加载")
+                )
+            store_runtime_activity_rank_fact(
+                session,
+                runtime_rank,
+                occurrence_runtime_id=str(period["runtime_id"]),
             )
-        store_runtime_activity_rank_fact(
-            session,
-            runtime_rank,
-            occurrence_runtime_id=str(period["runtime_id"]),
-        )
+        except ActivityObservationUnavailable as exc:
+            # Rank and exchange projections are independent Runtime facts.  A
+            # not-yet-loaded rank must not suppress a current wallet or shop.
+            rank_refresh_reason = str(exc)
     currency_refresh_status = "retained"
     currency_refresh_reason = "只读数据库物化未请求运行态钱包"
     currency_runtime_evidence: dict[str, Any] = {}
+    runtime_currency: dict[str, Any] = {}
     if collect_runtime_shop:
         from backend.core.fanxiu.instrumentation.runtime_memory import (
             FanxiuRuntimeMemoryError,
@@ -286,16 +460,41 @@ def collect_and_store_magic_invasion_activity(
     shop_base_id, currency_type, _expected_cross_count = resolve_magic_invasion_shop_identity(
         cross_count=period["cross_count"]
     )
-    observation = collect_standard_activity_observation(
-        session,
-        ActivityObservationSpec(
-            rank_activity_id=personal_rank_id,
-            currency_type=currency_type,
-            related_rank_activity_ids=related,
-            primary_scope=primary_scope_spec.scope,
-            row_mode=primary_scope_spec.row_mode,
-        ),
-    )
+    shop: dict[str, Any] | None = None
+    has_shop = bool(existing) and session.exec(
+        select(FanxiuExchangeShopItem.id)
+        .where(FanxiuExchangeShopItem.activity_id == existing.id)
+        .limit(1)
+    ).first() is not None
+    shop_reason = "只读事实刷新未请求游戏内商店投影"
+    if collect_runtime_shop:
+        shop_reason = ""
+        try:
+            # Shop and wallet are occurrence facts independent of whether the
+            # personal ranking panel has been loaded yet.
+            shop = _shop_snapshot(cross_count=period["cross_count"])
+        except FanxiuActivityShopNotLoadedError as exc:
+            if not has_shop:
+                raise ValueError(f"魔道入侵兑换宝阁尚未加载：{exc}") from exc
+            shop_reason = str(exc)
+        except FanxiuActivityShopCollectionError as exc:
+            raise ValueError(f"魔道入侵兑换宝阁采集失败：{exc}") from exc
+
+    observation_error = ""
+    try:
+        observation = collect_standard_activity_observation(
+            session,
+            ActivityObservationSpec(
+                rank_activity_id=personal_rank_id,
+                currency_type=currency_type,
+                related_rank_activity_ids=related,
+                primary_scope=primary_scope_spec.scope,
+                row_mode=primary_scope_spec.row_mode,
+            ),
+        )
+    except ActivityObservationUnavailable as exc:
+        observation_error = str(exc)
+        observation = {}
     personal_captured_date = str(
         observation.get("evidence", {}).get("rank_captured_at") or ""
     )[:10]
@@ -305,16 +504,98 @@ def collect_and_store_magic_invasion_activity(
         .get("occurrence_runtime_id")
         or ""
     )
-    rank_bound_to_override = bool(
-        runtime_period_override is not None
+    rank_bound_to_period = bool(
+        rank_occurrence_runtime_id
         and rank_occurrence_runtime_id == str(period["runtime_id"])
     )
-    if not rank_bound_to_override and not (
-        period["start_date"] <= personal_captured_date <= period["end_date"]
-    ):
-        raise ActivityObservationUnavailable(
-            "魔道入侵个人榜事实不属于当前活动周期"
+    if not observation_error:
+        if rank_occurrence_runtime_id and not rank_bound_to_period:
+            observation_error = "魔道入侵个人榜事实属于另一活动实例"
+        elif not rank_bound_to_period and not (
+            period["start_date"] <= personal_captured_date <= period["end_date"]
+        ):
+            observation_error = "魔道入侵个人榜事实不属于当前活动周期"
+
+    if observation_error:
+        from backend.core.fanxiu.activity.exchange_event import (
+            list_exchange_activity_snapshot,
+            upsert_exchange_activity_snapshot,
         )
+
+        evidence = dict(existing.evidence or {}) if existing is not None else {}
+        refresh_status = dict(evidence.get("refresh_status") or {})
+        refresh_status.update({
+            "rankings": "retained" if existing is not None else "unavailable",
+            "rankings_reason": rank_refresh_reason or observation_error,
+            "currency": currency_refresh_status,
+            "currency_reason": currency_refresh_reason,
+            "currency_stale": bool(
+                collect_runtime_shop and currency_refresh_status != "updated"
+            ),
+            "shop": "updated" if shop is not None else "retained",
+            "shop_reason": shop_reason or ("" if shop is not None else "尚无完整商店快照"),
+            "shop_had_persisted_snapshot": has_shop,
+        })
+        instance_key = (
+            existing.instance_key
+            if existing is not None
+            else (
+                f"runtime:{period['runtime_id']}:activity:{period['game_activity_id']}:"
+                f"{period['start_at']}:{period['end_at']}"
+            )
+        )
+        evidence.update({
+            "instance_key": instance_key,
+            "runtime_id": period["runtime_id"],
+            "game_activity_id": period["game_activity_id"],
+            "period_record_id": period["record_id"],
+            "period_packet_id": period["packet_id"],
+            "world_level": period["world_level"],
+            "rank_activity_ids": follow,
+            "refresh_status": refresh_status,
+        })
+        if currency_runtime_evidence:
+            evidence["currency_runtime"] = currency_runtime_evidence
+        if shop is not None:
+            evidence["shop"] = dict(shop.get("evidence") or {})
+        payload: dict[str, Any] = {
+            "instance_key": instance_key,
+            "family": "gameplay_rank",
+            "activity_type": MAGIC_INVASION_ACTIVITY_TYPE,
+            "runtime_id": period["runtime_id"],
+            "game_activity_id": period["game_activity_id"],
+            "cross_count": period["cross_count"],
+            "prepare_at": period["prepare_at"],
+            "start_at": period["start_at"],
+            "end_at": period["end_at"],
+            "close_at": period["close_at"],
+            "start_date": period["start_date"],
+            "end_date": period["end_date"],
+            "game_rank_activity_id": personal_rank_id,
+            "game_shop_base_id": shop_base_id,
+            "currency_type": currency_type,
+            "currency_name": MAGIC_INVASION_CURRENCY_NAME,
+            "source_kind": "read_only_runtime_facts",
+            "evidence": evidence,
+        }
+        if currency_refresh_status == "updated":
+            payload.update({
+                "current_currency": int(runtime_currency["exchange_currency"]),
+                "cumulative_currency": int(runtime_currency["cumulative_currency"]),
+                "captured_at": str(runtime_currency["captured_at"]),
+            })
+        elif existing is None:
+            payload["captured_at"] = str(period["captured_at"])
+        if shop is not None:
+            payload["shop_items"] = list(shop["items"])
+            payload["expected_shop_item_count"] = int(shop["active_shop_item_count"])
+        persisted_id = upsert_exchange_activity_snapshot(session, payload)
+        return list_exchange_activity_snapshot(
+            session,
+            activity_type=MAGIC_INVASION_ACTIVITY_TYPE,
+            activity_id=persisted_id,
+        ).selected_activity
+
     ranking_merge = merge_occurrence_rankings(
         session,
         observation=observation,
@@ -327,32 +608,17 @@ def collect_and_store_magic_invasion_activity(
     observation["rankings"] = list(ranking_merge.rankings)
     observation["captured_at"] = ranking_merge.captured_at
 
-    shop: dict[str, Any] | None = None
-    has_shop = bool(existing) and session.exec(
-        select(FanxiuExchangeShopItem.id)
-        .where(FanxiuExchangeShopItem.activity_id == existing.id)
-        .limit(1)
-    ).first() is not None
-    shop_reason = "只读事实刷新未请求游戏内商店投影"
-    if collect_runtime_shop:
-        shop_reason = ""
-        try:
-            # The explicit collection endpoint is a refresh operation.  Always
-            # retry the runtime projection, even after an earlier shop snapshot
-            # was stored; if the game has not loaded it, retain the last complete
-            # snapshot instead of replacing it with an empty list.
-            shop = _shop_snapshot(cross_count=period["cross_count"])
-        except FanxiuActivityShopNotLoadedError as exc:
-            if not has_shop:
-                raise ValueError(f"魔道入侵兑换宝阁尚未加载：{exc}") from exc
-            shop_reason = str(exc)
-        except FanxiuActivityShopCollectionError as exc:
-            # A base-id, active-index, cross-group or completeness mismatch is
-            # a failed collection, not a successful refresh with zero rows.
-            raise ValueError(f"魔道入侵兑换宝阁采集失败：{exc}") from exc
-
     evidence = dict(existing.evidence or {}) if existing is not None else {}
     evidence.update({
+        "instance_key": (
+            existing.instance_key
+            if existing is not None
+            else (
+                f"runtime:{period['runtime_id']}:activity:{period['game_activity_id']}:"
+                f"{period['start_at']}:{period['end_at']}"
+            )
+        ),
+        "runtime_id": period["runtime_id"],
         "game_activity_id": period["game_activity_id"],
         "period_record_id": period["record_id"],
         "period_packet_id": period["packet_id"],
@@ -387,8 +653,16 @@ def collect_and_store_magic_invasion_activity(
     if shop is not None:
         evidence["shop"] = dict(shop.get("evidence") or {})
     payload: dict[str, Any] = {
+        "instance_key": evidence["instance_key"],
+        "family": "gameplay_rank",
         "activity_type": MAGIC_INVASION_ACTIVITY_TYPE,
+        "runtime_id": period["runtime_id"],
+        "game_activity_id": period["game_activity_id"],
         "cross_count": period["cross_count"],
+        "prepare_at": period["prepare_at"],
+        "start_at": period["start_at"],
+        "end_at": period["end_at"],
+        "close_at": period["close_at"],
         "start_date": period["start_date"],
         "end_date": period["end_date"],
         "game_rank_activity_id": personal_rank_id,
@@ -423,7 +697,7 @@ def ensure_magic_invasion_activity(session: Session) -> None:
         ActivityObservationUnavailable,
     )
 
-    period = _runtime_period(session)
+    period = _runtime_period(session, target_date=date.today())
     existing = session.exec(
         select(FanxiuExchangeActivity).where(
             FanxiuExchangeActivity.activity_type == MAGIC_INVASION_ACTIVITY_TYPE,

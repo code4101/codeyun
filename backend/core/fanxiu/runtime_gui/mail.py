@@ -18,7 +18,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
 
-from backend.core.fanxiu.runtime_gui import ocr_name_similarity
+from backend.core.fanxiu.runtime_gui.text import ocr_name_similarity
 
 
 @dataclass(frozen=True)
@@ -805,3 +805,4 @@ __all__ = [
     "mail_window_geometry_from_asset",
     "stable_complete_mail_snapshots",
 ]
+

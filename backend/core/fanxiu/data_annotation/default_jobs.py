@@ -106,7 +106,6 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "xutian_palace_rankings",
     "xutian_palace_native_auto",
     "yunmeng_trial_auto_challenge",
-    "magic_invasion_explore",
     "ranking_lifecycle",
     "beast_abyss_initialization_rnd",
     "beast_abyss_rank_refresh_rnd",
@@ -1731,45 +1730,33 @@ def register_fanxiu_default_jobs() -> None:
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
-        is_scan = bool(
-            payload.get("observe_only")
-            or payload.get("scan_only")
-            or payload.get("full_scan")
-            or str(payload.get("scan_mode") or "").strip().lower()
-            in {"full", "full_scan", "observe", "observe_only", "refresh", "sync"}
-        )
         business_message = ""
         runner._mail_selective_claim_terminal_message = ""
-        if is_scan:
-            result = yield from runner._execute_mail_legacy_scan_task(ctx, stop_event, payload)
-        else:
-            result = yield from runner._execute_mail_selective_claim_task(
-                ctx,
-                stop_event,
-                payload,
-                cleanup_after_claim=bool(payload.get("cleanup_after_claim", True)),
-            )
-            business_message = str(
-                getattr(runner, "_mail_selective_claim_terminal_message", "") or ""
-            ).strip()
+        result = yield from runner._execute_mail_selective_claim_task(
+            ctx,
+            stop_event,
+            payload,
+            cleanup_after_claim=bool(payload.get("cleanup_after_claim", True)),
+        )
+        business_message = str(
+            getattr(runner, "_mail_selective_claim_terminal_message", "") or ""
+        ).strip()
         yield from context.go_scene(34)
-        if not is_scan:
-            if result != "success":
-                raise RuntimeError(
-                    "邮件_选择性领取：业务流程未返回 success，拒绝推进次日调度；"
-                    f"result={result!r}"
-                )
-            if not business_message:
-                raise RuntimeError(
-                    "邮件_选择性领取：业务完成但缺少领取/删除终态摘要，拒绝推进次日调度"
-                )
-            business_message = runner._finish_mail_selective_claim_schedule(
-                payload,
-                business_message,
+        if result != "success":
+            raise RuntimeError(
+                "邮件_选择性领取：业务流程未返回 success，拒绝推进次日调度；"
+                f"result={result!r}"
             )
-            runner._mail_selective_claim_terminal_message = business_message
-            return {"result": "success", "message": business_message}
-        return result
+        if not business_message:
+            raise RuntimeError(
+                "邮件_选择性领取：业务完成但缺少领取/删除终态摘要，拒绝推进次日调度"
+            )
+        business_message = runner._finish_mail_selective_claim_schedule(
+            payload,
+            business_message,
+        )
+        runner._mail_selective_claim_terminal_message = business_message
+        return {"result": "success", "message": business_message}
 
     @register_fanxiu_data_annotation_task_cell(
         "mail_claim_law",
@@ -2087,31 +2074,6 @@ def register_fanxiu_default_jobs() -> None:
                 ctx,
                 payload,
                 stop_event,
-            )
-        )
-
-    @register_fanxiu_data_annotation_task_cell(
-        "magic_invasion_explore",
-        "魔道入侵_探查",
-        scheduler_supported=False,
-    )
-    def _run_data_annotation_magic_invasion_explore_task_cell(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
-            execute_magic_invasion_explore_job,
-        )
-
-        return (
-            yield from execute_magic_invasion_explore_job(
-                runner,
-                ctx,
-                payload,
-                stop_event,
-                manage_schedule=False,
             )
         )
 

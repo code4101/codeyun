@@ -72,7 +72,6 @@ def test_scene_api_has_one_waiting_entry_and_no_legacy_aliases() -> None:
         "self",
         "scenes",
         "wait",
-        "handle_interruptions",
         "label",
     ]
     assert wait_parameters["scenes"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
@@ -391,6 +390,50 @@ def test_default_layer1_graph_includes_popup_candidates(monkeypatch):
         101, 98.0, "graph_nearest", 1,
     )
     assert calls == [("layer1", [101, 47])]
+
+
+def test_popup_layer0_cannot_be_reclassified_as_a_business_scene(monkeypatch):
+    runner = create_behavior_tree_executor()
+    popup = _ocr_popup_scene(
+        663,
+        "活动即将开始提醒",
+        r"活动.*即将开始.*是否前往查看",
+        action_title="空白",
+    )
+    world = _scene(34, 1)
+    tree = [world, {"type": "folder", "title": "弹窗", "children": [popup]}]
+    ctx = {"asset_tree": tree, "images": {34: world, 663: popup}}
+    context = BehaviorTreeContext(runner, ctx)
+    recognized = iter((663, 34))
+    handled: list[int] = []
+
+    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number_by_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            scene_id=(scene_id := next(recognized)),
+            score=100.0,
+            status="matched",
+            matched_layer=0,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_handle_recognized_popup_candidate",
+        lambda _context, candidate, **_kwargs: handled.append(
+            int(candidate["image"]["filename"].split(".")[0])
+        ) or True,
+    )
+    monkeypatch.setattr(runner, "_commit_scene_observation", lambda *_args, **_kwargs: None)
+
+    match, score, _frame = _drain_result(
+        context._recognize_scene_layers([663, 34], wait=0)
+    )
+
+    assert match == 34
+    assert score == 100.0
+    assert handled == [663]
 
 
 def test_canonical_global_layers_exclude_popup_candidates(monkeypatch):

@@ -19,7 +19,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     read_runtime_snapshot_with_rebind,
     resolve_lua_global_manager_root,
 )
-from backend.core.fanxiu.mail.visual_alignment import mail_snapshot_fingerprint
+from backend.core.fanxiu.runtime_gui.mail import mail_snapshot_fingerprint
 from backend.core.fanxiu.instrumentation.item_config import read_loaded_item_metadata
 
 

@@ -17,6 +17,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     DANDAO_REWARDS_KIND,
     EXCHANGE_TAIL_KIND,
     MAGIC_ACTIVE_KIND,
+    MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
     RANKING_LIFECYCLE_TASK_ID,
     RESOURCE_FREE_GIFT_KIND,
@@ -87,6 +88,20 @@ def _execute_magic_active_checkpoint(runner, ctx, payload, stop_event, *, occurr
     )
     return (yield from execute_magic_invasion_compound_checkpoint(
         runner, ctx, payload, stop_event, occurrence=occurrence
+    ))
+
+
+def _execute_magic_mail_checkpoint(runner, ctx, payload, stop_event, *, checkpoint):
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_mail import (
+        execute_magic_invasion_mail_checkpoint,
+    )
+
+    return (yield from execute_magic_invasion_mail_checkpoint(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        business_day=datetime.fromisoformat(checkpoint.business_date).date(),
     ))
 
 
@@ -334,7 +349,21 @@ def _execute_family_job(
     for checkpoint in due:
         if stop_event.is_set():
             raise InterruptedError()
-        occurrence = by_instance[checkpoint.instance_key]
+        occurrence = by_instance.get(checkpoint.instance_key)
+        if occurrence is None and checkpoint.checkpoint_kind == MAGIC_MAIL_KIND:
+            occurrence = next(
+                (
+                    item
+                    for item in occurrences
+                    if item.runtime_id == checkpoint.runtime_id
+                    and item.activity_id == checkpoint.activity_id
+                ),
+                None,
+            )
+        if occurrence is None:
+            raise RuntimeError(
+                f"玩法榜 checkpoint 找不到所属实例：{checkpoint.instance_key}"
+            )
         try:
             if (
                 checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND
@@ -379,6 +408,10 @@ def _execute_family_job(
             elif checkpoint.checkpoint_kind == MAGIC_ACTIVE_KIND:
                 result = yield from _execute_magic_active_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind == MAGIC_MAIL_KIND:
+                result = yield from _execute_magic_mail_checkpoint(
+                    runner, ctx, payload, stop_event, checkpoint=checkpoint
                 )
             elif checkpoint.checkpoint_kind == XUTIAN_ACTIVE_KIND:
                 result = yield from _execute_xutian_active_checkpoint(

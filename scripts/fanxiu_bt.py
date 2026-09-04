@@ -102,14 +102,6 @@ def _payload_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         payload["target_scene_id"] = parse_data_annotation_scene_id(args.scene_id)
         return "go_scene", payload
     if args.command == "mail-check":
-        payload.update(
-            {
-                "observe_only": bool(args.observe_only),
-                "scan_mode": args.scan_mode,
-                "skip_capture": bool(args.skip_capture),
-                "max_actions": int(args.max_actions or 0),
-            }
-        )
         return "mail_selective_claim", payload
     if args.command in {"task", "run"}:
         if str(args.task_type) == "go_scene" and getattr(args, "target_scene_id", ""):
@@ -1738,10 +1730,6 @@ def main() -> int:
     _add_task_run_options(go_scene)
 
     mail_check = subparsers.add_parser("mail-check", help="运行邮件_选择性领取")
-    mail_check.add_argument("--observe-only", action="store_true")
-    mail_check.add_argument("--scan-mode", default="incremental")
-    mail_check.add_argument("--skip-capture", action="store_true")
-    mail_check.add_argument("--max-actions", type=int, default=0)
     _add_task_run_options(mail_check)
 
     task = subparsers.add_parser("task", help="运行任意已注册任务类型")

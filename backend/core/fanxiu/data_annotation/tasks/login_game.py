@@ -166,7 +166,6 @@ class LoginGameTaskMixin:
             match, score, frame = yield from context._recognize_scene_layers(
                 self.login_game_scene_ids,
                 wait=0,
-                handle_interruptions=True,
             )
             scene_id = match.scene_id if match is not None else None
             frame_text = context.ocr_text(frame)

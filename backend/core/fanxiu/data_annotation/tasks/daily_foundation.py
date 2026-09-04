@@ -10344,7 +10344,6 @@ class DailyFoundationTaskMixin:
                                 [341,
                                 342],
                                 wait=successor_wait_seconds,
-                                handle_interruptions=False,
                                 label=f"{task_label}：等待地点「{place}」详情或占领弹窗",
                             )
                         except TimeoutError:
@@ -11878,12 +11877,6 @@ class DailyFoundationTaskMixin:
                         wait=float(
                             payload.get("lingmai_kick_confirm_appear_timeout") or 20.0
                         ),
-                        # This is an action-owned business transaction.  The
-                        # generic #47 popup resembles the confirmation while
-                        # #381 OCR is warming up and can otherwise click its
-                        # background, stealing the confirmation before the
-                        # Lingmai task consumes it.
-                        handle_interruptions=False,
                         label=(
                             f"{task_label}：#380「驱离」点击后等待业务确认层/战前对白"
                         ),

@@ -79,11 +79,6 @@ def test_compound_skips_mail_and_keeps_sufficient_supply_inside_activity(
         yield None
         return {"status": "claimed"}
 
-    def supply(*_args, **kwargs):
-        events.append(("supply", kwargs["required_tianyan"]))
-        yield None
-        return {"status": "supplied"}
-
     def explore(*_args, **kwargs):
         events.append(
             (
@@ -113,7 +108,6 @@ def test_compound_skips_mail_and_keeps_sufficient_supply_inside_activity(
         "read_backpack_item_counts",
         lambda *_args, **_kwargs: ({1010004: 1533}, {"read_only": True}),
     )
-    monkeypatch.setattr(compound, "ensure_magic_tianyan_supply", supply)
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
 
     result = _finish(
@@ -131,7 +125,11 @@ def test_compound_skips_mail_and_keeps_sufficient_supply_inside_activity(
     assert not any(event[0] == "mail" for event in events)
     assert not any(event[0] == "supply" for event in events)
     assert not any(event == ("goto", 34) for event in events)
-    assert events.index(("tasks",)) < events.index(("explore", False, True))
+    assert events.index(("explore", False, True)) < events.index(("tasks",))
+    assert [event for event in events if event == ("select_magic",)] == [
+        ("select_magic",),
+        ("select_magic",),
+    ]
     assert result["supply"]["status"] == "sufficient"
     assert result["supply"]["tianyan_before"] == 1533
 
@@ -151,10 +149,6 @@ def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
         yield None
         return {"status": "claimed"}
 
-    def supply(*_args, **_kwargs):
-        yield None
-        return {"status": "supplied"}
-
     def explore(*_args, **_kwargs):
         yield None
         return {"result": "success", "performed_actions": False}
@@ -169,7 +163,6 @@ def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
         "read_backpack_item_counts",
         lambda *_args, **_kwargs: ({1010004: 1500}, {"read_only": True}),
     )
-    monkeypatch.setattr(compound, "ensure_magic_tianyan_supply", supply)
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
 
     with pytest.raises(RuntimeError, match="3×500 完成证据"):
@@ -182,9 +175,12 @@ def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
                 occurrence=_occurrence(),
             )
         )
+    assert not any(event[0] == "tasks" for event in events)
 
 
-def test_compound_ignores_legacy_scheduler_progress_payload(monkeypatch) -> None:
+def test_compound_fails_closed_when_tianyan_requires_removed_legacy_supply(
+    monkeypatch,
+) -> None:
     events = []
     runner = _Runner(events)
     monkeypatch.setattr(
@@ -198,11 +194,6 @@ def test_compound_ignores_legacy_scheduler_progress_payload(monkeypatch) -> None
     def tasks(*_args, **_kwargs):
         yield None
         return {"status": "already_claimed"}
-
-    def supply(*_args, **kwargs):
-        events.append(("supply", kwargs["required_tianyan"]))
-        yield None
-        return {"status": "already_sufficient", "tianyan_after": 1000}
 
     def explore(_runner, _ctx, explore_payload, _stop, **kwargs):
         events.append(
@@ -233,7 +224,6 @@ def test_compound_ignores_legacy_scheduler_progress_payload(monkeypatch) -> None
         "read_backpack_item_counts",
         lambda *_args, **_kwargs: ({1010004: 0}, {"read_only": True}),
     )
-    monkeypatch.setattr(compound, "ensure_magic_tianyan_supply", supply)
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
     monkeypatch.setattr(
         compound,
@@ -254,19 +244,17 @@ def test_compound_ignores_legacy_scheduler_progress_payload(monkeypatch) -> None
         }
     }
 
-    result = _finish(
-        compound.execute_magic_invasion_compound_checkpoint(
-            runner,
-            {},
-            payload,
-            Event(),
-            occurrence=_occurrence(),
+    with pytest.raises(RuntimeError, match="旧版.*补给路径已删除"):
+        _finish(
+            compound.execute_magic_invasion_compound_checkpoint(
+                runner,
+                {},
+                payload,
+                Event(),
+                occurrence=_occurrence(),
+            )
         )
-    )
-
-    assert result["status"] == "completed"
-    assert ("supply", 1500) in events
-    assert ("explore", False, False) in events
+    assert not any(event[0] == "explore" for event in events)
 
 
 def test_occurrence_evidence_blocks_before_any_optional_action(monkeypatch) -> None:

@@ -234,8 +234,8 @@ def test_job_records_daily_checkpoint_and_persists_wake_before_and_after_work(
     ]
     assert result["result"] == "success"
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ))
+        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ))
     ]
 
 
@@ -260,7 +260,7 @@ def test_job_isolates_checkpoint_error_and_schedules_retry(monkeypatch) -> None:
     assert row.status == "error"
     assert row.retry_at == "2026-08-21T10:00:00+08:00"
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ)),
         ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ)),
     ]
     assert result["result"] == "success"
@@ -402,6 +402,47 @@ def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
     }
 
 
+def test_gameplay_job_dispatches_one_account_magic_mail_checkpoint(monkeypatch) -> None:
+    engine = _arrange(
+        monkeypatch,
+        reconcile=lambda *_args, **_kwargs: {
+            "status": "completed",
+            "message": "静态档次已对齐",
+        },
+    )
+    monkeypatch.setattr(
+        lifecycle_job,
+        "job_now",
+        lambda: datetime(2026, 8, 21, 12, 0, tzinfo=TZ),
+    )
+    seen = []
+
+    def execute(*_args, checkpoint, **_kwargs):
+        seen.append(checkpoint.key)
+        if False:
+            yield None
+        return {"status": "completed", "message": "今日魔道邮件已处理"}
+
+    monkeypatch.setattr(lifecycle_job, "_execute_magic_mail_checkpoint", execute)
+
+    result = _drain(
+        lifecycle_job.execute_ranking_lifecycle_job(
+            _Runner(), {"scheduler_task_id": "ranking-lifecycle"}, {}, Event()
+        )
+    )
+
+    with Session(engine) as session:
+        rows = list(session.exec(select(FanxiuRankingLifecycleCheckpoint)).all())
+    assert seen == [
+        ("account:magic-invasion-mail", "magic_mail_1200", "2026-08-21")
+    ]
+    assert {(row.checkpoint_kind, row.status) for row in rows} == {
+        ("daily_reconcile", "completed"),
+        ("magic_mail_1200", "completed"),
+    }
+    assert result["result"] == "success"
+
+
 def test_xutian_active_dispatches_the_unified_checkpoint(monkeypatch) -> None:
     seen = {}
 
@@ -485,7 +526,7 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     assert result["result"] == "success"
     assert "成功 0，待重试 1" in result["message"]
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 19, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ)),
         ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ))
     ]
 

@@ -15,6 +15,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     DAILY_RECONCILE_KIND,
     EXCHANGE_TAIL_KIND,
     MAGIC_ACTIVE_KIND,
+    MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
     RESOURCE_FREE_GIFT_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
@@ -541,7 +542,7 @@ def test_xianyuan_exchange_tail_is_due_at_midnight() -> None:
     assert any(item.key == tail.key for item in due)
 
 
-def test_expired_magic_action_is_never_replayed_but_daily_tail_is_reconciled() -> None:
+def test_expired_magic_action_is_never_replayed_but_safe_same_day_mail_catches_up() -> None:
     server = next(
         row
         for row in discover_ranking_occurrences(_schedule(), identities=IDENTITIES)
@@ -554,7 +555,10 @@ def test_expired_magic_action_is_never_replayed_but_daily_tail_is_reconciled() -
     )
 
     assert due
-    assert {item.checkpoint_kind for item in due} == {DAILY_RECONCILE_KIND}
+    assert {item.checkpoint_kind for item in due} == {
+        DAILY_RECONCILE_KIND,
+        MAGIC_MAIL_KIND,
+    }
 
 
 def test_magic_1900_is_extra_checkpoint_not_a_parallel_job() -> None:
@@ -570,13 +574,48 @@ def test_magic_1900_is_extra_checkpoint_not_a_parallel_job() -> None:
         (cross,),
         now=datetime(2026, 8, 22, 0, 31, tzinfo=TZ),
         completed_keys=completed,
-    ) == datetime(2026, 8, 22, 19, 0, tzinfo=TZ)
+    ) == datetime(2026, 8, 22, 12, 0, tzinfo=TZ)
+    mail_due = due_ranking_checkpoints(
+        (cross,),
+        now=datetime(2026, 8, 22, 12, 0, tzinfo=TZ),
+        completed_keys=completed,
+    )
+    assert [item.checkpoint_kind for item in mail_due] == [MAGIC_MAIL_KIND]
+    completed.update(item.key for item in mail_due)
     active_due = due_ranking_checkpoints(
         (cross,),
         now=datetime(2026, 8, 22, 19, 0, tzinfo=TZ),
         completed_keys=completed,
     )
     assert [item.checkpoint_kind for item in active_due] == [MAGIC_ACTIVE_KIND]
+
+
+def test_magic_mail_is_one_account_checkpoint_for_server_and_cross_instances() -> None:
+    common = dict(
+        activity_type="magic-invasion",
+        family="gameplay_rank",
+        activity_id=8070001,
+        start_at=datetime(2026, 9, 4, 0, 0, tzinfo=TZ),
+        end_at=datetime(2026, 9, 4, 22, 0, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 4, 0, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 5, 23, 59, 59, tzinfo=TZ),
+    )
+    server = RankingOccurrence(runtime_id="server", cross_count=1, **common)
+    cross = RankingOccurrence(runtime_id="cross", cross_count=8, **common)
+
+    due = due_ranking_checkpoints(
+        (server, cross), now=datetime(2026, 9, 4, 12, 0, tzinfo=TZ)
+    )
+    mail = [item for item in due if item.checkpoint_kind == MAGIC_MAIL_KIND]
+
+    assert len(mail) == 1
+    assert mail[0].instance_key == "account:magic-invasion-mail"
+    later_due = due_ranking_checkpoints(
+        (cross,),
+        now=datetime(2026, 9, 4, 12, 1, tzinfo=TZ),
+        completed_keys={mail[0].key},
+    )
+    assert MAGIC_MAIL_KIND not in {item.checkpoint_kind for item in later_due}
 
 
 def test_xutian_1000_is_one_occurrence_scoped_checkpoint() -> None:

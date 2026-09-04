@@ -139,10 +139,6 @@ def fanxiu_kernel_service_start_lock_path() -> Path:
     return fanxiu_kernel_scheduler_dir() / "kernel-service.start.lock"
 
 
-def fanxiu_data_annotation_mail_scan_state_path() -> Path:
-    return fanxiu_kernel_scheduler_dir() / "mail_scan_state.json"
-
-
 def restart_fanxiu_kernel_scheduler_service(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
@@ -641,20 +637,12 @@ def go_fanxiu_scene(
 def run_fanxiu_mail_selective_claim(
     *,
     entry_id: str = DEFAULT_FANXIU_ENTRY_ID,
-    observe_only: bool = False,
-    scan_mode: str = "incremental",
-    skip_capture: bool = False,
-    max_actions: int = 0,
     target_mail_ids: list[str] | None = None,
     cleanup_after_claim: bool = True,
     timeout_seconds: float = 0.0,
     wait_timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "observe_only": bool(observe_only),
-        "scan_mode": str(scan_mode or "incremental"),
-        "skip_capture": bool(skip_capture),
-        "max_actions": int(max_actions or 0),
         "target_mail_ids": [str(value) for value in target_mail_ids or [] if str(value)],
         "cleanup_after_claim": bool(cleanup_after_claim),
     }
@@ -666,16 +654,6 @@ def run_fanxiu_mail_selective_claim(
         entry_id=entry_id,
         wait_timeout_seconds=wait_timeout_seconds,
     )
-
-
-def run_fanxiu_mail_cleanup(**kwargs: Any) -> dict[str, Any]:
-    """Legacy API alias; use ``run_fanxiu_mail_selective_claim``."""
-    return run_fanxiu_mail_selective_claim(**kwargs)
-
-
-def run_fanxiu_mail_claim_check(**kwargs: Any) -> dict[str, Any]:
-    """Legacy API alias; use ``run_fanxiu_mail_selective_claim``."""
-    return run_fanxiu_mail_selective_claim(**kwargs)
 
 
 def run_fanxiu_xianfu_visit_partner(

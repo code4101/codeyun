@@ -48,6 +48,7 @@ RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
 DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
+MAGIC_MAIL_KIND = "magic_mail_1200"
 XUTIAN_ACTIVE_KIND = "xutian_active_1000"
 BEAST_ABYSS_INITIALIZATION_KIND = "beast_abyss_initialization_1000"
 BEAST_ABYSS_FORMAL_KIND = "beast_abyss_formal_1005"
@@ -61,6 +62,7 @@ YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 30)
 XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
+MAGIC_MAIL_TIME = time(12, 0)
 XUTIAN_ACTIVE_TIME = time(10, 0)
 BEAST_ABYSS_INITIALIZATION_TIME = time(10, 0)
 BEAST_ABYSS_FORMAL_TIME = time(10, 5)
@@ -423,6 +425,27 @@ def checkpoints_for_occurrence(
             )
         )
     magic_at = _at(business_day, MAGIC_ACTIVE_TIME, occurrence.start_at.tzinfo)
+    magic_mail_at = _at(business_day, MAGIC_MAIL_TIME, occurrence.start_at.tzinfo)
+    if (
+        occurrence.activity_type == "magic-invasion"
+        and occurrence.start_at.date() <= business_day <= occurrence.end_at.date()
+    ):
+        checkpoints.append(
+            RankingCheckpoint(
+                # The mail box belongs to the account, not to either of the
+                # consecutive server/cross-server activity occurrences.  A
+                # stable account key makes the 12:00 action idempotent even
+                # when Runtime later drops the server occurrence.
+                instance_key="account:magic-invasion-mail",
+                activity_type=occurrence.activity_type,
+                family=occurrence.family,
+                runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id,
+                checkpoint_kind=MAGIC_MAIL_KIND,
+                business_date=business_day.isoformat(),
+                due_at=magic_mail_at,
+            )
+        )
     if (
         occurrence.activity_type == "magic-invasion"
         and occurrence.start_at <= magic_at <= occurrence.end_at
@@ -575,6 +598,10 @@ def due_ranking_checkpoints(
                 )
                 if checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND
                 or (
+                    checkpoint.checkpoint_kind == MAGIC_MAIL_KIND
+                    and business_day == local_now.date()
+                )
+                or (
                     checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND
                     and occurrence.end_at < local_now < occurrence.close_at
                 )
@@ -615,21 +642,26 @@ def due_ranking_checkpoints(
                     >= BEAST_ABYSS_AUTO_WINDOW_END
                 )
             )
-    return tuple(
-        sorted(
-            (
-                item
-                for item in candidates
-                if item.key not in completed and item.due_at <= now
-            ),
-            key=lambda item: (
-                item.due_at,
-                item.activity_type,
-                item.instance_key,
-                item.checkpoint_kind,
-            ),
-        )
+    ordered = sorted(
+        (
+            item
+            for item in candidates
+            if item.key not in completed and item.due_at <= now
+        ),
+        key=lambda item: (
+            item.due_at,
+            item.activity_type,
+            item.instance_key,
+            item.checkpoint_kind,
+            item.runtime_id,
+        ),
     )
+    # Several consecutive magic occurrences can describe the same account
+    # mailbox on one business day.  Keep exactly one durable checkpoint key.
+    unique: dict[tuple[str, str, str], RankingCheckpoint] = {}
+    for item in ordered:
+        unique.setdefault(item.key, item)
+    return tuple(unique.values())
 
 
 def next_ranking_lifecycle_time(
@@ -670,6 +702,7 @@ __all__ = [
     "DAILY_RECONCILE_KIND",
     "EXCHANGE_TAIL_KIND",
     "MAGIC_ACTIVE_KIND",
+    "MAGIC_MAIL_KIND",
     "XUTIAN_ACTIVE_KIND",
     "XIANMENG_ACTIVE_KIND",
     "TIANDI_YIJU_ACTIVE_KIND",
