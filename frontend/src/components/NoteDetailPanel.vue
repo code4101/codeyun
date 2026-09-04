@@ -233,7 +233,7 @@ watch(
 const refreshCurrentNoteFromServer = async () => {
   if (!props.noteId || isFetchingContent.value) return;
   const requestToken = loadRequestToken;
-  const detailed = await noteStore.fetchNoteDetail(props.noteId, { force: true });
+  const detailed = await noteStore.fetchNoteDetail(props.noteId, { force: true, silent: true });
   if (!detailed || requestToken !== loadRequestToken || props.noteId !== noteKey(detailed.id) || !currentNote.value) return;
 
   const note = noteStore.getNoteById(props.noteId) || detailed;
@@ -275,10 +275,10 @@ const handleSave = async (
   };
   let updatedNote: Awaited<ReturnType<typeof noteStore.updateNote>>;
   try {
-    updatedNote = await noteStore.updateNote(note.id, payload);
+    updatedNote = await noteStore.updateNote(note.id, payload, { silent: true, throwOnError: true });
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 409) {
-      const latestNote = await noteStore.fetchNoteDetail(note.id, { force: true });
+      const latestNote = await noteStore.fetchNoteDetail(note.id, { force: true, silent: true });
       if (latestNote) {
         return {
           kind: 'conflict' as const,

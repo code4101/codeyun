@@ -1171,25 +1171,39 @@ def test_mumu_device_health_reports_starting_before_android_started(monkeypatch)
     assert result["status"] == "starting"
 
 
-def test_mumu_manager_launch_breaks_away_from_caller_job(monkeypatch):
+def test_mumu_manager_launch_uses_windows_task_scheduler_broker(monkeypatch):
     calls = []
     monkeypatch.setattr(mumu, "_mumu_manager_path", lambda: Path("MuMuManager.exe"))
+    monkeypatch.setattr(mumu.os, "name", "nt")
     monkeypatch.setattr(
         mumu,
-        "background_popen_kwargs",
-        lambda *, independent: {"creationflags": 0x01000000 if independent else 0},
-    )
-    monkeypatch.setattr(
-        mumu.subprocess,
-        "run",
-        lambda command, **kwargs: calls.append((command, kwargs))
-        or SimpleNamespace(returncode=0, stdout="{}", stderr=""),
+        "_launch_mumu_via_windows_task",
+        lambda vmindex, path: calls.append((vmindex, path))
+        or {"launch_broker": "windows_task_scheduler"},
     )
 
-    mumu._mumu_manager_control("1", "launch")
+    result = mumu._mumu_manager_control("1", "launch")
 
-    assert calls[0][0] == ["MuMuManager.exe", "control", "--vmindex", "1", "launch"]
-    assert calls[0][1]["creationflags"] & 0x01000000
+    assert calls == [("1", Path("MuMuManager.exe"))]
+    assert result["launch_broker"] == "windows_task_scheduler"
+
+
+def test_windows_task_broker_creates_past_due_task_and_runs_it(monkeypatch):
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(mumu, "run_quiet", fake_run)
+
+    result = mumu._launch_mumu_via_windows_task("1", Path(r"C:\Program Files\MuMu\MuMuManager.exe"))
+
+    assert calls[0][0][:5] == ["schtasks", "/Create", "/TN", r"\Fanxiu MuMu Launch 1", "/SC"]
+    assert calls[0][0][calls[0][0].index("/ST") + 1] == "00:00"
+    assert '"C:\\Program Files\\MuMu\\MuMuManager.exe"' in calls[0][0][calls[0][0].index("/TR") + 1]
+    assert calls[1][0] == ["schtasks", "/Run", "/TN", r"\Fanxiu MuMu Launch 1"]
+    assert result["launch_broker"] == "windows_task_scheduler"
 
 
 def test_mumu_manager_non_launch_control_stays_in_caller_lifecycle(monkeypatch):
@@ -1516,7 +1530,7 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
 
     assert result["recovered"] is True
     assert controls == [(("1", "launch"), {"timeout": 15})]
-    assert lifecycle == ["login_intent", "vm_control"]
+    assert lifecycle == ["login_intent", "vm_control", "login_intent"]
     assert result["login_scheduler"]["task_id"] == "login-game"
 
 

@@ -1339,6 +1339,7 @@ useSortableList({
 const autoSave = useAutoSave<EditableNoteSnapshot>({
   debounceMs: CONTENT_SAVE_DELAY_MS,
   retryDelayMs: 1500,
+  maxRetryDelayMs: 30000,
   equals: areEditableNoteSnapshotsEqual,
   storageKey: () => currentDraftKey.value,
   save: async snapshot => {

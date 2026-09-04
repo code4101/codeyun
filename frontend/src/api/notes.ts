@@ -2149,7 +2149,7 @@ export const useNoteStore = defineStore('notes', () => {
     });
   };
 
-  const fetchNoteDetail = async (id: NoteRef, options: { force?: boolean } = {}) => {
+  const fetchNoteDetail = async (id: NoteRef, options: { force?: boolean; silent?: boolean } = {}) => {
     const key = normalizeNoteKey(id);
     const cached = noteDetailMap.value[key];
     if (!options.force && cached?.content !== undefined) {
@@ -2164,7 +2164,7 @@ export const useNoteStore = defineStore('notes', () => {
       return mergeNoteDetailAndPrune(detailedNote);
     } catch (error) {
       console.error('Failed to fetch note detail:', error);
-      ElMessage.error('获取节点内容失败');
+      if (!options.silent) ElMessage.error('获取节点内容失败');
       return null;
     } finally {
       bumpPending(-1);
@@ -2313,7 +2313,8 @@ export const useNoteStore = defineStore('notes', () => {
       expected_fields?: Record<string, unknown>;
       mutation_id?: string;
       client_instance_id?: string;
-    }
+    },
+    options: { silent?: boolean; throwOnError?: boolean } = {}
   ) => {
     bumpPending(1);
     try {
@@ -2331,10 +2332,10 @@ export const useNoteStore = defineStore('notes', () => {
       return mergedNote;
     } catch (error) {
       console.error('Failed to update note:', error);
-      if (axios.isAxiosError(error) && error.response?.status === 409) {
+      if (options.throwOnError || (axios.isAxiosError(error) && error.response?.status === 409)) {
         throw error;
       }
-      ElMessage.error('保存任务失败');
+      if (!options.silent) ElMessage.error('保存任务失败');
       return null;
     } finally {
       bumpPending(-1);

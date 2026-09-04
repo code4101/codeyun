@@ -38,3 +38,20 @@ def test_note_editor_draft_is_immediately_durable_and_dirty_state_is_reactive():
     assert "void saveStatus.value;" in dirty_computed
     assert "if (suppressModelDrivenChange.value) return" not in handle_change
     assert "nextHtml === normalizeEditorInputHtml(props.modelValue)" in handle_change
+
+
+def test_note_editor_network_failures_are_quiet_and_back_off_without_duplicate_hide_saves():
+    auto_save = (REPO_ROOT / "frontend/src/utils/useAutoSave.ts").read_text(encoding="utf-8")
+    shared_editor = (REPO_ROOT / "frontend/src/components/SharedNoteEditor.vue").read_text(encoding="utf-8")
+    detail_panel = (REPO_ROOT / "frontend/src/components/NoteDetailPanel.vue").read_text(encoding="utf-8")
+
+    handle_page_hide = auto_save.split("const handlePageHide =", 1)[1].split("const handleVisibilityChange =", 1)[0]
+
+    assert "2 ** retryAttempt" in auto_save
+    assert "maxRetryDelayMs: 30000" in shared_editor
+    assert "if (retryAttempt === 0) options.onError?.(error);" in auto_save
+    assert "dispatchKeepalive()" in handle_page_hide
+    assert "keepaliveVersion === changeVersion" in auto_save
+    assert "if (options.saveOnPageHide) dispatchKeepalive();" in auto_save
+    assert "{ silent: true, throwOnError: true }" in detail_panel
+    assert "{ force: true, silent: true }" in detail_panel

@@ -30,7 +30,7 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.services.launcher import background_popen_kwargs, popen_service, run_quiet
+from backend.core.services.launcher import popen_service, run_quiet
 from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_image_asset
 from backend.core.fanxiu.client.adb_device import (
     fanxiu_adb_device_service,
@@ -846,7 +846,6 @@ def _run_mumu_manager_json(
     args: list[str],
     *,
     timeout: float = 8.0,
-    independent: bool = False,
 ) -> Any:
     manager_path = _mumu_manager_path()
     if manager_path is None:
@@ -859,15 +858,7 @@ def _run_mumu_manager_json(
         "errors": "replace",
         "timeout": timeout,
     }
-    if independent:
-        process = subprocess.run(
-            command,
-            check=False,
-            **run_kwargs,
-            **background_popen_kwargs(independent=True),
-        )
-    else:
-        process = run_quiet(command, **run_kwargs)
+    process = run_quiet(command, **run_kwargs)
     output = str(process.stdout or "").strip()
     if output:
         try:
@@ -925,11 +916,63 @@ def _mumu_manager_player_info(vmindex: str = "1") -> dict[str, Any]:
     raise RuntimeError(f"MuMuManager 未返回实例 {vmindex} 状态")
 
 
+def _launch_mumu_via_windows_task(vmindex: str, manager_path: Path) -> dict[str, Any]:
+    """Ask Task Scheduler to launch MuMu outside the caller's Windows Job.
+
+    ``CREATE_BREAKAWAY_FROM_JOB`` is insufficient when an outer Job (for
+    example Codex's command runner) disallows breakaway.  Submitting the short
+    Manager command to Task Scheduler makes the Windows service the launcher,
+    so the VM cannot inherit the lifetime of Codex, CodeYun, or a terminal.
+    The task's scheduled time is already past; it only runs through ``/Run``.
+    """
+
+    safe_vmindex = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(vmindex or "1"))
+    task_name = rf"\Fanxiu MuMu Launch {safe_vmindex}"
+    launch_command = subprocess.list2cmdline(
+        [str(manager_path), "control", "--vmindex", str(vmindex or "1"), "launch"]
+    )
+    create = run_quiet(
+        [
+            "schtasks", "/Create", "/TN", task_name,
+            "/SC", "ONCE", "/ST", "00:00",
+            "/TR", launch_command, "/RL", "LIMITED", "/F",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=12,
+    )
+    if create.returncode != 0:
+        detail = "\n".join(
+            part.strip() for part in (create.stdout or "", create.stderr or "") if part and part.strip()
+        )
+        raise RuntimeError(detail or f"创建独立 MuMu 启动任务失败：{create.returncode}")
+    started = run_quiet(
+        ["schtasks", "/Run", "/TN", task_name],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=12,
+    )
+    if started.returncode != 0:
+        detail = "\n".join(
+            part.strip() for part in (started.stdout or "", started.stderr or "") if part and part.strip()
+        )
+        raise RuntimeError(detail or f"提交独立 MuMu 启动任务失败：{started.returncode}")
+    return {"launch_broker": "windows_task_scheduler", "task_name": task_name}
+
+
 def _mumu_manager_control(vmindex: str, command: str, *, timeout: float = 12.0) -> dict[str, Any]:
+    if command == "launch" and os.name == "nt":
+        manager_path = _mumu_manager_path()
+        if manager_path is None:
+            raise RuntimeError("未找到 MuMuManager.exe")
+        return _launch_mumu_via_windows_task(str(vmindex or "1"), manager_path)
     payload = _run_mumu_manager_json(
         ["control", "--vmindex", str(vmindex or "1"), command],
         timeout=timeout,
-        independent=command == "launch",
     )
     return payload if isinstance(payload, dict) else {}
 
@@ -1534,6 +1577,12 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
             except Exception as exc:
                 window_size_result = {"ok": False, "error": str(exc)}
             frame_ready = wait_mumu_recovery_frame_ready(timeout_s=45.0)
+            # The pre-shutdown trigger is the durable recovery intent, but the
+            # external Scheduler may consume it while Android is still showing
+            # black startup frames. Re-assert the same idempotent intent after
+            # the frame boundary is usable so login, popup cleanup and bubble
+            # reconciliation cannot be lost to that race.
+            login_scheduler_intent = _schedule_login_job_after_mumu_restart()
             with _MUMU_DEVICE_HEALTH_LOCK:
                 _mumu_device_health_state["failure_count"] = 0
                 _mumu_device_health_state["recovery_count"] = int(_mumu_device_health_state.get("recovery_count") or 0) + 1

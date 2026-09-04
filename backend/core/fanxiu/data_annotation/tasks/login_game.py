@@ -153,7 +153,15 @@ class LoginGameTaskMixin:
         loading_started_at: float | None = None
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.current_scene(self.login_game_scene_ids, update=True)
+            # Login is also the post-restart cleanup transaction. Use the
+            # canonical layered recognizer so ordinary popup nodes are handled
+            # and recognition repeats before the login state machine proceeds.
+            match, score, frame = yield from context._recognize_scene_layers(
+                self.login_game_scene_ids,
+                wait=0,
+                handle_interruptions=True,
+            )
+            scene_id = match.scene_id if match is not None else None
             frame_text = context.ocr_text(frame)
             scene_id = self._resolve_login_scene(scene_id, frame_text)
             bubble_ready = bool(
@@ -203,8 +211,8 @@ class LoginGameTaskMixin:
                     yield from result
                 continue
             # Only an explicitly modelled post-login terminal proves success.
-            # Global popup candidates are handled inside current_scene() and
-            # recognition then repeats until one of these terminals appears.
+            # Global popup candidates were handled by the layered recognizer,
+            # which repeats until one of these terminals appears.
             if scene_id in self.login_terminal_scene_ids or bubble_ready:
                 reason = (
                     f"login_game_scene_{scene_id}"

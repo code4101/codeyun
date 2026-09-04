@@ -16,7 +16,12 @@ from backend.core.fanxiu.data_annotation.state import (
     write_data_annotation_world_facts,
 )
 from backend.core.fanxiu.instrumentation.backpack_ui import read_backpack_ui_snapshot
-from backend.core.fanxiu.mail.policy import fanxiu_mail_rewards_from_payload
+from backend.core.fanxiu.instrumentation.role_progression import read_role_profile_from_memory
+from backend.core.fanxiu.instrumentation.runtime_memory import MumuProcessMemory
+from backend.core.fanxiu.mail.policy import (
+    fanxiu_mail_reward_is_faze,
+    fanxiu_mail_rewards_from_payload,
+)
 from backend.core.fanxiu.mail.runtime_store import current_runtime_mail_sequence_snapshot
 from backend.core.fanxiu.runtime_gui import (
     StorageBagGrid,
@@ -46,7 +51,7 @@ def _law_rewards(mail: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         reward for reward in rewards
         if isinstance(reward, dict)
-        and (str(reward.get("item_type") or "") == "法则" or _as_int(reward.get("extra_mark")) == 7)
+        and fanxiu_mail_reward_is_faze(reward)
         and _as_int(reward.get("item_id") or reward.get("base_id")) is not None
     ]
 
@@ -62,7 +67,6 @@ def select_oldest_claimable_law_mail(snapshot: dict[str, Any]) -> dict[str, Any]
             str(item.get("execution_status") or "") == "unclaimed"
             and bool(item.get("present_in_runtime"))
             and not bool(item.get("locked"))
-            and str(item.get("action_policy") or "") == "claim"
         ):
             continue
         rewards = _law_rewards(item)
@@ -81,23 +85,124 @@ def select_oldest_claimable_law_mail(snapshot: dict[str, Any]) -> dict[str, Any]
     return min(candidates, key=lambda item: (int(item["create_time_ms"]), str(item["mail_id"]))) if candidates else None
 
 
-def active_law_end_time(snapshot: dict[str, Any], *, now_ms: int | None = None) -> dict[str, Any] | None:
-    """A live future ``end_time`` is the authoritative active-law fact.
+def active_law_end_time(
+    snapshot: dict[str, Any],
+    *,
+    active_faze_id: int,
+    active_item_base_id: int | None = None,
+    now_ms: int | None = None,
+) -> dict[str, Any] | None:
+    """Return expiry only with both active-state and catalog identity evidence.
 
-    The backpack panel exposes this field on the activated law instance.  More
-    than one live timer is an ambiguity, not permission to guess.
+    A future backpack ``end_time`` alone is merely the unused item's expiry;
+    treating that as activation was the original false-positive.  RoleMgr's
+    ``V_FazeId`` is a law-resource id (for example 10020), not an item base id
+    (for example 10080014), so callers must not compare those namespaces.
     """
 
+    if not int(active_faze_id or 0) or active_item_base_id is None:
+        return None
     now = int(now_ms if now_ms is not None else time.time() * 1000)
-    active = [item for item in snapshot.get("items") or [] if isinstance(item, dict) and (_as_int(item.get("end_time")) or 0) > now]
+    active = [
+        item
+        for item in snapshot.get("items") or []
+        if isinstance(item, dict)
+        and _as_int(item.get("base_id")) == int(active_item_base_id)
+        and (_as_int(item.get("end_time")) or 0) > now
+    ]
     if len(active) != 1:
         return None
     item = active[0]
     return {"instance_id": str(item.get("instance_id") or ""), "base_id": _as_int(item.get("base_id")), "end_time_ms": _as_int(item.get("end_time"))}
 
 
+def select_claimed_law_from_backpack(
+    mail_snapshot: dict[str, Any],
+    backpack_snapshot: dict[str, Any],
+    *,
+    now_ms: int | None = None,
+) -> dict[str, Any] | None:
+    """Recover an already claimed but not yet used law from current facts."""
+
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    names_by_base_id: dict[int, str] = {}
+    for item in mail_snapshot.get("items") or []:
+        if not isinstance(item, dict) or str(item.get("execution_status") or "") != "claimed":
+            continue
+        rewards = _law_rewards(item)
+        if len(rewards) != 1:
+            continue
+        base_id = _as_int(rewards[0].get("item_id") or rewards[0].get("base_id"))
+        name = str(rewards[0].get("item_name") or rewards[0].get("name") or "")
+        if base_id is not None and name:
+            names_by_base_id[base_id] = name
+
+    candidates = [
+        {
+            "instance_id": str(item.get("instance_id") or ""),
+            "base_id": _as_int(item.get("base_id")),
+            "name": names_by_base_id.get(_as_int(item.get("base_id")) or -1, ""),
+            "end_time_ms": _as_int(item.get("end_time")),
+            "ui_index": _as_int(item.get("ui_index")) or 0,
+        }
+        for item in backpack_snapshot.get("items") or []
+        if isinstance(item, dict)
+        and not bool(item.get("is_padding"))
+        and (_as_int(item.get("base_id")) or -1) in names_by_base_id
+        and (_as_int(item.get("end_time")) or 0) > now
+    ]
+    return min(candidates, key=lambda item: (int(item["end_time_ms"] or 0), int(item["ui_index"]))) if candidates else None
+
+
+def current_role_faze_id() -> int:
+    profile = read_role_profile_from_memory(MumuProcessMemory.discover_cached())
+    if not profile.get("ok"):
+        raise RuntimeError(f"邮件_领法则：RoleMgr 法则状态不可用：{profile.get('reason')}")
+    faze_id = _as_int(profile.get("faze"))
+    if faze_id is None:
+        raise RuntimeError("邮件_领法则：RoleMgr V_FazeId 缺失")
+    return faze_id
+
+
 def law_next_time(end_time_ms: int) -> str:
     return datetime.fromtimestamp(int(end_time_ms) / 1000).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def law_detail_title_texts(
+    tokens: Iterable[dict[str, Any]],
+    *,
+    frame_width: int = 900,
+    frame_height: int = 1600,
+) -> tuple[str, ...]:
+    """Read only the dynamic title row of the law-detail overlay.
+
+    #567 deliberately has no item-name identity Shape because the name is
+    dynamic.  Its title row is nevertheless stable, so the dedicated law
+    transaction can use that narrow ROI as independent evidence after the
+    Runtime-aligned bag click.
+    """
+
+    left, right = frame_width * 0.28, frame_width * 0.62
+    top, bottom = frame_height * 0.14, frame_height * 0.23
+    accepted = [
+        token
+        for token in tokens
+        if isinstance(token, dict)
+        and left <= float(token.get("x") or 0) + float(token.get("w") or 0) / 2 <= right
+        and top <= float(token.get("y") or 0) + float(token.get("h") or 0) / 2 <= bottom
+        and str(token.get("text") or "").strip()
+    ]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for token in accepted:
+        line_id = str(token.get("parent_line_id") or f"y:{round(float(token.get('y') or 0) / 12)}")
+        grouped.setdefault(line_id, []).append(token)
+    return tuple(
+        "".join(
+            str(token.get("text") or "").strip()
+            for token in sorted(line, key=lambda item: (float(item.get("x") or 0), int(item.get("order") or 0)))
+        )
+        for line in grouped.values()
+    )
 
 
 class MailClaimLawTaskMixin:
@@ -119,10 +224,22 @@ class MailClaimLawTaskMixin:
         task_facts[MAIL_CLAIM_LAW_TASK_ID] = {**fact, "updated_at": time.time()}
         write_data_annotation_world_facts(path, facts)
 
-    def _schedule_active_law(self, active: dict[str, Any], *, payload: dict[str, Any], source: str) -> str:
+    def _schedule_active_law(
+        self,
+        active: dict[str, Any],
+        *,
+        active_faze_id: int,
+        payload: dict[str, Any],
+        source: str,
+    ) -> str:
         end_time_ms = int(active["end_time_ms"])
         next_time = law_next_time(end_time_ms)
-        self._remember_law({**active, "next_time": next_time, "source": source})
+        self._remember_law({
+            **active,
+            "active_faze_id": int(active_faze_id),
+            "next_time": next_time,
+            "source": source,
+        })
         self._persist_scheduler_task_next_time(str(payload.get("__scheduler_task_id") or MAIL_CLAIM_LAW_TASK_ID), next_time)
         self._log("success", f"邮件_领法则：读取 Runtime end_time，法则持续到 {next_time}")
         return "success"
@@ -139,6 +256,33 @@ class MailClaimLawTaskMixin:
                 visit(item.get("children") or [])
         visit((view.raw or {}).get("shapes") or [])
         return result
+
+    def _wait_verified_law_detail(self, context: Any, plan: Any, *, name: str):
+        """Wait for #567 by its action gate plus exact dynamic item title.
+
+        Whole-scene recognition remains useful for navigation, but the live
+        law overlay can miss its ``效果说明`` identity OCR.  Here the preceding
+        unique Runtime/grid alignment supplies the click authorization, while
+        the fresh title ROI and visible ``使用`` button prove the successor.
+        """
+
+        deadline = time.monotonic() + 12.0
+        last_reason = "详情尚未出现"
+        while time.monotonic() < deadline:
+            frame = context.cur_frame(update=True)
+            use_gate = context.shape_matches(567, "使用", frame_data_url=frame)
+            title_texts = law_detail_title_texts(context.full_frame_ocr_tokens(frame))
+            detail = verify_storage_bag_item_detail(
+                plan,
+                expected_name=name,
+                detail_title_texts=title_texts,
+            )
+            if use_gate is not None and detail.confirmed:
+                self._log("detail", f"邮件_领法则：详情页动态标题核验通过：{detail.reason}")
+                return
+            last_reason = f"使用按钮={'已识别' if use_gate is not None else '未识别'}；{detail.reason}"
+            yield from context.wait_action_settle(0.5)
+        raise RuntimeError(f"邮件_领法则：等待法则详情失败：{last_reason}")
 
     def _use_claimed_law_from_bag(self, context: Any, *, base_id: int, name: str, stop_event: Any) -> dict[str, Any]:
         yield from self._open_storage_bag(context)
@@ -161,10 +305,7 @@ class MailClaimLawTaskMixin:
             plan = plan_storage_bag_item_click(snapshot, target_base_id=base_id, cells=cells, observations=quantity_observations_from_ocr(cells, fragments))
             if plan.ready:
                 context.click_frame_point(525, *plan.point)
-                yield from context.wait_scene(567, wait=12.0, label="邮件_领法则：等待法则详情")
-                detail = verify_storage_bag_item_detail(plan, expected_name=name, detail_title_texts=[part.get("text") or "" for part in context.ocr_fragments(context.cur_frame(update=True))])
-                if not detail.confirmed:
-                    raise RuntimeError(f"邮件_领法则：详情二次核验失败：{detail.reason}")
+                yield from self._wait_verified_law_detail(context, plan, name=name)
                 pre_use = next((item for item in snapshot.get("items") or [] if isinstance(item, dict) and item.get("base_id") == base_id and (_as_int(item.get("end_time")) or 0) > int(time.time() * 1000)), None)
                 if pre_use is None:
                     raise RuntimeError("邮件_领法则：使用前未读取到目标法则的动态 end_time")
@@ -188,27 +329,90 @@ class MailClaimLawTaskMixin:
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
         yield from self._open_storage_bag(context)
-        active = active_law_end_time(read_backpack_ui_snapshot()) or self._remembered_law()
-        if active is not None:
+        backpack_snapshot = read_backpack_ui_snapshot()
+        active_faze_id = current_role_faze_id()
+        remembered = self._remembered_law()
+        if active_faze_id:
             yield from context.go_scene(34)
-            return self._schedule_active_law(active, payload=payload, source="already_active")
+            if remembered is None:
+                raise RuntimeError(
+                    f"邮件_领法则：RoleMgr 已有法则 {active_faze_id}，但缺少其可靠结束时间"
+                )
+            remembered_faze_id = _as_int(remembered.get("active_faze_id"))
+            if remembered_faze_id not in {None, active_faze_id}:
+                raise RuntimeError(
+                    "邮件_领法则：RoleMgr 当前法则与记忆中的法则不一致，拒绝沿用旧结束时间；"
+                    f"current={active_faze_id} remembered={remembered_faze_id}"
+                )
+            return self._schedule_active_law(
+                remembered,
+                active_faze_id=active_faze_id,
+                payload=payload,
+                source="already_active",
+            )
         yield from context.go_scene(34)
         if not self._refresh_runtime_mail_snapshot("法则邮件选择", force_refresh=True):
             raise RuntimeError("邮件_领法则：动态邮件模型不可用")
         from backend.db import engine
-        selected = select_oldest_claimable_law_mail(current_runtime_mail_sequence_snapshot(lambda: engine))
+        mail_snapshot = current_runtime_mail_sequence_snapshot(lambda: engine)
+        recovered = select_claimed_law_from_backpack(mail_snapshot, backpack_snapshot)
+        if recovered is not None:
+            yield from context.go_scene(34)
+            use_result = yield from self._use_claimed_law_from_bag(
+                context,
+                base_id=int(recovered["base_id"]),
+                name=str(recovered["name"]),
+                stop_event=stop_event,
+            )
+            activated_faze_id = current_role_faze_id()
+            if activated_faze_id == 0:
+                raise RuntimeError("邮件_领法则：使用后 RoleMgr V_FazeId 仍为 0")
+            return self._schedule_active_law(
+                {**recovered, "end_time_ms": recovered["end_time_ms"]},
+                active_faze_id=activated_faze_id,
+                payload=payload,
+                source="recovered_claimed_item",
+            )
+
+        selected = select_oldest_claimable_law_mail(mail_snapshot)
         if selected is None:
             self._persist_scheduler_task_next_time(str(payload.get("__scheduler_task_id") or MAIL_CLAIM_LAW_TASK_ID), None)
             self._log("success", "邮件_领法则：没有可领取的法则邮件，作业休眠")
             return "success"
         claim_payload = {**payload, "target_mail_ids": [selected["mail_id"]]}
-        yield from self._execute_mail_selective_claim_task(ctx, stop_event, claim_payload)
+        selected_mail_id = str(selected["mail_id"])
+        selected_base_id = int(selected["base_id"])
+
+        def authorize_selected_law_mail(item: dict[str, Any]) -> bool:
+            item_id = str(item.get("id") or item.get("mail_id") or "")
+            rewards = _law_rewards(item)
+            return (
+                item_id == selected_mail_id
+                and len(rewards) == 1
+                and _as_int(rewards[0].get("item_id") or rewards[0].get("base_id")) == selected_base_id
+            )
+
+        yield from self._execute_mail_selective_claim_task(
+            ctx,
+            stop_event,
+            claim_payload,
+            protected_claim_authorizer=authorize_selected_law_mail,
+            cleanup_after_claim=False,
+        )
         use_result = yield from self._use_claimed_law_from_bag(context, base_id=int(selected["base_id"]), name=str(selected["name"]), stop_event=stop_event)
-        active = active_law_end_time(use_result.get("snapshot") or {}) or {
+        activated_faze_id = current_role_faze_id()
+        if activated_faze_id == 0:
+            raise RuntimeError("邮件_领法则：使用后 RoleMgr V_FazeId 仍为 0")
+        active = {
             "instance_id": str((use_result.get("activated") or {}).get("instance_id") or ""),
             "base_id": _as_int((use_result.get("activated") or {}).get("base_id")),
             "end_time_ms": _as_int((use_result.get("activated") or {}).get("end_time")),
         }
         if active is None or active.get("base_id") != selected["base_id"]:
             raise RuntimeError("邮件_领法则：使用后未在 Runtime 读到目标法则 end_time")
-        return self._schedule_active_law({**active, "mail_id": selected["mail_id"], "name": selected["name"]}, payload=payload, source="claimed_and_used")
+        return self._schedule_active_law(
+            {**active, "mail_id": selected["mail_id"], "name": selected["name"]},
+            active_faze_id=activated_faze_id,
+            payload=payload,
+            source="claimed_and_used",
+        )

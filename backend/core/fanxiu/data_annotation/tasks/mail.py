@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from pathlib import Path
 from types import GeneratorType
 
@@ -184,6 +184,9 @@ class MailTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
+        *,
+        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
+        cleanup_after_claim: bool = True,
     ) -> str:
         _behavior_tree_executor.ensure_fanxiu_mail_table()
         payload = dict(payload or {})
@@ -289,7 +292,7 @@ class MailTaskMixin:
             and not bool(item.get("locked"))
             and str(item.get("execution_status") or "") == "claimed"
         )
-        if claimed_visible_count >= 20:
+        if cleanup_after_claim and claimed_visible_count >= 20:
             self._log(
                 "info",
                 "邮件_选择性领取：跨 Cell 新批次检测到 "
@@ -319,6 +322,8 @@ class MailTaskMixin:
                 for value in payload.get("target_mail_ids") or []
                 if str(value)
             },
+            protected_claim_authorizer=protected_claim_authorizer,
+            cleanup_after_claim=cleanup_after_claim,
         )
         target_count = len(
             self._select_precise_mail_claim_targets(
@@ -328,11 +333,13 @@ class MailTaskMixin:
                     for value in payload.get("target_mail_ids") or []
                     if str(value)
                 },
+                protected_claim_authorizer=protected_claim_authorizer,
             )
         )
         self._validate_precise_mail_terminal_result(
             ordered_result,
             target_count=target_count,
+            require_garbage_cleanup=cleanup_after_claim,
         )
         message = (
             "邮件_选择性领取：完整闭环，"
@@ -606,7 +613,11 @@ class MailTaskMixin:
         return "success"
 
     @staticmethod
-    def _precise_mail_claim_targets(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    def _precise_mail_claim_targets(
+        snapshot: dict[str, Any],
+        *,
+        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> list[dict[str, Any]]:
         items = snapshot.get("items")
         if not isinstance(items, list):
             return []
@@ -617,7 +628,13 @@ class MailTaskMixin:
             and str(item.get("execution_status") or "") == "unclaimed"
             and bool(item.get("present_in_runtime"))
             and not bool(item.get("locked"))
-            and str(item.get("action_policy") or "") == "claim"
+            and (
+                str(item.get("action_policy") or "") == "claim"
+                or (
+                    protected_claim_authorizer is not None
+                    and bool(protected_claim_authorizer(item))
+                )
+            )
         ]
 
     @staticmethod
@@ -803,6 +820,7 @@ class MailTaskMixin:
         result: dict[str, Any],
         *,
         target_count: int,
+        require_garbage_cleanup: bool = True,
     ) -> None:
         """Validate the count contract before exposing a successful summary."""
 
@@ -818,7 +836,9 @@ class MailTaskMixin:
                 "邮件_选择性领取：批次仍有待领取目标或领取计数不一致，"
                 f"target={target_count} claimed={claimed_count}"
             )
-        if garbage_after != 0 or deleted_count != garbage_before:
+        if require_garbage_cleanup and (
+            garbage_after != 0 or deleted_count != garbage_before
+        ):
             raise RuntimeError(
                 "邮件_选择性领取：可删除垃圾未形成归零闭环，"
                 f"before={garbage_before} deleted={deleted_count} after={garbage_after}"
@@ -831,8 +851,13 @@ class MailTaskMixin:
         cls,
         snapshot: dict[str, Any],
         target_mail_ids: set[str] | None,
+        *,
+        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
     ) -> list[dict[str, Any]]:
-        targets = cls._precise_mail_claim_targets(snapshot)
+        targets = cls._precise_mail_claim_targets(
+            snapshot,
+            protected_claim_authorizer=protected_claim_authorizer,
+        )
         wanted = {str(value) for value in target_mail_ids or set() if str(value)}
         if not wanted:
             return targets
@@ -847,6 +872,8 @@ class MailTaskMixin:
         cls,
         snapshot: dict[str, Any],
         mail_id: str,
+        *,
+        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
     ) -> bool:
         """Return whether one exact Runtime identity still needs a claim.
 
@@ -860,7 +887,10 @@ class MailTaskMixin:
         target_id = str(mail_id or "")
         return any(
             str(item.get("id") or item.get("mail_id") or "") == target_id
-            for item in cls._precise_mail_claim_targets(snapshot)
+            for item in cls._precise_mail_claim_targets(
+                snapshot,
+                protected_claim_authorizer=protected_claim_authorizer,
+            )
         )
 
     @staticmethod
@@ -1240,12 +1270,15 @@ class MailTaskMixin:
         geometry: Any,
         snapshot: dict[str, Any],
         target_mail_ids: set[str] | None = None,
+        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
+        cleanup_after_claim: bool = True,
     ):
         """Claim the one Runtime target batch, then delete once and verify once."""
 
         targets = self._select_precise_mail_claim_targets(
             snapshot,
             target_mail_ids,
+            protected_claim_authorizer=protected_claim_authorizer,
         )
         target_by_id = {
             str(item.get("id") or item.get("mail_id") or ""): item
@@ -1386,6 +1419,7 @@ class MailTaskMixin:
                     if not self._runtime_mail_target_still_requires_claim(
                         refreshed,
                         mail_id,
+                        protected_claim_authorizer=protected_claim_authorizer,
                     ):
                         snapshot = refreshed
                         claimed_ids.add(mail_id)
@@ -1474,12 +1508,41 @@ class MailTaskMixin:
             previous_offset = int(window["runtime_offset"])
             known_top = False
 
-        cleanup = yield from self._delete_read_mail_until_clean(
-            context,
-            view121,
-            stop_event,
-            reason="批量领取完成后统一删除",
-        )
+        if cleanup_after_claim:
+            cleanup = yield from self._delete_read_mail_until_clean(
+                context,
+                view121,
+                stop_event,
+                reason="批量领取完成后统一删除",
+            )
+            final_snapshot = cleanup["snapshot"]
+        else:
+            final_snapshot = self._read_complete_precise_mail_snapshot(
+                stop_event,
+                reason="精确领取完成后只读复查",
+            )
+            garbage_count = len(self._deletable_runtime_mail_garbage(final_snapshot))
+            cleanup = {
+                "snapshot": final_snapshot,
+                "before_count": garbage_count,
+                "after_count": garbage_count,
+                "deleted_count": 0,
+                "batch_count": 0,
+                "protected_count": sum(
+                    1
+                    for item in final_snapshot.get("items") or []
+                    if isinstance(item, dict)
+                    and bool(item.get("present_in_runtime"))
+                    and (
+                        bool(item.get("locked"))
+                        or str(item.get("action_policy") or "") != "claim"
+                    )
+                ),
+            }
+            self._log(
+                "success",
+                "邮件_选择性领取：专用精确领取已完成；保留邮件列表，不执行通用垃圾清理",
+            )
         yield from self._leave_mail_scene_to_world(
             ctx,
             stop_event,
@@ -1487,7 +1550,6 @@ class MailTaskMixin:
             121,
             label="邮件_选择性领取",
         )
-        final_snapshot = cleanup["snapshot"]
         self._validate_mail_policy_with_unknown_assistance(
             final_snapshot,
             reason="任务完成复查",
@@ -1496,17 +1558,18 @@ class MailTaskMixin:
         remaining = self._select_precise_mail_claim_targets(
             final_snapshot,
             target_mail_ids,
+            protected_claim_authorizer=protected_claim_authorizer,
         )
         if remaining:
             raise RuntimeError(
-                "邮件_选择性领取：一键删除后 Runtime 终检仍有必领目标："
+                "邮件_选择性领取：Runtime 终检仍有本批次待领目标："
                 f"{[int(item.get('runtime_index') or 0) for item in remaining]}"
             )
         self._log(
             "success",
             f"邮件_选择性领取完整闭环：领取 {len(claimed_ids)} 封，"
             f"删除 {cleanup['deleted_count']}/{cleanup['before_count']} 封，"
-            "Runtime 终检无必领目标且可删除垃圾为 0",
+            f"Runtime 终检无本批次待领目标；cleanup_after_claim={cleanup_after_claim}",
         )
         return {
             "result": "success",

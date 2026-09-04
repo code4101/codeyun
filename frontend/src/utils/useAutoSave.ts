@@ -19,6 +19,7 @@ interface UseAutoSaveOptions<T> {
   debounceMs?: number;
   draftTtlMs?: number;
   retryDelayMs?: number;
+  maxRetryDelayMs?: number;
   clone?: (value: T) => T;
   equals: (left: T, right: T) => boolean;
   save: (snapshot: T) => Promise<T | void | null>;
@@ -36,6 +37,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   const debounceMs = options.debounceMs ?? 2000;
   const draftTtlMs = options.draftTtlMs ?? 1000 * 60 * 60 * 24 * 7;
   const retryDelayMs = options.retryDelayMs ?? 1500;
+  const maxRetryDelayMs = Math.max(retryDelayMs, options.maxRetryDelayMs ?? 30000);
 
   const saveStatus = ref<AutoSaveStatus>('saved');
   const lastDraftAt = ref<number | null>(null);
@@ -47,6 +49,8 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let draftPersistTimer: ReturnType<typeof setTimeout> | null = null;
   let activeFlush: Promise<boolean> | null = null;
+  let retryAttempt = 0;
+  let keepaliveVersion = -1;
 
   const clearSaveTimer = () => {
     if (!saveTimer) return;
@@ -122,6 +126,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     baselineSnapshot = clone(snapshot);
     latestSnapshot = clone(snapshot);
     saveStatus.value = 'saved';
+    retryAttempt = 0;
     clearDraftPersistTimer();
     clearDraft();
   };
@@ -277,6 +282,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     }
 
     changeVersion += 1;
+    retryAttempt = 0;
     saveStatus.value = 'unsaved';
 
     const delayMs = markOptions.immediate ? 0 : Math.max(0, markOptions.delayMs ?? debounceMs);
@@ -327,12 +333,14 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
         } catch (error) {
           saveStatus.value = 'unsaved';
           scheduleDraftPersist(0);
-          options.onError?.(error);
+          if (retryAttempt === 0) options.onError?.(error);
           if (retryDelayMs >= 0) {
+            const retryInMs = Math.min(maxRetryDelayMs, retryDelayMs * (2 ** retryAttempt));
+            retryAttempt += 1;
             clearSaveTimer();
             saveTimer = setTimeout(() => {
               void flush();
-            }, retryDelayMs);
+            }, retryInMs);
           }
           return false;
         }
@@ -358,11 +366,22 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     persistDraft(latestSnapshot);
   };
 
+  const dispatchKeepalive = () => {
+    if (!options.saveOnPageHide || !latestSnapshot || keepaliveVersion === changeVersion) return false;
+    keepaliveVersion = changeVersion;
+    options.saveOnPageHide(clone(latestSnapshot), baselineSnapshot ? clone(baselineSnapshot) : null);
+    return true;
+  };
+
   const handlePageHide = () => {
     persistCurrentDraft();
     if (saveStatus.value === 'unsaved') {
       if (latestSnapshot) {
-        options.saveOnPageHide?.(clone(latestSnapshot), baselineSnapshot ? clone(baselineSnapshot) : null);
+        clearSaveTimer();
+        if (options.saveOnPageHide) {
+          dispatchKeepalive();
+          return;
+        }
       }
       void flush();
     }
@@ -371,6 +390,8 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'hidden') {
       handlePageHide();
+    } else if (saveStatus.value === 'unsaved') {
+      void flush();
     }
   };
 
@@ -384,7 +405,8 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     clearDraftPersistTimer();
     persistCurrentDraft();
     if (saveStatus.value === 'unsaved') {
-      void flush();
+      if (options.saveOnPageHide) dispatchKeepalive();
+      else void flush();
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('pagehide', handlePageHide);

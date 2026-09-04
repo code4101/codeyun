@@ -7596,17 +7596,35 @@ class BehaviorTreeExecutor(
         normalized_payload = dict(payload or {})
         if definition.normalize_payload is not None:
             normalized_payload = definition.normalize_payload(normalized_payload)
-        with execution_task_payload(ctx, normalized_payload):
-            result = definition.handler(self, ctx, normalized_payload, stop_event)
-            if not isinstance(result, GeneratorType):
-                return str(result or "success")
 
         def run_generator():
-            # A generator function does not execute its body when constructed.
-            # Re-enter the same task scope while it is actually consumed, and
-            # restore the context on normal return, error, or interruption.
             with execution_task_payload(ctx, normalized_payload):
-                return (yield from result)
+                scheduler_task_id = str(normalized_payload.get("__scheduler_task_id") or "")
+                if (
+                    scheduler_task_id
+                    and ctx.get("entry") is not None
+                    and task_type not in {"login_game", "maintenance_recovery"}
+                ):
+                    preflight = self._ensure_world_ready_via_login_game(
+                        ctx,
+                        stop_event,
+                        normalized_payload,
+                    )
+                    preflight_result = (
+                        (yield from preflight)
+                        if isinstance(preflight, GeneratorType)
+                        else preflight
+                    )
+                    if preflight_result == "scheduled":
+                        return {
+                            "result": "success",
+                            "message": "检测到登录链，已让登录作业抢先；当前作业保持到期等待整单重跑",
+                        }
+
+                result = definition.handler(self, ctx, normalized_payload, stop_event)
+                if isinstance(result, GeneratorType):
+                    return (yield from result)
+                return str(result or "success")
 
         return run_generator()
 
