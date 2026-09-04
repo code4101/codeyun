@@ -458,7 +458,9 @@ def ensure_xianzang_row_choices_selected(
     if not desired or desired[0] < 1 or desired[-1] > count:
         raise ValueError(f"第 {row_number} 排候选范围必须为 1..{count}：{desired!r}")
     target_view = context.view(int(scene_id))
-    current_scene, score, frame = context.sample_scene_once([int(scene_id)], update=True)
+    current_scene, score, frame = yield from context.current_scene(
+        [int(scene_id)], update=True, label="蓬莱仙藏：勾选前确认自选页"
+    )
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
             f"当前不是可靠的 #{scene_id}，拒绝勾选：scene={current_scene}, score={float(score or 0):.1f}"
@@ -473,7 +475,7 @@ def ensure_xianzang_row_choices_selected(
         point = points[column - 1]
         context.click_frame_point(target_view, *point)
         click_points.append(point)
-        time.sleep(0.25)
+        yield from context.wait_action_settle(0.25)
 
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     last_selected = before
@@ -499,7 +501,7 @@ def ensure_xianzang_row_choices_selected(
             )
         if time.monotonic() >= deadline:
             break
-        time.sleep(0.25)
+        yield from context.wait_action_settle(0.25)
     raise RuntimeError(
         f"#448 第 {row_number} 排勾选未闭环：期望={desired}，绿色勾={last_selected}，OCR={last_fraction}"
     )
@@ -525,8 +527,9 @@ def complete_xianzang_optional_reward_selection(
         treasure_column,
         prayer_category=category,
     )
-    row_results = tuple(
-        ensure_xianzang_row_choices_selected(
+    row_results_list: list[XianzangRowSelectionResult] = []
+    for row, columns in sorted(plan.items()):
+        row_results_list.append((yield from ensure_xianzang_row_choices_selected(
             context,
             row,
             columns,
@@ -535,9 +538,8 @@ def complete_xianzang_optional_reward_selection(
             row_labels=row_labels,
             require_fraction_ocr=require_fraction_ocr,
             allow_missing_fraction_ocr=allow_missing_fraction_ocr,
-        )
-        for row, columns in sorted(plan.items())
-    )
+        )))
+    row_results = tuple(row_results_list)
     if not confirm:
         return XianzangSelectionCompletionResult(
             prayer_category=category,
@@ -547,7 +549,9 @@ def complete_xianzang_optional_reward_selection(
             final_scene_score=100.0,
         )
 
-    current_scene, score, frame = context.sample_scene_once([int(scene_id)], update=True)
+    current_scene, score, frame = yield from context.current_scene(
+        [int(scene_id)], update=True, label="蓬莱仙藏：确认前复核自选页"
+    )
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
             f"三排勾选后当前不是可靠的 #{scene_id}，拒绝确认："
@@ -561,7 +565,9 @@ def complete_xianzang_optional_reward_selection(
     final_score = 100.0
     while True:
         candidates = [int(scene_id), *expected_after]
-        final_scene, final_score, _frame = context.sample_scene_once(candidates, update=True)
+        final_scene, final_score, _frame = yield from context.current_scene(
+            candidates, update=True, label="蓬莱仙藏：等待自选确认落地"
+        )
         final_text = context.ocr_text(_frame)
         landed_on_numbered_scene = (
             final_scene in expected_after
@@ -581,7 +587,7 @@ def complete_xianzang_optional_reward_selection(
             )
         if time.monotonic() >= deadline:
             break
-        time.sleep(0.3)
+        yield from context.wait_action_settle(0.3)
     raise RuntimeError(
         f"#448 确认后未进入预期页面 {expected_after}，也未识别到蓬莱仙藏主页面："
         f"scene={final_scene}, score={float(final_score or 0):.1f}"

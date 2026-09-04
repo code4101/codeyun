@@ -2194,7 +2194,7 @@ const getCodexDailyMetricTitle = (date: Date) => {
   const observedText = Number.isNaN(observedAt.getTime())
     ? quota.observed_at
     : observedAt.toLocaleString('zh-CN', { hour12: false });
-  return `Codex 每周使用限额剩余 ${quota.remaining_percent}%（${observedText} 采集，记入 ${quota.date}）`;
+  return `Codex 每周使用限额当日初始剩余 ${quota.remaining_percent}%（${observedText} 采集，记入 ${quota.date}）`;
 };
 const codexWorkloadStatusText = computed(() => {
   if (!showCodexWorkload.value) return '';

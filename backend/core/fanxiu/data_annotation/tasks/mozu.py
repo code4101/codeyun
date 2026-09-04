@@ -102,7 +102,7 @@ class MozuTaskMixin:
             yield from context.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
             # 活动战场本身可能持续二十多分钟；完成最低参战时间后使用已有
             # 安全离开图标和通用确认框主动退出，不能把“等整场结束”当收尾。
-            scene_id, _score, _frame = context.sample_scene_once([338, 557, 20, 34, 339], update=True)
+            scene_id, _score, _frame = (yield from context.current_scene([338, 557, 20, 34, 339], update=True))
             if scene_id in {338, 557}:
                 transition = yield from context.wait_click_then_scene(
                     scene_id,

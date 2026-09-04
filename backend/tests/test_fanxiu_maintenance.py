@@ -35,8 +35,10 @@ class _FakeRuntime:
         self.clicks = []
         self.completion_message = ""
 
-    def sample_scene_once(self, _scene_ids, update=True):
+    def current_scene(self, _scene_ids=None, *, update=True, **_options):
         scene_id = self.scenes.pop(0)
+        if False:
+            yield None
         return scene_id, 100.0, f"frame-{scene_id}"
 
     def click_shape_center(self, scene_id, title):
@@ -204,8 +206,8 @@ def test_maintenance_observation_bypasses_ordinary_popup_guard(tmp_path):
         def cur_frame(self, *, update=True):
             return "maintenance-frame"
 
-        def sample_scene_once(self, *_args, **_kwargs):
-            raise AssertionError("维护恢复不能经过普通作业 current_scene 门卫")
+        def recognize_scene_in_frame(self, _scene_ids, *, frame_data_url):
+            return 47, 88.0, frame_data_url
 
         def ocr_text(self, _frame):
             return "停更码字中，敬请期待更新"
@@ -214,7 +216,7 @@ def test_maintenance_observation_bypasses_ordinary_popup_guard(tmp_path):
     runner = _FakeMaintenanceRunner(tmp_path / "world_facts.json", runtime)
     runner._identify_scene_number = lambda *_args, **_kwargs: (47, 88.0)
 
-    scene_id, score, frame, text = runner._observe_maintenance_scene(runtime)
+    scene_id, score, frame, text = _drain(runner._observe_maintenance_scene(runtime))
 
     assert (scene_id, score, frame) == (LOGIN_MAINTENANCE_PROMPT_SCENE_ID, 88.0, "maintenance-frame")
     assert "停更码字中" in text

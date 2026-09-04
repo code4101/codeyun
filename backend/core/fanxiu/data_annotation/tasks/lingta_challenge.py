@@ -403,10 +403,10 @@ class LingtaChallengeTaskMixin:
         # transition animation.
         stable_deadline = time.monotonic() + 15.0
         while True:
-            scene_id, _score, frame = context.sample_scene_once(
+            scene_id, _score, frame = (yield from context.current_scene(
                 [LINGTA_LIST_SCENE_ID],
                 update=True,
-            )
+            ))
             if scene_id == LINGTA_LIST_SCENE_ID:
                 break
             if time.monotonic() >= stable_deadline:
@@ -507,7 +507,7 @@ class LingtaChallengeTaskMixin:
             float(payload.get("start_transition_grace_seconds") or 15.0),
         )
 
-        scene_id, _score, frame = context.sample_scene_once(
+        scene_id, _score, frame = (yield from context.current_scene(
             [
                 34,
                 69,
@@ -521,7 +521,7 @@ class LingtaChallengeTaskMixin:
                 LINGTA_FAILURE_SCENE_ID,
             ],
             update=True,
-        )
+        ))
         if (
             isinstance(start_mark, dict)
             and start_mark.get("terminal_outcome") == "power_limit"
@@ -830,7 +830,7 @@ class LingtaChallengeTaskMixin:
         ordinary_result_latched = False
         while time.monotonic() <= deadline:
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = context.sample_scene_once(
+            scene_id, _score, frame = (yield from context.current_scene(
                 [
                     LINGTA_FAILURE_SCENE_ID,
                     LINGTA_LIST_SCENE_ID,
@@ -841,7 +841,7 @@ class LingtaChallengeTaskMixin:
                     34,
                 ],
                 update=True,
-            )
+            ))
             if isinstance(frame, str) and frame:
                 last_frame = frame
             if scene_id != LINGTA_ORDINARY_RESULT_SCENE_ID:

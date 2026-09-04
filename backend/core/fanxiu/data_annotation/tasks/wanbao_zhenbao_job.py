@@ -139,7 +139,7 @@ def _landing_scene_id(landing: Any) -> int:
 def _open_wanbao_main(context: Any):
     """Resume #604 safely, otherwise establish the canonical #600 landing."""
 
-    scene_id, _score, _frame = context.sample_scene_once(
+    scene_id, _score, _frame = (yield from context.current_scene(
         [
             WANBAO_XIANGZHEN_REWARD_SCENE_ID,
             WANBAO_MAIN_SCENE_ID,
@@ -148,7 +148,7 @@ def _open_wanbao_main(context: Any):
             34,
         ],
         update=True,
-    )
+    ))
     if int(scene_id or 0) == WANBAO_XIANGZHEN_REWARD_SCENE_ID:
         landing = yield from _settle_wanbao_reward_page(context, label="恢复遗留奖励页")
         scene_id = _landing_scene_id(landing)
@@ -216,10 +216,10 @@ def apply_wanbao_draw_policy(
 def _settle_wanbao_reward_page(context: Any, *, label: str):
     """Close manual reward pages but never click through auto-closing pages."""
 
-    scene_id, _score, frame = context.sample_scene_once(
+    scene_id, _score, frame = (yield from context.current_scene(
         [WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, 34],
         update=True,
-    )
+    ))
     if int(scene_id or 0) != WANBAO_XIANGZHEN_REWARD_SCENE_ID:
         return scene_id
     text = ""
@@ -233,10 +233,10 @@ def _settle_wanbao_reward_page(context: Any, *, label: str):
             label=f"万宝臻宝：{label}等待自动关闭",
         ))
     yield from context.wait_action_settle(5.0)
-    fresh_id, _score, _fresh = context.sample_scene_once(
+    fresh_id, _score, _fresh = (yield from context.current_scene(
         [WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, 34],
         update=True,
-    )
+    ))
     if int(fresh_id or 0) != WANBAO_XIANGZHEN_REWARD_SCENE_ID:
         return fresh_id
     yield from context.wait_click(

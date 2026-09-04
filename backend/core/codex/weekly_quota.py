@@ -16,7 +16,7 @@ from backend.core.settings import get_settings
 CODEX_WEEKLY_QUOTA_TASK_KEY = "codex_weekly_quota_snapshot"
 CODEX_WEEKLY_QUOTA_RUN_TIME = "00:00"
 CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage"
-CODEX_WEEKLY_QUOTA_HISTORY_VERSION = 1
+CODEX_WEEKLY_QUOTA_HISTORY_VERSION = 2
 
 
 class CodexWeeklyQuotaError(RuntimeError):
@@ -70,10 +70,24 @@ def read_codex_weekly_quota_history(path: Path | None = None) -> dict[str, Any]:
         payload = json.loads(resolved_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {"version": CODEX_WEEKLY_QUOTA_HISTORY_VERSION, "snapshots": []}
+    source_version = int(payload.get("version") or 1) if isinstance(payload, dict) else 1
     snapshots = payload.get("snapshots") if isinstance(payload, dict) else []
+    normalized_snapshots = [dict(item) for item in snapshots if isinstance(item, dict)]
+    if source_version < 2:
+        for item in normalized_snapshots:
+            observed_at = str(item.get("observed_at") or "").strip()
+            try:
+                item["date"] = dt.datetime.fromisoformat(observed_at).date().isoformat()
+            except ValueError:
+                try:
+                    item["date"] = (
+                        dt.date.fromisoformat(str(item.get("date") or "")) + dt.timedelta(days=1)
+                    ).isoformat()
+                except ValueError:
+                    pass
     return {
         "version": CODEX_WEEKLY_QUOTA_HISTORY_VERSION,
-        "snapshots": [dict(item) for item in snapshots if isinstance(item, dict)],
+        "snapshots": normalized_snapshots,
     }
 
 
@@ -96,7 +110,7 @@ def record_codex_weekly_quota_snapshot(
         raise ValueError("Codex 每周余额必须在 0 到 100 之间")
     resolved_path = path or get_codex_weekly_quota_history_path()
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    effective_date = (observed_at.date() - dt.timedelta(days=1)).isoformat()
+    effective_date = observed_at.date().isoformat()
     record = {
         "date": effective_date,
         "remaining_percent": int(remaining_percent),

@@ -59,7 +59,7 @@ class TakeMedicineBatchTaskMixin:
                 [594], wait=timeout, label="服用丹药：等待批量确认 #594",
             ))
         except TimeoutError:
-            scene_id, _score, _frame = context.sample_scene_once([593, 594], update=True)
+            scene_id, _score, _frame = (yield from context.current_scene([593, 594], update=True))
             if scene_id == 593:
                 return None
             raise
@@ -88,7 +88,7 @@ class TakeMedicineBatchTaskMixin:
         timeout = max(5.0, min(60.0, float(payload.get("timeout_seconds") or 20.0)))
         task_id = str(payload.get("__scheduler_task_id") or STANDARD_JOB_ID)
 
-        scene_id, score, _frame = context.sample_scene_once(list(self.take_medicine_scene_ids), update=True)
+        scene_id, score, _frame = (yield from context.current_scene(list(self.take_medicine_scene_ids), update=True))
         if scene_id is None:
             raise TakeMedicineBatchSafetyError(
                 f"服用丹药：当前不是已验收链路场景，score={float(score or 0):.0f}%"

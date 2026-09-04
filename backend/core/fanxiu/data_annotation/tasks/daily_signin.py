@@ -339,10 +339,10 @@ class DailySigninTaskMixin:
         attempt_count = max(1, int(attempts))
         last_reason = "未开始对齐"
         for attempt in range(attempt_count):
-            current_scene, _score, frame = context.sample_scene_once(
+            current_scene, _score, frame = (yield from context.current_scene(
                 [scene_id],
                 update=True,
-            )
+            ))
             # A group popup is a transient layer above #34.  Its visual scene
             # projection can lag or be confused with the world, while the
             # active ActivityBtnGroup Runtime sequence is the authoritative
@@ -444,9 +444,9 @@ class DailySigninTaskMixin:
                             float(candidate["x"]) + float(candidate["w"]) / 2.0,
                             float(candidate["y"]) - float(candidate["h"]),
                         )
-                        fresh_scene, _fresh_score, fresh_frame = context.sample_scene_once(
+                        fresh_scene, _fresh_score, fresh_frame = (yield from context.current_scene(
                             [scene_id], update=True
-                        )
+                        ))
                         fresh_tokens = context.ocr_tokens_in_shapes(
                             scene_id,
                             list(direct_shape_names),
@@ -823,7 +823,7 @@ class DailySigninTaskMixin:
         for _attempt in range(2):
             context.click_shape_center(404, "返回")
             yield from context.wait_action_settle(settle_seconds)
-            scene_id, _score, _frame = context.sample_scene_once([34, 404], update=True)
+            scene_id, _score, _frame = (yield from context.current_scene([34, 404], update=True))
             if scene_id == 34:
                 return
             if scene_id != 404:
@@ -921,7 +921,7 @@ class DailySigninTaskMixin:
                 )
                 break
             except TimeoutError:
-                scene_id, _score, _frame = context.sample_scene_once([34, 403], update=True)
+                scene_id, _score, _frame = (yield from context.current_scene([34, 403], update=True))
                 if scene_id != 34 or entry_attempt >= 1:
                     raise
                 self._log(
@@ -1102,7 +1102,7 @@ class DailySigninTaskMixin:
         # implementation kept reading #404[已领] behind that popup, so OCR was
         # guaranteed to be empty and the task failed while visibly stuck on
         # the sign-in flow.  Claim first, then return to #404 before verifying.
-        post_click_scene, _score, _frame = context.sample_scene_once([250, 404], update=True)
+        post_click_scene, _score, _frame = (yield from context.current_scene([250, 404], update=True))
         if post_click_scene == 250:
             self._log("action", "日常_签到：#250 奖励页点击「领取」")
             context.click_shape_center(250, "领取")

@@ -164,7 +164,7 @@ def _open_sacred_tree(context: Any, snapshot: Mapping[str, Any], cards: Mapping[
         int(row.get("num") or 0),
     )
     for attempt in range(3):
-        click = plan_current_random_box_click(context, snapshot, request)
+        click = yield from plan_current_random_box_click(context, snapshot, request)
         if click.ready and click.point is not None:
             context.click_frame_point(STORAGE_BAG_SCENE, *click.point)
             break

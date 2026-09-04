@@ -61,20 +61,15 @@ def test_lingmai_clear_checks_unchecked_image_before_clicking_one_click_explore(
     assert checked.calls == [("wait_click_then_scene", 313, "确定", 314)]
 
 
-def test_lingmai_clear_validates_313_by_stamina_without_popup_scene_recognition(monkeypatch):
+def test_lingmai_clear_validates_expected_313_by_stamina(monkeypatch):
     class Context:
         def __init__(self):
             self.calls = []
 
-        def wait_click(self, scene, shape):
-            assert (scene, shape) == (285, "探索")
-            self.calls.append(("wait_click", scene, shape))
+        def wait_click_then_scene(self, scene, shape, targets, **options):
+            self.calls.append(("wait_click_then_scene", scene, shape, targets, options))
             yield
-
-        def wait_action_settle(self, seconds):
-            assert seconds == 1.0
-            self.calls.append(("settle", seconds))
-            yield
+            return 313
 
         def cur_frame(self, *, update=False):
             self.calls.append(("cur_frame", update))
@@ -114,8 +109,13 @@ def test_lingmai_clear_validates_313_by_stamina_without_popup_scene_recognition(
         )
     ) == "continued"
     assert context.calls == [
-        ("wait_click", 285, "探索"),
-        ("settle", 1.0),
+        (
+            "wait_click_then_scene",
+            285,
+            "探索",
+            [313, 286],
+            {"timeout": 15.0, "label": "灵脉_清体力：等待 #313 探索业务框或 #286 完成页"},
+        ),
         ("cur_frame", True),
         (
             "ocr_text_in_shapes",
@@ -131,18 +131,12 @@ def test_lingmai_clear_accepts_286_only_when_runtime_confirms_completed(monkeypa
         def __init__(self):
             self.calls = []
 
-        def wait_click(self, *_args, **_kwargs):
+        def wait_click_then_scene(self, *_args, **_kwargs):
             yield
-
-        def wait_action_settle(self, _seconds):
-            yield
+            return 286
 
         def cur_frame(self, *, update=False):
             return "select-slot-frame"
-
-        def sample_scene_once(self, scene_ids, *, update=False):
-            assert (scene_ids, update) == ([286], False)
-            return 286, 100.0, "select-slot-frame"
 
         def ocr_text_in_shapes(self, *_args, **_kwargs):
             return ""
@@ -198,13 +192,10 @@ def test_lingmai_clear_reenters_through_business_entry_when_guiyuan_returns_to_w
             assert frame == "world-frame"
             return "world"
 
-        def wait_click(self, scene, shape):
-            self.calls.append(("wait_click", scene, shape))
+        def wait_click_then_scene(self, scene, shape, targets, **options):
+            self.calls.append(("wait_click_then_scene", scene, shape, targets, options))
             yield
-
-        def wait_action_settle(self, seconds):
-            self.calls.append(("settle", seconds))
-            yield
+            return 313
 
         def cur_frame(self, *, update=False):
             self.calls.append(("cur_frame", update))
@@ -213,10 +204,6 @@ def test_lingmai_clear_reenters_through_business_entry_when_guiyuan_returns_to_w
         def ocr_text_in_shapes(self, scene, shapes, **options):
             self.calls.append(("ocr_text_in_shapes", scene, shapes, options))
             return "剩余聚灵体力 30/1900"
-
-        def wait_click_then_scene(self, scene, shape, target):
-            self.calls.append(("wait_click_then_scene", scene, shape, target))
-            yield
 
     runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
     runner._log = lambda *_args, **_kwargs: None
@@ -253,8 +240,13 @@ def test_lingmai_clear_reenters_through_business_entry_when_guiyuan_returns_to_w
     ) == "continued"
     assert context.calls == [
         ("sample_scene_once", [285, 69, 34], True),
-        ("wait_click", 285, "探索"),
-        ("settle", 1.0),
+        (
+            "wait_click_then_scene",
+            285,
+            "探索",
+            [313, 286],
+            {"timeout": 15.0, "label": "灵脉_清体力：等待 #313 探索业务框或 #286 完成页"},
+        ),
         ("cur_frame", True),
         (
             "ocr_text_in_shapes",
@@ -464,6 +456,6 @@ def test_lingmai_clear_tolerates_transient_315_expiring_before_click():
         (
             "wait_scene",
             (313, 285),
-            {"timeout": 15.0, "label": "灵脉_清体力：等待有时效性的 #315 自动消失并回到 #313/#285"},
+            {"wait": 15.0, "label": "灵脉_清体力：等待有时效性的 #315 自动消失并回到 #313/#285"},
         ),
     ]

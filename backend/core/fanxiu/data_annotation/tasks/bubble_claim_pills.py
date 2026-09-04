@@ -18,7 +18,7 @@ class BubbleClaimPillsTaskMixin:
 
     @staticmethod
     def _bubble_overlay_scene(context: Any, scene_ids: tuple[int, ...], *, update: bool = True):
-        scene_id, score, frame = context.sample_scene_once(list(scene_ids), update=update)
+        scene_id, score, frame = yield from context.current_scene(list(scene_ids), update=update)
         if scene_id in scene_ids:
             return scene_id, score, frame
         direct: list[tuple[float, int]] = []
@@ -54,7 +54,7 @@ class BubbleClaimPillsTaskMixin:
         *,
         transition_timeout: float,
     ):
-        scene_id, _score, frame = self._bubble_overlay_scene(context, (592, 591, 590))
+        scene_id, _score, frame = yield from self._bubble_overlay_scene(context, (592, 591, 590))
         if scene_id == 592:
             raise RuntimeError("气泡_领丹药：启动时停在未完成的角色选择事务 #592，拒绝猜测确认")
         if scene_id == 591:
@@ -141,7 +141,7 @@ class BubbleClaimPillsTaskMixin:
         probe_samples = max(1, int(round(timeout / poll_seconds)))
         last_scene: int | None = 591
         for sample in range(probe_samples):
-            scene_id, _score, frame = self._bubble_overlay_scene(context, (592, 591))
+            scene_id, _score, frame = yield from self._bubble_overlay_scene(context, (592, 591))
             last_scene = scene_id
             if scene_id == 592:
                 return True
@@ -176,7 +176,7 @@ class BubbleClaimPillsTaskMixin:
         absent_count = 0
         last_scene: int | None = 592
         while time.monotonic() < deadline:
-            scene_id, _score, _frame = self._bubble_overlay_scene(context, (592, 591, 590))
+            scene_id, _score, _frame = yield from self._bubble_overlay_scene(context, (592, 591, 590))
             last_scene = scene_id
             if scene_id == 592:
                 absent_count = 0
@@ -197,7 +197,7 @@ class BubbleClaimPillsTaskMixin:
         poll_seconds: float,
         max_scrolls: int,
     ):
-        scene_id, _score, frame = self._bubble_overlay_scene(context, (591, 590))
+        scene_id, _score, frame = yield from self._bubble_overlay_scene(context, (591, 590))
         list_visible = bool(
             self._bubble_visible_claim_items(context, frame=frame)
             or self._bubble_visible_claim_items(context, frame=frame, anchor_text="已领取")
@@ -220,7 +220,7 @@ class BubbleClaimPillsTaskMixin:
                 raise RuntimeError(
                     f"气泡_领丹药：收尾回卷 {rewind_count} 次仍未到顶部，拒绝猜返回按钮"
                 )
-            scene_id, _score, frame = self._bubble_overlay_scene(context, (591, 590))
+            scene_id, _score, frame = yield from self._bubble_overlay_scene(context, (591, 590))
             list_visible = bool(
                 self._bubble_visible_claim_items(context, frame=frame)
                 or self._bubble_visible_claim_items(context, frame=frame, anchor_text="已领取")
@@ -306,7 +306,7 @@ class BubbleClaimPillsTaskMixin:
             )
 
         while True:
-            scene_id, _score, frame = self._bubble_overlay_scene(context, (591,))
+            scene_id, _score, frame = yield from self._bubble_overlay_scene(context, (591,))
             items = self._bubble_visible_claim_items(context, frame=frame)
             completed_items = self._bubble_visible_claim_items(
                 context,
@@ -367,7 +367,7 @@ class BubbleClaimPillsTaskMixin:
                 # often intentionally inactive and remain single-attempt.
                 item_ordinal = encountered_item_ids.index(item_id)
                 if item_ordinal < 3:
-                    _scene_id, _score, retry_frame = self._bubble_overlay_scene(context, (591,))
+                    _scene_id, _score, retry_frame = yield from self._bubble_overlay_scene(context, (591,))
                     retry_item = next(
                         (
                             candidate

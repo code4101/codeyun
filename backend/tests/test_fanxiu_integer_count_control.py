@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerSliderAssets,
     _fine_tune_batches,
     _slider_geometry,
     read_positive_integer_count,
@@ -238,3 +239,73 @@ def test_pixel_trace_uses_actual_thumb_motion_and_gesture_gain() -> None:
         < result["proportional_drag"]["commanded_pixels"]
     )
     assert result["after"] == 100
+
+
+def test_track_only_common_shop_slider_moves_from_one_to_exact_100() -> None:
+    assets = IntegerSliderAssets(
+        settings_scene_id=634,
+        count_region="数量滑条",
+        count_decrease="-",
+        count_increase="+",
+        count_slider_thumb=None,
+        count_slider_track="数量滑条",
+    )
+    context = SliderContext(maximum=1998)
+    context.ocr_numbers_in_shapes = lambda *_args: ([], "")
+    context.shape_box = lambda *_args: {"x": 0.0, "y": 10.0, "w": 100.0, "h": 20.0}
+
+    result = _finish(set_verified_integer_slider_count(
+        context,
+        assets,
+        100,
+        maximum=1998,
+        max_adjustments=10,
+        count_label="神物兑换数量",
+        runtime_count_reader=lambda: {
+            "current": context.count,
+            "maximum": context.maximum,
+        },
+    ))
+
+    assert result["before"] == 1
+    assert result["after"] == 100
+    assert result["maximum"] == 1998
+    assert result["phase"] == "track_only_closed_loop"
+
+
+def test_track_only_slider_models_drag_response_before_fine_tuning() -> None:
+    assets = IntegerSliderAssets(
+        settings_scene_id=634,
+        count_region="数量滑条",
+        count_decrease="-",
+        count_increase="+",
+        count_slider_thumb=None,
+        count_slider_track="数量滑条",
+    )
+    context = SliderContext(maximum=1998, gain=0.5)
+    context.ocr_numbers_in_shapes = lambda *_args: ([], "")
+    context.shape_box = lambda *_args: {
+        "x": 0.0,
+        "y": 10.0,
+        "w": 100.0,
+        "h": 20.0,
+    }
+
+    result = _finish(set_verified_integer_slider_count(
+        context,
+        assets,
+        100,
+        maximum=1998,
+        max_adjustments=10,
+        count_label="神物兑换数量",
+        runtime_count_reader=lambda: {
+            "current": context.count,
+            "maximum": context.maximum,
+        },
+    ))
+
+    assert result["after"] == 100
+    assert result["pixel_probes"]
+    assert result["interpolation_drags"]
+    assert result["interpolation_drags"][0]["after"] == 100
+    assert result["fine_batches"] == []

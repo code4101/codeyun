@@ -48,14 +48,13 @@ class MaintenanceTaskMixin:
                     *candidate_ids,
                     *candidate_provider(context.ctx),
                 ]))
-            scene_id, score = self._identify_scene_number(
-                context.ctx,
-                frame,
+            scene_id, score, frame = context.recognize_scene_in_frame(
                 candidate_ids,
+                frame_data_url=frame,
             )
         else:
             # Lightweight test/context adapters may expose only the public view.
-            scene_id, score, frame = context.sample_scene_once(
+            scene_id, score, frame = yield from context.current_scene(
                 self.maintenance_probe_scene_ids,
                 update=update,
             )
@@ -113,7 +112,7 @@ class MaintenanceTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame, last_text = self._observe_maintenance_scene(context, update=True)
+            scene_id, score, frame, last_text = yield from self._observe_maintenance_scene(context, update=True)
             last_scene_id = scene_id
             if scene_id in {14, 18, 415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID} or self._maintenance_scene_proves_available(scene_id):
                 return {
@@ -156,7 +155,7 @@ class MaintenanceTaskMixin:
             return {"result": "success", "message": "维护门闩未开启，无需恢复检查"}
 
         context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-        scene_id, score, frame, _text = self._observe_maintenance_scene(context, update=True)
+        scene_id, score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
         if scene_id == 34:
             clear_maintenance_gate(
                 self._maintenance_world_facts_path(),
@@ -197,7 +196,7 @@ class MaintenanceTaskMixin:
                     break
                 context.click_shape_center(14, "关闭公告")
                 yield from context.wait_action_settle(2.0)
-                scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
+                scene_id, _score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
 
             if scene_id == 18:
                 for attempt in range(1, probe_attempts + 1):
@@ -211,7 +210,7 @@ class MaintenanceTaskMixin:
                             current_scene=18,
                         )
                     yield from context.wait_action_settle(probe_interval)
-                    scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
+                    scene_id, _score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
                     if self._maintenance_scene_proves_available(scene_id):
                         break
                     if scene_id in {415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID}:
@@ -343,7 +342,7 @@ class MaintenanceTaskMixin:
             if scene_id == 14:
                 context.click_shape_center(14, "关闭公告")
                 yield from context.wait_action_settle(2.0)
-                scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
+                scene_id, _score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
                 continue
             break
 
@@ -368,7 +367,7 @@ class MaintenanceTaskMixin:
                         current_scene=18,
                     )
                 yield from context.wait_action_settle(probe_interval)
-                scene_id, _score, frame, _text = self._observe_maintenance_scene(context, update=True)
+                scene_id, _score, frame, _text = yield from self._observe_maintenance_scene(context, update=True)
                 if scene_id in {415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID}:
                     break
                 # A click can briefly produce an unrecognized loading frame.

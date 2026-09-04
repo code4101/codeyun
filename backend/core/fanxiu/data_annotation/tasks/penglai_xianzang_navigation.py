@@ -85,7 +85,7 @@ def _page_from_observation(
 
 
 def read_xianzang_page(context: Any, *, update: bool = True) -> XianzangPageResult | None:
-    scene_id, score, frame = context.sample_scene_once(
+    scene_id, score, frame = yield from context.current_scene(
         list(XIANZANG_KNOWN_SCENE_IDS),
         update=bool(update),
     )
@@ -115,7 +115,7 @@ def _wait_xianzang_page(
 ) -> XianzangPageResult:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        result = read_xianzang_page(context, update=True)
+        result = yield from read_xianzang_page(context, update=True)
         if result is not None and result.page == page:
             return result
         if time.monotonic() >= deadline:
@@ -123,7 +123,7 @@ def _wait_xianzang_page(
             raise RuntimeError(
                 f"等待蓬莱仙藏页面「{page}」超时，当前={observed}"
             )
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
 
 
 def enter_xianzang(
@@ -137,22 +137,24 @@ def enter_xianzang(
 ) -> XianzangPageResult:
     """Enter the Xianzang main page from #34 and verify fresh business text."""
 
-    current = read_xianzang_page(context, update=True)
+    current = yield from read_xianzang_page(context, update=True)
     if current is not None:
         if current.page == "蓬莱仙藏":
             return current
-        return open_xianzang_tab(
+        return (yield from open_xianzang_tab(
             context,
             "蓬莱仙藏",
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
-        )
+        ))
 
     availability_deadline = time.monotonic() + max(
         0.5, float(availability_timeout_seconds)
     )
     while True:
-        scene_id, score, frame = context.sample_scene_once([int(source_scene_id)], update=True)
+        scene_id, score, frame = yield from context.current_scene(
+            [int(source_scene_id)], update=True, label="蓬莱仙藏：识别活动入口"
+        )
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
                 f"进入蓬莱仙藏要求从可靠 #{source_scene_id} 开始："
@@ -165,7 +167,9 @@ def enter_xianzang(
                 f"可靠 #{source_scene_id} 菜单连续 "
                 f"{float(availability_timeout_seconds):.0f} 秒未识别到蓬莱仙藏"
             )
-        time.sleep(max(0.05, float(availability_poll_seconds)))
+        yield from context.wait_action_settle(
+            max(0.05, float(availability_poll_seconds))
+        )
     deadline = time.monotonic() + max(1.0, float(timeout_seconds))
     click_count = 0
     next_click_at = 0.0
@@ -183,18 +187,18 @@ def enter_xianzang(
             )
             click_count += 1
             next_click_at = now + 1.0
-        time.sleep(max(0.05, float(poll_seconds)))
-        result = read_xianzang_page(context, update=True)
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
+        result = yield from read_xianzang_page(context, update=True)
         if result is not None:
             if result.page == "蓬莱仙藏":
                 return result
-            return open_xianzang_tab(
+            return (yield from open_xianzang_tab(
                 context,
                 "蓬莱仙藏",
                 timeout_seconds=timeout_seconds,
                 poll_seconds=poll_seconds,
-            )
-        scene_id, score, frame = context.sample_scene_once(
+            ))
+        scene_id, score, frame = yield from context.current_scene(
             [int(source_scene_id)],
             update=True,
         )
@@ -233,7 +237,7 @@ def open_xianzang_tab(
     target = str(tab or "").strip()
     if target not in {"蓬莱仙藏", "任务", "商店"}:
         raise ValueError(f"尚未实现的蓬莱仙藏页签：{tab!r}")
-    current = read_xianzang_page(context, update=True)
+    current = yield from read_xianzang_page(context, update=True)
     if current is None:
         raise RuntimeError("当前不在可靠的蓬莱仙藏系列页面，拒绝切换页签")
     if current.page == target:
@@ -280,8 +284,8 @@ def open_xianzang_tab(
             raise RuntimeError(
                 f"等待蓬莱仙藏页面「{target}」超时，当前={current_page}"
             )
-        time.sleep(max(0.05, float(poll_seconds)))
-        observed = read_xianzang_page(context, update=True)
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
+        observed = yield from read_xianzang_page(context, update=True)
 
 
 def open_xianzang_optional_reward(
@@ -292,7 +296,7 @@ def open_xianzang_optional_reward(
 ) -> XianzangPageResult:
     """Open #448 only after first aligning the Xianzang main page."""
 
-    current = open_xianzang_tab(
+    current = yield from open_xianzang_tab(
         context,
         "蓬莱仙藏",
         timeout_seconds=timeout_seconds,
@@ -304,12 +308,12 @@ def open_xianzang_optional_reward(
         "自选未配置入口",
         frame_data_url=frame,
     )
-    return _wait_xianzang_page(
+    return (yield from _wait_xianzang_page(
         context,
         "自选",
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
-    )
+    ))
 
 
 def leave_xianzang(
@@ -320,7 +324,7 @@ def leave_xianzang(
 ) -> tuple[int, float]:
     """Close #447 through its explicit return shape and verify world #34."""
 
-    open_xianzang_tab(
+    yield from open_xianzang_tab(
         context,
         "蓬莱仙藏",
         timeout_seconds=timeout_seconds,
@@ -332,7 +336,7 @@ def leave_xianzang(
     last_scene: int | None = None
     last_score = 0.0
     while True:
-        last_scene, last_score, _frame = context.sample_scene_once(
+        last_scene, last_score, _frame = yield from context.current_scene(
             [34, XIANZANG_MAIN_SCENE_ID],
             update=True,
         )
@@ -343,4 +347,4 @@ def leave_xianzang(
                 f"#447[返回] 后未可靠回到 #34：scene={last_scene}, "
                 f"score={float(last_score or 0):.1f}"
             )
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))

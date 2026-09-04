@@ -276,7 +276,7 @@ class DaofaTaskMixin:
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
         )
-        scene_id, _score, _frame = context.sample_scene_once([376, 377, 378], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([376, 377, 378], update=True))
         prompt_seen = scene_id == 377
         if scene_id not in {376, 377, 378}:
             raise RuntimeError("道法争锋：小闭环只能从 #376、#377 或 #378 开始")
@@ -527,7 +527,7 @@ class DaofaTaskMixin:
             stop_event=stop_event,
         )
         context.attrs["payload"] = payload
-        scene_id, _score, frame = context.sample_scene_once([34, 69, 376], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([34, 69, 376], update=True))
         started_in_daofa = scene_id == 376
 
         text = context.ocr_text(frame)

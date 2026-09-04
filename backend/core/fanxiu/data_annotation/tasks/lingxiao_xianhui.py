@@ -797,9 +797,9 @@ def execute_lingxiao_xianhui_job(
 
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     task_id = str(payload.get("__scheduler_task_id") or LINGXIAO_XIANHUI_TASK_ID)
-    scene_id, _score, _frame = context.sample_scene_once(
+    scene_id, _score, _frame = (yield from context.current_scene(
         [34, LINGXIAO_GREEN_BOTTLE_WORLD_SCENE_ID, LINGXIAO_COVER_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, LINGXIAO_TASK_SCENE_ID, LINGXIAO_FULING_SCENE_ID], update=True,
-    )
+    ))
     if scene_id not in {LINGXIAO_COVER_SCENE_ID, LINGXIAO_MAIN_SCENE_ID, LINGXIAO_TASK_SCENE_ID, LINGXIAO_FULING_SCENE_ID}:
         # A popup such as #530 is an optional overlay, not evidence that the
         # underlying business page vanished.  Let the standard interruption

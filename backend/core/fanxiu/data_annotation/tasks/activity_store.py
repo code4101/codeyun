@@ -177,7 +177,9 @@ def _read_stable_store_scan(
     deadline = time.monotonic() + max(0.5, float(stability_timeout_seconds))
     previous_scan: ActivityStoreRegionScan | None = None
     while True:
-        current_scene, score, frame = context.sample_scene_once([int(scene_id)], update=True)
+        current_scene, score, frame = yield from context.current_scene(
+            [int(scene_id)], update=True, label=f"活动商店：识别 #{scene_id}"
+        )
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             tokens = context.ocr_tokens_in_shapes(
                 int(scene_id),
@@ -195,7 +197,9 @@ def _read_stable_store_scan(
             raise RuntimeError(
                 f"#{scene_id}[{region_title}] 在 {stability_timeout_seconds:.1f}s 内未形成连续稳定帧"
             )
-        time.sleep(max(0.05, float(stability_poll_seconds)))
+        yield from context.wait_action_settle(
+            max(0.05, float(stability_poll_seconds))
+        )
 
 
 def _wait_store_after_purchase(
@@ -207,12 +211,14 @@ def _wait_store_after_purchase(
 ) -> None:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        current_scene, score, _frame = context.sample_scene_once([int(scene_id), 227], update=True)
+        current_scene, score, _frame = yield from context.current_scene(
+            [int(scene_id), 227], update=True, label="活动商店：等待购买结果"
+        )
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             return
         if time.monotonic() >= deadline:
             raise RuntimeError(f"点击活动商店目标后未在 {timeout_seconds:.1f}s 内返回 #{scene_id}")
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
 
 
 def operate_activity_store_region(
@@ -240,7 +246,7 @@ def operate_activity_store_region(
     previous_signature: tuple[Any, ...] | None = None
     click_limit = max(1, int(max_clicks))
     while len(clicked_values) < click_limit:
-        _frame, scan = _read_stable_store_scan(
+        _frame, scan = yield from _read_stable_store_scan(
             context,
             scene_id=int(scene_id),
             region_title=str(region_title),
@@ -266,7 +272,7 @@ def operate_activity_store_region(
         context.click_frame_point(int(scene_id), click_x, click_y)
         clicked_values.append(target.value)
         previous_signature = signature
-        _wait_store_after_purchase(
+        yield from _wait_store_after_purchase(
             context,
             scene_id=int(scene_id),
             timeout_seconds=purchase_timeout_seconds,

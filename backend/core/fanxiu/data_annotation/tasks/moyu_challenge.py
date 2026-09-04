@@ -265,7 +265,7 @@ class MoyuChallengeTaskMixin:
         }
 
     def _moyu_return_world(self, context: Any):
-        current, _score, _frame = context.sample_scene_once([401, 400, 34], update=True)
+        current, _score, _frame = (yield from context.current_scene([401, 400, 34], update=True))
         if current == 401:
             context.click_shape_center(401, "返回")
             landing = yield from context.wait_scene(
@@ -321,7 +321,7 @@ class MoyuChallengeTaskMixin:
                 "message": "已到 22:00，今日奖励窗口结束",
             }
 
-        current, _score, _frame = context.sample_scene_once([466, 401], update=True)
+        current, _score, _frame = (yield from context.current_scene([466, 401], update=True))
         if current not in {466, 401}:
             yield from self._moyu_open_activity(context, payload)
             current = 401

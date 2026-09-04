@@ -155,7 +155,7 @@ def navigate_to_daily_task_reward_cover(
         raise ValueError(f"未知日常任务奖励域：{domain}") from exc
 
     candidates = [spec.target_scene_id, *spec.landing_scene_ids, 69, 34]
-    scene_id, _score, frame = context.sample_scene_once(candidates, update=True)
+    scene_id, _score, frame = (yield from context.current_scene(candidates, update=True))
     scene_id = _scene_id(scene_id)
     text = context.ocr_text(frame)
 

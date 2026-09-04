@@ -239,10 +239,10 @@ def _require_high_level_quick_synthesis_state(
 def _enter_beast_soul_main(context: Any):
     """Enter #478 through the annotated #35 -> #483 -> #478 path."""
 
-    current_scene, _score, _frame = context.sample_scene_once(
-        views=[BEAST_SOUL_MAIN_SCENE],
+    current_scene, _score, _frame = (yield from context.current_scene(
+        scenes=[BEAST_SOUL_MAIN_SCENE],
         update=True,
-    )
+    ))
     if current_scene == BEAST_SOUL_MAIN_SCENE:
         return
     from backend.core.fanxiu.data_annotation.tasks.world_menu_navigation import (
@@ -285,20 +285,20 @@ def _leave_quick_synthesis(context: Any):
         BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE,
         BEAST_SOUL_MAIN_SCENE,
     ]
-    scene_id, _score, _frame = context.sample_scene_once(
-        views=exit_views,
+    scene_id, _score, _frame = (yield from context.current_scene(
+        scenes=exit_views,
         update=True,
-    )
+    ))
     if scene_id == BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
         # The result/reward overlay is asynchronous: bb4f first observed #481
         # after a valid delta, then the formal #346 appeared before the close
         # click.  Require one delayed second observation before treating #481
         # as the direct-return branch.
         yield from _settle(context, 1.0)
-        scene_id, _score, _frame = context.sample_scene_once(
-            views=exit_views,
+        scene_id, _score, _frame = (yield from context.current_scene(
+            scenes=exit_views,
             update=True,
-        )
+        ))
     if scene_id == BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE:
         yield from context.wait_click(
             BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE,
@@ -311,14 +311,14 @@ def _leave_quick_synthesis(context: Any):
             wait=10,
             label="兽魂更新：关闭合成结果",
         )
-        scene_id, _score, _frame = context.sample_scene_once(
-            views=[
+        scene_id, _score, _frame = (yield from context.current_scene(
+            scenes=[
                 BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                 BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
                 BEAST_SOUL_MAIN_SCENE,
             ],
             update=True,
-        )
+        ))
     if scene_id == BEAST_SOUL_MATERIAL_DROPDOWN_SCENE:
         yield from context.wait_click(
             BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
@@ -563,14 +563,14 @@ def _execute_current_batch(
         "执行快捷合成",
     )
     yield from _settle(context, 0.8)
-    scene_id, score, frame = context.sample_scene_once(
-        views=[
+    scene_id, score, frame = (yield from context.current_scene(
+        scenes=[
             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
             BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
         ],
         update=True,
-    )
+    ))
     if policy.requires_precious_material_confirmation and scene_id == BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
         # The precious-material alert is delayed: production evidence showed
         # transient #481 at 19:23:48 and #529 only at 19:23:52.  Observe only;
@@ -578,14 +578,14 @@ def _execute_current_batch(
         # generic popup/background while waiting.
         for _ in range(10):
             yield from _settle(context, 0.5)
-            scene_id, score, frame = context.sample_scene_once(
-                views=[
+            scene_id, score, frame = (yield from context.current_scene(
+                scenes=[
                     BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                     BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
                     BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                 ],
                 update=True,
-            )
+            ))
             if scene_id != BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
                 break
     if policy.auto_confirm_low_success:
@@ -596,14 +596,14 @@ def _execute_current_batch(
             # proves the first click produced no synthesis side effect.
             for _ in range(10):
                 yield from _settle(context, 0.5)
-                scene_id, score, frame = context.sample_scene_once(
-                    views=[
+                scene_id, score, frame = (yield from context.current_scene(
+                    scenes=[
                         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
                         BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                     ],
                     update=True,
-                )
+                ))
                 if scene_id != BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
                     break
             if scene_id == BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
@@ -626,14 +626,14 @@ def _execute_current_batch(
                 )
                 yield from _settle(context, 1.0)
                 for _ in range(10):
-                    scene_id, score, frame = context.sample_scene_once(
-                        views=[
+                    scene_id, score, frame = (yield from context.current_scene(
+                        scenes=[
                             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
                             BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                         ],
                         update=True,
-                    )
+                    ))
                     if scene_id != BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
                         break
                     yield from _settle(context, 0.5)
@@ -744,14 +744,14 @@ def _execute_current_batch(
             f"兽魂更新：100%策略意外出现确认弹窗，evidence={evidence}"
         )
 
-    result_scene, result_score, result_frame = context.sample_scene_once(update=True)
+    result_scene, result_score, result_frame = (yield from context.current_scene(update=True))
     if result_scene in (
         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
     ):
         for _ in range(10):
             yield from _settle(context, 0.5)
-            result_scene, result_score, result_frame = context.sample_scene_once(update=True)
+            result_scene, result_score, result_frame = (yield from context.current_scene(update=True))
             if result_scene not in (
                 BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                 BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -1060,10 +1060,10 @@ def _open_initial_bag_card(
             )
             return {"attempt": attempt, "point": (x, y)}
         except (RuntimeError, TimeoutError):
-            scene, _score, _frame = context.sample_scene_once(
-                views=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
+            scene, _score, _frame = (yield from context.current_scene(
+                scenes=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
                 update=True,
-            )
+            ))
             if scene == BEAST_SOUL_DETAIL_SCENE:
                 return {"attempt": attempt, "point": (x, y)}
             if scene != BEAST_SOUL_MAIN_SCENE:
@@ -1659,10 +1659,10 @@ def _open_bag_item_detail(
             if not changed:
                 break
             changed_count += 1
-            scene, _score, _frame = context.sample_scene_once(
-                views=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
+            scene, _score, _frame = (yield from context.current_scene(
+                scenes=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
                 update=True,
-            )
+            ))
             if scene != BEAST_SOUL_MAIN_SCENE:
                 raise BeastSoulTargetNotFoundError(
                     item_id,

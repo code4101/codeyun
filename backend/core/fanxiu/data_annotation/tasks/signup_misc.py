@@ -36,7 +36,7 @@ class SignupMiscTaskMixin:
         return {"result": "success", "claimed": 领取数量, "signup_page_opened": True, "evidence": "claimed_rewards"}
 
     def _日常报名进入日常页(self, context: Any):
-        scene_id, _score, frame = context.sample_scene_once([69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
         text = context.ocr_text(frame)
         if self._日常报名文本是报名后活动页(text):
             return "活动页"
@@ -171,7 +171,7 @@ class SignupMiscTaskMixin:
         )
 
     def _日常报名返回日常页(self, context: Any):
-        scene_id, _score, frame = context.sample_scene_once([23, 69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([23, 69, 34], update=True))
         text = context.ocr_text(frame)
         if scene_id in (69, 34):
             return
@@ -184,7 +184,7 @@ class SignupMiscTaskMixin:
         yield from context.wait_click(23, "返回")
 
     def _日常报名返回世界(self, context: Any):
-        scene_id, _score, frame = context.sample_scene_once([69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
         text = context.ocr_text(frame)
         if scene_id == 34:
             return
@@ -201,7 +201,7 @@ class SignupMiscTaskMixin:
                         },
                         label="日常_报名：等待活动页返回",
                     )
-                scene_id, _score, frame = context.sample_scene_once([69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
                 text = context.ocr_text(frame)
                 if scene_id == 34:
                     return

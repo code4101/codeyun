@@ -8,6 +8,9 @@ from backend.core.fanxiu.data_annotation.tasks.magic_invasion_supply import (
     plan_magic_tianyan_supply,
     verify_magic_tianyan_supply_delta,
 )
+from backend.core.fanxiu.data_annotation.tasks.sacred_exchange_supply import (
+    derive_common_shop_quantity_control,
+)
 
 
 def _snapshot(*, bamboo: int, tianyan: int, fingerprint: str = "a") -> dict:
@@ -99,3 +102,30 @@ def test_supply_delta_requires_exact_bamboo_cost_and_tianyan_gain() -> None:
             _snapshot(bamboo=441, tianyan=3086, fingerprint="c"),
             plan,
         )
+
+
+def test_common_shop_control_derives_100_and_1998_from_runtime() -> None:
+    plan = plan_magic_tianyan_supply(
+        _snapshot(bamboo=39962, tianyan=286),
+        _shop(),
+        required_tianyan=10286,
+    )
+    control = derive_common_shop_quantity_control(
+        {
+            "complete": True,
+            "showNum": 1,
+            "maxNum": 1998,
+            "Price": 20,
+            "HadPrice": 39962,
+        },
+        plan,
+    )
+
+    assert control == {
+        "initial": 1,
+        "target": 100,
+        "maximum": 1998,
+        "unit_price": 20,
+        "target_cost": 2000,
+        "affordable_maximum": 1998,
+    }

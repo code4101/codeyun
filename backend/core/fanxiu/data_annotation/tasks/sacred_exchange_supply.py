@@ -15,8 +15,11 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     StorageBagRandomBoxRequest,
     plan_current_random_box_click,
 )
+from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerSliderAssets,
+    set_verified_integer_slider_count,
+)
 from backend.core.fanxiu.data_annotation.tasks.xianshi_exchange import (
-    quantity_adjustment_shape,
     validate_common_shop_dialog,
 )
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
@@ -45,6 +48,14 @@ ITEM_DETAIL_SCENE = 610
 SACRED_ITEM_SCENE = 632
 SACRED_SHOP_SCENE = 633
 SACRED_BUY_SCENE = 634
+COMMON_SHOP_QUANTITY_ASSETS = IntegerSliderAssets(
+    settings_scene_id=SACRED_BUY_SCENE,
+    count_region="数量滑条",
+    count_decrease="-",
+    count_increase="+",
+    count_slider_thumb=None,
+    count_slider_track="数量滑条",
+)
 
 
 @dataclass(frozen=True)
@@ -159,6 +170,46 @@ def verify_sacred_exchange_supply_delta(
         )
 
 
+def derive_common_shop_quantity_control(
+    snapshot: Mapping[str, Any],
+    plan: SacredExchangeStockPlan,
+) -> dict[str, int]:
+    """Derive the exact exchange count and usable bound from Runtime facts."""
+
+    if snapshot.get("complete") is not True:
+        raise RuntimeError(
+            f"CommonShop 购买框运行态不完整：{snapshot.get('reason') or snapshot!r}"
+        )
+    initial = int(snapshot.get("showNum") or 0)
+    maximum = int(snapshot.get("maxNum") or 0)
+    unit_price = int(snapshot.get("Price") or 0)
+    owned = int(snapshot.get("HadPrice") or 0)
+    target = int(plan.exchange_count)
+    if unit_price != int(plan.cost_per_exchange):
+        raise RuntimeError(
+            f"神物兑换单价与计划不一致：{unit_price} != {plan.cost_per_exchange}"
+        )
+    if min(initial, maximum, unit_price, target) <= 0:
+        raise RuntimeError("神物兑换数量、上限或单价无效")
+    affordable_maximum = owned // unit_price
+    if maximum > affordable_maximum:
+        raise RuntimeError(
+            f"CommonShop 上限 {maximum} 超过资源可负担上限 {affordable_maximum}"
+        )
+    if target > maximum or target * unit_price > owned:
+        raise RuntimeError(
+            f"神物兑换目标次数 {target} 超出上限 {maximum} 或资源不足"
+        )
+    return {
+        "initial": initial,
+        "target": target,
+        "maximum": maximum,
+        "unit_price": unit_price,
+        "target_cost": target * unit_price,
+        "affordable_maximum": affordable_maximum,
+    }
+
+
 def _open_storage_category(
     context: Any,
     spec: SacredExchangeSupplySpec,
@@ -182,13 +233,20 @@ def _open_source_exchange(
     target: Any,
     snapshot: Mapping[str, Any],
 ):
+    runtime_items = runtime_backpack_items(snapshot)
+    try:
+        target_quantity = int(runtime_items[target.runtime_index].get("num") or 0)
+    except (IndexError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"{spec.source_item_name}的 Runtime 数量不可读") from exc
+    if target_quantity <= 0:
+        raise RuntimeError(f"{spec.source_item_name}的 Runtime 数量无效：{target_quantity}")
     request = StorageBagRandomBoxRequest(
         spec.source_item_id,
         target.instance_id,
         target.name,
-        target.quantity,
+        target_quantity,
     )
-    click = plan_current_random_box_click(context, snapshot, request)
+    click = yield from plan_current_random_box_click(context, snapshot, request)
     if not click.ready or click.point is None:
         raise RuntimeError(f"{spec.source_item_name}无法唯一对齐储物袋：{click.status}")
     context.click_frame_point(STORAGE_BAG_SCENE, *click.point)
@@ -272,44 +330,37 @@ def _exchange_quantity(
     *,
     label: str,
 ):
-    target = int(plan.exchange_count)
-    snapshot = dict(reader())
-    maximum = int(snapshot.get("maxNum") or 0)
-    current = int(snapshot.get("showNum") or 0)
-    if not 1 <= target <= maximum:
-        raise RuntimeError(f"{label}兑换数量 {target} 超出 1..{maximum}")
-    if current != target and maximum > 1:
-        track = context.shape_box(SACRED_BUY_SCENE, "数量滑条")
-        left = float(track.get("x") or 0.0)
-        right = left + float(track.get("w") or 0.0)
-        y = float(track.get("y") or 0.0) + float(track.get("h") or 0.0) / 2
-        context.drag_frame_point(
-            SACRED_BUY_SCENE,
-            left + (right - left) * ((current - 1) / (maximum - 1)),
-            y,
-            left + (right - left) * ((target - 1) / (maximum - 1)),
-            y,
-            duration_ms=600,
-        )
-        yield from context.wait_action_settle(0.8)
-    for _ in range(24):
-        snapshot = dict(reader())
-        current = int(snapshot.get("showNum") or 0)
-        if current == target:
-            break
-        shape = quantity_adjustment_shape(current, target)
-        if shape is None:
-            break
-        context.click_shape_center(SACRED_BUY_SCENE, shape)
-        yield from context.wait_action_settle(0.3)
-    else:
-        raise RuntimeError(f"{label}兑换数量未有界收敛")
+    initial = dict(reader())
+    control = derive_common_shop_quantity_control(initial, plan)
+
+    def runtime_count() -> Mapping[str, int]:
+        current = dict(reader())
+        if current.get("complete") is not True:
+            raise RuntimeError(
+                f"{label}购买框运行态不完整：{current.get('reason') or current!r}"
+            )
+        return {
+            "current": int(current.get("showNum") or 0),
+            "maximum": int(current.get("maxNum") or 0),
+        }
+
+    adjustment = yield from set_verified_integer_slider_count(
+        context,
+        COMMON_SHOP_QUANTITY_ASSETS,
+        control["target"],
+        maximum=control["maximum"],
+        max_adjustments=10,
+        count_label=f"{label}兑换数量",
+        runtime_count_reader=runtime_count,
+    )
+    if int(adjustment.get("after") or 0) != control["target"]:
+        raise RuntimeError(f"{label}兑换数量未精确回读为 {control['target']}")
     snapshot = dict(reader())
     if int(snapshot.get("goodsNum") or 0) != plan.goods_per_exchange:
         raise RuntimeError(f"{label}单次产出与计划不一致")
     validate_common_shop_dialog(
         snapshot,
-        quantity=target,
+        quantity=control["target"],
         unit_price=plan.cost_per_exchange,
     )
     yield from context.wait_click(SACRED_BUY_SCENE, "兑换（高风险）", timeout=8.0)
@@ -337,8 +388,8 @@ def ensure_sacred_exchange_stock(
         snapshot_reader=snapshot_reader,
     )
     runtime_backpack_identity(before)
-    required = max(0, int(required_stock))
     current = runtime_backpack_total(before, spec.target_item_id)
+    required = max(0, int(required_stock))
     if current >= required:
         yield from context.go_scene(WORLD_SCENE)
         return {"status": "sufficient", "stock_after": current}
@@ -380,6 +431,7 @@ def ensure_sacred_exchange_stock(
 
 __all__ = [
     "SacredExchangeSupplySpec",
+    "derive_common_shop_quantity_control",
     "ensure_sacred_exchange_stock",
     "plan_sacred_exchange_supply",
     "runtime_backpack_identity",

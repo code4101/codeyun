@@ -990,7 +990,7 @@ def _ensure_entry_surface(context: Any) -> Iterator[Any]:
         assets.npc_entry_scene_id,
         assets.region_map_scene_id,
     )
-    scene_id, _score, _frame = context.sample_scene_once(accepted, update=True)
+    scene_id, _score, _frame = (yield from context.current_scene(accepted, update=True))
     if scene_id not in accepted:
         yield from context.go_scene(assets.home_scene_id)
 
@@ -999,13 +999,13 @@ def _close_auto_terminal(context: Any, scene_id: int | None) -> Iterator[Any]:
     assets = DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS
     if scene_id != 382:
         raise RuntimeError(f"兽渊自动批次没有停在已验证终态：scene={scene_id!r}")
-    observed, _score, frame = context.sample_scene_once((382,), update=True)
+    observed, _score, frame = (yield from context.current_scene((382,), update=True))
     if observed != 382 or "点击屏幕关闭" not in context.ocr_text(frame).replace(" ", ""):
         raise RuntimeError("兽渊#382完成页缺少完整完成证据，拒绝关闭")
     context.click_shape_center(382, "关闭")
     for _attempt in range(20):
         yield from context.wait_action_settle(0.5)
-        observed, _score, _frame = context.sample_scene_once((382,), update=True)
+        observed, _score, _frame = (yield from context.current_scene((382,), update=True))
         if observed != 382:
             return
     raise RuntimeError("兽渊#382完成页点击关闭后仍未离开")
@@ -1047,9 +1047,9 @@ def _execute_or_recover_initialization_batch(
             request,
             maximum_explores=int(budget["capacity"]["explore_attempts_with_items"]),
         )
-        current_scene, _score, _frame = context.sample_scene_once(
+        current_scene, _score, _frame = (yield from context.current_scene(
             (assets.help_view_scene_id,), update=True
-        )
+        ))
         if current_scene == assets.help_view_scene_id:
             # R&D/resume path: #658 has already been configured and visually
             # confirmed.  Reuse its fully read-back contract instead of leaving
@@ -1071,14 +1071,14 @@ def _execute_or_recover_initialization_batch(
 
     terminal_scene = int(marker.get("terminal_scene") or 0) or None
     if not bool(marker.get("terminal_confirmed")):
-        scene_id, _score, frame = context.sample_scene_once(
+        scene_id, _score, frame = (yield from context.current_scene(
             (
                 assets.help_view_scene_id,
                 assets.completed_notice_scene_id,
                 *assets.terminal_scene_ids,
             ),
             update=True,
-        )
+        ))
         if scene_id == assets.help_view_scene_id:
             current, _ = _read_ledger(
                 activity,
@@ -1148,9 +1148,9 @@ def _execute_or_recover_initialization_batch(
         )
     sealed_after = marker.get("after")
     if sealed_after is None:
-        current_scene, _score, _frame = context.sample_scene_once(
+        current_scene, _score, _frame = (yield from context.current_scene(
             assets.terminal_scene_ids, update=True
-        )
+        ))
         if current_scene in assets.terminal_scene_ids:
             yield from _close_auto_terminal(context, int(current_scene))
         rank_snapshot = yield from _refresh_personal_rank_for_measurement(
@@ -1840,10 +1840,10 @@ def _enter_beast_abyss_occurrence_home(
     )
     expected_home_scene_id = 696 if settlement else 535
 
-    scene_id, _score, frame = context.sample_scene_once(
-        views=[535, 696, 536, 66, 657, 658],
+    scene_id, _score, frame = (yield from context.current_scene(
+        scenes=[535, 696, 536, 66, 657, 658],
         update=True,
-    )
+    ))
     if scene_id == expected_home_scene_id:
         return expected_home_scene_id
     if scene_id != 66:

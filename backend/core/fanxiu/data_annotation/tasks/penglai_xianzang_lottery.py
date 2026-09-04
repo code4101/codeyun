@@ -100,13 +100,13 @@ def draw_xianzang_once(
     recovered = _reconcile_pending_xianzang_draw()
     if recovered is not None:
         return recovered
-    return draw_bothdraw_once(
+    return (yield from draw_bothdraw_once(
         context,
         _spec(),
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
         requested_batch_size=requested_batch_size,
-    )
+    ))
 
 
 def _reconcile_pending_xianzang_draw() -> dict[str, Any] | None:
@@ -242,8 +242,8 @@ def ensure_xianzang_draw_mode(
         # Reopen the activity once before any draw/toggle click.  This is a
         # reversible panel-lifecycle repair; the same Bothdraw activity id is
         # still rechecked below, and a second NotLoaded remains a hard failure.
-        leave_xianzang(context)
-        enter_xianzang(context)
+        yield from leave_xianzang(context)
+        yield from enter_xianzang(context)
         panel_reloaded = True
         before = read_bothdraw_ten_draw_runtime(expected_activity_id=activity_id)
     if not before.get("complete") or not isinstance(
@@ -277,7 +277,7 @@ def ensure_xianzang_draw_mode(
                 "ten_draw_enabled": bool(ten_draw),
                 "panel_reloaded": panel_reloaded,
             }
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
     raise RuntimeError(
         "切换鉴宝次数后未从 V_UseTenTimes 复验成功："
         f"{str((last or {}).get('reason') or '状态未变化')}"
@@ -291,13 +291,13 @@ def claim_xianzang_cumulative_rewards(
     poll_seconds: float = 0.5,
     max_clicks: int = 16,
 ) -> dict[str, Any]:
-    return claim_bothdraw_cumulative_rewards(
+    return (yield from claim_bothdraw_cumulative_rewards(
         context,
         _spec(),
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
         max_clicks=max_clicks,
-    )
+    ))
 
 
 def close_xianzang_draw_result(
@@ -306,12 +306,12 @@ def close_xianzang_draw_result(
     timeout_seconds: float = 30.0,
     poll_seconds: float = 0.25,
 ) -> dict[str, Any]:
-    return close_bothdraw_result(
+    return (yield from close_bothdraw_result(
         context,
         _spec(),
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
-    )
+    ))
 
 
 def decide_xianzang_next_draw(
@@ -341,9 +341,9 @@ def complete_xianzang_lottery(
 
     spec = _spec()
     spec.require_executable_assets()
-    spec.open_main_page(context)
+    yield from _open_main(context)
     rounds: list[dict[str, Any]] = []
-    initial_claim = claim_xianzang_cumulative_rewards(context)
+    initial_claim = yield from claim_xianzang_cumulative_rewards(context)
     for round_index in range(max(1, int(max_rounds))):
         state = read_bothdraw_cumulative_rewards_runtime()
         if not state.get("complete"):
@@ -352,7 +352,7 @@ def complete_xianzang_lottery(
             state, preserve_terminal_remainder=False
         )
         if decision.action == "stop":
-            final_claim = claim_xianzang_cumulative_rewards(context)
+            final_claim = yield from claim_xianzang_cumulative_rewards(context)
             final_state = read_bothdraw_cumulative_rewards_runtime()
             if not final_state.get("complete"):
                 raise RuntimeError(
@@ -373,18 +373,18 @@ def complete_xianzang_lottery(
             }
 
         if decision.action == "claim_rewards":
-            claim_xianzang_cumulative_rewards(context)
+            yield from claim_xianzang_cumulative_rewards(context)
             continue
         expected = int(decision.expected_batch_size)
-        mode = ensure_xianzang_draw_mode(context, ten_draw=expected == 10)
-        draw = draw_xianzang_once(context, requested_batch_size=expected)
+        mode = yield from ensure_xianzang_draw_mode(context, ten_draw=expected == 10)
+        draw = yield from draw_xianzang_once(context, requested_batch_size=expected)
         if int(draw.get("dx") or 0) != expected:
             raise RuntimeError(
                 "蓬莱仙藏实际批次与已复验开关不一致："
                 f"expected={expected}, actual={int(draw.get('dx') or 0)}"
             )
-        close = close_xianzang_draw_result(context)
-        claim = claim_xianzang_cumulative_rewards(context)
+        close = yield from close_xianzang_draw_result(context)
+        claim = yield from claim_xianzang_cumulative_rewards(context)
         rounds.append(
             {
                 "round": round_index + 1,
@@ -410,9 +410,9 @@ def complete_xianzang_config_ten_draws(
 
     spec = _spec()
     spec.require_executable_assets()
-    spec.open_main_page(context)
+    yield from _open_main(context)
     rounds: list[dict[str, Any]] = []
-    initial_claim = claim_xianzang_cumulative_rewards(context)
+    initial_claim = yield from claim_xianzang_cumulative_rewards(context)
     for round_index in range(max(1, int(max_rounds))):
         state = read_bothdraw_cumulative_rewards_runtime()
         if not state.get("complete"):
@@ -431,17 +431,17 @@ def complete_xianzang_config_ten_draws(
             }
 
         if decision.action == "claim_rewards":
-            claim_xianzang_cumulative_rewards(context)
+            yield from claim_xianzang_cumulative_rewards(context)
             continue
-        mode = ensure_xianzang_draw_mode(context, ten_draw=True)
-        draw = draw_xianzang_once(context, requested_batch_size=10)
+        mode = yield from ensure_xianzang_draw_mode(context, ten_draw=True)
+        draw = yield from draw_xianzang_once(context, requested_batch_size=10)
         if int(draw.get("dx") or 0) != 10:
             raise RuntimeError(
                 "蓬莱仙藏配置阶段实际批次与已复验十连开关不一致："
                 f"expected=10, actual={int(draw.get('dx') or 0)}"
             )
-        close = close_xianzang_draw_result(context)
-        claim = claim_xianzang_cumulative_rewards(context)
+        close = yield from close_xianzang_draw_result(context)
+        claim = yield from claim_xianzang_cumulative_rewards(context)
         rounds.append(
             {
                 "round": round_index + 1,

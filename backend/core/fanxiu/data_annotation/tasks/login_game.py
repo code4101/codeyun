@@ -91,7 +91,11 @@ class LoginGameTaskMixin:
         )
         startup_gate = mumu_device_startup_grace_state()
         login_required = bool(startup_gate.get("login_required"))
-        scene_id, _score, frame = context.sample_scene_once(self.login_game_scene_ids, update=True)
+        scene_id, _score, frame = yield from context.current_scene(
+            self.login_game_scene_ids,
+            update=True,
+            label="登录前置：识别当前场景",
+        )
         frame_text = context.ocr_text(frame)
         scene_id = self._resolve_login_scene(scene_id, frame_text)
         resource_loading = scene_id is None and self._is_resource_loading_frame(frame_text)
@@ -163,11 +167,10 @@ class LoginGameTaskMixin:
             # Login is also the post-restart cleanup transaction. Use the
             # canonical layered recognizer so ordinary popup nodes are handled
             # and recognition repeats before the login state machine proceeds.
-            match, score, frame = yield from context._recognize_scene_layers(
+            scene_id, score, frame = yield from context.current_scene(
                 self.login_game_scene_ids,
-                wait=0,
+                label="登录游戏：识别当前场景",
             )
-            scene_id = match.scene_id if match is not None else None
             frame_text = context.ocr_text(frame)
             scene_id = self._resolve_login_scene(scene_id, frame_text)
             bubble_ready = bool(

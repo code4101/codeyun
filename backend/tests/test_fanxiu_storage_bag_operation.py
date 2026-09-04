@@ -101,17 +101,19 @@ class _Runtime:
                 self.scene = 227
         return f"frame-{self.scene}"
 
+    def current_scene(self, scenes=None, *, update=True, **_options):
+        frame = self.cur_frame(update=update)
+        scene_id = self.scene if scenes is None or self.scene in scenes else None
+        if False:
+            yield None
+        return scene_id, 100, frame
+
     def ocr_text(self, frame):
         if self.active_outcome == "empty" and self.scene == 526:
             self.toast_reads += 1
             if self.toast_reads <= 2:
                 return EMPTY_OPERATION_TOAST
         return ""
-
-    def sample_scene_once(self, scenes, *, frame_data_url):
-        assert frame_data_url.startswith("frame-")
-        return (self.scene if self.scene in scenes else None), 100, frame_data_url
-
 
 class _Runner:
     def __init__(self, runtime):

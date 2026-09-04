@@ -3,11 +3,19 @@ from __future__ import annotations
 """Reusable fixed-point loop for draw activities with cumulative rewards."""
 
 import time
+from types import GeneratorType
 from typing import Any, Callable
 
 
 SnapshotReader = Callable[[], dict[str, Any]]
 Action = Callable[[], dict[str, Any]]
+
+
+def _run_action(action: Action):
+    result = action()
+    if isinstance(result, GeneratorType):
+        return (yield from result)
+    return result
 
 
 def run_draw_claim_cycle(
@@ -27,7 +35,7 @@ def run_draw_claim_cycle(
     observed delta instead of assuming single or ten-draw semantics.
     """
 
-    initial_claim = claim_rewards()
+    initial_claim = yield from _run_action(claim_rewards)
     rounds: list[dict[str, Any]] = []
     previous_x: int | None = None
     for round_index in range(max(1, int(max_rounds))):
@@ -38,7 +46,7 @@ def run_draw_claim_cycle(
         if available_draws <= 0:
             # A final idempotent claim closes the fixed point: a milestone may
             # itself award draw currency even when the wallet was empty.
-            final_claim = claim_rewards()
+            final_claim = yield from _run_action(claim_rewards)
             deadline = time.monotonic() + max(0.0, float(reward_settle_seconds))
             while True:
                 final_state = read_snapshot()
@@ -71,15 +79,15 @@ def run_draw_claim_cycle(
                 "stop_reason": "draws_exhausted_and_rewards_claimed",
             }
 
-        draw = draw_once()
+        draw = yield from _run_action(draw_once)
         current_x = int((draw.get("after") or {}).get("x") or 0)
         if previous_x is not None and current_x <= previous_x:
             raise RuntimeError(
                 f"抽奖累计次数没有单调增加：{previous_x} -> {current_x}"
             )
         previous_x = current_x
-        close_result = close_draw_result()
-        claim = claim_rewards()
+        close_result = yield from _run_action(close_draw_result)
+        claim = yield from _run_action(claim_rewards)
         rounds.append(
             {
                 "round": round_index + 1,

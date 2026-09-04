@@ -137,10 +137,10 @@ class YuandingSanshengTaskMixin:
             frame = context.cur_frame(update=True)
             fragments = context.ocr_fragments(frame)
             last_text = fragment_text(fragments)
-            scene_id, _score, _frame = context.sample_scene_once(
+            scene_id, _score, _frame = (yield from context.current_scene(
                 [34, 66, YUANDING_MAIN_SCENE_ID],
                 update=False,
-            )
+            ))
             if yuanding_page_state(scene_id, fragments, last_text) == expected_state:
                 return frame, fragments
             yield from context.wait_action_settle(0.35)
@@ -164,10 +164,10 @@ class YuandingSanshengTaskMixin:
         frame = context.cur_frame(update=True)
         fragments = context.ocr_fragments(frame)
         text = fragment_text(fragments)
-        scene_id, _score, _frame = context.sample_scene_once(
+        scene_id, _score, _frame = (yield from context.current_scene(
             [34, 66, YUANDING_MAIN_SCENE_ID],
             update=False,
-        )
+        ))
         state = yuanding_page_state(scene_id, fragments, text)
         if state == "unknown":
             raise RuntimeError(

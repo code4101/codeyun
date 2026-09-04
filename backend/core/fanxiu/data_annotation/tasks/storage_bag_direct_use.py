@@ -11,6 +11,7 @@ already-authorized instance to the two visible confirmation pages.
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import GeneratorType
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
@@ -293,8 +294,8 @@ def _default_click_planner(
     context: Any,
     snapshot: Mapping[str, Any],
     request: StorageBagDirectUseRequest,
-) -> StorageBagItemClickPlan:
-    return plan_current_random_box_click(
+) -> Generator[Any, Any, StorageBagItemClickPlan]:
+    return (yield from plan_current_random_box_click(
         context,
         snapshot,
         StorageBagRandomBoxRequest(
@@ -303,7 +304,7 @@ def _default_click_planner(
             request.name,
             request.quantity,
         ),
-    )
+    ))
 
 
 class StorageBagSpiritStoneGuiAdapter:
@@ -363,7 +364,8 @@ class StorageBagSpiritStoneGuiAdapter:
         retry_count = 0
         scroll_count = 0
         while True:
-            plan = self.click_planner(self.context, before, request)
+            planned = self.click_planner(self.context, before, request)
+            plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:

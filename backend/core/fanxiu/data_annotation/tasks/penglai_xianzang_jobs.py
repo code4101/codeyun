@@ -128,8 +128,8 @@ def _optional_selection(
         f"rule={choice.selection_reason}",
     )
     if not already_on_optional_page:
-        open_xianzang_optional_reward(context)
-    result = complete_xianzang_optional_reward_selection(
+        yield from open_xianzang_optional_reward(context)
+    result = yield from complete_xianzang_optional_reward_selection(
         context,
         choice.candidate.column,
         # The selected column is already fixed by authoritative Runtime ids and
@@ -221,10 +221,11 @@ def _execute_xianzang_standard_job(
 
     context = _behavior_tree_context(runner, ctx, stop_event)
     resumed: dict[str, Any] = {}
-    if resume_draw_result_page and callable(getattr(context, "sample_scene_once", None)):
-        scene_id, score, _frame = context.sample_scene_once(
+    if resume_draw_result_page:
+        scene_id, score, _frame = yield from context.current_scene(
             [XIANZANG_DRAW_RESULT_SCENE_ID],
             update=True,
+            label="蓬莱仙藏：检查待关闭抽奖结果",
         )
         if (
             int(scene_id or 0) == XIANZANG_DRAW_RESULT_SCENE_ID
@@ -236,7 +237,7 @@ def _execute_xianzang_standard_job(
             )
             resumed["draw_result"] = close_xianzang_draw_result(context)
     if resume_optional_page:
-        current = read_xianzang_page(context, update=True)
+        current = yield from read_xianzang_page(context, update=True)
         if (
             current is not None
             and current.page == "自选"
@@ -247,13 +248,13 @@ def _execute_xianzang_standard_job(
                 "info",
                 "蓬莱仙藏_配置：启动现场为可靠 #448，先按权威计划幂等续做自选",
             )
-            resumed["optional"] = _optional_selection(
+            resumed["optional"] = yield from _optional_selection(
                 context,
                 runner,
                 already_on_optional_page=True,
             )
     try:
-        enter_xianzang(context)
+        yield from enter_xianzang(context)
     except XianzangActivityUnavailable as exc:
         return _unavailable_result(
             runner,
@@ -263,10 +264,10 @@ def _execute_xianzang_standard_job(
         )
 
     _record_availability(available=True, reason="已进入 #447")
-    details = workflow(context, runner, resumed)
+    details = yield from workflow(context, runner, resumed)
     if isinstance(resumed.get("draw_result"), dict):
         details["resumed_draw_result"] = resumed["draw_result"]
-    final_scene, final_score = leave_xianzang(context)
+    final_scene, final_score = yield from leave_xianzang(context)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError(
             f"{spec.task_label} 收尾未可靠回到 #34："
@@ -295,13 +296,13 @@ def _run_xianzang_config_workflow(
 ) -> dict[str, Any]:
     optional = resumed.get("optional")
     if not isinstance(optional, dict):
-        optional = _optional_selection(context, runner)
-    store = complete_xianzang_store(context)
-    tasks = complete_xianzang_tasks(context)
+        optional = yield from _optional_selection(context, runner)
+    store = yield from complete_xianzang_store(context)
+    tasks = yield from complete_xianzang_tasks(context)
     # The first phase consumes only complete ten-draw batches and preserves the
     # 0..9 remainder.  The 21:10 job claims late tasks, then switches between
     # ten/single draws as needed to exhaust the same Thursday-scoped instance.
-    lottery = complete_xianzang_config_ten_draws(context)
+    lottery = yield from complete_xianzang_config_ten_draws(context)
     return {
         "optional": optional,
         "store_clicked_values": list(store.clicked_values),
@@ -316,8 +317,8 @@ def _run_xianzang_lottery_workflow(
     _runner: Any,
     _resumed: dict[str, Any],
 ) -> dict[str, Any]:
-    tasks = complete_xianzang_tasks(context)
-    lottery = complete_xianzang_lottery(context)
+    tasks = yield from complete_xianzang_tasks(context)
+    lottery = yield from complete_xianzang_lottery(context)
     return {
         "task_clicked_count": tasks.clicked_count,
         "task_stop_reason": tasks.stop_reason,
@@ -332,7 +333,7 @@ def execute_xianzang_config_job(
     stop_event: threading.Event,
 ) -> dict[str, Any]:
     del payload
-    return _execute_xianzang_standard_job(
+    return (yield from _execute_xianzang_standard_job(
         runner,
         ctx,
         stop_event,
@@ -344,7 +345,7 @@ def execute_xianzang_config_job(
         workflow=_run_xianzang_config_workflow,
         resume_optional_page=True,
         resume_draw_result_page=True,
-    )
+    ))
 
 
 def execute_xianzang_lottery_job(
@@ -354,7 +355,7 @@ def execute_xianzang_lottery_job(
     stop_event: threading.Event,
 ) -> dict[str, Any]:
     del payload
-    return _execute_xianzang_standard_job(
+    return (yield from _execute_xianzang_standard_job(
         runner,
         ctx,
         stop_event,
@@ -365,7 +366,7 @@ def execute_xianzang_lottery_job(
         ),
         workflow=_run_xianzang_lottery_workflow,
         resume_draw_result_page=True,
-    )
+    ))
 
 
 __all__ = [

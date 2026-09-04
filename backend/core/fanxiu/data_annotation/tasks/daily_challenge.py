@@ -93,7 +93,7 @@ class DailyChallengeTaskMixin:
 
         task_label = "日常_每日副本"
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = context.sample_scene_once([226, 225, 224, 223, 69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([226, 225, 224, 223, 69, 34], update=True))
         text = context.ocr_text(frame)
         if self._daily_dungeon_text_is_result(text):
             return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
@@ -118,7 +118,7 @@ class DailyChallengeTaskMixin:
             while time.monotonic() - start < float(payload.get("entry_ocr_retry_seconds") or 5.0):
                 self._raise_if_stopped(stop_event)
                 yield BehaviorTreeStatus.RUNNING
-                scene_id, _score, frame = context.sample_scene_once([226, 225, 224, 223, 69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([226, 225, 224, 223, 69, 34], update=True))
                 if scene_id in {69, 34}:
                     break
                 if scene_id == 226:
@@ -149,7 +149,7 @@ class DailyChallengeTaskMixin:
                     return (yield from self._click_daily_dungeon_recommend_and_buy(ctx, stop_event, payload, image222, image223, image224, image225, task_label=task_label))
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame = context.sample_scene_once([69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
                 text = context.ocr_text(frame)
             if scene_id != 69:
                 yield from self._enter_daily_from_world_like(
@@ -249,7 +249,7 @@ class DailyChallengeTaskMixin:
             timeout_key="recommend_timeout",
         )
         yield from context.wait_action_settle(float(payload.get("recommend_click_settle_seconds") or 2.0))
-        scene_id, score, frame = context.sample_scene_once(update=True)
+        scene_id, score, frame = (yield from context.current_scene(update=True))
         text = context.ocr_text(frame)
         with self._lock:
             self._set_status_locked(
@@ -376,7 +376,7 @@ class DailyChallengeTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, _frame = context.sample_scene_once([226], update=True)
+            scene_id, score, _frame = (yield from context.current_scene([226], update=True))
             last_scene_id, last_score = scene_id, score
             if scene_id == 226:
                 yield from self._click_shape_respecting_conditions(
@@ -490,7 +490,7 @@ class DailyChallengeTaskMixin:
                 return "success"
             if self._daily_dungeon_text_is_completed(text):
                 return (yield from self._finish_daily_dungeon_completed(ctx, stop_event, payload, text=text, task_label=task_label))
-            scene_id, _score, _frame = context.sample_scene_once([227, 223, 34], update=False)
+            scene_id, _score, _frame = (yield from context.current_scene([227, 223, 34], update=False))
             if scene_id == 34:
                 raise RuntimeError(f"{task_label}：扫荡后直接回到世界，但未识别 #227 奖励结果或 #223 次数归零，禁止按完成处理")
             if time.monotonic() - start >= timeout:
@@ -533,7 +533,7 @@ class DailyChallengeTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([223, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([223, 34], update=True))
             text = context.ocr_text(frame)
             last_text = text or last_text
             if scene_id == 34 and not self._daily_dungeon_text_is_entry(text):
@@ -568,7 +568,7 @@ class DailyChallengeTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, _frame = context.sample_scene_once([224, 225, 223], update=True)
+            scene_id, score, _frame = (yield from context.current_scene([224, 225, 223], update=True))
             last_scene_id, last_score = scene_id, score
             if scene_id == 224:
                 self._log("success", f"{label}：进入 #224 购买破界符")
@@ -733,7 +733,7 @@ class DailyChallengeTaskMixin:
         image221 = images.get(221)
 
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = context.sample_scene_once([221, 219, 218, 217, 216, 215, 69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([221, 219, 218, 217, 216, 215, 69, 34], update=True))
         text = context.ocr_text(frame)
         if scene_id == 221:
             return (yield from self._click_daily_shuangxiu_continue(ctx, stop_event, payload))
@@ -753,7 +753,7 @@ class DailyChallengeTaskMixin:
             if scene_id != 34:
                 raise RuntimeError("日常_双修：当前不在可识别的世界、日常页或双修秘术页，无法开始")
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="日常_双修")):
-                scene_id, _score, frame = context.sample_scene_once([215, 69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([215, 69, 34], update=True))
                 if scene_id == 215:
                     return (yield from self._click_daily_shuangxiu_first_book(ctx, stop_event, payload, frame=frame))
             if scene_id != 69:
@@ -1002,7 +1002,7 @@ class DailyChallengeTaskMixin:
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
         context.clear_frame()
         for _index in range(4):
-            scene_id, _score, frame = context.sample_scene_once([34, 69, 188, 187, 183], update=True)
+            scene_id, _score, frame = (yield from context.current_scene([34, 69, 188, 187, 183], update=True))
             text = context.ocr_text(frame)
             if scene_id in {34, 69, 188, 187, 183}:
                 break
@@ -1021,7 +1021,7 @@ class DailyChallengeTaskMixin:
             context.click_shape_center(back_image, "返回")
             yield from context.wait_action_settle(2.0)
             context.clear_frame()
-        scene_id, _score, _frame = context.sample_scene_once([34, 188, 187, 183, 69], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([34, 188, 187, 183, 69], update=True))
         if scene_id == 34:
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
@@ -1090,7 +1090,7 @@ class DailyChallengeTaskMixin:
                 yield from context.wait_action_settle(2.0)
             yield from context.wait_scene([34], wait=18.0, label=f"{task_label}：等待世界 #34")
         context.clear_frame()
-        scene_id, _score, _frame = context.sample_scene_once([34], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([34], update=True))
         if scene_id != 34:
             raise RuntimeError(f"{task_label}：收尾回世界后仍识别为 #{scene_id or 'unknown'}")
         with self._lock:
@@ -1123,7 +1123,7 @@ class DailyChallengeTaskMixin:
         start = time.monotonic()
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([188, 189, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([188, 189, 69, 34], update=True))
             lines = context.ocr_fragments(frame)
             text = context.ocr_text(frame)
             if self._daily_free_challenge_text_is_purchase_modal(text):
@@ -1256,11 +1256,11 @@ class DailyChallengeTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError(f"缺少{task_label}资产树路径，无法执行作业")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = context.sample_scene_once([223, 188, 189, 69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([223, 188, 189, 69, 34], update=True))
         text = context.ocr_text(frame)
         if scene_id == 223 or self._daily_dungeon_text_is_entry(text) or self._daily_dungeon_text_is_completed(text):
             yield from self._return_daily_dungeon_to_world(ctx, stop_event, payload, task_label=task_label)
-            scene_id, _score, frame = context.sample_scene_once([188, 189, 69, 34], update=True)
+            scene_id, _score, frame = (yield from context.current_scene([188, 189, 69, 34], update=True))
             text = context.ocr_text(frame)
         if self._daily_free_challenge_text_is_purchase_modal(text):
             return (yield from self._finish_daily_free_challenge_purchase_modal(
@@ -1328,7 +1328,7 @@ class DailyChallengeTaskMixin:
             return result
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label=task_label)):
-                scene_id, _score, frame = context.sample_scene_once([188, 189, 69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([188, 189, 69, 34], update=True))
                 text = context.ocr_text(frame)
             if scene_id not in {69, 188, 189}:
                 scene_id = yield from self._enter_daily_from_world_like(
@@ -1534,7 +1534,7 @@ class DailyChallengeTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([204, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([204, 69, 34], update=True))
             last_scene_id, last_score = scene_id, score
             if scene_id == 204:
                 return 204, float(score)
@@ -1576,7 +1576,7 @@ class DailyChallengeTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([275, 237, 204, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([275, 237, 204, 69, 34], update=True))
             text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
@@ -1705,7 +1705,7 @@ class DailyChallengeTaskMixin:
         yield from context.wait_action_settle(float(payload.get("assistant_list_state_initial_settle_seconds") or 1.0))
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([275, 237, 204, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([275, 237, 204, 69, 34], update=True))
             text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if self._daily_assistant_scene_or_text_is_list(scene_id, text):
@@ -1835,7 +1835,7 @@ class DailyChallengeTaskMixin:
         execution_evidence = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([276, 277, 275, 237, 204, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([276, 277, 275, 237, 204, 69, 34], update=True))
             text = context.ocr_text(frame)
             if scene_id in {69, 34}:
                 raise RuntimeError(
@@ -1891,7 +1891,7 @@ class DailyChallengeTaskMixin:
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            scene_id, score, frame = context.sample_scene_once([275, 237, 204, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([275, 237, 204, 69, 34], update=True))
             text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if scene_id == 237:
@@ -1963,7 +1963,7 @@ class DailyChallengeTaskMixin:
                     "日常_助手：等待 #277 进度或 #275 结果超时，"
                     f"最后 {scene_text} {last_score:.0f}%，OCR={last_text[:160]}"
                 )
-            scene_id, score, frame = context.sample_scene_once([277, 275, 204, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([277, 275, 204, 69, 34], update=True))
             text = context.ocr_text(frame)
             last_scene_id, last_score, last_text = scene_id, score, text
             if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
@@ -2010,7 +2010,7 @@ class DailyChallengeTaskMixin:
             if False:
                 yield None
             return
-        scene_id, _score, frame = context.sample_scene_once([275, 237, 204, 69, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([275, 237, 204, 69, 34], update=True))
         text = context.ocr_text(frame)
         if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
             self._daily_assistant_close_one_key_result(ctx, context, frame, label="日常_助手")
@@ -2027,7 +2027,7 @@ class DailyChallengeTaskMixin:
             current_scene = int(scene_id)
         if current_scene == 204:
             for _attempt in range(3):
-                scene_id, _score, frame = context.sample_scene_once([275, 237, 204, 69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([275, 237, 204, 69, 34], update=True))
                 text = context.ocr_text(frame)
                 if scene_id == 275 or self._daily_assistant_text_is_one_key_result(text):
                     self._daily_assistant_close_one_key_result(ctx, context, frame, label="日常_助手")
@@ -2123,11 +2123,11 @@ class DailyChallengeTaskMixin:
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_助手资产树路径，无法执行作业")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = context.sample_scene_once([34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([34], update=True))
         text = context.ocr_text(frame)
         if scene_id != 69:
             if (yield from self._leave_world_side_scene_if_present(ctx, stop_event, frame, text, label="日常_助手")):
-                scene_id, _score, frame = context.sample_scene_once([69, 34], update=True)
+                scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
                 text = context.ocr_text(frame)
             if scene_id != 69:
                 scene_id = yield from self._enter_daily_from_world_like(
@@ -2306,7 +2306,7 @@ class DailyChallengeTaskMixin:
         while True:
             self._raise_if_stopped(stop_event)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = context.sample_scene_once([199, 198, 197, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([199, 198, 197, 69, 34], update=True))
             text = context.ocr_text(frame)
             last_scene_id, last_score = scene_id, score
             if scene_id == 197 and not self._daily_xianyuan_text_is_people_list(text):
@@ -2535,7 +2535,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             context.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = context.sample_scene_once([199, 198, 197, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([199, 198, 197, 69, 34], update=True))
             last_scene_id, last_score = scene_id, score
             text = context.ocr_text(frame)
             if self._daily_xianyuan_text_is_dialogue(text):
@@ -2623,7 +2623,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             context.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = context.sample_scene_once([199, 198, 197, 69, 34], update=True)
+            scene_id, score, frame = (yield from context.current_scene([199, 198, 197, 69, 34], update=True))
             last_scene_id, last_score = scene_id, score
             text = context.ocr_text(frame)
             if self._daily_xianyuan_text_is_dialogue(text):
@@ -2762,7 +2762,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, _score, frame = observer.sample_scene_once(challenge_scene_ids, update=True)
+            scene_id, _score, frame = (yield from observer.current_scene(challenge_scene_ids, update=True))
             if scene_id in DAILY_XIANYUAN_CHALLENGE_LAYER0_SCENE_IDS:
                 break
             lines = observer.ocr_fragments(frame)
@@ -2788,7 +2788,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, _score, frame = observer.sample_scene_once(challenge_scene_ids, update=True)
+            scene_id, _score, frame = (yield from observer.current_scene(challenge_scene_ids, update=True))
             lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
             if scene_id == 201:
@@ -2842,7 +2842,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, _score, frame = observer.sample_scene_once(challenge_scene_ids, update=True)
+            scene_id, _score, frame = (yield from observer.current_scene(challenge_scene_ids, update=True))
             if scene_id == 202:
                 break
             lines = observer.ocr_fragments(frame)
@@ -2919,7 +2919,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = observer.sample_scene_once(DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS, update=True)
+            scene_id, score, frame = (yield from observer.current_scene(DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS, update=True))
             if scene_id == 34:
                 with self._lock:
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {score:.0f}%")
@@ -2996,7 +2996,7 @@ class DailyChallengeTaskMixin:
 
     def _return_daily_xianyuan_current_to_world(self, ctx: dict[str, Any], stop_event: threading.Event):
         observer = self._fanxiu_observer(ctx, stop_event)
-        scene_id, score, frame = observer.sample_scene_once(DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS, update=True)
+        scene_id, score, frame = (yield from observer.current_scene(DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS, update=True))
         if scene_id == 34:
             with self._lock:
                 self._status.update({"current_scene": 34, "updated_at": time.time()})
@@ -3020,7 +3020,7 @@ class DailyChallengeTaskMixin:
             self._log_locked("action", f"日常_挑战仙缘：点击 #{scene_id}「返回」")
             observer.click_shape_center(View(image), "返回")
             yield from observer.wait_action_settle(2.0)
-            next_scene_id, next_score, frame = observer.sample_scene_once([34, 69], update=True)
+            next_scene_id, next_score, frame = (yield from observer.current_scene([34, 69], update=True))
             if next_scene_id == 34:
                 with self._lock:
                     self._status.update({"current_scene": 34, "updated_at": time.time()})
@@ -3038,7 +3038,7 @@ class DailyChallengeTaskMixin:
         if not isinstance(image69, dict):
             raise RuntimeError("日常_挑战仙缘：缺少 #69「日常」标注，无法回世界")
         observer = self._fanxiu_observer(ctx, stop_event)
-        scene_id, _score, frame = observer.sample_scene_once([69, 34], update=True)
+        scene_id, _score, frame = (yield from observer.current_scene([69, 34], update=True))
         if scene_id == 34:
             return "success"
         if scene_id != 69:
@@ -3058,7 +3058,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = observer.sample_scene_once([34], update=True)
+            scene_id, score, frame = (yield from observer.current_scene([34], update=True))
             last_scene_id, last_score = scene_id, score
             if scene_id == 34:
                 with self._lock:
@@ -3094,9 +3094,11 @@ class DailyChallengeTaskMixin:
         if not all(isinstance(item, dict) for item in (image184, image185, image187, image188, image189)):
             raise RuntimeError("缺少 #184/#185/#187/#188/#189 灵祖挑战标注，无法挑战灵祖")
 
-        observer = context if hasattr(context, "sample_scene_once") and hasattr(context, "ocr_text") else self._fanxiu_observer(ctx, stop_event)
+        if not hasattr(context, "current_scene") or not hasattr(context, "ocr_text"):
+            raise RuntimeError("日常_灵祖要求正式 BehaviorTreeContext 场景接口")
+        observer = context
         action_context = context if hasattr(context, "wait_click") else self._behavior_tree_context(ctx, ctx.get("asset_tree_path") if isinstance(ctx.get("asset_tree_path"), Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = observer.sample_scene_once([184, 185, 186, 187, 188, 189, 34], update=True)
+        scene_id, _score, frame = (yield from observer.current_scene([184, 185, 186, 187, 188, 189, 34], update=True))
         if self._daily_lingzu_text_is_detail(observer.ocr_text(frame)):
             scene_id = 184
         if scene_id == 184:
@@ -3159,7 +3161,7 @@ class DailyChallengeTaskMixin:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = observer.sample_scene_once([34, 185, 186, 188, 189], update=True)
+            scene_id, score, frame = (yield from observer.current_scene([34, 185, 186, 188, 189], update=True))
             text = observer.ocr_text(frame)
             if scene_id == 185 or "跳过" in text:
                 skip_shape = self._find_shape(image185, "跳过")

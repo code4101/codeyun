@@ -52,7 +52,7 @@ def _page_from_observation(
 
 
 def read_kunlun_page(context: Any, *, update: bool = True) -> KunlunPageResult | None:
-    scene_id, score, frame = context.sample_scene_once(
+    scene_id, score, frame = yield from context.current_scene(
         list(KUNLUN_KNOWN_SCENE_IDS), update=bool(update)
     )
     return _page_from_observation(scene_id, float(score or 0), context.ocr_text(frame))
@@ -64,13 +64,13 @@ def _wait_kunlun_page(
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     result = None
     while True:
-        result = read_kunlun_page(context, update=True)
+        result = yield from read_kunlun_page(context, update=True)
         if result is not None and result.page == page:
             return result
         if time.monotonic() >= deadline:
             observed = result.page if result is not None else "unknown"
             raise RuntimeError(f"等待昆仑秘藏页面「{page}」超时，当前={observed}")
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
 
 
 def enter_kunlun(
@@ -82,7 +82,7 @@ def enter_kunlun(
     availability_timeout_seconds: float = 60.0,
     availability_poll_seconds: float = 1.0,
 ) -> KunlunPageResult:
-    current = read_kunlun_page(context, update=True)
+    current = yield from read_kunlun_page(context, update=True)
     if current is not None:
         # A failed/interrupted configuration may legitimately leave #541 open.
         # Let the idempotent workflow continue from the currently visible form
@@ -92,7 +92,9 @@ def enter_kunlun(
 
     deadline = time.monotonic() + max(0.5, float(availability_timeout_seconds))
     while True:
-        scene_id, score, frame = context.sample_scene_once([int(source_scene_id)], update=True)
+        scene_id, score, frame = yield from context.current_scene(
+            [int(source_scene_id)], update=True, label="昆仑秘藏：识别活动入口"
+        )
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
                 f"进入昆仑秘藏要求从可靠 #{source_scene_id} 开始："
@@ -105,7 +107,9 @@ def enter_kunlun(
                 f"可靠 #{source_scene_id} 菜单连续 {availability_timeout_seconds:.0f} 秒"
                 "未识别到昆仑秘藏"
             )
-        time.sleep(max(0.05, float(availability_poll_seconds)))
+        yield from context.wait_action_settle(
+            max(0.05, float(availability_poll_seconds))
+        )
     context.click_ocr_text(
         int(source_scene_id),
         "昆仑秘藏",
@@ -114,9 +118,9 @@ def enter_kunlun(
         min_similarity=70.0,
         ambiguity_margin=5.0,
     )
-    return _wait_kunlun_page(
+    return (yield from _wait_kunlun_page(
         context, "昆仑秘藏", timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
-    )
+    ))
 
 
 def open_kunlun_tab(
@@ -129,7 +133,7 @@ def open_kunlun_tab(
     target = str(tab or "").strip()
     if target not in {"昆仑秘藏", "任务", "商店"}:
         raise ValueError(f"尚未实现的昆仑秘藏页签：{tab!r}")
-    current = read_kunlun_page(context, update=True)
+    current = yield from read_kunlun_page(context, update=True)
     if current is None:
         raise RuntimeError("当前不在可靠的昆仑秘藏系列页面，拒绝切换页签")
     if current.page == target:
@@ -140,9 +144,9 @@ def open_kunlun_tab(
     if target == "昆仑秘藏" and current.scene_id == KUNLUN_TASK_SCENE_ID:
         click_shape_title = "kunlun昆仑秘藏"
     context.click_shape(int(click_scene_id), click_shape_title, frame_data_url=frame)
-    return _wait_kunlun_page(
+    return (yield from _wait_kunlun_page(
         context, target, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
-    )
+    ))
 
 
 def open_kunlun_optional_reward(
@@ -151,16 +155,16 @@ def open_kunlun_optional_reward(
     timeout_seconds: float = KUNLUN_PAGE_WAIT_TIMEOUT_SECONDS,
     poll_seconds: float = 0.25,
 ) -> KunlunPageResult:
-    open_kunlun_tab(context, "昆仑秘藏", timeout_seconds=timeout_seconds)
+    yield from open_kunlun_tab(context, "昆仑秘藏", timeout_seconds=timeout_seconds)
     frame = context.cur_frame(update=True)
     context.click_shape(
         KUNLUN_MAIN_SCENE_ID,
         "自选未配置入口",
         frame_data_url=frame,
     )
-    return _wait_kunlun_page(
+    return (yield from _wait_kunlun_page(
         context, "自选", timeout_seconds=timeout_seconds, poll_seconds=poll_seconds
-    )
+    ))
 
 
 def leave_kunlun(
@@ -169,16 +173,18 @@ def leave_kunlun(
     timeout_seconds: float = KUNLUN_PAGE_WAIT_TIMEOUT_SECONDS,
     poll_seconds: float = 0.25,
 ) -> tuple[int, float]:
-    open_kunlun_tab(context, "昆仑秘藏", timeout_seconds=timeout_seconds)
+    yield from open_kunlun_tab(context, "昆仑秘藏", timeout_seconds=timeout_seconds)
     frame = context.cur_frame(update=True)
     context.click_shape(KUNLUN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        scene_id, score, _ = context.sample_scene_once([34, KUNLUN_MAIN_SCENE_ID], update=True)
+        scene_id, score, _ = yield from context.current_scene(
+            [34, KUNLUN_MAIN_SCENE_ID], update=True, label="昆仑秘藏：等待返回世界"
+        )
         if int(scene_id or 0) == 34 and float(score or 0) >= 90.0:
             return 34, float(score)
         if time.monotonic() >= deadline:
             raise RuntimeError(
                 f"#540[返回] 后未可靠回到 #34：scene={scene_id}, score={score:.1f}"
             )
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))

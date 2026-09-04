@@ -35,10 +35,10 @@ class ZhenxieTaskMixin:
     def _enter_daily_zhenxie(self, context: Any):
         """Enter the event from any valid timed-event landing scene."""
 
-        scene_id, _score, _frame = context.sample_scene_once(
+        scene_id, _score, _frame = (yield from context.current_scene(
             [63, 271, 272, 85, 34, 66],
             update=True,
-        )
+        ))
         current = scene_id
         if current not in {63, 271, 272, 85}:
             yield from context.go_scene(66)

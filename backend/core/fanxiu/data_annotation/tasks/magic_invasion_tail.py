@@ -246,10 +246,10 @@ def execute_magic_invasion_tail_checkpoint(
         session.commit()
 
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    dialog_scene, _dialog_score, _dialog_frame = context.sample_scene_once(
+    dialog_scene, _dialog_score, _dialog_frame = (yield from context.current_scene(
         (COMMON_SHOP_DIALOG_SCENE,),
         update=True,
-    )
+    ))
     if dialog_scene == COMMON_SHOP_DIALOG_SCENE:
         context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "关闭详情")
         yield from _wait_exchange_shop_ready(
@@ -276,10 +276,10 @@ def execute_magic_invasion_tail_checkpoint(
             wait=20.0,
             label=f"{label}：从本期兑换宝阁返回活动主页",
         )
-    current_scene, _score, _frame = context.sample_scene_once(
+    current_scene, _score, _frame = (yield from context.current_scene(
         (34, 66),
         update=True,
-    )
+    ))
     if current_scene == 34:
         yield from context.go_scene(66)
     elif current_scene != 66:
@@ -371,10 +371,10 @@ def execute_magic_invasion_tail_checkpoint(
         wait=30.0,
         label=f"{label}：等待结束态活动页",
     )
-    scene, _score, _frame = context.sample_scene_once(
+    scene, _score, _frame = (yield from context.current_scene(
         (509, 519, 520, 521, MAGIC_ENDED_HOME_SCENE),
         update=True,
-    )
+    ))
     if scene != MAGIC_SHOP_SCENE:
         if scene not in {509, 520, 521, MAGIC_ENDED_HOME_SCENE}:
             raise RuntimeError(f"{label}：活动页场景无法对齐：{scene}")
@@ -517,10 +517,10 @@ def execute_magic_invasion_tail_checkpoint(
         wait=20.0,
         label=f"{label}：离开兑换宝阁",
     )
-    landed, _score, _frame = context.sample_scene_once(
+    landed, _score, _frame = (yield from context.current_scene(
         (34, 509, MAGIC_ENDED_HOME_SCENE),
         update=True,
-    )
+    ))
     if landed != 34:
         yield from context.go_scene(34)
     return {

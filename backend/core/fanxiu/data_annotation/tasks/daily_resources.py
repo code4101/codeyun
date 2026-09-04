@@ -110,7 +110,7 @@ class DailyResourceTaskMixin:
         image256 = context.view(256).raw
         image257 = context.view(257).raw
 
-        scene_id, _score, frame = context.sample_scene_once([34, 47, 251, 252, 255, 256, 257], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([34, 47, 251, 252, 255, 256, 257], update=True))
         accepted = 0
         upgraded = 0
         if scene_id == 255:
@@ -118,14 +118,14 @@ class DailyResourceTaskMixin:
             scene_id = 254
         if scene_id == 47:
             yield from context.wait_click(47, "空白")
-            scene_id, _score, frame = context.sample_scene_once([34, 251, 252, 255, 256, 257], update=True)
+            scene_id, _score, frame = (yield from context.current_scene([34, 251, 252, 255, 256, 257], update=True))
         if scene_id == 257:
             yield from context.wait_click(257, "空白")
             yield from context.wait_action_settle(1.2)
             scene_id = 252
         if scene_id == 256:
             yield from context.wait_click(256, "返回")
-            scene_id, _score, frame = context.sample_scene_once([34, 252], update=True)
+            scene_id, _score, frame = (yield from context.current_scene([34, 252], update=True))
 
         if self._daily_gongfeng_upgrade_page_visible(context, frame):
             upgraded = yield from self._upgrade_daily_gongfeng_until_insufficient(ctx, stop_event, payload, image254, image255, context)
@@ -284,7 +284,7 @@ class DailyResourceTaskMixin:
                 try:
                     yield from self._wait_daily_gongfeng_upgrade_page(context)
                 except TimeoutError:
-                    scene_id, score, _frame = context.sample_scene_once([34, 252, 256], update=True)
+                    scene_id, score, _frame = (yield from context.current_scene([34, 252, 256], update=True))
                     if scene_id in {34, 252, 256}:
                         self._log("success", f"日常_供奉：升级后已离开 #254，到达 #{scene_id} {score:.0f}%，升级 {upgraded} 次")
                         return upgraded
@@ -335,7 +335,7 @@ class DailyResourceTaskMixin:
         context: Any,
     ):
         del ctx, stop_event, image255
-        scene_id, _score, _frame = context.sample_scene_once([255], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([255], update=True))
         if scene_id != 255:
             return False
         self._log("action", "日常_供奉：关闭 #255 物品详情")
@@ -353,7 +353,7 @@ class DailyResourceTaskMixin:
         context: BehaviorTreeContext,
     ):
         del image254
-        scene_id, score, _frame = context.sample_scene_once([34, 252, 254, 256], update=True)
+        scene_id, score, _frame = (yield from context.current_scene([34, 252, 254, 256], update=True))
         if scene_id in {34, 252}:
             self._log("success", f"日常_供奉：已在收尾场景 #{scene_id} {score:.0f}%，无需关闭 #254")
             return "success"
@@ -364,7 +364,7 @@ class DailyResourceTaskMixin:
         try:
             yield from self._wait_daily_gongfeng_upgrade_page(context)
         except TimeoutError:
-            scene_id, score, _frame = context.sample_scene_once([34, 252, 256], update=True)
+            scene_id, score, _frame = (yield from context.current_scene([34, 252, 256], update=True))
             if scene_id in {34, 252}:
                 self._log("success", f"日常_供奉：未再检测到 #254，当前 #{scene_id} {score:.0f}%，按已收尾处理")
                 return "success"
@@ -611,7 +611,7 @@ class DailyResourceTaskMixin:
                     timeout=timeout,
                     label=f"{label}：确认游历菜单已选中",
                 )
-                scene_id, score, _frame = context.sample_scene_once([target_scene_id], update=True)
+                scene_id, score, _frame = (yield from context.current_scene([target_scene_id], update=True))
         self._log("success", f"{label}：已到达 #{target_scene_id} {score:.0f}%")
         return scene_id, score
 
@@ -731,7 +731,7 @@ class DailyResourceTaskMixin:
             yield from context.wait_click(229, "购买并使用")
             clicked += 1
             yield from context.wait_action_settle(float(payload.get("purchase_click_settle_seconds") or 1.2))
-            scene_id, _score, frame = context.sample_scene_once([233, 229], update=True)
+            scene_id, _score, frame = (yield from context.current_scene([233, 229], update=True))
             text = context.ocr_text(frame)
             self._log("detail", f"{task_label}：购买并使用 {clicked}/{target_count} 后 OCR={text[:120]}")
             if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
@@ -742,7 +742,7 @@ class DailyResourceTaskMixin:
                 self._log("success", f"{task_label}：购买弹窗已关闭，停止购买")
                 return "success"
         if clicked > 0:
-            scene_id, _score, frame = context.sample_scene_once([229, 228, 233], update=True)
+            scene_id, _score, frame = (yield from context.current_scene([229, 228, 233], update=True))
             text = context.ocr_text(frame)
             if scene_id == 233 or self._daily_youli_text_is_purchase_empty(text):
                 yield from self._close_daily_youli_purchase_empty_and_wait_home(ctx, stop_event, image233, task_label=task_label)
@@ -764,7 +764,7 @@ class DailyResourceTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = context.sample_scene_once([236, 228], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([236, 228], update=True))
         text = context.ocr_text(frame)
         if scene_id == 236 or self._daily_youli_text_is_region_detail(text):
             self._log("success", f"{task_label}：当前已在游历区域详情，直接执行快速游历")
@@ -901,7 +901,7 @@ class DailyResourceTaskMixin:
         )
         if not entered:
             raise RuntimeError(f"{task_label}：区域返回落到世界，主线快路径未能重新进入游历")
-        scene_id, _score, _frame = context.sample_scene_once([71, 228], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([71, 228], update=True))
         if scene_id == 71:
             yield from self._select_daily_youli_from_xiuxianzhuan_menu(ctx, stop_event, payload, image71, task_label=task_label)
         yield from self._wait_daily_youli_home(ctx, stop_event, timeout=18.0, label=f"{task_label}：等待重新进入修仙传游历 #228")
@@ -939,7 +939,7 @@ class DailyResourceTaskMixin:
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        scene_id, _score, frame = context.sample_scene_once([236, 228, 34], update=True)
+        scene_id, _score, frame = (yield from context.current_scene([236, 228, 34], update=True))
         text = context.ocr_text(frame)
         if self._daily_youli_text_is_reward_recovery(text):
             return (yield from self._return_daily_youli_reward_recovery_to_world(ctx, stop_event, task_label=task_label))
@@ -1139,7 +1139,7 @@ class DailyResourceTaskMixin:
         phase = self._xianshi_weekly_resources_phase(payload)
 
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame = context.sample_scene_once([316, 247, 34], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([316, 247, 34], update=True))
         claimed: list[str] = []
         claim_attempts = 0
         uncertain_detail = False
@@ -1487,7 +1487,7 @@ class DailyResourceTaskMixin:
         for click_index in range(3):
             yield from context.wait_click(316, "领取")
             yield from context.wait_action_settle(1.2)
-            scene_id, _score, _frame = context.sample_scene_once([247, 316], update=True)
+            scene_id, _score, _frame = (yield from context.current_scene([247, 316], update=True))
             if scene_id == 247:
                 self._log("success", f"仙市_每周资源：已领取 {name_text}，并确认返回列表")
                 return {"status": "claimed", "item": str(name_text or expected_group)}
@@ -1532,7 +1532,7 @@ class DailyResourceTaskMixin:
 
         task_label = "日常_vip"
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, _frame = context.sample_scene_once([34], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([34], update=True))
         if scene_id != 34:
             with self._lock:
                 self._set_status_locked(

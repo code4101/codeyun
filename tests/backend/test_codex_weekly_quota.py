@@ -34,7 +34,7 @@ def test_parse_codex_weekly_quota_uses_main_weekly_limit_instead_of_spark():
     }
 
 
-def test_record_codex_weekly_quota_attributes_midnight_snapshot_to_previous_day(tmp_path):
+def test_record_codex_weekly_quota_attributes_midnight_snapshot_to_observed_day(tmp_path):
     history_path = tmp_path / "weekly_quota_history.json"
     record_codex_weekly_quota_snapshot(
         remaining_percent=40,
@@ -49,11 +49,36 @@ def test_record_codex_weekly_quota_attributes_midnight_snapshot_to_previous_day(
 
     assert list_codex_weekly_quota_snapshots(history_path) == [
         {
-            "date": "2026-08-06",
+            "date": "2026-08-07",
             "remaining_percent": 39,
             "observed_at": "2026-08-07T00:03:00",
             "reset_at": "",
             "source_url": CODEX_USAGE_URL,
+        }
+    ]
+
+
+def test_read_codex_weekly_quota_migrates_legacy_previous_day_dates(tmp_path):
+    history_path = tmp_path / "weekly_quota_history.json"
+    history_path.write_text(
+        """{
+  "version": 1,
+  "snapshots": [
+    {
+      "date": "2026-09-03",
+      "remaining_percent": 37,
+      "observed_at": "2026-09-04T00:00:01"
+    }
+  ]
+}""",
+        encoding="utf-8",
+    )
+
+    assert list_codex_weekly_quota_snapshots(history_path) == [
+        {
+            "date": "2026-09-04",
+            "remaining_percent": 37,
+            "observed_at": "2026-09-04T00:00:01",
         }
     ]
 
@@ -105,7 +130,7 @@ def test_collect_codex_weekly_quota_writes_snapshot_and_closes_its_success_tab(t
         timeout_seconds=1,
     )
 
-    assert result["date"] == "2026-08-06"
+    assert result["date"] == "2026-08-07"
     assert result["remaining_percent"] == 40
     assert browser.tab.closed is True
 
@@ -125,10 +150,11 @@ def test_codex_weekly_quota_is_optional_standard_daily_midnight_job():
 def test_codex_weekly_quota_api_returns_calendar_snapshots(client, auth_user, monkeypatch):
     monkeypatch.setattr(
         "backend.api.notes.list_codex_weekly_quota_snapshots",
-        lambda: [{"date": "2026-08-06", "remaining_percent": 40, "observed_at": "2026-08-07T00:00:00"}],
+        lambda: [{"date": "2026-08-07", "remaining_percent": 40, "observed_at": "2026-08-07T00:00:00"}],
     )
 
     response = client.get("/api/notes/codex-weekly-quota")
 
     assert response.status_code == 200
+    assert response.json()["snapshots"][0]["date"] == "2026-08-07"
     assert response.json()["snapshots"][0]["remaining_percent"] == 40

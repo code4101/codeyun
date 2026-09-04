@@ -10,6 +10,14 @@ from backend.core.fanxiu.data_annotation.tasks.activity_store import (
 )
 
 
+def _drain(generator):
+    while True:
+        try:
+            next(generator)
+        except StopIteration as stopped:
+            return stopped.value
+
+
 def _tokens(text: str, *, x: float, y: float, line: str) -> list[dict]:
     result = []
     cursor = x
@@ -102,11 +110,17 @@ class _FakeRuntime:
         self.clicks: list[tuple[int, float, float]] = []
         self.frame_id = 0
 
-    def sample_scene_once(self, scene_ids, *, update: bool):
+    def current_scene(self, scene_ids=None, *, update=True, label="识别当前场景"):
         assert update is True
         assert 449 in scene_ids
         self.frame_id += 1
+        if False:
+            yield None
         return 449, 100.0, f"frame-{self.frame_id}"
+
+    def wait_action_settle(self, _seconds):
+        if False:
+            yield None
 
     def ocr_tokens_in_shapes(self, scene_id, shape_titles, *, frame_data_url, padding):
         assert scene_id == 449
@@ -162,13 +176,13 @@ def test_store_operation_applies_explicit_selector_one_fresh_scan_at_a_time(monk
         lambda _seconds: None,
     )
 
-    result = operate_activity_store_region(
+    result = _drain(operate_activity_store_region(
         runtime,
         scene_id=449,
         select_targets=lambda scan: tuple(
             target for target in scan.targets if not target.is_cash
         ),
-    )
+    ))
 
     assert result.clicked_values == (488, 988)
     assert [(target.value, target.is_cash) for target in result.remaining_targets] == [(6, True)]
@@ -182,11 +196,11 @@ def test_store_stability_accepts_bounded_live_ocr_box_jitter(monkeypatch):
         lambda _seconds: None,
     )
 
-    result = operate_activity_store_region(
+    result = _drain(operate_activity_store_region(
         runtime,
         scene_id=449,
         select_targets=lambda scan: scan.targets,
-    )
+    ))
 
     assert result.clicked_values == (248, 988)
 
@@ -198,11 +212,11 @@ def test_store_completion_is_successful_when_region_is_already_empty(monkeypatch
         lambda _seconds: None,
     )
 
-    result = operate_activity_store_region(
+    result = _drain(operate_activity_store_region(
         runtime,
         scene_id=449,
         select_targets=lambda scan: scan.targets,
-    )
+    ))
 
     assert result.completed is True
     assert result.clicked_values == ()
@@ -216,11 +230,11 @@ def test_store_operation_does_nothing_when_business_selector_returns_empty(monke
         lambda _seconds: None,
     )
 
-    result = operate_activity_store_region(
+    result = _drain(operate_activity_store_region(
         runtime,
         scene_id=449,
         select_targets=lambda _scan: (),
-    )
+    ))
 
     assert result.clicked_values == ()
     assert [(target.value, target.is_cash) for target in result.remaining_targets] == [
@@ -237,11 +251,11 @@ def test_store_operation_can_select_cash_only_when_business_explicitly_requests_
         lambda _seconds: None,
     )
 
-    result = operate_activity_store_region(
+    result = _drain(operate_activity_store_region(
         runtime,
         scene_id=449,
         select_targets=lambda scan: tuple(target for target in scan.targets if target.is_cash),
-    )
+    ))
 
     assert result.clicked_values == (6,)
     assert [(target.value, target.is_cash) for target in result.remaining_targets] == [(488, False)]

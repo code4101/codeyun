@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import inspect
 import io
 import threading
@@ -66,27 +67,112 @@ def _png_frame(runner, *, color=(240, 240, 240)) -> str:
 
 def test_scene_api_has_one_waiting_entry_and_no_legacy_aliases() -> None:
     wait_parameters = inspect.signature(BehaviorTreeContext.wait_scene).parameters
-    sample_parameters = inspect.signature(BehaviorTreeContext.sample_scene_once).parameters
+    frame_parameters = inspect.signature(
+        BehaviorTreeContext.recognize_scene_in_frame
+    ).parameters
 
     assert list(wait_parameters) == [
         "self",
         "scenes",
         "wait",
+        "required",
         "label",
     ]
     assert wait_parameters["scenes"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert wait_parameters["wait"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert wait_parameters["wait"].default == 5.0
-    assert "wait" not in sample_parameters
-    assert not hasattr(BehaviorTreeContext, "current_scene")
+    assert list(frame_parameters) == ["self", "views", "frame_data_url"]
     for legacy_name in (
         "recognize_scene",
         "observe_scene",
         "wait_view",
         "wait_view_id",
         "goto_view",
+        "sample_scene_once",
     ):
         assert not hasattr(BehaviorTreeContext, legacy_name)
+
+
+def test_production_data_annotation_has_no_legacy_scene_sampling_calls() -> None:
+    production_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation"
+    offenders = [
+        path
+        for path in production_root.rglob("*.py")
+        if any(
+            legacy_call in path.read_text(encoding="utf-8-sig")
+            for legacy_call in ("sample_scene_once(", "handle_interruptions(")
+        )
+    ]
+
+    assert offenders == []
+
+
+def test_same_frame_recognition_cannot_capture_or_refresh_a_frame() -> None:
+    production_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation"
+    offenders: list[tuple[Path, int, str]] = []
+    for path in production_root.rglob("*.py"):
+        source = path.read_text(encoding="utf-8-sig")
+        tree = ast.parse(source, filename=str(path))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "recognize_scene_in_frame"
+            ):
+                continue
+            keywords = {keyword.arg for keyword in node.keywords}
+            if "frame_data_url" not in keywords or "update" in keywords:
+                offenders.append((path, node.lineno, ",".join(sorted(keywords))))
+
+    assert offenders == []
+
+
+def test_business_tasks_do_not_call_private_scene_identifiers() -> None:
+    tasks_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation" / "tasks"
+    offenders = [
+        path
+        for path in tasks_root.rglob("*.py")
+        if "_identify_scene_number(" in path.read_text(encoding="utf-8-sig")
+    ]
+
+    assert offenders == []
+
+
+def test_current_scene_calls_are_executed_as_behavior_tree_generators() -> None:
+    production_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation"
+    offenders: list[tuple[Path, int]] = []
+    for path in production_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "current_scene"
+            ):
+                continue
+            cursor: ast.AST | None = parents.get(node)
+            consumed = False
+            while cursor is not None and not isinstance(cursor, ast.stmt):
+                if isinstance(cursor, (ast.YieldFrom, ast.Lambda)):
+                    consumed = True
+                    break
+                if (
+                    isinstance(cursor, ast.Call)
+                    and isinstance(cursor.func, ast.Attribute)
+                    and cursor.func.attr in {"execute", "_run_direct_action"}
+                ):
+                    consumed = True
+                    break
+                cursor = parents.get(cursor)
+            if not consumed:
+                offenders.append((path, node.lineno))
+
+    assert offenders == []
 
 
 def test_wait_scene_rejects_an_empty_layer0_collection() -> None:
@@ -98,6 +184,39 @@ def test_wait_scene_rejects_an_empty_layer0_collection() -> None:
         assert "scenes 不能为空" in str(exc)
     else:
         raise AssertionError("empty Layer-0 collection must fail before recognition")
+
+
+def test_current_scene_delegates_to_non_required_wait_scene(monkeypatch) -> None:
+    context = BehaviorTreeContext(create_behavior_tree_executor(), _context())
+    match = SceneMatch(
+        301,
+        score=96.0,
+        matched_layer=0,
+        scope="business",
+        status="matched",
+        frame_data_url="current-frame",
+    )
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def wait_scene(scenes=None, **options):
+        calls.append((scenes, options))
+        if False:
+            yield None
+        return match
+
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+
+    assert _drain_result(context.current_scene([301], label="current")) == (
+        301,
+        96.0,
+        "current-frame",
+    )
+    assert calls == [
+        (
+            [301],
+            {"wait": 0.0, "required": False, "label": "current"},
+        )
+    ]
 
 
 def test_scene_match_is_an_id_with_explicit_recognition_facts() -> None:
@@ -141,6 +260,52 @@ def test_layered_wait_reports_actual_business_layer_not_asset_layer(monkeypatch)
     assert match.matched_layer == 0
     assert match.scope == "business"
     assert score == 95.0
+    assert frame == "frame"
+
+
+def test_popup_layer0_cannot_be_reclassified_as_a_business_scene(monkeypatch) -> None:
+    runner = create_behavior_tree_executor()
+    popup = _scene(313, 2)
+    popup["shapes"].append({"id": "close-313", "title": "空白"})
+    business = _scene(301, 2)
+    raw_context = {
+        "asset_tree": [
+            {"type": "folder", "title": "弹窗", "children": [popup]},
+            business,
+        ],
+        "images": {313: popup, 301: business},
+        "_fanxiu_scene_observation_probe": True,
+    }
+    context = BehaviorTreeContext(runner, raw_context)
+    monkeypatch.setattr(context, "cur_frame", lambda update=False: "frame")
+    recognized = iter((313, 301))
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number_by_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            scene_id=next(recognized),
+            score=99.0,
+            status="matched",
+            matched_layer=0,
+        ),
+    )
+    handled: list[int] = []
+    monkeypatch.setattr(
+        runner,
+        "_handle_recognized_popup_candidate",
+        lambda _context, candidate, **_kwargs: handled.append(
+            runner._image_number(candidate["image"])
+        ) or True,
+    )
+
+    match, score, frame = _drain_result(
+        context._recognize_scene_layers([313, 301], wait=0)
+    )
+
+    assert handled == [313]
+    assert match.scene_id == 301
+    assert match.scope == "business"
+    assert score == 99.0
     assert frame == "frame"
 
 

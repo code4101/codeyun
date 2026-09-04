@@ -9,7 +9,7 @@ class MiscActionTaskMixin:
     def _open_settings_page(self, context: Any):
         """从当前 #34/#35/#49 层级以最短确定路径打开设置页。"""
 
-        scene_id, _score, _frame = context.sample_scene_once([34, 35, 49], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([34, 35, 49], update=True))
         if scene_id == 49:
             self._log("success", "打开设置页：当前已在 #49")
             return 49
@@ -35,7 +35,7 @@ class MiscActionTaskMixin:
     def _leave_settings_page(self, context: Any):
         """沿正式 shape 从 #49/#35 确定性返回世界 #34。"""
 
-        scene_id, score, _frame = context.sample_scene_once([34, 35, 49], update=True)
+        scene_id, score, _frame = (yield from context.current_scene([34, 35, 49], update=True))
         if scene_id == 34:
             self._log("success", "离开设置页：当前已在 #34")
             return 34

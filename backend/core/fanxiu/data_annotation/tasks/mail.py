@@ -1480,12 +1480,10 @@ class MailTaskMixin:
         last_scene_hint: int | None = None
         stable_scene_reads = 0
         while time.monotonic() - started_at < max(1.0, float(timeout)):
-            frame = context.cur_frame(update=True)
-            last_frame = frame
-            scene_id, _score, _current = context.sample_scene_once(
-                [122, 123],
-                frame_data_url=frame,
+            scene_id, _score, frame = yield from context.current_scene(
+                [122, 123], update=True, label="邮件：确认详情浮层"
             )
+            last_frame = frame
             if scene_id not in {122, 123}:
                 # ``current_scene`` also evaluates active business/popup nodes.
                 # A full-screen mail sheet can therefore lose that combined
@@ -1494,7 +1492,7 @@ class MailTaskMixin:
                 # Reuse the strict detail-only graph as an observation fallback;
                 # the existing two-consecutive-frame gate below still prevents
                 # one noisy template match from authorizing a claim click.
-                scene_id = self._mail_detail_overlay_scene(context.ctx, frame)
+                scene_id = self._mail_detail_overlay_scene(context, frame)
             action_scene = self._mail_detail_action_shape_scene(context, frame)
             if action_scene in {122, 123}:
                 scene_id = action_scene
@@ -1615,10 +1613,16 @@ class MailTaskMixin:
             return 123
         return None
 
-    def _mail_detail_overlay_scene(self, ctx: dict[str, Any], frame_data_url: str) -> int | None:
+    def _mail_detail_overlay_scene(
+        self,
+        context: BehaviorTreeContext,
+        frame_data_url: str,
+    ) -> int | None:
         """Resolve the overlay through the formal #122/#123 graph nodes."""
 
-        scene_id, _score = self._identify_scene_number(ctx, frame_data_url, [122, 123])
+        scene_id, _score, _frame = context.recognize_scene_in_frame(
+            [122, 123], frame_data_url=frame_data_url
+        )
         return scene_id if scene_id in {122, 123} else None
 
     def _wait_mail_list_after_detail_action(
@@ -1687,7 +1691,7 @@ class MailTaskMixin:
             elapsed = time.monotonic() - start
             detail_scene_id = detail_view.id if isinstance(detail_view.id, int) else None
             candidates = [scene for scene in [121, 347, 250, 34, detail_scene_id] if isinstance(scene, int)]
-            scene_id, score, frame, text = self._behavior_tree_context_scene_text(ctx, context, candidates, update=True)
+            scene_id, score, frame, text = yield from self._behavior_tree_context_scene_text(ctx, context, candidates, update=True)
             last_scene_id, last_score = scene_id, score
             if scene_id != 121:
                 fresh_mail_list_streak = 0

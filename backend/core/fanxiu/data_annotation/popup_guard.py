@@ -115,7 +115,12 @@ class SceneInterruptionMixin:
         candidates: list[dict[str, Any]] = []
         seen_image_ids: set[int] = set()
 
-        def add_candidate(image: dict[str, Any], folder_path: str, action_shape: dict[str, Any] | None) -> None:
+        def add_candidate(
+            image: dict[str, Any],
+            folder_path: str,
+            action_shape: dict[str, Any] | None,
+            action_view: dict[str, Any] | None = None,
+        ) -> None:
             identity = id(image)
             if identity in seen_image_ids:
                 return
@@ -124,22 +129,46 @@ class SceneInterruptionMixin:
                 "image": image,
                 "folder_path": folder_path,
                 "action_shape": action_shape,
+                "action_view": action_view or image,
             })
 
-        def collect_popup_scenes(items: list[dict[str, Any]], path: list[str]) -> None:
+        def collect_popup_scenes(
+            items: list[dict[str, Any]],
+            path: list[str],
+            inherited_close: tuple[dict[str, Any], dict[str, Any]] | None = None,
+        ) -> None:
             for item in items:
                 if not isinstance(item, dict):
                     continue
                 node_type = str(item.get("type") or "")
                 title = str(item.get("title") or "").strip()
                 current_path = [*path, title] if title else path
+                descendant_close = inherited_close
                 if node_type == "image" and self._scene_identity_shapes(item):
-                    action_shape = self._auto_close_guard_action_shape(item)
+                    own_action = self._auto_close_guard_action_shape(item)
+                    own_title = str((own_action or {}).get("title") or "").strip()
+                    if inherited_close is not None and own_title in {"确定", "确认"}:
+                        action_view, action_shape = inherited_close
+                    elif own_action is not None:
+                        action_view, action_shape = item, own_action
+                    elif inherited_close is not None:
+                        action_view, action_shape = inherited_close
+                    else:
+                        action_view, action_shape = item, None
                     if self._popup_candidate_has_executable_action(item, action_shape):
-                        add_candidate(item, "/".join(path), action_shape)
+                        add_candidate(item, "/".join(path), action_shape, action_view)
+                    if (
+                        self._auto_close_guard_action_allowed(own_action)
+                        and own_title not in {"确定", "确认"}
+                    ):
+                        descendant_close = (item, own_action)
                 children = item.get("children")
                 if isinstance(children, list):
-                    collect_popup_scenes([child for child in children if isinstance(child, dict)], current_path)
+                    collect_popup_scenes(
+                        [child for child in children if isinstance(child, dict)],
+                        current_path,
+                        descendant_close,
+                    )
 
         def find_popup_groups(items: list[dict[str, Any]], path: list[str]) -> None:
             for item in items:
@@ -210,9 +239,27 @@ class SceneInterruptionMixin:
         event: dict[str, Any],
         *,
         score: float,
+        candidate: dict[str, Any] | None = None,
     ) -> bool:
         view_id = int(view.id or 0)
         view_label = f"#{view_id}" if view_id else "#?"
+        action_shape = candidate.get("action_shape") if isinstance(candidate, dict) else None
+        action_title = str((action_shape or {}).get("title") or "").strip()
+        if (
+            self._auto_close_guard_action_allowed(action_shape)
+            and action_title not in {"确定", "确认"}
+        ):
+            raw_action_view = candidate.get("action_view") if isinstance(candidate, dict) else None
+            action_view = View(raw_action_view) if isinstance(raw_action_view, dict) else view
+            shape = Shape(action_shape, parent_view=action_view)
+            context.click_shape(action_view, shape, frame_data_url=context.cur_frame())
+            self._record_popup_guard_click(
+                view_id or None,
+                f"场景识别处理：{view_label} 点击父级「{action_title}」 {score:.0f}%",
+                event,
+                action_title,
+            )
+            return True
         confirm_shape = view.get_shape("确认")
         if not confirm_shape:
             self._record_popup_guard_missing(view_id or None, f"场景识别命中：{view_label} {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
@@ -384,6 +431,7 @@ class SceneInterruptionMixin:
                 view,
                 event,
                 score=score,
+                candidate=candidate,
             )
         if view.id == 287:
             return self._handle_auto_close_popup_287(
@@ -428,8 +476,10 @@ class SceneInterruptionMixin:
             # candidate.  Re-running View.close() here would invoke a second,
             # potentially different close-action planner and could miss a
             # perfectly valid ``确认`` annotation.
-            shape = Shape(action_shape, parent_view=view)
-            context.click_shape(view, shape, frame_data_url=context.cur_frame())
+            raw_action_view = candidate.get("action_view")
+            action_view = View(raw_action_view) if isinstance(raw_action_view, dict) else view
+            shape = Shape(action_shape, parent_view=action_view)
+            context.click_shape(action_view, shape, frame_data_url=context.cur_frame())
         except RuntimeError:
             self._record_popup_guard_missing(
                 view.id,

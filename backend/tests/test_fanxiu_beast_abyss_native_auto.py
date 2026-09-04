@@ -131,6 +131,11 @@ class FakeRuntime:
         scene, text = rows[self.stage]
         return scene, 100.0, text
 
+    def current_scene(self, scenes=None, *, update=True, label="识别当前场景"):
+        if False:
+            yield None
+        return self.sample_scene_once(scenes, update=update)
+
     def ocr_text(self, frame):
         return frame
 
@@ -290,6 +295,11 @@ def test_native_auto_default_terminal_budget_exceeds_old_five_minute_limit() -> 
             if self.polls <= 300:
                 return None, 0.0, "自动探查中"
             return 604, 100.0, "探查结束 第185次探查 点击屏幕关闭"
+
+        def current_scene(self, scenes=None, *, update=True, label="识别当前场景"):
+            if False:
+                yield None
+            return self.sample_scene_once(scenes, update=update)
 
         def ocr_text(self, frame):
             return frame

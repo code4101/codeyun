@@ -394,7 +394,7 @@ def _enter_adapter_from_schedule(
     for attempt in range(3):
         context.runner._raise_if_stopped(context.stop_event)
         frame = context.cur_frame(update=True)
-        scene, score, _ = context.sample_scene_once([SCHEDULE_SCENE_ID], update=False)
+        scene, score, _ = (yield from context.current_scene([SCHEDULE_SCENE_ID], update=False))
         if scene != SCHEDULE_SCENE_ID or score < 90:
             raise RuntimeError(
                 f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：#66 身份无效 {scene}/{score:.0f}"
@@ -452,12 +452,12 @@ def open_resource_rank_activity_page(
 ):
     """Open one active resource-ranking occurrence and return its main scene."""
 
-    scene, _score, _frame = context.sample_scene_once(
+    scene, _score, _frame = (yield from context.current_scene(
         [34, 66, *(adapter.page_scene_ids), *(
             (adapter.intro_scene_id,) if adapter.intro_scene_id is not None else ()
         )],
         update=True,
-    )
+    ))
     if scene not in adapter.page_scene_ids:
         if scene != 66:
             result = context.go_scene(66)
@@ -492,7 +492,7 @@ def _open_adapter_gift_page(
     activity_id: int,
     now: datetime,
 ):
-    scene, _score, _frame = context.sample_scene_once([605], update=True)
+    scene, _score, _frame = (yield from context.current_scene([605], update=True))
     if scene == 605:
         return
     scene = yield from open_resource_rank_activity_page(

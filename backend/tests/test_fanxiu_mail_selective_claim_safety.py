@@ -3,6 +3,7 @@ import threading
 import pytest
 
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
 from pyxllib.autogui import View
 
 
@@ -386,10 +387,11 @@ def test_mail_detail_overlay_does_not_confuse_list_bulk_actions(monkeypatch):
     monkeypatch.setattr(
         runner,
         "_identify_scene_number",
-        lambda _ctx, frame, candidates: ({"list": None, "claim-detail": 122, "delete-detail": 123}[frame], 100.0),
+        lambda _ctx, frame, candidates=None, **_options: ({"list": None, "claim-detail": 122, "delete-detail": 123}[frame], 100.0),
     )
     ctx = {"asset_tree": [], "images": {}}
+    context = BehaviorTreeContext(runner, ctx)
 
-    assert runner._mail_detail_overlay_scene(ctx, "list") is None
-    assert runner._mail_detail_overlay_scene(ctx, "claim-detail") == 122
-    assert runner._mail_detail_overlay_scene(ctx, "delete-detail") == 123
+    assert runner._mail_detail_overlay_scene(context, "list") is None
+    assert runner._mail_detail_overlay_scene(context, "claim-detail") == 122
+    assert runner._mail_detail_overlay_scene(context, "delete-detail") == 123

@@ -732,7 +732,7 @@ def ensure_equipment_strengthening(
     deliberately raised in place so callers retain the current game screen.
     """
 
-    scene_id, _score, _frame = context.sample_scene_once(
+    scene_id, _score, _frame = yield from context.current_scene(
         (EQUIPMENT_STRENGTHENING_VIEW_ID, EQUIPMENT_VIEW_ID, WORLD_VIEW_ID),
         update=True,
     )

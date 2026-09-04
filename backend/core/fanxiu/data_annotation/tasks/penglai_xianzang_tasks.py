@@ -83,7 +83,7 @@ def complete_xianzang_tasks(
     click_limit = max(confirmations, int(max_clicks))
     clicked_count = 0
     last_progress: XianzangTaskProgress | None = None
-    task_page = open_xianzang_tab(context, "任务")
+    task_page = yield from open_xianzang_tab(context, "任务")
     if task_page.scene_id != XIANZANG_TASK_SCENE_ID or task_page.score < 80.0:
         raise RuntimeError("未可靠进入 #450 蓬莱仙藏任务页，拒绝识别或点击任务")
 
@@ -105,7 +105,7 @@ def complete_xianzang_tasks(
             raise RuntimeError(
                 f"蓬莱仙藏任务连续领取超过 {click_limit} 次仍未收敛，拒绝继续点击"
             )
-        scene_id, score, frame = context.sample_scene_once(
+        scene_id, score, frame = yield from context.current_scene(
             [XIANZANG_TASK_SCENE_ID],
             update=True,
         )
@@ -117,8 +117,8 @@ def complete_xianzang_tasks(
             frame_data_url=frame,
         )
         clicked_count += 1
-        time.sleep(max(0.0, float(retry_seconds)))
-        scene_id, score, frame = context.sample_scene_once(
+        yield from context.wait_action_settle(max(0.0, float(retry_seconds)))
+        scene_id, score, frame = yield from context.current_scene(
             [XIANZANG_TASK_SCENE_ID],
             update=True,
         )
@@ -131,7 +131,7 @@ def complete_xianzang_tasks(
         else:
             unchanged += 1
 
-    final_page = open_xianzang_tab(context, "蓬莱仙藏")
+    final_page = yield from open_xianzang_tab(context, "蓬莱仙藏")
     return XianzangTaskCompletionResult(
         clicked_count=clicked_count,
         stop_reason="stable_no_change",

@@ -102,7 +102,7 @@ class WeeklyShengzuTaskMixin:
         max_scrolls: int,
         transition_timeout: float,
     ):
-        scene_id, _score, _frame = context.sample_scene_once([383, 384, 385, 69, 34], update=True)
+        scene_id, _score, _frame = (yield from context.current_scene([383, 384, 385, 69, 34], update=True))
         if scene_id == 385:
             return
         if scene_id == 383:

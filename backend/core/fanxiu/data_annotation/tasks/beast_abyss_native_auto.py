@@ -220,8 +220,8 @@ def classify_beast_abyss_auto_terminal(text: str) -> BeastAbyssAutoTerminal:
     return BeastAbyssAutoTerminal.UNKNOWN
 
 
-def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
-    scene_id, _score, frame = context.sample_scene_once(list(scene_ids), update=True)
+def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]):
+    scene_id, _score, frame = yield from context.current_scene(list(scene_ids), update=True)
     text = context.ocr_text(frame)
     if scene_id not in scene_ids or not any(_compact(anchor) in _compact(text) for anchor in anchors):
         raise RuntimeError(
@@ -384,9 +384,9 @@ def enter_beast_abyss_explore(
     )
     scene_id = None
     for _entry_probe in range(6):
-        scene_id, _score, _frame = context.sample_scene_once(
+        scene_id, _score, _frame = (yield from context.current_scene(
             list(entry_scenes), update=True
-        )
+        ))
         if scene_id in entry_scenes:
             break
         if _entry_probe < 5:
@@ -408,13 +408,13 @@ def enter_beast_abyss_explore(
             scene_id = assets.home_scene_id
             break
     if scene_id == assets.home_scene_id:
-        _observe(context, (assets.home_scene_id,), ("进入活动", "兽渊探秘"))
+        yield from _observe(context, (assets.home_scene_id,), ("进入活动", "兽渊探秘"))
         context.click_shape_center(assets.home_scene_id, assets.enter_activity)
         yield from context.wait_action_settle(1.0)
     elif scene_id != assets.explore_scene_id:
         raise RuntimeError(f"兽渊预检要求从活动页或探查页开始：scene={scene_id!r}")
     for _attempt in range(24):
-        scene_id, _score, _frame = context.sample_scene_once(list(entry_scenes), update=True)
+        scene_id, _score, _frame = (yield from context.current_scene(list(entry_scenes), update=True))
         if scene_id == assets.explore_scene_id:
             break
         action = {
@@ -428,7 +428,7 @@ def enter_beast_abyss_explore(
         yield from context.wait_action_settle(1.0)
     else:
         raise RuntimeError("兽渊首次进入动画在有界状态机内未到达探查页")
-    _observe(context, (assets.explore_scene_id,), ("自动探查", "快捷处理"))
+    yield from _observe(context, (assets.explore_scene_id,), ("自动探查", "快捷处理"))
     return assets.explore_scene_id
 
 
@@ -465,7 +465,7 @@ def prepare_beast_abyss_native_auto(
         timeout=20.0,
         label=f"兽渊：点击「{entry_action}」后等待自动设置页",
     )
-    _observe(context, (assets.help_view_scene_id,), ("开启自动",))
+    yield from _observe(context, (assets.help_view_scene_id,), ("开启自动",))
 
     options = BeastAbyssNativeAutoOptions(
         fairy_events=request.fairy_events,
@@ -518,10 +518,10 @@ def run_prepared_beast_abyss_native_auto(
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = context.sample_scene_once(
+        scene_id, _score, frame = (yield from context.current_scene(
             [assets.completed_notice_scene_id, *assets.terminal_scene_ids],
             update=True,
-        )
+        ))
         if scene_id == assets.completed_notice_scene_id:
             notice_text = context.ocr_text(frame)
             notice_terminal = classify_beast_abyss_auto_terminal(notice_text)
@@ -534,9 +534,9 @@ def run_prepared_beast_abyss_native_auto(
                     label="兽渊自动探查完成：确认进入结果页",
                 )
                 scene_id = int(getattr(landed, "id", landed))
-                _confirmed, _score, frame = context.sample_scene_once(
+                _confirmed, _score, frame = (yield from context.current_scene(
                     list(assets.terminal_scene_ids), update=True
-                )
+                ))
                 last_scene = (
                     int(scene_id) if scene_id in assets.terminal_scene_ids else None
                 )

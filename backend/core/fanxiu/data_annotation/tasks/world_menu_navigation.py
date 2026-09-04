@@ -23,10 +23,7 @@ def open_world_menu_function(
     yield from context.go_scene(34)
     yield from context.wait_click(34, "打开下方菜单")
     yield from context.wait_scene([35], wait=timeout_seconds, label="下拉菜单：等待展开")
-    frame = context.cur_frame(update=True)
-    scene_id, score, _ = context.sample_scene_once(
-        views=[35], frame_data_url=frame, update=False
-    )
+    scene_id, score, frame = yield from context.current_scene([35], update=True)
     if scene_id != 35 or float(score or 0.0) < 80.0:
         raise RuntimeError(f"下拉菜单未可靠展开：scene={scene_id}, score={score}")
     snapshot = read_world_menu_snapshot()

@@ -8,7 +8,9 @@ from backend.core.fanxiu.data_annotation.tasks import login_game
 
 
 class _UnknownContext:
-    def sample_scene_once(self, _scene_ids, *, update=True):
+    def current_scene(self, _scene_ids, **_options):
+        if False:
+            yield None
         return None, 0.0, "frame"
 
     def ocr_text(self, _frame):

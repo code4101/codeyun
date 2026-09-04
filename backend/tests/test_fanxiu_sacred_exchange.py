@@ -5,6 +5,9 @@ from backend.core.fanxiu.runtime_gui.sacred_exchange import (
     sacred_exchange_quantity_observations,
     visible_sacred_exchange_rows,
 )
+from backend.core.fanxiu.runtime_gui.storage_bag_alignment import (
+    StorageBagQuantityObservation,
+)
 
 
 def _snapshot() -> dict:
@@ -73,4 +76,50 @@ def test_divine_exchange_refuses_a_single_ocr_anchor() -> None:
         observations=(),
     )
 
+    assert plan.status == "insufficient_observations"
+
+
+def test_divine_exchange_accepts_one_globally_unique_target_quantity() -> None:
+    rows = visible_sacred_exchange_rows(
+        (100.0, 100.0, 300.0, 80.0),
+        (100.0, 200.0, 300.0, 80.0),
+        (80.0, 90.0, 360.0, 300.0),
+        frame_width=720,
+        frame_height=1280,
+    )
+    observation = StorageBagQuantityObservation(1, 116906, None, "116906", 0.99)
+
+    plan = plan_sacred_exchange_item_click(
+        _snapshot(),
+        target_base_id=4_000_001,
+        rows=rows,
+        observations=(observation,),
+    )
+
+    assert plan.ready
+    assert plan.runtime_index == 1
+    assert plan.point == rows[1].point
+    assert "均唯一" in plan.reason
+
+
+def test_divine_exchange_refuses_one_anchor_when_quantity_is_not_unique() -> None:
+    rows = visible_sacred_exchange_rows(
+        (100.0, 100.0, 300.0, 80.0),
+        (100.0, 200.0, 300.0, 80.0),
+        (80.0, 90.0, 360.0, 300.0),
+        frame_width=720,
+        frame_height=1280,
+    )
+    snapshot = _snapshot()
+    snapshot["items"][2]["num"] = 116906
+    observation = StorageBagQuantityObservation(1, 116906, None, "116906", 0.99)
+
+    plan = plan_sacred_exchange_item_click(
+        snapshot,
+        target_base_id=4_000_001,
+        rows=rows,
+        observations=(observation,),
+    )
+
+    assert not plan.ready
     assert plan.status == "insufficient_observations"

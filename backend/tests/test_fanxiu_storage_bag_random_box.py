@@ -185,8 +185,11 @@ def test_current_click_planner_resamples_window_after_ocr_and_fails_closed(
             assert update is True
             return next(self.frames)
 
-        def sample_scene_once(self, **_options):
-            return 525, 100.0, None
+        def current_scene(self, scenes=None, *, update=True, **_options):
+            frame = self.cur_frame(update=update)
+            if False:
+                yield None
+            return (525 if scenes is None or 525 in scenes else None), 100.0, frame
 
         def shape(self, _scene, _name):
             return type("Shape", (), {"raw": {}})()
@@ -232,11 +235,11 @@ def test_current_click_planner_resamples_window_after_ocr_and_fails_closed(
         lambda *_args, **_kwargs: stale,
     )
 
-    result = plan_current_random_box_click(
+    result = _consume(plan_current_random_box_click(
         FakeRuntime(),
         {"complete": True, "items": []},
         StorageBagRandomBoxRequest(1001, "stone", "灵石", 57_810),
-    )
+    ))
 
     assert result.status == "insufficient_observations"
     assert result.point is None

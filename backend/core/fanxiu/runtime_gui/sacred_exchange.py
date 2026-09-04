@@ -143,14 +143,66 @@ def plan_sacred_exchange_item_click(
     rows: Sequence[StorageBagVisibleCell],
     observations: Sequence[StorageBagQuantityObservation],
 ) -> StorageBagItemClickPlan:
-    """Map a divine item to one row only after unique ordered registration."""
+    """Map a divine item by sequence, or by one globally unique target quantity.
 
-    return plan_storage_bag_item_click(
+    The sacred-item overview is a single column and can expose only one useful
+    quantity anchor in a viewport.  In that narrow case an offset is not
+    needed: a target quantity that occurs exactly once in the complete Runtime
+    list and exactly once in the visible GUI identifies the target row itself.
+    """
+
+    plan = plan_storage_bag_item_click(
         snapshot,
         target_base_id=int(target_base_id),
         cells=rows,
         observations=observations,
         minimum_observations=2,
+    )
+    if plan.ready or plan.status not in {
+        "insufficient_observations",
+        "ambiguous_offset",
+    }:
+        return plan
+    if snapshot.get("complete") is not True:
+        return plan
+    runtime_items = [
+        row
+        for row in snapshot.get("items") or ()
+        if isinstance(row, Mapping) and not row.get("is_padding")
+    ]
+    targets = [
+        (index, row)
+        for index, row in enumerate(runtime_items)
+        if int(row.get("base_id") or 0) == int(target_base_id)
+    ]
+    if len(targets) != 1:
+        return plan
+    runtime_index, target = targets[0]
+    target_quantity = int(target.get("num") or 0)
+    if target_quantity <= 0:
+        return plan
+    if sum(int(row.get("num") or 0) == target_quantity for row in runtime_items) != 1:
+        return plan
+    visible_matches = [
+        observation
+        for observation in observations
+        if int(observation.quantity) == target_quantity
+    ]
+    if len(visible_matches) != 1:
+        return plan
+    observation = visible_matches[0]
+    cells_by_index = {row.visible_index: row for row in rows}
+    cell = cells_by_index.get(observation.visible_index)
+    if cell is None:
+        return plan
+    return StorageBagItemClickPlan(
+        "ready",
+        "目标神物数量在完整 Runtime 与当前单列界面中均唯一，已直接对齐目标行",
+        runtime_index=runtime_index,
+        runtime_item=target,
+        point=cell.point,
+        viewport_runtime_start=runtime_index - observation.visible_index,
+        observations=(observation,),
     )
 
 

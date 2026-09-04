@@ -12,6 +12,7 @@ from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 import hashlib
 import re
+from types import GeneratorType
 from typing import Any
 
 from sqlmodel import Session
@@ -280,13 +281,14 @@ def plan_current_random_box_click(
     context: Any,
     snapshot: Mapping[str, Any],
     request: StorageBagRandomBoxRequest,
-) -> StorageBagItemClickPlan:
+) -> Generator[Any, Any, StorageBagItemClickPlan]:
     """Re-register one fresh #525 frame and resolve the exact instance."""
 
     view = context.view(STORAGE_BAG_SCENE)
-    current_data_url = context.cur_frame(update=True)
-    scene_id, _score, _frame = context.sample_scene_once(
-        frame_data_url=current_data_url
+    scene_id, _score, current_data_url = yield from context.current_scene(
+        [STORAGE_BAG_SCENE],
+        update=True,
+        label="储物袋随机箱：定位前识别 #525",
     )
     if scene_id != STORAGE_BAG_SCENE:
         raise StorageBagRandomBoxBlocked("定位前全图模型未把当前帧唯一识别为 #525")
@@ -338,7 +340,13 @@ def plan_current_random_box_click(
             "窗口",
             frame_data_url=current_data_url,
         )
-        verification_data_url = context.cur_frame(update=True)
+        verification_scene_id, _score, verification_data_url = yield from context.current_scene(
+            [STORAGE_BAG_SCENE],
+            update=True,
+            label="储物袋随机箱：点击前复验 #525",
+        )
+        if verification_scene_id != STORAGE_BAG_SCENE:
+            raise StorageBagRandomBoxBlocked("点击前复验未识别为 #525")
         after_signature = context.image_signature_bytes_in_shape(
             STORAGE_BAG_SCENE,
             "窗口",
@@ -537,7 +545,8 @@ class StorageBagRandomBoxGuiAdapter:
         retry_count = 0
         scroll_count = 0
         while True:
-            plan = self.click_planner(self.context, before, request)
+            planned = self.click_planner(self.context, before, request)
+            plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:

@@ -323,9 +323,11 @@ class _RuntimeGui:
         self.scene = scene
         self.calls: list[tuple] = []
 
-    def sample_scene_once(self, candidates, **kwargs):
+    def current_scene(self, candidates=None, **kwargs):
         self.calls.append(("observe", tuple(candidates), kwargs))
         matched = self.scene if self.scene in set(candidates) else None
+        if False:
+            yield None
         return matched, 100.0 if matched is not None else 0.0, "frame"
 
     def click_shape_center_then_scene(

@@ -12,7 +12,8 @@ class IntegerCountAssets(Protocol):
     count_region: str
     count_decrease: str
     count_increase: str
-    count_slider_thumb: str
+    count_slider_thumb: str | None
+    count_slider_track: str | None
     count_minimum_marker: str | None
     count_slider_left_anchor: str | None
     count_slider_right_anchor: str | None
@@ -26,7 +27,8 @@ class IntegerSliderAssets:
     count_region: str = "挑战次数"
     count_decrease: str = "挑战次数_减少"
     count_increase: str = "挑战次数_增加"
-    count_slider_thumb: str = "挑战次数_滑块"
+    count_slider_thumb: str | None = "挑战次数_滑块"
+    count_slider_track: str | None = None
     count_minimum_marker: str | None = None
     count_slider_left_anchor: str | None = None
     count_slider_right_anchor: str | None = None
@@ -37,10 +39,11 @@ class IntegerSliderAssets:
         if self.settings_scene_id <= 0:
             raise ValueError("整数滑轨缺少有效设置场景")
         if any(not str(value).strip() for value in (
-            self.count_region, self.count_decrease,
-            self.count_increase, self.count_slider_thumb,
+            self.count_region, self.count_decrease, self.count_increase,
         )):
             raise ValueError("整数滑轨 Shape 名称不得为空")
+        if not self.count_slider_thumb and not self.count_slider_track:
+            raise ValueError("整数滑轨必须提供滑块或完整滑条 Shape")
         if bool(self.count_slider_left_anchor) != bool(self.count_slider_right_anchor):
             raise ValueError("整数滑轨左右锚点必须成对提供")
 
@@ -70,7 +73,7 @@ def read_positive_integer_count(
 
     try:
         return _ocr_count(context, assets)
-    except RuntimeError as ocr_error:
+    except (KeyError, RuntimeError, ValueError) as ocr_error:
         if runtime_reader is None:
             raise RuntimeError(f"{count_label}无法读回：{ocr_error}") from ocr_error
         raw = runtime_reader()
@@ -102,6 +105,8 @@ def _stable_read(context, assets, *, count_label, runtime_reader) -> Iterator[An
 
 
 def _slider_geometry(context: Any, assets: IntegerCountAssets) -> dict[str, float] | None:
+    if not assets.count_slider_thumb:
+        return None
     if not assets.count_slider_left_anchor or not assets.count_slider_right_anchor:
         return None
     if not all(callable(getattr(context, name, None)) for name in (
@@ -135,6 +140,8 @@ def _slider_geometry(context: Any, assets: IntegerCountAssets) -> dict[str, floa
 
 
 def _live_thumb_center(context: Any, assets: IntegerCountAssets, geometry: Mapping[str, float]) -> tuple[float, float]:
+    if not assets.count_slider_thumb:
+        raise RuntimeError("整数滑轨缺少可定位滑块")
     return context.shape_center_in_box(
         assets.settings_scene_id,
         assets.count_slider_thumb,
@@ -354,6 +361,160 @@ def _fine_tune_batches(
     return current, batches
 
 
+def _set_track_only_count(
+    context: Any,
+    assets: IntegerCountAssets,
+    desired: int,
+    *,
+    before: int,
+    maximum: int | None,
+    count_label: str,
+    runtime_reader: Callable[[], int | Mapping[str, Any]] | None,
+    threshold: int,
+) -> Iterator[Any]:
+    """Control a CommonShop-style track whose thumb has no separate asset."""
+
+    if maximum is None and runtime_reader is not None:
+        raw = runtime_reader()
+        maximum = int(raw.get("maximum") or 0) if isinstance(raw, Mapping) else 0
+    if maximum is None or maximum <= 1 or desired > maximum:
+        raise RuntimeError(
+            f"{count_label}超出滑轨范围：target={desired}, maximum={maximum}"
+        )
+    track_name = str(getattr(assets, "count_slider_track", "") or "").strip()
+    if not track_name:
+        raise RuntimeError(f"{count_label}缺少完整滑条 Shape")
+    track = context.shape_box(assets.settings_scene_id, track_name)
+    left = float(track.get("x") or 0.0)
+    width = float(track.get("w") or 0.0)
+    height = float(track.get("h") or 0.0)
+    top = float(track.get("y") or 0.0)
+    if width <= 1 or height <= 0:
+        raise RuntimeError(f"{count_label}完整滑条像素范围无效")
+    initial_start_x = left + width * ((before - 1) / (maximum - 1))
+    initial_target_x = left + width * ((desired - 1) / (maximum - 1))
+    y = top + height / 2.0
+    context.drag_frame_point(
+        assets.settings_scene_id,
+        initial_start_x,
+        y,
+        initial_target_x,
+        y,
+        duration_ms=1000,
+    )
+    yield from context.wait_action_settle(0.75)
+    current = yield from _stable_read(
+        context,
+        assets,
+        count_label=count_label,
+        runtime_reader=runtime_reader,
+    )
+    probes: list[dict[str, Any]] = []
+    interpolation_rows: list[dict[str, Any]] = []
+    coarse_exit = "within_threshold"
+    for _ in range(5):
+        error = desired - current
+        if abs(error) <= threshold:
+            coarse_exit = "within_threshold"
+            break
+        sign = 1 if error > 0 else -1
+        count_x = left + width * ((current - 1) / (maximum - 1))
+        available = left + width - count_x if sign > 0 else count_x - left
+        effective: tuple[float, int] | None = None
+        distance = 1.0
+        while distance <= max(1.0, available):
+            commanded = min(distance, available)
+            if commanded < 0.5:
+                break
+            before_probe = current
+            probe_x = min(left + width, max(left, count_x + sign * commanded))
+            context.drag_frame_point(
+                assets.settings_scene_id,
+                count_x,
+                y,
+                probe_x,
+                y,
+                duration_ms=1000,
+            )
+            yield from context.wait_action_settle(0.5)
+            current = yield from _stable_read(
+                context,
+                assets,
+                count_label=count_label,
+                runtime_reader=runtime_reader,
+            )
+            delta = current - before_probe
+            probes.append({
+                "commanded_pixels": commanded,
+                "count_delta": delta,
+            })
+            if delta * sign > 0:
+                effective = (sign * commanded, delta)
+                break
+            distance *= 2.0
+        if effective is None:
+            raise RuntimeError(f"{count_label}递增像素拖拽未产生有效变化")
+        probe_pixels, probe_delta = effective
+        error = desired - current
+        if abs(error) < abs(probe_delta):
+            coarse_exit = "within_drag_grain"
+            break
+        start_x = left + width * ((current - 1) / (maximum - 1))
+        drag_delta = error / probe_delta * probe_pixels
+        end_x = min(left + width, max(left, start_x + drag_delta))
+        before_interpolation = current
+        context.drag_frame_point(
+            assets.settings_scene_id,
+            start_x,
+            y,
+            end_x,
+            y,
+            duration_ms=1000,
+        )
+        yield from context.wait_action_settle(0.75)
+        current = yield from _stable_read(
+            context,
+            assets,
+            count_label=count_label,
+            runtime_reader=runtime_reader,
+        )
+        interpolation_rows.append({
+            "before": before_interpolation,
+            "after": current,
+            "commanded_pixels": abs(end_x - start_x),
+            "probe_pixel_delta": probe_pixels,
+            "probe_count_delta": probe_delta,
+        })
+    else:
+        raise RuntimeError(
+            f"{count_label}拖拽逼近未进入颗粒度范围：current={current}, target={desired}"
+        )
+    current, batches = yield from _fine_tune_batches(
+        context,
+        assets,
+        desired,
+        current=current,
+        count_label=count_label,
+        runtime_reader=runtime_reader,
+    )
+    return {
+        "before": before,
+        "after": current,
+        "maximum": maximum,
+        "phase": "track_only_closed_loop",
+        "proportional_drag": {
+            "start_x": initial_start_x,
+            "target_x": initial_target_x,
+            "fraction": (desired - 1) / (maximum - 1),
+        },
+        "pixel_probes": probes,
+        "interpolation_drags": interpolation_rows,
+        "coarse_exit": coarse_exit,
+        "fine_batches": batches,
+        "fine_adjustment_actions": sum(row["clicks"] for row in batches),
+    }
+
+
 def set_verified_integer_slider_count(
     context: Any,
     assets: IntegerCountAssets,
@@ -376,6 +537,17 @@ def set_verified_integer_slider_count(
     )
     if before == desired:
         return {"before": before, "after": before, "phase": "already_exact"}
+    if not assets.count_slider_thumb and getattr(assets, "count_slider_track", None):
+        return (yield from _set_track_only_count(
+            context,
+            assets,
+            desired,
+            before=before,
+            maximum=maximum,
+            count_label=count_label,
+            runtime_reader=runtime_count_reader,
+            threshold=threshold,
+        ))
     geometry = _slider_geometry(context, assets)
     current, observed_maximum, range_probe, fraction, proportional = yield from _proportional_position(
         context, assets, desired, before=before, maximum=maximum, geometry=geometry,

@@ -55,10 +55,10 @@ class DailyRedpacketTaskMixin:
     def _prepare_daily_redpacket_world(self, context: Any, *, transition_timeout: float):
         """Unwind an interrupted chat input layer through formal GUI shapes."""
 
-        scene_id, _score, _frame = context.sample_scene_once(
+        scene_id, _score, _frame = (yield from context.current_scene(
             [390, 30, 332, 34],
             update=True,
-        )
+        ))
         if scene_id in {390, 30}:
             self._log(
                 "action",
@@ -1091,7 +1091,7 @@ class DailyRedpacketTaskMixin:
                 timeout=transition_timeout,
             ))
         except TimeoutError:
-            scene_id, _score, _frame = context.sample_scene_once([332, 34], update=True)
+            scene_id, _score, _frame = (yield from context.current_scene([332, 34], update=True))
             if scene_id == 34:
                 return (yield from context.wait_scene(
                     [34],
@@ -1111,7 +1111,7 @@ class DailyRedpacketTaskMixin:
                 timeout=transition_timeout,
             ))
         except TimeoutError:
-            scene_id, _score, _frame = context.sample_scene_once([30, 332, 20, 34], update=True)
+            scene_id, _score, _frame = (yield from context.current_scene([30, 332, 20, 34], update=True))
             if scene_id in {332, 20, 34}:
                 return (yield from context.wait_scene(
                     [332,
@@ -1241,7 +1241,7 @@ class DailyRedpacketTaskMixin:
                 )
                 break
             except TimeoutError:
-                scene_id, _score, _frame = context.sample_scene_once([30], update=True)
+                scene_id, _score, _frame = (yield from context.current_scene([30], update=True))
                 if scene_id != 30:
                     return 0, False
         if current is None:

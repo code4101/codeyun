@@ -305,8 +305,8 @@ def classify_yunmeng_auto_terminal(text: str) -> YunmengAutoTerminal:
     return YunmengAutoTerminal.UNKNOWN
 
 
-def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
-    scene_id, _score, frame = context.sample_scene_once(list(scene_ids), update=True)
+def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]):
+    scene_id, _score, frame = yield from context.current_scene(list(scene_ids), update=True)
     text = context.ocr_text(frame)
     if scene_id not in scene_ids or not all(
         _compact(anchor) in _compact(text) for anchor in anchors
@@ -394,10 +394,10 @@ def run_yunmeng_native_auto(
     # The calligraphic first two characters are frequently obscured by the
     # character model.  The stable suffix is sufficient when Runtime scene
     # identity independently agrees with the expected Yunmeng home scene.
-    _observe(context, (assets.home_scene_id,), ("试剑",))
+    yield from _observe(context, (assets.home_scene_id,), ("试剑",))
     context.click_shape_center(assets.home_scene_id, assets.open_settings)
     yield from context.wait_action_settle(0.5)
-    _observe(context, (assets.settings_scene_id,), ("自动挑战设置", "开启自动"))
+    yield from _observe(context, (assets.settings_scene_id,), ("自动挑战设置", "开启自动"))
 
     desired = {
         "use_high_power_boost": request.use_high_power_boost,
@@ -472,10 +472,10 @@ def run_yunmeng_native_auto(
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = context.sample_scene_once(
+        scene_id, _score, frame = (yield from context.current_scene(
             list(assets.terminal_scene_ids),
             update=True,
-        )
+        ))
         last_scene = int(scene_id) if scene_id in assets.terminal_scene_ids else None
         last_text = context.ocr_text(frame)
         terminal = classify_yunmeng_auto_terminal(last_text)

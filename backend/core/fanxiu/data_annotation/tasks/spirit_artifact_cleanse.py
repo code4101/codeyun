@@ -284,9 +284,12 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         self.assets = assets or SpiritArtifactCleanseGuiAssets()
 
     def current_scene_id(self) -> int | None:
-        scene_id, _score, _frame = self.context.sample_scene_once(
-            self.assets.observation_scene_ids,
-            update=True,
+        scene_id, _score, _frame = self.execute(
+            self.context.current_scene(
+                self.assets.observation_scene_ids,
+                update=True,
+                label="洗灵：识别当前场景",
+            )
         )
         return int(scene_id) if scene_id is not None else None
 

@@ -102,10 +102,10 @@ def execute_beast_abyss_exchange(
 
     label = "兽渊_兑换"
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    scene_id, _score, _frame = context.sample_scene_once(
+    scene_id, _score, _frame = (yield from context.current_scene(
         (BEAST_ABYSS_SHOP_SCENE, COMMON_SHOP_DETAIL_SCENE),
         update=True,
-    )
+    ))
     if scene_id == COMMON_SHOP_DETAIL_SCENE:
         context.click_shape_center(COMMON_SHOP_DETAIL_SCENE, "关闭详情")
         yield from context.wait_scene(

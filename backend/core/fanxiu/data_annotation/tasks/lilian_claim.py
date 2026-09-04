@@ -81,7 +81,7 @@ def execute_lilian_claim_task(
     )
 
     yield from context.go_scene(34)
-    scene_id, _score, _frame = context.sample_scene_once([34], update=True)
+    scene_id, _score, _frame = (yield from context.current_scene([34], update=True))
     if scene_id != 34:
         raise RuntimeError(
             f"历练_领取：收取后未返回 #34，当前 #{scene_id or 'unknown'}"

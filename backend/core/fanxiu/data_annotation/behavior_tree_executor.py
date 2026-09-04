@@ -736,6 +736,9 @@ class BehaviorTreeContext(AutomationContext):
                         "recognized_scene_id": 546,
                     },
                 )
+            # Popup ownership is absolute.  A business task cannot reclassify
+            # an interruption as foreground merely by including the same ID
+            # in its expected candidates; Layer 0 must clear it first.
             if layer0_scene_id in popup_by_scene_id:
                 if len(handled_popup_ids) >= 9:
                     sequence = " -> ".join(f"#{item}" for item in handled_popup_ids)
@@ -772,23 +775,23 @@ class BehaviorTreeContext(AutomationContext):
                 continue
             return commit(global_recognition, frame, scope="global")
 
-    def sample_scene_once(
+    def recognize_scene_in_frame(
         self,
         views: Iterable[View | int] | None = None,
         *,
-        frame_data_url: str | None = None,
-        update: bool = False,
+        frame_data_url: str,
     ) -> tuple[int | None, float, str]:
-        """Sample exactly one frame for a narrow diagnostic/algorithmic probe.
+        """Classify an already captured frame without operating the game.
 
-        This low-level primitive does not wait or process popup interruptions.
-        It is valid only when a one-frame miss is itself useful data or an
-        enclosing loop already owns the waiting budget. Task admission, action
-        readiness, click landing, navigation recovery, and terminal-state
-        observation must use ``wait_scene(scenes, wait=...)`` instead.
+        This is a pure same-frame analysis primitive: callers must supply the
+        frame and it never captures a new one, waits, handles a popup, or
+        clicks.  Any live scene observation must enter through ``wait_scene``
+        (or its ``current_scene`` wrapper) before using this helper.
         """
 
-        frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+        if not isinstance(frame_data_url, str) or not frame_data_url:
+            raise ValueError("recognize_scene_in_frame 必须传入已有 frame_data_url")
+        frame = frame_data_url
         business_view_ids: list[int] = []
         if views is not None:
             business_view_ids = [view.id if isinstance(view, View) else int(view) for view in views]
@@ -1320,7 +1323,7 @@ class BehaviorTreeContext(AutomationContext):
                     raise
                 if isinstance(target_view, View) and target_view.id == source_view.id:
                     raise
-                scene_id, score, _frame = self.sample_scene_once(
+                scene_id, score, _frame = yield from self.current_scene(
                     [source_view],
                     update=True,
                 )
@@ -1423,7 +1426,7 @@ class BehaviorTreeContext(AutomationContext):
                             or source_view.id is None
                         ):
                             break
-                        scene_id, score, _frame = self.sample_scene_once(
+                        scene_id, score, _frame = yield from self.current_scene(
                             update=True,
                         )
                         if scene_id != source_view.id:
@@ -1612,7 +1615,7 @@ class BehaviorTreeContext(AutomationContext):
                 self.runner._raise_if_stopped(self.stop_event)
             self.runner._clear_tick_frame(self.ctx)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, _frame = self.sample_scene_once(
+            scene_id, score, _frame = yield from self.current_scene(
                 update=True,
             )
             last_scene_id, last_score = scene_id, score
@@ -1687,9 +1690,10 @@ class BehaviorTreeContext(AutomationContext):
 
     def wait_scene(
         self,
-        scenes: list[int],
+        scenes: Iterable[View | int] | None = None,
         wait: float = 5.0,
         *,
+        required: bool = True,
         label: str = "等待场景",
     ):
         """Return the first scene recognized by the complete layered flow.
@@ -1702,16 +1706,20 @@ class BehaviorTreeContext(AutomationContext):
         a :class:`SceneWaitTimeout` is raised.
         """
 
-        view_ids = [int(scene) for scene in scenes]
+        view_ids = [
+            scene.id if isinstance(scene, View) else int(scene)
+            for scene in (scenes or ())
+        ]
         view_ids = [view_id for view_id in view_ids if view_id is not None]
-        if not view_ids:
+        if scenes is not None and not view_ids:
             raise ValueError("wait_scene scenes 不能为空")
         wait_timeout = float(wait)
         if wait_timeout < 0.0:
             raise ValueError("wait_scene wait 必须大于等于 0")
         source_info = self._execution_source_info("wait_scene", self._format_execution_call("wait_scene", *view_ids))
+        expected_label = "/".join(f"#{view_id}" for view_id in view_ids) or "全局场景"
         self._emit_execution_action(
-            f"{label}：等待 {'/'.join(f'#{view_id}' for view_id in view_ids)}",
+            f"{label}：等待 {expected_label}",
             phase="execution_wait_scene",
             kind="wait",
             source_info=source_info,
@@ -1742,7 +1750,7 @@ class BehaviorTreeContext(AutomationContext):
 
         identify_started_at = time.monotonic()
         match, score, frame = yield from self._recognize_scene_layers(
-            view_ids,
+            view_ids if scenes is not None else None,
             wait=wait_timeout,
         )
         identify_elapsed = time.monotonic() - identify_started_at
@@ -1754,6 +1762,8 @@ class BehaviorTreeContext(AutomationContext):
             )
         if match is not None:
             return finish(match, score)
+        if not required:
+            return None
 
         guard_started_at = time.monotonic()
         guard_seconds = max(0.0, float(self.scene_unmatched_guard_seconds))
@@ -1768,7 +1778,7 @@ class BehaviorTreeContext(AutomationContext):
                     "updated_at": time.time(),
                 })
             match, score, frame = yield from self._recognize_scene_layers(
-                view_ids,
+                view_ids if scenes is not None else None,
                 wait=0.0,
             )
             if match is not None:
@@ -1818,6 +1828,36 @@ class BehaviorTreeContext(AutomationContext):
             codex_dispatch_id=codex_dispatch_id,
             codex_request_path=codex_request_path,
             codex_escalation_error=codex_escalation_error,
+        )
+
+    def current_scene(
+        self,
+        scenes: Iterable[View | int] | None = None,
+        *,
+        update: bool = True,
+        label: str = "识别当前场景",
+    ):
+        """Observe one fresh non-popup scene through the mandatory wait pipeline.
+
+        Popup interruptions remain mandatory.  ``None`` means that every formal
+        global scene may match; an all-layer miss is returned as an unknown
+        observation rather than raising :class:`SceneWaitTimeout`.
+        """
+
+        if update:
+            self.clear_frame()
+        match = yield from self.wait_scene(
+            scenes,
+            wait=0.0,
+            required=False,
+            label=label,
+        )
+        if match is None:
+            return None, 0.0, str(self.frame_data_url or "")
+        return (
+            int(match.scene_id),
+            float(match.score or 0.0),
+            str(match.frame_data_url or self.frame_data_url or ""),
         )
 
     def render_scene_comparison(
@@ -1963,7 +2003,7 @@ class BehaviorTreeContext(AutomationContext):
             label=label,
         )
         target_view = view.id if isinstance(view, View) else int(view)
-        scene_id, score, _frame = self.sample_scene_once([target_view])
+        scene_id, score, _frame = yield from self.current_scene([target_view])
         if scene_id != target_view:
             scene_id, score = target_view, 0.0
         return result, scene_id, score
@@ -2017,7 +2057,7 @@ class BehaviorTreeContext(AutomationContext):
             self.runner._clear_tick_frame(self.ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = self.cur_frame(update=True)
-            _scene_id, _score, frame = self.sample_scene_once([], frame_data_url=frame)
+            _scene_id, _score, frame = self.recognize_scene_in_frame([], frame_data_url=frame)
             for key, condition in conditions.items():
                 result = condition.check(self, frame)
                 last_details[str(key)] = result.detail or condition.label
@@ -2398,7 +2438,7 @@ class BehaviorTreeContext(AutomationContext):
         if max_clicks <= 0:
             raise ValueError("max_clicks 必须大于 0")
 
-        scene_id, _score, _frame = self.sample_scene_once([source_id], update=True)
+        scene_id, _score, _frame = yield from self.current_scene([source_id], update=True)
         if scene_id != source_id:
             yield from self.wait_scene(
                 [source_view],
@@ -2418,7 +2458,7 @@ class BehaviorTreeContext(AutomationContext):
                     break
                 sample_seconds = min(poll_seconds, remaining_seconds)
                 yield from self.wait_action_settle(sample_seconds)
-                scene_id, _score, _frame = self.sample_scene_once([source_id], update=True)
+                scene_id, _score, _frame = yield from self.current_scene([source_id], update=True)
                 if scene_id == source_id:
                     source_reappeared = True
                     break
@@ -3938,7 +3978,7 @@ class BehaviorTreeContext(AutomationContext):
         ) + (227, 367)
         with self.expect_views(business_foreground_ids):
             for poll_index in range(max_polls):
-                scene_id, score, frame = self.sample_scene_once(list(views), update=True)
+                scene_id, score, frame = yield from self.current_scene(list(views), update=True)
                 last_scene_id = scene_id
                 if scene_id in views:
                     absent_polls = 0
@@ -3974,7 +4014,7 @@ class BehaviorTreeContext(AutomationContext):
                                     # stable #227 so a late ``继续`` cannot
                                     # penetrate into #357's purchase button.
                                     yield from self.wait_action_settle(0.35)
-                                    stable_id, _stable_score, frame = self.sample_scene_once(
+                                    stable_id, _stable_score, frame = yield from self.current_scene(
                                         [227, challenge_id, 367], update=True
                                     )
                                     if stable_id == challenge_id:
@@ -4097,7 +4137,7 @@ class BehaviorTreeContext(AutomationContext):
             # wave.  Only a result layer that remains present is terminal;
             # #361 -> #362 means the battle is still running.
             yield from self.wait_action_settle(result_confirmation_seconds)
-            stable_id, _stable_score, _stable_frame = self.sample_scene_once(
+            stable_id, _stable_score, _stable_frame = yield from self.current_scene(
                 candidate_ids, update=True
             )
             if stable_id == result_id:
@@ -4294,7 +4334,7 @@ class BehaviorTreeContext(AutomationContext):
         """
 
         home_id = int(self.view(home_view).id)
-        scene_id, score, _frame = self.sample_scene_once([home_id], update=True)
+        scene_id, score, _frame = yield from self.current_scene([home_id], update=True)
         if scene_id != home_id:
             raise RuntimeError(
                 f"逐级探测必须从仙窍试炼主页 #{home_id} 开始，"
@@ -4500,7 +4540,7 @@ class BehaviorTreeContext(AutomationContext):
                 raise RuntimeError(f"#363 无法唯一识别购买价格：{ocr_text!r}")
             return known_prices[0], ocr_text, current_frame
 
-        scene_id, _score, _frame = self.sample_scene_once(candidate_ids, update=True)
+        scene_id, _score, _frame = yield from self.current_scene(candidate_ids, update=True)
         if scene_id not in candidate_ids:
             raise RuntimeError("仙窍试炼购买流程必须从 #357/#363/#364 之一开始")
 
@@ -4618,7 +4658,7 @@ class BehaviorTreeContext(AutomationContext):
                 if time.monotonic() >= refresh_deadline:
                     raise TimeoutError(f"#363 购买 {price} 后价格/场景未在限时内刷新")
                 yield from self.wait_action_settle(min(0.4, settle_seconds or 0.4))
-                scene_id, _score, _frame = self.sample_scene_once(candidate_ids, update=True)
+                scene_id, _score, _frame = yield from self.current_scene(candidate_ids, update=True)
 
         raise TimeoutError(
             f"仙窍试炼购买流程超过 {max_transitions} 次场景转换；"
@@ -4649,7 +4689,7 @@ class BehaviorTreeContext(AutomationContext):
         daily_id = int(self.view(daily_view).id)
         auto_route_id = int(self.view(auto_route_view).id)
         forbidden_id = int(self.view(forbidden_view).id)
-        scene_id, score, _frame = self.sample_scene_once(
+        scene_id, score, _frame = yield from self.current_scene(
             [world_id, daily_id, auto_route_id, forbidden_id], update=True
         )
         if scene_id == daily_id:
@@ -4698,7 +4738,7 @@ class BehaviorTreeContext(AutomationContext):
             # A second observation after settling proves that the list itself
             # is the terminal state before any row is searched or clicked.
             yield from self.wait_action_settle(max(1.0, settle_seconds))
-            stable_id, stable_score, _stable_frame = self.sample_scene_once(
+            stable_id, stable_score, _stable_frame = yield from self.current_scene(
                 [daily_id, auto_route_id, forbidden_id], update=True
             )
             if stable_id == daily_id:
@@ -4900,7 +4940,7 @@ class BehaviorTreeContext(AutomationContext):
         """点击 #357“返回”并确认直接回到稳定世界 #34。"""
 
         home_id = int(self.view(home_view).id)
-        scene_id, score, frame = self.sample_scene_once([home_id], update=True)
+        scene_id, score, frame = yield from self.current_scene([home_id], update=True)
         if scene_id != home_id:
             raise RuntimeError(
                 f"仙窍_试炼收尾预期 #357，实际 #{scene_id} ({float(score):.0f}%)"
@@ -7441,7 +7481,13 @@ class BehaviorTreeExecutor(
         asset_tree_path = ctx.get("asset_tree_path")
         if isinstance(asset_tree_path, Path):
             context = self._behavior_tree_context(ctx, asset_tree_path, frame_data_url=frame_data_url, stop_event=stop_event)
-            required_methods = ("cur_frame", "sample_scene_once", "ocr_fragments", "ocr_text", "clear_frame")
+            required_methods = (
+                "cur_frame",
+                "recognize_scene_in_frame",
+                "ocr_fragments",
+                "ocr_text",
+                "clear_frame",
+            )
             if all(hasattr(context, name) for name in required_methods):
                 return context
 
@@ -7459,14 +7505,15 @@ class BehaviorTreeExecutor(
                 self.frame_data_url = runner._screencap(ctx)
                 return self.frame_data_url
 
-            def sample_scene_once(
+            def recognize_scene_in_frame(
                 self,
                 views: list[int] | None = None,
                 *,
-                frame_data_url: str | None = None,
-                update: bool = False,
+                frame_data_url: str,
             ) -> tuple[int | None, float, str]:
-                frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
+                if not isinstance(frame_data_url, str) or not frame_data_url:
+                    raise ValueError("recognize_scene_in_frame 必须传入已有 frame_data_url")
+                frame = frame_data_url
                 scene_id, score = runner._identify_scene_number(ctx, frame, views)
                 return scene_id, float(score or 0.0), frame
 
@@ -7529,15 +7576,23 @@ class BehaviorTreeExecutor(
         *,
         frame: str | None = None,
         update: bool = False,
-    ) -> tuple[int | None, float, str, str]:
+    ):
         if "entry" not in ctx and (not isinstance(frame, str) or not frame):
             if scene_ids is None:
                 scene_id, score, frame = self._current_scene_number(ctx)
             else:
                 frame = self._screencap(ctx)
                 scene_id, score = self._identify_scene_number(ctx, frame, scene_ids)
-        elif hasattr(context, "sample_scene_once"):
-            scene_id, score, frame = context.sample_scene_once(scene_ids, frame_data_url=frame, update=update)
+        elif isinstance(frame, str) and frame and hasattr(context, "recognize_scene_in_frame"):
+            scene_id, score, frame = context.recognize_scene_in_frame(
+                scene_ids, frame_data_url=frame
+            )
+        elif hasattr(context, "current_scene"):
+            scene_id, score, frame = yield from context.current_scene(
+                scene_ids,
+                update=update,
+                label="读取场景及文本",
+            )
         else:
             if not isinstance(frame, str) or not frame:
                 frame = context.cur_frame(update=update) if hasattr(context, "cur_frame") else self._screencap(ctx)
@@ -7797,7 +7852,15 @@ class BehaviorTreeExecutor(
             context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=cleanup_stop_event)
             last_score = 0.0
             for probe_index in range(2):
-                scene_id, score, _frame = context.sample_scene_once([target_scene_id], update=True)
+                scene_id, score, _frame = self._run_direct_action(
+                    lambda: context.current_scene(
+                        [target_scene_id],
+                        update=True,
+                        label=f"{task_label}：确认失败收尾锚点",
+                    ),
+                    stop_event=cleanup_stop_event,
+                    max_execution_seconds=30.0,
+                )
                 last_score = float(score or 0.0)
                 if scene_id != target_scene_id or not self._scene_matches_id(target_scene_id, last_score):
                     return False, last_score
@@ -12915,13 +12978,11 @@ class BehaviorTreeExecutor(
         )
         while True:
             self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
-            scene_id, score, frame = context.sample_scene_once(
+            scene_id, score, frame = yield from context.current_scene(
                 [target_scene_id],
-                frame_data_url=frame,
+                update=True,
+                label=label,
             )
             last_scene_id, last_score = scene_id, score
             if scene_id == target_scene_id:
@@ -12967,13 +13028,11 @@ class BehaviorTreeExecutor(
         )
         while True:
             self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
-            scene_id, score, frame = context.sample_scene_once(
+            scene_id, score, frame = yield from context.current_scene(
                 [121],
-                frame_data_url=frame,
+                update=True,
+                label=label,
             )
             last_scene_id, last_score = scene_id, score
             try:
@@ -13565,7 +13624,6 @@ class BehaviorTreeExecutor(
         last_frame = ""
         history: list[str] = []
         left_source = False
-        handled_intermediate_scene_ids: set[int] = set()
         shape_jump_target = str(shape.get("sceneJumpTarget") or "").strip()
         dynamic_landing = bool(edge.get("_dynamic_confirm_edge")) or shape_jump_target == "-1" or shape_jump_target.startswith("-1(")
         source_stall_timeout = self._scene_jump_source_stall_timeout(
@@ -13579,12 +13637,6 @@ class BehaviorTreeExecutor(
             ctx,
             asset_tree_path,
             stop_event=stop_event,
-        )
-        source_shape_title = str(shape.get("title") or "").strip()
-        confirmation_scene_ids = (
-            self._scene_jump_confirmation_scene_ids(tree)
-            if source_shape_title in {"离开", "返回", "关闭", "退出"}
-            else []
         )
         first_poll = True
 
@@ -13619,69 +13671,16 @@ class BehaviorTreeExecutor(
                     seconds=DEFAULT_SCENE_RECOGNITION_POLL_SECONDS,
                 )
             first_poll = False
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
-
-            # A click such as 「离开」may synchronously open a confirmation
-            # popup.  Keep that popup in the transition's explicit Layer-0
-            # candidate domain before the general popup domain is evaluated.
-            # Otherwise a broad parent such as #47 can legitimately match the
-            # same frame first and execute its generic close action, cancelling
-            # the leave operation before #86 gets a chance to confirm it.
-            if confirmation_scene_ids:
-                confirmation_scene_id, confirmation_score = self._identify_scene_number(
-                    ctx,
-                    frame,
-                    confirmation_scene_ids,
-                )
-                if (
-                    confirmation_scene_id is not None
-                    and confirmation_scene_id not in handled_intermediate_scene_ids
-                ):
-                    confirmation_image = (ctx.get("images") or {}).get(int(confirmation_scene_id))
-                    confirmation_shape = self._scene_jump_intermediate_confirm_shape(
-                        confirmation_image,
-                        shape,
-                    )
-                    if confirmation_shape is not None:
-                        confirm_title = str(confirmation_shape.get("title") or "确认")
-                        handled_intermediate_scene_ids.add(int(confirmation_scene_id))
-                        with self._lock:
-                            self._status.update({
-                                "phase": "go_scene_confirm",
-                                "current_scene": int(confirmation_scene_id),
-                                "message": (
-                                    f"跳转确认：#{source_scene_id} -> #{target_scene_id}，"
-                                    f"点击 {confirm_title}"
-                                ),
-                                "updated_at": time.time(),
-                            })
-                        self._log(
-                            "action",
-                            (
-                                f"场景跳转确认：#{int(confirmation_scene_id)} "
-                                f"{float(confirmation_score or 0.0):.0f}%，点击 {confirm_title}"
-                            ),
-                        )
-                        self._click_shape(
-                            ctx,
-                            confirmation_image,
-                            confirmation_shape,
-                            frame,
-                        )
-                        left_source = True
-                        start = time.monotonic()
-                        continue
 
             expected_id_set = {int(item) for item in expected_ids}
             fallback_scene_id: int | None = None
             fallback_score = 0.0
             with self._scene_observation_probe(ctx):
-                matched_expected, expected_score, frame = context.sample_scene_once(
-                    expected_ids,
-                    frame_data_url=frame,
+                matched_expected, expected_score, frame = yield from context.current_scene(
+                    expected_ids or None,
+                    update=True,
+                    label=f"场景跳转：等待 #{source_scene_id} 动作落点",
                 )
             if matched_expected == source_scene_id and source_scene_id not in expected_ids:
                 history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% preferred-source ignored left={left_source}")
@@ -14032,7 +14031,10 @@ class BehaviorTreeExecutor(
             attempts += 1
             ctx.pop("_last_scene_recognition_status", None)
             with self._scene_observation_probe(ctx):
-                current_scene_id, score, frame = context.sample_scene_once(frame_data_url=frame)
+                current_scene_id, score, frame = yield from context.current_scene(
+                    update=True,
+                    label=f"场景移动：识别前往 #{target_scene_id} 的当前位置",
+                )
             recognition_status = str(
                 ctx.pop(
                     "_last_scene_recognition_status",
@@ -14148,7 +14150,6 @@ class BehaviorTreeExecutor(
                 stop_event,
                 seconds=min(DEFAULT_SCENE_RECOGNITION_POLL_SECONDS, remaining),
             )
-            frame = self._screencap(ctx)
 
     def _go_scene_task(
         self,
@@ -14193,15 +14194,15 @@ class BehaviorTreeExecutor(
 
         def confirm_target_on_fresh_frame():
             """Reject a cached/transient target hit before reporting success."""
-            self._clear_tick_frame(ctx)
             yield from self._wait_action_settle(
                 ctx,
                 stop_event,
                 seconds=DEFAULT_SCENE_RECOGNITION_POLL_SECONDS,
             )
-            self._clear_tick_frame(ctx)
-            fresh_frame = self._screencap(ctx)
-            full_scene_id, full_score = self._identify_scene_number(ctx, fresh_frame)
+            full_scene_id, full_score, fresh_frame = yield from context.current_scene(
+                update=True,
+                label=f"场景移动：复核目标 #{target_scene_id}",
+            )
             confirmed = (
                 full_scene_id == int(target_scene_id)
                 and self._scene_matches_id(int(target_scene_id), float(full_score or 0.0))

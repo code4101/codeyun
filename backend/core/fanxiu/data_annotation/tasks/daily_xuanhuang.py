@@ -219,10 +219,8 @@ class DailyXuanhuangTaskMixin:
         next_status_at = started_at
         saw_battle_scene = False
         while True:
-            frame = context.cur_frame(update=True)
-            scene_id, _score, _frame = context.sample_scene_once(
-                [186, 419, 420],
-                frame_data_url=frame,
+            scene_id, _score, frame = yield from context.current_scene(
+                [186, 419, 420], update=True
             )
             if scene_id == 420:
                 return saw_battle_scene
@@ -246,10 +244,8 @@ class DailyXuanhuangTaskMixin:
                         status_persister(min_interval_seconds=2.0)
                 next_status_at = now + 30.0
             if now >= deadline:
-                final_frame = context.cur_frame(update=True)
-                final_scene, _score, _frame = context.sample_scene_once(
-                    [186, 419, 420],
-                    frame_data_url=final_frame,
+                final_scene, _score, final_frame = yield from context.current_scene(
+                    [186, 419, 420], update=True
                 )
                 if final_scene == 420:
                     return saw_battle_scene
@@ -393,7 +389,7 @@ class DailyXuanhuangTaskMixin:
             # 作业入口必须先回答“当前实际在哪”，不能只把 #418 当作一次性
             # 候选探针；后者偶发漏判时会错误地先 goto #34，丢掉已在挑战页
             # 且次数为 0 的业务终态。
-            current_scene, _score, _frame = context.sample_scene_once(update=True)
+            current_scene, _score, _frame = (yield from context.current_scene(update=True))
             if current_scene == 418:
                 start_from_counter = True
                 break

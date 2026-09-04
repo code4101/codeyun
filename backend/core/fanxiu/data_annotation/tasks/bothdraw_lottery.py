@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
+from types import GeneratorType
 from typing import Any, Callable
 
 from backend.core.fanxiu.data_annotation.tasks.draw_claim_cycle import (
@@ -21,6 +22,13 @@ PageOpener = Callable[[Any], Any]
 PageReader = Callable[[Any], Any]
 SnapshotRecorder = Callable[[dict[str, Any], str], None]
 InstanceIdResolver = Callable[[str], str]
+
+
+def _run_page_operation(operation: Callable[[], Any]):
+    result = operation()
+    if isinstance(result, GeneratorType):
+        return (yield from result)
+    return result
 
 
 @dataclass(frozen=True)
@@ -110,7 +118,7 @@ def draw_bothdraw_once(
     """Draw exactly once and persist only the observed cumulative delta."""
 
     spec.require_executable_assets()
-    spec.open_main_page(context)
+    yield from _run_page_operation(lambda: spec.open_main_page(context))
     before = spec.read_lottery()
     if not before.get("complete"):
         raise RuntimeError(str(before.get("reason") or "抽奖前运行态数据不完整"))
@@ -149,7 +157,7 @@ def draw_bothdraw_once(
         if time.monotonic() >= deadline:
             reason = str((last or {}).get("reason") or "累计抽数未增加")
             raise RuntimeError(f"点击{spec.draw_shape}后未取得新抽奖点：{reason}")
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
 
     after = last
     assert after is not None
@@ -260,7 +268,7 @@ def claim_bothdraw_cumulative_rewards(
     """Claim only milestones proven claimable by the read-only context model."""
 
     spec.require_cumulative_claim_assets()
-    spec.open_main_page(context)
+    yield from _run_page_operation(lambda: spec.open_main_page(context))
     clicks: list[dict[str, int]] = []
     activity_id: int | None = None
     for _attempt in range(max(1, int(max_clicks))):
@@ -315,7 +323,7 @@ def claim_bothdraw_cumulative_rewards(
                 and int(last.get("claimed_count") or 0) > before_count
             ):
                 break
-            time.sleep(max(0.05, float(poll_seconds)))
+            yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
         else:
             reason = str((last or {}).get("reason") or "已领取数量没有增加")
             raise RuntimeError(f"点击累计奖励后动态状态未确认领取成功：{reason}")
@@ -395,8 +403,8 @@ def close_bothdraw_result(
     clicked_count = 0
     last_click_at: float | None = None
     while time.monotonic() < deadline:
-        last_scene, last_score, frame = context.sample_scene_once(
-            [result_scene_id], update=True
+        last_scene, last_score, frame = yield from context.current_scene(
+            [result_scene_id], update=True, label=f"{spec.activity_label}：识别抽奖结果页"
         )
         if int(last_scene or 0) == result_scene_id and float(last_score or 0) >= 90.0:
             now = time.monotonic()
@@ -414,7 +422,7 @@ def close_bothdraw_result(
                 )
                 clicked_count += 1
                 last_click_at = now
-        page = spec.read_page(context)
+        page = yield from _run_page_operation(lambda: spec.read_page(context))
         if page is not None and page.page == spec.main_page_name:
             return {
                 "result": "success",
@@ -423,7 +431,7 @@ def close_bothdraw_result(
                 "score": page.score,
                 "clicked_count": clicked_count,
             }
-        time.sleep(max(0.05, float(poll_seconds)))
+        yield from context.wait_action_settle(max(0.05, float(poll_seconds)))
     if clicked_count == 0:
         raise RuntimeError(
             f"{spec.draw_shape}后未可靠识别 #{result_scene_id}"
@@ -446,14 +454,14 @@ def complete_bothdraw_lottery(
     # Fail before navigation or any consumptive action when a new activity has
     # not yet supplied its independently verified result-page asset.
     spec.require_executable_assets()
-    spec.open_main_page(context)
-    return run_draw_claim_cycle(
+    yield from _run_page_operation(lambda: spec.open_main_page(context))
+    return (yield from run_draw_claim_cycle(
         read_snapshot=spec.read_cumulative_rewards,
         draw_once=lambda: draw_bothdraw_once(context, spec),
         close_draw_result=lambda: close_bothdraw_result(context, spec),
         claim_rewards=lambda: claim_bothdraw_cumulative_rewards(context, spec),
         max_rounds=max_rounds,
-    )
+    ))
 
 
 __all__ = [
