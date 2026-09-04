@@ -407,7 +407,79 @@ def read_xutian_auto_settings_snapshot() -> dict[str, Any]:
     }
 
 
+def read_xutian_auto_count_snapshot() -> dict[str, Any]:
+    """Read the active Heaven settings panel's count and native range.
+
+    The panel recomputes ``_MaxSliderValue`` after the refill switch changes.
+    This value is the native slider range, while the caller remains
+    responsible for its own bounded-batch and resource-spending policy.
+    """
+
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+        active_ui_component_objects,
+        read_ui_object_field,
+        read_ui_runtime_snapshot,
+    )
+
+    required = frozenset({
+        "_CurMaxFightCount",
+        "_MaxSliderValue",
+        "_AutoToggleDic",
+        "FightCount",
+        "Slider",
+        "AddBtn",
+        "SubBtn",
+        "StartBtn",
+        "AutoFight1",
+        "AutoFight11",
+    })
+
+    def read_panel(context):
+        candidates = []
+        for component in active_ui_component_objects(context):
+            fields = context.reader.fields(component)
+            if required.issubset(fields):
+                candidates.append(component)
+        if len(candidates) != 1:
+            raise FanxiuRuntimeMemoryError(
+                f"active 虚天自动挑战设置面板数量为 {len(candidates)}"
+            )
+        panel = candidates[0]
+        current = as_int(
+            read_ui_object_field(context, panel.address, "_CurMaxFightCount")
+        )
+        maximum = as_int(
+            read_ui_object_field(context, panel.address, "_MaxSliderValue")
+        )
+        if current is None or current < 1:
+            raise FanxiuRuntimeMemoryError(
+                f"虚天自动挑战当前次数无效：{current!r}"
+            )
+        if maximum is None or maximum < current:
+            raise FanxiuRuntimeMemoryError(
+                f"虚天自动挑战原生最大值无效：current={current!r}, maximum={maximum!r}"
+            )
+        return {
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "active_xutian_auto_settings_panel",
+            "read_only": True,
+            "current": int(current),
+            "minimum": 1,
+            "maximum": int(maximum),
+            "evidence": {
+                "pid": context.binding.pid,
+                "process_start_ticks": context.binding.process_start_ticks,
+                "panel_address": f"0x{panel.address:x}",
+                "current_field": "_CurMaxFightCount",
+                "maximum_field": "_MaxSliderValue",
+            },
+        }
+
+    return read_ui_runtime_snapshot(required, read_panel, fast=True)
+
+
 __all__ = [
+    "read_xutian_auto_count_snapshot",
     "read_xutian_auto_settings_snapshot",
     "read_xutian_resource_snapshot",
 ]

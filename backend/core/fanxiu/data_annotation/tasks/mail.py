@@ -1208,18 +1208,13 @@ class MailTaskMixin:
                 current_scene=121,
             )
             self._log_locked("action", f"邮件_选择性领取：{reason}，点击 #121「一键删除」")
-        delete_read_shape.click(context)
-        # A modal is rendered above #121 while the underlying mail scene stays
-        # fully recognizable.  Waiting for modal and base scene in one call
-        # lets #121 win immediately and leaves the real confirmation untouched.
-        # Give formal modal scenes an exclusive bounded gate first; only when
-        # all of them are absent may the base mail page prove an idempotent
-        # no-op.
+        yield from context.wait_click(mail_view, delete_read_shape)
+        # #210/#278 are Layer 0-owned and use the preceding「一键删除」intent
+        # plus their asset description to authorize confirmation. #348 is the
+        # only remaining business modal; if absent, re-check the mail page.
         try:
             result_view = yield from context.wait_scene(
-                [348,
-                210,
-                278],
+                [348],
                 wait=6.0,
                 label="邮件_选择性领取：一键删除后优先等待确认弹窗",
             )
@@ -1230,7 +1225,7 @@ class MailTaskMixin:
                 label="邮件_选择性领取：未见确认弹窗后复核邮件页",
             )
         result_scene = getattr(result_view, "scene_id", getattr(result_view, "id", None))
-        if result_scene in {348, 210, 278}:
+        if result_scene == 348:
             with self._lock:
                 self._set_status_locked(
                     "running",
@@ -1240,9 +1235,8 @@ class MailTaskMixin:
                 )
                 self._log_locked("action", f"邮件_选择性领取：#{result_scene} 点击「确认」")
             self._click_confirmed_mail_delete_prompt(context, result_scene)
-            targets = (121,) if result_scene == 348 else (121, 34)
             result_view = yield from context.wait_scene(
-                targets,
+                (121,),
                 wait=12.0,
                 label="邮件_选择性领取：确认一键删除后等待邮件页",
             )

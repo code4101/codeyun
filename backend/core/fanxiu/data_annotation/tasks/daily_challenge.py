@@ -93,15 +93,12 @@ class DailyChallengeTaskMixin:
 
         task_label = "日常_每日副本"
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, _score, frame = (yield from context.current_scene([226, 225, 224, 223, 69, 34], update=True))
+        scene_id, _score, frame = (yield from context.current_scene([225, 224, 223, 69, 34], update=True))
         text = context.ocr_text(frame)
         if self._daily_dungeon_text_is_result(text):
             return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
         if self._daily_dungeon_text_is_completed(text):
             return (yield from self._finish_daily_dungeon_completed(ctx, stop_event, payload, text=text, task_label=task_label))
-        if scene_id == 226:
-            yield from self._handle_daily_dungeon_quick_sweep_prompt(ctx, stop_event, payload, task_label=task_label)
-            return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
         if scene_id == 225 or self._daily_dungeon_text_is_purchase_unavailable(text):
             yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
             yield from context.wait_scene([223], wait=10.0, label="日常_每日副本：等待回到副本挑战 #223")
@@ -118,12 +115,9 @@ class DailyChallengeTaskMixin:
             while time.monotonic() - start < float(payload.get("entry_ocr_retry_seconds") or 5.0):
                 self._raise_if_stopped(stop_event)
                 yield BehaviorTreeStatus.RUNNING
-                scene_id, _score, frame = (yield from context.current_scene([226, 225, 224, 223, 69, 34], update=True))
+                scene_id, _score, frame = (yield from context.current_scene([225, 224, 223, 69, 34], update=True))
                 if scene_id in {69, 34}:
                     break
-                if scene_id == 226:
-                    yield from self._handle_daily_dungeon_quick_sweep_prompt(ctx, stop_event, payload, task_label=task_label)
-                    return (yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label))
                 if scene_id == 225:
                     yield from self._close_daily_dungeon_purchase_unavailable(ctx, stop_event, image225)
                     yield from context.wait_scene([223], wait=10.0, label="日常_每日副本：等待回到副本挑战 #223")
@@ -346,62 +340,14 @@ class DailyChallengeTaskMixin:
             label=f"{task_label}：点击扫荡",
             timeout_key="sweep_timeout",
         )
-        prompt_result = yield from self._handle_daily_dungeon_quick_sweep_prompt(ctx, stop_event, payload, task_label=task_label)
+        # Optional #226 is a declared popup landing of「扫荡」and is consumed
+        # by wait_scene Layer 0 before the result scene is returned.
+        prompt_result = "layer0"
         yield from self._finish_daily_dungeon_result(ctx, stop_event, payload, task_label=task_label)
         yield from context.wait_action_settle(float(payload.get("sweep_click_settle_seconds") or 2.0))
         text = context.ocr_text(update=True)
         self._log("success", f"{task_label}：已点击扫荡，提示处理={prompt_result}，OCR={text[:120]}")
         return "success"
-
-    def _handle_daily_dungeon_quick_sweep_prompt(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        payload: dict[str, Any],
-        *,
-        task_label: str,
-    ):
-        image226 = (ctx.get("images") or {}).get(226)
-        if not isinstance(image226, dict):
-            raise RuntimeError("日常_每日副本：缺少 #226「快速扫荡提示」标注，无法确认扫荡提示")
-        continue_shape = self._find_shape(image226, "继续扫荡")
-        if continue_shape is None:
-            raise RuntimeError("日常_每日副本：缺少 #226「继续扫荡」标注，无法确认扫荡提示")
-        timeout = float(payload.get("quick_sweep_prompt_timeout") or 10.0)
-        asset_tree_path = ctx.get("asset_tree_path")
-        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        start = time.monotonic()
-        last_scene_id: int | None = None
-        last_score = 0.0
-        while True:
-            self._raise_if_stopped(stop_event)
-            yield BehaviorTreeStatus.RUNNING
-            scene_id, score, _frame = (yield from context.current_scene([226], update=True))
-            last_scene_id, last_score = scene_id, score
-            if scene_id == 226:
-                yield from self._click_shape_respecting_conditions(
-                    ctx,
-                    stop_event,
-                    image226,
-                    continue_shape,
-                    payload,
-                    label=f"{task_label}：继续扫荡",
-                    timeout_key="continue_sweep_timeout",
-                )
-                yield from context.wait_action_settle(float(payload.get("continue_sweep_settle_seconds") or 1.5))
-                self._log("success", f"{task_label}：已点击继续扫荡")
-                return "clicked"
-            if time.monotonic() - start >= timeout:
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                self._log("detail", f"{task_label}：10 秒内未出现 #226 快速扫荡提示，继续后续逻辑，最后 {scene_text} {last_score:.0f}%")
-                return "not_found"
-            with self._lock:
-                self._status.update({
-                    "phase": "daily_dungeon_wait_quick_sweep_prompt",
-                    "current_scene": scene_id,
-                    "message": f"{task_label}：等待快速扫荡提示 #226，当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
-                    "updated_at": time.time(),
-                })
 
     def _daily_dungeon_text_is_result(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)

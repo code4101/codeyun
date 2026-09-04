@@ -16,6 +16,10 @@ from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import (
 )
 from backend.core.fanxiu.instrumentation.exchange_shop import read_exchange_shop_runtime
 from backend.core.fanxiu.instrumentation.gongfa_atlas import read_gongfa_atlas_runtime
+from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerButtonAssets,
+    set_verified_integer_button_count,
+)
 
 
 TUESDAY = 1
@@ -26,15 +30,6 @@ LANGYAGE_DETAIL_SCENE = 470
 COMMON_SHOP_DETAIL_SCENE = 634
 LANGYAGE_FUSION_CAP = 100
 _CATEGORY_TABS = frozenset({"剑修", "法修", "魔修", "体修"})
-
-
-def quantity_clicks(quantity: int) -> tuple[int, int]:
-    """Return (+10 clicks, +1 clicks) for a dialog whose initial value is one."""
-
-    value = int(quantity)
-    if value < 1:
-        raise ValueError("兑换数量至少为 1")
-    return divmod(value - 1, 10)
 
 
 def _book_index(books: Iterable[Mapping[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -127,21 +122,6 @@ def _numbers(context: Any, scene_id: int, shape: str) -> tuple[list[int], str]:
     return [int(value) for value in values], str(text or "")
 
 
-def quantity_adjustment_shape(current: int, target: int) -> str | None:
-    """Choose one idempotent quantity adjustment from the observed value."""
-
-    delta = int(target) - int(current)
-    if delta >= 10:
-        return "+10"
-    if delta > 0:
-        return "+"
-    if delta <= -10:
-        return "-10"
-    if delta < 0:
-        return "-"
-    return None
-
-
 def validate_common_shop_dialog(
     snapshot: Mapping[str, Any],
     *,
@@ -168,6 +148,24 @@ def validate_common_shop_dialog(
             f"CanBuy={snapshot.get('CanBuy')!r}, isEnough={snapshot.get('isEnough')!r}"
         )
     return owned
+
+
+def verify_xianshi_currency_balances(
+    expected: Mapping[int, int],
+    actual: Mapping[int, int],
+    *,
+    spent_currency_ids: Iterable[int],
+) -> None:
+    """Require the final Runtime wallet to match every currency we spent."""
+
+    for item_id in sorted({int(value) for value in spent_currency_ids}):
+        expected_value = int(expected.get(item_id, 0))
+        actual_value = int(actual.get(item_id, 0))
+        if actual_value != expected_value:
+            raise RuntimeError(
+                f"仙市兑换后资源未闭环：item_id={item_id}，"
+                f"期望 {expected_value}，实际 {actual_value}"
+            )
 
 
 def is_langyage_detail_text(text: str) -> bool:
@@ -347,30 +345,41 @@ class XianshiExchangeTaskMixin:
         # Every click batch and the final high-risk exchange still receive a
         # fresh Runtime read, so safety evidence is not weakened.
         snapshot: dict[str, Any] = dict(initial_snapshot or {})
-        for _attempt in range(12):
-            if _attempt > 0 or not snapshot:
-                snapshot = self._read_common_shop_dialog(
-                    label=label,
-                    stage=f"数量复核{_attempt + 1}",
-                )
-            if snapshot.get("complete") is not True:
+        if not snapshot:
+            snapshot = self._read_common_shop_dialog(label=label, stage="数量初始值")
+        if snapshot.get("complete") is not True:
+            raise RuntimeError(
+                f"{label}：CommonShop 购买框运行态不完整：{snapshot.get('reason') or snapshot!r}"
+            )
+
+        def runtime_count() -> Mapping[str, int]:
+            current_snapshot = self._read_common_shop_dialog(label=label, stage="数量稳定读回")
+            if current_snapshot.get("complete") is not True:
                 raise RuntimeError(
-                    f"{label}：CommonShop 购买框运行态不完整：{snapshot.get('reason') or snapshot!r}"
+                    f"{label}：CommonShop 购买框运行态不完整："
+                    f"{current_snapshot.get('reason') or current_snapshot!r}"
                 )
-            current = int(snapshot.get("showNum") or 0)
-            if current == int(quantity):
-                break
-            delta = int(quantity) - current
-            coarse, fine = divmod(abs(delta), 10)
-            coarse_shape, fine_shape = (("+10", "+") if delta > 0 else ("-10", "-"))
-            for _ in range(coarse):
-                context.click_shape_center(detail_scene, coarse_shape)
-                yield from context.wait_action_settle(0.5)
-            for _ in range(fine):
-                context.click_shape_center(detail_scene, fine_shape)
-                yield from context.wait_action_settle(0.5)
-        else:
-            raise RuntimeError(f"{label}：数量配置未在动作上限内收敛到 {quantity}")
+            return {"current": int(current_snapshot.get("showNum") or 0)}
+
+        assets = IntegerButtonAssets(
+            settings_scene_id=int(detail_scene),
+            count_region="数量",
+            count_decrease="-",
+            count_increase="+",
+            count_decrease_large="-10",
+            count_increase_large="+10",
+            count_large_step=10,
+        )
+        adjustment = yield from set_verified_integer_button_count(
+            context,
+            assets,
+            int(quantity),
+            count_label=f"{label}购买数量",
+            runtime_count_reader=runtime_count,
+            initial_count=int(snapshot.get("showNum") or 0),
+        )
+        if int(adjustment.get("after") or 0) != int(quantity):
+            raise RuntimeError(f"{label}：购买数量未精确回读为 {quantity}")
 
         snapshot = self._read_common_shop_dialog(label=label, stage="兑换前最终复核")
         owned = validate_common_shop_dialog(snapshot, quantity=quantity, unit_price=unit_price)
@@ -486,6 +495,19 @@ class XianshiExchangeTaskMixin:
                 "cost_item_id": cost_item_id,
             })
 
+        backpack_debug_after: dict[str, Any] | None = None
+        if purchases:
+            spent_currency_ids = {int(row["cost_item_id"]) for row in purchases}
+            actual_remaining, backpack_debug_after = read_backpack_item_counts(
+                spent_currency_ids,
+                manager_key=f"{task_id}-currencies-after",
+            )
+            verify_xianshi_currency_balances(
+                currency_remaining,
+                actual_remaining,
+                spent_currency_ids=spent_currency_ids,
+            )
+
         yield from self._return_xianshi_exchange_to_world(context, home_scene, label=label)
         next_time = self._record_xianshi_exchange_done(payload, default_task_id=task_id)
         self._log("success", f"{label}：兑换 {len(purchases)} 种并返回 #34，下次 {next_time}")
@@ -496,6 +518,7 @@ class XianshiExchangeTaskMixin:
             "purchases": purchases,
             "currency_remaining": currency_remaining,
             "backpack_debug": backpack_debug,
+            "backpack_debug_after": backpack_debug_after,
         }
 
     def _execute_xianshi_zhenwuge_task(self, ctx: dict[str, Any], stop_event: Any, payload: dict[str, Any] | None = None):

@@ -109,6 +109,78 @@ def _quick_auto_currency_delta(
     }
 
 
+def read_yunmeng_auto_count_snapshot() -> dict[str, Any]:
+    """Read the active Yunmeng settings panel's count and native range.
+
+    ``YunmengAutoSettingView.UpdateMaxUse`` derives ``_MaxSliderValue`` from
+    the live challenge count plus refill items only when that refill switch is
+    enabled.  It is therefore the slider coordinate authority; the job's
+    bounded-batch ceiling is a separate safety policy.
+    """
+
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+        active_ui_component_objects,
+        read_ui_object_field,
+        read_ui_runtime_snapshot,
+    )
+
+    required = frozenset({
+        "_CurMaxFightCount",
+        "_MaxSliderValue",
+        "FightCount",
+        "Slider",
+        "AddBtn",
+        "SubBtn",
+        "StartBtn",
+        "AutoUseBuff",
+        "AutoUseMulti",
+        "AutoUseItem",
+    })
+
+    def read_panel(context):
+        candidates = []
+        for component in active_ui_component_objects(context):
+            fields = context.reader.fields(component)
+            if required.issubset(fields):
+                candidates.append(component)
+        if len(candidates) != 1:
+            raise FanxiuRuntimeMemoryError(
+                f"active 云梦自动挑战设置面板数量为 {len(candidates)}"
+            )
+        panel = candidates[0]
+        current = as_int(
+            read_ui_object_field(context, panel.address, "_CurMaxFightCount")
+        )
+        maximum = as_int(
+            read_ui_object_field(context, panel.address, "_MaxSliderValue")
+        )
+        if current is None or current < 1:
+            raise FanxiuRuntimeMemoryError(
+                f"云梦自动挑战当前次数无效：{current!r}"
+            )
+        if maximum is None or maximum < current:
+            raise FanxiuRuntimeMemoryError(
+                f"云梦自动挑战原生最大值无效：current={current!r}, maximum={maximum!r}"
+            )
+        return {
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "active_yunmeng_auto_settings_panel",
+            "read_only": True,
+            "current": int(current),
+            "minimum": 1,
+            "maximum": int(maximum),
+            "evidence": {
+                "pid": context.binding.pid,
+                "process_start_ticks": context.binding.process_start_ticks,
+                "panel_address": f"0x{panel.address:x}",
+                "current_field": "_CurMaxFightCount",
+                "maximum_field": "_MaxSliderValue",
+            },
+        }
+
+    return read_ui_runtime_snapshot(required, read_panel, fast=True)
+
+
 def read_yunmeng_trial_status_snapshot(
     *,
     rank_activity_id: int,

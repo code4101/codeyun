@@ -35,8 +35,13 @@ class _Runtime:
         self.confirmation_text = confirmation_text
         self.clicks: list[tuple[int, str]] = []
 
-    def sample_scene_once(self, _scene_ids, update=False):
-        return self.scene, 95.0, "frame"
+    def current_scene(self, _scene_ids, update=False):
+        assert update is True
+        # #507 is Layer 0-owned; model the guard acknowledging it and exposing
+        # the underlying training page to the business flow.
+        if self.scene == 507:
+            self.scene = 405
+        return _done((self.scene, 95.0, "frame"))
 
     def click_shape_center_then_scene(self, scene_id, shape, *_targets, **_kwargs):
         self.clicks.append((scene_id, shape))
@@ -52,6 +57,8 @@ class _Runtime:
 
     def wait_scene(self, layer0, **_kwargs):
         scene_ids = tuple(layer0)
+        if self.scene == 507:
+            self.scene = 405
         assert self.scene in scene_ids
         return _done(type("View", (), {"id": self.scene})())
 
@@ -155,9 +162,11 @@ def test_immediate_completion_does_not_retry_confirmation(landing: int) -> None:
     assert all(shape != "停止服用" for _scene, shape in runner.runtime.clicks)
 
 
-def test_existing_result_popup_is_acknowledged_without_new_confirmation() -> None:
+def test_existing_result_popup_is_consumed_before_business_scene_is_returned() -> None:
     runner = _Runner(_Runtime(507))
     result = _run(runner)
-    assert result["result"] == "completed"
-    assert result["confirmation_clicks"] == 0
-    assert runner.runtime.clicks == [(507, "确认")]
+    assert result["result"] == "started"
+    assert result["confirmation_clicks"] == 1
+    assert runner.runtime.clicks == [
+        (405, "服用丹药"), (593, "一键服用"), (594, "确认"),
+    ]

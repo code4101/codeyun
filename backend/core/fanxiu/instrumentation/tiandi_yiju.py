@@ -480,6 +480,73 @@ def read_tiandi_yiju_auto_dialog_snapshot() -> dict[str, Any]:
     }
 
 
+def read_tiandi_yiju_auto_count_snapshot() -> dict[str, Any]:
+    """Read #680's live round count and native slider maximum.
+
+    ``AlliancePCPieceAutoView.UpdateShowAutoContent`` owns ``useNum`` and
+    ``useMax``.  ``useMax`` changes with the remaining activity window and
+    the auto-use-strength-item switch, so neither the ordinary 100-round
+    batch policy nor a previously computed resource budget can replace it.
+    """
+
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+        active_ui_component_objects,
+        read_ui_object_field,
+        read_ui_runtime_snapshot,
+    )
+
+    required = frozenset({
+        "useNum",
+        "useMax",
+        "SliderNum",
+        "AddCountBtn",
+        "RemoveBtn",
+        "AutoUseCount",
+        "AutoUseItemToggle",
+        "NoBreakToggle",
+        "SkipEffectToggle",
+    })
+
+    def read_panel(context):
+        candidates = []
+        for component in active_ui_component_objects(context):
+            fields = context.reader.fields(component)
+            if required.issubset(fields):
+                candidates.append(component)
+        if len(candidates) != 1:
+            raise FanxiuRuntimeMemoryError(
+                f"active 天地弈局自动对弈面板数量为 {len(candidates)}"
+            )
+        panel = candidates[0]
+        current = as_int(read_ui_object_field(context, panel.address, "useNum"))
+        maximum = as_int(read_ui_object_field(context, panel.address, "useMax"))
+        if current is None or current < 1:
+            raise FanxiuRuntimeMemoryError(
+                f"天地弈局自动对弈当前次数无效：{current!r}"
+            )
+        if maximum is None or maximum < current:
+            raise FanxiuRuntimeMemoryError(
+                f"天地弈局自动对弈原生最大值无效：current={current!r}, maximum={maximum!r}"
+            )
+        return {
+            "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "source": "active_tiandi_yiju_auto_panel",
+            "read_only": True,
+            "current": int(current),
+            "minimum": 1,
+            "maximum": int(maximum),
+            "evidence": {
+                "pid": context.binding.pid,
+                "process_start_ticks": context.binding.process_start_ticks,
+                "panel_address": f"0x{panel.address:x}",
+                "current_field": "useNum",
+                "maximum_field": "useMax",
+            },
+        }
+
+    return read_ui_runtime_snapshot(required, read_panel, fast=True)
+
+
 def read_tiandi_yiju_recommended_target() -> dict[str, Any]:
     """Choose the nearest currently attackable point to Tianyuan from live Runtime."""
 
@@ -654,6 +721,8 @@ __all__ = [
     "GROUP_SELECTION_ACTIVITY_ID",
     "PLAYABLE_ACTIVITY_IDS",
     "TIANYUAN_PIECE_ID",
+    "read_tiandi_yiju_auto_count_snapshot",
+    "read_tiandi_yiju_auto_dialog_snapshot",
     "read_tiandi_yiju_recommended_target",
     "read_tiandi_yiju_runtime_snapshot",
     "validate_tiandi_yiju_natural_play_transition",

@@ -107,22 +107,12 @@ class MozuTaskMixin:
                 transition = yield from context.wait_click_then_scene(
                     scene_id,
                     "离开",
-                    [86, 186, 339, 34],
+                    [186, 339, 34],
                     timeout=25.0,
                     settle_seconds=1.5,
                     label="日常_魔祖：最低参战时间完成后主动离开战场",
                 )
                 completed_scene_id = getattr(transition, "id", transition)
-                if completed_scene_id == 86:
-                    transition = yield from context.wait_click_then_scene(
-                        86,
-                        "确认",
-                        [186, 339, 34],
-                        timeout=30.0,
-                        settle_seconds=1.5,
-                        label="日常_魔祖：确认离开战场",
-                    )
-                    completed_scene_id = getattr(transition, "id", transition)
             elif scene_id in {20, 34, 339}:
                 completed_scene_id = scene_id
             else:

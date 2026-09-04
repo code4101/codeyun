@@ -21,7 +21,7 @@ class TakeMedicineBatchSafetyError(RuntimeError):
 
 
 class TakeMedicineBatchTaskMixin:
-    take_medicine_scene_ids = (34, 20, 405, 408, 507, 593, 594, 595)
+    take_medicine_scene_ids = (34, 20, 405, 408, 593, 594, 595)
 
     def _take_medicine_finish(self, *, task_id: str, result: str, message: str,
                               confirmation_clicks: int, log_level: str) -> dict[str, Any]:
@@ -105,15 +105,6 @@ class TakeMedicineBatchTaskMixin:
                 message="服用丹药：启动时已停在批量确认 #594；已取消自动重试，等待人工判断",
                 confirmation_clicks=0, log_level="warning",
             )
-        if scene_id == 507:
-            yield from context.wait_click(507, "确认", timeout=timeout)
-            yield from context.wait_scene([405, 408], wait=timeout, label="服用丹药：关闭即时结果 #507")
-            return self._take_medicine_finish(
-                task_id=task_id, result="completed",
-                message="服用丹药：已确认即时完成结果 #507",
-                confirmation_clicks=0, log_level="success",
-            )
-
         scene_id = yield from self._take_medicine_open_training_page(
             context, scene_id=int(scene_id), timeout=timeout,
         )
@@ -143,15 +134,11 @@ class TakeMedicineBatchTaskMixin:
         self._raise_if_stopped(stop_event)
         context.click_shape_center(594, "确认")
         landed = yield from context.wait_scene(
-            [595, 507, 405, 408], wait=timeout,
+            [595, 405, 408], wait=timeout,
             label="服用丹药：确认后只读等待炼化队列或即时完成",
         )
         landing_id = int(landed.id)
-        if landing_id == 507:
-            yield from context.wait_click(507, "确认", timeout=timeout)
-            yield from context.wait_scene([405, 408], wait=timeout, label="服用丹药：关闭即时结果 #507")
-            result, message = "completed", "服用丹药：已单次确认批量服用，并验收即时完成结果 #507"
-        elif landing_id in {405, 408}:
+        if landing_id in {405, 408}:
             result, message = "completed", "服用丹药：已单次确认批量服用，并验收直接完成落点"
         else:
             result, message = "started", "服用丹药：已单次确认批量服用，并由 #595 炼化中页面验收"

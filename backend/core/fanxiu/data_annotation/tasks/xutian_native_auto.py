@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
     IntegerSliderAssets,
-    read_integer_slider_count as _read_count,
+    read_positive_integer_count,
     set_verified_integer_slider_count as _set_count,
 )
 from backend.core.fanxiu.data_annotation.tasks.bounded_batch_planning import (
@@ -48,6 +48,7 @@ XUTIAN_NATIVE_AUTO_TASK_ID = "xutian-palace-native-auto"
 XUTIAN_NATIVE_AUTO_START_MARK = "xutian_native_auto_started"
 XUTIAN_NATIVE_AUTO_BATCHES_KEY = "xutian_native_auto_batches"
 XUTIAN_DEVICE_FRAME_CHECK_INTERVAL_SECONDS = 5.0
+XUTIAN_NATIVE_COUNT_FINE_THRESHOLD = 10
 
 _QUALITY_LABELS = {
     3: "上品怪物",
@@ -537,6 +538,24 @@ def _reconcile_lower_switch(
         raise RuntimeError(f"虚天下组开关「{_LOWER_SWITCH_LABELS[name]}」Runtime 后验失败")
 
 
+def _xutian_count_assets(context: Any) -> IntegerSliderAssets:
+    """Build #615 slider geometry from its retained maximum-state frame."""
+
+    decrease = context.shape_box(XUTIAN_SETTINGS_SCENE_ID, "挑战次数_减少")
+    thumb = context.shape_box(XUTIAN_SETTINGS_SCENE_ID, "挑战次数_滑块")
+    decrease_width = float(decrease.get("w") or 0.0)
+    thumb_width = float(thumb.get("w") or 0.0)
+    if decrease_width <= 0 or thumb_width <= 0:
+        raise RuntimeError("虚天挑战次数滑轨边界 Shape 几何无效")
+    return IntegerSliderAssets(
+        settings_scene_id=XUTIAN_SETTINGS_SCENE_ID,
+        count_slider_left_anchor="挑战次数_减少",
+        count_slider_right_anchor="挑战次数_滑块",
+        count_slider_left_center_offset=decrease_width * 0.5,
+        count_slider_right_center_offset=thumb_width * 0.5,
+    )
+
+
 def _configure_and_run_batch(
     context: Any,
     *,
@@ -593,14 +612,26 @@ def _configure_and_run_batch(
             context, name=name, desired=desired, identity=identity
         )
 
-    count_assets = IntegerSliderAssets(
-        settings_scene_id=XUTIAN_SETTINGS_SCENE_ID,
+    from backend.core.fanxiu.instrumentation.xutian_runtime import (
+        read_xutian_auto_count_snapshot,
     )
+
+    count_assets = _xutian_count_assets(context)
+    live_count = read_xutian_auto_count_snapshot()
+    native_maximum = int(live_count.get("maximum") or 0)
+    if int(requested_challenges) > native_maximum:
+        raise RuntimeError(
+            "虚天自动挑战请求超过当前面板原生上限："
+            f"target={int(requested_challenges)}, maximum={native_maximum}"
+        )
     yield from _set_count(
         context,
         count_assets,
         int(requested_challenges),
-        max_adjustments=min(100, max(20, int(requested_challenges) // 5)),
+        max_adjustments=XUTIAN_NATIVE_COUNT_FINE_THRESHOLD,
+        count_label="虚天自动挑战次数",
+        maximum=native_maximum,
+        runtime_count_reader=read_xutian_auto_count_snapshot,
     )
     final_settings = _read_auto_snapshot()
     mismatches = validate_xutian_auto_settings(
@@ -611,8 +642,25 @@ def _configure_and_run_batch(
     )
     if _runtime_identity(final_settings) != identity or mismatches:
         raise RuntimeError(f"虚天自动设置 Runtime 复验失败：{mismatches}")
-    if _read_count(context, count_assets) != int(requested_challenges):
-        raise RuntimeError("虚天挑战次数 GUI 与 Runtime 未对齐")
+    final_count = read_xutian_auto_count_snapshot()
+    active_count = int(final_count.get("current") or 0)
+    final_maximum = int(final_count.get("maximum") or 0)
+    gui_count = read_positive_integer_count(
+        context,
+        count_assets,
+        count_label="虚天自动挑战次数",
+        runtime_reader=read_xutian_auto_count_snapshot,
+    )
+    if (
+        active_count != int(requested_challenges)
+        or gui_count != active_count
+        or final_maximum != native_maximum
+    ):
+        raise RuntimeError(
+            "虚天挑战次数 GUI 与 Runtime 未对齐："
+            f"target={int(requested_challenges)}, gui={gui_count}, runtime={active_count}, "
+            f"maximum={final_maximum}, expected_maximum={native_maximum}"
+        )
     if before_start is not None:
         before_start(final_settings)
     auto_started_at = time.monotonic()

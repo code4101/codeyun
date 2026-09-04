@@ -22,9 +22,8 @@ from backend.core.fanxiu.data_annotation.tasks.xianshi_exchange import (
     is_langyage_product_detail_text,
     plan_langyage_candidates,
     plan_zhenwuge_candidates,
-    quantity_adjustment_shape,
-    quantity_clicks,
     validate_common_shop_dialog,
+    verify_xianshi_currency_balances,
 )
 
 
@@ -61,20 +60,6 @@ def _item(book_id: int, *, item_id: int, currency: int = 1, remaining=49, unlimi
     }
 
 
-def test_quantity_clicks_starts_from_one():
-    assert quantity_clicks(1) == (0, 0)
-    assert quantity_clicks(17) == (1, 6)
-    assert quantity_clicks(35) == (3, 4)
-
-
-def test_quantity_adjustment_shape_converges_from_observed_value():
-    assert quantity_adjustment_shape(1, 35) == "+10"
-    assert quantity_adjustment_shape(31, 35) == "+"
-    assert quantity_adjustment_shape(35, 35) is None
-    assert quantity_adjustment_shape(35, 1) == "-10"
-    assert quantity_adjustment_shape(4, 1) == "-"
-
-
 def test_common_shop_dialog_uses_runtime_quantity_unit_price_and_guards():
     snapshot = {
         "complete": True,
@@ -89,6 +74,20 @@ def test_common_shop_dialog_uses_runtime_quantity_unit_price_and_guards():
         validate_common_shop_dialog({**snapshot, "showNum": 2}, quantity=3, unit_price=80)
     with pytest.raises(RuntimeError, match="购买资格未闭环"):
         validate_common_shop_dialog({**snapshot, "isEnough": False}, quantity=3, unit_price=80)
+
+
+def test_final_currency_balance_must_match_runtime_for_spent_pools():
+    verify_xianshi_currency_balances(
+        {11: 760, 12: 500},
+        {11: 760, 12: 0},
+        spent_currency_ids={11},
+    )
+    with pytest.raises(RuntimeError, match="item_id=11，期望 760，实际 759"):
+        verify_xianshi_currency_balances(
+            {11: 760},
+            {11: 759},
+            spent_currency_ids={11},
+        )
 
 
 def test_langyage_detail_text_requires_all_saved_failure_frame_anchors():
@@ -245,6 +244,14 @@ def test_buy_quantity_reuses_caller_snapshot_but_keeps_post_click_and_final_read
                 "CanBuy": True,
                 "isEnough": True,
             },
+            {
+                "complete": True,
+                "showNum": 3,
+                "Price": 80,
+                "HadPrice": 1000,
+                "CanBuy": True,
+                "isEnough": True,
+            },
         )
     )
     monkeypatch.setattr(
@@ -287,6 +294,6 @@ def test_buy_quantity_reuses_caller_snapshot_but_keeps_post_click_and_final_read
         )
     )
 
-    assert len(reads) == 2
+    assert len(reads) == 3
     assert clicks == ["+", "+", "兑换（高风险）"]
     assert remaining == 760

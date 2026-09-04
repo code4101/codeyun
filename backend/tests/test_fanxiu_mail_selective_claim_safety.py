@@ -57,6 +57,13 @@ def test_delete_read_mail_confirms_prompt_and_returns_to_mail():
     views = iter((View({"id": 348, "shapes": []}), View({"id": 121, "shapes": []})))
 
     class Runtime:
+        def wait_click(self, scene_id, title, **_kwargs):
+            resolved_scene = scene_id.id if isinstance(scene_id, View) else int(scene_id)
+            resolved_title = title if isinstance(title, str) else title.title
+            clicks.append((resolved_scene, resolved_title))
+            if False:
+                yield None
+
         def click_shape(self, scene_id, title, **_kwargs):
             resolved_scene = scene_id.id if isinstance(scene_id, View) else int(scene_id)
             resolved_title = title if isinstance(title, str) else title.title
@@ -83,7 +90,7 @@ def test_delete_read_mail_confirms_prompt_and_returns_to_mail():
 
     assert result == 121
     assert clicks == [(121, "一键删除"), (348, "确认")]
-    assert waits == [(348, 210, 278), (121,)]
+    assert waits == [(348,), (121,)]
 
 
 def test_delete_read_mail_requires_strict_runtime_decrease(monkeypatch):

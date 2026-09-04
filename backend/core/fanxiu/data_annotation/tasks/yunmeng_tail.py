@@ -8,11 +8,13 @@ from typing import Any
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     ExchangeTailPhysicalAction as YunmengTailPhysicalAction,
     ExchangeTailPurchase as YunmengTailPurchase,
-    exchange_quantity_clicks as yunmeng_quantity_clicks,
     ocr_contains_amount as _ocr_contains_amount,
     plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
     plan_exchange_tail_purchases,
     verify_exchange_detail as _detail_matches,
+)
+from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+    set_verified_common_shop_quantity,
 )
 
 
@@ -239,19 +241,12 @@ def execute_yunmeng_tail_job(
             expected_name=action.name,
             expected_price=action.unit_price,
         )
-        plus_ten_count, plus_one_count = yunmeng_quantity_clicks(
+        yield from set_verified_common_shop_quantity(
+            context,
             action.quantity,
-            buying_to_cap=action.clears_row,
+            unit_price=action.unit_price,
+            label=f"{label}/{action.name}",
         )
-        for index in range(plus_ten_count):
-            context.click_shape_center_fast(566, "+10")
-            if (index + 1) % 25 == 0:
-                yield from context.wait_action_settle(0.05)
-        for index in range(plus_one_count):
-            context.click_shape_center_fast(566, "+")
-            if (index + 1) % 25 == 0:
-                yield from context.wait_action_settle(0.05)
-        yield from context.wait_action_settle(0.4)
 
         expected_total = action.quantity * action.unit_price
         if expected_wallet - expected_total < reserved_tokens:
@@ -334,5 +329,4 @@ __all__ = [
     "plan_yunmeng_tail_purchases",
     "refresh_yunmeng_final_rankings",
     "store_yunmeng_final_rankings",
-    "yunmeng_quantity_clicks",
 ]

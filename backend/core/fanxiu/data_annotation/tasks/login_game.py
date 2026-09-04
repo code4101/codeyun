@@ -22,12 +22,12 @@ from backend.core.fanxiu.data_annotation.popup_guard import (
 
 
 class LoginGameTaskMixin:
-    login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 47, 49, 415, 546, 611, 661, 694, 695)
-    login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 546, 661, 694, 695})
+    login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 49, 415, 611, 661, 694, 695)
+    login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 661, 694, 695})
     # A healthy device and an arbitrary recognized game page do not prove that
     # login completed.  Keep this list explicit so newly recognized startup
     # overlays cannot silently turn a long unknown wait into false success.
-    login_terminal_scene_ids = frozenset({19, 20, 21, 22, 34, 47, 49})
+    login_terminal_scene_ids = frozenset({19, 20, 21, 22, 34, 49})
 
     @staticmethod
     def _resolve_login_scene(scene_id: int | None, frame_text: str) -> int | None:
@@ -302,7 +302,7 @@ class LoginGameTaskMixin:
                 raise RuntimeError(
                     f"登录游戏：当前 #{scene_id} 不是已定义的登录终态，拒绝报告成功"
                 )
-            if scene_id in {415, 546}:
+            if scene_id == 415:
                 self._raise_game_maintenance(
                     scene_id=scene_id,
                     evidence={"source": "login_game_scene", "scene_id": scene_id},

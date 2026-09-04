@@ -120,6 +120,7 @@ class SceneInterruptionMixin:
             folder_path: str,
             action_shape: dict[str, Any] | None,
             action_view: dict[str, Any] | None = None,
+            intended_action_shape: dict[str, Any] | None = None,
         ) -> None:
             identity = id(image)
             if identity in seen_image_ids:
@@ -130,7 +131,37 @@ class SceneInterruptionMixin:
                 "folder_path": folder_path,
                 "action_shape": action_shape,
                 "action_view": action_view or image,
+                "intended_action_shape": intended_action_shape,
             })
+
+        def intended_action(image: dict[str, Any]) -> dict[str, Any] | None:
+            """Choose the popup's positive continuation for a declared arrival.
+
+            This action is never used for an unsolicited popup.  Descriptions
+            such as "only allowed in the mail flow" are therefore compatible:
+            the preceding sceneJumpTarget is the authorization proof.
+            """
+
+            negative_titles = {"取消", "返回", "关闭", "空白", "离开"}
+            shapes = [shape for shape in image.get("shapes") or [] if isinstance(shape, dict)]
+            positive = [
+                shape
+                for shape in shapes
+                if not shape.get("isSceneIdentity")
+                and str(shape.get("title") or "").strip() not in negative_titles
+                and str(shape.get("sceneJumpTarget") or "").strip()
+            ]
+            if positive:
+                return positive[0]
+            fallback_titles = {"确认", "确定", "继续扫荡", "进行扫荡", "前往灵脉"}
+            return next(
+                (
+                    shape
+                    for shape in shapes
+                    if str(shape.get("title") or "").strip() in fallback_titles
+                ),
+                None,
+            )
 
         def collect_popup_scenes(
             items: list[dict[str, Any]],
@@ -156,7 +187,13 @@ class SceneInterruptionMixin:
                     else:
                         action_view, action_shape = item, None
                     if self._popup_candidate_has_executable_action(item, action_shape):
-                        add_candidate(item, "/".join(path), action_shape, action_view)
+                        add_candidate(
+                            item,
+                            "/".join(path),
+                            action_shape,
+                            action_view,
+                            intended_action(item),
+                        )
                     if (
                         self._auto_close_guard_action_allowed(own_action)
                         and own_title not in {"确定", "确认"}
@@ -193,7 +230,12 @@ class SceneInterruptionMixin:
                         None,
                     ) if action_title else None
                     if self._popup_candidate_has_executable_action(item, action_shape):
-                        add_candidate(item, "/".join(path), action_shape)
+                        add_candidate(
+                            item,
+                            "/".join(path),
+                            action_shape,
+                            intended_action_shape=intended_action(item),
+                        )
                 if str(item.get("type") or "") == "folder" and title == "弹窗":
                     if isinstance(children, list):
                         collect_popup_scenes(
@@ -243,6 +285,51 @@ class SceneInterruptionMixin:
     ) -> bool:
         view_id = int(view.id or 0)
         view_label = f"#{view_id}" if view_id else "#?"
+        pending_shape = getattr(context, "last_clicked_shape", None)
+        pending_age = time.monotonic() - float(
+            getattr(context, "last_clicked_at", 0.0) or 0.0
+        )
+        pending_title = str(
+            (pending_shape.title if isinstance(pending_shape, Shape) else "") or ""
+        ).strip()
+        tree = getattr(context, "ctx", {}).get("asset_tree")
+        declared_ids = (
+            self._scene_jump_target_ids(
+                tree if isinstance(tree, list) else [],
+                pending_shape.raw,
+            )
+            if isinstance(pending_shape, Shape)
+            else []
+        )
+        confirmation_ids = self._scene_jump_confirmation_scene_ids(
+            tree if isinstance(tree, list) else []
+        )
+        # A leave confirmation may be accepted only as the immediate declared
+        # landing of the action just executed.  Merely listing #86/#289 as a
+        # business candidate grants no ownership; unexpected instances still
+        # use the inherited parent-background dismissal below.
+        if (
+            pending_age <= 15.0
+            and (view_id in declared_ids or view_id in confirmation_ids)
+            and pending_title in {"离开", "返回", "退出", "关闭", "回到世界"}
+        ):
+            confirm_shape = view.get_shape("确认")
+            if confirm_shape is None:
+                self._record_popup_guard_missing(
+                    view_id or None,
+                    f"场景识别命中声明的离开确认：{view_label} {score:.0f}%，缺少「确认」标注",
+                    event,
+                    "missing_confirm",
+                )
+                return True
+            context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
+            self._record_popup_guard_click(
+                view_id or None,
+                f"场景识别处理：{view_label} 是「{pending_title}」声明落点，点击「确认」 {score:.0f}%",
+                event,
+                "确认",
+            )
+            return True
         action_shape = candidate.get("action_shape") if isinstance(candidate, dict) else None
         action_title = str((action_shape or {}).get("title") or "").strip()
         if (
@@ -416,6 +503,54 @@ class SceneInterruptionMixin:
             "score": round(float(score or 0.0), 1),
             "action": "",
         }
+
+        pending_shape = getattr(context, "last_clicked_shape", None)
+        pending_age = time.monotonic() - float(
+            getattr(context, "last_clicked_at", 0.0) or 0.0
+        )
+        tree = getattr(context, "ctx", {}).get("asset_tree")
+        declared_ids = (
+            self._scene_jump_target_ids(
+                tree if isinstance(tree, list) else [],
+                pending_shape.raw,
+            )
+            if isinstance(pending_shape, Shape)
+            else []
+        )
+        intended_shape = candidate.get("intended_action_shape")
+        pending_title = str(
+            (pending_shape.title if isinstance(pending_shape, Shape) else "") or ""
+        ).strip()
+        intended_text = "\n".join(
+            str(value or "")
+            for value in (
+                (intended_shape or {}).get("title") if isinstance(intended_shape, dict) else "",
+                (intended_shape or {}).get("description") if isinstance(intended_shape, dict) else "",
+                view.title,
+            )
+        )
+        described_result = bool(
+            pending_title
+            and len(pending_title) >= 3
+            and pending_title in intended_text
+        )
+        # A popup that is the declared immediate result of the preceding
+        # business click remains Layer 0-owned. Layer 0 performs its positive
+        # continuation itself; the task never receives or reclassifies it.
+        if (
+            pending_age <= 15.0
+            and (view.id in declared_ids or described_result)
+            and isinstance(intended_shape, dict)
+        ):
+            intended = Shape(intended_shape, parent_view=view)
+            context.click_shape(view, intended, frame_data_url=context.cur_frame())
+            self._record_popup_guard_click(
+                view.id,
+                f"场景识别处理：{image_label} 是上一动作声明落点，点击「{intended.title}」 {score:.0f}%",
+                event,
+                intended.title or "shape",
+            )
+            return True
 
         if view.id == 84:
             return self._handle_auto_close_popup_84(

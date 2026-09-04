@@ -730,7 +730,6 @@ def _execute_current_batch(
             f"scene={scene_id}, evidence={evidence}"
         )
     elif scene_id in (
-        47,
         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
     ):

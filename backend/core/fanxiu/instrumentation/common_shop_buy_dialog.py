@@ -9,6 +9,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemo
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     active_ui_component_objects,
+    clear_ui_runtime_context_cache,
     read_ui_object_field,
     read_ui_runtime_snapshot,
 )
@@ -90,16 +91,46 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
 
 
 def read_common_shop_buy_dialog_snapshot() -> dict[str, Any]:
-    try:
-        return read_ui_runtime_snapshot(_REQUIRED_KEYS, _read_snapshot, fast=True)
-    except (FanxiuRuntimeMemoryError, KeyError, AttributeError, TypeError, ValueError) as exc:
-        return {
-            "ok": False,
-            "complete": False,
-            "source": "active_common_shop_buy_tips",
-            "reason": str(exc),
-            "read_only": True,
-        }
+    """Read the currently active panel, cold-rebinding once if it was replaced.
+
+    CommonShopBuyTips rebuilds its field table while the slider animates.  A
+    child address is therefore scoped to one coherent read only.  The generic
+    UI snapshot layer already retries an in-read fault once; this adapter adds
+    one bounded panel rediscovery when that coherent read still loses the
+    active panel.  It never returns a value from the failed address.
+    """
+
+    rebind_reasons: list[str] = []
+    for attempt in range(2):
+        try:
+            snapshot = dict(
+                read_ui_runtime_snapshot(_REQUIRED_KEYS, _read_snapshot, fast=True)
+            )
+            snapshot["panel_rebinds"] = attempt
+            snapshot["read_attempts"] = attempt + 1
+            if rebind_reasons:
+                snapshot["panel_rebind_reasons"] = tuple(rebind_reasons)
+            return snapshot
+        except FanxiuRuntimeMemoryError as exc:
+            rebind_reasons.append(str(exc))
+            if attempt == 0:
+                clear_ui_runtime_context_cache()
+                continue
+            error: Exception = exc
+            break
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            error = exc
+            break
+    return {
+        "ok": False,
+        "complete": False,
+        "source": "active_common_shop_buy_tips",
+        "reason": str(error),
+        "panel_rebinds": min(1, len(rebind_reasons)),
+        "read_attempts": max(1, len(rebind_reasons)),
+        "panel_rebind_reasons": tuple(rebind_reasons),
+        "read_only": True,
+    }
 
 
 __all__ = ["plan_common_shop_quantity", "read_common_shop_buy_dialog_snapshot"]

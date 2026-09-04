@@ -14,13 +14,15 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     authorize_exchange_purchase,
-    exchange_quantity_clicks,
     ocr_contains_amount as _ocr_contains_amount,
     plan_exchange_tail_physical_actions,
     plan_exchange_tail_purchases,
     verify_exchange_detail as _detail_matches,
     verify_exchange_purchase_counts,
     verify_exchange_wallet,
+)
+from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+    set_verified_common_shop_quantity,
 )
 from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
     resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
@@ -388,17 +390,12 @@ def execute_xianyuan_duokui_tail_checkpoint(
             label=f"{label}：等待 {action.name} 购买框",
         )
         _detail_matches(context, expected_name=action.name, expected_price=action.unit_price)
-        plus_ten, plus_one = exchange_quantity_clicks(
+        yield from set_verified_common_shop_quantity(
+            context,
             action.quantity,
-            buying_to_cap=action.clears_row,
+            unit_price=action.unit_price,
+            label=f"{label}/{action.name}",
         )
-        for index in range(plus_ten):
-            context.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+10")
-            yield from context.wait_action_settle(0.08)
-        for index in range(plus_one):
-            context.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+")
-            yield from context.wait_action_settle(0.08)
-        yield from context.wait_action_settle(0.35)
         cost, remaining_wallet = authorize_exchange_purchase(
             current_wallet=expected_wallet,
             quantity=action.quantity,

@@ -14,11 +14,13 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     authorize_exchange_purchase,
-    exchange_quantity_clicks,
     plan_exchange_tail_physical_actions,
     plan_exchange_tail_purchases,
     verify_exchange_purchase_counts,
     verify_exchange_wallet,
+)
+from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+    set_verified_common_shop_quantity,
 )
 from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
     resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
@@ -444,19 +446,12 @@ def execute_magic_invasion_tail_checkpoint(
             label=f"{label}：等待 {action.name} 购买框",
         )
         _verify_dialog(context, name=action.name, unit_price=action.unit_price)
-        plus_ten, plus_one = exchange_quantity_clicks(
+        quantity_proof = yield from set_verified_common_shop_quantity(
+            context,
             action.quantity,
-            buying_to_cap=action.clears_row,
+            unit_price=action.unit_price,
+            label=f"{label}/{action.name}",
         )
-        for index in range(plus_ten):
-            context.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+10")
-            if (index + 1) % 25 == 0:
-                yield from context.wait_action_settle(0.05)
-        for index in range(plus_one):
-            context.click_shape_center_fast(COMMON_SHOP_DIALOG_SCENE, "+")
-            if (index + 1) % 25 == 0:
-                yield from context.wait_action_settle(0.05)
-        yield from context.wait_action_settle(0.35)
         _cost, remaining_wallet = authorize_exchange_purchase(
             current_wallet=expected_wallet,
             quantity=action.quantity,
@@ -476,6 +471,7 @@ def execute_magic_invasion_tail_checkpoint(
             "name": action.name,
             "quantity": action.quantity,
             "unit_price": action.unit_price,
+            "quantity_proof": quantity_proof,
         })
 
     with Session(engine) as session:

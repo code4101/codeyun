@@ -289,19 +289,11 @@ class DailyXuanhuangTaskMixin:
             )
             region_landing = yield from context.wait_scene(
                 [34,
-                86,
                 55],
                 wait=max(30.0, view_timeout),
-                label="日常_玄荒：#85 离开后等待世界、确认或大地图",
+                label="日常_玄荒：#85 离开后等待世界或大地图（确认弹窗由 Layer 0 处理）",
             )
-            if region_landing.id == 86:
-                yield from context.wait_click(86, "确认", timeout=view_timeout)
-                yield from context.wait_scene(
-                    [34],
-                    wait=max(30.0, view_timeout),
-                    label="日常_玄荒：确认离开区域后等待世界 #34",
-                )
-            elif region_landing.id == 55:
+            if region_landing.id == 55:
                 yield from context.go_scene(34)
         if landing.id == 395:
             # #395 与 #420 使用同一右侧「离开」按钮位置。复用既有
@@ -310,23 +302,11 @@ class DailyXuanhuangTaskMixin:
             context.click_shape_center(420, "离开")
             confirm = yield from context.wait_scene(
                 [34,
-                86,
                 55],
                 wait=max(30.0, view_timeout),
-                label="日常_玄荒：副本 #395 离开后等待确认、世界或大地图",
+                label="日常_玄荒：副本 #395 离开后等待世界或大地图（确认弹窗由 Layer 0 处理）",
             )
-            if confirm.id == 86:
-                yield from context.wait_click(
-                    86,
-                    "确认",
-                    timeout=view_timeout,
-                )
-                yield from context.wait_scene(
-                    [34],
-                    wait=max(30.0, view_timeout),
-                    label="日常_玄荒：确认离开副本后等待世界 #34",
-                )
-            elif confirm.id == 55:
+            if confirm.id == 55:
                 # 实机存在直接落到 #55「大地图」的分支；通用场景图
                 # 已能从 #55 安全返回 #34，复用它而不新增/修改标注。
                 yield from context.go_scene(34)
@@ -416,7 +396,6 @@ class DailyXuanhuangTaskMixin:
                 420,
                 85,
                 395,
-                86,
                 55],
                 wait=resume_transition_timeout_seconds,
                 label="日常_玄荒：等待战斗退出过渡落到已知页面",
@@ -426,7 +405,7 @@ class DailyXuanhuangTaskMixin:
                 start_from_counter = True
             elif current_scene in {186, 419, 420}:
                 resume_battle_scene = current_scene
-            elif current_scene in {85, 395, 86, 55}:
+            elif current_scene in {85, 395, 55}:
                 yield from context.go_scene(34)
 
         while True:

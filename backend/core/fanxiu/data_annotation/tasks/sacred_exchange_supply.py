@@ -15,12 +15,9 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     StorageBagRandomBoxRequest,
     plan_current_random_box_click,
 )
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
-    IntegerSliderAssets,
-    set_verified_integer_slider_count,
-)
-from backend.core.fanxiu.data_annotation.tasks.xianshi_exchange import (
-    validate_common_shop_dialog,
+from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+    SACRED_SHOP_QUANTITY_ASSETS,
+    set_verified_common_shop_quantity,
 )
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import (
@@ -48,18 +45,17 @@ ITEM_DETAIL_SCENE = 610
 SACRED_ITEM_SCENE = 632
 SACRED_SHOP_SCENE = 633
 SACRED_BUY_SCENE = 634
-COMMON_SHOP_QUANTITY_ASSETS = IntegerSliderAssets(
-    settings_scene_id=SACRED_BUY_SCENE,
-    count_region="数量滑条",
-    count_decrease="-",
-    count_increase="+",
-    count_slider_thumb=None,
-    count_slider_track="数量滑条",
-)
 
 
 @dataclass(frozen=True)
 class SacredExchangeSupplySpec:
+    """One ranking-mode binding for the shared 神物兑换 transaction.
+
+    The workflow owns navigation, Runtime-GUI alignment, exact quantity control,
+    purchase and double-delta verification.  A ranking mode only supplies the
+    source sacred item, target stock item and its shortage policy here.
+    """
+
     label: str
     source_item_id: int
     source_item_name: str
@@ -333,36 +329,21 @@ def _exchange_quantity(
     initial = dict(reader())
     control = derive_common_shop_quantity_control(initial, plan)
 
-    def runtime_count() -> Mapping[str, int]:
-        current = dict(reader())
-        if current.get("complete") is not True:
-            raise RuntimeError(
-                f"{label}购买框运行态不完整：{current.get('reason') or current!r}"
-            )
-        return {
-            "current": int(current.get("showNum") or 0),
-            "maximum": int(current.get("maxNum") or 0),
-        }
-
-    adjustment = yield from set_verified_integer_slider_count(
+    quantity_proof = yield from set_verified_common_shop_quantity(
         context,
-        COMMON_SHOP_QUANTITY_ASSETS,
         control["target"],
-        maximum=control["maximum"],
-        max_adjustments=10,
-        count_label=f"{label}兑换数量",
-        runtime_count_reader=runtime_count,
+        unit_price=plan.cost_per_exchange,
+        label=label,
+        assets=SACRED_SHOP_QUANTITY_ASSETS,
+        initial_snapshot=initial,
+        snapshot_reader=reader,
     )
+    adjustment = dict(quantity_proof.get("adjustment") or {})
     if int(adjustment.get("after") or 0) != control["target"]:
         raise RuntimeError(f"{label}兑换数量未精确回读为 {control['target']}")
-    snapshot = dict(reader())
+    snapshot = dict(quantity_proof.get("snapshot") or {})
     if int(snapshot.get("goodsNum") or 0) != plan.goods_per_exchange:
         raise RuntimeError(f"{label}单次产出与计划不一致")
-    validate_common_shop_dialog(
-        snapshot,
-        quantity=control["target"],
-        unit_price=plan.cost_per_exchange,
-    )
     yield from context.wait_click(SACRED_BUY_SCENE, "兑换（高风险）", timeout=8.0)
     yield from context.wait_scene(
         [SACRED_SHOP_SCENE], wait=10.0, label=f"{label}：兑换后返回列表"
@@ -381,7 +362,14 @@ def ensure_sacred_exchange_stock(
         "cards_by_id"
     ],
 ):
-    cards = dict(catalog_reader())
+    """Raise ``spec.target_item_id`` to ``required_stock`` through 神物兑换.
+
+    This is the public business API for ranking-mode sacred-item exchange.  It
+    derives price, output ratio, limits and affordable quantity from live
+    Runtime state; callers must not reproduce the GUI sequence or assume that
+    requested item count equals slider count or source-item cost.
+    """
+
     before = yield from _open_storage_category(
         context,
         spec,
@@ -393,6 +381,7 @@ def ensure_sacred_exchange_stock(
     if current >= required:
         yield from context.go_scene(WORLD_SCENE)
         return {"status": "sufficient", "stock_after": current}
+    cards = dict(catalog_reader())
     target = prepare_storage_bag_target_by_name(
         before,
         name=spec.source_item_name,

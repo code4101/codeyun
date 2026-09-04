@@ -348,14 +348,13 @@ class LingquanTaskMixin:
         """Consume every nested leave layer until the real world scene is reached."""
         deadline = time.monotonic() + max(1.0, float(timeout))
         scene_id, _score, _frame = (yield from context.current_scene(
-            [34, 388, 186, 86],
+            [34, 388, 186],
             update=True,
         ))
 
         # 灵泉结束后可能叠着多层内部场景：活动专用 #388、通用离开层
-        # #186，以及每次离开产生的 #86 确认层。不能把第一次点击后出现
-        # #186 当成异常，也不能只消费一次确认；每次动作后都重新识别，
-        # 直到真实命中 #34。动作次数与总时间同时有界，避免异常画面狂点。
+        # #186，以及每次离开产生的确认弹窗。确认弹窗由 wait_scene Layer 0
+        # 根据刚执行的「离开」动作处理；业务树只观察可操作场景和最终 #34。
         for _step in range(8):
             # wait_scene / wait_click_then_scene 已经用真实帧确认落到 #34 时，
             # 即使动作恰好耗尽总预算也应以业务成功为准。否则下一轮先算
@@ -370,8 +369,7 @@ class LingquanTaskMixin:
                 waited = yield from context.wait_scene(
                     [34,
                     388,
-                    186,
-                    86],
+                    186],
                     wait=remaining,
                     label="日常_灵泉：重新识别多层离场上下文",
                 )
@@ -385,24 +383,11 @@ class LingquanTaskMixin:
                 if remaining <= 0:
                     raise TimeoutError("日常_灵泉：点击离开后等待落点超时")
                 landed = yield from context.wait_scene(
-                    [86,
-                    34,
+                    [34,
                     388,
                     186],
                     wait=remaining,
                     label="日常_灵泉：点击离开后重新识别落点",
-                )
-                scene_id = self._view_id(landed)
-                continue
-            if scene_id == 86:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("日常_灵泉：离场确认前已超时")
-                landed = yield from context.wait_click_then_scene(
-                    86,
-                    "确认",
-                    [34, 388, 186, 86],
-                    timeout=remaining,
                 )
                 scene_id = self._view_id(landed)
                 continue

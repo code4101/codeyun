@@ -149,13 +149,24 @@ def test_exchange_tail_buys_once_and_persists_wallet_and_count(monkeypatch) -> N
         }
 
     monkeypatch.setattr(tiandi_yiju_tail, "plan_exchange_tail_purchases", plan)
+
+    def verified_quantity(*_args, **_kwargs):
+        if False:
+            yield None
+        return {"quantity": 1, "expected_total": 50}
+
+    monkeypatch.setattr(
+        tiandi_yiju_tail,
+        "set_verified_common_shop_quantity",
+        verified_quantity,
+    )
     runtime = _Runtime()
     result = _run(tiandi_yiju_tail.execute_tiandi_yiju_exchange_tail(
         None,
         {},
         occurrence=occurrence,
         stop_event=threading.Event(),
-        runtime=runtime,
+        context=runtime,
         return_to_world=True,
     ))
 

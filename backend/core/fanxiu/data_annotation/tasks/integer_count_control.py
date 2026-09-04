@@ -3,7 +3,6 @@ from __future__ import annotations
 """Activity-neutral, closed-loop positive-integer slider control."""
 
 from dataclasses import dataclass
-from math import ceil
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
 
@@ -12,6 +11,9 @@ class IntegerCountAssets(Protocol):
     count_region: str
     count_decrease: str
     count_increase: str
+    count_decrease_large: str | None
+    count_increase_large: str | None
+    count_large_step: int | None
     count_slider_thumb: str | None
     count_slider_track: str | None
     count_minimum_marker: str | None
@@ -22,11 +24,43 @@ class IntegerCountAssets(Protocol):
 
 
 @dataclass(frozen=True)
+class IntegerButtonAssets:
+    """Positive-integer control whose UI exposes only +/- buttons."""
+
+    settings_scene_id: int
+    count_region: str = "数量"
+    count_decrease: str = "-"
+    count_increase: str = "+"
+    count_decrease_large: str | None = None
+    count_increase_large: str | None = None
+    count_large_step: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.settings_scene_id <= 0:
+            raise ValueError("整数按钮缺少有效设置场景")
+        if any(not str(value).strip() for value in (
+            self.count_region, self.count_decrease, self.count_increase,
+        )):
+            raise ValueError("整数按钮 Shape 名称不得为空")
+        if bool(self.count_decrease_large) != bool(self.count_increase_large):
+            raise ValueError("整数按钮大步减少与增加 Shape 必须成对提供")
+        if self.count_decrease_large and (
+            self.count_large_step is None or self.count_large_step <= 1
+        ):
+            raise ValueError("整数按钮大步操作必须提供大于1的步长")
+        if not self.count_decrease_large and self.count_large_step is not None:
+            raise ValueError("整数按钮未提供大步操作时不得设置大步步长")
+
+
+@dataclass(frozen=True)
 class IntegerSliderAssets:
     settings_scene_id: int
     count_region: str = "挑战次数"
     count_decrease: str = "挑战次数_减少"
     count_increase: str = "挑战次数_增加"
+    count_decrease_large: str | None = None
+    count_increase_large: str | None = None
+    count_large_step: int | None = None
     count_slider_thumb: str | None = "挑战次数_滑块"
     count_slider_track: str | None = None
     count_minimum_marker: str | None = None
@@ -44,6 +78,14 @@ class IntegerSliderAssets:
             raise ValueError("整数滑轨 Shape 名称不得为空")
         if not self.count_slider_thumb and not self.count_slider_track:
             raise ValueError("整数滑轨必须提供滑块或完整滑条 Shape")
+        if bool(self.count_decrease_large) != bool(self.count_increase_large):
+            raise ValueError("整数滑轨大步减少与增加 Shape 必须成对提供")
+        if self.count_decrease_large and (
+            self.count_large_step is None or self.count_large_step <= 1
+        ):
+            raise ValueError("整数滑轨大步按钮必须提供大于1的步长")
+        if not self.count_decrease_large and self.count_large_step is not None:
+            raise ValueError("整数滑轨未提供大步按钮时不得设置大步步长")
         if bool(self.count_slider_left_anchor) != bool(self.count_slider_right_anchor):
             raise ValueError("整数滑轨左右锚点必须成对提供")
 
@@ -73,7 +115,7 @@ def read_positive_integer_count(
 
     try:
         return _ocr_count(context, assets)
-    except (KeyError, RuntimeError, ValueError) as ocr_error:
+    except (AttributeError, KeyError, RuntimeError, ValueError) as ocr_error:
         if runtime_reader is None:
             raise RuntimeError(f"{count_label}无法读回：{ocr_error}") from ocr_error
         raw = runtime_reader()
@@ -92,16 +134,37 @@ def read_integer_slider_count(context: Any, assets: IntegerCountAssets) -> int:
 
 
 def _stable_read(context, assets, *, count_label, runtime_reader) -> Iterator[Any]:
-    first = read_positive_integer_count(
-        context, assets, count_label=count_label, runtime_reader=runtime_reader
+    """Return only after two adjacent bounded samples agree.
+
+    Slider animation and queued input can expose an early transitional value,
+    so one mismatching pair is evidence to keep sampling rather than immediate
+    failure.  The complete trace is retained when the bounded read never
+    settles.
+    """
+
+    max_samples = 6
+    trace: list[int] = []
+    yield from context.wait_action_settle(0.35)
+    for index in range(max_samples):
+        try:
+            value = read_positive_integer_count(
+                context,
+                assets,
+                count_label=count_label,
+                runtime_reader=runtime_reader,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{count_label}稳定读回失败，观测轨迹={trace}：{exc}"
+            ) from exc
+        trace.append(value)
+        if len(trace) >= 2 and trace[-1] == trace[-2]:
+            return value
+        if index + 1 < max_samples:
+            yield from context.wait_action_settle(0.25)
+    raise RuntimeError(
+        f"{count_label}在{max_samples}次有界采样内未稳定，观测轨迹={trace}"
     )
-    yield from context.wait_action_settle(0.25)
-    second = read_positive_integer_count(
-        context, assets, count_label=count_label, runtime_reader=runtime_reader
-    )
-    if first != second:
-        raise RuntimeError(f"{count_label}稳定复读不一致：{first} -> {second}")
-    return second
 
 
 def _slider_geometry(context: Any, assets: IntegerCountAssets) -> dict[str, float] | None:
@@ -332,23 +395,40 @@ def _fine_tune_batches(
     click = getattr(context, "click_shape_center_fast", None)
     if not callable(click):
         click = context.click_shape_center
-    for index in range(5):
+    large_step = int(getattr(assets, "count_large_step", 0) or 0)
+    large_decrease = getattr(assets, "count_decrease_large", None)
+    large_increase = getattr(assets, "count_increase_large", None)
+    for _index in range(5):
         if current == desired:
             return current, batches
         residual = abs(desired - current)
-        clicks = residual if residual < 5 else max(5, ceil(residual / (5 - index)))
-        action = assets.count_increase if current < desired else assets.count_decrease
+        increasing = current < desired
+        unit_action = assets.count_increase if increasing else assets.count_decrease
+        large_action = large_increase if increasing else large_decrease
+        large_clicks = residual // large_step if large_action and large_step > 1 else 0
+        unit_clicks = residual - large_clicks * large_step
         before = current
-        for _ in range(clicks):
-            click(assets.settings_scene_id, action)
+        for _ in range(large_clicks):
+            click(assets.settings_scene_id, large_action)
+        for _ in range(unit_clicks):
+            click(assets.settings_scene_id, unit_action)
         # Fast clicks are queued by the game UI.  Read once only after the
         # whole batch has drained; otherwise a transient x == y can be
         # followed by late clicks from the same batch.
         yield from context.wait_action_settle(1.5)
-        current = read_positive_integer_count(
-            context, assets, count_label=count_label, runtime_reader=runtime_reader
+        current = yield from _stable_read(
+            context,
+            assets,
+            count_label=count_label,
+            runtime_reader=runtime_reader,
         )
-        batches.append({"before": before, "after": current, "clicks": clicks})
+        batches.append({
+            "before": before,
+            "after": current,
+            "clicks": large_clicks + unit_clicks,
+            "large_clicks": large_clicks,
+            "unit_clicks": unit_clicks,
+        })
         if current == before:
             # GUI input can occasionally drop an isolated +/- click.  A lost
             # click is safe and consumes one of the five bounded batches; the
@@ -521,14 +601,12 @@ def set_verified_integer_slider_count(
     desired: int,
     *,
     max_adjustments: int,
-    force_bound_probe: bool = False,
     count_label: str = "整数滑轨次数",
     maximum: int | None = None,
     runtime_count_reader: Callable[[], int | Mapping[str, Any]] | None = None,
 ) -> Iterator[Any]:
     """Proportional positioning, pixel feedback, then at most five +/- batches."""
 
-    del force_bound_probe  # source-compatible; historical bound round trip is retired
     if isinstance(desired, bool) or not isinstance(desired, int) or desired <= 0:
         raise ValueError(f"{count_label}必须为正整数")
     threshold = max(1, int(max_adjustments))
@@ -572,6 +650,53 @@ def set_verified_integer_slider_count(
     }
 
 
+def set_verified_integer_button_count(
+    context: Any,
+    assets: IntegerButtonAssets,
+    desired: int,
+    *,
+    count_label: str = "整数数量",
+    runtime_count_reader: Callable[[], int | Mapping[str, Any]] | None = None,
+    initial_count: int | None = None,
+) -> Iterator[Any]:
+    """Set an exact count when the dialog has buttons but no slider.
+
+    This is the fine-tuning stage of the integer controller as a standalone
+    path.  It deliberately does not invent slider geometry for legacy dialogs.
+    Every click batch is followed by a stable authoritative reread.
+    """
+
+    if isinstance(desired, bool) or not isinstance(desired, int) or desired <= 0:
+        raise ValueError(f"{count_label}必须为正整数")
+    if initial_count is None:
+        current = yield from _stable_read(
+            context,
+            assets,
+            count_label=count_label,
+            runtime_reader=runtime_count_reader,
+        )
+    else:
+        current = int(initial_count)
+        if current <= 0:
+            raise ValueError(f"{count_label}初始值必须为正整数")
+    before = current
+    current, batches = yield from _fine_tune_batches(
+        context,
+        assets,
+        desired,
+        current=current,
+        count_label=count_label,
+        runtime_reader=runtime_count_reader,
+    )
+    return {
+        "before": before,
+        "after": current,
+        "phase": "button_only_closed_loop" if before != desired else "already_exact",
+        "fine_batches": batches,
+        "fine_adjustment_actions": sum(row["clicks"] for row in batches),
+    }
+
+
 def set_minimum_then_increment_count(
     context: Any,
     assets: IntegerCountAssets,
@@ -593,7 +718,7 @@ def set_minimum_then_increment_count(
 
 
 __all__ = [
-    "IntegerCountAssets", "IntegerSliderAssets", "read_integer_slider_count",
+    "IntegerButtonAssets", "IntegerCountAssets", "IntegerSliderAssets", "read_integer_slider_count",
     "read_positive_integer_count", "set_minimum_then_increment_count",
-    "set_verified_integer_slider_count",
+    "set_verified_integer_button_count", "set_verified_integer_slider_count",
 ]

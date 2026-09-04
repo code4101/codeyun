@@ -31,6 +31,9 @@ from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_coun
 from backend.core.fanxiu.instrumentation.magic_invasion_task_rewards import (
     read_magic_invasion_task_reward_snapshot,
 )
+from backend.core.fanxiu.instrumentation.item_batch_use_dialog import (
+    read_item_batch_use_dialog_snapshot,
+)
 
 
 MAGIC_INVASION_PROGRESS_KEY = "magic_invasion_progress"
@@ -168,14 +171,6 @@ def parse_magic_invasion_result_explore_count(
             f"魔道入侵第 {batch_index} 批结果少于 500 次：{result_explore_count}"
         )
     return result_explore_count
-
-
-def slider_fraction(*, quantity: int, owned_count: int) -> float:
-    if owned_count <= 0 or not 1 <= quantity <= owned_count:
-        raise ValueError("天眼符滑块目标超出持有数量")
-    if owned_count == 1:
-        return 0.0
-    return (int(quantity) - 1) / (int(owned_count) - 1)
 
 
 def _wait_scene(
@@ -423,10 +418,51 @@ def load_magic_invasion_occurrence_progress(
     }
 
 
+def _read_stable_tianyan_use_dialog(context: Any) -> Iterator[Any]:
+    """Wait for two adjacent coherent Runtime reads of the Tianyan dialog."""
+
+    trace: list[dict[str, int]] = []
+    yield from context.wait_action_settle(0.35)
+    for index in range(6):
+        snapshot = read_item_batch_use_dialog_snapshot(
+            expected_item_id=TIANYAN_ITEM_ID
+        )
+        observation = {
+            key: int(snapshot.get(key) or 0)
+            for key in (
+                "item_id",
+                "current",
+                "single_use_maximum",
+                "owned_count",
+                "slider_maximum",
+            )
+        }
+        evidence = dict(snapshot.get("evidence") or {})
+        observation["pid"] = int(evidence.get("pid") or 0)
+        observation["process_start_ticks"] = int(
+            evidence.get("process_start_ticks") or 0
+        )
+        if observation["pid"] <= 0 or observation["process_start_ticks"] <= 0:
+            raise RuntimeError("天眼符使用弹窗缺少有效游戏进程身份")
+        trace.append(observation)
+        if len(trace) >= 2 and trace[-1] == trace[-2]:
+            return snapshot
+        if index < 5:
+            yield from context.wait_action_settle(0.25)
+    raise RuntimeError(f"天眼符使用弹窗运行态未稳定，观测轨迹={trace}")
+
+
 def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
-    owned = parse_owned_item_count(_shape_text(context, MAGIC_INVASION_USE_SCENE_ID, "持有数量"))
+    runtime_before = yield from _read_stable_tianyan_use_dialog(context)
+    owned = int(runtime_before["owned_count"])
+    single_use_maximum = int(runtime_before["single_use_maximum"])
+    slider_maximum = int(runtime_before["slider_maximum"])
     if quantity > owned:
         raise RuntimeError(f"天眼符不足：需要 {quantity}，持有 {owned}")
+    if quantity > single_use_maximum:
+        raise RuntimeError(
+            f"天眼符单次使用上限不足：需要 {quantity}，上限 {single_use_maximum}"
+        )
     assets = IntegerSliderAssets(
         settings_scene_id=MAGIC_INVASION_USE_SCENE_ID,
         count_region="使用数量",
@@ -442,8 +478,10 @@ def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
         assets,
         int(quantity),
         max_adjustments=10,
-        maximum=owned,
-        force_bound_probe=True,
+        maximum=slider_maximum,
+        runtime_count_reader=lambda: read_item_batch_use_dialog_snapshot(
+            expected_item_id=TIANYAN_ITEM_ID
+        ),
         count_label="天眼符使用数量",
     )
     calibration_evidence = dict(calibration or {})
@@ -453,10 +491,40 @@ def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
         raise RuntimeError("天眼符使用数量缺少稳定读回证据") from exc
     if verified != int(quantity):
         raise RuntimeError(f"天眼符使用数量验证失败：目标 {quantity}，实际 {verified}")
+    runtime_after = yield from _read_stable_tianyan_use_dialog(context)
+    runtime_verified = int(runtime_after["current"])
+    if runtime_verified != int(quantity):
+        raise RuntimeError(
+            f"天眼符使用数量 Runtime 验证失败：目标 {quantity}，实际 {runtime_verified}"
+        )
+    for key in ("item_id", "single_use_maximum", "owned_count", "slider_maximum"):
+        if int(runtime_after[key]) != int(runtime_before[key]):
+            raise RuntimeError(
+                f"天眼符使用弹窗在配置期间发生变化：{key}="
+                f"{runtime_before[key]}->{runtime_after[key]}"
+            )
+    before_process = dict(runtime_before.get("evidence") or {})
+    after_process = dict(runtime_after.get("evidence") or {})
+    before_identity = (
+        int(before_process.get("pid") or 0),
+        int(before_process.get("process_start_ticks") or 0),
+    )
+    after_identity = (
+        int(after_process.get("pid") or 0),
+        int(after_process.get("process_start_ticks") or 0),
+    )
+    if 0 in before_identity or before_identity != after_identity:
+        raise RuntimeError(
+            "天眼符使用数量配置期间游戏进程身份变化："
+            f"{before_identity}->{after_identity}"
+        )
     return {
         "owned_count": owned,
-        "single_use_maximum": int(calibration_evidence.get("maximum") or 0),
-        "selected_count": verified,
+        "single_use_maximum": single_use_maximum,
+        "slider_maximum": slider_maximum,
+        "selected_count": runtime_verified,
+        "runtime_before": runtime_before,
+        "runtime_after": runtime_after,
         "slider_calibration": calibration_evidence,
     }
 
@@ -967,5 +1035,4 @@ __all__ = [
     "parse_available_explore_count",
     "parse_owned_item_count",
     "parse_selected_item_count",
-    "slider_fraction",
 ]

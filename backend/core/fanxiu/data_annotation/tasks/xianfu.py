@@ -316,22 +316,6 @@ class XianfuTaskMixin:
         normalized = _sanitize_ocr_text(text)
         return "继续寻访" in normalized and "关闭" in normalized
 
-    def _xianfu_leave_confirm_text_is_scene(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        return "离开当前场景" in normalized and "确认" in normalized and "取消" in normalized
-
-    def _confirm_xianfu_leave_to_world(self, context: BehaviorTreeContext, *, task_label: str):
-        view86 = context.get_view(86)
-        confirm_shape = view86.get_shape("确认") if isinstance(view86, View) else None
-        if confirm_shape is None:
-            raise RuntimeError(f"{task_label}：当前在 #86 离开确认弹窗，但缺少 #86「确认」标注，无法返回世界")
-        with self._lock:
-            self._set_status_locked("running", f"{task_label}：确认离开当前场景", phase="xianfu_return_confirm_leave", current_scene=86)
-            self._log_locked("action", f"{task_label}：点击 #86「确认」")
-        confirm_shape.click(context)
-        yield from context.wait_scene([34], wait=30.0, label=f"{task_label}：确认离开后等待世界 #34")
-        return "success"
-
     def _wait_xianfu_visit_juepin(self, context: BehaviorTreeContext, *, timeout: float, label: str):
         return (yield from context.wait_any(
             {
@@ -349,7 +333,7 @@ class XianfuTaskMixin:
         yield from self._return_xianfu_pages_to_world(
             context,
             task_label="仙府_寻访仙侣",
-            current_candidates=(175, 174, 173, 172, 171, 86, 34),
+            current_candidates=(175, 174, 173, 172, 171, 34),
         )
         return "success"
 
@@ -358,7 +342,7 @@ class XianfuTaskMixin:
         context: BehaviorTreeContext,
         *,
         task_label: str,
-        current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 86, 34),
+        current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 34),
     ):
         for _attempt in range(6):
             scene_id, score, _frame = (yield from context.current_scene(current_candidates, update=True))
@@ -368,18 +352,11 @@ class XianfuTaskMixin:
                     scene_id = 175
                 elif self._xianfu_visit_text_is_juepin(text):
                     scene_id = 174
-                elif self._xianfu_leave_confirm_text_is_scene(text):
-                    scene_id = 86
-            elif scene_id == 34 and self._xianfu_leave_confirm_text_is_scene(text):
-                scene_id = 86
             with self._lock:
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
             if scene_id == 34:
                 self._log("success", f"{task_label}：已返回世界 #34")
                 return "success"
-            if scene_id == 86:
-                yield from self._confirm_xianfu_leave_to_world(context, task_label=task_label)
-                continue
             if scene_id == 177:
                 view177 = context.get_view(177)
                 continue_shape = view177.get_shape("继续") if isinstance(view177, View) else None
@@ -444,10 +421,11 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：离开仙府", phase="xianfu_return_leave_home", current_scene=171)
                     self._log_locked("action", f"{task_label}：点击 #171「离开」")
                 leave_shape.click(context)
-                leave_result = yield from context.wait_scene([86, 34], wait=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
-                leave_scene_id = getattr(leave_result, "scene_id", getattr(leave_result, "id", None))
-                if leave_scene_id == 86:
-                    yield from self._confirm_xianfu_leave_to_world(context, task_label=task_label)
+                yield from context.wait_scene(
+                    [34],
+                    wait=30.0,
+                    label=f"{task_label}：等待 Layer 0 处理离开确认并返回世界 #34",
+                )
                 continue
             if scene_id == 172:
                 self._log("warning", f"{task_label}：停在 #172 寻仙台，回退通用场景图返回 #34")

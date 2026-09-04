@@ -98,7 +98,6 @@ class ZhenxieTaskMixin:
             [34,
             85,
             186,
-            86,
             272,
             271],
             wait=90.0,
@@ -119,20 +118,9 @@ class ZhenxieTaskMixin:
                 landed = yield from context.wait_scene(
                     [34,
                     85,
-                    186,
-                    86],
+                    186],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：点击离开后重新识别多层落点",
-                )
-                current = self._zhenxie_scene_id(landed)
-                continue
-            if current == 86:
-                landed = yield from context.wait_click_then_scene(
-                    86,
-                    "确认",
-                    [34, 85, 186, 86],
-                    timeout=max(1.0, deadline - time.monotonic()),
-                    label="日常_镇邪：确认离场后重新识别多层落点",
                 )
                 current = self._zhenxie_scene_id(landed)
                 continue
@@ -147,8 +135,7 @@ class ZhenxieTaskMixin:
                 landed = yield from context.wait_scene(
                     [34,
                     85,
-                    186,
-                    86],
+                    186],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：重新识别多层离场上下文",
                 )

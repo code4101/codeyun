@@ -7,7 +7,6 @@ from backend.core.fanxiu.data_annotation.tasks.yunmeng_tail import (
     plan_yunmeng_tail_physical_actions,
     plan_yunmeng_tail_purchases,
     refresh_yunmeng_final_rankings,
-    yunmeng_quantity_clicks,
 )
 
 
@@ -133,11 +132,6 @@ def test_incomplete_closing_goods_unlocks_ordinary_and_monday_prayer_locks() -> 
     assert retained == set()
     assert [row.goods_id for row in purchases] == [3, 1, 2]
     assert facts["closing_goods_reached"] is False
-
-
-def test_buying_to_limit_uses_plus_ten_cap_instead_of_single_steps() -> None:
-    assert yunmeng_quantity_clicks(25, buying_to_cap=True) == (3, 0)
-    assert yunmeng_quantity_clicks(25, buying_to_cap=False) == (2, 4)
 
 
 def test_theory_priority_allocates_budget_but_physical_order_executes_once() -> None:

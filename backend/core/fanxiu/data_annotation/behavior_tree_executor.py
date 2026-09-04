@@ -539,6 +539,7 @@ class BehaviorTreeContext(AutomationContext):
         self.stop_event = stop_event
         self.matched_view: _FanxiuMatchedView | None = None
         self.last_clicked_shape: Shape | None = None
+        self.last_clicked_at: float = 0.0
         self._shape_match_results: dict[int, dict[str, Any]] = {}
         attrs = ctx.get("attrs")
         if not isinstance(attrs, dict):
@@ -1165,19 +1166,21 @@ class BehaviorTreeContext(AutomationContext):
                 raise RuntimeError("frame=None 时无法从当前上下文解析 view")
             view = current
         target = self.resolve_shape_selector(view, shape)
-        self.last_clicked_shape = target
         target_view = target.parent_view if isinstance(target.parent_view, View) and isinstance(target.parent_view.raw, dict) else view
         label = f"wait_click #{view.id or '?'} {self._shape_path(target)}"
-        # ``wait_click`` is a deterministic business action: the caller has
-        # already selected the source view and action.  Re-running whole-scene
-        # recognition here is both redundant and unsafe because the generic
-        # popup domain (for example #47) can outscore the intended business
-        # state.  Only constraints declared by the target Shape are allowed to
-        # delay the click; an unconstrained Shape is a fixed business action.
-        self.runner._log(
-            "detail",
-            f"{label}：点击前仅检查目标 Shape，不重新识别整帧场景",
+        # Every game action re-enters the mandatory scene pipeline.  The
+        # caller's expected source view never owns an overlapping popup ID;
+        # Layer 0 must clear interruptions before this click may proceed.
+        guarded_match = yield from self.wait_scene(
+            [view],
+            wait=timeout,
+            label=f"{label}：点击前守护",
         )
+        guarded_scene_id = int(getattr(guarded_match, "id", guarded_match))
+        if guarded_scene_id != int(view.id):
+            raise RuntimeError(
+                f"{label}：点击前场景为 #{guarded_scene_id}，不是预期 #{view.id}，拒绝点击"
+            )
         self._emit_execution_action(
             f"点击 #{view.id or '?'}「{self._shape_path(target)}」",
             phase="execution_wait_click",
@@ -1200,6 +1203,11 @@ class BehaviorTreeContext(AutomationContext):
             click_options: dict[str, float] = {}
             if x_ratio != 0.5 or y_ratio != 0.5:
                 click_options.update(x_ratio=x_ratio, y_ratio=y_ratio)
+            # Publish action intent only after Layer 0 has accepted the source
+            # scene and immediately before the real click.  Publishing it
+            # earlier could authorize a popup left over from a previous action.
+            self.last_clicked_shape = target
+            self.last_clicked_at = time.monotonic()
             self.runner._click_shape(
                 self.ctx,
                 target_view.raw,
@@ -1219,6 +1227,8 @@ class BehaviorTreeContext(AutomationContext):
         click_x = (float(target.raw.get("x") or 0) + float(target.raw.get("w") or 0) * x_ratio) * width
         click_y = (float(target.raw.get("y") or 0) + float(target.raw.get("h") or 0) * y_ratio) * height
         self.runner._log("detail", f"{label}：固定点击 ({click_x:.1f},{click_y:.1f})")
+        self.last_clicked_shape = target
+        self.last_clicked_at = time.monotonic()
         self.runner._click_frame_point(self.ctx, target_view.raw, click_x, click_y)
         self.clear_frame()
 
@@ -2123,6 +2133,7 @@ class BehaviorTreeContext(AutomationContext):
         )
         if isinstance(target_shape, Shape):
             self.last_clicked_shape = target_shape
+            self.last_clicked_at = time.monotonic()
         action_match_result = match_result
         if action_match_result is None and isinstance(target_shape, Shape):
             action_match_result = self._shape_match_results.get(id(target_shape.raw))
@@ -2243,6 +2254,8 @@ class BehaviorTreeContext(AutomationContext):
         width, height = self.runner._frame_size(source_view.raw)
         click_x = (float(target_shape.raw.get("x") or 0) + float(target_shape.raw.get("w") or 0) * float(x_ratio)) * width
         click_y = (float(target_shape.raw.get("y") or 0) + float(target_shape.raw.get("h") or 0) * float(y_ratio)) * height
+        self.last_clicked_shape = target_shape
+        self.last_clicked_at = time.monotonic()
         self._emit_execution_action(
             f"固定点击 #{target_view.id or '?'}「{self._shape_path(target_shape)}」",
             phase="execution_click_shape",
@@ -8349,9 +8362,12 @@ class BehaviorTreeExecutor(
         scene_id = view.id if isinstance(view, View) else int(view) if isinstance(view, int) else None
         if scene_id == 228:
             yield from self._select_daily_youli_tab_from_menu_if_visible(ctx, stop_event, payload, image228, task_label=task_label)
-        frame = self._screencap(ctx)
+        scene_id, _score, frame = yield from context.current_scene(
+            [228, 71],
+            update=True,
+            label=f"{task_label}：复核主线快路径落点",
+        )
         text = self._recognized_scene_ocr_text(ctx, frame, [228, 71])
-        scene_id, _score = self._identify_scene_number(ctx, frame, [228, 71])
         if scene_id == 71:
             self._log("success", f"{task_label}：主线快路径进入修仙传菜单")
             return True
@@ -9130,12 +9146,19 @@ class BehaviorTreeExecutor(
         start = time.monotonic()
         last_scene_id: int | None = None
         last_score = 0.0
+        asset_tree_path = ctx.get("asset_tree_path")
+        context = self._behavior_tree_context(
+            ctx,
+            asset_tree_path if isinstance(asset_tree_path, Path) else None,
+            stop_event=stop_event,
+        )
         while True:
             self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
-            scene_id, score = self._identify_scene_number(ctx, frame, scene_ids)
+            scene_id, score, _frame = yield from context.current_scene(
+                scene_ids,
+                update=True,
+                label=label,
+            )
             last_scene_id, last_score = scene_id, score
             if scene_id in scene_ids:
                 with self._lock:
@@ -9203,12 +9226,13 @@ class BehaviorTreeExecutor(
         last_text = ""
         while True:
             self._raise_if_stopped(stop_event)
-            self._clear_tick_frame(ctx)
-            yield BehaviorTreeStatus.RUNNING
-            frame = self._screencap(ctx)
+            scene_id, score, frame = yield from context.current_scene(
+                [184],
+                update=True,
+                label="日常_灵祖：等待灵祖挑战详情 #184",
+            )
             text = self._recognized_scene_ocr_text(ctx, frame, [184])
             last_text = text or last_text
-            scene_id, score = self._identify_scene_number(ctx, frame, [184])
             if scene_id == 184 or self._daily_lingzu_text_is_detail(text):
                 with self._lock:
                     self._status.update({"current_scene": 184, "updated_at": time.time()})
@@ -12584,11 +12608,14 @@ class BehaviorTreeExecutor(
         if self._image_number(image) != 418 or str(shape.get("title") or "").strip() != "前往":
             return frame_data_url
 
-        # This is a destructive business action. Never trust a cached frame or
-        # a caller's earlier OCR result when deciding whether another attempt
-        # may be consumed.
-        self._clear_tick_frame(ctx)
-        fresh_frame = self._screencap(ctx)
+        # The frame must come from ``wait_click`` after its mandatory Layer 0
+        # arbitration. Capturing here would create an unguarded observation gap
+        # in which a popup could replace #418 immediately before the click.
+        fresh_frame = str(frame_data_url or "")
+        if not fresh_frame:
+            raise RuntimeError(
+                "安全拦截：#418[前往] 必须由 wait_click 提供 Layer 0 守护帧，禁止点击"
+            )
         scene_id, scene_score = self._identify_scene_number(ctx, fresh_frame, preferred_scene_ids=[418])
         if scene_id != 418 or not self._scene_matches_id(418, float(scene_score or 0.0)):
             raise RuntimeError(
@@ -12747,6 +12774,8 @@ class BehaviorTreeExecutor(
         deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
         last_similarity = 0.0
         last_ocr_text = ""
+        source_scene_id = self._image_number(image)
+        context = self._behavior_tree_context(ctx, stop_event=stop_event)
 
         def accept_result(result: dict[str, Any]) -> bool:
             similarity = float(result.get("similarity") or 0)
@@ -12763,7 +12792,20 @@ class BehaviorTreeExecutor(
 
         while time.monotonic() < deadline:
             self._raise_if_stopped(stop_event)
-            frame = self._screencap(ctx)
+            scene_id, _scene_score, frame = yield from context.current_scene(
+                [source_scene_id] if source_scene_id is not None else None,
+                update=True,
+                label=f"{label}：Shape 等待前守护",
+            )
+            if source_scene_id is not None and scene_id != source_scene_id:
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"{label}：当前 #{scene_id or 'unknown'}，等待 #{source_scene_id}",
+                        phase="wait_shape_scene",
+                    )
+                yield BehaviorTreeStatus.RUNNING
+                continue
             for condition in self._shape_match_conditions(shape):
                 result = self._match_shape(ctx, image, shape, frame, condition=condition)
                 last_similarity = max(last_similarity, float(result.get("similarity") or 0))
@@ -12796,27 +12838,21 @@ class BehaviorTreeExecutor(
         y_ratio: float = 0.5,
         timeout_key: str = "shape_click_timeout",
     ):
-        if self._shape_has_click_condition(shape):
-            frame, match_result = yield from self._wait_shape_match(
-                ctx,
-                stop_event,
-                image,
-                shape,
-                timeout=float(payload.get(timeout_key) or payload.get("shape_click_timeout") or 8.0),
-                label=label,
-            )
-            self._click_shape(ctx, image, shape, frame, match_result=match_result)
-            return
-        if bool(shape.get("floating")):
-            self._log(
-                "warning",
-                f"{label}：标注「{shape.get('title') or shape.get('id')}」开启了浮动但没有图像/OCR条件，退化为固定坐标点击",
-            )
-        width, height = self._frame_size(image)
-        click_x = (float(shape.get("x") or 0) + float(shape.get("w") or 0) * float(x_ratio)) * width
-        click_y = (float(shape.get("y") or 0) + float(shape.get("h") or 0) * float(y_ratio)) * height
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
-        context.click_frame_point(image, click_x, click_y)
+        view = View(image)
+        target = Shape(shape, parent_view=view)
+        yield from context.wait_click(
+            view,
+            target,
+            timeout=float(
+                payload.get(timeout_key)
+                or payload.get("shape_click_timeout")
+                or 8.0
+            ),
+            x_ratio=float(x_ratio),
+            y_ratio=float(y_ratio),
+            _source_info={"label": label},
+        )
 
     def _click_frame_point(
         self,
@@ -13694,7 +13730,9 @@ class BehaviorTreeExecutor(
                 matched_expected = None
             if matched_expected is not None:
                 if not left_source and matched_expected != source_scene_id:
-                    default_scene_id, default_score = self._identify_scene_number(ctx, frame)
+                    default_scene_id, default_score, _ = context.recognize_scene_in_frame(
+                        frame_data_url=frame
+                    )
                     if default_scene_id == source_scene_id and float(default_score or 0) >= float(expected_score or 0):
                         last_scene_id, last_score, last_frame = default_scene_id, default_score, frame
                         history.append(
@@ -13761,7 +13799,9 @@ class BehaviorTreeExecutor(
             if fallback_scene_id is not None:
                 scene_id, score = fallback_scene_id, fallback_score
             else:
-                scene_id, score = self._identify_scene_number(ctx, frame)
+                scene_id, score, _ = context.recognize_scene_in_frame(
+                    frame_data_url=frame
+                )
             if scene_id is None:
                 route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
                 scene_id, score = self._identify_scene_number_for_route(
@@ -14544,10 +14584,10 @@ class BehaviorTreeExecutor(
                 # frame once identified the real world as #69 and immediately
                 # clicked #69「退出」at the lower-left world entry.  Require a
                 # fresh-frame confirmation before every return-to-world click.
-                self._clear_tick_frame(ctx)
-                yield BehaviorTreeStatus.RUNNING
-                confirm_frame = self._screencap(ctx)
-                confirm_scene_id, confirm_score = self._identify_scene_number(ctx, confirm_frame)
+                confirm_scene_id, confirm_score, confirm_frame = yield from context.current_scene(
+                    update=True,
+                    label="场景移动：回世界前复核当前场景",
+                )
                 if (
                     confirm_scene_id != current_scene_id
                     or not self._scene_matches_id(int(confirm_scene_id), float(confirm_score or 0.0))
@@ -14978,7 +15018,11 @@ class BehaviorTreeExecutor(
         return ""
 
     def _process_code(self, ctx: dict[str, Any], code: str, is_last: bool, stop_event: threading.Event) -> None:
-        frame = self._screencap(ctx)
+        _scene_id, _score, frame = yield from context.current_scene(
+            [184],
+            update=True,
+            label="日常_灵祖：读取挑战详情",
+        )
         key, score = self._identify_scene(ctx, frame, ["settings", "gift"])
         if key == "settings" and self._scene_matches(key, score):
             with self._lock:

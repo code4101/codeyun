@@ -132,47 +132,56 @@ def test_supply_replay_passes_without_opening_shop_when_boxes_are_sufficient() -
     assert result == {"status": "sufficient", "boxes_after": 5}
 
 
-def test_supply_accepts_direct_product_shop_after_using_tree(monkeypatch) -> None:
+def test_supply_adapter_delegates_to_shared_sacred_exchange_transaction(
+    monkeypatch,
+) -> None:
     def done(result=None):
         if False:
             yield None
         return result
 
-    snapshots = iter(
-        [
-            _snapshot(trees=1_000, boxes=2),
-            _snapshot(trees=400, boxes=5, fingerprint="b"),
-        ]
-    )
-    monkeypatch.setattr(supply_module, "_open_daily_bag", lambda *_args: done())
-    monkeypatch.setattr(
-        supply_module,
-        "_open_sacred_tree",
-        lambda *_args: done(supply_module.SACRED_SHOP_SCENE),
-    )
-    monkeypatch.setattr(
-        supply_module,
-        "_open_tree_shop",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("直达 #633 时不得再选一次灵眼神树")
-        ),
-    )
-    monkeypatch.setattr(supply_module, "_open_box_product", lambda *_args: done())
-    monkeypatch.setattr(supply_module, "_exchange_quantity", lambda *_args: done())
+    calls = []
 
-    class Runtime:
-        def go_scene(self, _scene):
-            return done()
+    def shared(context, **kwargs):
+        calls.append((context, kwargs))
+        yield None
+        return {
+            "status": "supplied",
+            "exchange_count": 3,
+            "cost_spent": 600,
+            "stock_after": 5,
+        }
+
+    monkeypatch.setattr(supply_module, "ensure_sacred_exchange_stock", shared)
+    context = object()
+    snapshot_reader = object()
+    shop_reader = object()
+    buy_reader = object()
+    catalog_reader = object()
 
     result = _drain(
         ensure_tiandi_yiju_round_supply(
-            Runtime(),
+            context,
             required_boxes=5,
-            snapshot_reader=lambda: next(snapshots),
-            shop_reader=_shop,
-            catalog_reader=lambda: {},
+            snapshot_reader=snapshot_reader,
+            shop_reader=shop_reader,
+            buy_reader=buy_reader,
+            catalog_reader=catalog_reader,
         )
     )
 
-    assert result["status"] == "supplied"
-    assert result["exchange_count"] == 3
+    assert calls == [(context, {
+        "spec": supply_module.TIANDI_YIJU_SUPPLY,
+        "required_stock": 5,
+        "snapshot_reader": snapshot_reader,
+        "shop_reader": shop_reader,
+        "buy_reader": buy_reader,
+        "catalog_reader": catalog_reader,
+    })]
+    assert supply_module.TIANDI_YIJU_SUPPLY.allow_partial is True
+    assert result == {
+        "status": "supplied",
+        "exchange_count": 3,
+        "tree_spent": 600,
+        "boxes_after": 5,
+    }

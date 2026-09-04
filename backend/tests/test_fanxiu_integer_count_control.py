@@ -5,10 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerButtonAssets,
     IntegerSliderAssets,
     _fine_tune_batches,
     _slider_geometry,
+    _stable_read,
     read_positive_integer_count,
+    set_verified_integer_button_count,
     set_verified_integer_slider_count,
 )
 
@@ -97,11 +100,13 @@ class SliderContext:
 
     def click_shape_center(self, _scene, title):
         self.clicks.append(title)
-        self.count += 1 if title == "增加" else -1
+        amount = 10 if title in {"增加10", "+10", "减少10", "-10"} else 1
+        self.count += amount if title in {"增加", "增加10", "+", "+10"} else -amount
 
     def click_shape_center_fast(self, _scene, title):
         self.fast_clicks.append(title)
-        self.count += 1 if title == "增加" else -1
+        amount = 10 if title in {"增加10", "+10", "减少10", "-10"} else 1
+        self.count += amount if title in {"增加", "增加10", "+", "+10"} else -amount
 
 
 def test_slider_geometry_uses_minimum_thumb_center_and_right_track_edge() -> None:
@@ -177,7 +182,7 @@ def test_pixel_probe_keeps_accelerating_beyond_eight_pixels() -> None:
     assert any(row["commanded_pixels"] >= 16 for row in result["pixel_probes"])
 
 
-def test_fine_adjustment_uses_at_most_five_batches_and_one_read_per_batch() -> None:
+def test_fine_adjustment_without_large_assets_preserves_unit_click_control() -> None:
     context = SliderContext()
     context.count = 77
     after, batches = _finish(_fine_tune_batches(
@@ -188,7 +193,7 @@ def test_fine_adjustment_uses_at_most_five_batches_and_one_read_per_batch() -> N
     assert after == 100
     assert len(batches) <= 5
     assert all(row["clicks"] >= 5 for row in batches[:-1])
-    assert context.reads == len(batches)
+    assert context.reads == len(batches) * 2
     assert len(context.fast_clicks) == 23
     assert context.clicks == []
 
@@ -204,8 +209,146 @@ def test_fine_adjustment_falls_back_when_fast_click_is_unavailable() -> None:
     ))
 
     assert after == 100
-    assert batches == [{"before": 97, "after": 100, "clicks": 3}]
+    assert batches == [{
+        "before": 97,
+        "after": 100,
+        "clicks": 3,
+        "large_clicks": 0,
+        "unit_clicks": 3,
+    }]
     assert context.clicks == ["增加", "增加", "增加"]
+
+
+def test_button_only_controller_uses_large_and_unit_steps_with_stable_reread() -> None:
+    assets = IntegerButtonAssets(
+        settings_scene_id=470,
+        count_region="数量",
+        count_decrease="-",
+        count_increase="+",
+        count_decrease_large="-10",
+        count_increase_large="+10",
+        count_large_step=10,
+    )
+    context = SliderContext()
+    context.count = 1
+
+    result = _finish(set_verified_integer_button_count(
+        context,
+        assets,
+        35,
+        count_label="仙市兑换数量",
+        runtime_count_reader=lambda: {"current": context.count},
+        initial_count=1,
+    ))
+
+    assert result["before"] == 1
+    assert result["after"] == 35
+    assert result["phase"] == "button_only_closed_loop"
+    assert context.fast_clicks == ["+10", "+10", "+10", "+", "+", "+", "+"]
+
+
+def test_button_only_controller_rejects_invalid_initial_count() -> None:
+    assets = IntegerButtonAssets(settings_scene_id=470)
+    context = SliderContext()
+
+    with pytest.raises(ValueError, match="初始值必须为正整数"):
+        _finish(set_verified_integer_button_count(
+            context,
+            assets,
+            5,
+            initial_count=0,
+        ))
+
+
+def test_fine_adjustment_uses_two_large_steps_from_80_to_100() -> None:
+    assets = SimpleNamespace(
+        **ASSETS.__dict__,
+        count_decrease_large="减少10",
+        count_increase_large="增加10",
+        count_large_step=10,
+    )
+    context = SliderContext()
+    context.count = 80
+
+    after, batches = _finish(_fine_tune_batches(
+        context,
+        assets,
+        100,
+        current=80,
+        count_label="测试次数",
+        runtime_reader=None,
+    ))
+
+    assert after == 100
+    assert batches == [{
+        "before": 80,
+        "after": 100,
+        "clicks": 2,
+        "large_clicks": 2,
+        "unit_clicks": 0,
+    }]
+    assert context.fast_clicks == ["增加10", "增加10"]
+
+
+def test_fine_adjustment_combines_large_steps_and_unit_remainder() -> None:
+    assets = SimpleNamespace(
+        **ASSETS.__dict__,
+        count_decrease_large="减少10",
+        count_increase_large="增加10",
+        count_large_step=10,
+    )
+    context = SliderContext()
+    context.count = 83
+
+    after, batches = _finish(_fine_tune_batches(
+        context,
+        assets,
+        100,
+        current=83,
+        count_label="测试次数",
+        runtime_reader=None,
+    ))
+
+    assert after == 100
+    assert batches[0]["large_clicks"] == 1
+    assert batches[0]["unit_clicks"] == 7
+    assert context.fast_clicks == ["增加10", *("增加" for _ in range(7))]
+
+
+def test_fine_adjustment_recomputes_after_a_dropped_large_click() -> None:
+    assets = SimpleNamespace(
+        **ASSETS.__dict__,
+        count_decrease_large="减少10",
+        count_increase_large="增加10",
+        count_large_step=10,
+    )
+
+    class DropFirstLargeContext(SliderContext):
+        dropped = False
+
+        def click_shape_center_fast(self, scene, title):
+            if title == "增加10" and not self.dropped:
+                self.fast_clicks.append(title)
+                self.dropped = True
+                return
+            super().click_shape_center_fast(scene, title)
+
+    context = DropFirstLargeContext()
+    context.count = 80
+
+    after, batches = _finish(_fine_tune_batches(
+        context,
+        assets,
+        100,
+        current=80,
+        count_label="测试次数",
+        runtime_reader=None,
+    ))
+
+    assert after == 100
+    assert [row["before"] for row in batches] == [80, 90]
+    assert [row["large_clicks"] for row in batches] == [2, 1]
+    assert context.fast_clicks == ["增加10", "增加10", "增加10"]
 
 
 def test_ocr_failure_uses_explicit_runtime_reader() -> None:
@@ -221,6 +364,35 @@ def test_ocr_failure_uses_explicit_runtime_reader() -> None:
     )
 
     assert value == 42
+
+
+def test_stable_read_tolerates_transitional_value_until_two_samples_agree() -> None:
+    context = SliderContext()
+    context.ocr_numbers_in_shapes = lambda *_args: ([], "")
+    values = iter((40, 401, 401))
+
+    value = _finish(_stable_read(
+        context,
+        ASSETS,
+        count_label="神物兑换数量",
+        runtime_reader=lambda: {"current": next(values)},
+    ))
+
+    assert value == 401
+
+
+def test_stable_read_fails_with_trace_when_value_keeps_changing() -> None:
+    context = SliderContext()
+    context.ocr_numbers_in_shapes = lambda *_args: ([], "")
+    values = iter((40, 401, 402, 403, 404, 405))
+
+    with pytest.raises(RuntimeError, match=r"观测轨迹=\[40, 401, 402, 403, 404, 405\]"):
+        _finish(_stable_read(
+            context,
+            ASSETS,
+            count_label="神物兑换数量",
+            runtime_reader=lambda: {"current": next(values)},
+        ))
 
 
 def test_pixel_trace_uses_actual_thumb_motion_and_gesture_gain() -> None:

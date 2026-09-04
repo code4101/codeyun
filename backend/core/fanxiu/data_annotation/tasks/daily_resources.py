@@ -110,15 +110,12 @@ class DailyResourceTaskMixin:
         image256 = context.view(256).raw
         image257 = context.view(257).raw
 
-        scene_id, _score, frame = (yield from context.current_scene([34, 47, 251, 252, 255, 256, 257], update=True))
+        scene_id, _score, frame = (yield from context.current_scene([34, 251, 252, 255, 256, 257], update=True))
         accepted = 0
         upgraded = 0
         if scene_id == 255:
             yield from self._close_daily_gongfeng_item_detail_if_present(ctx, stop_event, image255, context)
             scene_id = 254
-        if scene_id == 47:
-            yield from context.wait_click(47, "空白")
-            scene_id, _score, frame = (yield from context.current_scene([34, 251, 252, 255, 256, 257], update=True))
         if scene_id == 257:
             yield from context.wait_click(257, "空白")
             yield from context.wait_action_settle(1.2)
@@ -202,22 +199,15 @@ class DailyResourceTaskMixin:
             self._log_locked("action", "日常_供奉：点击 #252「额外奖励」")
         yield from context.wait_click(252, "额外奖励")
         yield from context.wait_action_settle(float(payload.get("gongfeng_extra_settle_seconds") or 2.0))
-        result = yield from context.wait_any(
-            {
-                "详情": context.scene_visible(257),
-                "供奉页": context.scene_visible(252),
-                "空白弹层": context.scene_visible(47),
-            },
-            label="日常_供奉：等待额外奖励结果",
+        result = yield from context.wait_scene(
+            [257, 252],
+            label="日常_供奉：等待额外奖励结果（弹窗由 Layer 0 守护清理）",
         )
-        if result == "详情":
+        result_id = int(getattr(result, "id", result))
+        if result_id == 257:
             yield from context.wait_click(257, "空白")
             yield from context.wait_scene([252], label="日常_供奉：等待回到 #252")
             return "closed_257"
-        if result == "空白弹层":
-            yield from context.wait_click(47, "空白")
-            yield from context.wait_scene([252], label="日常_供奉：等待回到 #252")
-            return "closed_47"
         self._log("success", "日常_供奉：额外奖励已领取或未弹出详情")
         return "no_popup"
 
@@ -1315,13 +1305,10 @@ class DailyResourceTaskMixin:
                     "仙市_每周资源：当前是世界样式的内部场景，先通过正式离开确认返回正常世界",
                 )
                 context.click_shape_center(85, "离开")
-                yield from context.wait_scene([86], wait=8.0, label="仙市_每周资源：等待离开场景确认")
-                yield from context.wait_click_then_scene(
-                    86,
-                    "确认",
-                    34,
-                    settle_seconds=3.0,
-                    timeout=20.0,
+                yield from context.wait_scene(
+                    [34],
+                    wait=20.0,
+                    label="仙市_每周资源：等待 Layer 0 处理离开确认并返回世界",
                 )
                 internal_scene_left = True
                 continue

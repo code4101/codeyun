@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from backend.core.fanxiu.data_annotation.tasks import magic_invasion_supply as supply_module
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_supply import (
     TIANLEI_BAMBOO_ITEM_ID,
     TIANYAN_ITEM_ID,
+    ensure_magic_tianyan_supply,
     plan_magic_tianyan_supply,
     verify_magic_tianyan_supply_delta,
 )
@@ -53,6 +55,14 @@ def _shop(*, bought: int = 0, limit: int = -1) -> dict:
             }
         ],
     }
+
+
+def _drain(generator):
+    try:
+        while True:
+            next(generator)
+    except StopIteration as done:
+        return done.value
 
 
 def test_plan_exchanges_only_enough_tianlei_bamboo_to_reach_3000() -> None:
@@ -129,3 +139,58 @@ def test_common_shop_control_derives_100_and_1998_from_runtime() -> None:
         "target_cost": 2000,
         "affordable_maximum": 1998,
     }
+
+
+def test_magic_adapter_delegates_only_parameters_to_shared_transaction(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    def shared(context, **kwargs):
+        calls.append((context, kwargs))
+        yield None
+        return {
+            "status": "supplied",
+            "exchange_count": 28,
+            "cost_spent": 560,
+            "stock_after": 3086,
+        }
+
+    monkeypatch.setattr(supply_module, "ensure_sacred_exchange_stock", shared)
+    context = object()
+    stop_event = object()
+    expected_stop = stop_event
+
+    class Runner:
+        def _behavior_tree_context(self, ctx, tree_path, *, stop_event):
+            assert ctx == {"asset_tree_path": "tree.json"}
+            assert tree_path == "tree.json"
+            assert stop_event is expected_stop
+            return context
+
+    snapshot_reader = object()
+    shop_reader = object()
+    buy_reader = object()
+    catalog_reader = object()
+    result = _drain(ensure_magic_tianyan_supply(
+        Runner(),
+        {"asset_tree_path": "tree.json"},
+        stop_event,
+        required_tianyan=3000,
+        snapshot_reader=snapshot_reader,
+        shop_reader=shop_reader,
+        buy_reader=buy_reader,
+        catalog_reader=catalog_reader,
+    ))
+
+    assert calls == [(context, {
+        "spec": supply_module.MAGIC_TIANYAN_SUPPLY,
+        "required_stock": 3000,
+        "snapshot_reader": snapshot_reader,
+        "shop_reader": shop_reader,
+        "buy_reader": buy_reader,
+        "catalog_reader": catalog_reader,
+    })]
+    assert supply_module.MAGIC_TIANYAN_SUPPLY.allow_partial is False
+    assert result["tianlei_bamboo_spent"] == 560
+    assert result["tianyan_after"] == 3086

@@ -30,15 +30,6 @@ class ExchangeTailPhysicalAction:
     clears_row: bool
 
 
-def exchange_quantity_clicks(quantity: int, *, buying_to_cap: bool) -> tuple[int, int]:
-    value = int(quantity)
-    if value < 1:
-        raise ValueError("兑换数量至少为 1")
-    if buying_to_cap:
-        return ((value - 1 + 9) // 10, 0)
-    return divmod(value - 1, 10)
-
-
 def authorize_exchange_purchase(
     *,
     current_wallet: int,
@@ -351,7 +342,6 @@ __all__ = [
     "ExchangeTailPhysicalAction",
     "ExchangeTailPurchase",
     "authorize_exchange_purchase",
-    "exchange_quantity_clicks",
     "ocr_contains_amount",
     "plan_exchange_tail_physical_actions",
     "plan_exchange_tail_purchases",

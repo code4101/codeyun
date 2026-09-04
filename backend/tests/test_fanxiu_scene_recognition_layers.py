@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
     BehaviorTreeContext,
@@ -138,6 +140,62 @@ def test_business_tasks_do_not_call_private_scene_identifiers() -> None:
     assert offenders == []
 
 
+def test_business_tasks_cannot_take_ownership_of_layer0_popup_ids() -> None:
+    tasks_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation" / "tasks"
+    # Verified against the formal production asset tree. Updating that popup
+    # domain requires updating this contract in the same change.
+    popup_ids = {
+        27, 28, 32, 36, 47, 50, 54, 56, 59, 84, 86, 191, 195, 210,
+        226, 262, 278, 287, 289, 300, 302, 353, 354, 355, 393, 433,
+        507, 530, 608, 609, 663,
+    }
+    guarded_calls = {
+        "current_scene",
+        "wait_scene",
+        "expect_views",
+        "wait_click",
+        "wait_click_then_scene",
+        "click_shape",
+        "click_shape_center",
+    }
+    offenders: list[tuple[Path, int, list[int]]] = []
+    for path in tasks_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        constants: dict[str, int] = {}
+        for statement in tree.body:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = statement.value
+            if not isinstance(value, ast.Constant) or not isinstance(value.value, int):
+                continue
+            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    constants[target.id] = int(value.value)
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in guarded_calls
+            ):
+                continue
+            values = {
+                int(item.value)
+                for item in ast.walk(node)
+                if isinstance(item, ast.Constant) and isinstance(item.value, int)
+            }
+            values.update(
+                constants[item.id]
+                for item in ast.walk(node)
+                if isinstance(item, ast.Name) and item.id in constants
+            )
+            overlap = sorted(values & popup_ids)
+            if overlap:
+                offenders.append((path, node.lineno, overlap))
+
+    assert offenders == []
+
+
 def test_current_scene_calls_are_executed_as_behavior_tree_generators() -> None:
     production_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation"
     offenders: list[tuple[Path, int]] = []
@@ -217,6 +275,44 @@ def test_current_scene_delegates_to_non_required_wait_scene(monkeypatch) -> None
             {"wait": 0.0, "required": False, "label": "current"},
         )
     ]
+
+
+def test_wait_click_reenters_scene_guard_and_refuses_a_different_scene(monkeypatch) -> None:
+    runner = create_behavior_tree_executor()
+    raw_context = _context()
+    raw_context["images"][301]["shapes"].append(
+        {"id": "action-301", "title": "执行", "x": 0.4, "y": 0.4, "w": 0.2, "h": 0.1}
+    )
+    context = BehaviorTreeContext(runner, raw_context)
+    calls: list[object] = []
+
+    def wait_scene(scenes=None, **_options):
+        # Merely preparing a click must not authorize a pre-existing popup as
+        # the declared result of an action that has not happened yet.
+        assert context.last_clicked_shape is None
+        calls.append(tuple(int(scene.id if hasattr(scene, "id") else scene) for scene in scenes))
+        if False:
+            yield None
+        return SceneMatch(
+            201,
+            score=99.0,
+            matched_layer=1,
+            scope="global",
+            status="matched",
+            frame_data_url="other-frame",
+        )
+
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+    monkeypatch.setattr(
+        runner,
+        "_click_frame_point",
+        lambda *_args, **_kwargs: calls.append("clicked"),
+    )
+
+    with pytest.raises(RuntimeError, match="不是预期 #301"):
+        _drain_result(context.wait_click(301, "执行"))
+
+    assert calls == [(301,)]
 
 
 def test_scene_match_is_an_id_with_explicit_recognition_facts() -> None:

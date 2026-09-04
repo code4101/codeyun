@@ -12,23 +12,13 @@ from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     plan_exchange_tail_purchases,
     verify_exchange_detail as _detail_matches,
 )
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
-    IntegerSliderAssets,
-    set_verified_integer_slider_count,
+from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+    set_verified_common_shop_quantity,
 )
 
 
 BEAST_ABYSS_SHOP_SCENE = 536
 COMMON_SHOP_DETAIL_SCENE = 566
-BEAST_ABYSS_EXCHANGE_COUNT_ASSETS = IntegerSliderAssets(
-    settings_scene_id=COMMON_SHOP_DETAIL_SCENE,
-    count_region="数量",
-    count_decrease="-",
-    count_increase="+",
-    count_slider_thumb="兑换数量_滑块游标",
-    count_slider_left_anchor="兑换数量_滑轨左端",
-    count_slider_right_anchor="兑换数量_滑轨右端",
-)
 
 
 def _exchange_dialog_maximum(row: Any, *, wallet: int, unit_price: int) -> int:
@@ -81,6 +71,32 @@ def _validate_fresh_exchange_snapshot(
     )
     if 0 in currency_identity or currency_identity != shop_identity:
         raise RuntimeError(f"{label}：钱包与兑换宝阁不来自同一游戏进程")
+
+
+def _configure_beast_exchange_quantity(
+    context: Any,
+    *,
+    quantity: int,
+    unit_price: int,
+    business_maximum: int,
+    expected_wallet: int,
+    label: str,
+):
+    """Configure #566 and bind its Runtime proof to the Beast plan."""
+
+    if int(quantity) > int(business_maximum):
+        raise RuntimeError(f"{label}：计划数量超过业务可选上限")
+    proof = yield from set_verified_common_shop_quantity(
+        context,
+        int(quantity),
+        unit_price=int(unit_price),
+        label=label,
+    )
+    if int(proof.get("maximum") or 0) < int(quantity):
+        raise RuntimeError(f"{label}：运行态可选上限不足")
+    if int(proof.get("owned_currency") or 0) != int(expected_wallet):
+        raise RuntimeError(f"{label}：购买框余额与本批账本不一致")
+    return proof
 
 
 def execute_beast_abyss_exchange(
@@ -187,20 +203,14 @@ def execute_beast_abyss_exchange(
             wallet=expected_wallet,
             unit_price=int(action.unit_price),
         )
-        if dialog_maximum < int(action.quantity):
-            raise RuntimeError(
-                f"{label}：{action.name} 计划数量超过详情页可选上限"
-            )
-        count_adjustment = None
-        if int(action.quantity) > 1:
-            count_adjustment = yield from set_verified_integer_slider_count(
-                context,
-                BEAST_ABYSS_EXCHANGE_COUNT_ASSETS,
-                int(action.quantity),
-                maximum=int(dialog_maximum),
-                max_adjustments=10,
-                count_label=f"{action.name}兑换数量",
-            )
+        quantity_proof = yield from _configure_beast_exchange_quantity(
+            context,
+            quantity=int(action.quantity),
+            unit_price=int(action.unit_price),
+            business_maximum=int(dialog_maximum),
+            expected_wallet=expected_wallet,
+            label=f"{label}/{action.name}",
+        )
 
         expected_total = int(action.quantity) * int(action.unit_price)
         if expected_wallet - expected_total < reserved_tokens:
@@ -240,7 +250,7 @@ def execute_beast_abyss_exchange(
             "name": str(action.name),
             "quantity": int(action.quantity),
             "unit_price": int(action.unit_price),
-            "count_adjustment": count_adjustment,
+            "quantity_proof": quantity_proof,
         })
 
     if expected_wallet != int(planning["planned_remaining_tokens"]):
