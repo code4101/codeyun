@@ -6,7 +6,7 @@
 
 当前业务规则：
 
-1. 五个难度属性各自至少占 1 档，所以初始难度是 6 级。
+1. 五个难度属性各自至少占 1 档，所以首个可配置难度是 6 级。
 2. 显示难度等于 ``1 + 五项档位之和``，五项全满时为 101 级。
 3. “均匀模型、优先填充前面的”表示先做整数均分，余数依次给前面的属性。
 4. 进入 #358 后先按当前体系已穿戴仙纹选择金/水/火中数量最少者作为掉落
@@ -109,6 +109,29 @@ def build_even_trial_difficulty_plan(level: int) -> TrialDifficultyPlan:
     positions = tuple(quotient + (1 if index < remainder else 0) for index in range(axis_count))
     values = tuple(axis.value_at(position) for axis, position in zip(TRIAL_DIFFICULTY_AXES, positions))
     return TrialDifficultyPlan(level=level, positions=positions, values=values)
+
+
+def next_configurable_trial_difficulty(current_level: int, increment: int = 1) -> int:
+    """Resolve the next slider-backed level from a live trial level.
+
+    Newly unlocked tracks start at level 1 even though the five sliders only
+    represent levels 6..101. Their first upward transition therefore jumps
+    from 1 to 6; established levels continue with the requested increment.
+    """
+
+    current = int(current_level)
+    delta = int(increment)
+    if delta == 0:
+        raise ValueError("试炼难度增量不能为0")
+    target = current + delta
+    if delta > 0 and current < TRIAL_DIFFICULTY_MIN_LEVEL:
+        target = TRIAL_DIFFICULTY_MIN_LEVEL
+    if target < TRIAL_DIFFICULTY_MIN_LEVEL or target > TRIAL_DIFFICULTY_MAX_LEVEL:
+        raise ValueError(
+            f"试炼难度 {target} 超出可配置范围 "
+            f"{TRIAL_DIFFICULTY_MIN_LEVEL}..{TRIAL_DIFFICULTY_MAX_LEVEL}"
+        )
+    return target
 
 
 def find_current_trial_difficulty(lines: Iterable[dict[str, Any]]) -> ObservedTrialDifficulty | None:

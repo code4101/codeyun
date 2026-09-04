@@ -106,6 +106,7 @@ from backend.core.fanxiu.data_annotation.trial_difficulty import (
     ObservedTrialDifficulty,
     build_even_trial_difficulty_plan,
     find_current_trial_difficulty,
+    next_configurable_trial_difficulty,
 )
 from backend.core.fanxiu.data_annotation.trial_purchase import (
     XIANQIAO_TRIAL_DAILY_PURCHASE_PRICES,
@@ -176,6 +177,44 @@ OFFLINE_CULTIVATION_SETTLE_WAIT_SECONDS = 120.0
 UNKNOWN_FALLBACK_MAX_ATTEMPTS_PER_NAVIGATION = 4
 OCCLUSION_ASSET_GROUP_TITLE = "遮挡"
 LEGACY_OCCLUSION_ASSET_GROUP_TITLES = {"遮挡标记"}
+XIANQIAO_TRIAL_TRACK_SHAPES = {
+    "higher": "切换至较高级试炼",
+    "lower": "切换至较低级试炼",
+}
+XIANQIAO_TRIAL_TRACK_ENEMIES = {
+    "higher": "黑凤王",
+    "lower": "血光",
+}
+XIANQIAO_TRIAL_KNOWN_ENEMIES = (
+    "血光",
+    "黑凤王",
+    "黑枭王",
+    "天雷圣尊",
+    "九幽古魔",
+    "死苦魇妖",
+)
+
+
+def normalize_xianqiao_trial_track(value: Any) -> Literal["higher", "lower"]:
+    """Normalize the public two-track trial selector without leaking UI labels."""
+
+    normalized = str(value or "").strip().lower()
+    aliases = {
+        "higher": "higher",
+        "high": "higher",
+        "a": "higher",
+        "较高级": "higher",
+        "高级": "higher",
+        "lower": "lower",
+        "low": "lower",
+        "b": "lower",
+        "较低级": "lower",
+        "低级": "lower",
+    }
+    track = aliases.get(normalized)
+    if track is None:
+        raise ValueError(f"未知仙窍试炼线路：{value!r}")
+    return track
 
 
 @dataclass
@@ -3351,7 +3390,7 @@ class BehaviorTreeContext(AutomationContext):
                 f"仙窍_试炼：连续{read_attempts}次未读到当前难度"
             ) from last_current_error
         resolved_target_level = (
-            current.level + int(difficulty_increment)
+            next_configurable_trial_difficulty(current.level, difficulty_increment)
             if target_level is None
             else int(target_level)
         )
@@ -3509,6 +3548,102 @@ class BehaviorTreeContext(AutomationContext):
             sweep_score=score,
         )
 
+    def select_xianqiao_trial_track(
+        self,
+        track: Literal["higher", "lower"] | str,
+        *,
+        home_view: View | int | str = 357,
+        settle_seconds: float = 0.8,
+    ):
+        """Select the exact 黑凤王 (A) or 血光 (B) track and remain on #357.
+
+        #357 contains more tracks on both sides, including locked tracks. To
+        avoid treating one relative arrow click as an identity, selection is
+        anchored at the leftmost supported track (血光). A is then exactly one
+        step to its right. Every endpoint is verified from the bounded
+        ``首领名称`` OCR region.
+        """
+
+        normalized = normalize_xianqiao_trial_track(track)
+        home_id = int(self.view(home_view).id)
+        yield from self.wait_scene(
+            [home_view],
+            wait=15.0,
+            label=f"选择仙窍试炼线路前确认主页 #{home_id}",
+        )
+        observations: list[dict[str, Any]] = []
+        for _index in range(len(XIANQIAO_TRIAL_KNOWN_ENEMIES)):
+            observation = self.observe_xianqiao_trial_track(home_view)
+            observations.append(observation)
+            if observation["enemy"] == XIANQIAO_TRIAL_TRACK_ENEMIES["lower"]:
+                break
+            self.click_shape_center(home_view, XIANQIAO_TRIAL_TRACK_SHAPES["lower"])
+            yield from self.wait_action_settle(settle_seconds)
+            yield from self.wait_scene(
+                [home_view],
+                wait=15.0,
+                label="向左查找血光试炼后确认 #357",
+            )
+        else:
+            raise RuntimeError("连续向左查找后仍未定位到血光试炼")
+
+        action_shape = None
+        if normalized == "higher":
+            action_shape = XIANQIAO_TRIAL_TRACK_SHAPES["higher"]
+            self.click_shape_center(home_view, action_shape)
+            yield from self.wait_action_settle(settle_seconds)
+            yield from self.wait_scene(
+                [home_view],
+                wait=15.0,
+                label="从血光切换黑凤王后确认 #357",
+            )
+        final_observation = self.observe_xianqiao_trial_track(home_view)
+        expected_enemy = XIANQIAO_TRIAL_TRACK_ENEMIES[normalized]
+        if final_observation["enemy"] != expected_enemy:
+            raise RuntimeError(
+                f"仙窍试炼线路选择不符：目标 {expected_enemy}，实际 {final_observation['enemy']}"
+            )
+        return {
+            "track": normalized,
+            "enemy": expected_enemy,
+            "action_shape": action_shape,
+            "terminal_scene": home_id,
+            "observations": observations,
+        }
+
+    def observe_xianqiao_trial_track(
+        self,
+        home_view: View | int | str = 357,
+        *,
+        enemy_shape: Shape | str = "首领名称",
+        frame_data_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Read the current #357 trial identity from its bounded name region."""
+
+        frame = (
+            frame_data_url
+            if isinstance(frame_data_url, str) and frame_data_url
+            else self.cur_frame(update=True)
+        )
+        shape_title = enemy_shape.title if isinstance(enemy_shape, Shape) else str(enemy_shape)
+        text = self.ocr_text_in_shapes(
+            home_view,
+            (shape_title,),
+            padding=0,
+            frame_data_url=frame,
+            crop=True,
+        )
+        compact = re.sub(r"\s+", "", text)
+        enemies = [enemy for enemy in XIANQIAO_TRIAL_KNOWN_ENEMIES if enemy in compact]
+        if len(enemies) != 1:
+            raise RuntimeError(f"#357 未唯一识别当前试炼首领：{text!r}")
+        enemy = enemies[0]
+        track = next(
+            (key for key, value in XIANQIAO_TRIAL_TRACK_ENEMIES.items() if value == enemy),
+            None,
+        )
+        return {"track": track, "enemy": enemy, "text": text}
+
     def configure_xianqiao_trial_level(
         self,
         target_level: int,
@@ -3543,6 +3678,50 @@ class BehaviorTreeContext(AutomationContext):
             label=f"仙窍试炼{int(target_level)}级设置后返回主页",
         )
         return settings
+
+    def inspect_xianqiao_trial_track_state(
+        self,
+        *,
+        home_view: View | int | str = 357,
+        settings_view: View | int | str = 358,
+        settle_seconds: float = 0.8,
+    ):
+        """Read one track's identity, current level and sweep eligibility.
+
+        The settings page is opened only to read the game's authoritative
+        current level.  No slider or drop-element control is changed.  A level
+        is exposed as ``sweepable_level`` only when #357 simultaneously shows
+        ``开启扫荡``.
+        """
+
+        track = self.observe_xianqiao_trial_track(home_view)
+        home = self.observe_xianqiao_trial_home(home_view)
+        self.click_shape_center(home_view, "设置难度")
+        yield from self.wait_action_settle(settle_seconds)
+        yield from self.wait_scene(
+            [int(self.view(settings_view).id)],
+            wait=15.0,
+            label="仙窍试炼：只读当前线路难度",
+        )
+        current = self.read_current_trial_difficulty(settings_view)
+        self.click_shape_center(settings_view, "返回")
+        yield from self.wait_action_settle(settle_seconds)
+        yield from self.wait_scene(
+            [int(self.view(home_view).id)],
+            wait=15.0,
+            label="仙窍试炼：只读难度后返回主页",
+        )
+        return {
+            **track,
+            "current_level": int(current.level),
+            "sweep_available": bool(home.sweep_available),
+            "sweepable_level": int(current.level) if home.sweep_available else None,
+            "attempts": {
+                "remaining": int(home.attempts.remaining),
+                "capacity": int(home.attempts.capacity),
+                "text": home.attempts.text,
+            },
+        }
 
     def adjust_xianqiao_trial_level(
         self,
@@ -3734,6 +3913,7 @@ class BehaviorTreeContext(AutomationContext):
         battle_entry_timeout: float = 30.0,
         battle_timeout: float = 360.0,
         result_settle_seconds: float = 0.2,
+        result_confirmation_seconds: float = 3.0,
     ):
         """识别 #362 战斗中状态并等待仙窍试炼结算画面。
 
@@ -3764,26 +3944,52 @@ class BehaviorTreeContext(AutomationContext):
         success = self.view(success_view)
         failure = self.view(failure_view)
         world = self.view(world_view)
-        observed_view = yield from self.wait_scene(
-            [battle,
-            success,
-            failure],
+        candidate_ids = [int(battle.id), int(success.id), int(failure.id), int(world.id)]
+        result_ids = {int(success.id), int(failure.id)}
+        result_view = yield from self.wait_scene(
+            candidate_ids,
             wait=battle_entry_timeout,
             label="等待仙窍试炼战斗或直接结算",
         )
-        observed_id = int(observed_view.id) if isinstance(observed_view, View) else int(observed_view)
-        if observed_id == int(battle.id):
-            result_view = yield from self.wait_scene(
-                [success,
-                failure,
-                world],
-                wait=battle_timeout,
-                label="等待仙窍试炼成功、失败或结算过期",
+        deadline = time.monotonic() + max(1.0, float(battle_timeout))
+        while True:
+            result_id = int(result_view)
+            if result_id == int(battle.id):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("等待仙窍试炼最终结算超时")
+                result_view = yield from self.wait_scene(
+                    [int(success.id), int(failure.id), int(world.id)],
+                    wait=remaining,
+                    label="等待仙窍试炼成功、失败或结算过期",
+                )
+                continue
+            if result_id not in result_ids:
+                break
+            # Multi-wave battles briefly reuse #361 after an intermediate
+            # wave.  Only a result layer that remains present is terminal;
+            # #361 -> #362 means the battle is still running.
+            yield from self.wait_action_settle(result_confirmation_seconds)
+            stable_id, _stable_score, _stable_frame = self.sample_scene_once(
+                candidate_ids, update=True
             )
-        else:
-            result_view = observed_view
+            if stable_id == result_id:
+                break
+            if stable_id == int(battle.id):
+                self.runner._log(
+                    "detail",
+                    f"仙窍试炼 #{result_id} 为中途结算层，已回 #362，继续等待",
+                )
+                result_view = int(battle.id)
+                continue
+            if stable_id in result_ids or stable_id == int(world.id):
+                result_view = int(stable_id)
+                continue
+            raise RuntimeError(
+                f"仙窍试炼结算确认后进入未知场景 #{stable_id}"
+            )
 
-        result_id = int(result_view.id) if isinstance(result_view, View) else int(result_view)
+        result_id = int(result_view)
         if result_id == int(world.id):
             return {
                 "outcome": "result_expired",
@@ -3883,7 +4089,7 @@ class BehaviorTreeContext(AutomationContext):
                 f"#{result['result_scene']}，立即退出以避免弹窗自动消失"
             ),
         )
-        self.click_shape(result["result_scene"], "退出", frame_data_url=frame)
+        self.click_shape_center(result["result_scene"], "退出")
         yield from self.wait_action_settle(settle_seconds)
         landing_view = yield from self.wait_scene(
             [home_view,
@@ -4267,6 +4473,89 @@ class BehaviorTreeContext(AutomationContext):
             f"已购买价格 {purchases_now}，最后场景 #{scene_id}"
         )
 
+    def enter_daily_list_direct(
+        self,
+        *,
+        world_view: View | int | str = 34,
+        daily_view: View | int | str = 69,
+        auto_route_view: View | int | str = 661,
+        forbidden_view: View | int | str = 376,
+        max_attempts: int = 2,
+        settle_seconds: float = 0.8,
+    ):
+        """Open #69 only through the explicit #34 ``日常`` button.
+
+        The generic scene planner may recover a missed world click through
+        #661 ``进入``.  That control starts the game's own task auto-route: #69
+        can appear briefly before the route continues into another activity.
+        This exact business entrance therefore rejects #661/#376 and requires
+        #69 to remain stable after the direct world click.
+        """
+
+        world_id = int(self.view(world_view).id)
+        daily_id = int(self.view(daily_view).id)
+        auto_route_id = int(self.view(auto_route_view).id)
+        forbidden_id = int(self.view(forbidden_view).id)
+        scene_id, score, _frame = self.sample_scene_once(
+            [world_id, daily_id, auto_route_id, forbidden_id], update=True
+        )
+        if scene_id == daily_id:
+            return {"terminal_scene": daily_id, "attempts": 0}
+        if scene_id != world_id:
+            raise RuntimeError(
+                "仙窍_试炼：专用日常入口只能从 #34 开始，"
+                f"实际 #{scene_id} ({float(score):.0f}%)"
+            )
+
+        for attempt in range(1, max(1, int(max_attempts)) + 1):
+            frame = self.cur_frame(update=True)
+            self.click_shape(world_id, "日常", frame_data_url=frame)
+            yield from self.wait_action_settle(settle_seconds)
+            try:
+                landed = yield from self.wait_scene(
+                    [daily_id, auto_route_id, forbidden_id],
+                    wait=5.0,
+                    label=f"仙窍_试炼：直接打开日常列表 {attempt}",
+                )
+            except TimeoutError:
+                landed = None
+            landed_id = int(landed) if landed is not None else None
+            if landed_id == forbidden_id:
+                raise RuntimeError(
+                    f"仙窍_试炼：直接入口误入 #{landed_id}，拒绝沿任务自动寻路继续"
+                )
+            if landed_id == auto_route_id:
+                # #661 may be the passive transition overlay produced by the
+                # direct world shortcut.  Waiting is safe; clicking its
+                # ``进入`` button is what starts the unrelated task route.
+                landed = yield from self.wait_scene(
+                    [daily_id, forbidden_id],
+                    wait=10.0,
+                    label="仙窍_试炼：等待 #661 自动消失",
+                )
+                landed_id = int(landed)
+                if landed_id == forbidden_id:
+                    raise RuntimeError(
+                        "仙窍_试炼：#661 未经点击仍进入 #376，已停止"
+                    )
+            if landed_id != daily_id:
+                continue
+
+            # #69 can be a transient waypoint of the game's own auto-route.
+            # A second observation after settling proves that the list itself
+            # is the terminal state before any row is searched or clicked.
+            yield from self.wait_action_settle(max(1.0, settle_seconds))
+            stable_id, stable_score, _stable_frame = self.sample_scene_once(
+                [daily_id, auto_route_id, forbidden_id], update=True
+            )
+            if stable_id == daily_id:
+                return {"terminal_scene": daily_id, "attempts": attempt}
+            raise RuntimeError(
+                "仙窍_试炼：#69 只是自动寻路瞬时页面，"
+                f"随后进入 #{stable_id} ({float(stable_score):.0f}%)，已停止"
+            )
+        raise RuntimeError("仙窍_试炼：从 #34 直接点击「日常」后未稳定到达 #69")
+
     def enter_xianqiao_trial(
         self,
         *,
@@ -4279,13 +4568,16 @@ class BehaviorTreeContext(AutomationContext):
     ):
         """从稳定世界锚点进入仙窍试炼主页 #357。
 
-        正式任务由框架先归一到 #34。本函数用通用场景规划进入 #69，在日常
+        正式任务由框架先归一到 #34。本函数用专用直达动作进入 #69，在日常
         列表实时查找“仙窍”，等待 #356 后，再在“试炼”区域内用全局空间
         OCR 找到唯一“真仙”并点击。标题文字坐标不是固定 shape，因此必须
         使用本轮 OCR 坐标；无法唯一命中时保留现场并停止，不能猜位置。
         """
 
-        yield from self.go_scene(daily_view)
+        daily_entry = yield from self.enter_daily_list_direct(
+            daily_view=daily_view,
+            settle_seconds=settle_seconds,
+        )
         status = yield from self.open_daily_entry(
             label="仙窍_试炼",
             title_pattern=r"仙\s*窍",
@@ -4323,7 +4615,12 @@ class BehaviorTreeContext(AutomationContext):
             wait=max(15.0, float(trial_entry_timeout)),
             label="仙窍_试炼：等待试炼主页 #357",
         )
-        return {"daily_entry": status, "category_scene": 356, "terminal_scene": 357}
+        return {
+            "daily_list": daily_entry,
+            "daily_entry": status,
+            "category_scene": 356,
+            "terminal_scene": 357,
+        }
 
     def sweep_remaining_xianqiao_trial_attempts(
         self,
@@ -5672,20 +5969,70 @@ class BehaviorTreeContext(AutomationContext):
         max_scrolls: int = 30,
         initial_checks: int = 1,
     ):
-        """Find one #69 entry from its annotated starting edge.
+        """Find one #69 entry after normalizing its persisted list cursor.
 
-        #69[滚动窗口] declares ``loadInitialPosition=start`` and
-        ``loadDirection=down``.  This traversal therefore observes the current
-        page first and only advances in the annotated loading direction.  A
-        caller must not turn transient OCR loss or a guessed stale cursor into
-        an unconditional rewind.  If a future shared GUI alignment proves
-        that the current cursor is elsewhere, that evidence belongs in the
-        shared window navigator rather than a per-job reverse budget.
+        #69 preserves its scroll position after leaving the page.  Its
+        ``滚动窗口`` is therefore annotated with ``loadInitialPosition=unknown``:
+        first move opposite to ``loadDirection`` until two unchanged semantic
+        observations prove the real starting edge, then scan forward.  Every
+        frame is re-identified as #69 before another drag or click, so a stale
+        cursor cannot turn into a click on another activity (notably 道法争锋).
         """
         view69 = self.view(69)
         list_shape = self.shape(view69, "滚动窗口")
         safe_scroll_shape = self._daily_scroll_safe_shape(view69, list_shape)
         initial_checks = max(1, int(initial_checks or 1))
+        initial_position = str(
+            list_shape.raw.get("loadInitialPosition") or "start"
+        ).strip().lower()
+        if initial_position == "unknown":
+            unchanged_rewinds = 0
+            for rewind_index in range(max(1, int(max_scrolls))):
+                before_frame = self.cur_frame(update=True)
+                before_lines = self.runner._ocr_fragments_in_scene_shapes(
+                    self.ctx, before_frame, view69.raw
+                )
+                self._ensure_daily_list_frame(before_frame, before_lines, label=label)
+                before_signature = self._daily_visible_list_signature(
+                    before_lines,
+                    view69,
+                    region_shape=safe_scroll_shape,
+                )
+                changed = yield from self.scroll_shape_content(
+                    view69,
+                    list_shape,
+                    recognition_shape=safe_scroll_shape,
+                    direction="up",
+                )
+                after_frame = self.cur_frame(update=True)
+                after_lines = self.runner._ocr_fragments_in_scene_shapes(
+                    self.ctx, after_frame, view69.raw
+                )
+                self._ensure_daily_list_frame(after_frame, after_lines, label=label)
+                after_signature = self._daily_visible_list_signature(
+                    after_lines,
+                    view69,
+                    region_shape=safe_scroll_shape,
+                )
+                if before_signature and after_signature:
+                    changed = self._daily_visible_list_moved(
+                        before_signature,
+                        after_signature,
+                    )
+                if changed:
+                    unchanged_rewinds = 0
+                    self.runner._log(
+                        "action",
+                        f"{label}：归一日常列表到起点 {rewind_index + 1}",
+                    )
+                    continue
+                unchanged_rewinds += 1
+                if unchanged_rewinds >= 2:
+                    break
+            else:
+                raise RuntimeError(
+                    f"{label}：日常列表在 {int(max_scrolls)} 次反向滚动内未确认起点"
+                )
         # The post-scroll frame below is already fresh, OCRed and validated
         # for movement.  Reuse it as the next page's search evidence instead
         # of capturing and OCRing an unchanged screen a second time.  Keep
