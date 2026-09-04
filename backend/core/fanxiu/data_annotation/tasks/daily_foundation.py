@@ -9408,14 +9408,14 @@ class DailyFoundationTaskMixin:
         scene_id, score, frame = context.sample_scene_once([589, 315, 314, 313, 312, 285, 69, 34], update=True)
         text = context.ocr_text(frame)
         if scene_id == 589:
-            yield from self._check_daily_lingmai_guiyuan_upgrade(
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(
                 context,
                 payload,
                 task_label=task_label,
-                already_open=True,
-            )
-            yield from context.wait_click_then_scene(285, "探索", 313)
-            return (yield from self._continue_daily_lingmai_clear_from_explore(context, payload, task_label=task_label))
+                ctx=ctx,
+                stop_event=stop_event,
+                guiyuan_already_open=True,
+            ))
         if scene_id == 315:
             return (yield from self._continue_daily_lingmai_clear_from_transient(context, payload, task_label=task_label))
         if scene_id == 314:
@@ -9425,10 +9425,22 @@ class DailyFoundationTaskMixin:
         if scene_id == 312:
             yield from context.wait_click_then_scene(312, "确认", 285)
             frame = context.cur_frame(update=True)
-            return (yield from self._continue_daily_lingmai_clear_from_zaohua(context, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(
+                context,
+                payload,
+                task_label=task_label,
+                ctx=ctx,
+                stop_event=stop_event,
+            ))
         if scene_id == 285:
             self._log("success", f"{task_label}：已在 #285 造化灵脉，继续清理体力，OCR={text[:160]}")
-            return (yield from self._continue_daily_lingmai_clear_from_zaohua(context, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(
+                context,
+                payload,
+                task_label=task_label,
+                ctx=ctx,
+                stop_event=stop_event,
+            ))
         scene_after, _score_after, frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
             ctx,
             stop_event,
@@ -9440,7 +9452,13 @@ class DailyFoundationTaskMixin:
             task_label=task_label,
         )
         if scene_after == 285:
-            return (yield from self._continue_daily_lingmai_clear_from_zaohua(context, payload, task_label=task_label))
+            return (yield from self._continue_daily_lingmai_clear_from_zaohua(
+                context,
+                payload,
+                task_label=task_label,
+                ctx=ctx,
+                stop_event=stop_event,
+            ))
         return "skipped"
 
     def _continue_daily_lingmai_clear_from_zaohua(
@@ -9449,24 +9467,63 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any],
         *,
         task_label: str,
+        ctx: dict[str, Any] | None = None,
+        stop_event: threading.Event | None = None,
+        guiyuan_already_open: bool = False,
     ):
         yield from self._check_daily_lingmai_guiyuan_upgrade(
             context,
             payload,
             task_label=task_label,
+            already_open=guiyuan_already_open,
         )
-        try:
-            yield from context.wait_click_then_scene(285, "探索", 313)
-        except TimeoutError:
-            frame = context.cur_frame(update=True)
-            scene_id, _score, frame = context.sample_scene_once([286, 313], update=False)
+        if ctx is not None and stop_event is not None:
+            scene_id, _score, frame = context.sample_scene_once(
+                [285, 69, 34],
+                update=True,
+            )
+            if scene_id != 285:
+                self._log(
+                    "warning",
+                    f"{task_label}：归元凝神返回后实际落到 "
+                    f"{'#' + str(scene_id) if scene_id is not None else 'unknown'}，"
+                    "重新从业务入口进入 #285",
+                )
+                scene_after, _score_after, _frame_after = yield from self._enter_daily_lingmai_zaohua_from_world_or_daily(
+                    ctx,
+                    stop_event,
+                    payload,
+                    context,
+                    scene_id,
+                    frame,
+                    context.ocr_text(frame),
+                    task_label=task_label,
+                )
+                if scene_after != 285:
+                    raise RuntimeError(
+                        f"{task_label}：归元凝神返回后未能重新进入 #285"
+                    )
+        # 「探索」会打开与通用 #47 同源的业务确认框。这里不能调用
+        # wait_scene，否则通用弹窗守卫会先点击「空白」把合法业务框关闭。
+        yield from context.wait_click(285, "探索")
+        yield from context.wait_action_settle(
+            float(payload.get("lingmai_explore_dialog_settle_seconds") or 1.0)
+        )
+        frame = context.cur_frame(update=True)
+        stamina_text = context.ocr_text_in_shapes(
+            313,
+            ("体力",),
+            frame_data_url=frame,
+        )
+        stamina = self._parse_daily_lingmai_clear_stamina(stamina_text)
+        if stamina is None or stamina[0] != 30 or stamina[1] < 0:
+            scene_id, _score, _frame = context.sample_scene_once([286], update=False)
             if scene_id == 286:
                 daily_status = refresh_lingmai_daily_status()
-                remaining_ms = daily_status.get("remaining_milliseconds")
                 if (
                     daily_status.get("available")
                     and daily_status.get("completed")
-                    and remaining_ms == 0
+                    and daily_status.get("remaining_milliseconds") == 0
                 ):
                     self._log(
                         "success",
@@ -9479,19 +9536,15 @@ class DailyFoundationTaskMixin:
                         task_id="legacy-daily-lingmai-clear",
                         label=task_label,
                     )
-            stamina_text = context.ocr_text_in_shapes(
-                313,
-                ("体力",),
-                frame_data_url=frame,
+            raise RuntimeError(
+                f"{task_label}：点击探索后未可靠读取 #313[体力]「{stamina_text}」，"
+                "禁止继续"
             )
-            stamina = self._parse_daily_lingmai_clear_stamina(stamina_text)
-            if stamina is None or stamina[0] != 30 or stamina[1] < 0:
-                raise
-            self._log(
-                "detail",
-                f"{task_label}：场景身份未命中，但 #313[体力] 已读取 "
-                f"{stamina[0]}/{stamina[1]}，确认进入探索页",
-            )
+        self._log(
+            "detail",
+            f"{task_label}：#313[体力] 已读取 {stamina[0]}/{stamina[1]}，"
+            "确认业务探索框已打开",
+        )
         return (yield from self._continue_daily_lingmai_clear_from_explore(context, payload, task_label=task_label))
 
     def _check_daily_lingmai_guiyuan_upgrade(

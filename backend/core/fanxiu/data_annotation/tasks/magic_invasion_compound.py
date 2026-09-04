@@ -19,7 +19,14 @@ from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_task_rewards import (
     claim_magic_invasion_task_rewards,
 )
+from backend.core.fanxiu.data_annotation.tasks.magic_invasion_supply import (
+    ensure_magic_tianyan_supply,
+)
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+
+
+MAGIC_INVASION_SUPPLY_TRIGGER = 2_000
+MAGIC_INVASION_SUPPLY_TARGET = 3_000
 
 
 def _remaining_tianyan_requirement(
@@ -114,7 +121,10 @@ def execute_magic_invasion_compound_checkpoint(
             "executions": [],
         }
         already_on_main_scene = True
-    elif tianyan_before_supply >= required_tianyan:
+    elif tianyan_before_supply >= max(
+        required_tianyan,
+        MAGIC_INVASION_SUPPLY_TRIGGER,
+    ):
         supply_result = {
             "status": "sufficient",
             "tianyan_before": tianyan_before_supply,
@@ -125,12 +135,20 @@ def execute_magic_invasion_compound_checkpoint(
         }
         already_on_main_scene = True
     else:
-        raise RuntimeError(
-            "魔道入侵天眼符不足："
-            f"需要 {required_tianyan}，当前 {tianyan_before_supply}；"
-            "旧版“玩法榜甄选·魔道”补给路径已删除，"
-            "天雷竹神物兑换尚未接入正式复合作业"
+        supply_result = yield from ensure_magic_tianyan_supply(
+            runner,
+            ctx,
+            stop_event,
+            required_tianyan=MAGIC_INVASION_SUPPLY_TARGET,
         )
+        supply_result = {
+            **dict(supply_result),
+            "tianyan_before": tianyan_before_supply,
+            "trigger": MAGIC_INVASION_SUPPLY_TRIGGER,
+            "target": MAGIC_INVASION_SUPPLY_TARGET,
+            "activity_page_inventory_evidence": inventory_evidence,
+        }
+        already_on_main_scene = False
 
     explore_payload = {
         **{

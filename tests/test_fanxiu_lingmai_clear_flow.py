@@ -1,3 +1,5 @@
+import threading
+
 from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 
 
@@ -59,20 +61,27 @@ def test_lingmai_clear_checks_unchecked_image_before_clicking_one_click_explore(
     assert checked.calls == [("wait_click_then_scene", 313, "确定", 314)]
 
 
-def test_lingmai_clear_accepts_313_stamina_shape_when_checked_state_misses_scene_identity(monkeypatch):
+def test_lingmai_clear_validates_313_by_stamina_without_popup_scene_recognition(monkeypatch):
     class Context:
-        def wait_click_then_scene(self, *_args, **_kwargs):
+        def __init__(self):
+            self.calls = []
+
+        def wait_click(self, scene, shape):
+            assert (scene, shape) == (285, "探索")
+            self.calls.append(("wait_click", scene, shape))
             yield
-            raise TimeoutError("#313 identity missed")
+
+        def wait_action_settle(self, seconds):
+            assert seconds == 1.0
+            self.calls.append(("settle", seconds))
+            yield
 
         def cur_frame(self, *, update=False):
+            self.calls.append(("cur_frame", update))
             return "checked-313-frame"
 
-        def sample_scene_once(self, scene_ids, *, update=False):
-            assert (scene_ids, update) == ([286, 313], False)
-            return -1, 0.0, "checked-313-frame"
-
         def ocr_text_in_shapes(self, scene, shapes, **options):
+            self.calls.append(("ocr_text_in_shapes", scene, shapes, options))
             assert (scene, shapes, options) == (
                 313,
                 ("体力",),
@@ -96,13 +105,25 @@ def test_lingmai_clear_accepts_313_stamina_shape_when_checked_state_misses_scene
     monkeypatch.setattr(runner, "_check_daily_lingmai_guiyuan_upgrade", check_upgrade)
     monkeypatch.setattr(runner, "_continue_daily_lingmai_clear_from_explore", continue_explore)
 
+    context = Context()
     assert _drain(
         runner._continue_daily_lingmai_clear_from_zaohua(
-            Context(),
+            context,
             {},
             task_label="灵脉_清体力",
         )
     ) == "continued"
+    assert context.calls == [
+        ("wait_click", 285, "探索"),
+        ("settle", 1.0),
+        ("cur_frame", True),
+        (
+            "ocr_text_in_shapes",
+            313,
+            ("体力",),
+            {"frame_data_url": "checked-313-frame"},
+        ),
+    ]
 
 
 def test_lingmai_clear_accepts_286_only_when_runtime_confirms_completed(monkeypatch):
@@ -110,16 +131,21 @@ def test_lingmai_clear_accepts_286_only_when_runtime_confirms_completed(monkeypa
         def __init__(self):
             self.calls = []
 
-        def wait_click_then_scene(self, *_args, **_kwargs):
+        def wait_click(self, *_args, **_kwargs):
             yield
-            raise TimeoutError("landed on #286")
+
+        def wait_action_settle(self, _seconds):
+            yield
 
         def cur_frame(self, *, update=False):
             return "select-slot-frame"
 
         def sample_scene_once(self, scene_ids, *, update=False):
-            assert (scene_ids, update) == ([286, 313], False)
+            assert (scene_ids, update) == ([286], False)
             return 286, 100.0, "select-slot-frame"
+
+        def ocr_text_in_shapes(self, *_args, **_kwargs):
+            return ""
 
         def go_scene(self, scene_id):
             self.calls.append(("go_scene", scene_id))
@@ -157,6 +183,86 @@ def test_lingmai_clear_accepts_286_only_when_runtime_confirms_completed(monkeypa
         )
     ) == "completed:runtime-terminal"
     assert context.calls == [("go_scene", 34)]
+
+
+def test_lingmai_clear_reenters_through_business_entry_when_guiyuan_returns_to_world(monkeypatch):
+    class Context:
+        def __init__(self):
+            self.calls = []
+
+        def sample_scene_once(self, scene_ids, *, update=False):
+            self.calls.append(("sample_scene_once", scene_ids, update))
+            return 34, 100.0, "world-frame"
+
+        def ocr_text(self, frame):
+            assert frame == "world-frame"
+            return "world"
+
+        def wait_click(self, scene, shape):
+            self.calls.append(("wait_click", scene, shape))
+            yield
+
+        def wait_action_settle(self, seconds):
+            self.calls.append(("settle", seconds))
+            yield
+
+        def cur_frame(self, *, update=False):
+            self.calls.append(("cur_frame", update))
+            return "explore-frame"
+
+        def ocr_text_in_shapes(self, scene, shapes, **options):
+            self.calls.append(("ocr_text_in_shapes", scene, shapes, options))
+            return "剩余聚灵体力 30/1900"
+
+        def wait_click_then_scene(self, scene, shape, target):
+            self.calls.append(("wait_click_then_scene", scene, shape, target))
+            yield
+
+    runner = BehaviorTreeExecutor.__new__(BehaviorTreeExecutor)
+    runner._log = lambda *_args, **_kwargs: None
+
+    def check_upgrade(*_args, **_kwargs):
+        if False:
+            yield
+        return "unknown"
+
+    def reenter(_ctx, _stop_event, _payload, _context, scene_id, frame, text, *, task_label):
+        assert (scene_id, frame, text, task_label) == (34, "world-frame", "world", "灵脉_清体力")
+        if False:
+            yield
+        return 285, 100.0, "zaohua-frame"
+
+    def continue_explore(*_args, **_kwargs):
+        if False:
+            yield
+        return "continued"
+
+    monkeypatch.setattr(runner, "_check_daily_lingmai_guiyuan_upgrade", check_upgrade)
+    monkeypatch.setattr(runner, "_enter_daily_lingmai_zaohua_from_world_or_daily", reenter)
+    monkeypatch.setattr(runner, "_continue_daily_lingmai_clear_from_explore", continue_explore)
+
+    context = Context()
+    assert _drain(
+        runner._continue_daily_lingmai_clear_from_zaohua(
+            context,
+            {},
+            task_label="灵脉_清体力",
+            ctx={"entry_id": "entry"},
+            stop_event=threading.Event(),
+        )
+    ) == "continued"
+    assert context.calls == [
+        ("sample_scene_once", [285, 69, 34], True),
+        ("wait_click", 285, "探索"),
+        ("settle", 1.0),
+        ("cur_frame", True),
+        (
+            "ocr_text_in_shapes",
+            313,
+            ("体力",),
+            {"frame_data_url": "explore-frame"},
+        ),
+    ]
 
 
 def test_lingmai_clear_drags_annotated_scrollbar_then_confirms():

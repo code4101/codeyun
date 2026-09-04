@@ -85,6 +85,52 @@ def test_schedule_selects_today_gameplay_and_does_not_relabel_old_resource_data(
     assert snapshot.resource_rank.snapshot is None
 
 
+def test_schedule_selects_new_cross_magic_instance_after_server_instance() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        server = _activity(
+            "magic-invasion",
+            "gameplay_rank",
+            start_date="2026-09-03",
+            end_date="2026-09-04",
+            close_date="2026-09-05",
+        )
+        server.id = "magic-server"
+        server.instance_key = "runtime:magic-server"
+        server.runtime_id = "magic-server"
+        server.cross_count = 1
+        server.start_at = "2026-09-03T19:00:00+08:00"
+        server.end_at = "2026-09-04T18:59:59+08:00"
+        cross = _activity(
+            "magic-invasion",
+            "gameplay_rank",
+            start_date="2026-09-04",
+            end_date="2026-09-05",
+            close_date="2026-09-06",
+        )
+        cross.id = "magic-cross"
+        cross.instance_key = "runtime:magic-cross"
+        cross.runtime_id = "magic-cross"
+        cross.cross_count = 8
+        cross.start_at = "2026-09-04T19:00:00+08:00"
+        cross.end_at = "2026-09-05T21:59:59+08:00"
+        session.add(server)
+        session.add(cross)
+        session.commit()
+
+        snapshot = load_fanxiu_schedule_ranking_snapshot(
+            session,
+            business_date=date(2026, 9, 4),
+        )
+
+    selected = snapshot.gameplay_rank.snapshot.selected_activity
+    assert snapshot.gameplay_rank.activity_type == "magic-invasion"
+    assert selected is not None
+    assert selected.id == "magic-cross"
+    assert selected.runtime_id == "magic-cross"
+    assert selected.cross_count == 8
+
+
 def test_materializer_failure_keeps_persisted_beast_abyss_history_visible(monkeypatch) -> None:
     class UnavailableRuntimeAdapter:
         def collect_activity(self, session: Session, *, activity_id: str):

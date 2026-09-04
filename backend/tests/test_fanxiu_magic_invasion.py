@@ -1,10 +1,12 @@
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.core.fanxiu.activity import magic_invasion
+from backend.core.fanxiu.activity import runtime_schedule
 from backend.core.fanxiu.instrumentation.activity_shop import (
     FanxiuActivityShopCollectionError,
     FanxiuActivityShopNotLoadedError,
@@ -33,6 +35,38 @@ def _cold_runtime_wallet(monkeypatch) -> None:
         lambda **_kwargs: (_ for _ in ()).throw(
             FanxiuRuntimeMemoryError("测试环境钱包缓存未加载")
         ),
+    )
+    monkeypatch.setattr(
+        runtime_schedule,
+        "read_fanxiu_activity_runtime_schedule",
+        lambda **_kwargs: {
+            "available": False,
+            "complete": False,
+            "items": [],
+            "source_kind": "test-runtime-unavailable",
+        },
+    )
+    from backend.core.fanxiu.instrumentation import activity_rank_runtime
+
+    monkeypatch.setattr(
+        activity_rank_runtime,
+        "read_activity_rank_runtime_snapshot",
+        lambda _activity_id: {
+            "ok": True,
+            "complete": True,
+            "rank_activity_id": 70841,
+            "rank_list_size": 73,
+            "self_ranking": {
+                "rank": 15,
+                "score": 729134,
+                "role_key": "role:1",
+                "name": "测试角色",
+                "server_id": 22077,
+            },
+            "rankings": [],
+            "captured_at": "2026-08-10T18:48:39+08:00",
+            "evidence": {"process_start_ticks": 123},
+        },
     )
 
 
@@ -142,6 +176,30 @@ def _shop_snapshot(token_cost: int = 1000) -> dict:
     }
 
 
+def _runtime_magic_item(
+    *,
+    runtime_id: int,
+    cross_count: int,
+    start_at: str,
+    end_at: str,
+    close_at: str,
+) -> dict:
+    timestamp_ms = lambda value: int(datetime.fromisoformat(value).timestamp() * 1000)
+    return {
+        "id": runtime_id,
+        "activityId": 8070001,
+        "activityType": 7,
+        "state": 1,
+        "name": "魔道入侵",
+        "serverCount": cross_count,
+        "avgWorldLevel": 230,
+        "startTime": timestamp_ms(start_at),
+        "endTime": timestamp_ms(end_at),
+        "prepareEndTime": timestamp_ms(start_at),
+        "closePanelTime": timestamp_ms(close_at),
+    }
+
+
 def test_magic_invasion_runtime_fact_defines_one_activity_instance() -> None:
     with _session() as session:
         session.add(FanxiuPacketBusinessRecord(
@@ -169,6 +227,142 @@ def test_magic_invasion_runtime_fact_defines_one_activity_instance() -> None:
     assert period["start_date"] == "2026-08-10"
     assert period["end_date"] == "2026-08-10"
     assert period["world_level"] == 221
+
+
+def test_current_runtime_schedule_wins_over_stale_packet_and_keeps_two_instances(
+    monkeypatch,
+) -> None:
+    with _session() as session:
+        _seed_collectable_facts(session)
+        server = _runtime_magic_item(
+            runtime_id=8070001400001,
+            cross_count=1,
+            start_at="2026-09-03T19:00:00+08:00",
+            end_at="2026-09-04T18:59:59+08:00",
+            close_at="2026-09-05T00:30:00+08:00",
+        )
+        cross = _runtime_magic_item(
+            runtime_id=8070001400008,
+            cross_count=8,
+            start_at="2026-09-04T19:00:00+08:00",
+            end_at="2026-09-05T21:59:59+08:00",
+            close_at="2026-09-06T00:30:00+08:00",
+        )
+        monkeypatch.setattr(
+            runtime_schedule,
+            "read_fanxiu_activity_runtime_schedule",
+            lambda **_kwargs: {
+                "available": True,
+                "complete": True,
+                "captured_at": "2026-09-04T20:00:00+08:00",
+                "source_kind": "worldline_activity_runtime_memory",
+                "items": [server, cross],
+            },
+        )
+
+        server_period = magic_invasion._runtime_period(session, cross_count=1)
+        cross_period = magic_invasion._runtime_period(session, cross_count=8)
+
+    assert server_period["runtime_id"] == "8070001400001"
+    assert server_period["start_date"] == "2026-09-03"
+    assert cross_period["runtime_id"] == "8070001400008"
+    assert cross_period["start_date"] == "2026-09-04"
+    assert server_period["record_id"].startswith("runtime:")
+    assert cross_period["source_kind"] == "worldline_activity_runtime_memory"
+
+
+def test_shop_and_wallet_refresh_are_not_blocked_by_stale_personal_rank(
+    monkeypatch,
+) -> None:
+    with _session() as session:
+        _seed_collectable_facts(session)
+        current = _runtime_magic_item(
+            runtime_id=8070001400008,
+            cross_count=8,
+            start_at="2026-09-04T19:00:00+08:00",
+            end_at="2026-09-05T21:59:59+08:00",
+            close_at="2026-09-06T00:30:00+08:00",
+        )
+        monkeypatch.setattr(
+            runtime_schedule,
+            "read_fanxiu_activity_runtime_schedule",
+            lambda **_kwargs: {
+                "available": True,
+                "complete": True,
+                "captured_at": "2026-09-04T20:00:00+08:00",
+                "source_kind": "worldline_activity_runtime_memory",
+                "items": [current],
+            },
+        )
+        monkeypatch.setattr(
+            magic_invasion,
+            "_activity_definition",
+            lambda _activity_id: {"follow": [70841, 70842]},
+        )
+        monkeypatch.setattr(
+            magic_invasion,
+            "_shop_snapshot",
+            lambda **_kwargs: _shop_snapshot(2500),
+        )
+        monkeypatch.setattr(
+            magic_invasion,
+            "_runtime_currency_snapshot",
+            lambda **_kwargs: {
+                "currency_type": 17,
+                "exchange_currency": 194_100,
+                "currency_amount": 194_100,
+                "currency_borrow": 0,
+                "cumulative_currency": 194_100,
+                "captured_at": "2026-09-04T20:00:00+08:00",
+                "evidence": {"process_start_ticks": 123},
+            },
+        )
+        from backend.core.fanxiu.instrumentation import activity_rank_runtime
+
+        monkeypatch.setattr(
+            activity_rank_runtime,
+            "read_activity_rank_runtime_snapshot",
+            lambda _activity_id: {
+                "ok": False,
+                "complete": False,
+                "error_code": "data_not_loaded",
+                "reason": "当前魔道榜单尚未加载",
+            },
+        )
+        session.add(FanxiuExchangeActivity(
+            id="current-magic-cross",
+            instance_key=(
+                "runtime:8070001400008:activity:8070001:"
+                "2026-09-04T19:00:00+08:00:2026-09-05T21:59:59+08:00"
+            ),
+            family="gameplay_rank",
+            activity_type="magic-invasion",
+            runtime_id="8070001400008",
+            game_activity_id=8070001,
+            cross_count=8,
+            prepare_at="2026-09-04T19:00:00+08:00",
+            start_at="2026-09-04T19:00:00+08:00",
+            end_at="2026-09-05T21:59:59+08:00",
+            close_at="2026-09-06T00:30:00+08:00",
+            start_date="2026-09-04",
+            end_date="2026-09-05",
+            evidence={"runtime_id": "8070001400008"},
+        ))
+        session.commit()
+
+        detail = magic_invasion.collect_and_store_magic_invasion_activity(
+            session,
+            activity_id="current-magic-cross",
+        )
+        stored = session.get(FanxiuExchangeActivity, "current-magic-cross")
+
+    assert detail.current_currency == 194_100
+    assert detail.shop_items[0].token_cost == 2500
+    assert stored is not None
+    assert stored.start_date == "2026-09-04"
+    assert stored.evidence["refresh_status"]["rankings"] == "unavailable"
+    assert stored.evidence["refresh_status"]["currency"] == "updated"
+    assert stored.evidence["refresh_status"]["shop"] == "updated"
 
 
 def test_magic_shop_identity_keeps_server_and_cross_instances_independent() -> None:

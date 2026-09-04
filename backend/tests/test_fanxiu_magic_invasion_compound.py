@@ -106,7 +106,7 @@ def test_compound_skips_mail_and_keeps_sufficient_supply_inside_activity(
     monkeypatch.setattr(
         compound,
         "read_backpack_item_counts",
-        lambda *_args, **_kwargs: ({1010004: 1533}, {"read_only": True}),
+        lambda *_args, **_kwargs: ({1010004: 2033}, {"read_only": True}),
     )
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
 
@@ -131,7 +131,7 @@ def test_compound_skips_mail_and_keeps_sufficient_supply_inside_activity(
         ("select_magic",),
     ]
     assert result["supply"]["status"] == "sufficient"
-    assert result["supply"]["tianyan_before"] == 1533
+    assert result["supply"]["tianyan_before"] == 2033
 
 
 def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
@@ -161,7 +161,7 @@ def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
     monkeypatch.setattr(
         compound,
         "read_backpack_item_counts",
-        lambda *_args, **_kwargs: ({1010004: 1500}, {"read_only": True}),
+        lambda *_args, **_kwargs: ({1010004: 2000}, {"read_only": True}),
     )
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
 
@@ -178,7 +178,7 @@ def test_compound_rejects_zero_action_explore_success(monkeypatch) -> None:
     assert not any(event[0] == "tasks" for event in events)
 
 
-def test_compound_fails_closed_when_tianyan_requires_removed_legacy_supply(
+def test_compound_uses_tianlei_exchange_to_raise_low_tianyan_to_3000(
     monkeypatch,
 ) -> None:
     events = []
@@ -222,9 +222,16 @@ def test_compound_fails_closed_when_tianyan_requires_removed_legacy_supply(
     monkeypatch.setattr(
         compound,
         "read_backpack_item_counts",
-        lambda *_args, **_kwargs: ({1010004: 0}, {"read_only": True}),
+        lambda *_args, **_kwargs: ({1010004: 1999}, {"read_only": True}),
     )
     monkeypatch.setattr(compound, "execute_magic_invasion_explore_job", explore)
+
+    def supply(_runner, _ctx, _stop, *, required_tianyan):
+        events.append(("supply", required_tianyan))
+        yield None
+        return {"status": "supplied", "tianyan_after": required_tianyan}
+
+    monkeypatch.setattr(compound, "ensure_magic_tianyan_supply", supply)
     monkeypatch.setattr(
         compound,
         "load_magic_invasion_occurrence_progress",
@@ -244,17 +251,19 @@ def test_compound_fails_closed_when_tianyan_requires_removed_legacy_supply(
         }
     }
 
-    with pytest.raises(RuntimeError, match="旧版.*补给路径已删除"):
-        _finish(
-            compound.execute_magic_invasion_compound_checkpoint(
-                runner,
-                {},
-                payload,
-                Event(),
-                occurrence=_occurrence(),
-            )
+    result = _finish(
+        compound.execute_magic_invasion_compound_checkpoint(
+            runner,
+            {},
+            payload,
+            Event(),
+            occurrence=_occurrence(),
         )
-    assert not any(event[0] == "explore" for event in events)
+    )
+    assert ("supply", 3000) in events
+    assert ("explore", False, False) in events
+    assert result["supply"]["tianyan_before"] == 1999
+    assert result["supply"]["tianyan_after"] == 3000
 
 
 def test_occurrence_evidence_blocks_before_any_optional_action(monkeypatch) -> None:

@@ -19,6 +19,7 @@ from backend.core.fanxiu.instrumentation.activity_shop import (
 )
 from backend.models import (
     FanxiuExchangeActivity,
+    FanxiuExchangeRanking,
     FanxiuExchangeShopItem,
     FanxiuPacketBusinessRecord,
 )
@@ -401,7 +402,7 @@ def collect_and_store_magic_invasion_activity(
         if scope.effective_role == "comparative"
     )
     rank_refresh_reason = ""
-    if collect_runtime_shop:
+    if collect_runtime_shop and str(period.get("runtime_id") or ""):
         from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
             prepare_activity_rank_runtime,
             read_activity_rank_runtime_snapshot,
@@ -466,6 +467,11 @@ def collect_and_store_magic_invasion_activity(
         .where(FanxiuExchangeShopItem.activity_id == existing.id)
         .limit(1)
     ).first() is not None
+    has_rankings = bool(existing) and session.exec(
+        select(FanxiuExchangeRanking.id)
+        .where(FanxiuExchangeRanking.activity_id == existing.id)
+        .limit(1)
+    ).first() is not None
     shop_reason = "只读事实刷新未请求游戏内商店投影"
     if collect_runtime_shop:
         shop_reason = ""
@@ -509,7 +515,9 @@ def collect_and_store_magic_invasion_activity(
         and rank_occurrence_runtime_id == str(period["runtime_id"])
     )
     if not observation_error:
-        if rank_occurrence_runtime_id and not rank_bound_to_period:
+        if collect_runtime_shop and rank_refresh_reason and not rank_bound_to_period:
+            observation_error = rank_refresh_reason
+        elif rank_occurrence_runtime_id and not rank_bound_to_period:
             observation_error = "魔道入侵个人榜事实属于另一活动实例"
         elif not rank_bound_to_period and not (
             period["start_date"] <= personal_captured_date <= period["end_date"]
@@ -517,6 +525,8 @@ def collect_and_store_magic_invasion_activity(
             observation_error = "魔道入侵个人榜事实不属于当前活动周期"
 
     if observation_error:
+        if existing is None and not collect_runtime_shop:
+            raise ActivityObservationUnavailable(observation_error)
         from backend.core.fanxiu.activity.exchange_event import (
             list_exchange_activity_snapshot,
             upsert_exchange_activity_snapshot,
@@ -525,7 +535,7 @@ def collect_and_store_magic_invasion_activity(
         evidence = dict(existing.evidence or {}) if existing is not None else {}
         refresh_status = dict(evidence.get("refresh_status") or {})
         refresh_status.update({
-            "rankings": "retained" if existing is not None else "unavailable",
+            "rankings": "retained" if has_rankings else "unavailable",
             "rankings_reason": rank_refresh_reason or observation_error,
             "currency": currency_refresh_status,
             "currency_reason": currency_refresh_reason,
@@ -552,6 +562,15 @@ def collect_and_store_magic_invasion_activity(
             "period_packet_id": period["packet_id"],
             "world_level": period["world_level"],
             "rank_activity_ids": follow,
+            "rank_scope_identities": {
+                scope.scope: {
+                    "runtime_rank_activity_id": rank_id,
+                    "reward_activity_id": (
+                        rank_id if scope.reward_tiers_enabled else None
+                    ),
+                }
+                for scope, rank_id in resolved_scopes
+            },
             "refresh_status": refresh_status,
         })
         if currency_runtime_evidence:
@@ -697,7 +716,7 @@ def ensure_magic_invasion_activity(session: Session) -> None:
         ActivityObservationUnavailable,
     )
 
-    period = _runtime_period(session, target_date=date.today())
+    period = _runtime_period(session)
     existing = session.exec(
         select(FanxiuExchangeActivity).where(
             FanxiuExchangeActivity.activity_type == MAGIC_INVASION_ACTIVITY_TYPE,
