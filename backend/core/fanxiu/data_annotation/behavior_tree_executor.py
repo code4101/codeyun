@@ -77,6 +77,14 @@ from backend.core.fanxiu.data_annotation.shape_inheritance import (
     resolve_shape_inheritance,
 )
 from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence, _image_similarity_percent
+from backend.core.fanxiu.data_annotation.scene_diagnostics import (
+    render_scene_comparison as _render_scene_comparison,
+    render_unknown_scene_overview as _render_unknown_scene_overview,
+    save_scene_diagnostic_frame,
+)
+from backend.core.fanxiu.data_annotation.scene_escalation import (
+    escalate_persistent_scene_unknown,
+)
 from backend.core.fanxiu.data_annotation.popup_guard import (
     FanxiuEmulatorRestartRequired,
     SceneInterruptionMixin,
@@ -103,6 +111,7 @@ from backend.core.fanxiu.data_annotation.slider_control import (
 )
 from backend.core.fanxiu.data_annotation.trial_difficulty import (
     TRIAL_DIFFICULTY_AXES,
+    TRIAL_DIFFICULTY_MIN_LEVEL,
     ObservedTrialDifficulty,
     build_even_trial_difficulty_plan,
     find_current_trial_difficulty,
@@ -132,6 +141,9 @@ from backend.core.fanxiu.data_annotation.state import (
 )
 from backend.core.fanxiu.data_annotation.storage import (
     update_data_annotation_asset_tree,
+)
+from backend.core.fanxiu.data_annotation.trial_strategy import (
+    choose_xianqiao_trial_sweep_track,
 )
 from backend.core.fanxiu.mail.policy import (
     fanxiu_mail_action_policy_for_record,
@@ -433,6 +445,7 @@ class SceneMatch(int):
         scope: Literal["business", "global"],
         status: str,
         frame_data_url: str | None = None,
+        evidence_frame_path: str | None = None,
     ) -> "SceneMatch":
         value = int.__new__(cls, int(scene_id))
         value.score = float(score or 0.0)
@@ -440,6 +453,7 @@ class SceneMatch(int):
         value.scope = scope
         value.status = str(status or "matched")
         value.frame_data_url = frame_data_url
+        value.evidence_frame_path = evidence_frame_path
         return value
 
     @property
@@ -461,7 +475,7 @@ class SceneMatch(int):
 
 
 class SceneWaitTimeout(TimeoutError):
-    """A bounded scene wait that ended without matching its Layer-0 target."""
+    """The normal wait and all-layer guard ended without a recognized scene."""
 
     def __init__(
         self,
@@ -469,10 +483,20 @@ class SceneWaitTimeout(TimeoutError):
         *,
         expected_scene_ids: Iterable[int],
         last_match: SceneMatch | None,
+        evidence_frame_path: str | None = None,
+        frame_data_url: str | None = None,
+        codex_dispatch_id: str | None = None,
+        codex_request_path: str | None = None,
+        codex_escalation_error: str | None = None,
     ) -> None:
         super().__init__(message)
         self.expected_scene_ids = tuple(int(scene_id) for scene_id in expected_scene_ids)
         self.last_match = last_match
+        self.evidence_frame_path = evidence_frame_path
+        self.frame_data_url = frame_data_url
+        self.codex_dispatch_id = codex_dispatch_id
+        self.codex_request_path = codex_request_path
+        self.codex_escalation_error = codex_escalation_error
 
 
 class BehaviorTreeContext(AutomationContext):
@@ -483,6 +507,7 @@ class BehaviorTreeContext(AutomationContext):
 
     default_wait_click_timeout = 18.0
     default_wait_condition_timeout = 12.0
+    scene_unmatched_guard_seconds = 120.0
     _business_view_claims_attr = "business_view_claims"
 
     def __init__(
@@ -1671,24 +1696,20 @@ class BehaviorTreeContext(AutomationContext):
         handle_interruptions: bool = True,
         label: str = "等待场景",
     ):
-        """Wait for Layer-0 scenes through the canonical layered recognizer.
+        """Return the first scene recognized by the complete layered flow.
 
-        ``scenes`` is the complete business-scene candidate collection for
-        this wait. Every fresh tick evaluates those candidates and popup group in
-        one graph.  Once ``wait`` expires, the same frame falls through the
-        global Layer-1/Layer-2 graph before the timeout is reported.  Passing
-        ``wait=0`` performs one tick without a retry budget. The returned
-        :class:`SceneMatch` behaves as an integer scene id; new code should use
-        ``scene_id`` and ``matched_layer`` explicitly when provenance matters,
-        and ``frame_data_url`` when subsequent reads must use the exact frame
-        that satisfied the wait.
+        ``scenes`` is the business Layer-0 candidate collection. ``wait`` is
+        only the Layer-0 fresh-frame budget; after it expires, the same frame
+        falls through Layer 1 and Layer 2. Any formal-layer match is returned
+        as :class:`SceneMatch`. If every layer misses, the complete flow is
+        retried from behavior-tree ticks for the fixed unmatched guard before
+        a :class:`SceneWaitTimeout` is raised.
         """
 
         view_ids = [int(scene) for scene in scenes]
         view_ids = [view_id for view_id in view_ids if view_id is not None]
         if not view_ids:
             raise ValueError("wait_scene scenes 不能为空")
-        start = time.monotonic()
         wait_timeout = float(wait)
         if wait_timeout < 0.0:
             raise ValueError("wait_scene wait 必须大于等于 0")
@@ -1700,89 +1721,141 @@ class BehaviorTreeContext(AutomationContext):
             source_info=source_info,
             current_scene=view_ids[0] if len(view_ids) == 1 else None,
         )
-        last_scene_id: int | None = None
-        last_match: SceneMatch | None = None
-        last_score = 0.0
-        previous_frame: str | None = None
-        while True:
-            if self.stop_event is not None:
-                self.runner._raise_if_stopped(self.stop_event)
-            elapsed = time.monotonic() - start
-            identify_started_at = time.monotonic()
-            remaining_timeout = max(0.0, float(wait_timeout) - elapsed)
-            match, score, frame = yield from self._recognize_scene_layers(
-                view_ids,
-                wait=remaining_timeout,
-                handle_interruptions=handle_interruptions,
-            )
-            scene_id = match.scene_id if match is not None else None
-            elapsed = time.monotonic() - start
-            identify_elapsed = time.monotonic() - identify_started_at
-            if elapsed >= 10.0 or identify_elapsed >= 1.0:
-                self.runner._log(
-                    "detail",
-                    (
-                        f"{label}：wait_scene轮询 elapsed={elapsed:.1f}s "
-                        f"identify={identify_elapsed:.2f}s "
-                        f"scene={'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%"
-                    ),
-                )
-            last_scene_id, last_match, last_score = scene_id, match, score
-            if scene_id in view_ids:
-                with self.runner._lock:
-                    self.runner._status.update({
-                        "current_scene": scene_id,
-                        "updated_at": time.time(),
-                    })
-                self._record_pending_declared_click_landing(int(scene_id))
-                self.runner._log("success", f"{label}：已到达 #{scene_id} {score:.0f}%")
-                return match
-            if elapsed >= float(wait_timeout):
-                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
-                expected = "/".join(f"#{view_id}" for view_id in view_ids)
-                diagnostic = ""
-                try:
-                    evidence = build_unknown_evidence(
-                        self.runner,
-                        self.ctx,
-                        frame,
-                        label=label,
-                        expected_scene_ids=view_ids,
-                        last_scene_id=last_scene_id,
-                        last_score=last_score,
-                        previous_frame_data_url=previous_frame,
-                        # A business wait timeout must stay bounded. Full-tree
-                        # unknown exploration can compare hundreds of stored
-                        # frames and previously turned a 12-second wait into a
-                        # multi-minute, multi-gigabyte diagnostic. The normal
-                        # scene recognizer has already run its layered graph;
-                        # timeout evidence only needs the requested nodes and
-                        # the last recognized node.
-                        candidate_scene_ids=list(dict.fromkeys([
-                            *view_ids,
-                            *([last_scene_id] if last_scene_id is not None else []),
-                        ])),
-                    )
-                    report_suffix = f"，证据={evidence.report_path}" if evidence.report_path else ""
-                    frame_suffix = f"，截图={evidence.frame_path}" if evidence.frame_path else ""
-                    diagnostic = f"；unknown诊断={evidence.classification}：{evidence.suggestion}{frame_suffix}{report_suffix}"
-                    self.runner._log("warning", f"{label}：{diagnostic.lstrip('；')}")
-                except Exception as exc:
-                    self.runner._log("warning", f"{label}：unknown诊断生成失败：{exc}")
-                layer_text = f" Layer{last_match.matched_layer}" if last_match is not None else ""
-                raise SceneWaitTimeout(
-                    f"{label} 超时，未检测到 {expected}，最后 {scene_text}{layer_text} {last_score:.0f}%{diagnostic}",
+        def finish(match: SceneMatch, score: float) -> SceneMatch:
+            if match.scope == "global" and match.matched_layer == 2 and not match.evidence_frame_path:
+                match.evidence_frame_path = save_scene_diagnostic_frame(
+                    self.runner,
+                    match.frame_data_url or "",
+                    kind="layer2_match",
+                    label=label,
                     expected_scene_ids=view_ids,
-                    last_match=last_match,
+                    matched_scene_id=match.scene_id,
+                    matched_layer=match.matched_layer,
                 )
             with self.runner._lock:
                 self.runner._status.update({
-                    "phase": "wait_scene",
-                    "current_scene": scene_id,
-                    "message": f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} {score:.0f}%",
+                    "current_scene": match.scene_id,
                     "updated_at": time.time(),
                 })
-            previous_frame = frame
+            self._record_pending_declared_click_landing(match.scene_id)
+            self.runner._log(
+                "success",
+                f"{label}：识别为 #{match.scene_id} Layer{match.matched_layer} {score:.0f}%",
+            )
+            return match
+
+        identify_started_at = time.monotonic()
+        match, score, frame = yield from self._recognize_scene_layers(
+            view_ids,
+            wait=wait_timeout,
+            handle_interruptions=handle_interruptions,
+        )
+        identify_elapsed = time.monotonic() - identify_started_at
+        if identify_elapsed >= 1.0:
+            self.runner._log(
+                "detail",
+                f"{label}：分层识别耗时 {identify_elapsed:.2f}s，结果 "
+                f"{'#' + str(match.scene_id) if match is not None else 'unknown'} {score:.0f}%",
+            )
+        if match is not None:
+            return finish(match, score)
+
+        guard_started_at = time.monotonic()
+        guard_seconds = max(0.0, float(self.scene_unmatched_guard_seconds))
+        while time.monotonic() - guard_started_at < guard_seconds:
+            if self.stop_event is not None:
+                self.runner._raise_if_stopped(self.stop_event)
+            with self.runner._lock:
+                self.runner._status.update({
+                    "phase": "wait_scene",
+                    "current_scene": None,
+                    "message": f"{label}：全层未匹配，保底重试中",
+                    "updated_at": time.time(),
+                })
+            match, score, frame = yield from self._recognize_scene_layers(
+                view_ids,
+                wait=0.0,
+                handle_interruptions=handle_interruptions,
+            )
+            if match is not None:
+                return finish(match, score)
+
+        evidence_frame_path = save_scene_diagnostic_frame(
+            self.runner,
+            frame,
+            kind="unmatched",
+            label=label,
+            expected_scene_ids=view_ids,
+        )
+        expected = "/".join(f"#{view_id}" for view_id in view_ids)
+        evidence_text = f"，原始帧={evidence_frame_path}" if evidence_frame_path else ""
+        codex_dispatch_id: str | None = None
+        codex_request_path: str | None = None
+        codex_escalation_error: str | None = None
+        scheduler_task_id = str(self.payload.get("__scheduler_task_id") or "").strip()
+        if scheduler_task_id and evidence_frame_path:
+            try:
+                dispatch = escalate_persistent_scene_unknown(
+                    task_id=scheduler_task_id,
+                    task_label=label,
+                    entry_id=str(self.ctx.get("entry_id") or ""),
+                    expected_scene_ids=view_ids,
+                    evidence_frame_path=evidence_frame_path,
+                    asset_tree_path=self.asset_tree_path,
+                    layer0_wait_seconds=wait_timeout,
+                    unmatched_guard_seconds=guard_seconds,
+                )
+                codex_dispatch_id = dispatch.dispatch_id
+                codex_request_path = dispatch.request_path
+                evidence_text += f"，Codex投递={codex_dispatch_id}"
+            except Exception as exc:
+                codex_escalation_error = f"{type(exc).__name__}: {exc}"
+                evidence_text += f"，Codex投递失败={codex_escalation_error}"
+        self.runner._log(
+            "warning",
+            f"{label}：全层持续未匹配 {guard_seconds:.0f}s{evidence_text}",
+        )
+        raise SceneWaitTimeout(
+            f"{label} 全层持续未匹配，期望业务场景 {expected}{evidence_text}",
+            expected_scene_ids=view_ids,
+            last_match=None,
+            evidence_frame_path=evidence_frame_path,
+            frame_data_url=frame,
+            codex_dispatch_id=codex_dispatch_id,
+            codex_request_path=codex_request_path,
+            codex_escalation_error=codex_escalation_error,
+        )
+
+    def render_scene_comparison(
+        self,
+        failure_frame: str | Path | bytes,
+        scene_id: int,
+    ) -> str:
+        """Build the standard two-frame, all-Shape comparison for Agent review."""
+
+        return _render_scene_comparison(
+            self.runner,
+            self.ctx,
+            failure_frame,
+            int(scene_id),
+        )
+
+    def render_unknown_scene_overview(
+        self,
+        failure_frame: str | Path | bytes,
+        scenes: list[int],
+        *,
+        top_k: int = 2,
+    ) -> str:
+        """Build the Shape-free multi-candidate overview for Agent review."""
+
+        return _render_unknown_scene_overview(
+            self.runner,
+            self.ctx,
+            failure_frame,
+            [int(scene_id) for scene_id in scenes],
+            top_k=top_k,
+        )
 
     def _record_pending_declared_click_landing(self, target_scene_id: int) -> None:
         if self.active_business_view_ids():
@@ -3201,6 +3274,26 @@ class BehaviorTreeContext(AutomationContext):
             raise RuntimeError("未从当前画面读取到“当前难度为 N 级”")
         return observation
 
+    def wait_current_trial_difficulty(
+        self,
+        view: View | int | str = 358,
+        *,
+        attempts: int = 6,
+        settle_seconds: float = 0.6,
+    ):
+        """Retry the bounded current-level read through transient banners."""
+
+        last_error: RuntimeError | None = None
+        for _index in range(max(1, int(attempts))):
+            try:
+                return self.read_current_trial_difficulty(view)
+            except RuntimeError as exc:
+                last_error = exc
+                yield from self.wait_action_settle(settle_seconds)
+        raise RuntimeError(
+            f"连续 {max(1, int(attempts))} 次未读到仙窍试炼当前难度"
+        ) from last_error
+
     def configure_even_trial_difficulty(
         self,
         view: View | int | str,
@@ -3703,7 +3796,10 @@ class BehaviorTreeContext(AutomationContext):
             wait=15.0,
             label="仙窍试炼：只读当前线路难度",
         )
-        current = self.read_current_trial_difficulty(settings_view)
+        current = yield from self.wait_current_trial_difficulty(
+            settings_view,
+            settle_seconds=min(0.8, max(0.2, settle_seconds)),
+        )
         self.click_shape_center(settings_view, "返回")
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
@@ -3748,6 +3844,25 @@ class BehaviorTreeContext(AutomationContext):
             wait=15.0,
             label="进入仙窍试炼设置页",
         )
+        if increment < 0:
+            current = yield from self.wait_current_trial_difficulty(
+                settings_view,
+                settle_seconds=min(0.8, max(0.2, settle_seconds)),
+            )
+            if int(current.level) <= TRIAL_DIFFICULTY_MIN_LEVEL:
+                self.click_shape_center(settings_view, "返回")
+                yield from self.wait_action_settle(settle_seconds)
+                yield from self.wait_scene(
+                    [int(self.view(home_view).id)],
+                    wait=15.0,
+                    label="仙窍试炼特殊低等级无需回退",
+                )
+                return {
+                    "current_level": int(current.level),
+                    "target_level": None,
+                    "skipped": True,
+                    "reason": "no_configurable_predecessor",
+                }
         settings = yield from self.prepare_xianqiao_trial_settings(
             settings_view,
             difficulty_increment=increment,
@@ -3860,7 +3975,19 @@ class BehaviorTreeContext(AutomationContext):
                                 if landed_id == challenge_id:
                                     break
                                 if landed_id == 227:
-                                    frame = self.cur_frame(update=True)
+                                    # Reward layers can disappear between the
+                                    # wait result and the click.  Reconfirm a
+                                    # stable #227 so a late ``继续`` cannot
+                                    # penetrate into #357's purchase button.
+                                    yield from self.wait_action_settle(0.35)
+                                    stable_id, _stable_score, frame = self.sample_scene_once(
+                                        [227, challenge_id, 367], update=True
+                                    )
+                                    if stable_id == challenge_id:
+                                        break
+                                    if stable_id != 227:
+                                        yield from self.wait_action_settle(settle_seconds)
+                                        continue
                                     self.click_shape(227, "继续", frame_data_url=frame)
                                     actions.append({
                                         "scene": 227,
@@ -3946,6 +4073,10 @@ class BehaviorTreeContext(AutomationContext):
         world = self.view(world_view)
         candidate_ids = [int(battle.id), int(success.id), int(failure.id), int(world.id)]
         result_ids = {int(success.id), int(failure.id)}
+
+        def resolved_id(value: View | int) -> int:
+            return int(value.id) if isinstance(value, View) else int(value)
+
         result_view = yield from self.wait_scene(
             candidate_ids,
             wait=battle_entry_timeout,
@@ -3953,7 +4084,7 @@ class BehaviorTreeContext(AutomationContext):
         )
         deadline = time.monotonic() + max(1.0, float(battle_timeout))
         while True:
-            result_id = int(result_view)
+            result_id = resolved_id(result_view)
             if result_id == int(battle.id):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -3965,6 +4096,8 @@ class BehaviorTreeContext(AutomationContext):
                 )
                 continue
             if result_id not in result_ids:
+                break
+            if float(result_confirmation_seconds) <= 0:
                 break
             # Multi-wave battles briefly reuse #361 after an intermediate
             # wave.  Only a result layer that remains present is terminal;
@@ -3989,7 +4122,7 @@ class BehaviorTreeContext(AutomationContext):
                 f"仙窍试炼结算确认后进入未知场景 #{stable_id}"
             )
 
-        result_id = int(result_view)
+        result_id = resolved_id(result_view)
         if result_id == int(world.id):
             return {
                 "outcome": "result_expired",
@@ -4018,6 +4151,7 @@ class BehaviorTreeContext(AutomationContext):
     def complete_xianqiao_trial_challenge(
         self,
         *,
+        track: Literal["higher", "lower"] | str | None = None,
         home_view: View | int | str = 357,
         success_view: View | int | str = 361,
         battle_view: View | int | str = 362,
@@ -4041,6 +4175,8 @@ class BehaviorTreeContext(AutomationContext):
 
         :return dict: 开战动作、结算识别结果，以及是否已返回主页。
         """
+
+        original_track = normalize_xianqiao_trial_track(track) if track is not None else None
 
         started = yield from self.start_xianqiao_trial_challenge(
             settle_seconds=settle_seconds,
@@ -4073,6 +4209,12 @@ class BehaviorTreeContext(AutomationContext):
                 trial_view=home_view,
                 settle_seconds=settle_seconds,
             )
+            if original_track is not None:
+                yield from self.select_xianqiao_trial_track(
+                    original_track,
+                    home_view=home_view,
+                    settle_seconds=settle_seconds,
+                )
             return {
                 "started": started,
                 "result": result,
@@ -4080,6 +4222,7 @@ class BehaviorTreeContext(AutomationContext):
                 "landing_scene": int(self.view(world_view).id),
                 "reentered_from_world": True,
                 "reentry": reentry,
+                "original_track": original_track,
             }
 
         self.runner._log(
@@ -4108,6 +4251,12 @@ class BehaviorTreeContext(AutomationContext):
                 trial_view=home_view,
                 settle_seconds=settle_seconds,
             )
+            if original_track is not None:
+                yield from self.select_xianqiao_trial_track(
+                    original_track,
+                    home_view=home_view,
+                    settle_seconds=settle_seconds,
+                )
         return {
             "started": started,
             "result": result,
@@ -4115,6 +4264,7 @@ class BehaviorTreeContext(AutomationContext):
             "landing_scene": landing_id,
             "reentered_from_world": reentry is not None,
             "reentry": reentry,
+            "original_track": original_track,
         }
 
     def probe_xianqiao_trial_until_failure(
@@ -4125,6 +4275,7 @@ class BehaviorTreeContext(AutomationContext):
         max_challenges: int = 20,
         settle_seconds: float = 0.8,
         battle_timeout: float = 360.0,
+        track: Literal["higher", "lower"] | str | None = None,
     ):
         """完全依赖 #357 实时状态逐级挑战，直到次数耗尽或首次失败。
 
@@ -4165,6 +4316,11 @@ class BehaviorTreeContext(AutomationContext):
             *,
             rollback_settings: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
+            sweepable_level = None
+            if isinstance(rollback_settings, dict) and not rollback_settings.get("skipped"):
+                target_level = rollback_settings.get("target_level")
+                if target_level is not None:
+                    sweepable_level = int(target_level)
             return {
                 "exit_reason": exit_reason,
                 "remaining_attempts": remaining_attempts,
@@ -4174,6 +4330,7 @@ class BehaviorTreeContext(AutomationContext):
                     and remaining_attempts > 0
                 ),
                 "rollback_settings": rollback_settings,
+                "sweepable_level": sweepable_level,
                 "trials": trials,
             }
 
@@ -4195,6 +4352,7 @@ class BehaviorTreeContext(AutomationContext):
                 )
                 mode = "incremented_from_sweep"
             challenge = yield from self.complete_xianqiao_trial_challenge(
+                track=track,
                 home_view=home_view,
                 battle_timeout=battle_timeout,
                 settle_seconds=settle_seconds,
@@ -4488,8 +4646,9 @@ class BehaviorTreeContext(AutomationContext):
         The generic scene planner may recover a missed world click through
         #661 ``进入``.  That control starts the game's own task auto-route: #69
         can appear briefly before the route continues into another activity.
-        This exact business entrance therefore rejects #661/#376 and requires
-        #69 to remain stable after the direct world click.
+        This exact business entrance never clicks #661: it only allows that
+        overlay to disappear passively, rejects #376, and requires #69 to
+        remain stable after the direct world click.
         """
 
         world_id = int(self.view(world_view).id)
@@ -4562,6 +4721,8 @@ class BehaviorTreeContext(AutomationContext):
         daily_view: View | int | str = 69,
         category_view: View | int | str = 356,
         trial_view: View | int | str = 357,
+        purchase_view: View | int | str = 363,
+        purchase_exhausted_view: View | int | str = 364,
         max_daily_scrolls: int = 30,
         settle_seconds: float = 0.8,
         trial_entry_timeout: float = 120.0,
@@ -4589,11 +4750,70 @@ class BehaviorTreeContext(AutomationContext):
         )
         if status != "open":
             raise RuntimeError(f"仙窍_试炼：#69 未能打开仙窍入口，状态 {status!r}")
-        yield from self.wait_scene(
-            [category_view],
+        landed = yield from self.wait_scene(
+            [
+                int(self.view(category_view).id),
+                int(self.view(trial_view).id),
+                int(self.view(purchase_view).id),
+                int(self.view(purchase_exhausted_view).id),
+            ],
             wait=15.0,
-            label="仙窍_试炼：等待仙窍分类页 #356",
+            label="仙窍_试炼：等待分类页、主页或次数购买页",
         )
+        landed_id = int(landed.id) if isinstance(landed, View) else int(landed)
+        if landed_id in {
+            int(self.view(purchase_view).id),
+            int(self.view(purchase_exhausted_view).id),
+        }:
+            self.runner._log(
+                "detail",
+                f"仙窍_试炼：日常入口因次数状态直达 #{landed_id}，关闭购买页",
+            )
+            self.click_shape_center(landed_id, "返回")
+            yield from self.wait_action_settle(settle_seconds)
+            purchase_return = yield from self.wait_scene(
+                [int(self.view(trial_view).id), int(self.view(daily_view).id)],
+                wait=15.0,
+                label="仙窍_试炼：关闭购买页后确认实际落点",
+            )
+            purchase_return_id = (
+                int(purchase_return.id)
+                if isinstance(purchase_return, View)
+                else int(purchase_return)
+            )
+            if purchase_return_id == int(self.view(daily_view).id):
+                self.click_shape_center(daily_view, "退出")
+                yield from self.wait_action_settle(settle_seconds)
+                yield from self.wait_scene(
+                    [34],
+                    wait=15.0,
+                    label="仙窍_试炼：次数耗尽后返回世界",
+                )
+                return {
+                    "daily_list": daily_entry,
+                    "daily_entry": status,
+                    "category_scene": None,
+                    "entry_landing_scene": landed_id,
+                    "already_exhausted": True,
+                    "terminal_scene": 34,
+                }
+            return {
+                "daily_list": daily_entry,
+                "daily_entry": status,
+                "category_scene": None,
+                "entry_landing_scene": landed_id,
+                "already_exhausted": False,
+                "terminal_scene": 357,
+            }
+        if landed_id == int(self.view(trial_view).id):
+            return {
+                "daily_list": daily_entry,
+                "daily_entry": status,
+                "category_scene": None,
+                "entry_landing_scene": landed_id,
+                "already_exhausted": False,
+                "terminal_scene": 357,
+            }
         frame = self.cur_frame(update=True)
         matches = self.ocr_centers_in_shape(
             category_view,
@@ -4619,6 +4839,8 @@ class BehaviorTreeContext(AutomationContext):
             "daily_list": daily_entry,
             "daily_entry": status,
             "category_scene": 356,
+            "entry_landing_scene": 356,
+            "already_exhausted": False,
             "terminal_scene": 357,
         }
 
@@ -4706,20 +4928,13 @@ class BehaviorTreeContext(AutomationContext):
         settle_seconds: float = 0.8,
         battle_timeout: float = 360.0,
     ):
-        """从 #357 执行仙窍试炼当日完整闭环并最终回到 #34。
+        """Probe A then B, and spend remaining attempts by weighted value.
 
-        每天不读取或保存昨天的难度状态。默认不购买额外次数，只消耗当天
-        两次免费次数；仅当调用方显式传入非零 ``target_daily_purchases`` 时，
-        才先把当天累计购买次数补到目标档位。随后完全依据 #357 的实时按钮
-        逐级挑战。
-
-        购买函数会处理已经买过部分档位或已出现 #364 的情况；挑战次数仍以
-        #357 OCR 的实际值为准，不硬断言次数。若探测到首次失败，本
-        函数已经回退1级；若仍有次数，继续扫荡到次数为0。无论当天次数都
-        挑战成功，还是中途失败后扫荡剩余次数，最后都从 #357 返回 #34。
-
-        真实运行已证明最终“返回”直接回世界页，不经过 #356。AI 单步调试
-        不调用本完整入口，而是继续按用户指令拆分调用底层函数。
+        A is the higher regular track (黑凤王); B is the lower track (血光).
+        Each track is pushed independently to its first failure while attempts
+        remain.  Only after both frontiers are known are remaining attempts
+        swept: B wins exactly when ``2 * B_level > A_level``; ties select A.
+        Levels without a verified sweep button are ineligible.
         """
 
         purchase_target = normalize_xianqiao_trial_purchase_target(target_daily_purchases)
@@ -4738,24 +4953,68 @@ class BehaviorTreeContext(AutomationContext):
                 "exit_reason": "purchase_disabled",
                 "terminal_scene": 357,
             }
-        progression = yield from self.probe_xianqiao_trial_until_failure(
-            max_challenges=max_challenges,
-            settle_seconds=settle_seconds,
-            battle_timeout=battle_timeout,
-        )
-        exit_reason = str(progression.get("exit_reason") or "")
-        if exit_reason not in {"attempts_exhausted", "failure_found"}:
-            raise RuntimeError(f"仙窍_试炼：逐级探测未正常结束，原因 {exit_reason!r}")
-        sweep = None
-        if progression.get("sweep_required"):
-            sweep = yield from self.sweep_remaining_xianqiao_trial_attempts(
-                max_sweeps=max_challenges,
+        tracks: dict[str, Any] = {}
+        remaining_attempts: int | None = None
+        for track in ("higher", "lower"):
+            selected = yield from self.select_xianqiao_trial_track(
+                track,
                 settle_seconds=settle_seconds,
             )
+            state = yield from self.inspect_xianqiao_trial_track_state(
+                settle_seconds=settle_seconds,
+            )
+            remaining_attempts = int(state["attempts"]["remaining"])
+            progression = None
+            sweepable_level = state.get("sweepable_level")
+            if remaining_attempts > 0:
+                progression = yield from self.probe_xianqiao_trial_until_failure(
+                    track=track,
+                    max_challenges=max_challenges,
+                    settle_seconds=settle_seconds,
+                    battle_timeout=battle_timeout,
+                )
+                exit_reason = str(progression.get("exit_reason") or "")
+                if exit_reason not in {"attempts_exhausted", "failure_found"}:
+                    raise RuntimeError(
+                        f"仙窍_试炼：{track} 逐级探测未正常结束，原因 {exit_reason!r}"
+                    )
+                remaining_attempts = progression.get("remaining_attempts")
+                if progression.get("sweepable_level") is not None:
+                    sweepable_level = int(progression["sweepable_level"])
+                elif exit_reason == "failure_found":
+                    sweepable_level = None
+            tracks[track] = {
+                "selection": selected,
+                "state_before": state,
+                "progression": progression,
+                "sweepable_level": sweepable_level,
+            }
+            if remaining_attempts is not None and int(remaining_attempts) <= 0:
+                break
+
+        sweep = None
+        sweep_decision = None
+        if remaining_attempts is not None and int(remaining_attempts) > 0:
+            higher_level = tracks.get("higher", {}).get("sweepable_level")
+            lower_level = tracks.get("lower", {}).get("sweepable_level")
+            if higher_level is not None or lower_level is not None:
+                sweep_decision = choose_xianqiao_trial_sweep_track(
+                    higher_level=higher_level,
+                    lower_level=lower_level,
+                )
+                yield from self.select_xianqiao_trial_track(
+                    str(sweep_decision["track"]),
+                    settle_seconds=settle_seconds,
+                )
+                sweep = yield from self.sweep_remaining_xianqiao_trial_attempts(
+                    max_sweeps=max_challenges,
+                    settle_seconds=settle_seconds,
+                )
         leave = yield from self.leave_xianqiao_trial(settle_seconds=settle_seconds)
         return {
             "purchase": purchase,
-            "progression": progression,
+            "tracks": tracks,
+            "sweep_decision": sweep_decision,
             "sweep": sweep,
             "leave": leave,
             "result": "success",

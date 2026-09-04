@@ -265,13 +265,6 @@ class _DailyLingmaiKickTargetLost(RuntimeError):
     """Raised when a Runtime-selected Lingmai target cannot be trusted in #286 GUI OCR."""
 
 
-class _DailyMojieRaidAttackCountdown(RuntimeError):
-    def __init__(self, seconds: int, text: str) -> None:
-        super().__init__(text)
-        self.seconds = int(seconds)
-        self.text = str(text)
-
-
 _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("daily_boss", "daily-boss", r"击败首领"),
     ("daily_dungeon", "legacy-daily-dungeon", r"通关每日副本|每日副本|副本探险"),
@@ -4486,6 +4479,13 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = dict(payload or {})
+
+        def terminal(message: str) -> str:
+            set_completion_message = getattr(context, "set_completion_message", None)
+            if callable(set_completion_message):
+                set_completion_message(str(message))
+            return "success"
+
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
@@ -4500,12 +4500,12 @@ class DailyFoundationTaskMixin:
             # already-changed game state, the current trigger must not attack
             # again.  Persist the next legal trigger before low-risk cleanup and
             # report success: the business effect for this trigger already exists.
-            self._schedule_next_mojie_raid_trigger(
+            next_time = self._schedule_next_mojie_raid_trigger(
                 payload,
                 reason="起点已处于 #331「已加入」状态，本轮业务已完成",
             )
             yield from context.go_scene(34)
-            return "success"
+            return terminal(f"#331 已确认入队，本轮幂等完成；下次 {next_time}")
         if scene_id == 330:
             scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
         if scene_id not in {69, *raid_scenes}:
@@ -4558,19 +4558,7 @@ class DailyFoundationTaskMixin:
                 raise RuntimeError("日常_奇袭魔界：入口点击后未到达 #319，疑似遇到未实现的特殊弹窗") from exc
         if scene_id == 319:
             self._log("success", "日常_奇袭魔界：已到达 #319")
-            existing_team_match = None
             shape_matches = getattr(context, "shape_matches", None)
-            if callable(shape_matches):
-                existing_team_match = shape_matches(319, "队伍")
-            if existing_team_match:
-                # “我的队伍”只证明本轮已经入队，不证明本周次数耗尽。
-                # 先提交下一轮触发，再低风险返回世界；不得继续点击“参与进攻”。
-                self._schedule_next_mojie_raid_trigger(
-                    payload,
-                    reason="#319 已显示「我的队伍」，本轮业务已完成",
-                )
-                yield from context.wait_click_then_scene(319, "返回", 34)
-                return "success"
             numbers, text = context.ocr_numbers_in_shapes(
                 319,
                 ("剩余次数",),
@@ -4584,14 +4572,6 @@ class DailyFoundationTaskMixin:
                 )
                 scene_id = yield from self._confirm_daily_mojie_raid_reward_confirmation(context)
                 if scene_id == 319:
-                    existing_team_match = shape_matches(319, "队伍") if callable(shape_matches) else None
-                    if existing_team_match:
-                        self._schedule_next_mojie_raid_trigger(
-                            payload,
-                            reason="#330 确认后 #319 已显示「我的队伍」，本轮业务已完成",
-                        )
-                        yield from context.wait_click_then_scene(319, "返回", 34)
-                        return "success"
                     numbers, text = context.ocr_numbers_in_shapes(
                         319,
                         ("剩余次数",),
@@ -4635,66 +4615,66 @@ class DailyFoundationTaskMixin:
             if remaining <= 0:
                 confirmed_at = _behavior_tree_executor._now()
                 if not self._mojie_raid_completion_window_open(confirmed_at):
-                    self._schedule_mojie_raid_thursday_verification(
+                    next_time = self._schedule_mojie_raid_thursday_verification(
                         payload,
                         reason="连续两帧确认剩余次数为 0，但尚未到周四，不能判定本周完成",
                         now=confirmed_at,
                     )
+                    message = f"连续两帧确认剩余次数为 0，但未到周四；复核时间 {next_time}"
                 else:
-                    self._schedule_next_mojie_raid_week(
+                    next_time = self._schedule_next_mojie_raid_week(
                         payload,
                         reason="周四起连续两帧确认剩余次数为 0，本周已完成",
                         confirmed_remaining=remaining,
                         confirmed_at=confirmed_at,
                     )
+                    message = f"周四起连续两帧确认剩余次数为 0，本周完成；下次 {next_time}"
                 yield from context.wait_click(319, "返回")
-                return "success"
+                return terminal(message)
+            existing_team_match = shape_matches(319, "队伍") if callable(shape_matches) else None
+            if existing_team_match:
+                # 剩余次数大于 0 时，「我的队伍」OCR 才是本轮已配置的幂等事实。
+                next_time = self._schedule_next_mojie_raid_trigger(
+                    payload,
+                    reason="#319 已显示「我的队伍」，本轮业务已完成",
+                )
+                yield from context.wait_click_then_scene(319, "返回", 34)
+                return terminal(f"#319 OCR 已确认「我的队伍」，本轮幂等完成；下次 {next_time}")
             yield from context.wait_click_then_scene(319, "参与进攻", 320)
             scene_id = 320
         else:
             self._log("detail", f"日常_奇袭魔界：从 #{scene_id} 恢复后续流程")
         if scene_id == 320:
+            # 「进攻倒计时」只限制战斗结算，不限制提前选择据点和配置队伍。
+            # 本轮幂等事实仍然必须来自 #319「队伍」OCR，或建队/入队后到达
+            # #324/#331；不能因为倒计时大于 0 就把 Job 延后并冒充完成。
             countdown_text = context.ocr_text_in_shapes(
                 320,
                 ("进攻倒计时标识",),
                 padding=int(payload.get("mojie_raid_attack_countdown_padding") or 12),
             )
             countdown_seconds = self._daily_mojie_raid_attack_countdown_seconds(countdown_text)
-            if countdown_seconds is None:
-                raise RuntimeError(
-                    "日常_奇袭魔界：#320 未能唯一解析「进攻倒计时」HH:MM:SS，"
-                    f"拒绝猜测点击，OCR={countdown_text[:120]}"
+            if countdown_seconds is not None and countdown_seconds > 0:
+                self._log(
+                    "detail",
+                    "日常_奇袭魔界：#320 仍有进攻倒计时，继续进入据点配置队伍，"
+                    f"OCR={countdown_text[:120]}",
                 )
-            if countdown_seconds > 0:
-                return (yield from self._defer_daily_mojie_raid_attack_countdown(
-                    context,
-                    payload,
-                    countdown_seconds=countdown_seconds,
-                    countdown_text=countdown_text,
-                ))
-            try:
-                scene_id = yield from self._click_daily_mojie_raid_top_attack_target(context, payload)
-            except _DailyMojieRaidAttackCountdown as countdown:
-                return (yield from self._defer_daily_mojie_raid_attack_countdown(
-                    context,
-                    payload,
-                    countdown_seconds=countdown.seconds,
-                    countdown_text=countdown.text,
-                ))
+            scene_id = yield from self._click_daily_mojie_raid_top_attack_target(context, payload)
             if scene_id == 331:
                 # A previous/current join can make the #320 target click land
                 # directly on the already-joined page, skipping #321..#324.
                 # This direct transition is authoritative transaction-local
                 # evidence.  Commit scheduling before cleanup so a navigation
                 # failure cannot make the non-replayable action due again.
-                self._schedule_next_mojie_raid_trigger(
+                next_time = self._schedule_next_mojie_raid_trigger(
                     payload,
                     reason="点击据点后已处于 #331「已加入」状态，本轮业务已完成",
                 )
                 yield from context.click_shape_center_then_scene(331, "返回", 320)
                 yield from context.wait_click(320, "返回")
                 yield from context.wait_click_then_scene(319, "返回", 34)
-                return "success"
+                return terminal(f"点击据点后 #331 已确认入队，本轮幂等完成；下次 {next_time}")
         if scene_id == 321:
             # #322 is only a confirmation popup, but a persistent #321 can mean
             # the server-side weekly attack allowance is already exhausted or
@@ -4740,11 +4720,13 @@ class DailyFoundationTaskMixin:
                     yield from context.click_shape_center_then_scene(321, "返回", 320)
                     yield from context.wait_click(320, "返回")
                     yield from context.wait_click_then_scene(319, "返回", 34)
-                    self._schedule_next_mojie_raid_trigger(
+                    next_time = self._schedule_next_mojie_raid_trigger(
                         payload,
                         reason=f"#322 建队额度已满 {team_count}/{team_limit}，#321 暂无可加入友方队伍",
                     )
-                    return "skipped"
+                    return terminal(
+                        f"建队额度已满 {team_count}/{team_limit} 且暂无可加入队伍；下次 {next_time}"
+                    )
                 scene_id = joined_scene
                 joined_existing_team = True
             else:
@@ -4773,7 +4755,8 @@ class DailyFoundationTaskMixin:
                 if joined_existing_team
                 else "已确认建队成功并进入 #324"
             )
-            self._schedule_next_mojie_raid_trigger(payload, reason=committed_reason)
+            next_time = self._schedule_next_mojie_raid_trigger(payload, reason=committed_reason)
+            terminal_message = f"{committed_reason}，本轮幂等完成；下次 {next_time}"
             # 建队成功后的队伍页会在短暂动画结束后让 #324 的「鼓舞」
             # 图像身份失效；此时再用 wait_click 会永远等不到源场景。
             # 「返回」本身是固定标注坐标，直接点击，并兼容实机可能跳到
@@ -4781,12 +4764,12 @@ class DailyFoundationTaskMixin:
             landed = yield from context.click_shape_center_then_scene(324, "返回", 331, 34)
             scene_id = int(getattr(landed, "id", landed))
             if scene_id == 34:
-                return "success"
+                return terminal(terminal_message)
         if scene_id == 331:
             yield from context.click_shape_center_then_scene(331, "返回", 320)
             yield from context.wait_click(320, "返回")
             yield from context.wait_click_then_scene(319, "返回", 34)
-        return "success"
+        return terminal(locals().get("terminal_message", "已确认奇袭魔界队伍状态，本轮幂等完成"))
 
     def _daily_mojie_raid_join_click_delta(
         self,
@@ -4970,23 +4953,6 @@ class DailyFoundationTaskMixin:
                     [320, 321, 331],
                     update=True,
                 )
-                if scene_id == 320:
-                    countdown_text = context.ocr_text_in_shapes(
-                        320,
-                        ("进攻倒计时标识",),
-                        padding=int(payload.get("mojie_raid_attack_countdown_padding") or 12),
-                    )
-                    countdown_seconds = self._daily_mojie_raid_attack_countdown_seconds(countdown_text)
-                    if countdown_seconds is None:
-                        raise RuntimeError(
-                            "日常_奇袭魔界：目标点击后仍在 #320，但未能唯一解析「进攻倒计时」"
-                            f"HH:MM:SS，拒绝第二次点击，OCR={countdown_text[:120]}"
-                        ) from exc
-                    if countdown_seconds > 0:
-                        raise _DailyMojieRaidAttackCountdown(
-                            countdown_seconds,
-                            countdown_text,
-                        ) from exc
                 if scene_id != 320 or attempt >= max_clicks:
                     raise
                 self._log(
@@ -5036,26 +5002,6 @@ class DailyFoundationTaskMixin:
             # unreadable timer and not a future delay.
             return 0
         return hours * 3600 + minutes * 60 + seconds
-
-    def _defer_daily_mojie_raid_attack_countdown(
-        self,
-        context: BehaviorTreeContext,
-        payload: dict[str, Any],
-        *,
-        countdown_seconds: int,
-        countdown_text: str,
-    ):
-        self._schedule_next_mojie_raid_countdown(
-            payload,
-            countdown_seconds=countdown_seconds,
-            reason=(
-                "#320 仍处于进攻开放倒计时 "
-                f"{countdown_text.strip()}，据点当前不可交互"
-            ),
-        )
-        yield from context.wait_click(320, "返回")
-        yield from context.wait_click_then_scene(319, "返回", 34)
-        return "skipped"
 
     def _next_mojie_raid_week_start_time_text(
         self,
@@ -5170,25 +5116,6 @@ class DailyFoundationTaskMixin:
         next_time = self._next_mojie_raid_followup_time_text()
         self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
         self._log("success", f"日常_奇袭魔界：{reason}，本周仍需继续，下次 {next_time}")
-        return next_time
-
-    def _schedule_next_mojie_raid_countdown(
-        self,
-        payload: dict[str, Any],
-        *,
-        countdown_seconds: int,
-        reason: str,
-    ) -> str:
-        """Schedule from the authoritative #320 countdown, plus a small UI safety margin."""
-
-        safety_seconds = max(1, int(payload.get("mojie_raid_countdown_safety_seconds") or 60))
-        next_time = (
-            _behavior_tree_executor._now()
-            + timedelta(seconds=max(1, int(countdown_seconds)) + safety_seconds)
-        ).strftime("%Y-%m-%d %H:%M:%S")
-        scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid")
-        self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
-        self._log("success", f"日常_奇袭魔界：{reason}，按真实倒计时复查，下次 {next_time}")
         return next_time
 
     def _handle_daily_mojie_raid_open_blocker_placeholder(

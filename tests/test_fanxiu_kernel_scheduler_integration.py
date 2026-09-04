@@ -3247,7 +3247,7 @@ def test_unknown_evidence_scores_all_candidates_before_limiting(monkeypatch):
     assert len(evidence.candidates) == 1
 
 
-def test_wait_scene_timeout_reports_unknown_evidence(monkeypatch):
+def test_wait_scene_timeout_preserves_raw_evidence_without_automatic_classification(monkeypatch):
     runner = create_behavior_tree_executor()
     image261 = {
         "id": 261,
@@ -3261,18 +3261,25 @@ def test_wait_scene_timeout_reports_unknown_evidence(monkeypatch):
     }
     ctx = {"images": {261: image261}}
     context = behavior_tree_executor_core.BehaviorTreeContext(runner, ctx, stop_event=fanxiu.threading.Event())
+    context.scene_unmatched_guard_seconds = 0.0
     monkeypatch.setattr(runner, "_screencap", lambda ctx: "not-a-data-url")
     monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (None, 0.0))
     monkeypatch.setattr(runner, "_shape_score", lambda ctx, image, shape, frame, **kwargs: 94.0 if shape["title"] == "箱子" else 37.0)
     monkeypatch.setattr(runner, "_cached_ocr_lines", lambda ctx, frame: [{"text": "异火 净莲妖火 升阶"}])
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda context: False)
+    monkeypatch.setattr(
+        behavior_tree_executor_core,
+        "build_unknown_evidence",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("wait_scene must not infer unknown semantics")),
+    )
 
-    with pytest.raises(TimeoutError) as exc_info:
+    with pytest.raises(behavior_tree_executor_core.SceneWaitTimeout) as exc_info:
         _drain_generator(context.wait_scene([261], wait=0.0, label="wait_click"))
 
     message = str(exc_info.value)
-    assert "unknown诊断=target_identity_partial_match" in message
-    assert "升阶" in message
+    assert "全层持续未匹配" in message
+    assert exc_info.value.expected_scene_ids == (261,)
+    assert exc_info.value.last_match is None
 
 
 def test_daily_youli_does_not_mark_done_from_daily_progress(monkeypatch):
@@ -9768,4 +9775,3 @@ def test_daily_lingmai_clicks_slot_entry_after_region_teleport(monkeypatch):
     assert result == "success"
     assert ("click_slot_entry", "region-frame", "灵脉_清体力") in actions
     assert ("wait_scene", (288,)) in actions
-

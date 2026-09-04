@@ -1251,6 +1251,9 @@ def register_fanxiu_default_jobs() -> None:
         yield from context.go_scene(34)
         result = yield from runner._execute_daily_mojie_raid_task(ctx, stop_event, payload)
         yield from context.go_scene(34)
+        completion_message = str(context.attrs.get("completion_message") or "").strip()
+        if completion_message:
+            return {"result": "success", "message": completion_message}
         return result
 
     @register_fanxiu_data_annotation_task_cell("daily_weekly_dungeon", "日常_周本", scheduler_supported=True)

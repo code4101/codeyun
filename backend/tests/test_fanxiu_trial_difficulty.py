@@ -573,8 +573,8 @@ def test_trial_challenge_reacts_to_each_scene_instead_of_difficulty_history(monk
 
     monkeypatch.setattr(
         context,
-        "current_scene",
-        current_scene,
+        "sample_scene_once",
+        sample_scene_once,
     )
     monkeypatch.setattr(
         context,
@@ -596,7 +596,7 @@ def test_trial_challenge_can_resume_directly_from_optional_confirmation(monkeypa
 
     monkeypatch.setattr(
         context,
-        "current_scene",
+        "sample_scene_once",
         lambda *_args, **_kwargs: (next(observations), 100.0, "frame"),
     )
     monkeypatch.setattr(
@@ -624,14 +624,14 @@ def test_trial_challenge_handles_sweep_as_an_observed_branch(monkeypatch):
         },
         367: {"id": 367, "title": "扫荡奖励", "width": 900, "height": 1600, "shapes": []},
     })
-    observations = iter((357, 366))
+    observations = iter((357, 366, 227, 227))
     landed = iter((227, 227, 357))
     clicks: list[tuple[int, str]] = []
     delays: list[float] = []
 
     monkeypatch.setattr(
         context,
-        "current_scene",
+        "sample_scene_once",
         lambda *_args, **_kwargs: (next(observations), 100.0, "frame"),
     )
     monkeypatch.setattr(
@@ -667,7 +667,7 @@ def test_trial_challenge_handles_sweep_as_an_observed_branch(monkeypatch):
         (227, "继续"),
         (227, "继续"),
     ]
-    assert delays == [0.0, 5.0, 0.0, 0.0]
+    assert delays == [0.0, 5.0, 0.35, 0.0, 0.35, 0.0]
     assert result["exit_reason"] == "sweep_completed"
     assert result["last_scene"] == 357
 
@@ -679,7 +679,7 @@ def test_trial_challenge_accepts_direct_entry_when_no_confirmation_appears(monke
 
     monkeypatch.setattr(
         context,
-        "current_scene",
+        "sample_scene_once",
         lambda *_args, **_kwargs: (next(observations), 0.0, "frame"),
     )
     monkeypatch.setattr(
@@ -738,7 +738,10 @@ def test_trial_result_treats_362_as_battle_and_waits_for_success_exit(monkeypatc
     monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "result-frame")
     monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "挑战成功 点击退出")
 
-    result = _finish(context.wait_xianqiao_trial_result(result_settle_seconds=0))
+    result = _finish(context.wait_xianqiao_trial_result(
+        result_settle_seconds=0,
+        result_confirmation_seconds=0,
+    ))
 
     assert events == ["entered_362", "result_361"]
     assert result["outcome"] == "success"
@@ -763,14 +766,59 @@ def test_trial_result_recognizes_failure_by_scene_identity(monkeypatch):
     monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "failure-frame")
     monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "挑战失败")
     clicks: list[tuple[int, str]] = []
-    monkeypatch.setattr(context, "click_shape", lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))))
+    monkeypatch.setattr(
+        context,
+        "click_shape_center",
+        lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
+    )
 
-    result = _finish(context.wait_xianqiao_trial_result(result_settle_seconds=0))
+    result = _finish(context.wait_xianqiao_trial_result(
+        result_settle_seconds=0,
+        result_confirmation_seconds=0,
+    ))
 
     assert result["outcome"] == "failure"
     assert result["result_scene"] == 365
     assert result["ocr_text"] == "挑战失败"
     assert clicks == []
+
+
+def test_trial_result_ignores_intermediate_success_layer(monkeypatch):
+    context = _trial_challenge_context()
+    context.ctx["images"].update({
+        361: {"id": 361, "title": "阶段成功", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
+        362: {"id": 362, "title": "仙窍战斗中", "width": 900, "height": 1600, "shapes": []},
+        365: {"id": 365, "title": "最终失败", "width": 900, "height": 1600, "shapes": [{"title": "退出"}]},
+    })
+    waited = iter((362, 361, 365))
+    stable = iter((362, 365))
+
+    def wait_scene(*_args, **_kwargs):
+        if False:
+            yield None
+        return context.view(next(waited))
+
+    def settle(_seconds):
+        if False:
+            yield None
+
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+    monkeypatch.setattr(
+        context,
+        "sample_scene_once",
+        lambda *_args, **_kwargs: (next(stable), 100.0, "frame"),
+    )
+    monkeypatch.setattr(context, "wait_action_settle", settle)
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "failure-frame")
+    monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "变强途径 点击退出")
+
+    result = _finish(context.wait_xianqiao_trial_result(
+        result_settle_seconds=0,
+        result_confirmation_seconds=0.1,
+    ))
+
+    assert result["outcome"] == "failure"
+    assert result["result_scene"] == 365
 
 
 def test_complete_trial_challenge_clicks_exit_only_for_known_success(monkeypatch):
@@ -800,7 +848,11 @@ def test_complete_trial_challenge_clicks_exit_only_for_known_success(monkeypatch
     monkeypatch.setattr(context, "start_xianqiao_trial_challenge", started)
     monkeypatch.setattr(context, "wait_xianqiao_trial_result", finished)
     monkeypatch.setattr(context, "wait_scene", wait_home)
-    monkeypatch.setattr(context, "click_shape", lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))))
+    monkeypatch.setattr(
+        context,
+        "click_shape_center",
+        lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
+    )
 
     result = _finish(context.complete_xianqiao_trial_challenge(settle_seconds=0))
 
@@ -829,7 +881,7 @@ def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monk
             yield None
         return {"outcome": "failure", "result_scene": 365, "_frame_data_url": "failure-frame"}
 
-    def wait_landing(*views, **_kwargs):
+    def wait_landing(views, **_kwargs):
         events.append(("wait", tuple(int(view) for view in views)))
         if False:
             yield None
@@ -841,22 +893,33 @@ def test_complete_trial_challenge_reenters_when_failure_exit_lands_on_world(monk
             yield None
         return {"terminal_scene": 357}
 
+    def select(track, **_kwargs):
+        events.append(("select", track))
+        if False:
+            yield None
+        return {"track": track}
+
     monkeypatch.setattr(context, "start_xianqiao_trial_challenge", started)
     monkeypatch.setattr(context, "wait_xianqiao_trial_result", finished)
     monkeypatch.setattr(context, "wait_scene", wait_landing)
     monkeypatch.setattr(context, "enter_xianqiao_trial", reenter)
+    monkeypatch.setattr(context, "select_xianqiao_trial_track", select)
     monkeypatch.setattr(
         context,
-        "click_shape",
+        "click_shape_center",
         lambda view, shape, **_kwargs: events.append(("click", int(view), str(shape))),
     )
 
-    result = _finish(context.complete_xianqiao_trial_challenge(settle_seconds=0))
+    result = _finish(context.complete_xianqiao_trial_challenge(
+        track="lower",
+        settle_seconds=0,
+    ))
 
     assert events == [
         ("click", 365, "退出"),
         ("wait", (357, 34)),
         ("reenter", 357),
+        ("select", "lower"),
     ]
     assert result["returned_home"] is True
     assert result["landing_scene"] == 34
@@ -932,7 +995,7 @@ def test_trial_result_reports_auto_expired_popup_when_game_returns_to_world(monk
 
     monkeypatch.setattr(context, "wait_scene", wait_scene)
 
-    result = _finish(context.wait_xianqiao_trial_result())
+    result = _finish(context.wait_xianqiao_trial_result(result_confirmation_seconds=0))
 
     assert result["outcome"] == "result_expired"
     assert result["result_scene"] == 34
@@ -1133,11 +1196,20 @@ def test_trial_daily_skips_purchase_by_default_then_uses_ui_driven_progression(m
             yield None
         return {"purchased_after": target}
 
-    def progress(**_kwargs):
-        events.append("progress")
+    def select(track, **_kwargs):
+        events.append(f"select_{track}")
         if False:
             yield None
-        return {"exit_reason": "attempts_exhausted", "sweep_required": False}
+        return {"track": track}
+
+    def inspect(**_kwargs):
+        events.append("inspect")
+        if False:
+            yield None
+        return {
+            "attempts": {"remaining": 0, "capacity": 2, "text": "0/2"},
+            "sweepable_level": 70,
+        }
 
     def leave(**_kwargs):
         events.append("leave")
@@ -1146,15 +1218,16 @@ def test_trial_daily_skips_purchase_by_default_then_uses_ui_driven_progression(m
         return {"terminal_scene": 34}
 
     monkeypatch.setattr(context, "purchase_xianqiao_trial_attempts", purchase)
-    monkeypatch.setattr(context, "probe_xianqiao_trial_until_failure", progress)
+    monkeypatch.setattr(context, "select_xianqiao_trial_track", select)
+    monkeypatch.setattr(context, "inspect_xianqiao_trial_track_state", inspect)
     monkeypatch.setattr(context, "leave_xianqiao_trial", leave)
 
     result = _finish(context.run_xianqiao_trial_daily(settle_seconds=0))
 
-    assert events == ["progress", "leave"]
+    assert events == ["select_higher", "inspect", "leave"]
     assert result["purchase"]["exit_reason"] == "purchase_disabled"
     assert result["purchase"]["purchases_now"] == []
-    assert result["progression"]["exit_reason"] == "attempts_exhausted"
+    assert result["tracks"]["higher"]["progression"] is None
     assert result["current_scene"] == 34
 
 
@@ -1168,11 +1241,31 @@ def test_trial_daily_sweeps_remaining_attempts_after_failure_then_leaves(monkeyp
             yield None
         return {"purchased_after": 3}
 
-    def progress(**_kwargs):
-        events.append("probe")
+    def select(track, **_kwargs):
+        events.append(f"select_{track}")
         if False:
             yield None
-        return {"exit_reason": "failure_found", "sweep_required": True, "remaining_attempts": 2}
+        return {"track": track}
+
+    def inspect(**_kwargs):
+        events.append("inspect")
+        if False:
+            yield None
+        return {
+            "attempts": {"remaining": 2, "capacity": 2, "text": "2/2"},
+            "sweepable_level": None,
+        }
+
+    def progress(*, track, **_kwargs):
+        events.append(f"probe_{track}")
+        if False:
+            yield None
+        return {
+            "exit_reason": "failure_found",
+            "sweep_required": True,
+            "remaining_attempts": 2,
+            "sweepable_level": 100 if track == "higher" else 51,
+        }
 
     def sweep(**_kwargs):
         events.append("sweep")
@@ -1187,6 +1280,8 @@ def test_trial_daily_sweeps_remaining_attempts_after_failure_then_leaves(monkeyp
         return {"terminal_scene": 34}
 
     monkeypatch.setattr(context, "purchase_xianqiao_trial_attempts", purchase)
+    monkeypatch.setattr(context, "select_xianqiao_trial_track", select)
+    monkeypatch.setattr(context, "inspect_xianqiao_trial_track_state", inspect)
     monkeypatch.setattr(context, "probe_xianqiao_trial_until_failure", progress)
     monkeypatch.setattr(context, "sweep_remaining_xianqiao_trial_attempts", sweep)
     monkeypatch.setattr(context, "leave_xianqiao_trial", leave)
@@ -1198,7 +1293,19 @@ def test_trial_daily_sweeps_remaining_attempts_after_failure_then_leaves(monkeyp
         )
     )
 
-    assert events == ["purchase", "probe", "sweep", "leave"]
+    assert events == [
+        "purchase",
+        "select_higher",
+        "inspect",
+        "probe_higher",
+        "select_lower",
+        "inspect",
+        "probe_lower",
+        "select_lower",
+        "sweep",
+        "leave",
+    ]
+    assert result["sweep_decision"]["track"] == "lower"
     assert result["sweep"]["remaining_attempts"] == 0
     assert result["result"] == "success"
 
@@ -1258,7 +1365,10 @@ def test_trial_result_can_resume_directly_from_failure_popup(monkeypatch):
     monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "failure-frame")
     monkeypatch.setattr(context, "ocr_text", lambda **_kwargs: "变强途径 退出")
 
-    result = _finish(context.wait_xianqiao_trial_result(result_settle_seconds=0))
+    result = _finish(context.wait_xianqiao_trial_result(
+        result_settle_seconds=0,
+        result_confirmation_seconds=0,
+    ))
 
     assert wait_calls == 1
     assert result["outcome"] == "failure"

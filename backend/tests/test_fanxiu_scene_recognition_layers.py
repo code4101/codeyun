@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import inspect
+import io
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
-from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext, SceneMatch
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
+    BehaviorTreeContext,
+    SceneMatch,
+    SceneWaitTimeout,
+)
 
 
 def _scene(scene_id: int, layer: int) -> dict:
@@ -47,6 +54,14 @@ def _drain_result(generator):
             next(generator)
         except StopIteration as exc:
             return exc.value
+
+
+def _png_frame(runner, *, color=(240, 240, 240)) -> str:
+    from PIL import Image
+
+    output = io.BytesIO()
+    Image.new("RGB", (90, 160), color).save(output, format="PNG")
+    return runner._data_url(output.getvalue())
 
 
 def test_scene_api_has_one_waiting_entry_and_no_legacy_aliases() -> None:
@@ -149,6 +164,156 @@ def test_layered_wait_reports_global_layer2_fallback(monkeypatch) -> None:
     assert match.scope == "global"
     assert score == 95.0
     assert frame == "frame"
+
+
+def test_wait_scene_returns_global_layer2_and_keeps_its_raw_frame(monkeypatch, tmp_path) -> None:
+    runner = create_behavior_tree_executor()
+    context = BehaviorTreeContext(runner, _context())
+    context.attrs["payload"] = {"__scheduler_task_id": "daily-test"}
+    frame = _png_frame(runner)
+    match = SceneMatch(
+        201,
+        score=91.0,
+        matched_layer=2,
+        scope="global",
+        status="matched",
+        frame_data_url=frame,
+    )
+
+    def recognize(*_args, **_kwargs):
+        if False:
+            yield None
+        return match, 91.0, frame
+
+    monkeypatch.setattr(context, "_recognize_scene_layers", recognize)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.scene_diagnostics._diagnostic_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.behavior_tree_executor.escalate_persistent_scene_unknown",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Layer 2 match is not an escalation condition")),
+    )
+
+    result = _drain_result(context.wait_scene([301], wait=0))
+
+    assert result is match
+    assert result.matched_layer == 2
+    assert result.evidence_frame_path
+    assert Path(result.evidence_frame_path).read_bytes() == runner._decode_frame_data_url(frame)
+
+
+def test_wait_scene_retries_the_complete_flow_after_an_all_layer_miss(monkeypatch) -> None:
+    runner = create_behavior_tree_executor()
+    context = BehaviorTreeContext(runner, _context())
+    frame = _png_frame(runner)
+    recovered = SceneMatch(
+        101,
+        score=94.0,
+        matched_layer=1,
+        scope="global",
+        status="matched",
+        frame_data_url=frame,
+    )
+    results = [(None, 0.0, frame), (recovered, 94.0, frame)]
+    waits: list[float] = []
+
+    def recognize(_scenes, wait, **_kwargs):
+        waits.append(wait)
+        if False:
+            yield None
+        return results.pop(0)
+
+    monkeypatch.setattr(context, "_recognize_scene_layers", recognize)
+
+    result = _drain_result(context.wait_scene([301], wait=5))
+
+    assert result is recovered
+    assert waits == [5.0, 0.0]
+    assert result.evidence_frame_path is None
+
+
+def test_wait_scene_raises_typed_timeout_with_raw_evidence_after_guard(monkeypatch, tmp_path) -> None:
+    runner = create_behavior_tree_executor()
+    context = BehaviorTreeContext(runner, _context())
+    context.scene_unmatched_guard_seconds = 2.0
+    frame = _png_frame(runner)
+    calls = 0
+
+    def recognize(_scenes, wait, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if False:
+            yield None
+        return None, 12.0, frame
+
+    clock = iter((0.0, 0.0, 0.0, 0.0, 3.0))
+    monkeypatch.setattr(context, "_recognize_scene_layers", recognize)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.behavior_tree_executor.time.monotonic",
+        lambda: next(clock),
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.scene_diagnostics._diagnostic_root",
+        lambda: tmp_path,
+    )
+
+    try:
+        _drain_result(context.wait_scene([301], wait=0))
+    except SceneWaitTimeout as exc:
+        assert exc.expected_scene_ids == (301,)
+        assert exc.last_match is None
+        assert exc.frame_data_url == frame
+        assert exc.evidence_frame_path
+        assert Path(exc.evidence_frame_path).is_file()
+        assert "持续未匹配" in str(exc)
+    else:
+        raise AssertionError("all-layer misses must raise SceneWaitTimeout after the guard")
+    assert calls == 2
+
+
+def test_scheduled_wait_scene_timeout_escalates_and_exposes_the_dispatch(monkeypatch, tmp_path) -> None:
+    runner = create_behavior_tree_executor()
+    context = BehaviorTreeContext(runner, _context())
+    context.scene_unmatched_guard_seconds = 0.0
+    context.attrs["payload"] = {"__scheduler_task_id": "daily-test"}
+    frame = _png_frame(runner)
+    captured = {}
+
+    def recognize(_scenes, wait, **_kwargs):
+        del wait
+        if False:
+            yield None
+        return None, 0.0, frame
+
+    def escalate(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            dispatch_id="dispatch-1",
+            request_path=str(tmp_path / "request.json"),
+        )
+
+    monkeypatch.setattr(context, "_recognize_scene_layers", recognize)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.scene_diagnostics._diagnostic_root",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.behavior_tree_executor.escalate_persistent_scene_unknown",
+        escalate,
+    )
+
+    try:
+        _drain_result(context.wait_scene([301], wait=0, label="scheduled-scene"))
+    except SceneWaitTimeout as exc:
+        assert exc.codex_dispatch_id == "dispatch-1"
+        assert exc.codex_request_path == str(tmp_path / "request.json")
+        assert exc.codex_escalation_error is None
+        assert "Codex投递=dispatch-1" in str(exc)
+    else:
+        raise AssertionError("scheduled persistent unknown must end the old attempt")
+    assert captured["task_id"] == "daily-test"
+    assert captured["expected_scene_ids"] == [301]
 
 
 def test_layer0_match_short_circuits_layer1_and_layer2(monkeypatch):

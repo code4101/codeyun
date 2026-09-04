@@ -31,6 +31,14 @@ class XianqiaoTrialTaskMixin:
             max_daily_scrolls=int(payload.get("max_daily_scrolls") or 30),
             settle_seconds=float(payload.get("settle_seconds") or 0.8),
         )
+        if entry.get("already_exhausted"):
+            context.set_next_time(self._next_daily_boss_reset_time_text())
+            return {
+                "entry": entry,
+                "result": "success",
+                "message": "仙窍_试炼今日次数已耗尽，已回到世界 #34",
+                "current_scene": 34,
+            }
         daily = yield from context.run_xianqiao_trial_daily(
             target_daily_purchases=(
                 int(purchase_target) if purchase_target is not None else 0
