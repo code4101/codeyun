@@ -192,7 +192,7 @@ def run_daily_activity_list_sync_flow(
                 yield from _yield_from_maybe(context.go_scene(66))
                 yield from _yield_from_maybe(
                     context.wait_scene(
-                        66,
+                        [66],
                         wait=float(view_timeout_seconds),
                         label="活动_每日清单同步：等待正式日程页 #66",
                     )
@@ -258,7 +258,7 @@ def run_daily_activity_list_sync_flow(
             yield from _yield_from_maybe(context.go_scene(34))
             yield from _yield_from_maybe(
                 context.wait_scene(
-                    34,
+                    [34],
                     wait=float(view_timeout_seconds),
                     label="活动_每日清单同步：返回世界 #34",
                 )

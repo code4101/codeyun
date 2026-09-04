@@ -160,7 +160,7 @@ def test_occurrence_validation_requires_runtime_and_instance_identity() -> None:
 
 def test_occurrence_entry_reuses_existing_beast_home() -> None:
     class Context:
-        def current_scene(self, **_kwargs):
+        def sample_scene_once(self, **_kwargs):
             return 535, 100.0, "frame"
 
     result = _finish(
@@ -176,7 +176,7 @@ def test_occurrence_entry_opens_schedule_from_unrecognized_world_skin(monkeypatc
     actions = []
 
     class Context:
-        def current_scene(self, **_kwargs):
+        def sample_scene_once(self, **_kwargs):
             return None, 87.0, "world-skin-frame"
 
         def click_shape(self, scene, shape, **kwargs):
@@ -186,7 +186,8 @@ def test_occurrence_entry_opens_schedule_from_unrecognized_world_skin(monkeypatc
             actions.append(("settle", seconds))
             return _generator_result(None)
 
-        def wait_scene(self, scene, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene = layer0[0]
             actions.append(("wait", scene))
             return _generator_result(scene)
 
@@ -928,7 +929,8 @@ def test_measurement_rank_refresh_opens_personal_tab_before_accepting_score(
             actions.append(("settle", seconds))
             return _generator_result(None)
 
-        def wait_scene(self, scene, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene = layer0[0]
             actions.append(("wait", scene))
             return _generator_result(scene)
 
@@ -1023,7 +1025,7 @@ def test_measurement_rank_refresh_accepts_fresh_unchanged_score(monkeypatch) -> 
         def wait_action_settle(self, _seconds):
             return _generator_result(None)
 
-        def wait_scene(self, *_args, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             return _generator_result(None)
 
     monkeypatch.setattr(
@@ -1212,7 +1214,7 @@ def test_close_real_terminal_accepts_transition_to_cutscene() -> None:
             self.scene = 382
             self.clicks = []
 
-        def current_scene(self, _expected, update=False):
+        def sample_scene_once(self, _expected, update=False):
             return self.scene, 100.0, "terminal"
 
         def ocr_text(self, _frame):
@@ -1238,14 +1240,15 @@ def test_exchange_tail_reenters_exact_occurrence_and_syncs_both_final_ranks(
     calls = []
 
     class Context:
-        def current_scene(self, **_kwargs):
+        def sample_scene_once(self, **_kwargs):
             return 66, 100.0, "schedule"
 
         def go_scene(self, scene):
             calls.append(("goto", scene))
             return _generator_result(None)
 
-        def wait_scene(self, scene, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene = layer0[0]
             calls.append(("wait", scene, kwargs.get("label")))
             return _generator_result(None)
 
@@ -1615,14 +1618,15 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
     )
 
     class Context:
-        def current_scene(self, **_kwargs):
+        def sample_scene_once(self, **_kwargs):
             return 66, 100.0, "schedule"
 
         def go_scene(self, scene):
             calls.append(("goto", scene))
             return _generator_result(None)
 
-        def wait_scene(self, scene, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene = layer0[0]
             calls.append(("wait", scene))
             return _generator_result(None)
 

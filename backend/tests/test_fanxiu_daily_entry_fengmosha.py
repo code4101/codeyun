@@ -21,7 +21,7 @@ class Runtime:
         self.scene = start_scene
         self.actions: list[tuple] = []
 
-    def current_scene(self, scene_ids=None, **_kwargs):
+    def sample_scene_once(self, scene_ids=None, **_kwargs):
         self.actions.append(("current_scene", tuple(scene_ids or ()), self.scene))
         return self.scene, 100.0, f"frame-{self.scene}"
 
@@ -47,7 +47,8 @@ class Runtime:
             yield None
         return self.scene
 
-    def wait_scene(self, *scene_ids, **_kwargs):
+    def wait_scene(self, layer0, **_kwargs):
+        scene_ids = tuple(layer0)
         self.actions.append(("wait_scene", tuple(scene_ids), self.scene))
         assert self.scene in scene_ids
         if False:

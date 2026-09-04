@@ -534,7 +534,7 @@ def scan_selected_choice_detail(
         timeout=8.0,
     )
     yield from context.wait_scene(
-        CHOICE_DETAIL_SCENE,
+        [CHOICE_DETAIL_SCENE],
         wait=8.0,
         label=f"储物袋自选匣：等待候选{selected.slot} #587详情",
     )
@@ -553,7 +553,7 @@ def scan_selected_choice_detail(
         timeout=8.0,
     )
     yield from context.wait_scene(
-        CHOICE_BOX_SCENE,
+        [CHOICE_BOX_SCENE],
         wait=8.0,
         label="储物袋自选匣：候选详情返回 #586",
     )
@@ -920,7 +920,7 @@ class StorageBagChoiceBoxGuiAdapter:
 
         self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
         yield from self.context.wait_scene(
-            CHOICE_BOX_SCENE,
+            [CHOICE_BOX_SCENE],
             wait=8.0,
             label="储物袋自选匣：等待 #586",
         )
@@ -965,7 +965,7 @@ class StorageBagChoiceBoxGuiAdapter:
         for _step in range(steps):
             yield from self.context.wait_click(CHOICE_BOX_SCENE, "增加数量", timeout=8.0)
             yield from self.context.wait_scene(
-                CHOICE_BOX_SCENE,
+                [CHOICE_BOX_SCENE],
                 wait=8.0,
                 label="储物袋自选匣：增加数量后复验 fresh #586",
             )
@@ -993,7 +993,7 @@ class StorageBagChoiceBoxGuiAdapter:
 
         yield from self.context.wait_click(CHOICE_BOX_SCENE, "确定", timeout=8.0)
         yield from self.context.wait_scene(
-            STORAGE_BAG_SCENE,
+            [STORAGE_BAG_SCENE],
             wait=8.0,
             label="储物袋自选匣：确定后等待 #525",
         )

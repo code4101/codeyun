@@ -91,7 +91,7 @@ class _FakeRuntime:
         assert scene_id == 448
         return self.view448
 
-    def current_scene(self, scene_ids, *, update: bool):
+    def sample_scene_once(self, scene_ids, *, update: bool):
         assert update is True
         if self.confirmed:
             assert 447 in scene_ids

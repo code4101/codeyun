@@ -458,7 +458,7 @@ def ensure_xianzang_row_choices_selected(
     if not desired or desired[0] < 1 or desired[-1] > count:
         raise ValueError(f"第 {row_number} 排候选范围必须为 1..{count}：{desired!r}")
     target_view = context.view(int(scene_id))
-    current_scene, score, frame = context.current_scene([int(scene_id)], update=True)
+    current_scene, score, frame = context.sample_scene_once([int(scene_id)], update=True)
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
             f"当前不是可靠的 #{scene_id}，拒绝勾选：scene={current_scene}, score={float(score or 0):.1f}"
@@ -547,7 +547,7 @@ def complete_xianzang_optional_reward_selection(
             final_scene_score=100.0,
         )
 
-    current_scene, score, frame = context.current_scene([int(scene_id)], update=True)
+    current_scene, score, frame = context.sample_scene_once([int(scene_id)], update=True)
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
             f"三排勾选后当前不是可靠的 #{scene_id}，拒绝确认："
@@ -561,7 +561,7 @@ def complete_xianzang_optional_reward_selection(
     final_score = 100.0
     while True:
         candidates = [int(scene_id), *expected_after]
-        final_scene, final_score, _frame = context.current_scene(candidates, update=True)
+        final_scene, final_score, _frame = context.sample_scene_once(candidates, update=True)
         final_text = context.ocr_text(_frame)
         landed_on_numbered_scene = (
             final_scene in expected_after

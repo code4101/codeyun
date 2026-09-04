@@ -395,7 +395,7 @@ def close_bothdraw_result(
     clicked_count = 0
     last_click_at: float | None = None
     while time.monotonic() < deadline:
-        last_scene, last_score, frame = context.current_scene(
+        last_scene, last_score, frame = context.sample_scene_once(
             [result_scene_id], update=True
         )
         if int(last_scene or 0) == result_scene_id and float(last_score or 0) >= 90.0:

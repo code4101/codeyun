@@ -383,7 +383,7 @@ def execute_xianyuan_duokui_tail_checkpoint(
             expected_unit_price=action.unit_price,
         )
         yield from context.wait_scene(
-            COMMON_SHOP_DIALOG_SCENE,
+            [COMMON_SHOP_DIALOG_SCENE],
             wait=15.0,
             label=f"{label}：等待 {action.name} 购买框",
         )

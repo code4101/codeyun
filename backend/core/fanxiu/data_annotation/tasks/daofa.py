@@ -276,7 +276,7 @@ class DaofaTaskMixin:
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
         )
-        scene_id, _score, _frame = context.current_scene([376, 377, 378], update=True)
+        scene_id, _score, _frame = context.sample_scene_once([376, 377, 378], update=True)
         prompt_seen = scene_id == 377
         if scene_id not in {376, 377, 378}:
             raise RuntimeError("道法争锋：小闭环只能从 #376、#377 或 #378 开始")
@@ -297,8 +297,8 @@ class DaofaTaskMixin:
                     raise ValueError(f"道法争锋：挑战落点越界 ({click_x:.1f}, {click_y:.1f})")
                 context.click_frame_point(376, click_x, click_y)
                 landed = yield from context.wait_scene(
-                    377,
-                    378,
+                    [377,
+                    378],
                     # #377 is optional.  When it is suppressed a real-player
                     # fight may run for minutes before #378 appears, so this wait
                     # must cover the battle rather than only the prompt grace.
@@ -310,14 +310,14 @@ class DaofaTaskMixin:
             if scene_id == 377:
                 context.click_shape_center(377, "确认")
                 yield from context.wait_scene(
-                    378,
+                    [378],
                     wait=float(result_timeout),
                     label="道法争锋：确认挑战后等待战斗结果",
                 )
         result_text = context.ocr_text(update=True)
         context.click_shape_center(378, "继续")
         yield from context.wait_scene(
-            376,
+            [376],
             wait=float(return_timeout),
             label="道法争锋：结果页继续并返回挑战页",
         )
@@ -527,7 +527,7 @@ class DaofaTaskMixin:
             stop_event=stop_event,
         )
         context.attrs["payload"] = payload
-        scene_id, _score, frame = context.current_scene([34, 69, 376], update=True)
+        scene_id, _score, frame = context.sample_scene_once([34, 69, 376], update=True)
         started_in_daofa = scene_id == 376
 
         text = context.ocr_text(frame)
@@ -550,7 +550,7 @@ class DaofaTaskMixin:
                 )
                 yield from context.go_scene(34)
                 return {"result": "success", "message": f"未找到道法入口，{next_time} 重试"}
-            yield from context.wait_scene(376, wait=30.0, label="道法争锋：等待挑战页 #376")
+            yield from context.wait_scene([376], wait=30.0, label="道法争锋：等待挑战页 #376")
 
         # Completion is authoritative on the visible game UI and does not need
         # target/ranking data.  This also avoids waiting for packet persistence

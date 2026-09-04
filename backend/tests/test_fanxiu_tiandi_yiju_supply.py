@@ -103,7 +103,7 @@ def test_supply_replay_passes_without_opening_shop_when_boxes_are_sufficient() -
             if False:
                 yield None
 
-        def wait_scene(self, *_args, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             if False:
                 yield None
 

@@ -394,7 +394,7 @@ def _enter_adapter_from_schedule(
     for attempt in range(3):
         context.runner._raise_if_stopped(context.stop_event)
         frame = context.cur_frame(update=True)
-        scene, score, _ = context.current_scene([SCHEDULE_SCENE_ID], update=False)
+        scene, score, _ = context.sample_scene_once([SCHEDULE_SCENE_ID], update=False)
         if scene != SCHEDULE_SCENE_ID or score < 90:
             raise RuntimeError(
                 f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：#66 身份无效 {scene}/{score:.0f}"
@@ -437,7 +437,7 @@ def _enter_adapter_from_schedule(
     if adapter.intro_scene_id is not None:
         targets.insert(0, adapter.intro_scene_id)
     return (yield from context.wait_scene(
-        *targets,
+        targets,
         wait=30.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}页面",
     ))
@@ -452,7 +452,7 @@ def open_resource_rank_activity_page(
 ):
     """Open one active resource-ranking occurrence and return its main scene."""
 
-    scene, _score, _frame = context.current_scene(
+    scene, _score, _frame = context.sample_scene_once(
         [34, 66, *(adapter.page_scene_ids), *(
             (adapter.intro_scene_id,) if adapter.intro_scene_id is not None else ()
         )],
@@ -473,7 +473,7 @@ def open_resource_rank_activity_page(
     if adapter.intro_scene_id is not None and scene == adapter.intro_scene_id:
         context.click_shape_center(adapter.intro_scene_id, "查看详情")
         waited = yield from context.wait_scene(
-            *adapter.page_scene_ids,
+            adapter.page_scene_ids,
             wait=20.0,
             label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}榜单",
         )
@@ -492,7 +492,7 @@ def _open_adapter_gift_page(
     activity_id: int,
     now: datetime,
 ):
-    scene, _score, _frame = context.current_scene([605], update=True)
+    scene, _score, _frame = context.sample_scene_once([605], update=True)
     if scene == 605:
         return
     scene = yield from open_resource_rank_activity_page(
@@ -506,7 +506,7 @@ def _open_adapter_gift_page(
     # #605 is the first real shared ActivityRankGiftView asset.  Additional
     # activities reuse this scene only after their own positive/negative replay.
     yield from context.wait_scene(
-        605,
+        [605],
         wait=20.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待{adapter.label}礼包页",
     )
@@ -527,7 +527,7 @@ def _reenter_adapter_gift_page(
     if adapter.intro_scene_id is not None:
         targets.append(adapter.intro_scene_id)
     yield from context.wait_scene(
-        *targets,
+        targets,
         wait=20.0,
         label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：退出礼包页以刷新排序",
     )
@@ -665,14 +665,14 @@ def run_resource_rank_daily_gift_flow(
             context.clear_frame()
             yield from context.wait_action_settle(1.0)
             landed = yield from context.wait_scene(
-                605,
-                578,
+                [605,
+                578],
                 wait=10.0,
                 label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待领取反馈",
             )
             if int(getattr(landed, "id", landed)) == 578:
                 yield from context.wait_scene(
-                    605,
+                    [605],
                     wait=12.0,
                     label=f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：等待奖励提示消失",
                 )

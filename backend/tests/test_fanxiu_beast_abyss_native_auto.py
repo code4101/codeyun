@@ -118,7 +118,7 @@ class FakeRuntime:
             "使用寻妖符": False,
         }
 
-    def current_scene(self, _views, update=False):
+    def sample_scene_once(self, _views, update=False):
         if self.transient_unknown_scene_reads > 0:
             self.transient_unknown_scene_reads -= 1
             return None, 0.0, "frame"
@@ -285,7 +285,7 @@ def test_native_auto_default_terminal_budget_exceeds_old_five_minute_limit() -> 
             if False:
                 yield None
 
-        def current_scene(self, _expected, update=False):
+        def sample_scene_once(self, _expected, update=False):
             self.polls += 1
             if self.polls <= 300:
                 return None, 0.0, "自动探查中"

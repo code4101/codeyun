@@ -10,16 +10,20 @@ from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.client.mumu_control import (
     mark_mumu_device_startup_ready,
     mumu_device_health_check,
+    mumu_device_startup_grace_state,
     recover_mumu_device,
 )
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     LOGIN_GAME_SCHEDULER_TASK_ID,
 )
+from backend.core.fanxiu.data_annotation.popup_guard import (
+    FanxiuEmulatorRestartRequired,
+)
 
 
 class LoginGameTaskMixin:
-    login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 47, 49, 415, 546, 611, 661)
-    login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 546, 661})
+    login_game_scene_ids = (14, 15, 16, 17, 18, 19, 20, 21, 22, 34, 47, 49, 415, 546, 611, 661, 694, 695)
+    login_action_scene_ids = frozenset({14, 15, 16, 17, 18, 415, 546, 661, 694, 695})
     # A healthy device and an arbitrary recognized game page do not prove that
     # login completed.  Keep this list explicit so newly recognized startup
     # overlays cannot silently turn a long unknown wait into false success.
@@ -85,11 +89,13 @@ class LoginGameTaskMixin:
             asset_tree_path if isinstance(asset_tree_path, Path) else None,
             stop_event=stop_event,
         )
-        scene_id, _score, frame = context.current_scene(self.login_game_scene_ids, update=True)
+        startup_gate = mumu_device_startup_grace_state()
+        login_required = bool(startup_gate.get("login_required"))
+        scene_id, _score, frame = context.sample_scene_once(self.login_game_scene_ids, update=True)
         frame_text = context.ocr_text(frame)
         scene_id = self._resolve_login_scene(scene_id, frame_text)
         resource_loading = scene_id is None and self._is_resource_loading_frame(frame_text)
-        if scene_id not in self.login_action_scene_ids and not resource_loading:
+        if not login_required and scene_id not in self.login_action_scene_ids and not resource_loading:
             return False
         scheduler_task_id = str((payload or {}).get("__scheduler_task_id") or "")
         if scheduler_task_id and scheduler_task_id != LOGIN_GAME_SCHEDULER_TASK_ID:
@@ -151,6 +157,7 @@ class LoginGameTaskMixin:
             stop_event=stop_event,
         )
         loading_started_at: float | None = None
+        action_attempt_counts: dict[int, int] = {}
         while True:
             self._raise_if_stopped(stop_event)
             # Login is also the post-restart cleanup transaction. Use the
@@ -224,8 +231,8 @@ class LoginGameTaskMixin:
                     if scene_id in self.login_terminal_scene_ids
                     else "#421 气泡覆盖的已登录业务页"
                 )
-                mark_mumu_device_startup_ready(reason=reason)
                 bubble_outcome = ""
+                mode = ""
                 bubble_reconcile = getattr(
                     self,
                     "_reconcile_bubble_after_login",
@@ -246,6 +253,7 @@ class LoginGameTaskMixin:
                         if task_id != "bubble-weekly-pills":
                             raise RuntimeError("登录游戏：气泡周事务没有落到唯一标准作业")
                         bubble_outcome = "气泡周事务已触发"
+                        mode = "scheduled_weekly"
                         self._log(
                             "info",
                             f"登录游戏：本周气泡领取未闭环，已触发 {task_id}",
@@ -263,12 +271,18 @@ class LoginGameTaskMixin:
                         if scheduled_task_id != "bubble-weekly-pills":
                             raise RuntimeError("登录游戏：气泡协调器没有返回唯一标准作业")
                         bubble_outcome = "气泡周事务已触发"
+                        mode = "scheduled_weekly"
                         self._log(
                             "info",
                             f"登录游戏：已按本周气泡事实触发 {scheduled_task_id}",
                         )
                     else:
                         raise RuntimeError("登录游戏：缺少气泡协调后置能力")
+                # Login and its mandatory bubble reconciliation form one
+                # startup transaction.  Keep ordinary Scheduler work gated if
+                # either half fails.
+                if mode != "scheduled_weekly":
+                    mark_mumu_device_startup_ready(reason=reason)
                 completion_message = f"登录游戏完成，已在 {location}；{bubble_outcome}"
                 context.set_completion_message(completion_message)
                 # The standard login job does not use the generic daily-task
@@ -300,20 +314,44 @@ class LoginGameTaskMixin:
                     current_scene=scene_id,
                 )
 
+            automated_action_scenes = {14, 17, 18, 661, 694}
+            if scene_id in automated_action_scenes:
+                attempts = int(action_attempt_counts.get(scene_id) or 0)
+                if attempts >= 2:
+                    recovery = recover_mumu_device(
+                        vmindex=vmindex,
+                        reason=f"login_action_no_effect_scene_{scene_id}",
+                        force_restart=True,
+                    )
+                    recovered = bool(recovery.get("recovered")) and str(
+                        recovery.get("status") or ""
+                    ) == "healthy"
+                    recovery_outcome = "已完整重启 MuMu" if recovered else "MuMu 强制重启失败"
+                    raise FanxiuEmulatorRestartRequired(
+                        f"登录游戏：#{scene_id} 动作执行后页面未变化；ADB 返回成功但输入未生效，{recovery_outcome}",
+                        evidence={"scene_id": scene_id, "recovery": recovery},
+                        recovery_succeeded=recovered,
+                    )
+                action_attempt_counts[scene_id] = attempts + 1
+
             if scene_id == 14:
                 context.click_shape_center(14, "关闭公告")
                 yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
             if scene_id == 15:
-                context.click_shape_center(15, "登录")
-                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
-                continue
+                raise RuntimeError("登录游戏：进入 #15 账号登录；凭据与登录确认只能由用户手动操作")
             if scene_id == 16:
                 raise RuntimeError("登录游戏：进入 #16 挑选账号；为避免误登，请人工选择账号后重新运行")
             if scene_id == 17:
                 context.click_shape_center(17, "同意")
                 yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
                 continue
+            if scene_id == 694:
+                context.click_shape_center(694, "确认")
+                yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))
+                continue
+            if scene_id == 695:
+                raise RuntimeError("登录游戏：进入 #695 账号登录；凭据与登录确认只能由用户手动操作")
             if scene_id == 18:
                 context.click_shape_center(18, "进入游戏")
                 yield from context.wait_action_settle(float(payload.get("loading_poll_seconds") or 2.0))

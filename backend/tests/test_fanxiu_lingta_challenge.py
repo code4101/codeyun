@@ -244,7 +244,8 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
                 yield None
             return "open"
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             self.actions.append(("wait_scene", scene_ids, kwargs.get("label"), kwargs.get("wait")))
             if False:
                 yield None
@@ -254,7 +255,7 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
                 return 531
             return scene_ids[-1]
 
-        def current_scene(self, scene_ids, **kwargs):
+        def sample_scene_once(self, scene_ids, **kwargs):
             self.actions.append(("current_scene", tuple(scene_ids), kwargs.get("update")))
             return 194, 100.0, "frame-194"
 
@@ -328,12 +329,13 @@ def test_lingta_route_accepts_current_card_landing_directly_on_532() -> None:
                 yield None
             return "open"
 
-        def wait_scene(self, *scene_ids, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene_ids = tuple(layer0)
             if False:
                 yield None
             return 194 if scene_ids == (193, 194) else 532
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
 
         def ocr_fragments_in_shapes(self, *_args, **_kwargs):
@@ -386,12 +388,13 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
                 yield None
             return "open"
 
-        def wait_scene(self, *scene_ids, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene_ids = tuple(layer0)
             if False:
                 yield None
             return 194 if scene_ids == (193, 194) else 531
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
 
         def ocr_fragments_in_shapes(self, *_args, **_kwargs):
@@ -447,14 +450,15 @@ def test_lingta_route_aligns_context_loaded_overview_with_stable_jump_anchor(mon
                 yield None
             return "open"
 
-        def wait_scene(self, *scene_ids, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene_ids = tuple(layer0)
             if False:
                 yield None
             if scene_ids == (193, 194):
                 return 194
             raise TimeoutError("dynamic overview identity")
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
 
         def ocr_fragments_in_shapes(self, *_args, **_kwargs):
@@ -523,12 +527,13 @@ def test_lingta_route_propagates_overview_race_timeout_without_clicking() -> Non
                 yield None
             return "open"
 
-        def wait_scene(self, *scene_ids, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene_ids = tuple(layer0)
             if False:
                 yield None
             return 194 if scene_ids == (193, 194) else 531
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
 
         def ocr_fragments_in_shapes(self, *_args, **_kwargs):
@@ -635,7 +640,7 @@ class _FakeLingtaRuntime:
         self.completion_message = ""
         self._ocr_text = ocr_text
 
-    def current_scene(self, _candidates, **_kwargs):
+    def sample_scene_once(self, _candidates, **_kwargs):
         self._last_scene = next(self._scenes, self._last_scene)
         return self._last_scene, 100.0, "frame"
 
@@ -836,7 +841,8 @@ def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
         def click_frame_point(self, scene_id, x, y):
             self.actions.append(("click_point", scene_id, x, y))
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             self.actions.append(("wait_scene", scene_ids, kwargs.get("label")))
             if False:
                 yield None

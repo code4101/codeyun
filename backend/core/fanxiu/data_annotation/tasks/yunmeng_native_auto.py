@@ -306,7 +306,7 @@ def classify_yunmeng_auto_terminal(text: str) -> YunmengAutoTerminal:
 
 
 def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
-    scene_id, _score, frame = context.current_scene(list(scene_ids), update=True)
+    scene_id, _score, frame = context.sample_scene_once(list(scene_ids), update=True)
     text = context.ocr_text(frame)
     if scene_id not in scene_ids or not all(
         _compact(anchor) in _compact(text) for anchor in anchors
@@ -472,7 +472,7 @@ def run_yunmeng_native_auto(
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = context.current_scene(
+        scene_id, _score, frame = context.sample_scene_once(
             list(assets.terminal_scene_ids),
             update=True,
         )
@@ -574,7 +574,7 @@ def execute_yunmeng_native_auto_job(
         require_runtime_alignment=True,
         now=datetime.now().astimezone(),
     )
-    yield from context.wait_scene(558, wait=30.0, label="云梦试剑：等待活动主页 #558")
+    yield from context.wait_scene([558], wait=30.0, label="云梦试剑：等待活动主页 #558")
     assets = YunmengNativeAutoAssets(
         home_scene_id=558,
         settings_scene_id=560,
@@ -647,14 +647,14 @@ def execute_yunmeng_native_auto_job(
         context.click_shape_center(562, "确认")
         yield from context.wait_action_settle(0.5)
         yield from context.wait_scene(
-            563,
+            [563],
             wait=20.0,
             label="云梦试剑：等待挑战结算 #563",
         )
         context.click_shape_center(563, "点击屏幕关闭")
         yield from context.wait_action_settle(0.5)
         yield from context.wait_scene(
-            558,
+            [558],
             wait=20.0,
             label="云梦试剑：结算后回到主页 #558",
         )

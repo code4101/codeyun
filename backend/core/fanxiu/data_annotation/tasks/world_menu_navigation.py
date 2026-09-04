@@ -22,9 +22,9 @@ def open_world_menu_function(
         raise ValueError("下拉菜单导航必须声明独立后继场景")
     yield from context.go_scene(34)
     yield from context.wait_click(34, "打开下方菜单")
-    yield from context.wait_scene(35, wait=timeout_seconds, label="下拉菜单：等待展开")
+    yield from context.wait_scene([35], wait=timeout_seconds, label="下拉菜单：等待展开")
     frame = context.cur_frame(update=True)
-    scene_id, score, _ = context.current_scene(
+    scene_id, score, _ = context.sample_scene_once(
         views=[35], frame_data_url=frame, update=False
     )
     if scene_id != 35 or float(score or 0.0) < 80.0:
@@ -42,7 +42,7 @@ def open_world_menu_function(
     context.click_frame_point(35, *plan.point)
     return (
         yield from context.wait_scene(
-            *expected,
+            expected,
             wait=timeout_seconds,
             label=f"下拉菜单：等待功能 {target} 后继",
         )

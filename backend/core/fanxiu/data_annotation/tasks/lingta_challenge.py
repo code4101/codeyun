@@ -301,8 +301,8 @@ class LingtaChallengeTaskMixin:
             )
             context.click_frame_point(LINGTA_CURRENT_FLOOR_SCENE_ID, 80, 1480)
             landing = yield from context.wait_scene(
-                LINGTA_LIST_SCENE_ID,
-                34,
+                [LINGTA_LIST_SCENE_ID,
+                34],
                 wait=30.0,
                 label="灵塔_挑战：动态 #532 返回后等待列表或世界",
             )
@@ -383,8 +383,8 @@ class LingtaChallengeTaskMixin:
         if opened != "open":
             raise RuntimeError(f"灵塔_挑战：#69 灵塔行未能打开：{opened}")
         landing = yield from context.wait_scene(
-            193,
-            LINGTA_LIST_SCENE_ID,
+            [193,
+            LINGTA_LIST_SCENE_ID],
             # 日常入口后的跨场景加载在真实设备上可超过 30 秒；加载期
             # Layer 0 应保持 unknown，不能因短超时把动画补成业务场景。
             wait=float(payload.get("lingta_entry_wait_timeout") or 60.0),
@@ -403,7 +403,7 @@ class LingtaChallengeTaskMixin:
         # transition animation.
         stable_deadline = time.monotonic() + 15.0
         while True:
-            scene_id, _score, frame = context.current_scene(
+            scene_id, _score, frame = context.sample_scene_once(
                 [LINGTA_LIST_SCENE_ID],
                 update=True,
             )
@@ -430,8 +430,8 @@ class LingtaChallengeTaskMixin:
         runtime_snapshot: dict[str, Any] = {}
         try:
             landing = yield from context.wait_scene(
-                LINGTA_OVERVIEW_SCENE_ID,
-                LINGTA_CURRENT_FLOOR_SCENE_ID,
+                [LINGTA_OVERVIEW_SCENE_ID,
+                LINGTA_CURRENT_FLOOR_SCENE_ID],
                 wait=15,
                 label="灵塔_挑战：等待总览 #531 或当前层 #532",
             )
@@ -507,7 +507,7 @@ class LingtaChallengeTaskMixin:
             float(payload.get("start_transition_grace_seconds") or 15.0),
         )
 
-        scene_id, _score, frame = context.current_scene(
+        scene_id, _score, frame = context.sample_scene_once(
             [
                 34,
                 69,
@@ -830,7 +830,7 @@ class LingtaChallengeTaskMixin:
         ordinary_result_latched = False
         while time.monotonic() <= deadline:
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = context.current_scene(
+            scene_id, _score, frame = context.sample_scene_once(
                 [
                     LINGTA_FAILURE_SCENE_ID,
                     LINGTA_LIST_SCENE_ID,

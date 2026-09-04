@@ -732,7 +732,7 @@ def ensure_equipment_strengthening(
     deliberately raised in place so callers retain the current game screen.
     """
 
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         (EQUIPMENT_STRENGTHENING_VIEW_ID, EQUIPMENT_VIEW_ID, WORLD_VIEW_ID),
         update=True,
     )
@@ -748,7 +748,7 @@ def ensure_equipment_strengthening(
         if scene_id != WORLD_VIEW_ID:
             yield from context.go_scene(WORLD_VIEW_ID)
         yield from context.wait_scene(
-            WORLD_VIEW_ID,
+            [WORLD_VIEW_ID],
             wait=transition_timeout,
             label="进入装备强化：等待世界 #34",
         )
@@ -759,7 +759,7 @@ def ensure_equipment_strengthening(
         )
         actions.append({"step": "world_to_equipment", **equipment_action})
         yield from context.wait_scene(
-            EQUIPMENT_VIEW_ID,
+            [EQUIPMENT_VIEW_ID],
             wait=transition_timeout,
             label="进入装备强化：等待装备页 #445",
         )
@@ -771,7 +771,7 @@ def ensure_equipment_strengthening(
     )
     actions.append({"step": "equipment_to_strengthening", **strengthening_action})
     yield from context.wait_scene(
-        EQUIPMENT_STRENGTHENING_VIEW_ID,
+        [EQUIPMENT_STRENGTHENING_VIEW_ID],
         wait=transition_timeout,
         label="进入装备强化：等待强化页 #446",
     )

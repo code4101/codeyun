@@ -69,13 +69,13 @@ def complete_pet_quick_swallow(
     )
     yield from context.wait_click(PET_HOME_SCENE_ID, "快速吞噬")
     yield from context.wait_scene(
-        PET_QUICK_SWALLOW_CONFIRM_SCENE_ID,
+        [PET_QUICK_SWALLOW_CONFIRM_SCENE_ID],
         wait=15,
         label="资源_自动使用/灵兽：等待快速吞噬确认",
     )
     yield from context.wait_click(PET_QUICK_SWALLOW_CONFIRM_SCENE_ID, "确认")
     yield from context.wait_scene(
-        PET_QUICK_SWALLOW_RESULT_SCENE_ID,
+        [PET_QUICK_SWALLOW_RESULT_SCENE_ID],
         wait=30,
         label="资源_自动使用/灵兽：等待吞噬结果",
     )
@@ -84,12 +84,12 @@ def complete_pet_quick_swallow(
         raise RuntimeError("资源_自动使用/灵兽：等级、库存或候选收敛未通过严格复验")
     yield from context.wait_click(PET_QUICK_SWALLOW_RESULT_SCENE_ID, "继续")
     yield from context.wait_scene(
-        PET_HOME_SCENE_ID,
+        [PET_HOME_SCENE_ID],
         wait=20,
         label="资源_自动使用/灵兽：结果页返回灵兽主页",
     )
     yield from context.wait_click(PET_HOME_SCENE_ID, "返回")
-    yield from context.wait_scene(34, wait=20, label="资源_自动使用/灵兽：返回世界")
+    yield from context.wait_scene([34], wait=20, label="资源_自动使用/灵兽：返回世界")
     return {"ok": True, "verified": True}
 
 

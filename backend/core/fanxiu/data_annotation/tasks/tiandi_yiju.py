@@ -262,7 +262,7 @@ def open_tiandi_yiju_recommended_target(
     # scene recognition prevents reading the still-present #686 frame.
     yield from context.wait_action_settle(2.5)
     landed = yield from context.wait_scene(
-        TIANDI_YIJU_PIECE_INFO_SCENE,
+        [TIANDI_YIJU_PIECE_INFO_SCENE],
         wait=20.0,
         label=f"天地弈局：跳转棋点 {piece_id}",
     )
@@ -407,7 +407,7 @@ def run_tiandi_yiju_bounded_batch(
         ):
             post_result_scenes.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
         landed = yield from context.wait_scene(
-            *post_result_scenes,
+            post_result_scenes,
             wait=20.0,
             label="天地弈局：关闭批战结果",
         )
@@ -416,8 +416,8 @@ def run_tiandi_yiju_bounded_batch(
         yield from context.wait_click(TIANDI_YIJU_AUTO_DIALOG_SCENE, "关闭")
         yield from context.wait_action_settle(0.8)
         landed = yield from context.wait_scene(
-            TIANDI_YIJU_BOARD_SCENE,
-            TIANDI_YIJU_RESULT_OVERLAY_SCENE,
+            [TIANDI_YIJU_BOARD_SCENE,
+            TIANDI_YIJU_RESULT_OVERLAY_SCENE],
             wait=20.0,
             label="天地弈局：批次后返回棋盘",
         )
@@ -429,7 +429,7 @@ def run_tiandi_yiju_bounded_batch(
         )
         yield from context.wait_action_settle(0.8)
         landed = yield from context.wait_scene(
-            TIANDI_YIJU_BOARD_SCENE,
+            [TIANDI_YIJU_BOARD_SCENE],
             wait=20.0,
             label="天地弈局：关闭总结果",
         )
@@ -626,7 +626,7 @@ def _run_tiandi_yiju_exchange_target_loop(
             yield from context.go_scene(TIANDI_YIJU_HOME_SCENE)
             context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "进入弈局")
             yield from context.wait_scene(
-                TIANDI_YIJU_BOARD_SCENE,
+                [TIANDI_YIJU_BOARD_SCENE],
                 wait=40.0,
                 label="天地弈局：补给后返回棋盘",
             )
@@ -831,7 +831,7 @@ def run_tiandi_yiju_exchange_target_loop(
     _assert_tiandi_yiju_production_asset_contract(context)
     context.click_shape_center(TIANDI_YIJU_HOME_SCENE, "进入弈局")
     yield from context.wait_scene(
-        TIANDI_YIJU_BOARD_SCENE,
+        [TIANDI_YIJU_BOARD_SCENE],
         wait=40.0,
         label="天地弈局：进入棋盘",
     )
@@ -1027,7 +1027,7 @@ def _refresh_tiandi_yiju_exchange_facts(
 def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float = 120.0):
     """Click once and accept a result overlay or the live direct-board terminal."""
 
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         [TIANDI_YIJU_ALLY_CONFIRM_SCENE], update=True
     )
     if scene_id != TIANDI_YIJU_ALLY_CONFIRM_SCENE:
@@ -1048,7 +1048,7 @@ def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float
         ]
         if TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None:
             candidates.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
-        scene_id, score, frame = context.current_scene(candidates, update=True)
+        scene_id, score, frame = context.sample_scene_once(candidates, update=True)
         last_text = context.ocr_text(frame)
         compact = _compact_ocr(last_text)
         if "批战结束" not in compact:

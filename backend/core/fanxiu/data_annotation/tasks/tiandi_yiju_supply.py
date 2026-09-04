@@ -147,7 +147,7 @@ def verify_tiandi_yiju_supply_delta(
 def _open_daily_bag(context: Any):
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
-    yield from context.wait_scene(STORAGE_BAG_SCENE, wait=10.0, label="天地弈局：等待储物袋")
+    yield from context.wait_scene([STORAGE_BAG_SCENE], wait=10.0, label="天地弈局：等待储物袋")
     yield from select_storage_bag_category(context, "日程")
 
 
@@ -171,11 +171,11 @@ def _open_sacred_tree(context: Any, snapshot: Mapping[str, Any], cards: Mapping[
         if attempt == 2:
             raise RuntimeError(f"灵眼神树无法唯一对齐 #525：{click.status}")
         yield from context.wait_action_settle(0.3)
-    yield from context.wait_scene(ITEM_DETAIL_SCENE, wait=8.0, label="天地弈局：灵眼神树详情")
+    yield from context.wait_scene([ITEM_DETAIL_SCENE], wait=8.0, label="天地弈局：灵眼神树详情")
     yield from context.wait_click(ITEM_DETAIL_SCENE, "使用（高风险）", timeout=8.0)
     landed = yield from context.wait_scene(
-        SACRED_ITEM_SCENE,
-        SACRED_SHOP_SCENE,
+        [SACRED_ITEM_SCENE,
+        SACRED_SHOP_SCENE],
         wait=10.0,
         label="天地弈局：神物兑换",
     )
@@ -211,7 +211,7 @@ def _open_tree_shop(context: Any, backpack: Mapping[str, Any]):
     if not plan.ready or plan.point is None:
         raise RuntimeError(f"神物兑换灵眼神树行未唯一对齐：{plan.status}")
     context.click_frame_point(SACRED_ITEM_SCENE, *plan.point)
-    yield from context.wait_scene(SACRED_SHOP_SCENE, wait=10.0, label="天地弈局：仙弈盒兑换列表")
+    yield from context.wait_scene([SACRED_SHOP_SCENE], wait=10.0, label="天地弈局：仙弈盒兑换列表")
 
 
 def _open_box_product(context: Any, plan: SacredExchangeStockPlan):
@@ -228,7 +228,7 @@ def _open_box_product(context: Any, plan: SacredExchangeStockPlan):
     row = context.shape_box(SACRED_SHOP_SCENE, "商品滚动窗口")
     x = float(row.get("x") or 0.0) + float(row.get("w") or 0.0) * 0.88
     context.click_frame_point(SACRED_SHOP_SCENE, x, match.point(anchor="center")[1])
-    yield from context.wait_scene(SACRED_BUY_SCENE, wait=10.0, label="天地弈局：仙弈盒兑换数量")
+    yield from context.wait_scene([SACRED_BUY_SCENE], wait=10.0, label="天地弈局：仙弈盒兑换数量")
 
 
 def _exchange_quantity(context: Any, plan: SacredExchangeStockPlan, reader: Callable[[], Mapping[str, Any]]):
@@ -273,7 +273,7 @@ def _exchange_quantity(context: Any, plan: SacredExchangeStockPlan, reader: Call
         unit_price=plan.cost_per_exchange,
     )
     yield from context.wait_click(SACRED_BUY_SCENE, "兑换（高风险）", timeout=8.0)
-    yield from context.wait_scene(SACRED_SHOP_SCENE, wait=10.0, label="天地弈局：兑换后返回列表")
+    yield from context.wait_scene([SACRED_SHOP_SCENE], wait=10.0, label="天地弈局：兑换后返回列表")
 
 
 def ensure_tiandi_yiju_round_supply(

@@ -70,8 +70,8 @@ def test_delete_read_mail_confirms_prompt_and_returns_to_mail():
             resolved_title = title if isinstance(title, str) else title.title
             clicks.append((resolved_scene, resolved_title))
 
-        def wait_scene(self, *_args, **_kwargs):
-            waits.append(tuple(int(value) for value in _args))
+        def wait_scene(self, layer0, **_kwargs):
+            waits.append(tuple(int(value) for value in layer0))
             if False:
                 yield None
             return next(views)
@@ -600,7 +600,7 @@ def test_mail_detail_action_ocr_can_override_one_false_template_match(monkeypatc
             assert update
             return "frame"
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 123, 100.0, "frame"
 
         def view(self, scene_id):
@@ -660,7 +660,7 @@ def test_mail_detail_uses_stable_detail_subgraph_when_combined_scene_is_unknown(
             assert update
             return "detail-frame"
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return None, 0.0, "detail-frame"
 
         def view(self, scene_id):
@@ -747,7 +747,7 @@ def test_mail_detail_action_shape_requires_two_stable_reads(monkeypatch):
             self.frame_reads += 1
             return f"frame-{self.frame_reads}"
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 121, 100.0, "frame"
 
         def shape_score(self, scene_id, title, **_kwargs):

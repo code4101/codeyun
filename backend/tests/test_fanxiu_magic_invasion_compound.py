@@ -19,7 +19,8 @@ class _Runtime:
         self.events.append(("goto", scene))
         yield None
 
-    def wait_scene(self, scene, **_kwargs):
+    def wait_scene(self, layer0, **_kwargs):
+        scene = layer0[0]
         self.events.append(("wait_scene", scene))
         yield None
 

@@ -139,7 +139,7 @@ def _landing_scene_id(landing: Any) -> int:
 def _open_wanbao_main(context: Any):
     """Resume #604 safely, otherwise establish the canonical #600 landing."""
 
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         [
             WANBAO_XIANGZHEN_REWARD_SCENE_ID,
             WANBAO_MAIN_SCENE_ID,
@@ -162,7 +162,7 @@ def _open_wanbao_main(context: Any):
             label="万宝臻宝：从活动子页恢复主页",
         )
         yield from context.wait_scene(
-            WANBAO_MAIN_SCENE_ID,
+            [WANBAO_MAIN_SCENE_ID],
             wait=15.0,
             label="万宝臻宝：确认恢复主页",
         )
@@ -176,7 +176,7 @@ def _open_wanbao_main(context: Any):
         label="万宝臻宝：进入活动",
     )
     yield from context.wait_scene(
-        WANBAO_MAIN_SCENE_ID,
+        [WANBAO_MAIN_SCENE_ID],
         wait=15.0,
         label="万宝臻宝：确认主页",
     )
@@ -216,7 +216,7 @@ def apply_wanbao_draw_policy(
 def _settle_wanbao_reward_page(context: Any, *, label: str):
     """Close manual reward pages but never click through auto-closing pages."""
 
-    scene_id, _score, frame = context.current_scene(
+    scene_id, _score, frame = context.sample_scene_once(
         [WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, 34],
         update=True,
     )
@@ -227,13 +227,13 @@ def _settle_wanbao_reward_page(context: Any, *, label: str):
         text = str(context.ocr_text(frame_data_url=frame) or "").replace(" ", "")
     if "自动关闭" in text:
         return (yield from context.wait_scene(
-            WANBAO_MAIN_SCENE_ID,
-            34,
+            [WANBAO_MAIN_SCENE_ID,
+            34],
             wait=8.0,
             label=f"万宝臻宝：{label}等待自动关闭",
         ))
     yield from context.wait_action_settle(5.0)
-    fresh_id, _score, _fresh = context.current_scene(
+    fresh_id, _score, _fresh = context.sample_scene_once(
         [WANBAO_XIANGZHEN_REWARD_SCENE_ID, WANBAO_MAIN_SCENE_ID, 34],
         update=True,
     )
@@ -246,8 +246,8 @@ def _settle_wanbao_reward_page(context: Any, *, label: str):
         label=f"万宝臻宝：{label}点击继续",
     )
     return (yield from context.wait_scene(
-        WANBAO_MAIN_SCENE_ID,
-        34,
+        [WANBAO_MAIN_SCENE_ID,
+        34],
         wait=20.0,
         label=f"万宝臻宝：{label}确认收尾",
     ))
@@ -284,7 +284,7 @@ def _claim_wanbao_tasks(context: Any, *, activity_id: int):
         label="万宝臻宝：打开任务",
     )
     yield from context.wait_scene(
-        WANBAO_TASK_SCENE_ID,
+        [WANBAO_TASK_SCENE_ID],
         wait=15.0,
         label="万宝臻宝：确认任务页",
     )
@@ -328,7 +328,7 @@ def _claim_wanbao_tasks(context: Any, *, activity_id: int):
         label="万宝臻宝：任务完成后返回主页",
     )
     yield from context.wait_scene(
-        WANBAO_MAIN_SCENE_ID,
+        [WANBAO_MAIN_SCENE_ID],
         wait=15.0,
         label="万宝臻宝：确认任务收尾主页",
     )
@@ -381,7 +381,7 @@ def _open_wanbao_xiangzhen(
         label="万宝臻宝：打开飨珍",
     )
     yield from context.wait_scene(
-        WANBAO_XIANGZHEN_SCENE_ID,
+        [WANBAO_XIANGZHEN_SCENE_ID],
         wait=15.0,
         label="万宝臻宝：确认飨珍窗口",
     )
@@ -410,7 +410,7 @@ def _open_wanbao_xiangzhen(
             label="万宝臻宝：关闭单个飨珍窗口",
         )
         yield from context.wait_scene(
-            WANBAO_MAIN_SCENE_ID,
+            [WANBAO_MAIN_SCENE_ID],
             wait=15.0,
             label="万宝臻宝：确认单个飨珍收尾主页",
         )
@@ -421,7 +421,7 @@ def _open_wanbao_xiangzhen(
             "final_scene": WANBAO_MAIN_SCENE_ID,
         }
     yield from context.wait_scene(
-        WANBAO_XIANGZHEN_REWARD_SCENE_ID,
+        [WANBAO_XIANGZHEN_REWARD_SCENE_ID],
         wait=20.0,
         label="万宝臻宝：确认飨珍奖励",
     )
@@ -481,8 +481,8 @@ def _claim_wanbao_cumulative_rewards(
         slot = proven_ids.index(reward_id)
         context.click_frame_point(WANBAO_MAIN_SCENE_ID, *proven_centers[slot])
         yield from context.wait_scene(
-            WANBAO_XIANGZHEN_REWARD_SCENE_ID,
-            WANBAO_MAIN_SCENE_ID,
+            [WANBAO_XIANGZHEN_REWARD_SCENE_ID,
+            WANBAO_MAIN_SCENE_ID],
             wait=12.0,
             label=f"万宝臻宝：领取累抽奖励 {reward_id}",
         )
@@ -572,7 +572,7 @@ def execute_wanbao_zhenbao_job(
         label="万宝臻宝：打开商店",
     )
     yield from context.wait_scene(
-        WANBAO_STORE_SCENE_ID,
+        [WANBAO_STORE_SCENE_ID],
         wait=15.0,
         label="万宝臻宝：确认商店",
     )
@@ -587,7 +587,7 @@ def execute_wanbao_zhenbao_job(
         label="万宝臻宝：从商店返回主页",
     )
     yield from context.wait_scene(
-        WANBAO_MAIN_SCENE_ID,
+        [WANBAO_MAIN_SCENE_ID],
         wait=15.0,
         label="万宝臻宝：确认回到主页",
     )
@@ -602,7 +602,7 @@ def execute_wanbao_zhenbao_job(
             timeout=10.0,
             label="万宝臻宝：返回世界",
         )
-        yield from context.wait_scene(34, wait=15.0, label="万宝臻宝：确认回到世界")
+        yield from context.wait_scene([34], wait=15.0, label="万宝臻宝：确认回到世界")
 
     message = (
         "万宝臻宝：任务、飨珍、累抽奖励与商店均已形成可证明终态；"

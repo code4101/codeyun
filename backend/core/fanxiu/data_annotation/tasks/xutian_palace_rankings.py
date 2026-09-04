@@ -41,7 +41,7 @@ def _wait_scene(
     last_score = 0.0
     last_text = ""
     while True:
-        last_scene, last_score, frame = context.current_scene(
+        last_scene, last_score, frame = context.sample_scene_once(
             list(XUTIAN_SCENE_IDS), update=True
         )
         last_text = context.ocr_text(frame)
@@ -63,7 +63,7 @@ def _wait_one_of(
     last_score = 0.0
     last_text = ""
     while True:
-        last_scene, last_score, frame = context.current_scene(list(targets), update=True)
+        last_scene, last_score, frame = context.sample_scene_once(list(targets), update=True)
         last_text = context.ocr_text(frame)
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_text
@@ -76,7 +76,7 @@ def _wait_one_of(
 
 
 def _enter_rankings(context: Any) -> None:
-    scene, score, _frame = context.current_scene(
+    scene, score, _frame = context.sample_scene_once(
         [34, 66, *XUTIAN_SCENE_IDS], update=True
     )
     if int(scene or 0) not in XUTIAN_SCENE_IDS:
@@ -84,7 +84,7 @@ def _enter_rankings(context: Any) -> None:
             result = context.go_scene(66)
             if hasattr(result, "send"):
                 yield from result
-        scene, score, _frame = context.current_scene([66], update=True)
+        scene, score, _frame = context.sample_scene_once([66], update=True)
         if int(scene or 0) != 66 or float(score) < 90.0:
             raise RuntimeError(
                 f"#66 未可靠识别日程页：scene={scene}, score={float(score):.1f}"
@@ -94,7 +94,7 @@ def _enter_rankings(context: Any) -> None:
         )
         _wait_scene(context, XUTIAN_MAIN_SCENE_ID)
 
-    scene, _score, frame = context.current_scene(list(XUTIAN_SCENE_IDS), update=True)
+    scene, _score, frame = context.sample_scene_once(list(XUTIAN_SCENE_IDS), update=True)
     if int(scene or 0) == XUTIAN_PERSONAL_RANK_SCENE_ID:
         return
     if int(scene or 0) == XUTIAN_PLANE_RANK_SCENE_ID:
@@ -135,7 +135,7 @@ def _store_rankings() -> tuple[str, int, int]:
 
 
 def _return_world(context: Any) -> tuple[int, float]:
-    scene, _score, frame = context.current_scene(list(XUTIAN_SCENE_IDS), update=True)
+    scene, _score, frame = context.sample_scene_once(list(XUTIAN_SCENE_IDS), update=True)
     if int(scene or 0) != XUTIAN_MAIN_SCENE_ID:
         context.click_shape(int(scene), "返回", frame_data_url=frame)
         scene, score, _text = _wait_one_of(context, (34, 66, XUTIAN_MAIN_SCENE_ID))
@@ -149,7 +149,7 @@ def _return_world(context: Any) -> tuple[int, float]:
         result = context.go_scene(34)
         if hasattr(result, "send"):
             yield from result
-        scene, score, _frame = context.current_scene([34], update=True)
+        scene, score, _frame = context.sample_scene_once([34], update=True)
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天殿榜单作业收尾未可靠回到 #34：scene={scene}, score={float(score):.1f}"

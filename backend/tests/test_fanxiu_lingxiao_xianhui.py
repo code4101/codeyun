@@ -394,7 +394,8 @@ def test_special_recharge_claims_only_runtime_first_free_offer_and_reads_back(mo
         def wait_click(self, scene, title, **_kwargs):
             yield ("click", scene, title)
 
-        def wait_scene(self, scene, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene = layer0[0]
             yield ("view", scene)
             return scene
 
@@ -464,14 +465,15 @@ def test_lingxiao_executor_reenters_main_before_using_fuling_shape_after_special
 
     class Runtime:
         def __init__(self): self._free_labels = iter(("免费奖励", "已激活"))
-        def current_scene(self, *_args, **_kwargs): return (575, 100, "")
+        def sample_scene_once(self, *_args, **_kwargs): return (575, 100, "")
         def cur_frame(self, **_kwargs): return ""
         def full_frame_ocr_tokens(self, *_args): return []
         def ocr_tokens_in_shapes(self, *_args, **_kwargs): return []
         def ocr_text_in_shapes(self, *_args, **_kwargs): return next(self._free_labels)
         def wait_click(self, scene, title, **_kwargs):
             yield ("click", scene, title)
-        def wait_scene(self, *scenes, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scenes = tuple(layer0)
             yield ("view", *scenes)
             return scenes[0]
         def go_scene(self, scene):
@@ -504,13 +506,14 @@ def test_lingxiao_executor_resumes_cover_after_optional_popup_without_forcing_wo
 
     class Runtime:
         def __init__(self): self._free_labels = iter(("免费奖励", "已激活"))
-        def current_scene(self, *_args, **_kwargs): return (None, 0, "")
+        def sample_scene_once(self, *_args, **_kwargs): return (None, 0, "")
         def cur_frame(self, **_kwargs): return ""
         def full_frame_ocr_tokens(self, *_args): return []
         def ocr_tokens_in_shapes(self, *_args, **_kwargs): return []
         def ocr_text_in_shapes(self, *_args, **_kwargs): return next(self._free_labels)
         def wait_click(self, scene, title, **_kwargs): yield ("click", scene, title)
-        def wait_scene(self, *scenes, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scenes = tuple(layer0)
             yield ("view", *scenes)
             return 574 if 574 in scenes and 34 in scenes else scenes[0]
         def go_scene(self, scene): yield ("goto", scene)
@@ -538,13 +541,14 @@ def test_lingxiao_executor_recovers_a_residual_fuling_page_via_its_own_return(mo
 
     class Runtime:
         def __init__(self): self._free_labels = iter(("已激活",))
-        def current_scene(self, *_args, **_kwargs): return (571, 100, "")
+        def sample_scene_once(self, *_args, **_kwargs): return (571, 100, "")
         def cur_frame(self, **_kwargs): return ""
         def full_frame_ocr_tokens(self, *_args): return []
         def ocr_tokens_in_shapes(self, *_args, **_kwargs): return []
         def ocr_text_in_shapes(self, *_args, **_kwargs): return next(self._free_labels)
         def wait_click(self, scene, title, **_kwargs): yield ("click", scene, title)
-        def wait_scene(self, *scenes, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scenes = tuple(layer0)
             yield ("view", *scenes)
             return scenes[0]
 
@@ -575,7 +579,8 @@ def test_lingxiao_world_normalization_keeps_green_bottle_as_a_return_branch() ->
     )
 
     class Runtime:
-        def wait_scene(self, *scenes, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scenes = tuple(layer0)
             yield ("view", *scenes)
             return 20 if 20 in scenes else 34
 
@@ -596,7 +601,7 @@ def test_lingxiao_executor_claims_the_complete_runtime_free_track_batch(monkeypa
         def __init__(self):
             self._free_labels = iter(("已激活",))
             self._mask_matches = iter(({"matched": True},))
-        def current_scene(self, *_args, **_kwargs): return (575, 100, "")
+        def sample_scene_once(self, *_args, **_kwargs): return (575, 100, "")
         def cur_frame(self, **_kwargs): return ""
         def full_frame_ocr_tokens(self, *_args): return []
         def ocr_tokens_in_shapes(self, *_args, **_kwargs): return []
@@ -606,7 +611,8 @@ def test_lingxiao_executor_claims_the_complete_runtime_free_track_batch(monkeypa
         def wait_action_settle(self, *_args, **_kwargs):
             if False:
                 yield None
-        def wait_scene(self, *scenes, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scenes = tuple(layer0)
             yield ("view", *scenes)
             return scenes[0]
 

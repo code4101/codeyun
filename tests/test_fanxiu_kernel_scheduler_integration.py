@@ -190,7 +190,7 @@ class _FakeDailyAuditContext:
         self._up_results = [True, False]
         self._down_results = [True, False]
 
-    def current_scene(self, candidates=None, **kwargs):
+    def sample_scene_once(self, candidates=None, **kwargs):
         return 69, 100.0, kwargs.get("frame_data_url") or "frame-current"
 
     def ocr_text(self, frame):
@@ -1273,7 +1273,7 @@ def test_xianshi_weekly_resources_midnight_unknown_slot_returns_world(monkeypatc
     actions = []
 
     class FakeContext:
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             return 247, 100, object()
 
         def wait_click_then_shape(self, *args, **kwargs):
@@ -1350,10 +1350,11 @@ def test_xianshi_weekly_resources_midnight_counts_current_detail_as_one_attempt(
         def __init__(self):
             self.scene_id = 316
 
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             return self.scene_id, 100, object()
 
-        def wait_scene(self, scene_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_id = layer0[0]
             actions.append(("wait_scene", scene_id))
             self.scene_id = scene_id
             if False:
@@ -1423,7 +1424,7 @@ def test_xianshi_weekly_resources_after_reset_caps_list_attempts_at_eight(monkey
     monkeypatch.setattr(fanxiu_daily_resources, "next_prayer_cycle", lambda: "炼丹")
 
     class FakeContext:
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             return 247, 100, object()
 
         def wait_click_then_shape(self, *args, **kwargs):
@@ -2075,7 +2076,8 @@ def test_daily_xianmeng_clicks_current_293_attack(tmp_path, monkeypatch):
             self.ctx = ctx
             self.stop_event = fanxiu.threading.Event()
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             actions.append(("wait_scene", tuple(scene_ids), kwargs))
             if False:
                 yield None
@@ -2167,7 +2169,8 @@ def test_daily_xianmeng_closes_295_to_293(tmp_path, monkeypatch):
             self.ctx = ctx
             self.stop_event = fanxiu.threading.Event()
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             actions.append(("wait_scene", tuple(scene_ids), kwargs))
             if False:
                 yield None
@@ -2240,7 +2243,7 @@ def test_daily_green_bottle_baiye_first_step_goto_20(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def current_scene(self, scene_ids, **kwargs):
+        def sample_scene_once(self, scene_ids, **kwargs):
             actions.append(("current_scene", tuple(scene_ids), kwargs))
             return 20, 100.0, "frame"
 
@@ -2296,7 +2299,7 @@ def test_daily_green_bottle_baiye_accepts_rank_scene_281(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def current_scene(self, scene_ids, **kwargs):
+        def sample_scene_once(self, scene_ids, **kwargs):
             actions.append(("current_scene", tuple(scene_ids), kwargs))
             return 20, 100.0, "frame"
 
@@ -2439,10 +2442,10 @@ def test_daily_xianshi_uses_context_observation_at_entry(tmp_path, monkeypatch):
 
     def wrapped_context(*args, **kwargs):
         context = real_factory(*args, **kwargs)
-        real_current_scene = context.current_scene
+        real_current_scene = context.sample_scene_once
         real_ocr_text = context.ocr_text
 
-        def current_scene(*scene_args, **scene_kwargs):
+        def sample_scene_once(*scene_args, **scene_kwargs):
             observed.append("current_scene")
             return real_current_scene(*scene_args, **scene_kwargs)
 
@@ -2450,7 +2453,7 @@ def test_daily_xianshi_uses_context_observation_at_entry(tmp_path, monkeypatch):
             observed.append("ocr_text")
             return real_ocr_text(*ocr_args, **ocr_kwargs)
 
-        context.current_scene = current_scene  # type: ignore[method-assign]
+        context.sample_scene_once = current_scene  # type: ignore[method-assign]
         context.ocr_text = ocr_text  # type: ignore[method-assign]
         return context
 
@@ -2486,7 +2489,7 @@ def test_daily_xianshi_recovers_to_world_before_opening_xianshi(tmp_path, monkey
             return False
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             return 75, 80.0, "daily-subframe"
 
@@ -2500,7 +2503,8 @@ def test_daily_xianshi_recovers_to_world_before_opening_xianshi(tmp_path, monkey
                 yield BehaviorTreeStatus.RUNNING
             return "success"
 
-        def wait_scene(self, view_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_id = layer0[0]
             actions.append(("wait_scene", view_id, kwargs))
             if False:
                 yield BehaviorTreeStatus.RUNNING
@@ -2577,7 +2581,8 @@ def test_daily_xianshi_open_coin_list_reads_as_behavior_tree_steps(tmp_path, mon
                 yield None
             return "success"
 
-        def wait_scene(self, view_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_id = layer0[0]
             actions.append(("wait_scene", view_id, kwargs))
             if False:
                 yield None
@@ -2641,7 +2646,8 @@ def test_daily_xianshi_return_to_world_uses_goto_world(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs.get("wait"), kwargs.get("label")))
             if False:
                 yield None
@@ -2774,7 +2780,8 @@ def test_daily_xianshi_free_coin_box_no_claim_button_is_idempotent_done(tmp_path
             if False:
                 yield None
 
-        def wait_scene(self, view_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_id = layer0[0]
             actions.append(("wait_scene", view_id, kwargs.get("label")))
             if False:
                 yield None
@@ -2857,7 +2864,8 @@ def test_daily_xianshi_non_claim_box_detail_returns_to_list_and_completes(tmp_pa
             if False:
                 yield None
 
-        def wait_scene(self, view_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_id = layer0[0]
             actions.append(("wait_scene", view_id, kwargs.get("label")))
             if False:
                 yield None
@@ -2916,7 +2924,7 @@ def test_daily_activity_retries_ocr_then_claims_and_returns_world(monkeypatch):
             actions.append(("cur_frame", update))
             return f"frame-{len(actions)}"
 
-        def current_scene(self, scene_ids, *, frame_data_url):
+        def sample_scene_once(self, scene_ids, *, frame_data_url):
             assert scene_ids == [69]
             return 69, 98.0, frame_data_url
 
@@ -2972,7 +2980,7 @@ def test_daily_activity_below_threshold_returns_world_for_one_hour_retry():
         def cur_frame(self, update=False):
             return "frame"
 
-        def current_scene(self, scene_ids, *, frame_data_url):
+        def sample_scene_once(self, scene_ids, *, frame_data_url):
             return 69, 98.0, frame_data_url
 
         def ocr_numbers_in_shapes(self, scene_id, shape_titles, *, padding, frame_data_url):
@@ -3008,7 +3016,8 @@ def test_daily_weekly_dungeon_retries_when_tiangong_challenge_keeps_source_scene
                 yield None
             return target_scene_id
 
-        def wait_scene(self, scene_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_id = layer0[0]
             actions.append(("wait_scene", scene_id, kwargs.get("wait")))
             if False:
                 yield None
@@ -3019,7 +3028,7 @@ def test_daily_weekly_dungeon_retries_when_tiangong_challenge_keeps_source_scene
             if False:
                 yield None
 
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             actions.append(("current_scene", tuple(candidates), update))
             return 326, 100.0, "frame326"
 
@@ -3061,7 +3070,7 @@ def test_daily_weekly_dungeon_retries_when_tiangong_entry_keeps_source_scene():
                 yield None
             return target_scene_id
 
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             actions.append(("current_scene", tuple(candidates), update))
             return 325, 80.0, "frame325"
 
@@ -3259,7 +3268,7 @@ def test_wait_scene_timeout_reports_unknown_evidence(monkeypatch):
     monkeypatch.setattr(runner, "_auto_close_popup_guard_step", lambda context: False)
 
     with pytest.raises(TimeoutError) as exc_info:
-        _drain_generator(context.wait_scene(261, wait=0.0, label="wait_click"))
+        _drain_generator(context.wait_scene([261], wait=0.0, label="wait_click"))
 
     message = str(exc_info.value)
     assert "unknown诊断=target_identity_partial_match" in message
@@ -3272,7 +3281,7 @@ def test_daily_youli_does_not_mark_done_from_daily_progress(monkeypatch):
     retries: list[dict[str, object]] = []
 
     class FakeContext:
-        def current_scene(self, *args, **kwargs):
+        def sample_scene_once(self, *args, **kwargs):
             return 69, 100.0, "frame"
 
         def ocr_text(self, *args, **kwargs):
@@ -3371,7 +3380,7 @@ def test_daily_dungeon_world_return_without_reward_result_is_not_success(monkeyp
         def ocr_text(self, *args, **kwargs):
             return "储物袋 角色 装备 功法书 日程"
 
-        def current_scene(self, *args, **kwargs):
+        def sample_scene_once(self, *args, **kwargs):
             return 34, 100.0, "frame"
 
     monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: FakeContext())
@@ -3539,7 +3548,7 @@ def test_jianling_cuiling_closes_popup_and_accepts_full_level_layer0_terminal(mo
             assert scene_id == 349
             return FakeView()
 
-        def current_scene(self, candidates, **_kwargs):
+        def sample_scene_once(self, candidates, **_kwargs):
             assert candidates == [351, 349]
             return next(self.scenes), 100.0, "frame"
 
@@ -3603,7 +3612,7 @@ def test_jianling_cuiling_reads_level_once_per_five_presses(monkeypatch):
             assert scene_id == 349
             return FakeView()
 
-        def current_scene(self, candidates, **_kwargs):
+        def sample_scene_once(self, candidates, **_kwargs):
             assert candidates == [351, 349]
             return 349, 100.0, "frame"
 
@@ -3657,7 +3666,7 @@ def test_jianling_cuiling_treats_disappearing_action_at_full_level_as_success(mo
             assert scene_id == 349
             return FakeView()
 
-        def current_scene(self, candidates, **_kwargs):
+        def sample_scene_once(self, candidates, **_kwargs):
             assert candidates == [351, 349]
             return 349, 100.0, "frame"
 
@@ -3850,7 +3859,8 @@ def test_daily_mojie_raid_top_attack_target_clicks_above_count_by_default():
         default_wait_click_timeout = 12.0
         runner = FakeRunner()
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             actions.append(("wait_scene", scene_ids, kwargs))
             if False:
                 yield None
@@ -3910,7 +3920,8 @@ def test_daily_mojie_raid_top_attack_target_allows_shape_override():
                 yield None
             return "settled"
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             actions.append(("wait_scene", scene_ids, kwargs))
             if False:
                 yield None
@@ -3946,7 +3957,8 @@ def test_daily_mojie_raid_top_attack_target_normalizes_wait_scene_object():
                 yield None
             return "settled"
 
-        def wait_scene(self, *scene_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_ids = tuple(layer0)
             if False:
                 yield None
             return FakeView()
@@ -4276,7 +4288,7 @@ def test_world_side_leave_falls_back_to_scene85_leave_shape(monkeypatch):
                 yield None
             return None
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return None, 0.0, "after"
 
         def ocr_text(self, _frame):
@@ -4369,7 +4381,7 @@ def test_daily_signup_treats_bottom_confirmed_all_signed_as_success():
     class FakeContext:
         payload = {"signup_bottom_confirmations": 2}
 
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             return 69, 100.0, "frame"
 
         def ocr_text(self, _frame=None):
@@ -4425,7 +4437,7 @@ def test_daily_signup_without_claim_or_signed_evidence_still_retries():
     class FakeContext:
         payload = {"signup_bottom_confirmations": 2}
 
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             return 69, 100.0, "frame"
 
         def ocr_text(self, _frame=None):
@@ -4473,7 +4485,7 @@ def test_daily_signup_return_world_uses_fixed_exit_click_before_world_wait():
     state = {"scene": 69}
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             return state["scene"], 100.0, "frame"
 
@@ -4538,7 +4550,7 @@ def test_xianfu_visit_partner_rejects_daily_page_as_entry(tmp_path, monkeypatch)
         def cur_frame(self, update=False):
             return object()
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             return self.scene_id, 100.0, self.cur_frame(update=bool(kwargs.get("update")))
 
         def ocr_text(self, _frame):
@@ -4573,7 +4585,7 @@ def test_xianfu_visit_partner_requires_world_to_xianfu_route(tmp_path, monkeypat
     }
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             return 34, 100.0, object()
 
         def ocr_text(self, _frame):
@@ -4612,7 +4624,7 @@ def test_daily_jianling_confirm_does_not_treat_early_main_frame_as_done(monkeypa
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
             if frame == "early-main":
@@ -4655,7 +4667,7 @@ def test_daily_jianling_finish_result_uses_context_clicks(tmp_path, monkeypatch)
     frames = iter(["result", "main"])
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
             if frame == "result":
@@ -4698,7 +4710,7 @@ def test_daily_lingta_finish_result_uses_context_clicks(tmp_path, monkeypatch):
     frames = iter(["result", "main"])
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
             if frame == "result":
@@ -4746,7 +4758,8 @@ def test_daily_jianling_sweep_uses_context_clicks(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs))
             if False:
                 yield None
@@ -4802,7 +4815,8 @@ def test_daily_lingta_sweep_uses_context_clicks(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs))
             if False:
                 yield None
@@ -4866,7 +4880,8 @@ def test_daily_lingta_confirm_uses_context_clicks(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs))
             if False:
                 yield None
@@ -4898,7 +4913,7 @@ def test_daily_lingta_entry_opens_main_with_context_clicks(tmp_path, monkeypatch
     frames = iter(["entry", "main"])
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
             if frame == "entry":
@@ -4940,7 +4955,7 @@ def test_daily_lingta_entry_keeps_jianling_misroute_guard(tmp_path, monkeypatch)
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             return None, 0.0, "jianling"
 
@@ -4979,7 +4994,7 @@ def test_daily_jianling_return_to_world_uses_context_clicks(tmp_path, monkeypatc
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             return 190, 100.0, "frame"
 
@@ -4993,7 +5008,8 @@ def test_daily_jianling_return_to_world_uses_context_clicks(tmp_path, monkeypatc
                 yield None
             return "success"
 
-        def wait_scene(self, view_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_id = layer0[0]
             actions.append(("wait_scene", view_id, kwargs))
             if False:
                 yield None
@@ -5041,7 +5057,7 @@ def test_daily_lingta_return_to_world_uses_context_clicks(tmp_path, monkeypatch)
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             return 194, 100.0, "frame"
 
@@ -5197,7 +5213,8 @@ def test_daily_youli_reward_recovery_exit_clicks_existing_exit_shape_without_sce
                 yield None
             return None
 
-        def wait_scene(self, view, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view = layer0[0]
             calls.append(("wait_scene", view, kwargs.get("label")))
             if False:
                 yield None
@@ -5479,7 +5496,7 @@ def test_daily_youli_purchase_reads_remaining_from_shape_and_closes(monkeypatch)
             yield None
             return "success"
 
-        def current_scene(self, views, **kwargs):
+        def sample_scene_once(self, views, **kwargs):
             actions.append(("current_scene", tuple(views), kwargs))
             if state["clicks"] >= 3:
                 return 233, 100.0, "empty-frame"
@@ -5719,7 +5736,7 @@ def test_daily_youli_last_region_uses_context_ocr_clicks(tmp_path, monkeypatch):
     frame = object()
 
     class FakeContext:
-        def current_scene(self, candidates, **kwargs):
+        def sample_scene_once(self, candidates, **kwargs):
             actions.append(("current_scene", candidates, kwargs))
             return 228, 100.0, frame
 
@@ -5809,7 +5826,7 @@ def test_daily_youli_last_region_continues_from_region_detail_after_purchase(tmp
     frame = object()
 
     class FakeContext:
-        def current_scene(self, candidates, **kwargs):
+        def sample_scene_once(self, candidates, **kwargs):
             actions.append(("current_scene", candidates, kwargs))
             return None, 0.0, frame
 
@@ -5872,7 +5889,7 @@ def test_daily_youli_last_region_completed_region_does_not_mark_done(tmp_path, m
     frame = object()
 
     class FakeContext:
-        def current_scene(self, candidates, **kwargs):
+        def sample_scene_once(self, candidates, **kwargs):
             actions.append(("current_scene", candidates, kwargs))
             return 236, 100.0, frame
 
@@ -6032,7 +6049,7 @@ def test_daily_youli_region_return_reenters_when_back_lands_world(tmp_path, monk
                 yield None
             return "world_text"
 
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             actions.append(("current_scene", tuple(view_ids or ())))
             return 228, 100.0, "frame"
 
@@ -6288,7 +6305,8 @@ def test_daily_youli_mainline_shortcut_enters_youli_home(monkeypatch):
         return True
 
     class FakeContext:
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             waited.append(tuple(view_ids))
             if False:
                 yield None
@@ -6337,7 +6355,8 @@ def test_daily_youli_mainline_shortcut_rejects_daozu_tab(monkeypatch):
     }
 
     class FakeContext:
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             if False:
                 yield None
             return 228
@@ -6494,7 +6513,7 @@ def test_daily_youli_wait_home_selects_youli_menu_when_228_is_daozu(tmp_path, mo
                 yield None
             return "text"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs.get("update")))
             return 228, 100.0, "youli-frame"
 
@@ -6529,7 +6548,7 @@ def test_daily_youli_return_to_world_uses_context_clicks(tmp_path, monkeypatch):
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             actions.append(("current_scene", tuple(view_ids or ())))
             return state["scene"], 100.0, "frame"
 
@@ -6547,7 +6566,8 @@ def test_daily_youli_return_to_world_uses_context_clicks(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids))
             if int(state["scene"]) not in {int(view_id) for view_id in view_ids}:
                 raise RuntimeError("unexpected scene")
@@ -6615,7 +6635,7 @@ def test_daily_youli_return_to_world_exits_daily_page_after_228_return(tmp_path,
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             actions.append(("current_scene", tuple(view_ids or ())))
             return state["scene"], 100.0, "frame"
 
@@ -6726,7 +6746,7 @@ def test_daily_youli_reward_recovery_return_uses_context_clicks(tmp_path, monkey
                 yield None
             return None
 
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             actions.append(("current_scene", tuple(view_ids or ())))
             return state["scene"], 100.0, "frame"
 
@@ -6863,7 +6883,7 @@ def test_daily_entry_recovers_from_hidden_world_popup_before_goto_daily(monkeypa
     actions: list[str] = []
 
     class FakeContext:
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             actions.append("current_scene")
             if state["page"] == 59:
                 return None, 0.0, str(state["page"])
@@ -7057,7 +7077,7 @@ def test_daily_lingzu_go_elder_uses_longer_scene_wait(monkeypatch):
     actions = []
 
     class FakeContext:
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             return 184, 100.0, "frame"
 
         def ocr_text(self, *_args, **_kwargs):
@@ -7077,7 +7097,8 @@ def test_daily_lingzu_go_elder_uses_longer_scene_wait(monkeypatch):
                 yield None
             return "success"
 
-        def wait_scene(self, scene_id, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            scene_id = layer0[0]
             waits.append((scene_id, kwargs.get("wait")))
             if False:
                 yield None
@@ -7461,7 +7482,7 @@ def test_daily_lingzu_return_closes_explicit_scene_186_before_success(tmp_path, 
             if False:
                 yield None
 
-        def current_scene(self, scene_ids=None, **kwargs):
+        def sample_scene_once(self, scene_ids=None, **kwargs):
             actions.append(("scene", tuple(scene_ids or ()), kwargs))
             return 34, 100.0, "clean-frame"
 
@@ -7520,7 +7541,7 @@ def test_daily_lingzu_outer_world_confirms_leave_dialog(monkeypatch):
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
             if frame == "confirm-frame":
@@ -7581,7 +7602,7 @@ def test_daily_lingzu_outer_world_unwinds_assistant_after_leave_confirm(monkeypa
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
             return {
@@ -8626,7 +8647,7 @@ def test_ensure_clean_world_after_task_exits_green_bottle(monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             self.calls += 1
             if self.calls == 1:
                 return 20, 91.0, "green-bottle-frame"
@@ -8662,7 +8683,7 @@ def test_ensure_clean_world_after_task_confirms_leave_scene(monkeypatch):
     frames = iter(["confirm-frame", "world-frame", "world-frame-2"])
 
     class FakeContext:
-        def current_scene(self, scene_ids, **kwargs):
+        def sample_scene_once(self, scene_ids, **kwargs):
             frame = next(frames)
             actions.append(("current_scene", tuple(scene_ids), kwargs, frame))
             if frame == "confirm-frame":
@@ -8718,7 +8739,7 @@ def test_ensure_clean_world_after_task_exits_daily_assistant_overview(monkeypatc
         def __init__(self):
             self.scene = 204
 
-        def current_scene(self, scene_ids, **kwargs):
+        def sample_scene_once(self, scene_ids, **kwargs):
             actions.append(("current_scene", tuple(scene_ids), kwargs, self.scene))
             if self.scene == 204:
                 return 204, 100.0, "assistant-list"
@@ -8740,7 +8761,8 @@ def test_ensure_clean_world_after_task_exits_daily_assistant_overview(monkeypatc
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs, self.scene))
             if False:
                 yield None
@@ -8773,7 +8795,7 @@ def test_ensure_clean_world_after_task_hides_floating_window(monkeypatch):
         def __init__(self):
             self.calls = 0
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             self.calls += 1
             if self.calls == 1:
                 return 58, 92.0, "floating-frame"
@@ -8921,7 +8943,7 @@ def test_mail_selective_claim_detail_timeout_still_runs_delete_read_cleanup(tmp_
         def click_shape(self, view, shape, **_kwargs):
             clicks.append(str(shape.title) if isinstance(shape, behavior_tree_executor_core.Shape) else str(shape))
 
-        def wait_scene(self, *_views, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             return_value = self.wait_scenes.pop(0)
             if False:
                 yield None
@@ -9015,7 +9037,7 @@ def test_mail_selective_claim_read_mail_probes_detail_delete_before_bulk_cleanup
         def click_shape(self, view, shape, **_kwargs):
             clicks.append(str(shape.title) if isinstance(shape, behavior_tree_executor_core.Shape) else str(shape))
 
-        def wait_scene(self, *_views, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             return_value = self.wait_scenes.pop(0)
             if False:
                 yield None
@@ -9096,7 +9118,7 @@ def test_scheduler_failure_cleanup_accepts_reliably_identified_world_after_undec
 
     class ContextProbe:
         @staticmethod
-        def current_scene(preferred, update=False):
+        def sample_scene_once(preferred, update=False):
             assert preferred == [34]
             assert update is True
             return 34, 100.0, "frame"
@@ -9128,7 +9150,7 @@ def test_scheduler_failure_cleanup_replans_after_single_false_target_match(tmp_p
 
     class ContextProbe:
         @staticmethod
-        def current_scene(preferred, update=False):
+        def sample_scene_once(preferred, update=False):
             assert preferred == [34]
             assert update is True
             scene_id, score = next(probe_results)
@@ -9264,13 +9286,14 @@ def test_daily_assistant_one_key_waits_progress_then_closes_result(tmp_path, mon
             if False:
                 yield None
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs))
             if False:
                 yield None
             return view_ids[0]
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             self.scene_calls += 1
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             if self.scene_calls == 1:
@@ -9348,7 +9371,7 @@ def test_daily_assistant_one_key_closes_result_before_list_success(tmp_path, mon
         def click_shape_center(self, image, shape_title):
             actions.append(("click_shape_center", image.get("id"), shape_title))
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             self.scene_calls += 1
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             if self.scene_calls == 1:
@@ -9398,7 +9421,7 @@ def test_daily_assistant_ensure_list_waits_transition_before_reopen(tmp_path, mo
             yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             self.calls += 1
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             if self.calls == 1:
@@ -9443,7 +9466,7 @@ def test_daily_assistant_ensure_list_reclicks_result_exit(tmp_path, monkeypatch)
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             self.calls += 1
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             if self.calls == 1:
@@ -9500,7 +9523,7 @@ def test_daily_assistant_ensure_list_clicks_ocr_exit_when_scene_unknown(tmp_path
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, self.closed))
             if self.closed:
                 return 204, 100.0, "list"
@@ -9551,7 +9574,7 @@ def test_daily_assistant_return_accepts_daily_page_after_result_close(tmp_path):
         def __init__(self):
             self.closed = False
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             actions.append(("current_scene", tuple(view_ids or ()), kwargs, self.closed))
             if self.closed:
                 return 69, 98.0, "daily"
@@ -9583,7 +9606,8 @@ def test_daily_assistant_return_accepts_daily_page_after_result_close(tmp_path):
                 yield None
             return "success"
 
-        def wait_scene(self, *view_ids, **kwargs):
+        def wait_scene(self, layer0, **kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids, kwargs))
             if False:
                 yield None
@@ -9629,7 +9653,7 @@ def test_daily_assistant_ensure_list_closes_youli_result(tmp_path, monkeypatch):
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **kwargs):
+        def sample_scene_once(self, view_ids=None, **kwargs):
             self.calls += 1
             actions.append(("current_scene", tuple(view_ids or ()), kwargs))
             if self.calls == 1:
@@ -9691,7 +9715,7 @@ def test_daily_lingmai_clicks_slot_entry_after_region_teleport(monkeypatch):
                 yield None
             return "success"
 
-        def current_scene(self, view_ids=None, **_kwargs):
+        def sample_scene_once(self, view_ids=None, **_kwargs):
             candidates = tuple(view_ids or ())
             actions.append(("current_scene", candidates))
             if 287 in candidates:
@@ -9707,7 +9731,8 @@ def test_daily_lingmai_clicks_slot_entry_after_region_teleport(monkeypatch):
                 "occupy-frame": "占领",
             }[frame]
 
-        def wait_scene(self, *view_ids, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            view_ids = tuple(layer0)
             actions.append(("wait_scene", view_ids))
             if False:
                 yield None

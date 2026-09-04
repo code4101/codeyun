@@ -577,7 +577,7 @@ def register_fanxiu_default_jobs() -> None:
 
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         current_fact_scene_ids = (445, 446)
-        current_scene_id, _score, _frame = context.current_scene(current_fact_scene_ids, update=True)
+        current_scene_id, _score, _frame = context.sample_scene_once(current_fact_scene_ids, update=True)
         if current_scene_id not in current_fact_scene_ids:
             yield from context.go_scene(34)
         result = yield from _run_manual_standard_job(
@@ -1193,7 +1193,7 @@ def register_fanxiu_default_jobs() -> None:
             69, 296, 297, 298, 371, 372, 373, 375, 295,
             329, 301, 302, 303, 304, 391, 52, 53, 54,
         )
-        current_scene_id, _score, _frame = context.current_scene(current_fact_scene_ids, update=True)
+        current_scene_id, _score, _frame = context.sample_scene_once(current_fact_scene_ids, update=True)
         if current_scene_id not in current_fact_scene_ids:
             yield from context.go_scene(34)
         result = yield from runner._execute_daily_lundao_task(ctx, stop_event, payload)

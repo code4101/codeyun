@@ -62,7 +62,8 @@ class _Runtime:
     def click_frame_point(self, scene, x, y):
         self.events.append(("point", scene, x, y))
 
-    def wait_scene(self, *scenes, **_options):
+    def wait_scene(self, layer0, **_options):
+        scenes = tuple(layer0)
         self.events.append(("view", scenes))
         if False:
             yield None
@@ -184,7 +185,7 @@ def test_current_click_planner_resamples_window_after_ocr_and_fails_closed(
             assert update is True
             return next(self.frames)
 
-        def current_scene(self, **_options):
+        def sample_scene_once(self, **_options):
             return 525, 100.0, None
 
         def shape(self, _scene, _name):

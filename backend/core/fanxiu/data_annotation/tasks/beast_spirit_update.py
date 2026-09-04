@@ -239,7 +239,7 @@ def _require_high_level_quick_synthesis_state(
 def _enter_beast_soul_main(context: Any):
     """Enter #478 through the annotated #35 -> #483 -> #478 path."""
 
-    current_scene, _score, _frame = context.current_scene(
+    current_scene, _score, _frame = context.sample_scene_once(
         views=[BEAST_SOUL_MAIN_SCENE],
         update=True,
     )
@@ -257,7 +257,7 @@ def _enter_beast_soul_main(context: Any):
     )
     yield from context.wait_click(SPIRIT_BEAST_MAIN_SCENE, "兽魂页签")
     yield from context.wait_scene(
-        BEAST_SOUL_MAIN_SCENE,
+        [BEAST_SOUL_MAIN_SCENE],
         wait=12,
         label="兽魂更新：等待兽魂主页",
     )
@@ -266,13 +266,13 @@ def _enter_beast_soul_main(context: Any):
 def _enter_quick_synthesis(context: Any):
     yield from context.wait_click(BEAST_SOUL_MAIN_SCENE, "合成魂晶")
     yield from context.wait_scene(
-        BEAST_SOUL_SYNTHESIS_SCENE,
+        [BEAST_SOUL_SYNTHESIS_SCENE],
         wait=8,
         label="兽魂更新：等待魂晶合成",
     )
     yield from context.wait_click(BEAST_SOUL_SYNTHESIS_SCENE, "快捷合成页签")
     yield from context.wait_scene(
-        BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
+        [BEAST_SOUL_QUICK_SYNTHESIS_SCENE],
         wait=8,
         label="兽魂更新：等待快捷合成",
     )
@@ -285,7 +285,7 @@ def _leave_quick_synthesis(context: Any):
         BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE,
         BEAST_SOUL_MAIN_SCENE,
     ]
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         views=exit_views,
         update=True,
     )
@@ -295,7 +295,7 @@ def _leave_quick_synthesis(context: Any):
         # click.  Require one delayed second observation before treating #481
         # as the direct-return branch.
         yield from _settle(context, 1.0)
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             views=exit_views,
             update=True,
         )
@@ -305,13 +305,13 @@ def _leave_quick_synthesis(context: Any):
             "继续",
         )
         yield from context.wait_scene(
-            BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
+            [BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
             BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
-            BEAST_SOUL_MAIN_SCENE,
+            BEAST_SOUL_MAIN_SCENE],
             wait=10,
             label="兽魂更新：关闭合成结果",
         )
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             views=[
                 BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
                 BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
@@ -325,7 +325,7 @@ def _leave_quick_synthesis(context: Any):
             "收起材料",
         )
         yield from context.wait_scene(
-            BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
+            [BEAST_SOUL_QUICK_SYNTHESIS_SCENE],
             wait=8,
             label="兽魂更新：收起材料列表",
         )
@@ -341,7 +341,7 @@ def _leave_quick_synthesis(context: Any):
         "点击空白处关闭",
     )
     yield from context.wait_scene(
-        BEAST_SOUL_MAIN_SCENE,
+        [BEAST_SOUL_MAIN_SCENE],
         wait=8,
         label="兽魂更新：关闭快捷合成",
     )
@@ -354,7 +354,7 @@ def _select_material(context: Any, level: int):
     target = f"消耗所有{label}魂晶"
     yield from context.wait_click(BEAST_SOUL_QUICK_SYNTHESIS_SCENE, "材料下拉")
     yield from context.wait_scene(
-        BEAST_SOUL_MATERIAL_DROPDOWN_SCENE,
+        [BEAST_SOUL_MATERIAL_DROPDOWN_SCENE],
         wait=8,
         label="兽魂更新：等待材料下拉",
     )
@@ -407,7 +407,7 @@ def _select_material(context: Any, level: int):
     else:
         raise RuntimeError(f"兽魂更新：材料列表滚动超过上限，仍找不到「{target}」")
     yield from context.wait_scene(
-        BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
+        [BEAST_SOUL_QUICK_SYNTHESIS_SCENE],
         wait=8,
         label="兽魂更新：材料选择完成",
     )
@@ -563,7 +563,7 @@ def _execute_current_batch(
         "执行快捷合成",
     )
     yield from _settle(context, 0.8)
-    scene_id, score, frame = context.current_scene(
+    scene_id, score, frame = context.sample_scene_once(
         views=[
             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -578,7 +578,7 @@ def _execute_current_batch(
         # generic popup/background while waiting.
         for _ in range(10):
             yield from _settle(context, 0.5)
-            scene_id, score, frame = context.current_scene(
+            scene_id, score, frame = context.sample_scene_once(
                 views=[
                     BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                     BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -596,7 +596,7 @@ def _execute_current_batch(
             # proves the first click produced no synthesis side effect.
             for _ in range(10):
                 yield from _settle(context, 0.5)
-                scene_id, score, frame = context.current_scene(
+                scene_id, score, frame = context.sample_scene_once(
                     views=[
                         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -626,7 +626,7 @@ def _execute_current_batch(
                 )
                 yield from _settle(context, 1.0)
                 for _ in range(10):
-                    scene_id, score, frame = context.current_scene(
+                    scene_id, score, frame = context.sample_scene_once(
                         views=[
                             BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                             BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -744,14 +744,14 @@ def _execute_current_batch(
             f"兽魂更新：100%策略意外出现确认弹窗，evidence={evidence}"
         )
 
-    result_scene, result_score, result_frame = context.current_scene(update=True)
+    result_scene, result_score, result_frame = context.sample_scene_once(update=True)
     if result_scene in (
         BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
         BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
     ):
         for _ in range(10):
             yield from _settle(context, 0.5)
-            result_scene, result_score, result_frame = context.current_scene(update=True)
+            result_scene, result_score, result_frame = context.sample_scene_once(update=True)
             if result_scene not in (
                 BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
                 BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
@@ -1051,7 +1051,7 @@ def _open_initial_bag_card(
         )
         try:
             yield from context.wait_scene(
-                BEAST_SOUL_DETAIL_SCENE,
+                [BEAST_SOUL_DETAIL_SCENE],
                 wait=timeout,
                 label=(
                     f"兽魂更新：打开初始魂晶 row={row}, column={column}"
@@ -1060,7 +1060,7 @@ def _open_initial_bag_card(
             )
             return {"attempt": attempt, "point": (x, y)}
         except (RuntimeError, TimeoutError):
-            scene, _score, _frame = context.current_scene(
+            scene, _score, _frame = context.sample_scene_once(
                 views=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
                 update=True,
             )
@@ -1659,7 +1659,7 @@ def _open_bag_item_detail(
             if not changed:
                 break
             changed_count += 1
-            scene, _score, _frame = context.current_scene(
+            scene, _score, _frame = context.sample_scene_once(
                 views=[BEAST_SOUL_MAIN_SCENE, BEAST_SOUL_DETAIL_SCENE],
                 update=True,
             )
@@ -1719,7 +1719,7 @@ def _open_item_detail(
             locate_deadline=locate_deadline,
         ))
     yield from context.wait_scene(
-        BEAST_SOUL_DETAIL_SCENE,
+        [BEAST_SOUL_DETAIL_SCENE],
         wait=8,
         label="兽魂更新：等待魂晶详情",
     )
@@ -1736,7 +1736,7 @@ def _open_item_detail(
 def _close_item_detail(context: Any):
     yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "关闭详情")
     yield from context.wait_scene(
-        BEAST_SOUL_MAIN_SCENE,
+        [BEAST_SOUL_MAIN_SCENE],
         wait=8,
         label="兽魂更新：关闭魂晶详情",
     )
@@ -1913,7 +1913,7 @@ def _apply_layout(context: Any, snapshot: dict[str, Any]):
             raise RuntimeError(f"兽魂更新：魂晶 {item_id} 详情未出现卸下按钮")
         yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "镶嵌或卸下")
         yield from context.wait_scene(
-            BEAST_SOUL_MAIN_SCENE,
+            [BEAST_SOUL_MAIN_SCENE],
             wait=8,
             label="兽魂更新：等待卸下完成",
         )
@@ -1937,7 +1937,7 @@ def _apply_layout(context: Any, snapshot: dict[str, Any]):
             raise RuntimeError(f"兽魂更新：魂晶 {item_id} 详情未出现镶嵌按钮")
         yield from context.wait_click(BEAST_SOUL_DETAIL_SCENE, "镶嵌或卸下")
         yield from context.wait_scene(
-            BEAST_SOUL_MAIN_SCENE,
+            [BEAST_SOUL_MAIN_SCENE],
             wait=8,
             label="兽魂更新：等待镶嵌完成",
         )

@@ -17,7 +17,7 @@ class _KunlunTaskRuntime:
         self.auto_return_after_claim = auto_return_after_claim
         self.clicks: list[tuple[int, str]] = []
 
-    def current_scene(self, _scene_ids, *, update=True):
+    def sample_scene_once(self, _scene_ids, *, update=True):
         del update
         return self.scene_id, 100.0, "frame"
 

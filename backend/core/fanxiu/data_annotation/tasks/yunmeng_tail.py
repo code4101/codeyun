@@ -149,7 +149,7 @@ def execute_yunmeng_tail_job(
             raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    initial_scene, _score, _frame = context.current_scene((565, 566), update=True)
+    initial_scene, _score, _frame = context.sample_scene_once((565, 566), update=True)
     if initial_scene == 565:
         context.click_shape_center(565, "云梦试剑")
         yield from context.wait_action_settle(1.0)
@@ -178,7 +178,7 @@ def execute_yunmeng_tail_job(
     )
 
     context.click_shape_center(YUNMENG_HOME_SCENE, "榜单")
-    yield from context.wait_scene(565, wait=20.0, label=f"{label}：等待最终榜单")
+    yield from context.wait_scene([565], wait=20.0, label=f"{label}：等待最终榜单")
     ranking_summary = yield from refresh_yunmeng_final_rankings(
         context,
         activity_id=activity_id,
@@ -192,7 +192,7 @@ def execute_yunmeng_tail_job(
     )
 
     context.click_shape_center(YUNMENG_HOME_SCENE, "兑换宝阁")
-    yield from context.wait_scene(YUNMENG_SHOP_SCENE, wait=20.0, label=f"{label}：进入兑换宝阁")
+    yield from context.wait_scene([YUNMENG_SHOP_SCENE], wait=20.0, label=f"{label}：进入兑换宝阁")
 
     with Session(engine) as session:
         detail = collect_and_store_yunmeng_exchange_activity(
@@ -233,7 +233,7 @@ def execute_yunmeng_tail_job(
             yield from context.wait_action_settle(0.25)
 
         context.click_shape_center(YUNMENG_SHOP_SCENE, f"商品行{action.slot}")
-        yield from context.wait_scene(566, wait=15.0, label=f"{label}：等待商品详情")
+        yield from context.wait_scene([566], wait=15.0, label=f"{label}：等待商品详情")
         _detail_matches(
             context,
             expected_name=action.name,

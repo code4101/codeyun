@@ -221,7 +221,7 @@ def classify_beast_abyss_auto_terminal(text: str) -> BeastAbyssAutoTerminal:
 
 
 def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]) -> tuple[int, str]:
-    scene_id, _score, frame = context.current_scene(list(scene_ids), update=True)
+    scene_id, _score, frame = context.sample_scene_once(list(scene_ids), update=True)
     text = context.ocr_text(frame)
     if scene_id not in scene_ids or not any(_compact(anchor) in _compact(text) for anchor in anchors):
         raise RuntimeError(
@@ -384,7 +384,7 @@ def enter_beast_abyss_explore(
     )
     scene_id = None
     for _entry_probe in range(6):
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             list(entry_scenes), update=True
         )
         if scene_id in entry_scenes:
@@ -396,7 +396,7 @@ def enter_beast_abyss_explore(
             yield from context.go_scene(assets.home_scene_id)
             try:
                 yield from context.wait_scene(
-                    assets.home_scene_id,
+                    [assets.home_scene_id],
                     wait=8.0,
                     label="兽渊：确认活动封面",
                 )
@@ -414,7 +414,7 @@ def enter_beast_abyss_explore(
     elif scene_id != assets.explore_scene_id:
         raise RuntimeError(f"兽渊预检要求从活动页或探查页开始：scene={scene_id!r}")
     for _attempt in range(24):
-        scene_id, _score, _frame = context.current_scene(list(entry_scenes), update=True)
+        scene_id, _score, _frame = context.sample_scene_once(list(entry_scenes), update=True)
         if scene_id == assets.explore_scene_id:
             break
         action = {
@@ -518,7 +518,7 @@ def run_prepared_beast_abyss_native_auto(
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = context.current_scene(
+        scene_id, _score, frame = context.sample_scene_once(
             [assets.completed_notice_scene_id, *assets.terminal_scene_ids],
             update=True,
         )
@@ -534,7 +534,7 @@ def run_prepared_beast_abyss_native_auto(
                     label="兽渊自动探查完成：确认进入结果页",
                 )
                 scene_id = int(getattr(landed, "id", landed))
-                _confirmed, _score, frame = context.current_scene(
+                _confirmed, _score, frame = context.sample_scene_once(
                     list(assets.terminal_scene_ids), update=True
                 )
                 last_scene = (

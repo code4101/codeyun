@@ -51,10 +51,20 @@ def _drain_result(generator):
 
 def test_scene_api_has_one_waiting_entry_and_no_legacy_aliases() -> None:
     wait_parameters = inspect.signature(BehaviorTreeContext.wait_scene).parameters
-    current_parameters = inspect.signature(BehaviorTreeContext.current_scene).parameters
+    sample_parameters = inspect.signature(BehaviorTreeContext.sample_scene_once).parameters
 
+    assert list(wait_parameters) == [
+        "self",
+        "scenes",
+        "wait",
+        "handle_interruptions",
+        "label",
+    ]
+    assert wait_parameters["scenes"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert wait_parameters["wait"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert wait_parameters["wait"].default == 5.0
-    assert "wait" not in current_parameters
+    assert "wait" not in sample_parameters
+    assert not hasattr(BehaviorTreeContext, "current_scene")
     for legacy_name in (
         "recognize_scene",
         "observe_scene",
@@ -65,12 +75,31 @@ def test_scene_api_has_one_waiting_entry_and_no_legacy_aliases() -> None:
         assert not hasattr(BehaviorTreeContext, legacy_name)
 
 
+def test_wait_scene_rejects_an_empty_layer0_collection() -> None:
+    context = BehaviorTreeContext(create_behavior_tree_executor(), _context())
+
+    try:
+        _drain_result(context.wait_scene([]))
+    except ValueError as exc:
+        assert "scenes 不能为空" in str(exc)
+    else:
+        raise AssertionError("empty Layer-0 collection must fail before recognition")
+
+
 def test_scene_match_is_an_id_with_explicit_recognition_facts() -> None:
-    match = SceneMatch(382, score=96.5, matched_layer=2, scope="global", status="matched")
+    match = SceneMatch(
+        382,
+        score=96.5,
+        matched_layer=2,
+        scope="global",
+        status="matched",
+        frame_data_url="frame-382",
+    )
 
     assert match == 382
     assert match.scene_id == 382
     assert match.id == 382
+    assert match.frame_data_url == "frame-382"
     assert match.as_dict() == {
         "scene_id": 382,
         "score": 96.5,

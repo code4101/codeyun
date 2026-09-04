@@ -80,7 +80,7 @@ def _open_refund_box(context: Any):
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=12)
     yield from context.wait_scene(
-        STORAGE_BAG_SCENE,
+        [STORAGE_BAG_SCENE],
         wait=12,
         label="万象宝阁：等待储物袋",
     )
@@ -143,7 +143,7 @@ def _open_refund_box(context: Any):
     if dict(result.wallet_after).get(1001, 0) - dict(result.wallet_before).get(1001, 0) != 6:
         raise RuntimeError("代币宝匣未精确回补6元充值代币")
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8)
-    yield from context.wait_scene(WORLD_SCENE, wait=12, label="万象宝阁：返回世界")
+    yield from context.wait_scene([WORLD_SCENE], wait=12, label="万象宝阁：返回世界")
     return {
         "opened": 1,
         "rewards": rewards,
@@ -218,14 +218,14 @@ def execute_wanxiang_baoge_task(
                 raise RuntimeError("目标商品已购账本与总购买次数矛盾")
             # Read-only detail click proves the icon is the documented box.
             context.click_shape(MAIN_REVEALED_SCENE, f"查看商品{slot}", frame_data_url=frame)
-            yield from context.wait_scene(BOX_DETAIL_SCENE, wait=10, label="万象宝阁：核对代币宝匣详情")
+            yield from context.wait_scene([BOX_DETAIL_SCENE], wait=10, label="万象宝阁：核对代币宝匣详情")
             yield from context.wait_click(BOX_DETAIL_SCENE, "关闭详情", timeout=8)
-            yield from context.wait_scene(MAIN_REVEALED_SCENE, wait=10, label="万象宝阁：详情返回")
+            yield from context.wait_scene([MAIN_REVEALED_SCENE], wait=10, label="万象宝阁：详情返回")
 
             purchase_before = _complete_snapshot()
             frame = context.cur_frame(update=True)
             context.click_shape(MAIN_REVEALED_SCENE, f"购买商品{slot}", frame_data_url=frame)
-            yield from context.wait_scene(PURCHASE_CONFIRM_SCENE, wait=10, label="万象宝阁：等待六元确认")
+            yield from context.wait_scene([PURCHASE_CONFIRM_SCENE], wait=10, label="万象宝阁：等待六元确认")
             confirm_frame = context.cur_frame(update=True)
             confirm = "".join(str(item.get("text") or "") for item in context.full_frame_ocr_tokens(frame_data_url=confirm_frame))
             if "购买商品：代币宝匣" not in confirm or "购买所需：6" not in confirm or "代币购买" not in confirm:

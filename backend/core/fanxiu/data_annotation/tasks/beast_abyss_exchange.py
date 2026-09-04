@@ -77,14 +77,14 @@ def execute_beast_abyss_exchange(
 
     label = "兽渊_兑换"
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         (BEAST_ABYSS_SHOP_SCENE, COMMON_SHOP_DETAIL_SCENE),
         update=True,
     )
     if scene_id == COMMON_SHOP_DETAIL_SCENE:
         context.click_shape_center(COMMON_SHOP_DETAIL_SCENE, "关闭详情")
         yield from context.wait_scene(
-            BEAST_ABYSS_SHOP_SCENE,
+            [BEAST_ABYSS_SHOP_SCENE],
             wait=15.0,
             label=f"{label}：关闭遗留商品详情",
         )
@@ -147,7 +147,7 @@ def execute_beast_abyss_exchange(
             f"商品行{action.slot}",
         )
         yield from context.wait_scene(
-            COMMON_SHOP_DETAIL_SCENE,
+            [COMMON_SHOP_DETAIL_SCENE],
             wait=15.0,
             label=f"{label}：等待 {action.name} 商品详情",
         )

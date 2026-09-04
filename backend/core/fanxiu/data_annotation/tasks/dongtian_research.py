@@ -25,7 +25,7 @@ def enter_dongtian_home_for_research(
     )
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     allowed_start_scene_ids = (34, 66, 477, 69)
-    scene_id, _score, frame = context.current_scene(
+    scene_id, _score, frame = context.sample_scene_once(
         allowed_start_scene_ids,
         update=True,
     )
@@ -44,7 +44,7 @@ def enter_dongtian_home_for_research(
             label=task_label,
         )
         if recovered:
-            scene_id, _score, frame = context.current_scene(
+            scene_id, _score, frame = context.sample_scene_once(
                 [34, 69],
                 update=True,
             )

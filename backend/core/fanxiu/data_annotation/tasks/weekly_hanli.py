@@ -102,7 +102,7 @@ class WeeklyHanliTaskMixin:
                 blank_frame_count += 1
                 if blank_frame_count >= 3:
                     yield from context.wait_scene(
-                        379,
+                        [379],
                         wait=transition_timeout,
                         label="周常_韩立：复核空白奖励列表仍在私聊页 #379",
                     )
@@ -128,7 +128,7 @@ class WeeklyHanliTaskMixin:
             )
             yield from context.wait_action_settle(reward_wait_seconds)
             yield from context.wait_scene(
-                379,
+                [379],
                 wait=transition_timeout,
                 label="周常_韩立：等待奖励弹窗结束并回到 #379",
             )
@@ -189,7 +189,7 @@ class WeeklyHanliTaskMixin:
             timeout_seconds=ocr_timeout,
             poll_seconds=poll_seconds,
         )
-        yield from context.wait_scene(379, wait=transition_timeout, label="周常_韩立：等待私聊页 #379")
+        yield from context.wait_scene([379], wait=transition_timeout, label="周常_韩立：等待私聊页 #379")
 
         gifts = yield from self._claim_weekly_hanli_gifts(
             context,

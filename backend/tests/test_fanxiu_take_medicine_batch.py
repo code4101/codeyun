@@ -35,7 +35,7 @@ class _Runtime:
         self.confirmation_text = confirmation_text
         self.clicks: list[tuple[int, str]] = []
 
-    def current_scene(self, _scene_ids, update=False):
+    def sample_scene_once(self, _scene_ids, update=False):
         return self.scene, 95.0, "frame"
 
     def click_shape_center_then_scene(self, scene_id, shape, *_targets, **_kwargs):
@@ -50,7 +50,8 @@ class _Runtime:
         elif (scene_id, shape) == (594, "确认"):
             self.scene = self.landing_after_confirm
 
-    def wait_scene(self, *scene_ids, **_kwargs):
+    def wait_scene(self, layer0, **_kwargs):
+        scene_ids = tuple(layer0)
         assert self.scene in scene_ids
         return _done(type("View", (), {"id": self.scene})())
 

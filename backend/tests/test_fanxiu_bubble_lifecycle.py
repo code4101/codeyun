@@ -11,6 +11,15 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_mumu_startup_gate(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "mumu_device_startup_grace_state",
+        lambda: {"login_required": False},
+    )
+
+
 def _done(value=None):
     if False:
         yield None
@@ -60,7 +69,7 @@ class _Runtime:
         self.waits = 0
         self.go_scene_calls = []
 
-    def current_scene(self, _views, **_kwargs):
+    def sample_scene_once(self, _views, **_kwargs):
         raise AssertionError("top-level bubble flow must not classify the game scene")
 
     def cur_frame(self, *, update):
@@ -155,6 +164,31 @@ def test_claimed_run_never_shakes_or_claims_and_still_hides(monkeypatch, tmp_pat
     assert result["claimed_this_run"] is False
     assert runner.claim_calls == 0
     assert runner.hide_calls == 1
+
+
+def test_bubble_success_clears_pending_mumu_startup_gate(monkeypatch, tmp_path):
+    now = datetime(2026, 8, 19, 1, 5)
+    monkeypatch.setattr(lifecycle, "job_now", lambda: now)
+    monkeypatch.setattr(
+        lifecycle,
+        "mumu_device_startup_grace_state",
+        lambda: {"login_required": True},
+    )
+    ready_reasons = []
+    monkeypatch.setattr(
+        lifecycle,
+        "mark_mumu_device_startup_ready",
+        lambda *, reason: ready_reasons.append(reason),
+    )
+    path = tmp_path / "facts.json"
+    lifecycle.record_bubble_claim_success(path, now=now, claim_count=3)
+    runner = _Runner(path)
+
+    _drain(runner._execute_bubble_weekly_task(
+        {"asset_tree_path": Path("tree.json")}, object(), {}
+    ))
+
+    assert ready_reasons == ["bubble_weekly_reconciled"]
 
 
 def test_login_reconcile_hides_inline_when_current_week_is_claimed(monkeypatch, tmp_path):

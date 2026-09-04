@@ -246,7 +246,7 @@ def execute_magic_invasion_tail_checkpoint(
         session.commit()
 
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    dialog_scene, _dialog_score, _dialog_frame = context.current_scene(
+    dialog_scene, _dialog_score, _dialog_frame = context.sample_scene_once(
         (COMMON_SHOP_DIALOG_SCENE,),
         update=True,
     )
@@ -270,13 +270,13 @@ def execute_magic_invasion_tail_checkpoint(
         # unrelated full-frame candidate and safe navigation will refuse it.
         context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
         yield from context.wait_scene(
-            34,
+            [34,
             509,
-            MAGIC_ENDED_HOME_SCENE,
+            MAGIC_ENDED_HOME_SCENE],
             wait=20.0,
             label=f"{label}：从本期兑换宝阁返回活动主页",
         )
-    current_scene, _score, _frame = context.current_scene(
+    current_scene, _score, _frame = context.sample_scene_once(
         (34, 66),
         update=True,
     )
@@ -305,7 +305,7 @@ def execute_magic_invasion_tail_checkpoint(
         if header_lines and calendar_lines:
             break
         yield from context.wait_action_settle(1.0)
-        yield from context.wait_scene(66, wait=10.0, label=f"{label}：等待日程稳定")
+        yield from context.wait_scene([66], wait=10.0, label=f"{label}：等待日程稳定")
     entities = runtime_activity_entities_for_date(
         schedule,
         r"魔道入侵",
@@ -363,15 +363,15 @@ def execute_magic_invasion_tail_checkpoint(
         )
     context.click_frame_point(66, exact[0].x, exact[0].y)
     yield from context.wait_scene(
-        509,
+        [509,
         519,
         520,
         521,
-        MAGIC_ENDED_HOME_SCENE,
+        MAGIC_ENDED_HOME_SCENE],
         wait=30.0,
         label=f"{label}：等待结束态活动页",
     )
-    scene, _score, _frame = context.current_scene(
+    scene, _score, _frame = context.sample_scene_once(
         (509, 519, 520, 521, MAGIC_ENDED_HOME_SCENE),
         update=True,
     )
@@ -439,7 +439,7 @@ def execute_magic_invasion_tail_checkpoint(
         # never the row locator.
         context.click_shape_center(MAGIC_SHOP_SCENE, f"商品行{action.slot}")
         yield from context.wait_scene(
-            COMMON_SHOP_DIALOG_SCENE,
+            [COMMON_SHOP_DIALOG_SCENE],
             wait=15.0,
             label=f"{label}：等待 {action.name} 购买框",
         )
@@ -511,13 +511,13 @@ def execute_magic_invasion_tail_checkpoint(
     # 82% unknown candidate would correctly fail closed.
     context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
     yield from context.wait_scene(
-        34,
+        [34,
         509,
-        MAGIC_ENDED_HOME_SCENE,
+        MAGIC_ENDED_HOME_SCENE],
         wait=20.0,
         label=f"{label}：离开兑换宝阁",
     )
-    landed, _score, _frame = context.current_scene(
+    landed, _score, _frame = context.sample_scene_once(
         (34, 509, MAGIC_ENDED_HOME_SCENE),
         update=True,
     )

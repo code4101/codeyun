@@ -21,7 +21,7 @@ class _Runtime:
     def __init__(self, start_scene_id: int) -> None:
         self.start_scene_id = start_scene_id
 
-    def current_scene(self, candidates, *, update=False):
+    def sample_scene_once(self, candidates, *, update=False):
         candidate_ids = tuple(candidates)
         if candidate_ids == (34, 66, 477, 69):
             return self.start_scene_id, 100.0, f"scene-{self.start_scene_id}"

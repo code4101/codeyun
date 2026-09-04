@@ -165,10 +165,10 @@ class MoyuChallengeTaskMixin:
         yield from context.wait_click(401, action_shape)
         try:
             landing = yield from context.wait_scene(
-                463,
+                [463,
                 464,
                 85,
-                465,
+                465],
                 wait=max(3.0, float(payload.get("entry_timeout_seconds") or 12.0)),
                 label="魔狱_挑战：等待确认、战斗或结算响应",
             )
@@ -195,9 +195,9 @@ class MoyuChallengeTaskMixin:
                 # valid post-confirm terminal and must never short-circuit the
                 # battle wait.
                 landing = yield from context.wait_scene(
-                    464,
+                    [464,
                     85,
-                    465,
+                    465],
                     wait=30.0,
                     label="魔狱_挑战：确认后的战斗或结算响应",
                 )
@@ -216,8 +216,8 @@ class MoyuChallengeTaskMixin:
         if battle_entered:
             try:
                 landing = yield from context.wait_scene(
-                    465,
-                    401,
+                    [465,
+                    401],
                     wait=max(
                         60.0,
                         float(payload.get("battle_timeout_seconds") or 1200.0),
@@ -265,12 +265,12 @@ class MoyuChallengeTaskMixin:
         }
 
     def _moyu_return_world(self, context: Any):
-        current, _score, _frame = context.current_scene([401, 400, 34], update=True)
+        current, _score, _frame = context.sample_scene_once([401, 400, 34], update=True)
         if current == 401:
             context.click_shape_center(401, "返回")
             landing = yield from context.wait_scene(
-                400,
-                34,
+                [400,
+                34],
                 wait=30.0,
                 label="魔狱_挑战：#401 返回后等待 #400/#34",
             )
@@ -278,7 +278,7 @@ class MoyuChallengeTaskMixin:
         if current == 400:
             context.click_shape_center(400, "返回")
             yield from context.wait_scene(
-                34,
+                [34],
                 wait=30.0,
                 label="魔狱_挑战：#400 返回世界 #34",
             )
@@ -321,14 +321,14 @@ class MoyuChallengeTaskMixin:
                 "message": "已到 22:00，今日奖励窗口结束",
             }
 
-        current, _score, _frame = context.current_scene([466, 401], update=True)
+        current, _score, _frame = context.sample_scene_once([466, 401], update=True)
         if current not in {466, 401}:
             yield from self._moyu_open_activity(context, payload)
             current = 401
         if current == 401:
             yield from context.wait_click(401, "奖励")
             yield from context.wait_scene(
-                466,
+                [466],
                 wait=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
                 label="魔狱_挑战：等待奖励页 #466 场景身份",
             )
@@ -409,7 +409,7 @@ class MoyuChallengeTaskMixin:
         with context.expect_views(539):
             try:
                 yield from context.wait_scene(
-                    539,
+                    [539],
                     wait=8.0,
                     label="魔狱_挑战：等待排名奖励领取确认 #539",
                 )
@@ -446,16 +446,16 @@ class MoyuChallengeTaskMixin:
         if self._moyu_reward_text(text):
             context.click_shape_center(466, "返回")
             landing = yield from context.wait_scene(
-                400,
-                401,
+                [400,
+                401],
                 wait=30.0,
                 label="魔狱_挑战：奖励页返回 #400/#401",
             )
             if getattr(landing, "id", landing) == 401:
                 context.click_shape_center(401, "返回")
                 yield from context.wait_scene(
-                    400,
-                    34,
+                    [400,
+                    34],
                     wait=30.0,
                     label="魔狱_挑战：#401 返回后等待 #400/#34",
                 )

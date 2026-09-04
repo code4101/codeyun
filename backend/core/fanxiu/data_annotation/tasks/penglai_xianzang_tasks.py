@@ -105,7 +105,7 @@ def complete_xianzang_tasks(
             raise RuntimeError(
                 f"蓬莱仙藏任务连续领取超过 {click_limit} 次仍未收敛，拒绝继续点击"
             )
-        scene_id, score, frame = context.current_scene(
+        scene_id, score, frame = context.sample_scene_once(
             [XIANZANG_TASK_SCENE_ID],
             update=True,
         )
@@ -118,7 +118,7 @@ def complete_xianzang_tasks(
         )
         clicked_count += 1
         time.sleep(max(0.0, float(retry_seconds)))
-        scene_id, score, frame = context.current_scene(
+        scene_id, score, frame = context.sample_scene_once(
             [XIANZANG_TASK_SCENE_ID],
             update=True,
         )

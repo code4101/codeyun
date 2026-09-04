@@ -83,7 +83,7 @@ class WeeklyShengzuTaskMixin:
                     raise RuntimeError(f"周常_圣祖：#69“圣祖”任务状态不是前往：{status_text!r}")
                 context.click_floating_item_field(item, "任务状态")
                 yield from context.wait_scene(
-                    384,
+                    [384],
                     wait=transition_timeout,
                     label="周常_圣祖：等待入口页 #384",
                 )
@@ -102,7 +102,7 @@ class WeeklyShengzuTaskMixin:
         max_scrolls: int,
         transition_timeout: float,
     ):
-        scene_id, _score, _frame = context.current_scene([383, 384, 385, 69, 34], update=True)
+        scene_id, _score, _frame = context.sample_scene_once([383, 384, 385, 69, 34], update=True)
         if scene_id == 385:
             return
         if scene_id == 383:

@@ -39,7 +39,7 @@ def test_mojie_task_prefers_anchored_zero_over_contaminated_first_number(
         return value
 
     class FakeRuntime:
-        def current_scene(self, _preferred, *, update=False):
+        def sample_scene_once(self, _preferred, *, update=False):
             return 319, 100.0, "frame319"
 
         def ocr_text(self, _frame):

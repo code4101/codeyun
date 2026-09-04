@@ -172,7 +172,7 @@ def _wait_scene(
     last_score = 0.0
     last_frame = ""
     while time.monotonic() < deadline:
-        last_scene, last_score, last_frame = context.current_scene(list(targets), update=True)
+        last_scene, last_score, last_frame = context.sample_scene_once(list(targets), update=True)
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_frame
         time.sleep(0.25)
@@ -209,7 +209,7 @@ def _wait_magic_invasion_map_entry_settle(context: Any) -> tuple[int, float, str
     last_frame = ""
     last_state = "unknown"
     while time.monotonic() < deadline:
-        scene, score, frame = context.current_scene(list(observed_targets), update=True)
+        scene, score, frame = context.sample_scene_once(list(observed_targets), update=True)
         last_scene = int(scene) if scene is not None else None
         last_score = float(score or 0.0)
         last_frame = frame

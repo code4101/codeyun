@@ -177,7 +177,7 @@ def _read_stable_store_scan(
     deadline = time.monotonic() + max(0.5, float(stability_timeout_seconds))
     previous_scan: ActivityStoreRegionScan | None = None
     while True:
-        current_scene, score, frame = context.current_scene([int(scene_id)], update=True)
+        current_scene, score, frame = context.sample_scene_once([int(scene_id)], update=True)
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             tokens = context.ocr_tokens_in_shapes(
                 int(scene_id),
@@ -207,7 +207,7 @@ def _wait_store_after_purchase(
 ) -> None:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        current_scene, score, _frame = context.current_scene([int(scene_id), 227], update=True)
+        current_scene, score, _frame = context.sample_scene_once([int(scene_id), 227], update=True)
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             return
         if time.monotonic() >= deadline:

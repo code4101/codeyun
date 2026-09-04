@@ -59,11 +59,12 @@ class _FakeRuntime:
         self._shape_scores = dict(shape_scores or {})
         self._panel_open = bool(panel_open)
         self._panel_collapsed = bool(panel_collapsed)
+        self.wait_scene_calls = []
 
     def set_completion_message(self, message: str) -> None:
         self.completion_message = message
 
-    def current_scene(self, _candidates, **_kwargs):
+    def sample_scene_once(self, _candidates, **_kwargs):
         self._last_scene = next(self._scenes, self._last_scene)
         return self._last_scene, 100.0, "frame"
 
@@ -88,7 +89,35 @@ class _FakeRuntime:
         if False:
             yield None
 
-    def wait_scene(self, scene_id, **_kwargs):
+    def wait_scene(self, layer0, **kwargs):
+        scene_ids = tuple(layer0)
+        self.wait_scene_calls.append((scene_ids, kwargs.get("wait")))
+        if len(scene_ids) > 1:
+            sentinel = object()
+            last_scene = None
+            while True:
+                candidate = next(self._scenes, sentinel)
+                if candidate is sentinel:
+                    break
+                self._last_scene = candidate
+                last_scene = candidate
+                if candidate in scene_ids:
+                    if False:
+                        yield None
+                    return candidate
+
+            class _LastMatch:
+                scene_id = last_scene
+
+            error = TimeoutError("startup wait timeout")
+            error.last_match = _LastMatch() if last_scene is not None else None
+            raise error
+
+        scene_id = scene_ids[0]
+        candidate = next(self._scenes, scene_id)
+        if candidate in scene_ids:
+            scene_id = candidate
+        self._last_scene = scene_id
         self.actions.append(("wait_scene", scene_id))
         if False:
             yield None
@@ -144,7 +173,7 @@ def test_daozu_state_fuses_fresh_runtime_pass_count_with_configured_limit(
     assert state["limit"] == 20
     assert state["remaining"] == remaining
     assert state["source"] == "runtime_memory_with_configured_limit"
-    assert state["runtime"]["complete"] is False
+    assert state["context"]["complete"] is False
 
 
 @pytest.mark.parametrize("pass_count", (None, -1, 21, True))
@@ -167,7 +196,7 @@ def test_daozu_state_refuses_packet_fallback_for_unusable_runtime_pass_count(
     assert state["ok"] is False
     assert state["source"] == "runtime_memory"
     assert state["reason"] == "runtime_incomplete_daily_pass_count_invalid_or_missing"
-    assert state["runtime"]["daily_pass_count"] is pass_count
+    assert state["context"]["daily_pass_count"] is pass_count
 
 
 def test_daozu_state_reports_runtime_failure_without_packet_fallback(monkeypatch):
@@ -198,6 +227,45 @@ def test_daozu_flow_refuses_action_without_fresh_state():
         _drain(runner.道祖挑战流程(runtime))
 
     assert runtime.completion_message == ""
+
+
+def test_daozu_flow_waits_through_transient_unknown_startup_frame():
+    runner = create_behavior_tree_executor()
+    updates = _capture_next_time(runner)
+    runtime = _FakeRuntime((None, None, 34))
+    runner._read_daozu_challenge_state = lambda: _state(pass_count=20)
+
+    assert _drain(runner.道祖挑战流程(runtime)) is None
+
+    assert updates[0][1].endswith("07:00:00")
+    assert runtime.actions == []
+    assert runtime.wait_scene_calls[0] == ((34, 251, 548, 533), 60.0)
+    assert "剩余 0/20" in runtime.completion_message
+
+
+def test_daozu_flow_returns_from_identified_preceding_job_scene_before_start():
+    runner = create_behavior_tree_executor()
+    updates = _capture_next_time(runner)
+    runtime = _FakeRuntime((358,))
+    runner._read_daozu_challenge_state = lambda: _state(pass_count=20)
+
+    assert _drain(runner.道祖挑战流程(runtime)) is None
+
+    assert updates[0][1].endswith("07:00:00")
+    assert runtime.actions == [("goto", 34)]
+    assert runtime.wait_scene_calls[0] == ((34, 251, 548, 533), 60.0)
+    assert "剩余 0/20" in runtime.completion_message
+
+
+def test_daozu_flow_does_not_take_over_account_login_scene():
+    runner = create_behavior_tree_executor()
+    runtime = _FakeRuntime((15,))
+    runner._read_daozu_challenge_state = lambda: _state(pass_count=20)
+
+    with pytest.raises(RuntimeError, match="账号登录页"):
+        _drain(runner.道祖挑战流程(runtime))
+
+    assert runtime.actions == []
 
 
 def test_daozu_flow_reconciles_start_mark_on_route_before_reporting_missing_fact():
@@ -515,23 +583,6 @@ def test_daozu_executor_does_not_delegate_scheduling_to_runtime_wrapper():
 def test_next_daozu_challenge_time_is_absolute_next_0700() -> None:
     assert next_daozu_challenge_time(datetime(2026, 8, 13, 6, 59, 59)) == datetime(2026, 8, 13, 7)
     assert next_daozu_challenge_time(datetime(2026, 8, 13, 7)) == datetime(2026, 8, 14, 7)
-
-
-def test_daily_runtime_finish_only_records_status_and_never_schedules():
-    runner = create_behavior_tree_executor()
-    updates = []
-    runner._persist_scheduler_task_next_time = lambda task_id, next_time: updates.append(
-        (task_id, next_time)
-    )
-
-    runner._finish_daily_runtime_task(
-        task_type="daozu_challenge",
-        label="道祖_挑战",
-        message="道祖_挑战结束，今日已完成",
-    )
-
-    assert updates == []
-    assert runner._status["message"] == "道祖_挑战结束，今日已完成"
 
 
 def test_daily_runtime_wrapper_does_not_interpret_business_result_as_run_error():

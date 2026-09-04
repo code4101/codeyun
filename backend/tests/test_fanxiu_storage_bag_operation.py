@@ -45,7 +45,8 @@ class _Runtime:
         self.scene = scene
         yield None
 
-    def wait_scene(self, scene, **kwargs):
+    def wait_scene(self, layer0, **kwargs):
+        scene = layer0[0]
         assert self.scene == scene
         self.calls.append(("wait_scene", scene))
         yield None
@@ -107,7 +108,7 @@ class _Runtime:
                 return EMPTY_OPERATION_TOAST
         return ""
 
-    def current_scene(self, scenes, *, frame_data_url):
+    def sample_scene_once(self, scenes, *, frame_data_url):
         assert frame_data_url.startswith("frame-")
         return (self.scene if self.scene in scenes else None), 100, frame_data_url
 
@@ -393,7 +394,7 @@ def test_quick_panel_accepts_shape_contract_when_title_identity_is_missing():
             self.ocr_calls += 1
             return ""
 
-        def current_scene(self, scenes, *, frame_data_url):
+        def sample_scene_once(self, scenes, *, frame_data_url):
             return None, 0, None
 
         def shape_matches(self, scene, title, *, frame_data_url):
@@ -437,7 +438,7 @@ def test_quick_panel_timeout_runs_one_last_frame_ocr_for_diagnostics(monkeypatch
             self.scene = 999
             self.ocr_calls = []
 
-        def current_scene(self, scenes, *, frame_data_url):
+        def sample_scene_once(self, scenes, *, frame_data_url):
             return None, 0, None
 
         def shape_matches(self, scene, title, *, frame_data_url):
@@ -467,7 +468,7 @@ def test_shape_contract_restores_526_for_observe_and_fixed_point(monkeypatch):
             super().__init__([])
             self.scene = 999
 
-        def current_scene(self, scenes, *, frame_data_url):
+        def sample_scene_once(self, scenes, *, frame_data_url):
             return None, 0, None
 
         def shape_matches(self, scene, title, *, frame_data_url):

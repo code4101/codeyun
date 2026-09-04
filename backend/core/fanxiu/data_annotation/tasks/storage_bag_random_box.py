@@ -285,7 +285,7 @@ def plan_current_random_box_click(
 
     view = context.view(STORAGE_BAG_SCENE)
     current_data_url = context.cur_frame(update=True)
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         frame_data_url=current_data_url
     )
     if scene_id != STORAGE_BAG_SCENE:
@@ -577,7 +577,7 @@ class StorageBagRandomBoxGuiAdapter:
 
         self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
         yield from self.context.wait_scene(
-            self.detail_scene_id,
+            [self.detail_scene_id],
             wait=8.0,
             label=f"储物袋{self.operation_label}：等待 #{self.detail_scene_id} 详情",
         )
@@ -614,7 +614,7 @@ class StorageBagRandomBoxGuiAdapter:
             self.detail_scene_id, "打开", timeout=8.0
         )
         yield from self.context.wait_scene(
-            USE_QUANTITY_SCENE,
+            [USE_QUANTITY_SCENE],
             wait=8.0,
             label="储物袋随机箱：等待 #584 数量确认",
         )
@@ -627,14 +627,14 @@ class StorageBagRandomBoxGuiAdapter:
 
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
         landed = yield from self.context.wait_scene(
-            STORAGE_BAG_SCENE,
-            TRANSIENT_REWARD_SCENE,
+            [STORAGE_BAG_SCENE,
+            TRANSIENT_REWARD_SCENE],
             wait=8.0,
             label="储物袋随机箱：等待结果或回到 #525",
         )
         if _view_id(landed) == TRANSIENT_REWARD_SCENE:
             yield from self.context.wait_scene(
-                STORAGE_BAG_SCENE,
+                [STORAGE_BAG_SCENE],
                 wait=8.0,
                 label="储物袋随机箱：等待短暂结果层自动回到 #525",
             )

@@ -324,10 +324,15 @@ class BehaviorTreeDebugContext:
         context = self._bound_context()
         return (yield from context.wait_click_then_scene(frame, shape, *targets, **options))
 
-    def wait_scene(self, *scenes: int | str, wait: float = 5.0, **options: Any):
+    def wait_scene(
+        self,
+        scenes: list[int],
+        wait: float = 5.0,
+        **options: Any,
+    ):
         self._require_act()
         context = self._bound_context()
-        return (yield from context.wait_scene(*scenes, wait=wait, **options))
+        return (yield from context.wait_scene(scenes, wait=wait, **options))
 
     def world_realm(self) -> dict[str, Any]:
         """Read the current #425 人/灵/魔/仙 realm by first character."""

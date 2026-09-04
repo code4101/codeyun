@@ -41,7 +41,7 @@ class RewardContext:
             "积分": iter(("积分任务三", "积分任务三", "积分任务三", "积分任务三")),
         }
 
-    def current_scene(self, _expected, update=False):
+    def sample_scene_once(self, _expected, update=False):
         return self.scene, 100.0, "frame"
 
     def wait_click_then_scene(self, scene_id, title, targets, **_options):

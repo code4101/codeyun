@@ -277,7 +277,7 @@ class DailyExperienceTaskMixin:
 
     def _daily_experience_enter(self, context: Any, *, timeout: float):
         yield from context.wait_click(34, "进入绿瓶")
-        yield from context.wait_scene(20, wait=timeout, label="日常_经验：等待绿瓶 #20")
+        yield from context.wait_scene([20], wait=timeout, label="日常_经验：等待绿瓶 #20")
         # #20 底部菜单会保留上次横向滚动位置；「修炼」固定在最左端。
         # 每轮从稳定事实重新归位，不能从遗留的后段菜单直接查找。
         for _ in range(30):
@@ -294,13 +294,13 @@ class DailyExperienceTaskMixin:
             offset=(0.0, -1.0),
             offset_unit="height",
         )
-        yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待修炼页 #405")
+        yield from context.wait_scene([405], wait=timeout, label="日常_经验：等待修炼页 #405")
         yield from self._daily_experience_open_books(context, timeout=timeout)
 
     def _daily_experience_reopen_books(self, context: Any, *, timeout: float):
         matched_405, _score, _frame = context.match_view(405, update=True)
         if not matched_405:
-            yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待返回修炼页 #405")
+            yield from context.wait_scene([405], wait=timeout, label="日常_经验：等待返回修炼页 #405")
         yield from self._daily_experience_open_books(context, timeout=timeout)
 
     def _daily_experience_close_bugged_result(self, context: Any, *, timeout: float):
@@ -360,15 +360,15 @@ class DailyExperienceTaskMixin:
 
     def _daily_experience_run_breakthrough(self, context: Any, *, timeout: float):
         yield from context.wait_click(408, "提升")
-        yield from context.wait_scene(409, wait=timeout, label="日常_经验：等待第一段升阶 #409")
+        yield from context.wait_scene([409], wait=timeout, label="日常_经验：等待第一段升阶 #409")
         yield from context.wait_click(409, "升阶")
-        yield from context.wait_scene(410, wait=timeout, label="日常_经验：等待第二段升阶 #410")
+        yield from context.wait_scene([410], wait=timeout, label="日常_经验：等待第二段升阶 #410")
         yield from context.wait_click(410, "升阶")
-        yield from context.wait_scene(411, wait=timeout, label="日常_经验：等待升阶结果 #411")
+        yield from context.wait_scene([411], wait=timeout, label="日常_经验：等待升阶结果 #411")
         yield from context.wait_click(411, "继续")
-        yield from context.wait_scene(412, wait=timeout, label="日常_经验：等待升阶收尾 #412")
+        yield from context.wait_scene([412], wait=timeout, label="日常_经验：等待升阶收尾 #412")
         yield from context.wait_click(412, "返回")
-        yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待升阶返回 #405")
+        yield from context.wait_scene([405], wait=timeout, label="日常_经验：等待升阶返回 #405")
         yield from self._daily_experience_open_books(context, timeout=timeout)
 
     def _daily_experience_replace_full_book(self, context: Any, *, timeout: float):
@@ -381,7 +381,7 @@ class DailyExperienceTaskMixin:
                 f"error={snapshot.get('error')!r}，evidence={snapshot.get('evidence')!r}"
             )
         yield from context.wait_click(405, "更换")
-        yield from context.wait_scene(439, wait=timeout, label="日常_经验：等待选择功法书 #439")
+        yield from context.wait_scene([439], wait=timeout, label="日常_经验：等待选择功法书 #439")
         target = snapshot.get("next_upgradable_book")
         if not isinstance(target, dict):
             if snapshot.get("all_books_full") is True:
@@ -421,9 +421,9 @@ class DailyExperienceTaskMixin:
             )
         book_x, book_y = match.point()
         context.click_frame_point(439, book_x, book_y)
-        yield from context.wait_scene(440, wait=max(timeout, 30.0), label="日常_经验：等待功法详情 #440")
+        yield from context.wait_scene([440], wait=max(timeout, 30.0), label="日常_经验：等待功法详情 #440")
         yield from context.wait_click(440, "修炼")
-        yield from context.wait_scene(405, wait=timeout, label="日常_经验：等待更换功法返回 #405")
+        yield from context.wait_scene([405], wait=timeout, label="日常_经验：等待更换功法返回 #405")
         yield from self._daily_experience_open_books(context, timeout=timeout)
         return {
             "book_id": target.get("book_id"),
@@ -525,8 +525,8 @@ class DailyExperienceTaskMixin:
         x, y = self._daily_experience_item_point(group)
         context.click_frame_point(406, x, y)
         landed = yield from context.wait_scene(
-            414,
-            413,
+            [414,
+            413],
             wait=timeout,
             label="日常_经验：等待潜修真悟购买 #414 或直接使用 #413",
         )
@@ -572,9 +572,9 @@ class DailyExperienceTaskMixin:
                     # an unconfirmed postcondition.
                     context.click_shape_center(_EXPERIENCE_BOOKS_SCENE, "返回")
                     closed = yield from context.wait_scene(
-                        _EXPERIENCE_RESULT_SCENE,
+                        [_EXPERIENCE_RESULT_SCENE,
                         _EXPERIENCE_BOOKS_SCENE,
-                        _EXPERIENCE_TRAINING_SCENE,
+                        _EXPERIENCE_TRAINING_SCENE],
                         wait=timeout,
                         label="日常_经验：购买文本未变化，关闭 #414 后核验落点",
                     )
@@ -618,8 +618,8 @@ class DailyExperienceTaskMixin:
         x, y = self._daily_experience_item_point(group)
         context.click_frame_point(406, x, y)
         landed = yield from context.wait_scene(
-            413,
-            405,
+            [413,
+            405],
             wait=max(timeout, _EXPERIENCE_ANIMATION_TIMEOUT_SECONDS),
             label="日常_经验：等待绿瓶灵气动画 #413 或直接返回 #405",
         )
@@ -653,9 +653,9 @@ class DailyExperienceTaskMixin:
             timeout=timeout,
         )
         yield from context.wait_click(405, "返回")
-        yield from context.wait_scene(20, wait=timeout, label="日常_经验：等待返回绿瓶 #20")
+        yield from context.wait_scene([20], wait=timeout, label="日常_经验：等待返回绿瓶 #20")
         yield from context.wait_click(20, "回到世界")
-        yield from context.wait_scene(34, wait=timeout, label="日常_经验：等待返回世界 #34")
+        yield from context.wait_scene([34], wait=timeout, label="日常_经验：等待返回世界 #34")
 
     def _daily_experience_finish_consumables_exhausted(
         self,

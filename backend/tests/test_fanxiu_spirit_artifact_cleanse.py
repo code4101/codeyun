@@ -323,7 +323,7 @@ class _RuntimeGui:
         self.scene = scene
         self.calls: list[tuple] = []
 
-    def current_scene(self, candidates, **kwargs):
+    def sample_scene_once(self, candidates, **kwargs):
         self.calls.append(("observe", tuple(candidates), kwargs))
         matched = self.scene if self.scene in set(candidates) else None
         return matched, 100.0 if matched is not None else 0.0, "frame"

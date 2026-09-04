@@ -890,7 +890,7 @@ def _refresh_personal_rank_for_measurement(
     )
     context.click_shape_center(537, "返回")
     yield from context.wait_scene(
-        34,
+        [34],
         wait=30.0,
         label="兽渊测速：个人榜刷新后返回世界",
     )
@@ -916,7 +916,7 @@ def _refresh_personal_rank_for_measurement(
     if not str(getattr(selected, "runtime_key", "") or ""):
         raise RuntimeError("兽渊测速：个人榜刷新后未回读精确 Runtime 实例")
     yield from context.wait_scene(
-        535,
+        [535],
         wait=30.0,
         label="兽渊测速：个人榜刷新后重入本期实例",
     )
@@ -990,7 +990,7 @@ def _ensure_entry_surface(context: Any) -> Iterator[Any]:
         assets.npc_entry_scene_id,
         assets.region_map_scene_id,
     )
-    scene_id, _score, _frame = context.current_scene(accepted, update=True)
+    scene_id, _score, _frame = context.sample_scene_once(accepted, update=True)
     if scene_id not in accepted:
         yield from context.go_scene(assets.home_scene_id)
 
@@ -999,13 +999,13 @@ def _close_auto_terminal(context: Any, scene_id: int | None) -> Iterator[Any]:
     assets = DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS
     if scene_id != 382:
         raise RuntimeError(f"兽渊自动批次没有停在已验证终态：scene={scene_id!r}")
-    observed, _score, frame = context.current_scene((382,), update=True)
+    observed, _score, frame = context.sample_scene_once((382,), update=True)
     if observed != 382 or "点击屏幕关闭" not in context.ocr_text(frame).replace(" ", ""):
         raise RuntimeError("兽渊#382完成页缺少完整完成证据，拒绝关闭")
     context.click_shape_center(382, "关闭")
     for _attempt in range(20):
         yield from context.wait_action_settle(0.5)
-        observed, _score, _frame = context.current_scene((382,), update=True)
+        observed, _score, _frame = context.sample_scene_once((382,), update=True)
         if observed != 382:
             return
     raise RuntimeError("兽渊#382完成页点击关闭后仍未离开")
@@ -1047,7 +1047,7 @@ def _execute_or_recover_initialization_batch(
             request,
             maximum_explores=int(budget["capacity"]["explore_attempts_with_items"]),
         )
-        current_scene, _score, _frame = context.current_scene(
+        current_scene, _score, _frame = context.sample_scene_once(
             (assets.help_view_scene_id,), update=True
         )
         if current_scene == assets.help_view_scene_id:
@@ -1071,7 +1071,7 @@ def _execute_or_recover_initialization_batch(
 
     terminal_scene = int(marker.get("terminal_scene") or 0) or None
     if not bool(marker.get("terminal_confirmed")):
-        scene_id, _score, frame = context.current_scene(
+        scene_id, _score, frame = context.sample_scene_once(
             (
                 assets.help_view_scene_id,
                 assets.completed_notice_scene_id,
@@ -1148,7 +1148,7 @@ def _execute_or_recover_initialization_batch(
         )
     sealed_after = marker.get("after")
     if sealed_after is None:
-        current_scene, _score, _frame = context.current_scene(
+        current_scene, _score, _frame = context.sample_scene_once(
             assets.terminal_scene_ids, update=True
         )
         if current_scene in assets.terminal_scene_ids:
@@ -1829,7 +1829,7 @@ def _enter_beast_abyss_occurrence_home(
         select_schedule_activity,
     )
 
-    scene_id, _score, frame = context.current_scene(
+    scene_id, _score, frame = context.sample_scene_once(
         views=[535, 66, 657, 658],
         update=True,
     )
@@ -1844,7 +1844,7 @@ def _enter_beast_abyss_occurrence_home(
             context.click_shape(34, "日程", frame_data_url=frame)
             yield from context.wait_action_settle(1.5)
             yield from context.wait_scene(
-                66,
+                [66],
                 wait=30.0,
                 label=f"{label}：等待日程页",
             )
@@ -1867,7 +1867,7 @@ def _enter_beast_abyss_occurrence_home(
     if not str(getattr(selected, "runtime_key", "") or ""):
         raise RuntimeError(f"{label}：#66 未回读精确 Runtime 实例标识")
     yield from context.wait_scene(
-        535,
+        [535],
         wait=30.0,
         label=f"{label}：等待旧实例主页",
     )
@@ -1999,7 +1999,7 @@ def execute_beast_abyss_exchange_tail_checkpoint(
     )
     context.click_shape_center(537, "返回")
     yield from context.wait_scene(
-        34,
+        [34],
         wait=20.0,
         label="兽渊尾日：榜单同步后返回世界",
     )

@@ -104,7 +104,7 @@ def _wait_quick_operation_panel(context: Any, *, timeout: float):
     while time.perf_counter() < deadline:
         frame = context.cur_frame(update=True)
         last_frame = frame
-        scene_id, _score, _matched_frame = context.current_scene(
+        scene_id, _score, _matched_frame = context.sample_scene_once(
             (QUICK_OPERATION_SCENE,),
             frame_data_url=frame,
         )
@@ -143,7 +143,7 @@ def _observe_known_scene(
         if EMPTY_OPERATION_TOAST in text:
             yield from context.wait_action_settle(0.25)
             continue
-        scene_id, _score, _matched_frame = context.current_scene(
+        scene_id, _score, _matched_frame = context.sample_scene_once(
             list(scene_ids),
             frame_data_url=frame,
         )
@@ -169,7 +169,7 @@ def _finish_reward_chain(context: Any, *, deadline: float):
         text = _compact_text(context.ocr_text(frame))
         if EMPTY_OPERATION_TOAST in text:
             return "empty_toast"
-        landed, _score, _matched_frame = context.current_scene(
+        landed, _score, _matched_frame = context.sample_scene_once(
             (REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
             frame_data_url=frame,
         )
@@ -249,7 +249,7 @@ def execute_storage_bag_operation_task(
         timeout=10.0,
     )
     yield from context.wait_scene(
-        STORAGE_BAG_SCENE,
+        [STORAGE_BAG_SCENE],
         wait=10.0,
         label="储物袋_操作：等待储物袋主页",
     )
@@ -301,13 +301,13 @@ def execute_storage_bag_operation_task(
                 timeout=8.0,
             )
             yield from context.wait_scene(
-                STORAGE_BAG_SCENE,
+                [STORAGE_BAG_SCENE],
                 wait=8.0,
                 label="储物袋_操作：关闭快捷操作面板",
             )
             yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
             yield from context.wait_scene(
-                WORLD_SCENE,
+                [WORLD_SCENE],
                 wait=10.0,
                 label="储物袋_操作：返回世界",
             )

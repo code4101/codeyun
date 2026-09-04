@@ -51,7 +51,7 @@ def complete_kunlun_tasks(
             break
         if clicked_count >= max(1, int(max_clicks)):
             raise RuntimeError("昆仑秘藏任务领取未在预算内收敛")
-        scene_id, score, frame = context.current_scene([KUNLUN_TASK_SCENE_ID], update=True)
+        scene_id, score, frame = context.sample_scene_once([KUNLUN_TASK_SCENE_ID], update=True)
         if int(scene_id or 0) != KUNLUN_TASK_SCENE_ID or float(score or 0) < 80.0:
             raise RuntimeError("领取前未可靠识别 #543，拒绝点击")
         context.click_shape(KUNLUN_TASK_SCENE_ID, "进度", frame_data_url=frame)

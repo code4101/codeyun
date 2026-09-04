@@ -104,7 +104,7 @@ def open_loaded_activity_menu_item(
     context.click_frame_point(source_scene, *plan.point)
     return (
         yield from context.wait_scene(
-            *expected,
+            expected,
             wait=timeout_seconds,
             label=f"活动菜单：等待 {target} 后继",
         )

@@ -142,7 +142,7 @@ class MailTaskMixin:
                         )
                         self._log_locked("action", f"邮件_历史扫描：点击 #121「空白-返回」，重新从顶部进入邮件，{reason}")
                     yield from context.wait_click(121, "空白-返回")
-                    yield from context.wait_scene(34, label="邮件_历史扫描：返回世界 #34")
+                    yield from context.wait_scene([34], label="邮件_历史扫描：返回世界 #34")
                     scene_id = 34
                 else:
                     with self._lock:
@@ -223,7 +223,7 @@ class MailTaskMixin:
                 self._set_status_locked("running", "邮件_选择性领取：关闭本轮奖励页", phase="mail_selective_claim_close_reward_page", current_scene=227)
                 self._log_locked("action", "邮件_选择性领取：点击 #227「继续」关闭本轮奖励页")
             yield from context.wait_click(227, "继续", timeout=8.0)
-            reward_result_view = yield from context.wait_scene(121, 34, wait=12.0, label="邮件_选择性领取：奖励页关闭后等待邮件或世界")
+            reward_result_view = yield from context.wait_scene([121, 34], wait=12.0, label="邮件_选择性领取：奖励页关闭后等待邮件或世界")
             scene_id = getattr(reward_result_view, "scene_id", getattr(reward_result_view, "id", None))
             score = 100.0 if scene_id in {121, 34} else 0.0
             frame = context.cur_frame(update=True)
@@ -266,7 +266,7 @@ class MailTaskMixin:
             else:
                 self._log("warning", f"邮件_选择性领取：#{scene_id} 缺少返回标注，使用已验证的左上空白返回")
                 context.click_frame_point(scene_id, 1, 1)
-            yield from context.wait_scene(121, wait=12.0, label="邮件_选择性领取：详情页安全返回邮件 #121")
+            yield from context.wait_scene([121], wait=12.0, label="邮件_选择性领取：详情页安全返回邮件 #121")
             yield from self._leave_mail_scene_to_world(
                 ctx,
                 stop_event,
@@ -2209,7 +2209,7 @@ class MailTaskMixin:
 
         # 一键删除是统一收尾动作；即使严格配准失败，也只会删除已领取或无附件邮件。
         try:
-            scene_id, _score, _frame = context.current_scene([121, 122, 123, 34], update=True)
+            scene_id, _score, _frame = context.sample_scene_once([121, 122, 123, 34], update=True)
             if scene_id in {122, 123}:
                 detail_view = context.view(scene_id)
                 back_shape = detail_view.get_shape("空白-返回")
@@ -2217,11 +2217,11 @@ class MailTaskMixin:
                     back_shape.click(context)
                 else:
                     context.click_frame_point(scene_id, 1, 1)
-                yield from context.wait_scene(121, wait=12.0, label="邮件_选择性领取：收尾返回邮件 #121")
+                yield from context.wait_scene([121], wait=12.0, label="邮件_选择性领取：收尾返回邮件 #121")
                 scene_id = 121
             if scene_id == 34:
                 yield from self._open_mail_selective_claim_entry(context)
-                yield from context.wait_scene(121, wait=12.0, label="邮件_选择性领取：收尾重新进入邮件 #121")
+                yield from context.wait_scene([121], wait=12.0, label="邮件_选择性领取：收尾重新进入邮件 #121")
                 scene_id = 121
             if scene_id != 121:
                 raise RuntimeError(f"邮件_选择性领取：收尾前无法确认邮件 #121，当前 #{scene_id or 'unknown'}")
@@ -2344,7 +2344,7 @@ class MailTaskMixin:
             if result_scene == 34:
                 yield from self._open_mail_selective_claim_entry(context)
                 yield from context.wait_scene(
-                    121,
+                    [121],
                     wait=12.0,
                     label="邮件_选择性领取：批量删除后重新进入邮件 #121",
                 )
@@ -2416,15 +2416,15 @@ class MailTaskMixin:
         # no-op.
         try:
             result_view = yield from context.wait_scene(
-                348,
+                [348,
                 210,
-                278,
+                278],
                 wait=6.0,
                 label="邮件_选择性领取：一键删除后优先等待确认弹窗",
             )
         except TimeoutError:
             result_view = yield from context.wait_scene(
-                121,
+                [121],
                 wait=6.0,
                 label="邮件_选择性领取：未见确认弹窗后复核邮件页",
             )
@@ -2441,7 +2441,7 @@ class MailTaskMixin:
             self._click_confirmed_mail_delete_prompt(context, result_scene)
             targets = (121,) if result_scene == 348 else (121, 34)
             result_view = yield from context.wait_scene(
-                *targets,
+                targets,
                 wait=12.0,
                 label="邮件_选择性领取：确认一键删除后等待邮件页",
             )
@@ -2595,7 +2595,7 @@ class MailTaskMixin:
             )
         if scene_id == 227:
             yield from context.wait_click(227, "继续", timeout=8.0)
-            view = yield from context.wait_scene(121, 34, wait=12.0, label="邮件_选择性领取：奖励页关闭后等待邮件或世界")
+            view = yield from context.wait_scene([121, 34], wait=12.0, label="邮件_选择性领取：奖励页关闭后等待邮件或世界")
             scene_id = getattr(view, "scene_id", getattr(view, "id", None))
             if scene_id == 121:
                 if refresh_existing_list:
@@ -2632,7 +2632,7 @@ class MailTaskMixin:
             self._set_status_locked("running", f"{label}：从绿瓶页返回世界", phase="mail_selective_claim_leave_green_bottle", current_scene=20)
             self._log_locked("action", f"{label}：点击 #20「世界」返回 #34")
         context.click_frame_point(20, 80, 1435)
-        yield from context.wait_scene(34, wait=12.0, label=f"{label}：绿瓶返回世界 #34")
+        yield from context.wait_scene([34], wait=12.0, label=f"{label}：绿瓶返回世界 #34")
         return True
 
     def _visible_mail_adjacency_intervals(self, rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -2778,7 +2778,7 @@ class MailTaskMixin:
                 timeout=self._MAIL_DETAIL_READY_TIMEOUT_SECONDS,
             )
         else:
-            detail_view = yield from context.wait_scene(122, 123, wait=12.0, label=f"邮件_选择性领取：等待「{mail.title}」详情")
+            detail_view = yield from context.wait_scene([122, 123], wait=12.0, label=f"邮件_选择性领取：等待「{mail.title}」详情")
         detail_scene_id = getattr(detail_view, "scene_id", getattr(detail_view, "id", None))
         if detail_scene_id not in {122, 123}:
             return _RuntimeMailActionOutcome("claim", "detail_not_found", False)
@@ -2790,7 +2790,7 @@ class MailTaskMixin:
             else:
                 context.click_frame_point(int(detail_scene_id), 1, 1)
             yield from context.wait_scene(
-                121,
+                [121],
                 wait=12.0,
                 label="邮件_选择性领取：模型与详情不一致，安全返回邮件 #121",
             )
@@ -2841,7 +2841,7 @@ class MailTaskMixin:
                 raise RuntimeError("邮件_选择性领取：领取后未回邮件列表，且缺少详情页「空白-返回」标注")
             self._log("info", f"邮件_选择性领取：{action_title}后未自动回列表，点击详情页返回")
             back_shape.click(context)
-            yield from context.wait_scene(121, wait=12.0, label="邮件_选择性领取：详情页返回邮件 #121")
+            yield from context.wait_scene([121], wait=12.0, label="邮件_选择性领取：详情页返回邮件 #121")
         return _RuntimeMailActionOutcome(
             actual_policy,
             wait_result,
@@ -2867,7 +2867,7 @@ class MailTaskMixin:
         while time.monotonic() - started_at < max(1.0, float(timeout)):
             frame = context.cur_frame(update=True)
             last_frame = frame
-            scene_id, _score, _current = context.current_scene(
+            scene_id, _score, _current = context.sample_scene_once(
                 [122, 123],
                 frame_data_url=frame,
             )
@@ -3427,7 +3427,7 @@ class MailTaskMixin:
         self._raise_if_stopped(stop_event)
         frame = context.cur_frame(update=True)
         if require_world_scene:
-            scene_id, score, _frame = context.current_scene(frame_data_url=frame)
+            scene_id, score, _frame = context.sample_scene_once(frame_data_url=frame)
             if scene_id not in {34, 35} or score < float(self.scene_threshold):
                 return "missing"
         mail_shape = self._find_shape(image35, "邮件")
@@ -3639,7 +3639,7 @@ class MailTaskMixin:
         while time.time() < deadline:
             self._raise_if_stopped(stop_event)
             frame = context.cur_frame(update=True)
-            scene_id, score, _frame = context.current_scene()
+            scene_id, score, _frame = context.sample_scene_once()
             in_world_menu_context = scene_id in {34, 35} and score >= float(self.scene_threshold)
             if not in_world_menu_context:
                 with self._lock:
@@ -4970,7 +4970,7 @@ class MailTaskMixin:
             self._raise_if_stopped(stop_event)
             context.clear_frame()
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, frame = context.current_scene(candidates, update=True)
+            scene_id, score, frame = context.sample_scene_once(candidates, update=True)
             last_scene_id, last_score = scene_id, score
             if scene_id in candidates:
                 with self._lock:

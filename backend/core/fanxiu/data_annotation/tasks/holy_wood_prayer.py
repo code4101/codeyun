@@ -107,7 +107,7 @@ def _wait_scene(context: Any, target: int, *, timeout: float = 20.0) -> tuple[in
     deadline = time.monotonic() + max(1.0, float(timeout))
     last_scene, last_score = None, 0.0
     while time.monotonic() < deadline:
-        last_scene, last_score, _frame = context.current_scene(
+        last_scene, last_score, _frame = context.sample_scene_once(
             list(HOLY_WOOD_KNOWN_SCENES), update=True
         )
         if int(last_scene or 0) == int(target) and float(last_score or 0) >= 80.0:
@@ -122,7 +122,7 @@ def _open_main(context: Any) -> None:
     deadline = time.monotonic() + 6.0
     scene, score, frame = None, 0.0, ""
     while time.monotonic() < deadline:
-        scene, score, frame = context.current_scene(
+        scene, score, frame = context.sample_scene_once(
             list(HOLY_WOOD_KNOWN_SCENES), update=True
         )
         if int(scene or 0) in HOLY_WOOD_KNOWN_SCENES and float(score or 0) >= 80.0:
@@ -151,7 +151,7 @@ def _close_result(context: Any, *, timeout: float = 30.0, max_clicks: int = 4) -
     clicks = 0
     last_click_at = 0.0
     while time.monotonic() < deadline:
-        scene, score, frame = context.current_scene(
+        scene, score, frame = context.sample_scene_once(
             [HOLY_WOOD_MAIN_SCENE_ID, HOLY_WOOD_RESULT_SCENE_ID], update=True
         )
         if int(scene or 0) == HOLY_WOOD_MAIN_SCENE_ID and float(score or 0) >= 80.0:
@@ -182,7 +182,7 @@ def _open_tab(context: Any, scene_id: int, shape_title: str) -> int:
     if scene_id == HOLY_WOOD_TASK_SCENE_ID:
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
-            landed, score, _frame = context.current_scene(
+            landed, score, _frame = context.sample_scene_once(
                 [HOLY_WOOD_TASK_SCENE_ID, HOLY_WOOD_PRAYER_TASK_SCENE_ID],
                 update=True,
             )
@@ -209,7 +209,7 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
     task_scene_id = _open_tab(context, HOLY_WOOD_TASK_SCENE_ID, "活动任务")
     if all(str(row.get("name") or "").startswith("圣木祈愿") for row in snapshot.get("claimable") or []):
         for _attempt in range(3):
-            scene, score, frame = context.current_scene(
+            scene, score, frame = context.sample_scene_once(
                 [HOLY_WOOD_TASK_SCENE_ID, HOLY_WOOD_PRAYER_TASK_SCENE_ID], update=True
             )
             if (
@@ -234,7 +234,7 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
         if len(clicked) >= max(1, int(max_clicks)):
             raise RuntimeError("圣木祈愿任务领取超过安全上限")
         task_id = int(claimable[0].get("task_id") or 0)
-        scene, score, frame = context.current_scene([task_scene_id], update=True)
+        scene, score, frame = context.sample_scene_once([task_scene_id], update=True)
         if int(scene or 0) != task_scene_id or float(score or 0) < 80.0:
             raise RuntimeError("圣木祈愿任务点击前页面身份无效")
         context.click_shape(task_scene_id, "进度", frame_data_url=frame)
@@ -477,7 +477,7 @@ def execute_holy_wood_prayer_task(
     yield from context.go_scene(34)
     yield from context.go_scene(630)
     yield from context.wait_click(630, "圣木祈愿", timeout=10.0, label="圣木祈愿：打开主页")
-    yield from context.wait_scene(HOLY_WOOD_MAIN_SCENE_ID, wait=20.0, label="圣木祈愿：确认主页")
+    yield from context.wait_scene([HOLY_WOOD_MAIN_SCENE_ID], wait=20.0, label="圣木祈愿：确认主页")
     _open_main(context)
     task_rounds: list[dict[str, Any]] = []
     store: dict[str, Any] | None = None

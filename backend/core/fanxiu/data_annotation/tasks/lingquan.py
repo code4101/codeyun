@@ -91,11 +91,11 @@ class LingquanTaskMixin:
             return None
 
     def _enter_lingquan(self, context: Any, *, transition_timeout: float, deadline: datetime):
-        scene_id, _score, _frame = context.current_scene([389, 388, 387, 386, 66, 34], update=True)
+        scene_id, _score, _frame = context.sample_scene_once([389, 388, 387, 386, 66, 34], update=True)
         if scene_id is None:
             self._log("info", "日常_灵泉：当前为过渡/未知画面，等待进入稳定业务场景")
             waited = yield from context.wait_scene(
-                389, 388, 387, 386,
+                [389, 388, 387, 386],
                 wait=self._lingquan_window_timeout(deadline),
                 label="日常_灵泉：等待过渡结束并进入稳定业务场景",
             )
@@ -129,7 +129,7 @@ class LingquanTaskMixin:
                 settle_seconds=min(0.8, settle_seconds),
             )
             yield from context.wait_scene(
-                386,
+                [386],
                 wait=timeout,
                 label="日常_灵泉：等待已校验的活动卡片进入 #386",
             )
@@ -153,7 +153,7 @@ class LingquanTaskMixin:
         yield from context.wait_click_then_scene(387, "灵泉", 303, timeout=timeout)
         yield from context.advance_dialogue(303, "对话", label="日常_灵泉：推进管事对话")
         timeout = self._lingquan_timeout(deadline, transition_timeout)
-        yield from context.wait_scene(388, wait=timeout, label="日常_灵泉：等待准备页 #388")
+        yield from context.wait_scene([388], wait=timeout, label="日常_灵泉：等待准备页 #388")
         timeout = self._lingquan_question_page_timeout(deadline, transition_timeout)
         yield from context.wait_click_then_scene(388, "进入问答", 389, timeout=timeout)
 
@@ -165,7 +165,7 @@ class LingquanTaskMixin:
         transition_timeout: float,
     ):
         """Keep the active quiz window anchored at #389."""
-        scene_id, _score, _frame = context.current_scene([389, 388, 387, 386, 66, 34], update=True)
+        scene_id, _score, _frame = context.sample_scene_once([389, 388, 387, 386, 66, 34], update=True)
         if scene_id == 389:
             return
         self._log(
@@ -177,7 +177,7 @@ class LingquanTaskMixin:
             transition_timeout=transition_timeout,
             deadline=cutoff,
         )
-        scene_id, _score, _frame = context.current_scene([389], update=True)
+        scene_id, _score, _frame = context.sample_scene_once([389], update=True)
         if scene_id != 389:
             raise TimeoutError("日常_灵泉：窗口内恢复后仍未确认到 #389")
 
@@ -347,7 +347,7 @@ class LingquanTaskMixin:
     def _exit_lingquan_to_world(self, context: Any, *, timeout: float):
         """Consume every nested leave layer until the real world scene is reached."""
         deadline = time.monotonic() + max(1.0, float(timeout))
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             [34, 388, 186, 86],
             update=True,
         )
@@ -368,10 +368,10 @@ class LingquanTaskMixin:
                 raise TimeoutError("日常_灵泉：多层离场超时，尚未回到 #34")
             if scene_id is None:
                 waited = yield from context.wait_scene(
-                    34,
+                    [34,
                     388,
                     186,
-                    86,
+                    86],
                     wait=remaining,
                     label="日常_灵泉：重新识别多层离场上下文",
                 )
@@ -385,10 +385,10 @@ class LingquanTaskMixin:
                 if remaining <= 0:
                     raise TimeoutError("日常_灵泉：点击离开后等待落点超时")
                 landed = yield from context.wait_scene(
-                    86,
+                    [86,
                     34,
                     388,
-                    186,
+                    186],
                     wait=remaining,
                     label="日常_灵泉：点击离开后重新识别落点",
                 )

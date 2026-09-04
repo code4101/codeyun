@@ -261,7 +261,7 @@ def _wait_scene(
     last_score = 0.0
     last_frame = ""
     while time.monotonic() < deadline:
-        last_scene, last_score, last_frame = context.current_scene(
+        last_scene, last_score, last_frame = context.sample_scene_once(
             list(targets), update=True
         )
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
@@ -281,7 +281,7 @@ def _enter_xutian_map(context: Any) -> Iterator[Any]:
         select_schedule_activity,
     )
 
-    current_scene, current_score, _frame = context.current_scene(
+    current_scene, current_score, _frame = context.sample_scene_once(
         [
             XUTIAN_TUTORIAL_SCENE_ID,
             XUTIAN_SETTINGS_SCENE_ID,
@@ -330,7 +330,7 @@ def _enter_xutian_map(context: Any) -> Iterator[Any]:
         # visible.  Let that delayed overlay settle before deciding the entry
         # is complete.
         yield from context.wait_action_settle(2.0)
-        scene, _score, frame = context.current_scene(
+        scene, _score, frame = context.sample_scene_once(
             [XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID], update=True
         )
     if scene == XUTIAN_TUTORIAL_SCENE_ID:
@@ -546,7 +546,7 @@ def _configure_and_run_batch(
     allow_boost_items: bool = False,
     before_start: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Iterator[Any]:
-    scene, score, _frame = context.current_scene(
+    scene, score, _frame = context.sample_scene_once(
         [XUTIAN_SETTINGS_SCENE_ID], update=True
     )
     if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
@@ -1093,7 +1093,7 @@ def execute_xutian_native_auto_job(
     # The Heaven Runtime model is lazily initialized by entering the activity.
     yield from _enter_xutian_map(context)
     if not isinstance(existing_mark, dict):
-        scene, score, _frame = context.current_scene(
+        scene, score, _frame = context.sample_scene_once(
             [XUTIAN_SETTINGS_SCENE_ID], update=True
         )
         if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
@@ -1237,7 +1237,7 @@ def execute_xutian_native_auto_job(
             elapsed_seconds=elapsed,
         )
     yield from context.go_scene(34)
-    scene, score, _frame = context.current_scene([34], update=True)
+    scene, score, _frame = context.sample_scene_once([34], update=True)
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天自动挑战收尾未可靠回到 #34：scene={scene}, score={score}"

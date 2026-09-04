@@ -55,7 +55,7 @@ class DailyRedpacketTaskMixin:
     def _prepare_daily_redpacket_world(self, context: Any, *, transition_timeout: float):
         """Unwind an interrupted chat input layer through formal GUI shapes."""
 
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             [390, 30, 332, 34],
             update=True,
         )
@@ -426,7 +426,7 @@ class DailyRedpacketTaskMixin:
             float(payload.get("redpacket_confirm_seconds") or 60.0),
         )
         yield from context.wait_scene(
-            34,
+            [34],
             wait=entry_timeout,
             label="鸿运福签：等待世界战斗过场结束并确认世界页",
         )
@@ -464,7 +464,7 @@ class DailyRedpacketTaskMixin:
         )
         context.click_frame_point(332, float(row.x + row.w / 2), float(row.y + row.h / 2))
         yield from context.wait_scene(
-            30,
+            [30],
             wait=transition_timeout,
             label="鸿运福签：等待活动聊天页",
         )
@@ -572,7 +572,7 @@ class DailyRedpacketTaskMixin:
             try:
                 context.click_shape_center(672, "弹窗外背景", x_ratio=0.1)
                 yield from context.wait_scene(
-                    30,
+                    [30],
                     wait=transition_timeout,
                     label="鸿运福签：关闭奖励详情回到活动聊天",
                 )
@@ -1003,8 +1003,8 @@ class DailyRedpacketTaskMixin:
     ):
         if current is None:
             current = yield from context.wait_scene(
-                397,
-                399,
+                [397,
+                399],
                 wait=transition_timeout,
                 label="日常_红包：等待开红包或已领完状态",
             )
@@ -1032,8 +1032,8 @@ class DailyRedpacketTaskMixin:
                     return opened_count
             opened_count += 1
             result_view = yield from context.wait_scene(
-                398,
-                399,
+                [398,
+                399],
                 wait=transition_timeout,
                 label="日常_红包：等待红包结果",
             )
@@ -1042,8 +1042,8 @@ class DailyRedpacketTaskMixin:
                 break
             yield from context.wait_click(398, "下一个", timeout=transition_timeout)
             current = yield from context.wait_scene(
-                397,
-                399,
+                [397,
+                399],
                 wait=transition_timeout,
                 label="日常_红包：等待下一个红包",
             )
@@ -1051,7 +1051,7 @@ class DailyRedpacketTaskMixin:
             raise RuntimeError(f"日常_红包：领取循环意外停在 #{current.id if current is not None else 'unknown'}")
         yield from context.wait_click(399, "返回", timeout=transition_timeout)
         yield from context.wait_scene(
-            30,
+            [30],
             wait=transition_timeout,
             label="日常_红包：领取完成后返回群聊 #30",
         )
@@ -1091,10 +1091,10 @@ class DailyRedpacketTaskMixin:
                 timeout=transition_timeout,
             ))
         except TimeoutError:
-            scene_id, _score, _frame = context.current_scene([332, 34], update=True)
+            scene_id, _score, _frame = context.sample_scene_once([332, 34], update=True)
             if scene_id == 34:
                 return (yield from context.wait_scene(
-                    34,
+                    [34],
                     wait=1.0,
                     label="日常_红包：确认聊天返回已生效",
                 ))
@@ -1111,12 +1111,12 @@ class DailyRedpacketTaskMixin:
                 timeout=transition_timeout,
             ))
         except TimeoutError:
-            scene_id, _score, _frame = context.current_scene([30, 332, 20, 34], update=True)
+            scene_id, _score, _frame = context.sample_scene_once([30, 332, 20, 34], update=True)
             if scene_id in {332, 20, 34}:
                 return (yield from context.wait_scene(
-                    332,
+                    [332,
                     20,
-                    34,
+                    34],
                     wait=1.0,
                     label="日常_红包：确认群聊返回已生效",
                 ))
@@ -1142,7 +1142,7 @@ class DailyRedpacketTaskMixin:
         # 当前可见卡片，未命中时有界点击定位入口，直到卡片 OCR 连续两帧
         # 稳定出现。禁止把 #30 参考帧中的卡片坐标当作探针硬点。
         yield from context.wait_scene(
-            30,
+            [30],
             wait=transition_timeout,
             label="日常_红包：等待群聊 #30",
         )
@@ -1233,15 +1233,15 @@ class DailyRedpacketTaskMixin:
             )
             try:
                 current = yield from context.wait_scene(
-                    397,
+                    [397,
                     399,
-                    672,
+                    672],
                     wait=attempt_timeout,
                     label="日常_红包：等待开红包、已领完或已抢光状态",
                 )
                 break
             except TimeoutError:
-                scene_id, _score, _frame = context.current_scene([30], update=True)
+                scene_id, _score, _frame = context.sample_scene_once([30], update=True)
                 if scene_id != 30:
                     return 0, False
         if current is None:
@@ -1361,8 +1361,8 @@ class DailyRedpacketTaskMixin:
         )
         context.click_shape_center(395, "聊天")
         landing = yield from context.wait_scene(
-            332,
-            333,
+            [332,
+            333],
             wait=transition_timeout,
             label="日常_红包：等待聊天或通讯录页",
         )

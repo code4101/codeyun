@@ -255,7 +255,7 @@ class XianshiExchangeTaskMixin:
         # go_scene and wait_scene both use the framework's inner recognition
         # polling.  A transient unknown is never treated as permission to click.
         yield from context.go_scene(34)
-        yield from context.wait_scene(34, wait=10.0, label=f"{label}：稳定确认世界 #34")
+        yield from context.wait_scene([34], wait=10.0, label=f"{label}：稳定确认世界 #34")
         yield from context.click_shape_center_then_scene(
             34, "仙市", 247, timeout=15.0, label=f"{label}：进入仙市 #247"
         )
@@ -321,7 +321,7 @@ class XianshiExchangeTaskMixin:
             return detail_scene
         else:
             yield from context.wait_scene(
-                detail_scene,
+                [detail_scene],
                 wait=15.0,
                 label=f"{label}：等待商品详情 #{detail_scene}",
             )
@@ -390,7 +390,7 @@ class XianshiExchangeTaskMixin:
     def _return_xianshi_exchange_to_world(self, context: Any, home_scene: int, *, label: str):
         yield from context.wait_click_then_scene(home_scene, "仙市", 247, timeout=15.0, label=f"{label}：返回仙市")
         yield from context.wait_click_then_scene(247, "返回", 34, timeout=15.0, label=f"{label}：返回世界")
-        yield from context.wait_scene(34, wait=10.0, label=f"{label}：稳定确认完成场景 #34")
+        yield from context.wait_scene([34], wait=10.0, label=f"{label}：稳定确认完成场景 #34")
 
     def _execute_xianshi_exchange_task(
         self,

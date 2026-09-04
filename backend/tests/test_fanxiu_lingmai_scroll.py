@@ -95,7 +95,7 @@ def test_lingmai_kick_search_stops_when_scroll_content_no_longer_changes(monkeyp
             yield BehaviorTreeStatus.RUNNING
 
         @staticmethod
-        def current_scene(scene_ids, *, update):
+        def sample_scene_once(scene_ids, *, update):
             assert scene_ids == [286]
             assert update is True
             return 286, 100.0, "after"
@@ -177,7 +177,7 @@ def test_lingmai_kick_rejects_best_effort_low_similarity_without_click(monkeypat
             yield BehaviorTreeStatus.RUNNING
 
         @staticmethod
-        def current_scene(scene_ids, *, update):
+        def sample_scene_once(scene_ids, *, update):
             assert scene_ids == [286]
             assert update is True
             return 286, 100.0, "frame"
@@ -258,12 +258,13 @@ def test_lingmai_kick_fuzzy_matches_runtime_name_variants(
             self.clicked = (scene_id, x, y)
 
         @staticmethod
-        def wait_scene(scene_id, *, wait, label):
+        def wait_scene(layer0, *, wait, label):
+            scene_id = layer0[0]
             assert scene_id == 380
             yield BehaviorTreeStatus.RUNNING
 
         @staticmethod
-        def current_scene(scene_ids, *, update):
+        def sample_scene_once(scene_ids, *, update):
             assert scene_ids == [380]
             return 380, 100.0, "frame380"
 
@@ -354,12 +355,13 @@ def test_lingmai_kick_nudges_edge_candidate_before_clicking(monkeypatch):
             self.clicked = (scene_id, x, y)
 
         @staticmethod
-        def wait_scene(scene_id, *, wait, label):
+        def wait_scene(layer0, *, wait, label):
+            scene_id = layer0[0]
             assert scene_id == 380
             yield BehaviorTreeStatus.RUNNING
 
         @staticmethod
-        def current_scene(scene_ids, *, update):
+        def sample_scene_once(scene_ids, *, update):
             assert scene_ids == [380]
             return 380, 100.0, "frame380"
 

@@ -12,6 +12,7 @@ DAOZU_CHAIN_START_MARK = "daozu_auto_chain_started_at"
 DAOZU_DAILY_TRIGGER = (7, 0)
 DAOZU_ORDINARY_RESULT_SCENE_ID = 548
 DAOZU_DAILY_LIMIT_RESULT_SCENE_ID = 533
+DAOZU_STARTUP_WAIT_SECONDS = 60.0
 
 
 def next_daozu_challenge_time(now: datetime | None = None) -> datetime:
@@ -141,10 +142,52 @@ class DaozuChallengeTaskMixin:
         ).strftime("%Y-%m-%d %H:%M:%S")
 
         result_scene_ids = [DAOZU_ORDINARY_RESULT_SCENE_ID, DAOZU_DAILY_LIMIT_RESULT_SCENE_ID]
-        scene_id, _score, frame = context.current_scene([34, 251, *result_scene_ids], update=True)
         chain_started = bool(payload.get(DAOZU_CHAIN_START_MARK))
+        startup_layer0_wait_seconds = max(
+            5.0,
+            float(
+                payload.get("startup_layer0_wait_seconds")
+                or DAOZU_STARTUP_WAIT_SECONDS
+            ),
+        )
+        match = None
+        try:
+            match = yield from context.wait_scene(
+                [34, 251, *result_scene_ids],
+                wait=startup_layer0_wait_seconds,
+                label="道祖_挑战：等待可接管起始场景",
+            )
+            scene_id = int(match)
+        except TimeoutError as exc:
+            # A persisted start mark proves that the only irreversible click
+            # already happened. An unidentified battle/loading frame is then
+            # a legal intermediate state and the monitor keeps waiting without
+            # clicking #251 again. Before the chain starts, a global match is
+            # diagnostic evidence for safe recovery only.
+            last_match = getattr(exc, "last_match", None)
+            scene_id = None if chain_started else (
+                int(getattr(last_match, "scene_id"))
+                if getattr(last_match, "scene_id", None) is not None
+                else None
+            )
+        frame = getattr(match, "frame_data_url", None) or context.cur_frame(update=True)
         if scene_id is None and not chain_started:
-            raise RuntimeError("道祖_挑战：当前为未知战斗/加载场景，拒绝导航或重复点击")
+            raise RuntimeError(
+                "道祖_挑战：wait_scene 等待后仍未出现指定 Layer 0 场景，"
+                "拒绝导航或重复点击"
+            )
+
+        if not chain_started and scene_id not in {34, 251, *result_scene_ids}:
+            if scene_id == 15:
+                raise RuntimeError(
+                    "道祖_挑战：当前为 #15 账号登录页，凭据与登录确认只能由用户处理"
+                )
+            # A preceding job can fail after leaving a normal, identified
+            # business page (for example #358).  Its safe navigation edges are
+            # the authoritative way back to the stable world entry.
+            yield from context.go_scene(34)
+            scene_id = 34
+            frame = context.cur_frame(update=True)
 
         state = self._read_daozu_challenge_state()
         if scene_id == 34:
@@ -181,13 +224,11 @@ class DaozuChallengeTaskMixin:
                 yield from context.wait_click(34, "任务")
                 yield from context.wait_action_settle(0.8)
             yield from context.wait_click(34, "主线")
-            yield from context.wait_scene(251, wait=30.0, label="道祖_挑战：等待路线 #251")
+            yield from context.wait_scene([251], wait=30.0, label="道祖_挑战：等待路线 #251")
             scene_id = 251
 
+        started_now = False
         if scene_id == 251:
-            _sid, _score, frame = context.current_scene([251], update=True)
-            if _sid != 251:
-                raise RuntimeError("道祖_挑战：启动前未识别到 #251，拒绝点击")
             realm_locked_score = self._daozu_realm_locked_score(context, frame)
             if realm_locked_score >= 55.0:
                 self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
@@ -232,6 +273,7 @@ class DaozuChallengeTaskMixin:
             # formal button Shape; it has no visual constraint, so Layer 0
             # performs no redundant full-frame precheck before this action.
             yield from context.wait_click(251, "挑战")
+            started_now = True
         elif scene_id is None and chain_started:
             # The start mark proves that the single start click already happened.
             # Battle/loading frames intentionally have no GUI scene identity;
@@ -240,14 +282,29 @@ class DaozuChallengeTaskMixin:
         elif scene_id not in result_scene_ids:
             raise RuntimeError(f"道祖_挑战：当前场景 #{scene_id} 不允许启动或接管自动链")
 
+        pending_scene_id = None if started_now or scene_id is None else scene_id
+        route_terminal_allowed = not started_now
         deadline = time.monotonic() + timeout
         while time.monotonic() <= deadline:
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = context.current_scene([251, *result_scene_ids], update=True)
+            if pending_scene_id is not None:
+                scene_id = pending_scene_id
+                pending_scene_id = None
+            else:
+                remaining_wait = max(0.0, deadline - time.monotonic())
+                try:
+                    observed = yield from context.wait_scene(
+                        [251, *result_scene_ids],
+                        wait=min(60.0, remaining_wait),
+                        label="道祖_挑战：等待路线或自动链结算场景",
+                    )
+                    scene_id = int(observed)
+                except TimeoutError:
+                    continue
             if scene_id == DAOZU_DAILY_LIMIT_RESULT_SCENE_ID:
                 yield from context.wait_click(DAOZU_DAILY_LIMIT_RESULT_SCENE_ID, "点击退出")
                 yield from context.wait_scene(
-                    251,
+                    [251],
                     wait=30.0,
                     label="道祖_挑战：终局退出后等待路线 #251",
                 )
@@ -264,17 +321,21 @@ class DaozuChallengeTaskMixin:
                 )
                 return
             if scene_id == 251:
-                route_state = self._read_daozu_challenge_state()
-                if route_state.get("ok") and _daozu_int(route_state.get("remaining")) == 0:
-                    self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
-                    yield from context.go_scene(34)
-                    self._finish_daozu_challenge(
-                        context,
-                        task_id=task_id,
-                        next_time=next_time,
-                        message="道祖_挑战结束，路线运行态确认每日20层已完成并返回世界",
-                    )
-                    return
+                if route_terminal_allowed:
+                    route_state = self._read_daozu_challenge_state()
+                    if (
+                        route_state.get("ok")
+                        and _daozu_int(route_state.get("remaining")) == 0
+                    ):
+                        self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
+                        yield from context.go_scene(34)
+                        self._finish_daozu_challenge(
+                            context,
+                            task_id=task_id,
+                            next_time=next_time,
+                            message="道祖_挑战结束，路线运行态确认每日20层已完成并返回世界",
+                        )
+                        return
                 # The first fresh frame after the start click may still be the
                 # launch page while the native dungeon is loading. Keep
                 # observing; the persisted start mark prevents a second click.
@@ -285,6 +346,7 @@ class DaozuChallengeTaskMixin:
             # exit settlement and never make progress depend on this click.
             if scene_id == DAOZU_ORDINARY_RESULT_SCENE_ID:
                 yield from context.wait_click(DAOZU_ORDINARY_RESULT_SCENE_ID, "下一层")
+                route_terminal_allowed = True
             yield from context.wait_action_settle(poll_interval)
 
         raise TimeoutError("道祖_挑战：自动链监控超时；防重复标记保留，禁止 Scheduler 重试点击")

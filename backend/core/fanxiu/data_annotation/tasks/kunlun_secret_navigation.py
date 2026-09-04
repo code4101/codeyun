@@ -52,7 +52,7 @@ def _page_from_observation(
 
 
 def read_kunlun_page(context: Any, *, update: bool = True) -> KunlunPageResult | None:
-    scene_id, score, frame = context.current_scene(
+    scene_id, score, frame = context.sample_scene_once(
         list(KUNLUN_KNOWN_SCENE_IDS), update=bool(update)
     )
     return _page_from_observation(scene_id, float(score or 0), context.ocr_text(frame))
@@ -92,7 +92,7 @@ def enter_kunlun(
 
     deadline = time.monotonic() + max(0.5, float(availability_timeout_seconds))
     while True:
-        scene_id, score, frame = context.current_scene([int(source_scene_id)], update=True)
+        scene_id, score, frame = context.sample_scene_once([int(source_scene_id)], update=True)
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
                 f"进入昆仑秘藏要求从可靠 #{source_scene_id} 开始："
@@ -174,7 +174,7 @@ def leave_kunlun(
     context.click_shape(KUNLUN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        scene_id, score, _ = context.current_scene([34, KUNLUN_MAIN_SCENE_ID], update=True)
+        scene_id, score, _ = context.sample_scene_once([34, KUNLUN_MAIN_SCENE_ID], update=True)
         if int(scene_id or 0) == 34 and float(score or 0) >= 90.0:
             return 34, float(score)
         if time.monotonic() >= deadline:

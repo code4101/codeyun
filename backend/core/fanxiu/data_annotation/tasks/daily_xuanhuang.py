@@ -75,7 +75,7 @@ class DailyXuanhuangTaskMixin:
             raise RuntimeError(f"日常_玄荒：无法打开日常入口，结果={entry_result!r}")
 
         yield from context.wait_scene(
-            400,
+            [400],
             wait=view_timeout,
             label="日常_玄荒：等待玄荒入口 #400",
         )
@@ -85,7 +85,7 @@ class DailyXuanhuangTaskMixin:
             timeout=view_timeout,
         )
         yield from context.wait_scene(
-            417,
+            [417],
             wait=view_timeout,
             label="日常_玄荒：等待推荐窗口 #417",
         )
@@ -149,7 +149,7 @@ class DailyXuanhuangTaskMixin:
         )
 
         yield from context.wait_scene(
-            418,
+            [418],
             wait=view_timeout,
             label="日常_玄荒：等待挑战页 #418",
         )
@@ -220,7 +220,7 @@ class DailyXuanhuangTaskMixin:
         saw_battle_scene = False
         while True:
             frame = context.cur_frame(update=True)
-            scene_id, _score, _frame = context.current_scene(
+            scene_id, _score, _frame = context.sample_scene_once(
                 [186, 419, 420],
                 frame_data_url=frame,
             )
@@ -247,7 +247,7 @@ class DailyXuanhuangTaskMixin:
                 next_status_at = now + 30.0
             if now >= deadline:
                 final_frame = context.cur_frame(update=True)
-                final_scene, _score, _frame = context.current_scene(
+                final_scene, _score, _frame = context.sample_scene_once(
                     [186, 419, 420],
                     frame_data_url=final_frame,
                 )
@@ -276,9 +276,9 @@ class DailyXuanhuangTaskMixin:
             timeout=view_timeout,
         )
         landing = yield from context.wait_scene(
-            34,
+            [34,
             395,
-            85,
+            85],
             wait=max(30.0, view_timeout),
             label="日常_玄荒：离开战斗后等待世界 #34、副本 #395 或区域内页 #85",
         )
@@ -292,16 +292,16 @@ class DailyXuanhuangTaskMixin:
                 timeout=view_timeout,
             )
             region_landing = yield from context.wait_scene(
-                34,
+                [34,
                 86,
-                55,
+                55],
                 wait=max(30.0, view_timeout),
                 label="日常_玄荒：#85 离开后等待世界、确认或大地图",
             )
             if region_landing.id == 86:
                 yield from context.wait_click(86, "确认", timeout=view_timeout)
                 yield from context.wait_scene(
-                    34,
+                    [34],
                     wait=max(30.0, view_timeout),
                     label="日常_玄荒：确认离开区域后等待世界 #34",
                 )
@@ -313,9 +313,9 @@ class DailyXuanhuangTaskMixin:
             # 确认弹窗，然后才能真正返回世界。
             context.click_shape_center(420, "离开")
             confirm = yield from context.wait_scene(
-                34,
+                [34,
                 86,
-                55,
+                55],
                 wait=max(30.0, view_timeout),
                 label="日常_玄荒：副本 #395 离开后等待确认、世界或大地图",
             )
@@ -326,7 +326,7 @@ class DailyXuanhuangTaskMixin:
                     timeout=view_timeout,
                 )
                 yield from context.wait_scene(
-                    34,
+                    [34],
                     wait=max(30.0, view_timeout),
                     label="日常_玄荒：确认离开副本后等待世界 #34",
                 )
@@ -393,7 +393,7 @@ class DailyXuanhuangTaskMixin:
             # 作业入口必须先回答“当前实际在哪”，不能只把 #418 当作一次性
             # 候选探针；后者偶发漏判时会错误地先 goto #34，丢掉已在挑战页
             # 且次数为 0 的业务终态。
-            current_scene, _score, _frame = context.current_scene(update=True)
+            current_scene, _score, _frame = context.sample_scene_once(update=True)
             if current_scene == 418:
                 start_from_counter = True
                 break
@@ -413,7 +413,7 @@ class DailyXuanhuangTaskMixin:
             # Wait only for existing safe anchors; this adds no asset identity
             # and performs no irreversible click during the transition.
             resumed = yield from context.wait_scene(
-                34,
+                [34,
                 418,
                 186,
                 419,
@@ -421,7 +421,7 @@ class DailyXuanhuangTaskMixin:
                 85,
                 395,
                 86,
-                55,
+                55],
                 wait=resume_transition_timeout_seconds,
                 label="日常_玄荒：等待战斗退出过渡落到已知页面",
             )

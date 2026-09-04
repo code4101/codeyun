@@ -60,7 +60,7 @@ class _Runtime:
         self.condition_texts = list(condition_texts)
         self.runner = SimpleNamespace(_frame_size=lambda _raw: (900, 1600))
 
-    def current_scene(self, views, update=False):
+    def sample_scene_once(self, views, update=False):
         self.actions.append(("current_scene", tuple(views), update))
         return self.scene_id, 100.0, "frame"
 
@@ -128,7 +128,8 @@ class _Runtime:
         self.actions.append(("click_ocr_text", scene, target, options))
         self.scene_id = self.landings.pop(0)
 
-    def wait_scene(self, *views, **options):
+    def wait_scene(self, layer0, **options):
+        views = tuple(layer0)
         self.actions.append(("wait_scene", views, options))
         if False:
             yield None
@@ -554,7 +555,8 @@ def test_lilian_event_same_attempt_retries_choice_after_confirmed_436_timeout(
             if self.click_count == 2:
                 self.scene_id = 438
 
-        def wait_scene(self, *views, **options):
+        def wait_scene(self, layer0, **options):
+            views = tuple(layer0)
             self.actions.append(("wait_scene", views, options))
             if False:
                 yield None

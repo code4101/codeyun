@@ -66,14 +66,14 @@ def _stub_purchase_io(
     polls = iter(polled_scenes)
     first_observation = True
 
-    def current_scene(*_args, **_kwargs):
+    def sample_scene_once(*_args, **_kwargs):
         nonlocal first_observation
         if first_observation:
             first_observation = False
             return initial_scene, 100.0, "frame"
         return next(polls), 100.0, "frame"
 
-    monkeypatch.setattr(runtime, "current_scene", current_scene)
+    monkeypatch.setattr(runtime, "sample_scene_once", current_scene)
     monkeypatch.setattr(runtime, "cur_frame", lambda **_kwargs: "frame")
     monkeypatch.setattr(
         runtime,
@@ -91,7 +91,7 @@ def _stub_purchase_io(
         lambda view, shape, **_kwargs: clicks.append((int(view), str(shape))),
     )
 
-    def wait_scene(*_args, **_kwargs):
+    def wait_scene(layer0, **_kwargs):
         if False:
             yield None
         return next(waits)

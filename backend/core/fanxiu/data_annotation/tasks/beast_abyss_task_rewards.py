@@ -119,7 +119,7 @@ def _open_beast_abyss_task_page(
     context: Any,
     assets: BeastAbyssTaskRewardAssets,
 ) -> Generator[Any, None, None]:
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         (assets.home_scene_id, assets.explore_scene_id, assets.task_scene_id),
         update=True,
     )
@@ -183,7 +183,7 @@ def claim_beast_abyss_task_rewards(
     click_limit = max(confirmations, int(max_clicks_per_tab))
     yield from _open_beast_abyss_task_page(context, assets)
 
-    scene_id, score, frame = context.current_scene(
+    scene_id, score, frame = context.sample_scene_once(
         (assets.task_scene_id,),
         update=True,
     )

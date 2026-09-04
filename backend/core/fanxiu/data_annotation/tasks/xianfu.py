@@ -102,7 +102,7 @@ class XianfuTaskMixin:
         raw_max_continue = payload.get("max_continue", 20)
         max_continue = int(20 if raw_max_continue in {None, ""} else raw_max_continue)
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, _frame = context.current_scene([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], update=True)
+        scene_id, score, _frame = context.sample_scene_once([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], update=True)
         self._reject_non_xianfu_scene(scene_id, task_label="仙府_寻访仙侣")
         current_text = context.ocr_text(_frame)
         if scene_id is None:
@@ -164,7 +164,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", "仙府_寻访仙侣：点击寻仙台", phase="xianfu_visit_open_platform", current_scene=171)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #171「寻仙台」")
                 shape.click(context)
-                yield from context.wait_scene(172, wait=18.0, label="仙府_寻访仙侣：等待寻仙台 #172")
+                yield from context.wait_scene([172], wait=18.0, label="仙府_寻访仙侣：等待寻仙台 #172")
                 scene_id = 172
             if scene_id == 172:
                 view172 = context.get_view(172)
@@ -175,7 +175,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", "仙府_寻访仙侣：进入寻访", phase="xianfu_visit_open_visit", current_scene=172)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #172「寻访」")
                 shape.click(context)
-                view = yield from context.wait_scene(173, 174, wait=18.0, label="仙府_寻访仙侣：等待寻访页")
+                view = yield from context.wait_scene([173, 174], wait=18.0, label="仙府_寻访仙侣：等待寻访页")
                 scene_id = getattr(view, "scene_id", getattr(view, "id", None))
             if scene_id == 173:
                 view173 = context.get_view(173)
@@ -267,7 +267,7 @@ class XianfuTaskMixin:
         continue_count = 0
         max_continue_count = max(0, int(max_continue))
         while True:
-            yield from context.wait_scene(175, wait=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
+            yield from context.wait_scene([175], wait=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
             frame = context.cur_frame(update=True)
             half_text = self._behavior_tree_context_ocr_text_in_shapes(context, view175, ("半价",), frame_data_url=frame, padding=24)
             half_value = _parse_first_int(half_text)
@@ -296,7 +296,7 @@ class XianfuTaskMixin:
                 self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
             close_shape.click(context)
             yield from context.wait_action_settle(1.0)
-            scene_id, _score, frame = context.current_scene([174, 175], update=True)
+            scene_id, _score, frame = context.sample_scene_once([174, 175], update=True)
             text = context.ocr_text(frame)
             if scene_id == 174 or self._xianfu_visit_text_is_juepin(text):
                 return "success"
@@ -329,7 +329,7 @@ class XianfuTaskMixin:
             self._set_status_locked("running", f"{task_label}：确认离开当前场景", phase="xianfu_return_confirm_leave", current_scene=86)
             self._log_locked("action", f"{task_label}：点击 #86「确认」")
         confirm_shape.click(context)
-        yield from context.wait_scene(34, wait=30.0, label=f"{task_label}：确认离开后等待世界 #34")
+        yield from context.wait_scene([34], wait=30.0, label=f"{task_label}：确认离开后等待世界 #34")
         return "success"
 
     def _wait_xianfu_visit_juepin(self, context: BehaviorTreeContext, *, timeout: float, label: str):
@@ -361,7 +361,7 @@ class XianfuTaskMixin:
         current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 86, 34),
     ):
         for _attempt in range(6):
-            scene_id, score, _frame = context.current_scene(current_candidates, update=True)
+            scene_id, score, _frame = context.sample_scene_once(current_candidates, update=True)
             text = context.ocr_text(_frame)
             if scene_id is None:
                 if self._xianfu_visit_text_is_continue_popup(text):
@@ -389,7 +389,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：关闭领悟结果弹窗", phase="xianfu_return_close_skill_result", current_scene=177)
                     self._log_locked("action", f"{task_label}：点击 #177「继续」")
                 continue_shape.click(context)
-                yield from context.wait_scene(176, 171, 34, wait=18.0, label=f"{task_label}：关闭 #177 后等待绝技页")
+                yield from context.wait_scene([176, 171, 34], wait=18.0, label=f"{task_label}：关闭 #177 后等待绝技页")
                 continue
             if scene_id == 176:
                 view176 = context.get_view(176)
@@ -400,7 +400,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：退出绝技页", phase="xianfu_return_exit_skill", current_scene=176)
                     self._log_locked("action", f"{task_label}：点击 #176「退出」")
                 exit_shape.click(context)
-                yield from context.wait_scene(171, 172, 34, wait=18.0, label=f"{task_label}：退出 #176 后等待仙府页")
+                yield from context.wait_scene([171, 172, 34], wait=18.0, label=f"{task_label}：退出 #176 后等待仙府页")
                 continue
             if scene_id == 175:
                 view175 = context.get_view(175)
@@ -411,7 +411,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：关闭寻访结果弹窗", phase="xianfu_return_close_visit_result", current_scene=175)
                     self._log_locked("action", f"{task_label}：点击 #175「关闭」")
                 close_shape.click(context)
-                yield from context.wait_scene(174, 173, 171, 34, wait=18.0, label=f"{task_label}：关闭 #175 后等待仙府页")
+                yield from context.wait_scene([174, 173, 171, 34], wait=18.0, label=f"{task_label}：关闭 #175 后等待仙府页")
                 continue
             if scene_id == 174:
                 view174 = context.get_view(174)
@@ -422,7 +422,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：退出绝品仙侣页", phase="xianfu_return_exit_juepin", current_scene=174)
                     self._log_locked("action", f"{task_label}：点击 #174「退出」")
                 exit_shape.click(context)
-                yield from context.wait_scene(171, 173, 172, 34, wait=18.0, label=f"{task_label}：退出 #174 后等待仙府页")
+                yield from context.wait_scene([171, 173, 172, 34], wait=18.0, label=f"{task_label}：退出 #174 后等待仙府页")
                 continue
             if scene_id == 173:
                 view173 = context.get_view(173)
@@ -433,7 +433,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：返回仙府主页", phase="xianfu_return_from_visit", current_scene=173)
                     self._log_locked("action", f"{task_label}：点击 #173「返回」")
                 back_shape.click(context)
-                yield from context.wait_scene(171, 172, 34, wait=18.0, label=f"{task_label}：返回 #173 后等待仙府主页")
+                yield from context.wait_scene([171, 172, 34], wait=18.0, label=f"{task_label}：返回 #173 后等待仙府主页")
                 continue
             if scene_id == 171:
                 view171 = context.get_view(171)
@@ -444,7 +444,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", f"{task_label}：离开仙府", phase="xianfu_return_leave_home", current_scene=171)
                     self._log_locked("action", f"{task_label}：点击 #171「离开」")
                 leave_shape.click(context)
-                leave_result = yield from context.wait_scene(86, 34, wait=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
+                leave_result = yield from context.wait_scene([86, 34], wait=30.0, label=f"{task_label}：离开仙府后等待世界 #34")
                 leave_scene_id = getattr(leave_result, "scene_id", getattr(leave_result, "id", None))
                 if leave_scene_id == 86:
                     yield from self._confirm_xianfu_leave_to_world(context, task_label=task_label)
@@ -480,11 +480,11 @@ class XianfuTaskMixin:
             )
             self._log_locked("detail", "仙府_领悟绝技：#347 无操作，等待自动返回仙府既有页面")
         result = yield from context.wait_scene(
-            177,
+            [177,
             176,
             172,
             171,
-            34,
+            34],
             wait=18.0,
             label="仙府_领悟绝技：等待 #347 自动关闭",
         )
@@ -548,7 +548,7 @@ class XianfuTaskMixin:
             )
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         preferred = [347, 177, 176, 172, 185, 171, 34]
-        scene_id, score, _frame = context.current_scene(preferred, update=True)
+        scene_id, score, _frame = context.sample_scene_once(preferred, update=True)
         self._reject_non_xianfu_scene(scene_id, task_label="仙府_领悟绝技")
         current_text = (
             ""
@@ -601,7 +601,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", "仙府_领悟绝技：点击寻仙台", phase="xianfu_skill_open_platform", current_scene=171)
                     self._log_locked("action", "仙府_领悟绝技：点击 #171「寻仙台」")
                 platform_shape.click(context)
-                yield from context.wait_scene(172, wait=18.0, label="仙府_领悟绝技：等待寻仙台 #172")
+                yield from context.wait_scene([172], wait=18.0, label="仙府_领悟绝技：等待寻仙台 #172")
                 scene_id = 172
             if scene_id == 172:
                 view172 = context.get_view(172)
@@ -612,7 +612,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", "仙府_领悟绝技：进入绝技页", phase="xianfu_skill_open_page", current_scene=172)
                     self._log_locked("action", "仙府_领悟绝技：点击 #172「领悟绝技」")
                 skill_shape.click(context)
-                yield from context.wait_scene(176, wait=18.0, label="仙府_领悟绝技：等待绝技 #176")
+                yield from context.wait_scene([176], wait=18.0, label="仙府_领悟绝技：等待绝技 #176")
 
         image176 = images.get(176)
         if not isinstance(image176, dict):

@@ -90,7 +90,7 @@ def test_result_close_retries_only_on_fresh_reliable_result_frames():
             self.clicks = []
             self.frames = 0
 
-        def current_scene(self, scene_ids, *, update):
+        def sample_scene_once(self, scene_ids, *, update):
             assert scene_ids == [451]
             assert update is True
             self.frames += 1

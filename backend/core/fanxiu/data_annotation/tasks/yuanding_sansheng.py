@@ -137,7 +137,7 @@ class YuandingSanshengTaskMixin:
             frame = context.cur_frame(update=True)
             fragments = context.ocr_fragments(frame)
             last_text = fragment_text(fragments)
-            scene_id, _score, _frame = context.current_scene(
+            scene_id, _score, _frame = context.sample_scene_once(
                 [34, 66, YUANDING_MAIN_SCENE_ID],
                 update=False,
             )
@@ -164,7 +164,7 @@ class YuandingSanshengTaskMixin:
         frame = context.cur_frame(update=True)
         fragments = context.ocr_fragments(frame)
         text = fragment_text(fragments)
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             [34, 66, YUANDING_MAIN_SCENE_ID],
             update=False,
         )
@@ -190,7 +190,7 @@ class YuandingSanshengTaskMixin:
                 yield from context.wait_action_settle(0.5)
             if entry is None:
                 context.click_shape_center(66, "返回")
-                yield from context.wait_scene(34, wait=page_timeout, label="缘定三生：无活动时返回世界")
+                yield from context.wait_scene([34], wait=page_timeout, label="缘定三生：无活动时返回世界")
                 return self._yuanding_result(
                     payload,
                     outcome="activity_unavailable",
@@ -279,9 +279,9 @@ class YuandingSanshengTaskMixin:
                 raise RuntimeError("缘定三生_每日礼包：点击免费礼包后未确认每日限购 0")
 
         context.click_shape_center(YUANDING_MAIN_SCENE_ID, "返回")
-        yield from context.wait_scene(66, wait=page_timeout, label="缘定三生：返回日程")
+        yield from context.wait_scene([66], wait=page_timeout, label="缘定三生：返回日程")
         context.click_shape_center(66, "返回")
-        yield from context.wait_scene(34, wait=page_timeout, label="缘定三生：返回世界")
+        yield from context.wait_scene([34], wait=page_timeout, label="缘定三生：返回世界")
         return self._yuanding_result(
             payload,
             outcome=("claimed" if claimed_now else "already_claimed"),

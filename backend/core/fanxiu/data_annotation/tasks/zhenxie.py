@@ -35,7 +35,7 @@ class ZhenxieTaskMixin:
     def _enter_daily_zhenxie(self, context: Any):
         """Enter the event from any valid timed-event landing scene."""
 
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             [63, 271, 272, 85, 34, 66],
             update=True,
         )
@@ -63,7 +63,7 @@ class ZhenxieTaskMixin:
             current = self._zhenxie_scene_id(
                 (
                     yield from context.wait_scene(
-                        271,
+                        [271],
                         wait=180.0,
                         label="日常_镇邪：#63[前往] 后等待 #271",
                     )
@@ -95,12 +95,12 @@ class ZhenxieTaskMixin:
 
         deadline = time.monotonic() + 135.0
         landing = yield from context.wait_scene(
-            34,
+            [34,
             85,
             186,
             86,
             272,
-            271,
+            271],
             wait=90.0,
             label="日常_镇邪：参战后等待可离开的稳定场景",
         )
@@ -117,10 +117,10 @@ class ZhenxieTaskMixin:
                 context.click_shape(current, "离开")
                 yield from context.wait_action_settle(2.0)
                 landed = yield from context.wait_scene(
-                    34,
+                    [34,
                     85,
                     186,
-                    86,
+                    86],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：点击离开后重新识别多层落点",
                 )
@@ -145,10 +145,10 @@ class ZhenxieTaskMixin:
                 continue
             if current is None:
                 landed = yield from context.wait_scene(
-                    34,
+                    [34,
                     85,
                     186,
-                    86,
+                    86],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：重新识别多层离场上下文",
                 )

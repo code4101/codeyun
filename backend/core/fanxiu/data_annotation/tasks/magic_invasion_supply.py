@@ -158,7 +158,7 @@ def ensure_magic_tianyan_supply(
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
-        STORAGE_BAG_SCENE,
+        [STORAGE_BAG_SCENE],
         wait=10.0,
         label="魔道入侵：等待储物袋补充天眼符",
     )
@@ -212,7 +212,7 @@ def ensure_magic_tianyan_supply(
         )
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(
-        WORLD_SCENE,
+        [WORLD_SCENE],
         wait=10.0,
         label="魔道入侵：补给后返回世界",
     )

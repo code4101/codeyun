@@ -285,7 +285,7 @@ def execute_dongtian_seating_runtime_job(
         )
         context.click_frame_point(341, *geometry.point)
         yield from context.wait_scene(
-            343,
+            [343],
             wait=15,
             label="洞天_上座：打开空侍从席队伍确认",
         )

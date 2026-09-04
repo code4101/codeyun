@@ -27,7 +27,8 @@ class _Runtime:
         self.calls.append(("wait_click", scene, shape))
         yield
 
-    def wait_scene(self, *scenes, label):
+    def wait_scene(self, layer0, *, label):
+        scenes = tuple(layer0)
         self.calls.append(("wait_scene", scenes, label))
         yield
 
@@ -35,7 +36,7 @@ class _Runtime:
         self.calls.append(("wait_action_settle", seconds))
         yield
 
-    def current_scene(self, scenes, *, update):
+    def sample_scene_once(self, scenes, *, update):
         scene = next(self.battle_scenes)
         self.calls.append(("current_scene", scenes, update, scene))
         return scene, 100.0, "frame"
@@ -84,7 +85,7 @@ def test_daily_dongtian_action_power_loop_can_start_at_341_and_stop_below_100():
             self.scenes = iter([341, 341])
             self.action_power = iter([100, 0])
 
-        def current_scene(self, scenes, *, update):
+        def sample_scene_once(self, scenes, *, update):
             return next(self.scenes), 100.0, "frame"
 
         def cur_frame(self, *, update):
@@ -202,7 +203,8 @@ def test_daily_dongtian_wrong_or_own_detail_returns_before_occupation():
         def __init__(self):
             self.calls = []
 
-        def wait_scene(self, scene, *, label):
+        def wait_scene(self, layer0, *, label):
+            scene = layer0[0]
             self.calls.append(("wait_scene", scene))
             yield
 
@@ -265,7 +267,8 @@ def test_daily_dongtian_enemy_place_uses_dynamic_icon_offset_and_avoids_roster()
                 "地点图标": Shape({"x": 540, "y": 1080, "w": 74, "h": 50}),
             }[title]
 
-        def wait_scene(self, scene, *, label):
+        def wait_scene(self, layer0, *, label):
+            scene = layer0[0]
             yield
 
         def cur_frame(self, *, update):
@@ -332,7 +335,8 @@ def test_daily_dongtian_enemy_place_accepts_occupancy_suffix_without_scrolling()
                 "地点图标": Shape({"x": 540, "y": 1080, "w": 74, "h": 50}),
             }[title]
 
-        def wait_scene(self, scene, *, label):
+        def wait_scene(self, layer0, *, label):
+            scene = layer0[0]
             yield
 
         def cur_frame(self, *, update):

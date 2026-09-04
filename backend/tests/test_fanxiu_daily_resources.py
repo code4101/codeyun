@@ -78,7 +78,8 @@ def test_xianshi_weekly_resource_leaves_world_like_internal_scene_first():
         def click_shape_center(self, view_id, title):
             events.append(("leave", view_id, title))
 
-        def wait_scene(self, view_id, **_options):
+        def wait_scene(self, layer0, **_options):
+            view_id = layer0[0]
             events.append(("wait", view_id))
             if False:
                 yield

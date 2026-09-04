@@ -61,7 +61,7 @@ class JianlingTaskMixin:
         for round_index in range(1, max_rounds + 1):
             self._raise_if_stopped(stop_event)
             frame = context.cur_frame(update=True)
-            scene_id, _score, _frame = context.current_scene([351, 349], frame_data_url=frame)
+            scene_id, _score, _frame = context.sample_scene_once([351, 349], frame_data_url=frame)
 
             if scene_id == 351:
                 unknown_rounds = 0

@@ -147,7 +147,7 @@ def run_dandao_task_rewards_flow(
     if int(scene) != DANDAO_TASK_REWARDS_SCENE_ID:
         context.click_shape_center(int(scene), "任务")
         yield from context.wait_scene(
-            DANDAO_TASK_REWARDS_SCENE_ID,
+            [DANDAO_TASK_REWARDS_SCENE_ID],
             wait=20.0,
             label=f"{DANDAO_TASK_REWARDS_LABEL}：等待任务页",
         )
@@ -160,7 +160,7 @@ def run_dandao_task_rewards_flow(
             break
         if len(claimed_ids) >= limit:
             raise RuntimeError(f"{DANDAO_TASK_REWARDS_LABEL}：领取达到安全上限 {limit} 仍未收敛")
-        scene_id, score, frame = context.current_scene(
+        scene_id, score, frame = context.sample_scene_once(
             [DANDAO_TASK_REWARDS_SCENE_ID],
             update=True,
         )

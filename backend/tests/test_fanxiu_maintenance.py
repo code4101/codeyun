@@ -35,7 +35,7 @@ class _FakeRuntime:
         self.clicks = []
         self.completion_message = ""
 
-    def current_scene(self, _scene_ids, update=True):
+    def sample_scene_once(self, _scene_ids, update=True):
         scene_id = self.scenes.pop(0)
         return scene_id, 100.0, f"frame-{scene_id}"
 
@@ -204,7 +204,7 @@ def test_maintenance_observation_bypasses_ordinary_popup_guard(tmp_path):
         def cur_frame(self, *, update=True):
             return "maintenance-frame"
 
-        def current_scene(self, *_args, **_kwargs):
+        def sample_scene_once(self, *_args, **_kwargs):
             raise AssertionError("维护恢复不能经过普通作业 current_scene 门卫")
 
         def ocr_text(self, _frame):

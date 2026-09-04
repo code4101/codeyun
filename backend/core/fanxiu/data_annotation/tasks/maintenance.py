@@ -55,7 +55,7 @@ class MaintenanceTaskMixin:
             )
         else:
             # Lightweight test/context adapters may expose only the public view.
-            scene_id, score, frame = context.current_scene(
+            scene_id, score, frame = context.sample_scene_once(
                 self.maintenance_probe_scene_ids,
                 update=update,
             )

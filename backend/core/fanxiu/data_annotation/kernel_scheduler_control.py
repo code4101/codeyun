@@ -1742,6 +1742,25 @@ def schedule_failed_task_retry(
         task["next_time"] = None
         return
 
+    # Login is a manual Job in the product surface, but a MuMu restart raises
+    # a persistent startup gate that only the complete login+bubble
+    # transaction may clear.  While that gate remains active, every login
+    # failure is still part of recovery even when the failure text is an
+    # ordinary scene/input error.
+    if str(task.get("id") or "") == LOGIN_GAME_SCHEDULER_TASK_ID:
+        try:
+            from backend.core.fanxiu.client.mumu_control import (
+                mumu_device_startup_grace_state,
+            )
+
+            if bool(mumu_device_startup_grace_state().get("login_required")):
+                task["next_time"] = (finished + timedelta(seconds=5)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                return
+        except Exception:
+            pass
+
     # Login is a manual Job in the product surface, but a successful MuMu
     # recovery turns it into the mandatory continuation of the invalidated GUI
     # transaction.  The Jupyter boundary deliberately preserves the exception

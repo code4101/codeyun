@@ -393,12 +393,14 @@ class SceneMatch(int):
         matched_layer: int,
         scope: Literal["business", "global"],
         status: str,
+        frame_data_url: str | None = None,
     ) -> "SceneMatch":
         value = int.__new__(cls, int(scene_id))
         value.score = float(score or 0.0)
         value.matched_layer = int(matched_layer)
         value.scope = scope
         value.status = str(status or "matched")
+        value.frame_data_url = frame_data_url
         return value
 
     @property
@@ -639,6 +641,7 @@ class BehaviorTreeContext(AutomationContext):
                     matched_layer=recognition.matched_layer,
                     scope=scope,
                     status=recognition.status,
+                    frame_data_url=frame,
                 )
                 if recognition.scene_id is not None and recognition.matched_layer is not None
                 else None
@@ -708,14 +711,21 @@ class BehaviorTreeContext(AutomationContext):
                 continue
             return commit(global_recognition, frame, scope="global")
 
-    def current_scene(
+    def sample_scene_once(
         self,
         views: Iterable[View | int] | None = None,
         *,
         frame_data_url: str | None = None,
         update: bool = False,
     ) -> tuple[int | None, float, str]:
-        """Recognize one frame without waiting or performing popup actions."""
+        """Sample exactly one frame for a narrow diagnostic/algorithmic probe.
+
+        This low-level primitive does not wait or process popup interruptions.
+        It is valid only when a one-frame miss is itself useful data or an
+        enclosing loop already owns the waiting budget. Task admission, action
+        readiness, click landing, navigation recovery, and terminal-state
+        observation must use ``wait_scene(scenes, wait=...)`` instead.
+        """
 
         frame = frame_data_url if isinstance(frame_data_url, str) and frame_data_url else self.cur_frame(update=update)
         business_view_ids: list[int] = []
@@ -1249,7 +1259,7 @@ class BehaviorTreeContext(AutomationContext):
                     raise
                 if isinstance(target_view, View) and target_view.id == source_view.id:
                     raise
-                scene_id, score, _frame = self.current_scene(
+                scene_id, score, _frame = self.sample_scene_once(
                     [source_view],
                     update=True,
                 )
@@ -1336,7 +1346,7 @@ class BehaviorTreeContext(AutomationContext):
                                 label=label or f"点击后等待离开 #{source_view.id or '?'}",
                             ))
                         target_view = yield from self.wait_scene(
-                            *target_ids,
+                            target_ids,
                             wait=wait_timeout,
                             label=wait_label,
                         )
@@ -1352,7 +1362,7 @@ class BehaviorTreeContext(AutomationContext):
                             or source_view.id is None
                         ):
                             break
-                        scene_id, score, _frame = self.current_scene(
+                        scene_id, score, _frame = self.sample_scene_once(
                             update=True,
                         )
                         if scene_id != source_view.id:
@@ -1482,7 +1492,7 @@ class BehaviorTreeContext(AutomationContext):
         yield from self.wait_action_settle(settle_seconds)
         try:
             return (yield from self.wait_scene(
-                590,
+                [590],
                 wait=attempt_timeout,
                 label="安全区点击气泡后等待37手游弹窗#590",
             ))
@@ -1541,7 +1551,7 @@ class BehaviorTreeContext(AutomationContext):
                 self.runner._raise_if_stopped(self.stop_event)
             self.runner._clear_tick_frame(self.ctx)
             yield BehaviorTreeStatus.RUNNING
-            scene_id, score, _frame = self.current_scene(
+            scene_id, score, _frame = self.sample_scene_once(
                 update=True,
             )
             last_scene_id, last_score = scene_id, score
@@ -1616,26 +1626,29 @@ class BehaviorTreeContext(AutomationContext):
 
     def wait_scene(
         self,
-        *scenes: View | int,
+        scenes: list[int],
         wait: float = 5.0,
+        *,
         handle_interruptions: bool = True,
         label: str = "等待场景",
     ):
         """Wait for Layer-0 scenes through the canonical layered recognizer.
 
-        Every fresh tick evaluates the business candidates and popup group in
+        ``scenes`` is the complete business-scene candidate collection for
+        this wait. Every fresh tick evaluates those candidates and popup group in
         one graph.  Once ``wait`` expires, the same frame falls through the
         global Layer-1/Layer-2 graph before the timeout is reported.  Passing
         ``wait=0`` performs one tick without a retry budget. The returned
         :class:`SceneMatch` behaves as an integer scene id; new code should use
-        ``scene_id`` and ``matched_layer`` explicitly when provenance matters.
+        ``scene_id`` and ``matched_layer`` explicitly when provenance matters,
+        and ``frame_data_url`` when subsequent reads must use the exact frame
+        that satisfied the wait.
         """
 
-        view_ids = [scene.id if isinstance(scene, View) else int(scene) for scene in scenes]
+        view_ids = [int(scene) for scene in scenes]
         view_ids = [view_id for view_id in view_ids if view_id is not None]
         if not view_ids:
-            match, _score, _frame = yield from self._recognize_scene_layers(wait=wait)
-            return match
+            raise ValueError("wait_scene scenes 不能为空")
         start = time.monotonic()
         wait_timeout = float(wait)
         if wait_timeout < 0.0:
@@ -1844,7 +1857,7 @@ class BehaviorTreeContext(AutomationContext):
             label=label,
         )
         target_view = view.id if isinstance(view, View) else int(view)
-        scene_id, score, _frame = self.current_scene([target_view])
+        scene_id, score, _frame = self.sample_scene_once([target_view])
         if scene_id != target_view:
             scene_id, score = target_view, 0.0
         return result, scene_id, score
@@ -1898,7 +1911,7 @@ class BehaviorTreeContext(AutomationContext):
             self.runner._clear_tick_frame(self.ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = self.cur_frame(update=True)
-            _scene_id, _score, frame = self.current_scene([], frame_data_url=frame)
+            _scene_id, _score, frame = self.sample_scene_once([], frame_data_url=frame)
             for key, condition in conditions.items():
                 result = condition.check(self, frame)
                 last_details[str(key)] = result.detail or condition.label
@@ -2279,10 +2292,10 @@ class BehaviorTreeContext(AutomationContext):
         if max_clicks <= 0:
             raise ValueError("max_clicks 必须大于 0")
 
-        scene_id, _score, _frame = self.current_scene([source_id], update=True)
+        scene_id, _score, _frame = self.sample_scene_once([source_id], update=True)
         if scene_id != source_id:
             yield from self.wait_scene(
-                source_view,
+                [source_view],
                 wait=initial_timeout,
                 label=f"{label}：等待自身场景 #{source_id}",
             )
@@ -2299,7 +2312,7 @@ class BehaviorTreeContext(AutomationContext):
                     break
                 sample_seconds = min(poll_seconds, remaining_seconds)
                 yield from self.wait_action_settle(sample_seconds)
-                scene_id, _score, _frame = self.current_scene([source_id], update=True)
+                scene_id, _score, _frame = self.sample_scene_once([source_id], update=True)
                 if scene_id == source_id:
                     source_reappeared = True
                     break
@@ -2382,7 +2395,7 @@ class BehaviorTreeContext(AutomationContext):
         yield from self.wait_action_settle(settle_seconds)
         wait_label = label or f"固定点击后等待目标场景 {','.join(f'#{target_id}' for target_id in target_ids)}"
         return (yield from self.wait_scene(
-            *target_ids,
+            target_ids,
             wait=self.default_wait_condition_timeout if timeout is None else float(timeout),
             label=wait_label,
         ))
@@ -3513,7 +3526,7 @@ class BehaviorTreeContext(AutomationContext):
         self.click_shape_center(home_view, "设置难度")
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
-            settings_view,
+            [settings_view],
             wait=15.0,
             label="进入仙窍试炼设置页",
         )
@@ -3525,7 +3538,7 @@ class BehaviorTreeContext(AutomationContext):
         self.click_shape_center(settings_view, "返回")
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
-            home_view,
+            [home_view],
             wait=15.0,
             label=f"仙窍试炼{int(target_level)}级设置后返回主页",
         )
@@ -3552,7 +3565,7 @@ class BehaviorTreeContext(AutomationContext):
         self.click_shape_center(home_view, "设置难度")
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
-            settings_view,
+            [settings_view],
             wait=15.0,
             label="进入仙窍试炼设置页",
         )
@@ -3564,7 +3577,7 @@ class BehaviorTreeContext(AutomationContext):
         self.click_shape_center(settings_view, "返回")
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
-            home_view,
+            [home_view],
             wait=15.0,
             label=f"仙窍试炼难度{increment:+d}后返回主页",
         )
@@ -3637,7 +3650,7 @@ class BehaviorTreeContext(AutomationContext):
         ) + (227, 367)
         with self.expect_views(business_foreground_ids):
             for poll_index in range(max_polls):
-                scene_id, score, frame = self.current_scene(list(views), update=True)
+                scene_id, score, frame = self.sample_scene_once(list(views), update=True)
                 last_scene_id = scene_id
                 if scene_id in views:
                     absent_polls = 0
@@ -3658,9 +3671,9 @@ class BehaviorTreeContext(AutomationContext):
                                 if remaining <= 0:
                                     raise TimeoutError("仙窍试炼扫荡奖励收口超时，未返回 #357")
                                 landed = yield from self.wait_scene(
-                                    challenge_view,
+                                    [challenge_view,
                                     227,
-                                    367,
+                                    367],
                                     wait=remaining,
                                     label="仙窍试炼扫荡奖励收口并返回主页",
                                 )
@@ -3752,18 +3765,18 @@ class BehaviorTreeContext(AutomationContext):
         failure = self.view(failure_view)
         world = self.view(world_view)
         observed_view = yield from self.wait_scene(
-            battle,
+            [battle,
             success,
-            failure,
+            failure],
             wait=battle_entry_timeout,
             label="等待仙窍试炼战斗或直接结算",
         )
         observed_id = int(observed_view.id) if isinstance(observed_view, View) else int(observed_view)
         if observed_id == int(battle.id):
             result_view = yield from self.wait_scene(
-                success,
+                [success,
                 failure,
-                world,
+                world],
                 wait=battle_timeout,
                 label="等待仙窍试炼成功、失败或结算过期",
             )
@@ -3873,8 +3886,8 @@ class BehaviorTreeContext(AutomationContext):
         self.click_shape(result["result_scene"], "退出", frame_data_url=frame)
         yield from self.wait_action_settle(settle_seconds)
         landing_view = yield from self.wait_scene(
-            home_view,
-            world_view,
+            [home_view,
+            world_view],
             wait=15.0,
             label="仙窍试炼结算退出后的实际落点",
         )
@@ -3930,7 +3943,7 @@ class BehaviorTreeContext(AutomationContext):
         """
 
         home_id = int(self.view(home_view).id)
-        scene_id, score, _frame = self.current_scene([home_id], update=True)
+        scene_id, score, _frame = self.sample_scene_once([home_id], update=True)
         if scene_id != home_id:
             raise RuntimeError(
                 f"逐级探测必须从仙窍试炼主页 #{home_id} 开始，"
@@ -4129,7 +4142,7 @@ class BehaviorTreeContext(AutomationContext):
                 raise RuntimeError(f"#363 无法唯一识别购买价格：{ocr_text!r}")
             return known_prices[0], ocr_text, current_frame
 
-        scene_id, _score, _frame = self.current_scene(candidate_ids, update=True)
+        scene_id, _score, _frame = self.sample_scene_once(candidate_ids, update=True)
         if scene_id not in candidate_ids:
             raise RuntimeError("仙窍试炼购买流程必须从 #357/#363/#364 之一开始")
 
@@ -4139,8 +4152,8 @@ class BehaviorTreeContext(AutomationContext):
                 actions.append({"scene": home_id, "shape": "购买"})
                 yield from self.wait_action_settle(settle_seconds)
                 waited = yield from self.wait_scene(
-                    purchase_view,
-                    exhausted_view,
+                    [purchase_view,
+                    exhausted_view],
                     wait=wait_timeout,
                     label="等待仙窍试炼购买结果",
                 )
@@ -4158,7 +4171,7 @@ class BehaviorTreeContext(AutomationContext):
                 actions.append({"scene": exhausted_id, "shape": "返回"})
                 yield from self.wait_action_settle(settle_seconds)
                 yield from self.wait_scene(
-                    home_view,
+                    [home_view],
                     wait=wait_timeout,
                     label="等待返回仙窍试炼主页",
                 )
@@ -4186,7 +4199,7 @@ class BehaviorTreeContext(AutomationContext):
                 actions.append({"scene": purchase_id, "shape": "返回", "price": price})
                 yield from self.wait_action_settle(settle_seconds)
                 yield from self.wait_scene(
-                    home_view,
+                    [home_view],
                     wait=wait_timeout,
                     label="等待返回仙窍试炼主页",
                 )
@@ -4210,9 +4223,9 @@ class BehaviorTreeContext(AutomationContext):
             actions.append({"scene": purchase_id, "shape": "购买并使用", "price": price})
             yield from self.wait_action_settle(settle_seconds)
             waited = yield from self.wait_scene(
-                home_view,
+                [home_view,
                 purchase_view,
-                exhausted_view,
+                exhausted_view],
                 wait=wait_timeout,
                 label="等待仙窍试炼购买后的实际场景",
             )
@@ -4247,7 +4260,7 @@ class BehaviorTreeContext(AutomationContext):
                 if time.monotonic() >= refresh_deadline:
                     raise TimeoutError(f"#363 购买 {price} 后价格/场景未在限时内刷新")
                 yield from self.wait_action_settle(min(0.4, settle_seconds or 0.4))
-                scene_id, _score, _frame = self.current_scene(candidate_ids, update=True)
+                scene_id, _score, _frame = self.sample_scene_once(candidate_ids, update=True)
 
         raise TimeoutError(
             f"仙窍试炼购买流程超过 {max_transitions} 次场景转换；"
@@ -4285,7 +4298,7 @@ class BehaviorTreeContext(AutomationContext):
         if status != "open":
             raise RuntimeError(f"仙窍_试炼：#69 未能打开仙窍入口，状态 {status!r}")
         yield from self.wait_scene(
-            category_view,
+            [category_view],
             wait=15.0,
             label="仙窍_试炼：等待仙窍分类页 #356",
         )
@@ -4306,7 +4319,7 @@ class BehaviorTreeContext(AutomationContext):
         self.click_frame_point(category_view, x, y)
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
-            trial_view,
+            [trial_view],
             wait=max(15.0, float(trial_entry_timeout)),
             label="仙窍_试炼：等待试炼主页 #357",
         )
@@ -4374,7 +4387,7 @@ class BehaviorTreeContext(AutomationContext):
         """点击 #357“返回”并确认直接回到稳定世界 #34。"""
 
         home_id = int(self.view(home_view).id)
-        scene_id, score, frame = self.current_scene([home_id], update=True)
+        scene_id, score, frame = self.sample_scene_once([home_id], update=True)
         if scene_id != home_id:
             raise RuntimeError(
                 f"仙窍_试炼收尾预期 #357，实际 #{scene_id} ({float(score):.0f}%)"
@@ -4382,7 +4395,7 @@ class BehaviorTreeContext(AutomationContext):
         self.click_shape(home_view, "返回", frame_data_url=frame)
         yield from self.wait_action_settle(settle_seconds)
         yield from self.wait_scene(
-            world_view,
+            [world_view],
             wait=15.0,
             label="仙窍_试炼：等待返回世界 #34",
         )
@@ -6834,7 +6847,7 @@ class BehaviorTreeExecutor(
         asset_tree_path = ctx.get("asset_tree_path")
         if isinstance(asset_tree_path, Path):
             context = self._behavior_tree_context(ctx, asset_tree_path, frame_data_url=frame_data_url, stop_event=stop_event)
-            required_methods = ("cur_frame", "current_scene", "ocr_fragments", "ocr_text", "clear_frame")
+            required_methods = ("cur_frame", "sample_scene_once", "ocr_fragments", "ocr_text", "clear_frame")
             if all(hasattr(context, name) for name in required_methods):
                 return context
 
@@ -6852,7 +6865,7 @@ class BehaviorTreeExecutor(
                 self.frame_data_url = runner._screencap(ctx)
                 return self.frame_data_url
 
-            def current_scene(
+            def sample_scene_once(
                 self,
                 views: list[int] | None = None,
                 *,
@@ -6929,8 +6942,8 @@ class BehaviorTreeExecutor(
             else:
                 frame = self._screencap(ctx)
                 scene_id, score = self._identify_scene_number(ctx, frame, scene_ids)
-        elif hasattr(context, "current_scene"):
-            scene_id, score, frame = context.current_scene(scene_ids, frame_data_url=frame, update=update)
+        elif hasattr(context, "sample_scene_once"):
+            scene_id, score, frame = context.sample_scene_once(scene_ids, frame_data_url=frame, update=update)
         else:
             if not isinstance(frame, str) or not frame:
                 frame = context.cur_frame(update=update) if hasattr(context, "cur_frame") else self._screencap(ctx)
@@ -7190,7 +7203,7 @@ class BehaviorTreeExecutor(
             context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=cleanup_stop_event)
             last_score = 0.0
             for probe_index in range(2):
-                scene_id, score, _frame = context.current_scene([target_scene_id], update=True)
+                scene_id, score, _frame = context.sample_scene_once([target_scene_id], update=True)
                 last_score = float(score or 0.0)
                 if scene_id != target_scene_id or not self._scene_matches_id(target_scene_id, last_score):
                     return False, last_score
@@ -7603,7 +7616,11 @@ class BehaviorTreeExecutor(
                 if (
                     scheduler_task_id
                     and ctx.get("entry") is not None
-                    and task_type not in {"login_game", "maintenance_recovery"}
+                    and task_type not in {
+                        "login_game",
+                        "maintenance_recovery",
+                        "bubble_weekly_pills",
+                    }
                 ):
                     preflight = self._ensure_world_ready_via_login_game(
                         ctx,
@@ -7664,8 +7681,8 @@ class BehaviorTreeExecutor(
         )
         try:
             view = yield from context.wait_scene(
-                228,
-                71,
+                [228,
+                71],
                 wait=float(payload.get("youli_mainline_wait_timeout") or 12.0),
                 label=f"{task_label}：等待主线快路径进入修仙传",
             )
@@ -8036,7 +8053,7 @@ class BehaviorTreeExecutor(
             34,
             wait=float(payload.get("return_world_layer0_wait_seconds") or 2.0),
         )
-        yield from context.wait_scene(34, label=f"{task_label}：等待世界 #34")
+        yield from context.wait_scene([34], label=f"{task_label}：等待世界 #34")
 
 
 
@@ -8071,7 +8088,7 @@ class BehaviorTreeExecutor(
     ):
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         return (yield from context.wait_scene(
-            217,
+            [217],
             wait=float(payload.get("invite_timeout") or 12.0),
             label="日常_双修：等待邀请页 #217",
         ))
@@ -8111,7 +8128,7 @@ class BehaviorTreeExecutor(
             yield from self._wait_action_settle(ctx, stop_event, seconds=settle_seconds)
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.wait_scene(
-            218,
+            [218],
             wait=float(payload.get("xianyuan_list_timeout") or 12.0),
             label="日常_双修：等待仙缘邀请列表 #218",
         )
@@ -8161,7 +8178,7 @@ class BehaviorTreeExecutor(
     ):
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         return (yield from context.wait_scene(
-            219,
+            [219],
             wait=float(payload.get("training_ready_timeout") or 12.0),
             label="日常_双修：等待修炼准备页 #219",
         ))
@@ -8210,7 +8227,7 @@ class BehaviorTreeExecutor(
     ):
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         return (yield from context.wait_scene(
-            221,
+            [221],
             wait=float(payload.get("training_complete_timeout") or 18.0),
             label="日常_双修：等待修炼完成页 #221",
         ))
@@ -8258,10 +8275,10 @@ class BehaviorTreeExecutor(
     ) -> str:
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         scene_id = yield from context.wait_scene(
-            34,
+            [34,
             289,
             86,
-            219,
+            219],
             wait=float(payload.get("after_complete_timeout") or 8.0),
             label="日常_双修：等待修炼完成后的正式落点",
         )
@@ -8276,7 +8293,7 @@ class BehaviorTreeExecutor(
         else:
             raise RuntimeError(f"日常_双修：修炼完成后的落点 #{scene_id} 尚未实现")
         yield from context.wait_scene(
-            34,
+            [34],
             wait=float(payload.get("after_leave_world_timeout") or 12.0),
             label="日常_双修：等待离开后回到世界 #34",
         )
@@ -8316,9 +8333,9 @@ class BehaviorTreeExecutor(
             yield from self._wait_action_settle(ctx, stop_event, seconds=settle_seconds)
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         scene_id = yield from context.wait_scene(
-            289,
+            [289,
             86,
-            34,
+            34],
             wait=float(payload.get("leave_result_timeout") or 8.0),
             label="日常_双修：等待离开确认或世界",
         )
@@ -8591,7 +8608,7 @@ class BehaviorTreeExecutor(
             self._set_status_locked("running", "仙府_领悟绝技：切换仙品绝技", phase="xianfu_skill_open_xianpin", current_scene=176)
             self._log_locked("action", "仙府_领悟绝技：点击 #176「仙品绝技」")
         tab_shape.click(context)
-        yield from context.wait_scene(176, wait=5.0, label="仙府_领悟绝技：等待仙品绝技 #176")
+        yield from context.wait_scene([176], wait=5.0, label="仙府_领悟绝技：等待仙品绝技 #176")
 
     def _handle_xianfu_learn_skill_result_popup(
         self,
@@ -8603,7 +8620,7 @@ class BehaviorTreeExecutor(
         view177 = context.get_view(177)
         if not isinstance(view177, View):
             raise RuntimeError("缺少 #177「领悟绝技」结果弹窗标注，无法继续")
-        yield from context.wait_scene(177, wait=18.0, label="仙府_领悟绝技：等待结果弹窗 #177")
+        yield from context.wait_scene([177], wait=18.0, label="仙府_领悟绝技：等待结果弹窗 #177")
         if refresh_reference_frame_once:
             frame_data_url = context.cur_frame()
             evidence_dir = self._refresh_scene_reference_frame(context, 177, frame_data_url)
@@ -8622,7 +8639,7 @@ class BehaviorTreeExecutor(
             self._set_status_locked("running", "仙府_领悟绝技：关闭结果弹窗", phase="xianfu_skill_continue", current_scene=177)
             self._log_locked("action", "仙府_领悟绝技：点击 #177「继续」")
         continue_shape.click(context)
-        yield from context.wait_scene(176, wait=18.0, label="仙府_领悟绝技：返回绝技 #176")
+        yield from context.wait_scene([176], wait=18.0, label="仙府_领悟绝技：返回绝技 #176")
         return "success"
 
     def _refresh_scene_reference_frame(
@@ -12308,7 +12325,7 @@ class BehaviorTreeExecutor(
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
-            scene_id, score, frame = context.current_scene(
+            scene_id, score, frame = context.sample_scene_once(
                 [target_scene_id],
                 frame_data_url=frame,
             )
@@ -12360,7 +12377,7 @@ class BehaviorTreeExecutor(
             yield BehaviorTreeStatus.RUNNING
             frame = self._screencap(ctx)
             elapsed = time.monotonic() - start
-            scene_id, score, frame = context.current_scene(
+            scene_id, score, frame = context.sample_scene_once(
                 [121],
                 frame_data_url=frame,
             )
@@ -13068,7 +13085,7 @@ class BehaviorTreeExecutor(
             fallback_scene_id: int | None = None
             fallback_score = 0.0
             with self._scene_observation_probe(ctx):
-                matched_expected, expected_score, frame = context.current_scene(
+                matched_expected, expected_score, frame = context.sample_scene_once(
                     expected_ids,
                     frame_data_url=frame,
                 )
@@ -13421,7 +13438,7 @@ class BehaviorTreeExecutor(
             attempts += 1
             ctx.pop("_last_scene_recognition_status", None)
             with self._scene_observation_probe(ctx):
-                current_scene_id, score, frame = context.current_scene(frame_data_url=frame)
+                current_scene_id, score, frame = context.sample_scene_once(frame_data_url=frame)
             recognition_status = str(
                 ctx.pop(
                     "_last_scene_recognition_status",

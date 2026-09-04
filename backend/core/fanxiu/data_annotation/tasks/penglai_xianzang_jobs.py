@@ -221,8 +221,8 @@ def _execute_xianzang_standard_job(
 
     context = _behavior_tree_context(runner, ctx, stop_event)
     resumed: dict[str, Any] = {}
-    if resume_draw_result_page and callable(getattr(context, "current_scene", None)):
-        scene_id, score, _frame = context.current_scene(
+    if resume_draw_result_page and callable(getattr(context, "sample_scene_once", None)):
+        scene_id, score, _frame = context.sample_scene_once(
             [XIANZANG_DRAW_RESULT_SCENE_ID],
             update=True,
         )

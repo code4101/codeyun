@@ -161,13 +161,14 @@ def test_yaochi_opens_shared_gift_page_with_proven_family_shape(monkeypatch) -> 
         def __init__(self):
             self.clicks = []
 
-        def current_scene(self, _scene_ids, *, update):
+        def sample_scene_once(self, _scene_ids, *, update):
             return 458, 100.0, "frame"
 
         def click_shape_center(self, scene_id, title):
             self.clicks.append((scene_id, title))
 
-        def wait_scene(self, scene_id, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene_id = layer0[0]
             if False:
                 yield None
             return scene_id

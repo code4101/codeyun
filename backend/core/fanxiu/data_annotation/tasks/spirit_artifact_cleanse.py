@@ -284,7 +284,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         self.assets = assets or SpiritArtifactCleanseGuiAssets()
 
     def current_scene_id(self) -> int | None:
-        scene_id, _score, _frame = self.context.current_scene(
+        scene_id, _score, _frame = self.context.sample_scene_once(
             self.assets.observation_scene_ids,
             update=True,
         )

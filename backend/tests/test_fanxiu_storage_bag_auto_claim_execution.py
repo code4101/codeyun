@@ -39,7 +39,8 @@ class _Runtime:
         self.clicks.append((scene_id, title))
         return _yielding(None)
 
-    def wait_scene(self, scene_id, **_kwargs):
+    def wait_scene(self, layer0, **_kwargs):
+        scene_id = layer0[0]
         return _yielding(scene_id)
 
 

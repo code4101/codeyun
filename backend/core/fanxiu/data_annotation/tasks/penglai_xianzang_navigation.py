@@ -85,7 +85,7 @@ def _page_from_observation(
 
 
 def read_xianzang_page(context: Any, *, update: bool = True) -> XianzangPageResult | None:
-    scene_id, score, frame = context.current_scene(
+    scene_id, score, frame = context.sample_scene_once(
         list(XIANZANG_KNOWN_SCENE_IDS),
         update=bool(update),
     )
@@ -152,7 +152,7 @@ def enter_xianzang(
         0.5, float(availability_timeout_seconds)
     )
     while True:
-        scene_id, score, frame = context.current_scene([int(source_scene_id)], update=True)
+        scene_id, score, frame = context.sample_scene_once([int(source_scene_id)], update=True)
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
                 f"进入蓬莱仙藏要求从可靠 #{source_scene_id} 开始："
@@ -194,7 +194,7 @@ def enter_xianzang(
                 timeout_seconds=timeout_seconds,
                 poll_seconds=poll_seconds,
             )
-        scene_id, score, frame = context.current_scene(
+        scene_id, score, frame = context.sample_scene_once(
             [int(source_scene_id)],
             update=True,
         )
@@ -332,7 +332,7 @@ def leave_xianzang(
     last_scene: int | None = None
     last_score = 0.0
     while True:
-        last_scene, last_score, _frame = context.current_scene(
+        last_scene, last_score, _frame = context.sample_scene_once(
             [34, XIANZANG_MAIN_SCENE_ID],
             update=True,
         )

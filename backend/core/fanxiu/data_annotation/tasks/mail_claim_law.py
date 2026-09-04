@@ -215,7 +215,7 @@ class MailClaimLawTaskMixin:
     def _open_storage_bag(self, context: Any):
         """#525 has no graph edge: use the named #34 entry, then verify #525."""
         yield from context.wait_click(34, "储物袋", timeout=8.0, label="邮件_领法则：进入储物袋")
-        yield from context.wait_scene(525, wait=12.0, label="邮件_领法则：等待储物袋")
+        yield from context.wait_scene([525], wait=12.0, label="邮件_领法则：等待储物袋")
 
     def _remember_law(self, fact: dict[str, Any]) -> None:
         path = fanxiu_data_annotation_world_facts_path()
@@ -310,7 +310,7 @@ class MailClaimLawTaskMixin:
                 if pre_use is None:
                     raise RuntimeError("邮件_领法则：使用前未读取到目标法则的动态 end_time")
                 yield from context.wait_click(567, "使用", timeout=8.0, label="邮件_领法则：使用已核验法则")
-                yield from context.wait_scene(177, wait=12.0, label="邮件_领法则：等待领取结果")
+                yield from context.wait_scene([177], wait=12.0, label="邮件_领法则：等待领取结果")
                 yield from context.wait_click(177, "继续", timeout=8.0, label="邮件_领法则：关闭领取结果")
                 yield from context.go_scene(34)
                 yield from self._open_storage_bag(context)

@@ -64,7 +64,7 @@ def execute_lilian_claim_task(
         timeout=float(payload.get("lilian_resource_timeout") or 20.0),
     )
     landed = yield from context.wait_scene(
-        441,
+        [441],
         wait=float(payload.get("lilian_resource_view_timeout") or 20.0),
         label="历练_领取：等待资源页",
     )
@@ -81,7 +81,7 @@ def execute_lilian_claim_task(
     )
 
     yield from context.go_scene(34)
-    scene_id, _score, _frame = context.current_scene([34], update=True)
+    scene_id, _score, _frame = context.sample_scene_once([34], update=True)
     if scene_id != 34:
         raise RuntimeError(
             f"历练_领取：收取后未返回 #34，当前 #{scene_id or 'unknown'}"

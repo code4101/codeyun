@@ -484,7 +484,11 @@ def test_scheduler_task_normalization_preserves_immediate_error_retry():
     assert normalized["error_retry_delay_seconds"] == 0
 
 
-def test_recovered_emulator_restart_keeps_login_due_until_success():
+def test_recovered_emulator_restart_keeps_login_due_until_success(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.client.mumu_control.mumu_device_startup_grace_state",
+        lambda: {"login_required": False},
+    )
     task = {
         "id": "login-game",
         "trigger_description": "手动",
@@ -504,7 +508,11 @@ def test_recovered_emulator_restart_keeps_login_due_until_success():
     assert task["next_time"] == "2026-08-20 21:11:19"
 
 
-def test_ordinary_manual_login_failure_still_has_no_autonomous_retry():
+def test_ordinary_manual_login_failure_still_has_no_autonomous_retry(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.client.mumu_control.mumu_device_startup_grace_state",
+        lambda: {"login_required": False},
+    )
     task = {
         "id": "login-game",
         "trigger_description": "手动",
@@ -519,6 +527,27 @@ def test_ordinary_manual_login_failure_still_has_no_autonomous_retry():
     )
 
     assert task["next_time"] is None
+
+
+def test_login_failure_retries_while_mumu_startup_gate_is_active(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.fanxiu.client.mumu_control.mumu_device_startup_grace_state",
+        lambda: {"login_required": True},
+    )
+    task = {
+        "id": "login-game",
+        "trigger_description": "手动",
+        "dispatch_level": 5,
+        "error_retry_delay_seconds": 0,
+        "last_message": "RuntimeError: 登录游戏：输入未生效",
+        "next_time": "2026-08-20 21:00:00",
+    }
+
+    kernel_scheduler_control.schedule_failed_task_retry(
+        task, real_datetime(2026, 8, 20, 21, 11, 19)
+    )
+
+    assert task["next_time"] == "2026-08-20 21:11:24"
 
 
 def test_scheduler_time_layers_restore_all_historical_parallel_batches():

@@ -59,7 +59,7 @@ class MozuTaskMixin:
                 "left_times": None,
             }
         yield from context.wait_scene(
-            336, wait=20.0, label="日常_魔祖：等待已校验的活动卡片进入 #336"
+            [336], wait=20.0, label="日常_魔祖：等待已校验的活动卡片进入 #336"
         )
         yield from context.wait_click_then_scene(336, "前往", 337)
         before_snapshot = read_demon_boss_snapshot()
@@ -88,8 +88,8 @@ class MozuTaskMixin:
             # a false participation result.
             try:
                 delayed = yield from context.wait_scene(
-                    338,
-                    339,
+                    [338,
+                    339],
                     wait=20.0,
                     label="日常_魔祖：等待延迟战场落点",
                 )
@@ -102,7 +102,7 @@ class MozuTaskMixin:
             yield from context.wait_action_settle(_MOZU_PARTICIPATION_SECONDS)
             # 活动战场本身可能持续二十多分钟；完成最低参战时间后使用已有
             # 安全离开图标和通用确认框主动退出，不能把“等整场结束”当收尾。
-            scene_id, _score, _frame = context.current_scene([338, 557, 20, 34, 339], update=True)
+            scene_id, _score, _frame = context.sample_scene_once([338, 557, 20, 34, 339], update=True)
             if scene_id in {338, 557}:
                 transition = yield from context.wait_click_then_scene(
                     scene_id,

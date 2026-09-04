@@ -290,7 +290,7 @@ def preflight_storage_bag_auto_claim_task(
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
-        STORAGE_BAG_SCENE,
+        [STORAGE_BAG_SCENE],
         wait=10.0,
         label="资源_自动使用/储物袋预检：等待储物袋主页",
     )
@@ -303,7 +303,7 @@ def preflight_storage_bag_auto_claim_task(
     )
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(
-        WORLD_SCENE,
+        [WORLD_SCENE],
         wait=10.0,
         label="资源_自动使用/储物袋预检：返回世界",
     )
@@ -343,7 +343,7 @@ def execute_storage_bag_auto_claim_task(
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
-        STORAGE_BAG_SCENE,
+        [STORAGE_BAG_SCENE],
         wait=10.0,
         label="资源_自动使用/储物袋勾选：等待储物袋主页",
     )
@@ -412,7 +412,7 @@ def execute_storage_bag_auto_claim_task(
 
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(
-        WORLD_SCENE,
+        [WORLD_SCENE],
         wait=10.0,
         label="资源_自动使用/储物袋勾选：返回世界",
     )

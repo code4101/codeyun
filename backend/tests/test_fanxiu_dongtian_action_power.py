@@ -112,7 +112,7 @@ def test_dongtian_action_power_finishes_after_battle_started_with_last_100(monke
     scheduled = []
 
     class Runtime:
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             assert candidates == [341, 279]
             assert update is True
             return 341, 100.0, "frame"
@@ -143,7 +143,7 @@ def test_dongtian_action_power_keeps_final_battle_visual_error_as_failure(monkey
     scheduled = []
 
     class Runtime:
-        def current_scene(self, candidates, update=False):
+        def sample_scene_once(self, candidates, update=False):
             assert candidates == [341, 279]
             assert update is True
             return 341, 100.0, "frame"
@@ -206,7 +206,8 @@ def _finish_generator(generator):
 
 def test_dongtian_detail_returns_canonical_name_after_fuzzy_dynamic_title_match():
     class Runtime:
-        def wait_scene(self, *scene_ids, label):
+        def wait_scene(self, layer0, *, label):
+            scene_ids = tuple(layer0)
             assert scene_ids == (341, 342)
             assert "白玉京" in label
             if False:
@@ -238,7 +239,7 @@ def test_dongtian_detail_mismatch_returns_home_and_fails_closed():
     clicks = []
 
     class Runtime:
-        def wait_scene(self, *_args, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             if False:
                 yield None
 
@@ -289,7 +290,8 @@ def test_dongtian_enemy_click_uses_runtime_aligned_name_box_not_global_template_
                 return Shape({"x": 650, "y": 300, "w": 240, "h": 500})
             raise AssertionError(f"不应再读取全局地点模板：{title}")
 
-        def wait_scene(self, scene_id, *, label):
+        def wait_scene(self, layer0, *, label):
+            scene_id = layer0[0]
             assert scene_id == 279
             assert "洞天福地" in label
             if False:
@@ -358,7 +360,7 @@ def test_dongtian_enemy_click_retries_bounded_left_hotspot_when_first_click_stay
                 return Shape({"x": 650, "y": 300, "w": 240, "h": 500})
             raise AssertionError(title)
 
-        def wait_scene(self, *_args, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             if False:
                 yield None
 
@@ -379,7 +381,7 @@ def test_dongtian_enemy_click_retries_bounded_left_hotspot_when_first_click_stay
             if False:
                 yield None
 
-        def current_scene(self, scene_ids, *, update=False):
+        def sample_scene_once(self, scene_ids, *, update=False):
             assert (scene_ids, update) == ([279, 341, 342], True)
             scene_id = 279 if len(clicks) == 1 else 341
             return scene_id, 1.0, "frame"
@@ -475,7 +477,8 @@ def test_dongtian_place_locator_reverses_after_down_boundary_and_finds_target_up
             assert scene_id == 279
             return Shape({"x": 650, "y": 300, "w": 240, "h": 500}) if title == "我的编队" else Shape({"x": 0, "y": 0, "w": 900, "h": 1400})
 
-        def wait_scene(self, scene_id, *, label):
+        def wait_scene(self, layer0, *, label):
+            scene_id = layer0[0]
             assert scene_id == 279
             if False:
                 yield None

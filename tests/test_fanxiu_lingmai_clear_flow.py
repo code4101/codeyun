@@ -68,7 +68,7 @@ def test_lingmai_clear_accepts_313_stamina_shape_when_checked_state_misses_scene
         def cur_frame(self, *, update=False):
             return "checked-313-frame"
 
-        def current_scene(self, scene_ids, *, update=False):
+        def sample_scene_once(self, scene_ids, *, update=False):
             assert (scene_ids, update) == ([286, 313], False)
             return -1, 0.0, "checked-313-frame"
 
@@ -117,7 +117,7 @@ def test_lingmai_clear_accepts_286_only_when_runtime_confirms_completed(monkeypa
         def cur_frame(self, *, update=False):
             return "select-slot-frame"
 
-        def current_scene(self, scene_ids, *, update=False):
+        def sample_scene_once(self, scene_ids, *, update=False):
             assert (scene_ids, update) == ([286, 313], False)
             return 286, 100.0, "select-slot-frame"
 
@@ -334,7 +334,8 @@ def test_lingmai_clear_tolerates_transient_315_expiring_before_click():
             yield
             raise TimeoutError("#315 expired")
 
-        def wait_scene(self, *scenes, **options):
+        def wait_scene(self, layer0, **options):
+            scenes = tuple(layer0)
             self.calls.append(("wait_scene", scenes, options))
             yield
             return 285

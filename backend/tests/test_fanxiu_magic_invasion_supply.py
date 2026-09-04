@@ -106,7 +106,7 @@ def test_sufficient_runtime_supply_does_not_load_choice_box_catalog() -> None:
         def wait_click(self, *_args, **_kwargs):
             yield None
 
-        def wait_scene(self, *_args, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
             yield None
 
     class _Runner:

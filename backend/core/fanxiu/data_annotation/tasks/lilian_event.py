@@ -167,7 +167,7 @@ def _choose_lilian_option(
     max_attempts = max(1, int(payload.get("lilian_option_click_attempts") or 3))
     timeout = float(payload.get("lilian_result_timeout") or 30.0)
     for attempt in range(max_attempts):
-        scene_id, _score, _frame = context.current_scene(
+        scene_id, _score, _frame = context.sample_scene_once(
             [436, 437, 438],
             update=True,
         )
@@ -194,13 +194,13 @@ def _choose_lilian_option(
         )
         try:
             landed = yield from context.wait_scene(
-                437,
-                438,
+                [437,
+                438],
                 wait=timeout,
                 label=f"历练_事件：等待事件结果（{attempt + 1}/{max_attempts}）",
             )
         except TimeoutError:
-            scene_id, _score, _frame = context.current_scene(
+            scene_id, _score, _frame = context.sample_scene_once(
                 [436, 437, 438],
                 update=True,
             )
@@ -419,7 +419,7 @@ def execute_lilian_event_task(
         asset_tree_path,
         stop_event=stop_event,
     )
-    scene_id, _score, _frame = context.current_scene(
+    scene_id, _score, _frame = context.sample_scene_once(
         [34],
         update=True,
     )
@@ -577,7 +577,7 @@ def execute_lilian_event_task(
 
     context.click_frame_point(425, 80, 1480)
     landed = yield from context.wait_scene(
-        34,
+        [34],
         wait=float(payload.get("lilian_return_world_timeout") or 20.0),
         label="历练_事件：返回世界",
     )

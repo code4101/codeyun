@@ -14,7 +14,11 @@ from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_world_facts,
     write_data_annotation_world_facts,
 )
-from backend.core.fanxiu.client.mumu_control import shake_mumu_device
+from backend.core.fanxiu.client.mumu_control import (
+    mark_mumu_device_startup_ready,
+    mumu_device_startup_grace_state,
+    shake_mumu_device,
+)
 
 
 BUBBLE_WEEKLY_TASK_ID = "bubble-weekly-pills"
@@ -308,6 +312,8 @@ class BubbleLifecycleTaskMixin:
         task_id = str(payload.get("__scheduler_task_id") or BUBBLE_WEEKLY_TASK_ID)
         self._persist_scheduler_task_next_time(task_id, next_time)
         message = f"气泡_每周丹药：本周丹药已确认领取，气泡已隐藏；下次 {next_time}"
+        if bool(mumu_device_startup_grace_state().get("login_required")):
+            mark_mumu_device_startup_ready(reason="bubble_weekly_reconciled")
         self._log("success", message)
         return {
             "result": "success", "message": message,

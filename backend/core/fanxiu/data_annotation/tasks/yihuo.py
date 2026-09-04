@@ -36,7 +36,7 @@ class 日常异火任务Mixin:
                 return
 
     def 日常异火流程(self, context: Any):
-        scene_id, _score, frame = context.current_scene([261, 260, 259, 34], update=True)
+        scene_id, _score, frame = context.sample_scene_once([261, 260, 259, 34], update=True)
         current_text = context.ocr_text(frame)
         if self._daily_yihuo_text_is_claimed(current_text):
             yield from self._daily_yihuo_return_best_effort(context)
@@ -44,7 +44,7 @@ class 日常异火任务Mixin:
             return
         if scene_id == 261 or self._daily_yihuo_text_is_detail(current_text):
             context.click_shape_center(261, "返回")
-            yield from context.wait_scene(260, wait=5.0, label="日常_异火：从异火详情返回列表 #260")
+            yield from context.wait_scene([260], wait=5.0, label="日常_异火：从异火详情返回列表 #260")
             scene_id = 260
         if scene_id not in {259, 260} and not self._daily_yihuo_text_is_xinghai_list(current_text):
             yield from context.go_scene(34)
@@ -59,7 +59,7 @@ class 日常异火任务Mixin:
                 context.click_shape_center(259, "异火")
             else:
                 yield from context.wait_click(259, "异火")
-            yield from context.wait_scene(260, wait=18.0, label="日常_异火：等待异火列表 #260")
+            yield from context.wait_scene([260], wait=18.0, label="日常_异火：等待异火列表 #260")
         context.click_shape_center(260, "净莲")
 
         箱子状态 = yield from context.wait_any({
@@ -81,7 +81,7 @@ class 日常异火任务Mixin:
         if 返回状态 == "异火页返回":
             context.click_shape_center(259, "返回")
         try:
-            yield from context.wait_scene(34, wait=3.0)
+            yield from context.wait_scene([34], wait=3.0)
         except Exception:
             pass
         context.set_next_time(self._next_daily_boss_reset_time_text())

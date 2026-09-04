@@ -100,7 +100,7 @@ class _Runtime:
         if False:
             yield None
 
-    def wait_scene(self, *_args, **_kwargs):
+    def wait_scene(self, layer0, **_kwargs):
         if False:
             yield None
 
@@ -259,7 +259,8 @@ def test_active_target_reached_immediately_runs_the_same_exchange_tail(
         def click_shape_center(self, scene, shape):
             events.append(("click", scene, shape))
 
-        def wait_scene(self, scene, **_kwargs):
+        def wait_scene(self, layer0, **_kwargs):
+            scene = layer0[0]
             events.append(("wait", scene))
             return (yield from done(scene))
 

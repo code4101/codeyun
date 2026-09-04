@@ -449,7 +449,7 @@ class StorageBagSpiritStoneGuiAdapter:
 
         self.context.click_frame_point(STORAGE_BAG_SCENE, *plan.point)
         yield from self.context.wait_scene(
-            DIRECT_ITEM_DETAIL_SCENE,
+            [DIRECT_ITEM_DETAIL_SCENE],
             wait=8.0,
             label="储物袋灵石：等待 #610 普通物品详情",
         )
@@ -475,7 +475,7 @@ class StorageBagSpiritStoneGuiAdapter:
             timeout=8.0,
         )
         yield from self.context.wait_scene(
-            USE_QUANTITY_SCENE,
+            [USE_QUANTITY_SCENE],
             wait=8.0,
             label="储物袋灵石：等待 #584 数量确认",
         )
@@ -507,14 +507,14 @@ class StorageBagSpiritStoneGuiAdapter:
             USE_QUANTITY_SCENE, "使用", timeout=8.0
         )
         landed = yield from self.context.wait_scene(
-            STORAGE_BAG_SCENE,
-            TRANSIENT_REWARD_SCENE,
+            [STORAGE_BAG_SCENE,
+            TRANSIENT_REWARD_SCENE],
             wait=8.0,
             label="储物袋灵石：等待结果或回到 #525",
         )
         if _view_id(landed) == TRANSIENT_REWARD_SCENE:
             yield from self.context.wait_scene(
-                STORAGE_BAG_SCENE,
+                [STORAGE_BAG_SCENE],
                 wait=8.0,
                 label="储物袋灵石：等待短暂结果层返回 #525",
             )

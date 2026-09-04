@@ -18,7 +18,7 @@ class BubbleClaimPillsTaskMixin:
 
     @staticmethod
     def _bubble_overlay_scene(context: Any, scene_ids: tuple[int, ...], *, update: bool = True):
-        scene_id, score, frame = context.current_scene(list(scene_ids), update=update)
+        scene_id, score, frame = context.sample_scene_once(list(scene_ids), update=update)
         if scene_id in scene_ids:
             return scene_id, score, frame
         direct: list[tuple[float, int]] = []

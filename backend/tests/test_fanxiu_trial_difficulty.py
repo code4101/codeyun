@@ -522,7 +522,7 @@ def test_trial_challenge_reacts_to_each_scene_instead_of_difficulty_history(monk
     clicks: list[tuple[int, str]] = []
     claims: list[tuple[int, ...]] = []
 
-    def current_scene(*_args, **_kwargs):
+    def sample_scene_once(*_args, **_kwargs):
         claims.append(context.active_business_view_ids())
         return next(observations), 100.0, "frame"
 
@@ -682,7 +682,7 @@ def test_trial_result_treats_362_as_battle_and_waits_for_success_exit(monkeypatc
     events: list[str] = []
     waited = iter((362, 361))
 
-    def wait_scene(*_args, **_kwargs):
+    def wait_scene(layer0, **_kwargs):
         value = next(waited)
         events.append("entered_362" if value == 362 else "result_361")
         if False:
@@ -880,7 +880,7 @@ def test_trial_result_reports_auto_expired_popup_when_game_returns_to_world(monk
     })
     waited = iter((362, 34))
 
-    def wait_scene(*_args, **_kwargs):
+    def wait_scene(layer0, **_kwargs):
         if False:
             yield None
         return context.view(next(waited))
@@ -948,7 +948,7 @@ def test_trial_probe_uses_sweep_button_to_increment_and_rolls_back_after_failure
     outcomes = iter(("success", "failure"))
     adjustments: list[int] = []
 
-    monkeypatch.setattr(context, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(context, "sample_scene_once", lambda *_args, **_kwargs: (357, 100.0, "frame"))
     monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
     monkeypatch.setattr(context, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(attempts_after))
 
@@ -996,7 +996,7 @@ def test_trial_probe_treats_missing_result_without_sweep_as_failure_once(monkeyp
     adjustments: list[int] = []
     challenge_count = 0
 
-    monkeypatch.setattr(context, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(context, "sample_scene_once", lambda *_args, **_kwargs: (357, 100.0, "frame"))
     monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
     monkeypatch.setattr(
         context,
@@ -1052,7 +1052,7 @@ def test_trial_probe_treats_all_successful_attempts_as_normal_daily_completion(m
     attempts_after = iter((ObservedTrialAttempts(remaining=0, capacity=5, text="奖励次数:0/5"),))
     adjustments: list[int] = []
 
-    monkeypatch.setattr(context, "current_scene", lambda *_args, **_kwargs: (357, 100.0, "frame"))
+    monkeypatch.setattr(context, "sample_scene_once", lambda *_args, **_kwargs: (357, 100.0, "frame"))
     monkeypatch.setattr(context, "observe_xianqiao_trial_home", lambda *_args, **_kwargs: next(observations))
     monkeypatch.setattr(context, "read_xianqiao_trial_attempts", lambda *_args, **_kwargs: next(attempts_after))
 
@@ -1202,7 +1202,7 @@ def test_trial_result_can_resume_directly_from_failure_popup(monkeypatch):
     })
     wait_calls = 0
 
-    def wait_scene(*_args, **_kwargs):
+    def wait_scene(layer0, **_kwargs):
         nonlocal wait_calls
         wait_calls += 1
         if False:

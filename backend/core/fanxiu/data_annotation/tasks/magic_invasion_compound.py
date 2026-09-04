@@ -99,7 +99,7 @@ def execute_magic_invasion_compound_checkpoint(
         now=job_now(),
     )
     yield from context.wait_scene(
-        509,
+        [509],
         wait=30.0,
         label="魔道入侵：等待活动主页领取任务",
     )

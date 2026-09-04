@@ -135,7 +135,7 @@ def test_wait_yuanding_page_reuses_fragments_without_second_ocr_call() -> None:
             self.ocr_text_calls += 1
             raise AssertionError("已有 fragments 时不应再调用 Runtime.ocr_text")
 
-        def current_scene(self, scenes, *, update):
+        def sample_scene_once(self, scenes, *, update):
             assert 249 in scenes
             assert update is False
             return 249, 100.0, "frame"

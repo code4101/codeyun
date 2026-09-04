@@ -45,7 +45,7 @@ class Runtime:
         self.scene = start_scene
         self.actions = []
 
-    def current_scene(self, _candidates, *, update=True):
+    def sample_scene_once(self, _candidates, *, update=True):
         return self.scene, 100.0, "frame"
 
     def wait_click_then_scene(self, scene, shape, targets, **_kwargs):

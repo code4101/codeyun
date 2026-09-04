@@ -102,7 +102,7 @@ class _FakeRuntime:
         self.clicks: list[tuple[int, float, float]] = []
         self.frame_id = 0
 
-    def current_scene(self, scene_ids, *, update: bool):
+    def sample_scene_once(self, scene_ids, *, update: bool):
         assert update is True
         assert 449 in scene_ids
         self.frame_id += 1

@@ -239,7 +239,7 @@ def execute_tiandi_yiju_exchange_tail(
             unit_price=action.unit_price,
         )
         yield from context.wait_scene(
-            COMMON_PURCHASE_DIALOG_SCENE,
+            [COMMON_PURCHASE_DIALOG_SCENE],
             wait=15.0,
             label=f"{label}：等待 {action.name} 购买框",
         )

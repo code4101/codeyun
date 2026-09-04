@@ -559,7 +559,7 @@ class PrayerDailyResourceTaskMixin:
         entry_timeout = float(payload.get("entry_timeout_seconds") or 60.0)
         page_timeout = float(payload.get("page_timeout_seconds") or 12.0)
 
-        current_scene, _score, current_frame = context.current_scene(
+        current_scene, _score, current_frame = context.sample_scene_once(
             [34, 69, 194, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
             update=True,
         )
@@ -584,11 +584,11 @@ class PrayerDailyResourceTaskMixin:
             self._log("action", "祈愿_每日资源：任务入口检测到新一轮确认弹窗，先恢复 #455")
             yield from context.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
             yield from context.wait_scene(
-                PRAYER_MAIN_SCENE_ID,
+                [PRAYER_MAIN_SCENE_ID],
                 wait=page_timeout,
                 label="祈愿_每日资源：确认新一轮后恢复祈愿主页 #455",
             )
-            current_scene, _score, current_frame = context.current_scene(
+            current_scene, _score, current_frame = context.sample_scene_once(
                 [PRAYER_MAIN_SCENE_ID],
                 update=True,
             )
@@ -598,7 +598,7 @@ class PrayerDailyResourceTaskMixin:
             # ``进入`` click.  Both scenes have proven graph routes back to the
             # stable world anchor, so recover before opening the daily entry.
             yield from context.go_scene(34)
-            current_scene, _score, current_frame = context.current_scene(
+            current_scene, _score, current_frame = context.sample_scene_once(
                 [34, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
                 update=True,
             )
@@ -639,7 +639,7 @@ class PrayerDailyResourceTaskMixin:
                     break
                 except RuntimeError as exc:
                     entry_error = exc
-                    scene_id, _score, _frame = context.current_scene(
+                    scene_id, _score, _frame = context.sample_scene_once(
                         [34, 194, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
                         update=True,
                     )
@@ -716,7 +716,7 @@ class PrayerDailyResourceTaskMixin:
 
         if tracker.stable_state == "claimed":
             context.click_shape_center(PRAYER_STORE_SCENE_ID, "返回")
-            yield from context.wait_scene(34, wait=page_timeout, label="祈愿_每日资源：返回世界 #34")
+            yield from context.wait_scene([34], wait=page_timeout, label="祈愿_每日资源：返回世界 #34")
             return self._prayer_daily_result(
                 payload,
                 outcome=("task_claimed" if task_result == "claimed" else "already_claimed"),
@@ -786,7 +786,7 @@ class PrayerDailyResourceTaskMixin:
             )
 
         context.click_shape_center(PRAYER_STORE_SCENE_ID, "返回")
-        yield from context.wait_scene(34, wait=page_timeout, label="祈愿_每日资源：领取后返回世界 #34")
+        yield from context.wait_scene([34], wait=page_timeout, label="祈愿_每日资源：领取后返回世界 #34")
         return self._prayer_daily_result(
             payload,
             outcome="claimed",

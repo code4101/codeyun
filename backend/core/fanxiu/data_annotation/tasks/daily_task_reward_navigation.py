@@ -121,7 +121,7 @@ def _finish_lingmai_cover(context: Any, scene_id: int) -> Any:
         # still-rendered animation frame must not be mistaken for completion.
         yield from context.wait_click(312, "确认")
         waited = yield from context.wait_scene(
-            285,
+            [285],
             wait=8.0,
             label="日常_任务奖励/灵脉：确认入口弹窗后等待 #285",
         )
@@ -155,7 +155,7 @@ def navigate_to_daily_task_reward_cover(
         raise ValueError(f"未知日常任务奖励域：{domain}") from exc
 
     candidates = [spec.target_scene_id, *spec.landing_scene_ids, 69, 34]
-    scene_id, _score, frame = context.current_scene(candidates, update=True)
+    scene_id, _score, frame = context.sample_scene_once(candidates, update=True)
     scene_id = _scene_id(scene_id)
     text = context.ocr_text(frame)
 
@@ -190,7 +190,7 @@ def navigate_to_daily_task_reward_cover(
                 f"日常_任务奖励/{domain}：#69 动态入口未打开，status={status!r}"
             )
         waited = yield from context.wait_scene(
-            *spec.landing_scene_ids,
+            spec.landing_scene_ids,
             wait=25.0,
             label=f"日常_任务奖励/{domain}：等待活动封面",
         )
