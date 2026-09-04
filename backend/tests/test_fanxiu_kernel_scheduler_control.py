@@ -237,6 +237,7 @@ def test_explicit_interrupt_closes_execution_and_attempt_without_consuming_trigg
 
 def test_take_ai_control_revokes_dispatch_before_interrupt(monkeypatch):
     events = []
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda **_kwargs: [])
     monkeypatch.setattr(
         kernel_scheduler_control,
         "set_scheduler_job_group_enabled",
@@ -265,6 +266,67 @@ def test_take_ai_control_revokes_dispatch_before_interrupt(monkeypatch):
     assert events == [("mode", False), ("interrupt", None)]
     assert result["job_group_enabled"] is False
     assert result["scheduler_control"] == "ai"
+
+
+def test_take_ai_control_interrupts_unclassified_cell_and_releases_stale_attempts(monkeypatch):
+    events = []
+    tasks = [
+        {
+            "id": "job-stale",
+            "task_type": "daily_lundao",
+            "label": "论道_座位",
+            "last_result": "running",
+            "next_time": "2026-09-04 18:21:25",
+            "attempt_original_trigger": "2026-09-04 17:46:29",
+            "attempt_id": "attempt-stale",
+            "attempt_kernel_generation": 1,
+        }
+    ]
+    writes = []
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "set_scheduler_job_group_enabled",
+        lambda enabled, **_kwargs: events.append(("mode", enabled)) or {"job_group_enabled": enabled},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "kernel_scheduler_status",
+        lambda **_kwargs: {
+            "running": False,
+            "current_task_id": "",
+            "kernel": {"execution_state": "busy"},
+        },
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "stop_current_task",
+        lambda *_args, **_kwargs: events.append(("interrupt", None)) or {
+            "status": "interrupted",
+            "kernel": {"execution_state": "idle", "interrupt_confirmed": True},
+        },
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "read_scheduler_tasks",
+        lambda **_kwargs: tasks,
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "write_scheduler_tasks",
+        lambda rows, **kwargs: writes.append((rows, kwargs)) or True,
+    )
+    monkeypatch.setattr(kernel_scheduler_control, "record_scheduler_task_fact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(kernel_scheduler_control, "record_scheduler_incident", lambda **_kwargs: None)
+
+    result = kernel_scheduler_control.take_ai_control("entry-a", interrupt_any_cell=True)
+
+    assert events == [("mode", False), ("interrupt", None)]
+    assert result["interrupted_scheduler_task_ids"] == ["job-stale"]
+    assert tasks[0]["last_result"] == "interrupted"
+    assert tasks[0]["next_time"] == "2026-09-04 17:46:29"
+    assert tasks[0]["attempt_id"] is None
+    assert writes[0][1]["execution_update_ids"] == {"job-stale"}
+    assert writes[0][1]["expected_execution_attempt_ids"] == {"job-stale": "attempt-stale"}
 
 
 def test_execution_status_never_projects_running_when_kernel_is_idle(monkeypatch):
@@ -1421,16 +1483,16 @@ def test_scheduler_repair_does_not_invent_a_business_next_time():
     assert task["next_time"] is None
 
 
-def test_hidden_ranking_lifecycle_is_not_in_default_scheduler_catalogue():
+def test_ranking_lifecycle_is_a_standard_scheduler_job():
     register_fanxiu_default_jobs()
     definitions = {
         item.task_type: item
         for item in list_fanxiu_data_annotation_task_cell_definitions()
     }
-    assert definitions["ranking_lifecycle"].scheduler_supported is False
-    assert definitions["ranking_lifecycle"].standard_job is False
+    assert definitions["ranking_lifecycle"].scheduler_supported is True
+    assert definitions["ranking_lifecycle"].standard_job is True
     defaults = kernel_scheduler_control.default_kernel_scheduler_tasks()
-    assert not any(item["id"] == "ranking-lifecycle" for item in defaults)
+    assert any(item["id"] == "ranking-lifecycle" for item in defaults)
 
 
 def test_beast_abyss_initialization_rnd_cell_cannot_be_scheduled():

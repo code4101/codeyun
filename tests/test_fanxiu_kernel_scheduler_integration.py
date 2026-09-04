@@ -2003,12 +2003,13 @@ def test_scheduler_settings_switch_to_ai_interrupts_running_engineering_cell(tmp
 
     assert response.job_group_enabled is False
     assert calls["entry_id"] == "resolved-mf-entry"
+    assert calls["interrupt_any_cell"] is True
     assert calls["scheduler_state_path"] == _scheduler_state_path(tmp_path)
     assert calls["execution_state_path"] == tmp_path / "execution_state.json"
     assert calls["world_facts_path"] == tmp_path / "world_facts.json"
 
 
-def test_scheduler_settings_switch_to_ai_preserves_manual_cell(tmp_path, monkeypatch):
+def test_scheduler_settings_switch_to_ai_interrupts_unclassified_cell(tmp_path, monkeypatch):
     _patch_data_annotation_api_common(monkeypatch, tmp_path)
     entry = type("Entry", (), {"entry_id": "resolved-mf-entry"})()
     monkeypatch.setattr(fanxiu, "_get_user_device_or_404", lambda _session, _user, _entry_id: entry)
@@ -2021,10 +2022,12 @@ def test_scheduler_settings_switch_to_ai_preserves_manual_cell(tmp_path, monkeyp
             "current_task": "AI 调试 Cell",
         },
     )
+    calls = {}
     monkeypatch.setattr(
         fanxiu._behavior_tree_framework,
         "take_ai_control",
-        lambda *_args, **_kwargs: {"status": "running", "running": True},
+        lambda entry_id, **kwargs: calls.update({"entry_id": entry_id, **kwargs})
+        or {"status": "interrupted", "running": False},
     )
 
     response = fanxiu.put_fanxiu_kernel_scheduler_settings(
@@ -2037,6 +2040,8 @@ def test_scheduler_settings_switch_to_ai_preserves_manual_cell(tmp_path, monkeyp
     )
 
     assert response.job_group_enabled is False
+    assert calls["entry_id"] == "resolved-mf-entry"
+    assert calls["interrupt_any_cell"] is True
 
 
 
@@ -2385,11 +2390,9 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert by_id["xianshi-weekly-resources"]["task_type"] == "xianshi_weekly_resources"
     assert by_id["xianshi-weekly-resources"]["trigger_description"] == "每周"
     assert "legacy-daily-xianmeng" not in by_id
-    assert "ranking-lifecycle" not in by_id
-    assert not any(
-        item.get("task_type") == "ranking_lifecycle"
-        for item in by_id.values()
-    )
+    assert by_id["ranking-lifecycle"]["task_type"] == "ranking_lifecycle"
+    assert by_id["ranking-lifecycle"]["label"] == "玩法榜"
+    assert by_id["ranking-lifecycle"]["trigger_description"] == "动态"
     assert by_id["resource-ranking"]["task_type"] == "resource_ranking"
     assert by_id["resource-ranking"]["label"] == "资源榜"
     assert by_id["resource-ranking"]["trigger_description"] == "动态"

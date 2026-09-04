@@ -47,7 +47,7 @@ def test_scheduler_migration_removes_retired_daily_gongfeng_instance():
     assert [task["id"] for task in tasks] == ["legacy-daily-assistant"]
 
 
-def test_scheduler_migration_retires_legacy_gameplay_job_while_family_is_hidden():
+def test_scheduler_migration_folds_legacy_gameplay_job_into_family_owner():
     tasks, changed = consolidate_arena_scheduler_instances([
         {
             "id": "magic-invasion-explore",
@@ -63,10 +63,12 @@ def test_scheduler_migration_retires_legacy_gameplay_job_while_family_is_hidden(
     ], now=datetime(2026, 8, 21, 23, 0, 0))
 
     assert changed is True
-    assert tasks == []
+    assert [(item["id"], item["task_type"], item["next_time"]) for item in tasks] == [
+        ("ranking-lifecycle", "ranking_lifecycle", "2026-08-22 00:30:00")
+    ]
 
 
-def test_scheduler_migration_removes_existing_hidden_gameplay_lifecycle():
+def test_scheduler_migration_keeps_existing_gameplay_lifecycle_owner():
     tasks, changed = consolidate_arena_scheduler_instances([
         {
             "id": "magic-invasion-explore",
@@ -89,7 +91,14 @@ def test_scheduler_migration_removes_existing_hidden_gameplay_lifecycle():
     ], now=datetime(2026, 8, 21, 23, 0, 0))
 
     assert changed is True
-    assert tasks == []
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == "ranking-lifecycle"
+    assert tasks[0]["task_type"] == "ranking_lifecycle"
+    assert tasks[0]["next_time"] == "2026-08-22 10:01:00"
+    assert tasks[0]["payload"] == {
+        "max_execution_seconds": 10800,
+        "owner": "parent",
+    }
 
 
 def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
@@ -118,7 +127,10 @@ def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
     )
 
     assert changed is True
-    assert tasks == []
+    assert len(tasks) == 1
+    assert tasks[0]["id"] == "ranking-lifecycle"
+    assert tasks[0]["task_type"] == "ranking_lifecycle"
+    assert tasks[0]["next_time"] == "2026-08-21 22:00:00"
 
     rerun, rerun_changed = consolidate_arena_scheduler_instances(
         tasks,
@@ -128,7 +140,7 @@ def test_scheduler_migration_retires_every_gameplay_child_without_dual_track():
     assert rerun == tasks
 
 
-def test_default_scheduler_hides_gameplay_family_but_keeps_resource_family() -> None:
+def test_default_scheduler_publishes_one_owner_per_ranking_family() -> None:
     tasks = default_kernel_scheduler_tasks(now=datetime(2026, 8, 21, 23, 0, 0))
     gameplay_types = {
         "ranking_lifecycle",
@@ -146,6 +158,7 @@ def test_default_scheduler_hides_gameplay_family_but_keeps_resource_family() -> 
 
     visible = [task for task in tasks if task["task_type"] in gameplay_types]
     assert [(task["id"], task["task_type"], task["label"]) for task in visible] == [
+        ("ranking-lifecycle", "ranking_lifecycle", "玩法榜"),
         ("resource-ranking", "resource_ranking", "资源榜"),
     ]
 
@@ -176,7 +189,9 @@ def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated()
     )
     assert changed is True
     by_id = {item["id"]: item for item in migrated}
-    assert set(by_id) == {"resource-ranking"}
+    assert set(by_id) == {"ranking-lifecycle", "resource-ranking"}
+    assert by_id["ranking-lifecycle"]["next_time"] == "2026-08-22 10:00:00"
+    assert by_id["ranking-lifecycle"]["payload"] == {"max_execution_seconds": 10800}
     assert by_id["resource-ranking"]["next_time"] == "2026-08-22 00:30:00"
     assert by_id["resource-ranking"]["payload"] == {"max_execution_seconds": 10800}
 
@@ -210,7 +225,12 @@ def test_scheduler_migration_removes_hidden_gameplay_and_normalizes_resource_lab
     ])
     assert changed is True
     by_id = {item["id"]: item for item in migrated}
-    assert "ranking-lifecycle" not in by_id
+    assert (
+        by_id["ranking-lifecycle"]["task_type"],
+        by_id["ranking-lifecycle"]["label"],
+        by_id["ranking-lifecycle"]["template_id"],
+        by_id["ranking-lifecycle"]["template_label"],
+    ) == ("ranking_lifecycle", "玩法榜", "ranking_lifecycle", "玩法榜")
     assert (
         by_id["resource-ranking"]["task_type"],
         by_id["resource-ranking"]["label"],

@@ -71,27 +71,11 @@ BEAST_ABYSS_AUTO_WINDOW_END = time(21, 30)
 # identities and executors available for explicit AI validation, but do not
 # publish them into the engineering Scheduler until the full branches pass.
 PRODUCTION_BEAST_ABYSS_ACTIVE_KINDS: frozenset[str] = frozenset()
-# Keep the read-only 00:30 reconcile and exchange-tail executors available for
-# explicit R&D, but publish neither through the disabled gameplay-ranking Job
-# until the full Beast Abyss lifecycle has passed live acceptance.
-PRODUCTION_BEAST_ABYSS_EXCHANGE_TAIL_ENABLED = False
 XIANMENG_ACTIVE_TIME = time(10, 0)
 TIANDI_YIJU_ACTIVE_TIME = time(10, 5)
 RESOURCE_FREE_GIFT_TIME = time(5, 10)
 DANDAO_REWARDS_TIME = time(18, 10)
 YUANDING_GIFT_TIME = time(5, 0)
-
-# An exchange-tail checkpoint is side-effectful, so it is enabled only for
-# activity adapters that have a proven, idempotent executor.  The common
-# lifecycle owns the timing; each adapter still owns navigation and purchase
-# verification for its page family.
-EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
-    "beast-abyss",
-    "magic-invasion",
-    "yunmeng-trial",
-    "xianyuan-duokui",
-    "tiandi-yiju",
-})
 
 # Only resource ranks with a real activity page, shared #605 landing and
 # ChargeMgr idempotency proof may receive this side-effectful checkpoint.
@@ -102,7 +86,7 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
 })
 
 RANKING_CAPABILITY_STATUS = {
-    "beast-abyss": "live_rnd_initialization_only",
+    "beast-abyss": "implemented_exchange_tail_active_still_rnd",
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
 }
 
@@ -363,6 +347,25 @@ def _at(day: date, value: time, timezone: Any) -> datetime:
     return datetime.combine(day, value, tzinfo=timezone)
 
 
+def occurrence_has_exchange_shop(occurrence: RankingOccurrence) -> bool:
+    """Return the registered page capability for this Runtime occurrence.
+
+    Runtime owns the exact open interval (``end_at`` to ``close_at``), while
+    the public activity spec owns whether that page actually has an exchange
+    shop.  Executor maturity is deliberately not part of this business fact.
+    """
+
+    from backend.core.fanxiu.activity.exchange_activity_registry import (
+        get_exchange_activity_spec,
+    )
+
+    try:
+        spec = get_exchange_activity_spec(occurrence.activity_type)
+    except ValueError:
+        return False
+    return bool(spec.page.has_shop and spec.shop is not None)
+
+
 def checkpoints_for_occurrence(
     occurrence: RankingOccurrence,
     *,
@@ -399,12 +402,7 @@ def checkpoints_for_occurrence(
     )
     tail_at = _at(tail_day, tail_time, occurrence.start_at.tzinfo)
     if (
-        occurrence.family == "gameplay_rank"
-        and occurrence.activity_type in EXCHANGE_TAIL_ACTIVITY_TYPES
-        and not (
-            occurrence.activity_type == "beast-abyss"
-            and not PRODUCTION_BEAST_ABYSS_EXCHANGE_TAIL_ENABLED
-        )
+        occurrence_has_exchange_shop(occurrence)
         and not (
             occurrence.activity_type == "tiandi-yiju"
             and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
@@ -670,7 +668,6 @@ __all__ = [
     "BEAST_ABYSS_INITIALIZATION_KIND",
     "BEAST_ABYSS_MANUAL_CLEAR_KIND",
     "DAILY_RECONCILE_KIND",
-    "EXCHANGE_TAIL_ACTIVITY_TYPES",
     "EXCHANGE_TAIL_KIND",
     "MAGIC_ACTIVE_KIND",
     "XUTIAN_ACTIVE_KIND",
@@ -698,6 +695,7 @@ __all__ = [
     "discover_ranking_occurrences",
     "due_ranking_checkpoints",
     "next_ranking_lifecycle_time",
+    "occurrence_has_exchange_shop",
     "occurrence_relevant_on",
     "ranking_activity_identities",
 ]

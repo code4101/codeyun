@@ -37,6 +37,7 @@
 - [data-annotation 运行设备](runbooks/凡修data-annotation运行设备约定.md)
 - [MuMu 异常恢复](runbooks/凡修MuMu模拟器异常恢复手册.md)
 - [兽渊探秘规划架构](plans/兽渊探秘规划架构.md)
+- [魔道入侵规划架构](plans/魔道入侵规划架构.md)
 - [整数滑轨次数配置规划](plans/整数滑轨次数配置规划.md)（按需专项：仅在明确处理滑轨次数配置时读取）
 - [拜谒与行为树遗留验证](plans/凡修拜谒与行为树基础设施任务清单.md)
 - [巅峰赛特殊资源榜研究](research/巅峰赛特殊资源榜研究.md)

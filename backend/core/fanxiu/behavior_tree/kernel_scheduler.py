@@ -645,6 +645,8 @@ def run_fanxiu_mail_selective_claim(
     scan_mode: str = "incremental",
     skip_capture: bool = False,
     max_actions: int = 0,
+    target_mail_ids: list[str] | None = None,
+    cleanup_after_claim: bool = True,
     timeout_seconds: float = 0.0,
     wait_timeout_seconds: float = 300.0,
 ) -> dict[str, Any]:
@@ -653,6 +655,8 @@ def run_fanxiu_mail_selective_claim(
         "scan_mode": str(scan_mode or "incremental"),
         "skip_capture": bool(skip_capture),
         "max_actions": int(max_actions or 0),
+        "target_mail_ids": [str(value) for value in target_mail_ids or [] if str(value)],
+        "cleanup_after_claim": bool(cleanup_after_claim),
     }
     if timeout_seconds:
         payload["timeout_seconds"] = float(timeout_seconds)

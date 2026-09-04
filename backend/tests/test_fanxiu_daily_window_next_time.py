@@ -47,7 +47,7 @@ def test_windowed_job_technical_retry_before_22_stays_today() -> None:
 def test_xianmeng_has_no_retired_child_scheduler_job_after_consolidation() -> None:
     tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 13, 21, 0))
     assert not any(item["id"] == "legacy-daily-xianmeng" for item in tasks)
-    assert not any(item["id"] == "ranking-lifecycle" for item in tasks)
+    assert sum(item["id"] == "ranking-lifecycle" for item in tasks) == 1
 
 
 def test_activity_end_boundary_itself_is_already_closed() -> None:

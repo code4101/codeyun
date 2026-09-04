@@ -7,16 +7,41 @@ from backend.core.fanxiu.activity.beast_abyss import (
     collect_and_store_beast_abyss_activity,
 )
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
-    exchange_quantity_clicks as yunmeng_quantity_clicks,
     ocr_contains_amount as _ocr_contains_amount,
     plan_exchange_tail_physical_actions as plan_yunmeng_tail_physical_actions,
     plan_exchange_tail_purchases,
     verify_exchange_detail as _detail_matches,
 )
+from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+    IntegerSliderAssets,
+    set_verified_integer_slider_count,
+)
 
 
 BEAST_ABYSS_SHOP_SCENE = 536
 COMMON_SHOP_DETAIL_SCENE = 566
+BEAST_ABYSS_EXCHANGE_COUNT_ASSETS = IntegerSliderAssets(
+    settings_scene_id=COMMON_SHOP_DETAIL_SCENE,
+    count_region="数量",
+    count_decrease="-",
+    count_increase="+",
+    count_slider_thumb="兑换数量_滑块游标",
+    count_slider_left_anchor="兑换数量_滑轨左端",
+    count_slider_right_anchor="兑换数量_滑轨右端",
+)
+
+
+def _exchange_dialog_maximum(row: Any, *, wallet: int, unit_price: int) -> int:
+    """Return the quantity range actually selectable in the purchase dialog."""
+
+    affordable = max(0, int(wallet) // int(unit_price))
+    if int(row.purchase_limit) < 0:
+        return affordable
+    remaining_limit = max(
+        0,
+        int(row.purchase_limit) - int(row.purchased_count),
+    )
+    return min(remaining_limit, affordable)
 
 
 def _validate_fresh_exchange_snapshot(
@@ -129,6 +154,7 @@ def execute_beast_abyss_exchange(
     initial_counts = {
         int(row.goods_id): int(row.purchased_count) for row in detail.shop_items
     }
+    initial_rows = {int(row.goods_id): row for row in detail.shop_items}
     reserved_tokens = int(planning["reserved_tokens"])
     executed: list[dict[str, Any]] = []
 
@@ -156,19 +182,25 @@ def execute_beast_abyss_exchange(
             expected_name=action.name,
             expected_price=action.unit_price,
         )
-        plus_ten_count, plus_one_count = yunmeng_quantity_clicks(
-            action.quantity,
-            buying_to_cap=action.clears_row,
+        dialog_maximum = _exchange_dialog_maximum(
+            initial_rows[int(action.goods_id)],
+            wallet=expected_wallet,
+            unit_price=int(action.unit_price),
         )
-        for index in range(plus_ten_count):
-            context.click_shape_center_fast(COMMON_SHOP_DETAIL_SCENE, "+10")
-            if (index + 1) % 25 == 0:
-                yield from context.wait_action_settle(0.05)
-        for index in range(plus_one_count):
-            context.click_shape_center_fast(COMMON_SHOP_DETAIL_SCENE, "+")
-            if (index + 1) % 25 == 0:
-                yield from context.wait_action_settle(0.05)
-        yield from context.wait_action_settle(0.4)
+        if dialog_maximum < int(action.quantity):
+            raise RuntimeError(
+                f"{label}：{action.name} 计划数量超过详情页可选上限"
+            )
+        count_adjustment = None
+        if int(action.quantity) > 1:
+            count_adjustment = yield from set_verified_integer_slider_count(
+                context,
+                BEAST_ABYSS_EXCHANGE_COUNT_ASSETS,
+                int(action.quantity),
+                maximum=int(dialog_maximum),
+                max_adjustments=10,
+                count_label=f"{action.name}兑换数量",
+            )
 
         expected_total = int(action.quantity) * int(action.unit_price)
         if expected_wallet - expected_total < reserved_tokens:
@@ -208,6 +240,7 @@ def execute_beast_abyss_exchange(
             "name": str(action.name),
             "quantity": int(action.quantity),
             "unit_price": int(action.unit_price),
+            "count_adjustment": count_adjustment,
         })
 
     if expected_wallet != int(planning["planned_remaining_tokens"]):
@@ -269,4 +302,8 @@ def execute_beast_abyss_exchange(
     }
 
 
-__all__ = ["execute_beast_abyss_exchange"]
+__all__ = [
+    "BEAST_ABYSS_EXCHANGE_COUNT_ASSETS",
+    "_exchange_dialog_maximum",
+    "execute_beast_abyss_exchange",
+]

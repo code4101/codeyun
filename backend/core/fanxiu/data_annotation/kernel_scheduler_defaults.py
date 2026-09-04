@@ -42,9 +42,6 @@ _RETIRED_SCHEDULER_TASK_IDS = {
     # 持久实例统一归属于 ranking-lifecycle。
     *RETIRED_GAMEPLAY_RANKING_TASK_IDS,
     *RETIRED_RESOURCE_RANKING_TASK_IDS,
-    # 玩法榜当前处于兽渊研发期。2026-09-03 00:30 的只读实例采集
-    # 已完成，后续生产调度暂不发布父 Job；研发仍可显式调用 Cell。
-    RANKING_LIFECYCLE_TASK_ID,
 }
 
 _RETIRED_SCHEDULER_TASK_TYPES = {
@@ -53,7 +50,6 @@ _RETIRED_SCHEDULER_TASK_TYPES = {
     "bubble_hide",
     *RETIRED_GAMEPLAY_RANKING_TASK_TYPES,
     *RETIRED_RESOURCE_RANKING_TASK_TYPES,
-    RANKING_LIFECYCLE_TASK_TYPE,
 }
 
 # Every Scheduler-supported task cell currently has one visible standard Job.
@@ -320,6 +316,15 @@ def default_kernel_scheduler_tasks(
         }
 
     tasks = [
+        job(
+            "ranking-lifecycle",
+            "ranking_lifecycle",
+            "玩法榜",
+            description="动态",
+            initial_times=("00:30",),
+            error_retry_delay_seconds=600,
+            payload={"max_execution_seconds": 10800},
+        ),
         job(
             "resource-ranking",
             "resource_ranking",

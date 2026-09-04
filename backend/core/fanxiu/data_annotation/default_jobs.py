@@ -110,6 +110,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "ranking_lifecycle",
     "beast_abyss_initialization_rnd",
     "beast_abyss_rank_refresh_rnd",
+    "beast_abyss_exchange_tail_rnd",
     "resource_ranking",
     "yunmeng_tail",
 )
@@ -1742,7 +1743,12 @@ def register_fanxiu_default_jobs() -> None:
         if is_scan:
             result = yield from runner._execute_mail_legacy_scan_task(ctx, stop_event, payload)
         else:
-            result = yield from runner._execute_mail_selective_claim_task(ctx, stop_event, payload)
+            result = yield from runner._execute_mail_selective_claim_task(
+                ctx,
+                stop_event,
+                payload,
+                cleanup_after_claim=bool(payload.get("cleanup_after_claim", True)),
+            )
             business_message = str(
                 getattr(runner, "_mail_selective_claim_terminal_message", "") or ""
             ).strip()
@@ -2112,10 +2118,11 @@ def register_fanxiu_default_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "ranking_lifecycle",
         "玩法榜",
-        scheduler_supported=False,
-        # Keep the explicit Cell for isolated R&D, but do not publish the
-        # unfinished gameplay-ranking lifecycle as a production Job.
-        standard_job=False,
+        scheduler_supported=True,
+        standard_job=True,
+        standard_job_id="ranking-lifecycle",
+        standard_job_description="动态",
+        standard_job_payload={"max_execution_seconds": 10800},
     )
     def _run_data_annotation_ranking_lifecycle_task_cell(
         runner: Any,
@@ -2176,6 +2183,29 @@ def register_fanxiu_default_jobs() -> None:
         )
 
         return (yield from execute_beast_abyss_rank_refresh_rnd_cell(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+        ))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "beast_abyss_exchange_tail_rnd",
+        "兽渊_兑换收尾研发",
+        scheduler_supported=False,
+        standard_job=False,
+    )
+    def _run_data_annotation_beast_abyss_exchange_tail_rnd_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import (
+            execute_beast_abyss_exchange_tail_rnd_cell,
+        )
+
+        return (yield from execute_beast_abyss_exchange_tail_rnd_cell(
             runner,
             ctx,
             payload,

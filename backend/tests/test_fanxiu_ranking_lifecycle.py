@@ -251,6 +251,77 @@ def test_tiandi_yiju_exchange_tail_is_due_during_post_end_grace_period() -> None
     assert EXCHANGE_TAIL_KIND in {item.checkpoint_kind for item in due}
 
 
+@pytest.mark.parametrize(
+    ("activity_type", "activity_id"),
+    (("beast-abyss", 8150001), ("xutian-palace", 8080001)),
+)
+def test_registered_shop_owns_tail_capability_inside_runtime_grace_window(
+    activity_type: str,
+    activity_id: int,
+) -> None:
+    occurrence = RankingOccurrence(
+        activity_type=activity_type,
+        family="gameplay_rank",
+        runtime_id=f"runtime-{activity_type}",
+        activity_id=activity_id,
+        start_at=datetime(2026, 9, 2, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 3, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 2, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 4, 23, 58, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    rows = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 9, 4, tzinfo=TZ).date(),
+    )
+
+    tail = next(item for item in rows if item.checkpoint_kind == EXCHANGE_TAIL_KIND)
+    assert tail.due_at == datetime(2026, 9, 4, 0, 30, tzinfo=TZ)
+
+
+def test_activity_without_registered_shop_never_gets_exchange_tail() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="dandao-wending",
+        family="resource_rank",
+        runtime_id="runtime-dandao",
+        activity_id=1043111,
+        start_at=datetime(2026, 9, 2, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 3, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 2, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 4, 23, 58, 59, tzinfo=TZ),
+        cross_count=1,
+    )
+
+    rows = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 9, 4, tzinfo=TZ).date(),
+    )
+
+    assert EXCHANGE_TAIL_KIND not in {item.checkpoint_kind for item in rows}
+
+
+def test_shop_capability_does_not_invent_tail_outside_runtime_window() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="xutian-palace",
+        family="gameplay_rank",
+        runtime_id="runtime-xutian",
+        activity_id=8080001,
+        start_at=datetime(2026, 9, 2, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 3, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 2, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 4, 0, 15, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    rows = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 9, 4, tzinfo=TZ).date(),
+    )
+
+    assert EXCHANGE_TAIL_KIND not in {item.checkpoint_kind for item in rows}
+
+
 def test_tiandi_yiju_exchange_tail_dispatches_the_idempotent_executor(monkeypatch) -> None:
     from backend.core.fanxiu.data_annotation.tasks import tiandi_yiju_tail
 
@@ -538,7 +609,7 @@ def test_xutian_1000_is_one_occurrence_scoped_checkpoint() -> None:
     assert [item.checkpoint_kind for item in at_open] == [XUTIAN_ACTIVE_KIND]
 
 
-def test_unverified_beast_abyss_only_publishes_first_day_read_only_reconcile() -> None:
+def test_unverified_beast_active_stays_disabled_without_hiding_its_shop_tail() -> None:
     occurrence = RankingOccurrence(
         activity_type="beast-abyss",
         family="gameplay_rank",
@@ -563,7 +634,9 @@ def test_unverified_beast_abyss_only_publishes_first_day_read_only_reconcile() -
         occurrence,
         business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
     )
-    assert tail_day == ()
+    assert [(item.checkpoint_kind, item.due_at.strftime("%H:%M")) for item in tail_day] == [
+        (EXCHANGE_TAIL_KIND, "00:30"),
+    ]
 
 
 def test_unverified_beast_abyss_active_slots_stay_unpublished_next_day() -> None:

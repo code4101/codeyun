@@ -176,8 +176,10 @@ def test_occurrence_entry_opens_schedule_from_unrecognized_world_skin(monkeypatc
     actions = []
 
     class Context:
+        samples = iter(((None, 87.0, "world-skin-frame"), (535, 100.0, "beast-frame")))
+
         def sample_scene_once(self, **_kwargs):
-            return None, 87.0, "world-skin-frame"
+            return next(self.samples)
 
         def click_shape(self, scene, shape, **kwargs):
             actions.append(("click", scene, shape, kwargs.get("frame_data_url")))
@@ -210,13 +212,82 @@ def test_occurrence_entry_opens_schedule_from_unrecognized_world_skin(monkeypatc
         )
     )
 
-    assert result is None
+    assert result == 535
     assert actions == [
         ("click", 34, "日程", "world-skin-frame"),
         ("settle", 1.5),
         ("wait", 66),
         ("wait", 535),
     ]
+
+
+def test_occurrence_entry_selects_the_old_instance_calendar_day(monkeypatch) -> None:
+    calls = []
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls):
+            return datetime(2026, 9, 4, 17, 30).astimezone()
+
+    class Context:
+        samples = iter(((66, 100.0, "schedule-frame"), (535, 100.0, "beast-frame")))
+
+        def sample_scene_once(self, **_kwargs):
+            return next(self.samples)
+
+        def wait_scene(self, layer0, **_kwargs):
+            return _generator_result(layer0[0])
+
+    def select(*_args, **kwargs):
+        calls.append(kwargs)
+        return _generator_result(SimpleNamespace(runtime_key="8150001|8150001400004"))
+
+    monkeypatch.setattr(beast_abyss_active, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.schedule_navigation.select_schedule_activity",
+        select,
+    )
+    occurrence = SimpleNamespace(
+        activity_id=8150001,
+        runtime_id="8150001400004",
+        cross_count=8,
+        end_at=datetime(2026, 9, 3, 22, 0).astimezone(),
+        close_at=datetime(2026, 9, 4, 23, 58, 59).astimezone(),
+    )
+
+    result = _finish(beast_abyss_active._enter_beast_abyss_occurrence_home(
+        Context(), occurrence, label="兽渊尾日"
+    ))
+
+    assert result == 696
+    assert calls[0]["day_offset"] == -1
+    assert calls[0]["now"].date().isoformat() == "2026-09-04"
+
+
+def test_occurrence_entry_accepts_explicit_settlement_scene(monkeypatch) -> None:
+    class FixedDateTime:
+        @classmethod
+        def now(cls):
+            return datetime(2026, 9, 4, 17, 30).astimezone()
+
+    class Context:
+        def sample_scene_once(self, **_kwargs):
+            return 696, 100.0, "settlement-frame"
+
+    monkeypatch.setattr(beast_abyss_active, "datetime", FixedDateTime)
+    occurrence = SimpleNamespace(
+        activity_id=8150001,
+        runtime_id="8150001400004",
+        cross_count=8,
+        end_at=datetime(2026, 9, 3, 22, 0).astimezone(),
+        close_at=datetime(2026, 9, 4, 23, 58, 59).astimezone(),
+    )
+
+    result = _finish(beast_abyss_active._enter_beast_abyss_occurrence_home(
+        Context(), occurrence, label="兽渊尾日"
+    ))
+
+    assert result == 696
 
 
 def test_completed_initialization_is_an_occurrence_scoped_noop(monkeypatch) -> None:
@@ -617,6 +688,7 @@ def test_pending_terminal_is_settled_without_replaying_start(monkeypatch) -> Non
     }
     context = SimpleNamespace(
         current_scene=lambda *_args, **_kwargs: (assets.terminal_scene_ids[0], 100, "frame"),
+        sample_scene_once=lambda *_args, **_kwargs: (assets.terminal_scene_ids[0], 100, "frame"),
         ocr_text=lambda _frame: (
             "探查结束 第185次探查 总共获得积分99999 "
             "总共获得功勋88888 点击屏幕关闭"
@@ -672,7 +744,10 @@ def test_new_batch_persists_pending_before_start_click(monkeypatch) -> None:
         requested_explores=100,
         measurement=True,
     )
-    context = SimpleNamespace(current_scene=lambda *_args, **_kwargs: (658, 100, "frame"))
+    context = SimpleNamespace(
+        current_scene=lambda *_args, **_kwargs: (658, 100, "frame"),
+        sample_scene_once=lambda *_args, **_kwargs: (658, 100, "frame"),
+    )
     order = []
     monkeypatch.setattr(
         beast_abyss_active,
@@ -778,6 +853,7 @@ def test_terminal_confirmed_batch_resumes_rank_refresh_without_replay(monkeypatc
     }
     context = SimpleNamespace(
         current_scene=lambda *_args, **_kwargs: (657, 100, "frame"),
+        sample_scene_once=lambda *_args, **_kwargs: (657, 100, "frame"),
     )
     refreshed = []
     monkeypatch.setattr(
@@ -1240,8 +1316,10 @@ def test_exchange_tail_reenters_exact_occurrence_and_syncs_both_final_ranks(
     calls = []
 
     class Context:
+        samples = iter(((66, 100.0, "schedule"),))
+
         def sample_scene_once(self, **_kwargs):
-            return 66, 100.0, "schedule"
+            return next(self.samples)
 
         def go_scene(self, scene):
             calls.append(("goto", scene))
@@ -1271,7 +1349,8 @@ def test_exchange_tail_reenters_exact_occurrence_and_syncs_both_final_ranks(
         activity_id=8150001,
         runtime_id="8150001400004",
         cross_count=8,
-        end_at=datetime(2026, 9, 3, 22, 0),
+        end_at=datetime(2026, 9, 3, 22, 0).astimezone(),
+        close_at=datetime(2026, 9, 4, 23, 58, 59).astimezone(),
     )
     monkeypatch.setattr(
         beast_abyss_active,
@@ -1293,6 +1372,7 @@ def test_exchange_tail_reenters_exact_occurrence_and_syncs_both_final_ranks(
             pattern,
             kwargs["expected_activity_id"],
             kwargs["now"],
+            kwargs["day_offset"],
         ))
         return _generator_result(SimpleNamespace(runtime_key="8150001|8150001400004"))
 
@@ -1349,11 +1429,12 @@ def test_exchange_tail_reenters_exact_occurrence_and_syncs_both_final_ranks(
     )
 
     select_calls = [item for item in calls if item[0] == "select"]
-    assert len(select_calls) == 2
+    assert len(select_calls) == 1
     assert all(item[2] == 8150001 for item in select_calls)
-    assert all(item[3] == datetime(2026, 9, 3, 12, 0) for item in select_calls)
+    assert all(item[3].date() == datetime.now().astimezone().date() for item in select_calls)
+    assert all(item[4] == -1 for item in select_calls)
     assert calls.index(("exchange", "old-occurrence")) < calls.index(
-        ("enter", 535, "兽渊榜", 537)
+        ("enter", 536, "兽渊榜", 537)
     )
     assert ("click", 537, "个人") in calls
     assert ("click", 537, "团队") in calls
@@ -1428,6 +1509,7 @@ def test_exchange_shop_collection_never_reuses_rank_cache(monkeypatch) -> None:
     )
     context = SimpleNamespace(
         current_scene=lambda *_args, **_kwargs: (536, 100.0, object()),
+        sample_scene_once=lambda *_args, **_kwargs: (536, 100.0, object()),
     )
     runner = SimpleNamespace(
         _behavior_tree_context=lambda *_args, **_kwargs: context,
@@ -1479,6 +1561,33 @@ def test_exchange_rejects_retained_shop_or_cross_process_snapshot() -> None:
             attempt_started_at=captured_at,
             label="兽渊_兑换",
         )
+
+
+@pytest.mark.parametrize(
+    ("purchase_limit", "purchased_count", "wallet", "unit_price", "expected"),
+    (
+        (100, 20, 500, 10, 50),
+        (100, 20, 2_000, 10, 80),
+        (-1, 0, 500, 10, 50),
+    ),
+)
+def test_exchange_dialog_maximum_respects_wallet_and_remaining_limit(
+    purchase_limit: int,
+    purchased_count: int,
+    wallet: int,
+    unit_price: int,
+    expected: int,
+) -> None:
+    row = SimpleNamespace(
+        purchase_limit=purchase_limit,
+        purchased_count=purchased_count,
+    )
+
+    assert beast_abyss_exchange._exchange_dialog_maximum(
+        row,
+        wallet=wallet,
+        unit_price=unit_price,
+    ) == expected
 
 
 def test_final_rank_refresh_fails_closed_when_team_tab_did_not_load(
@@ -1592,8 +1701,9 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
         activity_id=8150001,
         runtime_id="8150001400004",
         cross_count=8,
-        start_at=datetime(2026, 9, 2, 10, 0),
-        end_at=datetime(2026, 9, 3, 22, 0),
+        start_at=datetime(2026, 9, 2, 10, 0).astimezone(),
+        end_at=datetime(2026, 9, 3, 22, 0).astimezone(),
+        close_at=datetime(2026, 9, 4, 23, 58, 59).astimezone(),
     )
     monkeypatch.setattr(
         "backend.core.fanxiu.activity.ranking_reconcile.seed_ranking_occurrence",
@@ -1610,7 +1720,7 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.schedule_navigation.select_schedule_activity",
         lambda _context, pattern, **kwargs: (
-            calls.append(("select", pattern, kwargs["now"]))
+            calls.append(("select", pattern, kwargs["now"], kwargs["day_offset"]))
             or _generator_result(
                 SimpleNamespace(runtime_key="8150001|8150001400004")
             )
@@ -1618,8 +1728,10 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
     )
 
     class Context:
+        samples = iter(((66, 100.0, "schedule"),))
+
         def sample_scene_once(self, **_kwargs):
-            return 66, 100.0, "schedule"
+            return next(self.samples)
 
         def go_scene(self, scene):
             calls.append(("goto", scene))
@@ -1647,7 +1759,10 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
         )
     )
 
-    assert ("select", "兽渊探秘", datetime(2026, 9, 3, 12, 0)) in calls
-    assert ("enter", 535, "兑换宝阁", 536) in calls
+    select_call = next(item for item in calls if item[0] == "select")
+    assert select_call[1] == "兽渊探秘"
+    assert select_call[2].date() == datetime.now().astimezone().date()
+    assert select_call[3] == -1
+    assert ("enter", 696, "兑换宝阁", 536) in calls
     assert calls[-1] == ("goto", 34)
     assert result["status"] == "completed"

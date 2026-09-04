@@ -1321,6 +1321,76 @@ def take_ai_control(
             execution_state_path=execution_state_path,
             world_facts_path=world_facts_path,
         )
+    kernel = status.get("kernel") if isinstance(status.get("kernel"), dict) else {}
+    if str(kernel.get("execution_state") or "") == "idle":
+        # A backend reload or an unclassified/manual Cell may have erased the
+        # execution projection while Scheduler attempts remain claimed.  Once
+        # the shared Kernel is confirmed idle during an AI handoff, none of
+        # those old claims can still own the GUI.  Reconcile them immediately
+        # instead of leaving misleading ``running`` rows behind.
+        tasks = read_scheduler_tasks(
+            scheduler_state_path=scheduler_state_path,
+            world_facts_path=world_facts_path,
+        )
+        interrupted_ids: list[str] = []
+        interrupted_rows: list[tuple[dict[str, Any], Any, str | None]] = []
+        expected_attempt_ids: dict[str, str | None] = {}
+        now = datetime.now()
+        message = "AI 调度器已取得运行权；切换前工程 attempt 已中断"
+        for task in tasks:
+            if str(task.get("last_result") or "") != "running":
+                continue
+            task_id = str(task.get("id") or "")
+            if not task_id:
+                continue
+            previous = deepcopy(task)
+            attempt_id = str(task.get("attempt_id") or "") or None
+            original_next_time = (
+                task.get("attempt_original_trigger")
+                if "attempt_original_trigger" in task
+                else task.get("next_time")
+            )
+            task["last_result"] = "interrupted"
+            task["last_message"] = message
+            task["finished_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            task["next_time"] = original_next_time
+            task["attempt_id"] = None
+            task["attempt_original_trigger"] = None
+            task["attempt_kernel_generation"] = None
+            task["attempt_kernel_idle_since"] = None
+            interrupted_ids.append(task_id)
+            interrupted_rows.append((previous, original_next_time, attempt_id))
+            expected_attempt_ids[task_id] = attempt_id
+        if interrupted_ids:
+            written = write_scheduler_tasks(
+                tasks,
+                scheduler_state_path=scheduler_state_path,
+                execution_update_ids=set(interrupted_ids),
+                expected_execution_attempt_ids=expected_attempt_ids,
+            )
+            if written is not False:
+                for previous, original_next_time, attempt_id in interrupted_rows:
+                    record_scheduler_task_fact(
+                        next(task for task in tasks if task.get("id") == previous.get("id")),
+                        "interrupted",
+                        world_facts_path=world_facts_path,
+                    )
+                    record_scheduler_incident(
+                        task=previous,
+                        original_next_time=original_next_time,
+                        next_time=original_next_time,
+                        incident={
+                            "kind": "attempt_interrupted",
+                            "cycle_kind": "scheduler",
+                            "reason": message,
+                        },
+                        attempt_id=attempt_id or "",
+                        entry_id=entry_id,
+                        occurred_at=now,
+                        execution_status=status,
+                        scheduler_state_path=scheduler_state_path,
+                    )
+                status["interrupted_scheduler_task_ids"] = interrupted_ids
     status["job_group_enabled"] = bool(settings.get("job_group_enabled"))
     status["scheduler_control"] = "ai"
     return status

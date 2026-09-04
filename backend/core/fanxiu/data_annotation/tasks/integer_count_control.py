@@ -173,6 +173,7 @@ def _proportional_position(
     drag_attempts: list[dict[str, float]] = []
     landed = start
     position_tolerance = 2.0
+    stalled = False
     for _ in range(8):
         live = _live_thumb_center(context, assets, geometry)
         remaining = target_x - live[0]
@@ -190,7 +191,11 @@ def _proportional_position(
         if abs(target_x - landed[0]) <= position_tolerance:
             break
         if abs(landed[0] - live[0]) < 0.5:
-            raise RuntimeError(f"{count_label}比例定位像素拖拽未产生有效位移")
+            # Some UIs swallow a short first drag.  That does not prove the
+            # slider is unusable: stage 2 deliberately probes 1, 2, 4, ...
+            # pixels and can discover the minimum effective gesture distance.
+            stalled = True
+            break
     else:
         raise RuntimeError(f"{count_label}比例定位未在有界次数内到达目标像素")
     # The thumb is now at the proportional target.  Require a stable value
@@ -211,6 +216,7 @@ def _proportional_position(
         "actual_start_x": start[0],
         "actual_end_x": landed[0],
         "actual_pixels": abs(landed[0] - start[0]),
+        "stalled": stalled,
         "drag_attempts": drag_attempts,
     }
 

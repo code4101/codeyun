@@ -229,10 +229,12 @@ def test_pixel_trace_uses_actual_thumb_motion_and_gesture_gain() -> None:
         context, ASSETS, 100, maximum=1000, max_adjustments=10,
     ))
 
-    probe = result["pixel_probes"][0]
-    assert probe["commanded_pixels"] == pytest.approx(1)
-    assert probe["actual_pixels"] == pytest.approx(0.75)
-    interpolation = result["interpolation_drags"][0]
-    assert interpolation["probe_gesture_gain"] == pytest.approx(0.75)
-    assert "commanded_pixels" in interpolation
-    assert "actual_pixels" in interpolation
+    first_drag = result["proportional_drag"]["drag_attempts"][0]
+    commanded = first_drag["commanded_end_x"] - first_drag["start_x"]
+    actual = first_drag["actual_end_x"] - first_drag["start_x"]
+    assert actual / commanded == pytest.approx(0.75)
+    assert (
+        result["proportional_drag"]["actual_pixels"]
+        < result["proportional_drag"]["commanded_pixels"]
+    )
+    assert result["after"] == 100

@@ -44,6 +44,23 @@ from backend.core.fanxiu.data_annotation.effective_time import job_now
 CHECKPOINT_RETRY_DELAY = timedelta(minutes=10)
 MAX_DEFAULT_CHECKPOINT_ATTEMPTS = 3
 
+# This is an execution-capability registry, not a declaration that the other
+# activities lack an exchange tail.  The lifecycle planner derives that
+# business fact from ExchangeActivitySpec.page.has_shop and Runtime's
+# endTime/closePanelTime window.  Add an activity here only after its purchase
+# flow has passed live, idempotent acceptance.
+PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES = frozenset({
+    "beast-abyss",
+    "magic-invasion",
+    "yunmeng-trial",
+    "xianyuan-duokui",
+    "tiandi-yiju",
+})
+
+
+def exchange_tail_executor_is_production(activity_type: str) -> bool:
+    return str(activity_type) in PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES
+
 
 def _default_retry_policy(
     *,
@@ -276,7 +293,22 @@ def _execute_family_job(
             for row in list_ranking_checkpoint_rows(session)
             if row.family == family
         }
-        due = due_ranking_checkpoints(occurrences, now=now, completed_keys=completed)
+        planned_due = due_ranking_checkpoints(
+            occurrences,
+            now=now,
+            completed_keys=completed,
+        )
+        deferred_exchange_tails = tuple(
+            checkpoint
+            for checkpoint in planned_due
+            if checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND
+            and not exchange_tail_executor_is_production(checkpoint.activity_type)
+        )
+        due = tuple(
+            checkpoint
+            for checkpoint in planned_due
+            if checkpoint not in deferred_exchange_tails
+        )
         initial_next_time = next_ranking_lifecycle_time(
             occurrences,
             now=now,
@@ -468,6 +500,13 @@ def _execute_family_job(
         "performed_actions": bool(results),
         "family": family,
         "checkpoint_results": results,
+        "deferred_exchange_tails": [
+            {
+                **checkpoint.as_dict(),
+                "reason": "exchange_tail_executor_not_production",
+            }
+            for checkpoint in deferred_exchange_tails
+        ],
     }
 
 
@@ -558,6 +597,42 @@ def execute_beast_abyss_rank_refresh_rnd_cell(runner, ctx, payload, stop_event):
     ))
 
 
+def execute_beast_abyss_exchange_tail_rnd_cell(runner, ctx, payload, stop_event):
+    """Settle the unique closed Beast Abyss occurrence still in its grace period."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("兽渊兑换收尾研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "beast-abyss"
+        and occurrence.end_at < now < occurrence.close_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"兽渊兑换收尾研发无法唯一定位结算期实例：matches={len(matches)}"
+        )
+    return (yield from _execute_exchange_tail_checkpoint(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        occurrence=matches[0],
+    ))
+
+
 def execute_resource_ranking_job(runner, ctx, payload, stop_event):
     return (yield from _execute_family_job(
         runner, ctx, payload, stop_event,
@@ -566,7 +641,10 @@ def execute_resource_ranking_job(runner, ctx, payload, stop_event):
 
 
 __all__ = [
+    "PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES",
+    "exchange_tail_executor_is_production",
     "execute_beast_abyss_initialization_rnd_cell",
+    "execute_beast_abyss_exchange_tail_rnd_cell",
     "execute_beast_abyss_rank_refresh_rnd_cell",
     "execute_ranking_lifecycle_job",
     "execute_resource_ranking_job",

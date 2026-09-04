@@ -144,6 +144,46 @@ def test_beast_initialization_rnd_cell_refuses_closed_window(monkeypatch):
         ))
 
 
+def test_beast_exchange_tail_rnd_cell_runs_only_the_unique_settlement_occurrence(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle_job,
+        "job_now",
+        lambda: datetime(2026, 9, 4, 17, 0, tzinfo=TZ),
+    )
+    monkeypatch.setattr(
+        runtime_schedule,
+        "read_fanxiu_activity_runtime_schedule",
+        lambda **_kwargs: {"available": True, "complete": True},
+    )
+    monkeypatch.setattr(
+        lifecycle_job,
+        "discover_ranking_occurrences",
+        lambda _schedule: (_beast_occurrence(),),
+    )
+    seen = []
+
+    def execute(*_args, occurrence, **_kwargs):
+        seen.append(occurrence.instance_key)
+        if False:
+            yield None
+        return {"status": "completed", "phase": "exchange_tail"}
+
+    monkeypatch.setattr(lifecycle_job, "_execute_exchange_tail_checkpoint", execute)
+
+    result = _drain(lifecycle_job.execute_beast_abyss_exchange_tail_rnd_cell(
+        object(), {}, {}, Event()
+    ))
+
+    assert result["phase"] == "exchange_tail"
+    assert seen == [_beast_occurrence().instance_key]
+
+
+def test_exchange_tail_business_fact_is_independent_from_executor_acceptance() -> None:
+    assert lifecycle_job.exchange_tail_executor_is_production("magic-invasion") is True
+    assert lifecycle_job.exchange_tail_executor_is_production("beast-abyss") is True
+    assert lifecycle_job.exchange_tail_executor_is_production("xutian-palace") is False
+
+
 def _arrange(monkeypatch, *, reconcile):
     engine = create_engine("sqlite://")
     monkeypatch.setattr(backend_db, "engine", engine)

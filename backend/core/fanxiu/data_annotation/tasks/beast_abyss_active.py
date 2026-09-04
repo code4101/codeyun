@@ -1783,13 +1783,13 @@ def execute_beast_abyss_rank_refresh_probe(
         stop_event=stop_event,
     )
     try:
-        yield from _enter_beast_abyss_occurrence_home(
+        home_scene_id = yield from _enter_beast_abyss_occurrence_home(
             context,
             occurrence,
             label="兽渊榜单刷新探针",
         )
         yield from context.wait_click_then_scene(
-            535,
+            home_scene_id,
             "兽渊榜",
             537,
             timeout=20.0,
@@ -1829,12 +1829,23 @@ def _enter_beast_abyss_occurrence_home(
         select_schedule_activity,
     )
 
+    current_moment = datetime.now().astimezone()
+
+    end_at = getattr(occurrence, "end_at", None)
+    close_at = getattr(occurrence, "close_at", None)
+    settlement = bool(
+        end_at is not None
+        and close_at is not None
+        and end_at < current_moment < close_at
+    )
+    expected_home_scene_id = 696 if settlement else 535
+
     scene_id, _score, frame = context.sample_scene_once(
-        views=[535, 66, 657, 658],
+        views=[535, 696, 536, 66, 657, 658],
         update=True,
     )
-    if scene_id == 535:
-        return 535
+    if scene_id == expected_home_scene_id:
+        return expected_home_scene_id
     if scene_id != 66:
         if scene_id is None:
             # World skins and transient world overlays can hide #34's OCR
@@ -1854,23 +1865,30 @@ def _enter_beast_abyss_occurrence_home(
     target_anchor = anchor or occurrence.end_at.replace(
         hour=12, minute=0, second=0, microsecond=0
     )
+    day_offset = (target_anchor.date() - current_moment.date()).days
     selected = yield from select_schedule_activity(
         context,
         r"兽渊探秘",
+        day_offset=day_offset,
         enter=True,
         require_runtime_alignment=True,
         expected_activity_id=int(occurrence.activity_id),
         expected_runtime_id=str(occurrence.runtime_id),
         expected_cross_count=int(occurrence.cross_count),
-        now=target_anchor,
+        now=current_moment,
     )
     if not str(getattr(selected, "runtime_key", "") or ""):
         raise RuntimeError(f"{label}：#66 未回读精确 Runtime 实例标识")
     yield from context.wait_scene(
-        [535],
+        [expected_home_scene_id],
         wait=30.0,
-        label=f"{label}：等待旧实例主页",
+        label=(
+            f"{label}：等待兽渊结算主页"
+            if settlement
+            else f"{label}：等待兽渊活动主页"
+        ),
     )
+    return expected_home_scene_id
 
 
 def execute_beast_abyss_daily_reconcile_checkpoint(
@@ -1904,13 +1922,13 @@ def execute_beast_abyss_daily_reconcile_checkpoint(
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
-    yield from _enter_beast_abyss_occurrence_home(
+    home_scene_id = yield from _enter_beast_abyss_occurrence_home(
         context,
         occurrence,
         label="兽渊00:30实例化",
     )
     yield from context.wait_click_then_scene(
-        535,
+        home_scene_id,
         "兑换宝阁",
         536,
         timeout=20.0,
@@ -1961,13 +1979,13 @@ def execute_beast_abyss_exchange_tail_checkpoint(
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
-    yield from _enter_beast_abyss_occurrence_home(
+    home_scene_id = yield from _enter_beast_abyss_occurrence_home(
         context,
         occurrence,
         label="兽渊尾日",
     )
     yield from context.wait_click_then_scene(
-        535,
+        home_scene_id,
         "兑换宝阁",
         536,
         timeout=20.0,
@@ -1979,13 +1997,8 @@ def execute_beast_abyss_exchange_tail_checkpoint(
         activity_id=str(activity.id),
         stop_event=stop_event,
     )
-    yield from _enter_beast_abyss_occurrence_home(
-        context,
-        occurrence,
-        label="兽渊尾日榜单同步",
-    )
     yield from context.wait_click_then_scene(
-        535,
+        536,
         "兽渊榜",
         537,
         timeout=20.0,

@@ -6229,9 +6229,13 @@ def put_fanxiu_kernel_scheduler_settings(
         entry_id = str(getattr(entry, "entry_id", None) or req.entry_id)
         control = _behavior_tree_framework.take_ai_control(
             entry_id,
+            # Selecting AI is an ownership handoff, not merely a future
+            # dispatch preference.  A Cell without Scheduler metadata can
+            # still own the shared GUI, so it must be interrupted as well.
+            interrupt_any_cell=True,
             scheduler_state_path=_kernel_scheduler_state_path(),
             scheduler_settings_path=_kernel_scheduler_settings_path(),
-        execution_state_path=_kernel_execution_state_path(),
+            execution_state_path=_kernel_execution_state_path(),
             world_facts_path=_data_annotation_world_facts_path(),
         )
         settings = {"job_group_enabled": bool(control.get("job_group_enabled", False))}
