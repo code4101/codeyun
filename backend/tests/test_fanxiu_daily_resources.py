@@ -2,6 +2,8 @@ from backend.core.fanxiu.data_annotation import behavior_tree_executor  # noqa: 
 from datetime import datetime
 
 from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
+import threading
 
 
 def _drain(generator):
@@ -105,6 +107,116 @@ def test_xianshi_weekly_resource_leaves_world_like_internal_scene_first():
         ("wait", 86),
         ("confirm", 86, "确认", 34),
         ("entry", 34, "仙市", 247, "秘藏阁"),
+    ]
+
+
+def test_daily_xianshi_uses_reference_tab_shape_without_treating_248_as_scene():
+    task = object.__new__(BehaviorTreeExecutor)
+    events: list[tuple] = []
+
+    class FakeRuntime:
+        def wait_click_then_shape(self, *args, **options):
+            events.append(("entry", args, options))
+            if False:
+                yield
+
+        def wait_click(self, *args, **options):
+            events.append(("click", args, options))
+            if False:
+                yield
+
+        def wait_action_settle(self, seconds):
+            events.append(("settle", seconds))
+            if False:
+                yield
+
+        def shape_visible(self, *args):
+            events.append(("shape_visible", args))
+            return "coin-tab-condition"
+
+        def wait_any(self, conditions, **options):
+            events.append(("wait_any", conditions, options))
+            if False:
+                yield
+            return "coin_tab"
+
+        def click_shape_center(self, *args):
+            events.append(("fixed_click", args))
+
+        def wait_scene(self, *args, **options):
+            events.append(("wait_scene", args, options))
+            if False:
+                yield
+            return 249
+
+    runtime = FakeRuntime()
+    task._behavior_tree_context = lambda *_args, **_kwargs: runtime
+    task._ensure_world_main_for_right_menu = lambda *_args, **_kwargs: iter(())
+
+    _drain(
+        task._open_daily_xianshi_coin_list(
+            {"asset_tree_path": None},
+            object(),
+            {},
+            {},
+            {},
+            {},
+            task_label="仙市_秘藏阁",
+        )
+    )
+
+    assert ("click", (247, "秘藏阁"), {}) in events
+    assert ("shape_visible", (248, "仙币")) in events
+    assert ("fixed_click", (248, "仙币")) in events
+    assert any(event[0] == "wait_scene" and event[1] == ([249],) for event in events)
+
+
+def test_daily_xianshi_retries_box_click_when_first_click_stays_on_list():
+    task = object.__new__(BehaviorTreeExecutor)
+    task._lock = threading.RLock()
+    task._status = {}
+    task._log_locked = lambda *_args, **_kwargs: None
+    task._log = lambda *_args, **_kwargs: None
+    task._raise_if_stopped = lambda *_args, **_kwargs: None
+    clicks: list[tuple[int, str]] = []
+    matches = iter([None, {"matched": True, "similarity": 100.0}])
+
+    class FakeRuntime:
+        def click_shape_center(self, view_id, title):
+            clicks.append((view_id, title))
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield
+
+        def cur_frame(self, **_options):
+            return "frame"
+
+        def shape_matches(self, *_args, **_options):
+            return next(matches)
+
+        def ocr_text(self, *_args, **_options):
+            return "coin list"
+
+    task._behavior_tree_context = lambda *_args, **_kwargs: FakeRuntime()
+    task._daily_xianshi_text_is_box_detail = lambda _text: False
+
+    result = _drain(
+        task._click_daily_xianshi_free_coin_box(
+            {"asset_tree_path": None},
+            object(),
+            {},
+            {},
+            {},
+            task_label="仙市_秘藏阁",
+        )
+    )
+
+    assert result is True
+    assert clicks == [
+        (249, "首个宝匣"),
+        (249, "首个宝匣"),
+        (250, "领取"),
     ]
 
 

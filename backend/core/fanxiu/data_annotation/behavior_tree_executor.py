@@ -8632,16 +8632,25 @@ class BehaviorTreeExecutor(
             max_clicks=int(payload.get("xianshi_entry_max_clicks") or 3),
             label=f"{task_label}：等待仙市入口页",
         )
-        yield from context.wait_click_then_shape(
-            247,
-            "秘藏阁",
-            248,
-            "仙币",
-            settle_seconds=1.5,
-            label=f"{task_label}：等待秘藏阁仙币页",
+        # #248 is a reference frame for the unselected ``仙币`` tab, not a
+        # globally recognizable scene.  Requiring current_scene == 248 makes
+        # its own perfectly matching local shape unreachable.  Keep #247 as
+        # the established source, wait for the reference shape directly, then
+        # use #249's OCR identity to prove that the tab switch completed.
+        yield from context.wait_click(247, "秘藏阁")
+        yield from context.wait_action_settle(1.5)
+        yield from context.wait_any(
+            {"coin_tab": context.shape_visible(248, "仙币")},
+            timeout=float(payload.get("coin_tab_visible_wait_seconds") or 30.0),
+            label=f"{task_label}：等待秘藏阁仙币标签",
         )
-        yield from context.wait_click(248, "仙币")
+        context.click_shape_center(248, "仙币")
         yield from context.wait_action_settle(float(payload.get("coin_tab_settle_seconds") or 2.5))
+        yield from context.wait_scene(
+            [249],
+            wait=float(payload.get("coin_list_wait_seconds") or 30.0),
+            label=f"{task_label}：等待仙币免费宝匣列表",
+        )
 
     def _ensure_world_main_for_right_menu(
         self,
@@ -8698,42 +8707,64 @@ class BehaviorTreeExecutor(
         del image249
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        self._raise_if_stopped(stop_event)
-        with self._lock:
-            self._status.update({
-                "phase": "daily_xianshi_open_coin_box",
-                "message": f"{task_label}：点击灵石仙币宝匣进入详情",
-                "updated_at": time.time(),
-            })
-            self._log_locked("action", f"{task_label}：点击 #249「灵石仙币宝匣」")
-        context.click_shape_center(249, "灵石仙币宝匣")
-        yield from context.wait_action_settle(float(payload.get("coin_box_settle_seconds") or 1.5))
-        try:
-            return (yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label))
-        except Exception as exc:
-            if not self._daily_xianshi_claim_shape_missing_error(exc):
-                raise
-            text = context.ocr_text(update=True)
+        click_attempts = max(1, int(payload.get("coin_box_click_attempts") or 3))
+        for attempt in range(1, click_attempts + 1):
+            self._raise_if_stopped(stop_event)
+            with self._lock:
+                self._status.update({
+                    "phase": "daily_xianshi_open_coin_box",
+                    "message": f"{task_label}：点击首个宝匣进入详情 {attempt}/{click_attempts}",
+                    "updated_at": time.time(),
+                })
+                self._log_locked(
+                    "action",
+                    f"{task_label}：点击 #249「首个宝匣」 {attempt}/{click_attempts}",
+                )
+            context.click_shape_center(249, "首个宝匣")
+            yield from context.wait_action_settle(float(payload.get("coin_box_settle_seconds") or 2.5))
+            detail_frame = context.cur_frame(update=True)
+            claim_match = context.shape_matches(250, "领取", frame_data_url=detail_frame)
+            if isinstance(claim_match, dict):
+                context.click_shape_center(250, "领取")
+                yield from context.wait_action_settle(float(payload.get("claim_settle_seconds") or 1.5))
+                self._log("success", f"{task_label}：已通过 #250「领取」局部锚点领取免费宝匣")
+                return True
+            text = context.ocr_text(detail_frame)
             if (
-                not self._daily_xianshi_text_is_box_detail(text)
-                or not self._daily_xianshi_text_indicates_no_free_coin_box(text)
+                self._daily_xianshi_text_is_box_detail(text)
+                and self._daily_xianshi_text_indicates_no_free_coin_box(text)
             ):
-                raise RuntimeError(
-                    f"{task_label}：#250 未匹配「领取」，且新鲜 OCR 未同时证明商品详情与非免费状态，"
-                    f"拒绝按已领取收尾；OCR={text[:120]}"
-                ) from exc
-            self._log(
-                "success",
-                f"{task_label}：#250 未匹配「领取」，详情 OCR 已证明当前宝匣需要付费，视为今日已无可领免费项",
+                self._log(
+                    "success",
+                    f"{task_label}：详情 OCR 已证明当前宝匣需要付费，视为今日已无可领免费项",
+                )
+                yield from self._return_daily_xianshi_box_detail_to_coin_list(
+                    ctx,
+                    stop_event,
+                    payload,
+                    image250,
+                    task_label=task_label,
+                )
+                return "not_free"
+            if attempt < click_attempts:
+                self._log(
+                    "warning",
+                    f"{task_label}：点击宝匣后「领取」局部框仍为空，重试 {attempt + 1}/{click_attempts}",
+                )
+                continue
+            raise RuntimeError(
+                f"{task_label}：连续 {attempt} 次点击后仍未确认宝匣详情，"
+                f"且 OCR 未证明非免费状态；OCR={text[:120]}"
             )
-            yield from self._return_daily_xianshi_box_detail_to_coin_list(ctx, stop_event, payload, image250, task_label=task_label)
-            return "not_free"
+        raise RuntimeError(f"{task_label}：连续 {click_attempts} 次点击仍未进入宝匣详情")
 
     def _daily_xianshi_claim_shape_missing_error(self, exc: Exception) -> bool:
         message = str(exc)
         compact = re.sub(r"\s+", "", message)
         if "250" not in compact or "领取" not in compact:
             return False
+        if "点击前场景" in compact and "#249" in compact:
+            return True
         return any(token in compact for token in ("未匹配", "超时", "timeout", "Timeout", "0%"))
 
     def _daily_xianshi_text_indicates_no_free_coin_box(self, text: str) -> bool:
@@ -8774,7 +8805,11 @@ class BehaviorTreeExecutor(
     ):
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        yield from context.wait_click(250, "领取")
+        frame = context.cur_frame(update=True)
+        claim_match = context.shape_matches(250, "领取", frame_data_url=frame)
+        if not isinstance(claim_match, dict):
+            raise RuntimeError(f"{task_label}：#250 [领取] 未匹配")
+        context.click_shape_center(250, "领取")
         yield from context.wait_action_settle(float(payload.get("claim_settle_seconds") or 1.5))
         text = context.ocr_text(update=True)
         self._log("success", f"{task_label}：领取后 OCR={text[:120]}")

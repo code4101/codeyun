@@ -1081,12 +1081,19 @@ class DailyResourceTaskMixin:
         yield from context.wait_scene([34], label=f"{task_label}：等待世界 #34")
         yield from self._open_daily_xianshi_coin_list(ctx, stop_event, payload, image34, image247, image248, task_label=task_label)
 
-        frame = context.cur_frame(update=True)
-        text = context.ocr_text(frame)
-        if self._daily_xianshi_text_is_box_detail(text):
-            completed = yield from self._claim_daily_xianshi_coin_box(ctx, stop_event, payload, image250, task_label=task_label)
-        else:
-            completed = yield from self._click_daily_xianshi_free_coin_box(ctx, stop_event, payload, image249, image250, task_label=task_label)
+        # This transaction always re-enters through the #249 list.  The list
+        # itself contains both "宝匣" and "兑换所需", so treating those words
+        # as proof of an already-open detail skips the required first-item
+        # click.  Open the current first item unconditionally; its detail then
+        # proves either free/领取 or paid/兑换 idempotence.
+        completed = yield from self._click_daily_xianshi_free_coin_box(
+            ctx,
+            stop_event,
+            payload,
+            image249,
+            image250,
+            task_label=task_label,
+        )
 
         if completed:
             if completed == "not_free":

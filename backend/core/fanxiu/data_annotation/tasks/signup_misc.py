@@ -66,11 +66,37 @@ class SignupMiscTaskMixin:
         current_text = context.ocr_text(context.cur_frame(update=True))
         if self._日常报名文本是报名页(current_text):
             return "报名页"
-        if hasattr(context, "wait_click_then_scene"):
-            yield from context.wait_click_then_scene(75, "活动报名", 23, label="日常_报名：打开活动报名 #23")
-        else:
-            yield from context.wait_click(75, "活动报名")
-            yield from context.wait_scene([23])
+        # #75 is a reference frame for the bottom activity strip rendered on
+        # the real #69 daily page; it is not an independently recognizable
+        # scene.  Guard #69, locate/click the #75 Shape on that fresh frame,
+        # then verify the real successor #23 explicitly.
+        for attempt in range(2):
+            scene_id, _score, frame = yield from context.current_scene(
+                [69, 23],
+                update=True,
+            )
+            if int(scene_id) == 23:
+                break
+            if int(scene_id) != 69:
+                raise RuntimeError(
+                    "日常_报名：活动报名参考帧只允许在 #69 使用，"
+                    f"当前 #{scene_id or 'unknown'}"
+                )
+            context.click_shape(75, "活动报名", frame_data_url=frame)
+            landed = yield from context.wait_scene(
+                [23],
+                wait=20.0,
+                label="日常_报名：打开活动报名 #23",
+            )
+            landed_id = int(getattr(landed, "id", landed))
+            if landed_id == 23:
+                break
+            if landed_id != 69 or attempt >= 1:
+                raise RuntimeError(
+                    "日常_报名：点击活动报名后未进入 #23，"
+                    f"实际 #{landed_id}"
+                )
+            yield from context.wait_action_settle(1.0)
         yield from context.wait_any(
             {
                 "scene": context.scene_visible(23),
