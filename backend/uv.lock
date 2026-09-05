@@ -8440,7 +8440,6 @@ kq5034 = [
     { name = "beautifulsoup4" },
     { name = "cachebox" },
     { name = "charset-normalizer" },
-    { name = "comtypes", marker = "sys_platform == 'win32'" },
     { name = "deprecated" },
     { name = "disjoint-set" },
     { name = "drissionpage" },
@@ -8481,11 +8480,10 @@ kq5034 = [
     { name = "pyyaml" },
     { name = "qiniu" },
     { name = "requests" },
-    { name = "tenacity" },
     { name = "tqdm" },
-    { name = "typing-extensions" },
     { name = "uiautomation", marker = "sys_platform == 'win32'" },
     { name = "ujson" },
+    { name = "wxauto4", marker = "sys_platform == 'win32'" },
     { name = "xlrd" },
     { name = "xlsxwriter" },
     { name = "xpath-parser" },
@@ -8518,10 +8516,6 @@ requires-dist = [
     { name = "charset-normalizer", marker = "extra == 'basic'" },
     { name = "charset-normalizer", marker = "extra == 'file'" },
     { name = "charset-normalizer", marker = "extra == 'kq5034'" },
-    { name = "comtypes", marker = "sys_platform == 'win32' and extra == 'advance'" },
-    { name = "comtypes", marker = "sys_platform == 'win32' and extra == 'all'" },
-    { name = "comtypes", marker = "sys_platform == 'win32' and extra == 'autogui'" },
-    { name = "comtypes", marker = "sys_platform == 'win32' and extra == 'kq5034'" },
     { name = "croniter", marker = "extra == 'all'" },
     { name = "croniter", marker = "extra == 'xlserver'" },
     { name = "deprecated", marker = "extra == 'advance'" },
@@ -8743,10 +8737,6 @@ requires-dist = [
     { name = "scp", marker = "extra == 'unix'" },
     { name = "shapely", marker = "extra == 'all'" },
     { name = "shapely", marker = "extra == 'ext-algo'" },
-    { name = "tenacity", marker = "extra == 'advance'" },
-    { name = "tenacity", marker = "extra == 'all'" },
-    { name = "tenacity", marker = "extra == 'autogui'" },
-    { name = "tenacity", marker = "extra == 'kq5034'" },
     { name = "tiktoken", marker = "extra == 'all'" },
     { name = "tiktoken", marker = "extra == 'xlpr'" },
     { name = "tqdm", marker = "extra == 'advance'" },
@@ -8754,10 +8744,6 @@ requires-dist = [
     { name = "tqdm", marker = "extra == 'basic'" },
     { name = "tqdm", marker = "extra == 'kq5034'" },
     { name = "tqdm", marker = "extra == 'prog'" },
-    { name = "typing-extensions", marker = "extra == 'advance'" },
-    { name = "typing-extensions", marker = "extra == 'all'" },
-    { name = "typing-extensions", marker = "extra == 'autogui'" },
-    { name = "typing-extensions", marker = "extra == 'kq5034'" },
     { name = "uiautomation", marker = "sys_platform == 'win32' and extra == 'advance'" },
     { name = "uiautomation", marker = "sys_platform == 'win32' and extra == 'all'" },
     { name = "uiautomation", marker = "sys_platform == 'win32' and extra == 'autogui'" },
@@ -8773,6 +8759,10 @@ requires-dist = [
     { name = "visdom", marker = "extra == 'xlai'" },
     { name = "visualdl", marker = "extra == 'all'" },
     { name = "visualdl", marker = "extra == 'xlpr'" },
+    { name = "wxauto4", marker = "sys_platform == 'win32' and extra == 'advance'", specifier = ">=41.1.7" },
+    { name = "wxauto4", marker = "sys_platform == 'win32' and extra == 'all'", specifier = ">=41.1.7" },
+    { name = "wxauto4", marker = "sys_platform == 'win32' and extra == 'autogui'", specifier = ">=41.1.7" },
+    { name = "wxauto4", marker = "sys_platform == 'win32' and extra == 'kq5034'", specifier = ">=41.1.7" },
     { name = "xlrd", marker = "extra == 'advance'" },
     { name = "xlrd", marker = "extra == 'all'" },
     { name = "xlrd", marker = "extra == 'kq5034'" },
@@ -11134,6 +11124,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/0f/270bafe92fde3b069a39bc01e39ee79340895b335640df861d43d2a51885/wrapt-2.3.0-cp314-cp314t-win_amd64.whl", hash = "sha256:42869085687f0aefd57c0f636c3f9354f8ffb321a8ba9cb52d19beb796e561c5", size = 83104, upload-time = "2026-07-28T06:05:52.405Z" },
     { url = "https://files.pythonhosted.org/packages/55/b3/af176d79a8515a8a720eccdad9a96f6e31a30abf2865430c8c42adf2fd13/wrapt-2.3.0-cp314-cp314t-win_arm64.whl", hash = "sha256:b1e5aa486e269b00ed35e64771c7d0ab8096cfd2643405ca8cd60ebedc099a51", size = 81774, upload-time = "2026-07-28T06:05:53.902Z" },
     { url = "https://files.pythonhosted.org/packages/00/39/3daf9f47be208606586de4568ba6713db53ebc8fd7a575aea1fe57983b69/wrapt-2.3.0-py3-none-any.whl", hash = "sha256:d8c7ed08477429752b8c44991f40ad7838b18332a160698740a6bfbc10d998a2", size = 61866, upload-time = "2026-07-28T06:06:12.9Z" },
+]
+
+[[package]]
+name = "wxauto4"
+version = "41.1.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "comtypes", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "httpx", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "pillow", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "psutil", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "pyperclip", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "pywin32", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+    { name = "tenacity", marker = "(python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux') or sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/0e/dd1378fc76d963a67e875d40ddb2f446187f5067380eb8508d9fcebf42e5/wxauto4-41.1.7-cp310-cp310-win_amd64.whl", hash = "sha256:000bd471165759d879162d918ff99cc84fbdb2520ed18777f12b9d8adc997a20", size = 2767626, upload-time = "2026-09-01T13:53:25.264Z" },
+    { url = "https://files.pythonhosted.org/packages/51/d5/810cbc1a6f1c01c43c5a6eb3de7ee61cce2a69d7e5592ccf84cdfdb019bc/wxauto4-41.1.7-cp311-cp311-win_amd64.whl", hash = "sha256:6830260d0e2967cfadae6ae24efd5101ff1444d83dc23223dba27d8f7f00eb95", size = 2882390, upload-time = "2026-09-01T13:53:26.943Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/60/27b830af71742dc86e2336d75991b9c8e78a58c88b00047b4b8eebce8603/wxauto4-41.1.7-cp312-cp312-win_amd64.whl", hash = "sha256:096a365ba71060c1af3c1f096342d5a16609452f51bcaf46e7359dd54235ebbf", size = 2946186, upload-time = "2026-09-01T13:53:29.165Z" },
+    { url = "https://files.pythonhosted.org/packages/24/40/f2f1d3e184e7c4a134ecdd737146e01d8be26c3a085dc2b0b9c3421dd204/wxauto4-41.1.7-cp313-cp313-win_amd64.whl", hash = "sha256:7dfd67b926caec43470bcd6e23a7865447775764b80f5aae9c7ce596e6153457", size = 2261297, upload-time = "2026-09-01T13:53:30.872Z" },
 ]
 
 [[package]]

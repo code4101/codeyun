@@ -107,6 +107,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "xutian_palace_native_auto",
     "yunmeng_trial_auto_challenge",
     "ranking_lifecycle",
+    "magic_invasion_initialization_rnd",
     "beast_abyss_initialization_rnd",
     "beast_abyss_rank_refresh_rnd",
     "beast_abyss_exchange_tail_rnd",
@@ -2108,6 +2109,29 @@ def register_fanxiu_default_jobs() -> None:
                 stop_event,
             )
         )
+
+    @register_fanxiu_data_annotation_task_cell(
+        "magic_invasion_initialization_rnd",
+        "魔道_实例化研发",
+        scheduler_supported=False,
+        standard_job=False,
+    )
+    def _run_data_annotation_magic_invasion_initialization_rnd_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import (
+            execute_magic_invasion_initialization_rnd_cell,
+        )
+
+        return (yield from execute_magic_invasion_initialization_rnd_cell(
+            runner,
+            ctx,
+            payload,
+            stop_event,
+        ))
 
     @register_fanxiu_data_annotation_task_cell(
         "beast_abyss_initialization_rnd",

@@ -235,16 +235,35 @@ class DailyExperienceTaskMixin:
         """Open #406 through a bounded, same-attempt local transition loop."""
 
         for recovery_index in range(_EXPERIENCE_OPEN_RECOVERY_LIMIT):
-            landed = yield from context.wait_click_then_scene(
-                _EXPERIENCE_TRAINING_SCENE,
-                "提升",
-                _EXPERIENCE_OPEN_BOOK_LANDINGS,
-                timeout=timeout,
-                label=(
-                    "日常_经验：打开经验书，等待 #406；"
-                    "允许已知遗留结算 #413 后有界清理"
-                ),
-            )
+            try:
+                landed = yield from context.wait_click_then_scene(
+                    _EXPERIENCE_TRAINING_SCENE,
+                    "提升",
+                    _EXPERIENCE_OPEN_BOOK_LANDINGS,
+                    timeout=timeout,
+                    label=(
+                        "日常_经验：打开经验书，等待 #406；"
+                        "允许已知遗留结算 #413 后有界清理"
+                    ),
+                )
+            except RuntimeError:
+                # #413 can reappear after the preceding close has already
+                # exposed #405.  The click guard must still reject the stale
+                # "提升" intent; consume only a fresh, overlay-first #413
+                # observation and retry through this bounded loop.
+                frame = context.cur_frame(update=True)
+                scene_id = self._daily_experience_observe_scene(
+                    context,
+                    frame,
+                    frozenset({_EXPERIENCE_RESULT_SCENE}),
+                )
+                if scene_id != _EXPERIENCE_RESULT_SCENE:
+                    raise
+                yield from self._daily_experience_close_result_to_training(
+                    context,
+                    timeout=timeout,
+                )
+                continue
             landed_id = int(getattr(landed, "id", landed))
             if landed_id == _EXPERIENCE_BOOKS_SCENE:
                 return

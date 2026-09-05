@@ -37,7 +37,9 @@ def _compact(value: Any) -> str:
     return re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "", str(value or ""))
 
 
-def _open_exchange_tab(context: Any, scene: int) -> None:
+def open_magic_invasion_exchange_tab(context: Any, scene: int) -> None:
+    """Open the shared Magic Invasion exchange tab from an activity subpage."""
+
     tokens = context.full_frame_ocr_tokens(update=True)
     target = resolve_magic_invasion_bottom_tab(
         _group_ocr_tokens(tokens),
@@ -77,7 +79,7 @@ def _exchange_shop_business_ready(lines: list[dict[str, Any]]) -> bool:
     return title_ready and wallet_ready and total_ready and tab_ready
 
 
-def _wait_exchange_shop_ready(
+def wait_magic_invasion_exchange_shop_ready(
     context: Any,
     *,
     label: str,
@@ -254,11 +256,11 @@ def execute_magic_invasion_tail_checkpoint(
     ))
     if dialog_scene == COMMON_SHOP_DIALOG_SCENE:
         context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "关闭详情")
-        yield from _wait_exchange_shop_ready(
+        yield from wait_magic_invasion_exchange_shop_ready(
             context,
             label=f"{label}：关闭上次安全拦截的购买框",
         )
-    initial_shop_ready = yield from _wait_exchange_shop_ready(
+    initial_shop_ready = yield from wait_magic_invasion_exchange_shop_ready(
         context,
         label=f"{label}：识别补跑起点",
         attempts=3,
@@ -380,8 +382,8 @@ def execute_magic_invasion_tail_checkpoint(
     if scene != MAGIC_SHOP_SCENE:
         if scene not in {509, 520, 521, MAGIC_ENDED_HOME_SCENE}:
             raise RuntimeError(f"{label}：活动页场景无法对齐：{scene}")
-        _open_exchange_tab(context, int(scene))
-    yield from _wait_exchange_shop_ready(context, label=label)
+        open_magic_invasion_exchange_tab(context, int(scene))
+    yield from wait_magic_invasion_exchange_shop_ready(context, label=label)
 
     with Session(engine) as session:
         runtime_period_override = {
@@ -461,7 +463,7 @@ def execute_magic_invasion_tail_checkpoint(
             label=label,
         )
         context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "购买")
-        yield from _wait_exchange_shop_ready(
+        yield from wait_magic_invasion_exchange_shop_ready(
             context,
             label=f"{label}：购买 {action.name} 后返回宝阁",
         )
@@ -533,4 +535,8 @@ def execute_magic_invasion_tail_checkpoint(
     }
 
 
-__all__ = ["execute_magic_invasion_tail_checkpoint"]
+__all__ = [
+    "execute_magic_invasion_tail_checkpoint",
+    "open_magic_invasion_exchange_tab",
+    "wait_magic_invasion_exchange_shop_ready",
+]

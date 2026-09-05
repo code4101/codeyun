@@ -47,6 +47,7 @@ RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
 })
 DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"
+MAGIC_INITIALIZATION_KIND = "magic_initialization_0030"
 MAGIC_ACTIVE_KIND = "magic_active_1900"
 MAGIC_MAIL_KIND = "magic_mail_1200"
 XUTIAN_ACTIVE_KIND = "xutian_active_1000"
@@ -60,6 +61,7 @@ RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 30)
+MAGIC_INITIALIZATION_TIME = time(0, 30)
 XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
 MAGIC_MAIL_TIME = time(12, 0)
@@ -410,7 +412,7 @@ def checkpoints_for_occurrence(
     ) and not (
         occurrence.activity_type == "beast-abyss"
         and business_day != occurrence.start_at.date()
-    )
+    ) and occurrence.activity_type != "magic-invasion"
     if daily_reconcile_enabled:
         checkpoints.append(RankingCheckpoint(
             instance_key=occurrence.instance_key,
@@ -452,6 +454,27 @@ def checkpoints_for_occurrence(
         )
     magic_at = _at(business_day, MAGIC_ACTIVE_TIME, occurrence.start_at.tzinfo)
     magic_mail_at = _at(business_day, MAGIC_MAIL_TIME, occurrence.start_at.tzinfo)
+    magic_initialization_at = _at(
+        business_day,
+        MAGIC_INITIALIZATION_TIME,
+        occurrence.start_at.tzinfo,
+    )
+    if (
+        occurrence.activity_type == "magic-invasion"
+        and business_day == occurrence.start_at.date()
+    ):
+        checkpoints.append(
+            RankingCheckpoint(
+                instance_key=occurrence.instance_key,
+                activity_type=occurrence.activity_type,
+                family=occurrence.family,
+                runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id,
+                checkpoint_kind=MAGIC_INITIALIZATION_KIND,
+                business_date=business_day.isoformat(),
+                due_at=magic_initialization_at,
+            )
+        )
     if (
         occurrence.activity_type == "magic-invasion"
         and occurrence.start_at.date() <= business_day <= occurrence.end_at.date()
@@ -623,7 +646,10 @@ def due_ranking_checkpoints(
                     occurrence,
                     business_day=business_day,
                 )
-                if checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND
+                if checkpoint.checkpoint_kind in {
+                    DAILY_RECONCILE_KIND,
+                    MAGIC_INITIALIZATION_KIND,
+                }
                 or (
                     checkpoint.checkpoint_kind == MAGIC_MAIL_KIND
                     and business_day == local_now.date()
@@ -734,6 +760,7 @@ __all__ = [
     "BEAST_ABYSS_MANUAL_CLEAR_KIND",
     "DAILY_RECONCILE_KIND",
     "EXCHANGE_TAIL_KIND",
+    "MAGIC_INITIALIZATION_KIND",
     "MAGIC_ACTIVE_KIND",
     "MAGIC_MAIL_KIND",
     "XUTIAN_ACTIVE_KIND",

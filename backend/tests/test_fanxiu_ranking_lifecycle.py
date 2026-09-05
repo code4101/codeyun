@@ -14,6 +14,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     BEAST_ABYSS_MANUAL_CLEAR_KIND,
     DAILY_RECONCILE_KIND,
     EXCHANGE_TAIL_KIND,
+    MAGIC_INITIALIZATION_KIND,
     MAGIC_ACTIVE_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
@@ -67,7 +68,7 @@ def test_production_due_excludes_unpromoted_gameplay_checkpoints() -> None:
     )
 
     assert {item.checkpoint_kind for item in catalog_due} >= {
-        DAILY_RECONCILE_KIND,
+        MAGIC_INITIALIZATION_KIND,
         MAGIC_MAIL_KIND,
         MAGIC_ACTIVE_KIND,
     }
@@ -473,24 +474,26 @@ def test_0030_collects_previous_tail_today_start_resource_and_missed_days() -> N
         now=datetime(2026, 8, 22, 0, 30, tzinfo=TZ),
     )
 
-    assert len(due) == 8
+    assert len(due) == 5
     assert {item.checkpoint_kind for item in due} == {
         DAILY_RECONCILE_KIND,
         EXCHANGE_TAIL_KIND,
+        MAGIC_INITIALIZATION_KIND,
     }
     assert {item.runtime_id for item in due} == {
         "1070011400004",
         "8070001400004",
         "9001",
     }
-    assert {(item.runtime_id, item.business_date) for item in due} == {
-        ("1070011400004", "2026-08-20"),
-        ("1070011400004", "2026-08-21"),
-        ("1070011400004", "2026-08-22"),
-        ("8070001400004", "2026-08-21"),
-        ("8070001400004", "2026-08-22"),
-        ("9001", "2026-08-21"),
-        ("9001", "2026-08-22"),
+    assert {
+        (item.runtime_id, item.checkpoint_kind, item.business_date)
+        for item in due
+    } == {
+        ("1070011400004", MAGIC_INITIALIZATION_KIND, "2026-08-21"),
+        ("1070011400004", EXCHANGE_TAIL_KIND, "2026-08-22"),
+        ("8070001400004", MAGIC_INITIALIZATION_KIND, "2026-08-22"),
+        ("9001", DAILY_RECONCILE_KIND, "2026-08-21"),
+        ("9001", DAILY_RECONCILE_KIND, "2026-08-22"),
     }
     tails = [item for item in due if item.checkpoint_kind == EXCHANGE_TAIL_KIND]
     assert [(item.runtime_id, item.business_date) for item in tails] == [
@@ -588,8 +591,44 @@ def test_expired_magic_action_is_never_replayed_but_safe_same_day_mail_catches_u
 
     assert due
     assert {item.checkpoint_kind for item in due} == {
-        DAILY_RECONCILE_KIND,
+        MAGIC_INITIALIZATION_KIND,
         MAGIC_MAIL_KIND,
+    }
+
+
+def test_magic_initialization_is_one_start_day_checkpoint_not_prepare_day_reconcile() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="magic-invasion",
+        family="gameplay_rank",
+        runtime_id="4070001400004",
+        activity_id=4070001,
+        start_at=datetime(2026, 9, 5, 10, 0, tzinfo=TZ),
+        end_at=datetime(2026, 9, 5, 22, 0, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 4, 10, 0, 5, tzinfo=TZ),
+        close_at=datetime(2026, 9, 6, 23, 58, 59, tzinfo=TZ),
+        cross_count=4,
+    )
+
+    prepare_day = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 9, 4, tzinfo=TZ).date(),
+    )
+    start_day = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 9, 5, tzinfo=TZ).date(),
+    )
+
+    assert MAGIC_INITIALIZATION_KIND not in {
+        item.checkpoint_kind for item in prepare_day
+    }
+    initialization = [
+        item for item in start_day
+        if item.checkpoint_kind == MAGIC_INITIALIZATION_KIND
+    ]
+    assert len(initialization) == 1
+    assert initialization[0].due_at == datetime(2026, 9, 5, 0, 30, tzinfo=TZ)
+    assert DAILY_RECONCILE_KIND not in {
+        item.checkpoint_kind for item in (*prepare_day, *start_day)
     }
 
 

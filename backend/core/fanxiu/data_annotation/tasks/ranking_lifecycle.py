@@ -16,6 +16,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     DAILY_RECONCILE_KIND,
     DANDAO_REWARDS_KIND,
     EXCHANGE_TAIL_KIND,
+    MAGIC_INITIALIZATION_KIND,
     MAGIC_ACTIVE_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
@@ -72,7 +73,10 @@ def _default_retry_policy(
 
     if status not in {"error", "blocked", "pending"}:
         return status, None
-    if checkpoint.checkpoint_kind == DAILY_RECONCILE_KIND and now < occurrence.start_at:
+    if checkpoint.checkpoint_kind in {
+        DAILY_RECONCILE_KIND,
+        MAGIC_INITIALIZATION_KIND,
+    } and now < occurrence.start_at:
         return status, occurrence.start_at
     if now > occurrence.close_at or prior_attempt_count + 1 >= MAX_DEFAULT_CHECKPOINT_ATTEMPTS:
         return "unavailable", None
@@ -400,6 +404,19 @@ def _execute_family_job(
                             captured_at=now.isoformat(timespec="seconds"),
                             required_fact_watermark=checkpoint.due_at,
                         )
+            elif checkpoint.checkpoint_kind == MAGIC_INITIALIZATION_KIND:
+                from backend.core.fanxiu.data_annotation.tasks.magic_invasion_initialization import (
+                    execute_magic_invasion_initialization_checkpoint,
+                )
+
+                result = yield from execute_magic_invasion_initialization_checkpoint(
+                    runner,
+                    ctx,
+                    stop_event,
+                    occurrence=occurrence,
+                    captured_at=now,
+                    required_fact_watermark=checkpoint.due_at,
+                )
             elif checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
                 result = yield from _execute_exchange_tail_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
@@ -592,6 +609,52 @@ def execute_beast_abyss_initialization_rnd_cell(runner, ctx, payload, stop_event
     ))
 
 
+def execute_magic_invasion_initialization_rnd_cell(runner, ctx, payload, stop_event):
+    """Initialize only the unique current Magic occurrence in an explicit R&D Cell."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_initialization import (
+        execute_magic_invasion_initialization_checkpoint,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("魔道初始化研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "magic-invasion"
+        and occurrence.start_at <= now <= occurrence.end_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"魔道初始化研发无法唯一定位当前开放实例：matches={len(matches)}"
+        )
+    occurrence = matches[0]
+    return (yield from execute_magic_invasion_initialization_checkpoint(
+        runner,
+        ctx,
+        stop_event,
+        occurrence=occurrence,
+        captured_at=now,
+        required_fact_watermark=occurrence.start_at.replace(
+            hour=0,
+            minute=30,
+            second=0,
+            microsecond=0,
+        ),
+    ))
+
+
 def execute_beast_abyss_rank_refresh_rnd_cell(runner, ctx, payload, stop_event):
     """Refresh the current Beast Abyss rank tabs without challenge or exchange."""
 
@@ -677,6 +740,7 @@ __all__ = [
     "PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES",
     "exchange_tail_executor_is_production",
     "execute_beast_abyss_initialization_rnd_cell",
+    "execute_magic_invasion_initialization_rnd_cell",
     "execute_beast_abyss_exchange_tail_rnd_cell",
     "execute_beast_abyss_rank_refresh_rnd_cell",
     "execute_ranking_lifecycle_job",
