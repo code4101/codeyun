@@ -959,6 +959,54 @@ def test_scheduler_losing_attempt_claim_does_not_submit_cell(monkeypatch):
     assert result["phase"] == "scheduler_attempt_already_claimed"
 
 
+def test_scheduler_stale_due_snapshot_does_not_claim_rescheduled_task(monkeypatch):
+    stale_due = {
+        "id": "daily-redpacket",
+        "task_type": "daily_redpacket",
+        "label": "日常_红包",
+        "next_time": "2026-08-20 12:30:00",
+        "last_result": "",
+        "attempt_id": None,
+    }
+    fresh_future = {
+        **stale_due,
+        "next_time": "2999-08-21 10:47:00",
+        "last_result": "success",
+    }
+    monkeypatch.setattr(
+        "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda **_kwargs: {"alive": True, "execution_state": "idle", "generation": 7},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "read_scheduler_tasks",
+        lambda **_kwargs: [deepcopy(fresh_future)],
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "write_scheduler_tasks",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不得领取已改期作业")),
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "submit_task_cell",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("不得提交已改期 Cell")),
+    )
+
+    result = kernel_scheduler_control._run_scheduler_task_cell_and_record_terminal(
+        entry=object(),
+        entry_id="game-window2",
+        task=deepcopy(stale_due),
+        scheduled_attempt=True,
+    )
+
+    assert result == {
+        "status": "success",
+        "phase": "scheduler_task_no_longer_due",
+        "message": "目标作业的触发时间已被其他运行推进，本轮未重复提交 Cell",
+    }
+
+
 def test_scheduler_cell_dispatch_lane_is_cross_process_exclusive(monkeypatch, tmp_path):
     task = {
         "id": "urgent-job",
@@ -1556,6 +1604,30 @@ def test_scheduler_repair_migrates_legacy_bubble_immediate_retry_only():
     )
     task = next(item for item in repaired if item["id"] == "bubble-weekly-pills")
     assert task["error_retry_delay_seconds"] == 1800
+
+
+def test_scheduler_repair_removes_retired_wanxiang_paid_refresh_payload():
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_plan as scheduler
+
+    defaults = kernel_scheduler_control.default_kernel_scheduler_tasks()
+    wanxiang = deepcopy(
+        next(item for item in defaults if item["id"] == "wanxiang-baoge-six-yuan")
+    )
+    wanxiang["payload"] = {"max_refreshes": 100}
+
+    repaired, changed = scheduler.repair_kernel_scheduler_tasks(
+        [wanxiang],
+        default_tasks=defaults,
+        facts={},
+        task_supported=lambda _task: True,
+        now=real_datetime(2026, 9, 5, 22, 40, 0),
+    )
+
+    task = next(
+        item for item in repaired if item["id"] == "wanxiang-baoge-six-yuan"
+    )
+    assert changed is True
+    assert task["payload"] == {}
 
 
 def test_scheduler_same_level_due_task_does_not_preempt_live_attempt(monkeypatch):

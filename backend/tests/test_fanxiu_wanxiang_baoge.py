@@ -5,6 +5,14 @@ from dataclasses import replace
 
 import pytest
 
+from backend.core.fanxiu.data_annotation.effective_time import job_effective_time
+from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+    default_kernel_scheduler_tasks,
+)
+from backend.core.fanxiu.data_annotation.tasks.wanxiang_baoge import (
+    _authorized_goods_slot,
+    next_wanxiang_retry_time,
+)
 from backend.core.fanxiu.instrumentation.wanxiang_baoge import (
     WanxiangRefundContractError,
     WanxiangRefundLedger,
@@ -113,6 +121,38 @@ def test_target_not_visible_does_not_authorize_paid_refresh():
     result = decide_wanxiang_refund_action(_snapshot(goods_ids=[1, 2, 3, 4, 5]))
     assert result["action"] == "stop"
     assert result["outcome"] == "target_not_visible"
+
+
+def test_only_goods_99001_can_be_selected_for_automatic_purchase():
+    assert _authorized_goods_slot([1, 2, 99001, 3, 4]) == 3
+    assert _authorized_goods_slot([1, 2, 3, 4, 5]) is None
+    with pytest.raises(RuntimeError, match="多个 goods_id=99001"):
+        _authorized_goods_slot([99001, 2, 99001, 3, 4])
+
+
+def test_other_purchase_does_not_make_refund_offer_idempotently_complete():
+    decision = decide_wanxiang_refund_action(
+        _snapshot(buy_times=1, purchase_counts={777: 1, 99001: 0})
+    )
+
+    assert decision["action"] == "purchase_with_voucher"
+    assert decision["goods_id"] == 99001
+
+
+def test_target_not_visible_retries_at_next_daily_activity_window():
+    with job_effective_time({"effective_now": "2026-09-05 22:30:00"}):
+        assert next_wanxiang_retry_time() == "2026-09-06 00:30:00"
+
+
+def test_standard_job_is_dynamic_without_paid_refresh_budget():
+    job = next(
+        item
+        for item in default_kernel_scheduler_tasks()
+        if item["id"] == "wanxiang-baoge-six-yuan"
+    )
+
+    assert job["trigger_description"] == "动态"
+    assert job["payload"] == {}
 
 
 def test_purchased_box_is_resumed_without_rebuying():

@@ -2222,6 +2222,17 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
     state_task = next((item for item in tasks if item.get("id") == task.get("id")), None)
     if state_task is None:
         raise LookupError(f"Scheduler 任务不存在：{task.get('id') or ''}")
+    # A due dispatcher can wait behind another Cell/API caller after selecting
+    # its candidate.  The previous owner may finish that same task and advance
+    # its business ``next_time`` before this caller enters the dispatch lane.
+    # Revalidate the fresh durable row inside the lane; attempt-id CAS alone
+    # only prevents two live claims and cannot reject an obsolete due snapshot.
+    if scheduled_attempt and not data_annotation_task_due(state_task):
+        return {
+            "status": "success",
+            "phase": "scheduler_task_no_longer_due",
+            "message": "目标作业的触发时间已被其他运行推进，本轮未重复提交 Cell",
+        }
     observed_attempt_id = str(state_task.get("attempt_id") or "") or None
     if str(state_task.get("last_result") or "") == "running" and observed_attempt_id:
         return {
@@ -2981,9 +2992,9 @@ def run_due_scheduler_tasks(
         world_facts_path=world_facts_path,
         scheduled_attempt=True,
     )
-    return {
-        **result,
-        "dispatched_task_id": str(selected.get("id") or ""),
-    }
+    response = dict(result)
+    if str(result.get("phase") or "") != "scheduler_task_no_longer_due":
+        response["dispatched_task_id"] = str(selected.get("id") or "")
+    return response
 
 

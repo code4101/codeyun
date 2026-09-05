@@ -122,6 +122,8 @@ def _consume(generator):
 
 
 def _ready(*_args):
+    if False:
+        yield None
     return StorageBagItemClickPlan(
         "ready",
         "unique",
@@ -140,7 +142,7 @@ def _target_detail(_runtime, reward):
 
 def _adapter(runtime, snapshots, **overrides):
     options = {
-        "runtime": runtime,
+        "context": runtime,
         "snapshot_reader": lambda: next(snapshots),
         "catalog_cards_by_id": CATALOG,
         "click_planner": _ready,
@@ -340,7 +342,7 @@ def test_current_asset_contract_missing_candidate_subshapes_fails_closed() -> No
             return type("Shape", (), {"raw": {"x": 0, "y": 0, "w": 1, "h": 1}})()
 
     adapter = StorageBagChoiceBoxGuiAdapter(
-        runtime=MissingAssetRuntime(),
+        context=MissingAssetRuntime(),
         snapshot_reader=lambda: pytest.fail("must fail before Runtime read"),
         catalog_cards_by_id=CATALOG,
         visible_slot_reader=lambda _runtime: (1, 2, 3),

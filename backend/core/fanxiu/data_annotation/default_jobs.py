@@ -708,8 +708,7 @@ def register_fanxiu_default_jobs() -> None:
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="wanxiang-baoge-six-yuan",
-        standard_job_description="手动",
-        standard_job_payload={"max_refreshes": 100},
+        standard_job_description="动态",
     )
     def _run_data_annotation_wanxiang_baoge_six_yuan_task_cell(
         runner: Any,
@@ -718,20 +717,15 @@ def register_fanxiu_default_jobs() -> None:
         stop_event: threading.Event,
     ) -> Any:
         from backend.core.fanxiu.data_annotation.tasks.wanxiang_baoge import (
-            STANDARD_JOB_ID,
             execute_wanxiang_baoge_task,
         )
 
         return (
-            yield from _run_manual_standard_job(
+            yield from execute_wanxiang_baoge_task(
                 runner,
-                STANDARD_JOB_ID,
-                lambda: execute_wanxiang_baoge_task(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                ),
+                ctx,
+                payload,
+                stop_event,
             )
         )
 

@@ -208,7 +208,7 @@ def test_gui_adapter_verifies_610_and_584_before_final_use() -> None:
     wallet_snapshots = iter((WALLET_BEFORE, WALLET_AFTER))
     runtime = _Runtime()
     adapter = StorageBagSpiritStoneGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: next(bag_snapshots),
         wallet_snapshot_reader=lambda currency_type: (
             next(wallet_snapshots) if currency_type == 1 else None
@@ -238,7 +238,7 @@ def test_gui_adapter_verifies_610_and_584_before_final_use() -> None:
 )
 def test_gui_contract_mismatch_never_reaches_final_584_use(runtime: _Runtime) -> None:
     adapter = StorageBagSpiritStoneGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: BEFORE,
         wallet_snapshot_reader=lambda _currency_type: WALLET_BEFORE,
         click_planner=_ready,
@@ -255,7 +255,7 @@ def test_changed_pre_click_backpack_invalidates_the_planned_coordinate() -> None
     snapshots = iter((BEFORE, _bag([("stone", 1001, 57_809)], "changed")))
     runtime = _Runtime()
     adapter = StorageBagSpiritStoneGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: next(snapshots),
         wallet_snapshot_reader=lambda _currency_type: WALLET_BEFORE,
         click_planner=_ready,
@@ -273,7 +273,7 @@ def test_stale_wallet_baseline_blocks_before_the_first_click() -> None:
     stale_wallet = _wallet(1_000, "2026-08-20T00:00:00+08:00")
     runtime = _Runtime()
     adapter = StorageBagSpiritStoneGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: next(snapshots),
         wallet_snapshot_reader=lambda _currency_type: stale_wallet,
         click_planner=_ready,

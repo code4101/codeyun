@@ -473,13 +473,15 @@ def _decode_c_list(
 def _decode_main_ui_row_pool(
     ctx: UiRuntimeContext, list_address: int
 ) -> tuple[ActivityMenuItem, ...]:
-    """Decode the active prefix of BtnNodeComp._CurList.
+    """Decode active rows from BtnNodeComp._CurList's recycled view pool.
 
-    The controller keeps inactive pooled row views after the live menu rows.
-    Their ``_DataIndex`` is ``-1`` and they carry no ``_Data``.  Only a
-    contiguous, one-based active prefix is accepted; an active row after a
-    pooled slot or a missing identity fails closed instead of being filtered
-    into an invented sequence.
+    ``_CurList`` is a row-view pool, not the authoritative business sequence.
+    Recycled inactive views may be interleaved with active views.  The numeric
+    pool order is the row-view/UI order; ``_DataIndex`` is the bound source-row
+    identity and is used only to prove that active views are unique.  Hidden or
+    expired source rows can leave gaps in those identities.  Active views are
+    therefore compacted in physical pool order to visible UI positions
+    ``1..N``.  Inactive views must have no data.  Anything else fails closed.
     """
 
     rows, count = ctx.reader.indexed_list_items(LuaRef("table", list_address))
@@ -487,8 +489,8 @@ def _decode_main_ui_row_pool(
         raise FanxiuRuntimeMemoryError(
             "#34 左侧活动菜单渲染池不完整", code="runtime_incomplete"
         )
-    items: list[ActivityMenuItem] = []
-    inactive_seen = False
+    active: list[tuple[int, LuaRef]] = []
+    seen_data_indices: set[int] = set()
     for _raw_index, raw in rows:
         view = table_ref(raw)
         if view is None:
@@ -498,23 +500,31 @@ def _decode_main_ui_row_pool(
         data_index = as_int(_field(ctx, view, "_DataIndex"))
         data = table_ref(_field(ctx, view, "_Data"))
         if data_index is None or data_index <= 0:
-            inactive_seen = True
             if data is not None:
                 raise FanxiuRuntimeMemoryError(
                     "#34 左侧活动菜单空闲槽仍绑定业务数据",
                     code="runtime_incomplete",
                 )
             continue
-        expected_index = len(items) + 1
-        if inactive_seen or data_index != expected_index or data is None:
+        if data is None:
             raise FanxiuRuntimeMemoryError(
-                "#34 左侧活动菜单有效槽不是连续有序前缀",
+                "#34 左侧活动菜单有效槽缺少业务数据",
                 code="runtime_incomplete",
             )
-        item = _decode_activity_row(ctx, expected_index, data)
+        if data_index in seen_data_indices:
+            raise FanxiuRuntimeMemoryError(
+                f"#34 左侧活动菜单逻辑序号重复：{data_index}",
+                code="runtime_incomplete",
+            )
+        seen_data_indices.add(data_index)
+        active.append((data_index, data))
+
+    items: list[ActivityMenuItem] = []
+    for visible_index, (data_index, data) in enumerate(active, start=1):
+        item = _decode_activity_row(ctx, visible_index, data)
         if item is None:
             raise FanxiuRuntimeMemoryError(
-                f"#34 左侧活动菜单第 {expected_index} 项缺少活动身份",
+                f"#34 左侧活动菜单源序号 {data_index} 缺少活动身份",
                 code="runtime_incomplete",
             )
         items.append(item)

@@ -429,9 +429,8 @@ def default_kernel_scheduler_tasks(
             "wanxiang-baoge-six-yuan",
             "wanxiang_baoge_six_yuan",
             "万象宝阁_六元代币宝匣",
-            description="手动",
+            description="动态",
             error_retry_delay_seconds=0,
-            payload={"max_refreshes": 100},
         ),
         job(
             "xianyuan-auto-gift",

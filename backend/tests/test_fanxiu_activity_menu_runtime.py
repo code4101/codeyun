@@ -240,7 +240,24 @@ def test_world_left_reads_current_main_ui_row_pool(monkeypatch):
     assert [item.name for item in snapshot.items] == ["限时活动", "特惠"]
 
 
-def test_world_left_current_pool_requires_contiguous_active_prefix(monkeypatch):
+def test_world_left_current_pool_preserves_view_order_across_recycled_holes(monkeypatch):
+    ctx = _current_world_context()
+    # Physical pool order is the UI order; source _DataIndex is identity only.
+    ctx.reader.lists[40] = [
+        (1, ref(52)),
+        (2, ref(51)),
+        (3, ref(50)),
+    ]
+    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+
+    snapshot = read_activity_menu_snapshot("world_left")
+
+    assert snapshot.complete is True
+    assert [item.key for item in snapshot.items] == ["group:110001", "activity:998877"]
+    assert [item.index for item in snapshot.items] == [1, 2]
+
+
+def test_world_left_current_pool_compacts_hidden_source_index_gap(monkeypatch):
     ctx = _current_world_context()
     ctx.fields[(52, "_DataIndex")] = 3
     ctx.fields[(52, "_Data")] = ref(62)
@@ -250,7 +267,21 @@ def test_world_left_current_pool_requires_contiguous_active_prefix(monkeypatch):
     ctx.fields.pop((51, "_Data"))
     monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
 
-    with pytest.raises(FanxiuRuntimeMemoryError, match="连续有序前缀") as exc:
+    snapshot = read_activity_menu_snapshot("world_left")
+
+    assert snapshot.complete is True
+    assert [item.index for item in snapshot.items] == [1, 2]
+    assert [item.key for item in snapshot.items] == ["activity:998877", "activity:123"]
+
+
+def test_world_left_current_pool_rejects_duplicate_logical_indices(monkeypatch):
+    ctx = _current_world_context()
+    ctx.fields[(52, "_DataIndex")] = 2
+    ctx.fields[(52, "_Data")] = ref(62)
+    ctx.fields[(62, "activityId")] = 123
+    monkeypatch.setattr(module, "acquire_ui_runtime_context_fast", lambda _keys: ctx)
+
+    with pytest.raises(FanxiuRuntimeMemoryError, match="逻辑序号重复：2") as exc:
         read_activity_menu_snapshot("world_left")
 
     assert exc.value.code == "runtime_incomplete"

@@ -326,6 +326,16 @@ def repair_kernel_scheduler_tasks(
             migrated_execution_state["next_time"] = current.strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
+        migrated_payload = {
+            **default.get("payload", {}),
+            **previous.get("payload", {}),
+        }
+        if task_id == "wanxiang-baoge-six-yuan":
+            # The first implementation allowed up to 100 paid refreshes.
+            # The production contract now permits only the free five-card
+            # reveal, so remove the exact retired knob from live state rather
+            # than preserving a misleading/unsafe historical payload forever.
+            migrated_payload.pop("max_refreshes", None)
         tasks.append({
             **default,
             **migrated_execution_state,
@@ -344,10 +354,7 @@ def repair_kernel_scheduler_tasks(
                 if "error_retry_delay_seconds" in raw_previous
                 else default["error_retry_delay_seconds"]
             ),
-            "payload": {
-                **default.get("payload", {}),
-                **previous.get("payload", {}),
-            },
+            "payload": migrated_payload,
         })
     tasks.extend(existing.values())
     return tasks, raw != tasks

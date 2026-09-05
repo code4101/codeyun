@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 import re
+from types import GeneratorType
 from typing import Any
 
 from backend.core.fanxiu.instrumentation.storage_bag_partner import (
@@ -886,7 +887,8 @@ class StorageBagChoiceBoxGuiAdapter:
         retries = 0
         scrolls = 0
         while True:
-            plan = self.click_planner(self.context, before, request)
+            planned = self.click_planner(self.context, before, request)
+            plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:

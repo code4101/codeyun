@@ -1079,13 +1079,24 @@ class DailyRedpacketTaskMixin:
                         attrs["daily_redpacket_quota_exhausted"] = True
                     self._log("success", "日常_红包：今日领取次数不足，停止继续开启红包")
                     return opened_count
-            opened_count += 1
             result_view = yield from context.wait_scene(
                 [398,
-                399],
+                399,
+                672],
                 wait=transition_timeout,
                 label="日常_红包：等待红包结果",
             )
+            if int(result_view.id or 0) == 672:
+                yield from self._dismiss_daily_redpacket_sold_out(
+                    context,
+                    transition_timeout=transition_timeout,
+                )
+                self._log(
+                    "success",
+                    "日常_红包：打开队列期间遇到已抢光红包，已关闭结果并返回当前群聊",
+                )
+                return opened_count
+            opened_count += 1
             if int(result_view.id or 0) == 399:
                 current = result_view
                 break

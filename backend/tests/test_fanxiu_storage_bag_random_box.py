@@ -253,7 +253,7 @@ def test_random_box_executes_exact_instance_and_records_verified_runtime_delta()
     recorded = []
     runtime = _Runtime()
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: next(snapshots),
         catalog_cards_by_id={"100": {"name": "随机宝匣"}, "200": {"name": "灵石"}},
         click_planner=_ready,
@@ -277,7 +277,7 @@ def test_fixed_box_reuses_box_flow_with_fixed_detail_identity() -> None:
     snapshots = iter((before, after))
     runtime = _Runtime(quantity_text="2", transient=False)
     adapter = StorageBagFixedBoxGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: next(snapshots),
         catalog_cards_by_id={"100": {"name": "随机宝匣"}, "200": {"name": "灵石"}},
         click_planner=_ready,
@@ -298,7 +298,7 @@ def test_quantity_mismatch_fails_before_use_and_before_recording() -> None:
     runtime = _Runtime(quantity_text="9")
     recorded = []
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: before,
         catalog_cards_by_id={"100": {"name": "随机宝匣"}},
         click_planner=_ready,
@@ -316,7 +316,7 @@ def test_wrong_detail_title_fails_before_open_or_use() -> None:
     before = _snapshot([("i1", 100, 10), ("other", 38100037, 90)], "before")
     runtime = _Runtime(detail_title="哪吒洗灵随机匣")
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: before,
         catalog_cards_by_id={"100": {"name": "VIP经验"}},
         click_planner=_ready,
@@ -343,7 +343,7 @@ def test_insufficient_or_ambiguous_alignment_retries_without_drag(status: str) -
 
     runtime = _Runtime()
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: before,
         catalog_cards_by_id={},
         recorder=lambda _execution: None,
@@ -382,7 +382,7 @@ def test_only_proven_target_not_visible_can_scroll_then_reregisters() -> None:
     )
     runtime = _Runtime()
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=runtime,
+        context=runtime,
         snapshot_reader=lambda: before,
         catalog_cards_by_id={},
         recorder=lambda _execution: None,
@@ -402,7 +402,7 @@ def test_only_proven_target_not_visible_can_scroll_then_reregisters() -> None:
 def test_exact_instance_id_is_required_even_when_base_id_matches() -> None:
     before = _snapshot([("other", 100, 10)], "before")
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=_Runtime(),
+        context=_Runtime(),
         snapshot_reader=lambda: before,
         catalog_cards_by_id={},
         recorder=lambda _execution: None,
@@ -479,7 +479,7 @@ def test_random_box_records_wallet_runtime_delta_when_reward_is_not_in_backpack(
         "1001": {"name": "灵石", "type": 9, "effect_value": "1_1"},
     }
     adapter = StorageBagRandomBoxGuiAdapter(
-        runtime=_Runtime(),
+        context=_Runtime(),
         snapshot_reader=lambda: next(snapshots),
         wallet_snapshot_reader=lambda _currency_type: next(wallet_snapshots),
         catalog_cards_by_id=catalog,
