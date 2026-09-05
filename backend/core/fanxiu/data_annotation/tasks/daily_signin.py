@@ -18,6 +18,9 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
     group_ocr_tokens,
     locate_text_box,
 )
+from backend.core.fanxiu.data_annotation.tasks.activity_menu_navigation import (
+    open_loaded_activity_menu_item,
+)
 from backend.core.fanxiu.instrumentation.activity_menu import (
     ActivityMenuSnapshot,
     read_activity_menu_snapshot,
@@ -28,7 +31,6 @@ from backend.core.fanxiu.instrumentation.activity_signin import (
 )
 from backend.core.fanxiu.runtime_gui.activity_menu import (
     GROUP_POPUP_ACTIVITY_GRID,
-    WORLD_LEFT_ACTIVITY_GRID,
     ActivityMenuGrid,
     plan_activity_menu_click,
 )
@@ -902,38 +904,22 @@ class DailySigninTaskMixin:
         # The registered Cell wrapper has already normalized this new attempt
         # to #34.  This business function always runs the complete entry chain;
         # it never interprets #403/#404 as a persisted step from an older run.
-        for entry_attempt in range(2):
-            yield from self._daily_signin_click_menu_target(
-                context,
-                scene_id=34,
-                menu_kind="world_left",
-                target=_DAILY_SIGNIN_WORLD_TARGET,
-                grid=WORLD_LEFT_ACTIVITY_GRID,
-                label="日常_签到：#34 左侧「特惠」",
-                attempts=3,
-                retry_wait_seconds=return_settle_seconds,
-            )
-            try:
-                landing_scene = yield from context.wait_scene(
-                    [403],
-                    wait=view_timeout,
-                    label="日常_签到：等待特惠页 #403",
-                )
-                scene_id = int(getattr(landing_scene, "id", landing_scene))
-            except TimeoutError:
-                scene_id, _score, _frame = (yield from context.current_scene([34, 403], update=True))
-            if int(scene_id) == 403:
-                break
-            if int(scene_id) != 34 or entry_attempt >= 1:
-                raise RuntimeError(
-                    "日常_签到：点击‘特惠’后未进入 #403，"
-                    f"实际识别为 #{scene_id}"
-                )
-            self._log(
-                "wait",
-                "日常_签到：特惠入口首次点击未生效且仍可靠位于 #34，重读菜单后再试一次",
-            )
-            yield from context.wait_action_settle(return_settle_seconds)
+        # Reuse the standard Runtime-GUI activity-menu entry used by other
+        # scheduled activities.  The OCR label is below the tall world-menu
+        # icon.  The shared helper first reconstructs the exact ``特惠`` span
+        # from real Paddle word boxes so an adjacent label cannot move the
+        # horizontal centre away from this item.
+        yield from open_loaded_activity_menu_item(
+            context,
+            _DAILY_SIGNIN_WORLD_TARGET,
+            kind="world_left",
+            source_scene_id=34,
+            ocr_shape_names=("左侧菜单",),
+            expected_scene_ids=(403,),
+            target_gui_name="特惠",
+            grid=ActivityMenuGrid(columns=1, click_offset_heights=0.5),
+            timeout_seconds=view_timeout,
+        )
 
         yield from self._daily_signin_click_menu_target(
             context,
@@ -1116,13 +1102,25 @@ class DailySigninTaskMixin:
         # implementation kept reading #404[已领] behind that popup, so OCR was
         # guaranteed to be empty and the task failed while visibly stuck on
         # the sign-in flow.  Claim first, then return to #404 before verifying.
-        post_click_scene, _score, _frame = (yield from context.current_scene([250, 404], update=True))
+        post_click_scene, _score, _frame = (yield from context.current_scene([250, 404, 578], update=True))
         if post_click_scene == 250:
             self._log("action", "日常_签到：#250 奖励页点击「领取」")
             context.click_shape_center(250, "领取")
             yield from context.wait_action_settle(popup_wait_seconds)
             yield from context.go_scene(404)
             yield from context.wait_scene([404], wait=view_timeout, label="日常_签到：领奖后回到签到页 #404")
+        elif post_click_scene == 578:
+            # Some ordinary day rewards skip #250 and go straight to the
+            # shared reward transition.  Close that proven overlay before any
+            # #404 OCR verification; otherwise the fraction ROI is necessarily
+            # invisible even though Runtime has already recorded the claim.
+            self._log("action", "日常_签到：#578 奖励过场点击「点击屏幕继续」")
+            yield from context.wait_click(578, "点击屏幕继续")
+            yield from context.wait_scene(
+                [404],
+                wait=view_timeout,
+                label="日常_签到：奖励过场后回到签到页 #404",
+            )
 
         snapshot_after = self._daily_signin_read_milestone_snapshot()
         signed_days_after = self._daily_signin_validate_snapshot(

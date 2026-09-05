@@ -10,7 +10,10 @@ deliberately does not open a menu, guess a scene, or fall back to global OCR.
 from dataclasses import replace
 from typing import Any, Iterable, Literal
 
-from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
+from backend.core.fanxiu.data_annotation.ocr_spatial import (
+    find_text_matches,
+    group_ocr_tokens,
+)
 
 from backend.core.fanxiu.instrumentation.activity_menu import (
     ActivityMenuSnapshot,
@@ -52,6 +55,23 @@ def _same_menu_snapshot(
     )
 
 
+def _normalize_ocr_token(token: Any) -> Any:
+    """Accept the legacy ``box=(x, y, w, h)`` candidate contract too."""
+
+    if not isinstance(token, dict) or all(key in token for key in ("x", "y", "w", "h")):
+        return token
+    box = token.get("box")
+    if not isinstance(box, (tuple, list)) or len(box) != 4:
+        return token
+    return {
+        **token,
+        "x": float(box[0]),
+        "y": float(box[1]),
+        "w": float(box[2]),
+        "h": float(box[3]),
+    }
+
+
 def open_loaded_activity_menu_item(
     context: Any,
     target: str | int,
@@ -63,6 +83,7 @@ def open_loaded_activity_menu_item(
     target_gui_name: str | None = None,
     grid: ActivityMenuGrid | None = None,
     timeout_seconds: float = 20.0,
+    max_scrolls: int = 0,
 ):
     """Click one item in an already loaded activity menu and verify its page.
 
@@ -82,74 +103,121 @@ def open_loaded_activity_menu_item(
     if not expected:
         raise ValueError("活动菜单导航必须声明独立后继场景")
 
-    snapshot = read_activity_menu_snapshot(kind)
-    if not snapshot.complete:
-        raise RuntimeError(f"活动菜单尚未完整加载：{snapshot.reason}")
-
-    frame = context.cur_frame(update=True)
-    tokens = context.ocr_tokens_in_shapes(
-        source_scene,
-        shapes,
-        frame_data_url=frame,
-    )
-    plan_snapshot = snapshot
     gui_name = str(target_gui_name or "").strip()
-    if gui_name:
-        target_text = str(target).strip()
-        matches = [
-            item
-            for item in snapshot.items
-            if item.key == target_text
-            or (item.activity_id is not None and str(item.activity_id) == target_text)
-            or (item.group_type is not None and str(item.group_type) == target_text)
-        ]
-        if len(matches) != 1:
-            raise RuntimeError("活动菜单 GUI 别名没有唯一 Runtime 身份")
-        plan_snapshot = replace(
-            snapshot,
-            items=tuple(
-                replace(item, name=gui_name) if item is matches[0] else item
-                for item in snapshot.items
-            ),
-        )
-    spatial_fragments = tuple(group_ocr_tokens(tokens))
-    gui_candidates = tuple(tokens) + spatial_fragments
-    plan = plan_activity_menu_click(
-        plan_snapshot,
-        target,
-        gui_candidates,
-        grid=grid or _default_grid(kind),
-    )
-    if not plan.ready or plan.point is None:
-        observed_texts = tuple(
-            dict.fromkeys(
-                str(item.get("text") or "").strip()
-                for item in gui_candidates
-                if str(item.get("text") or "").strip()
+    scroll_limit = max(0, int(max_scrolls))
+    last_reason = "目标尚未检查"
+    last_candidates: tuple[dict[str, Any], ...] = ()
+    last_anchors = ()
+    for scroll_index in range(scroll_limit + 1):
+        snapshot = read_activity_menu_snapshot(kind)
+        if not snapshot.complete:
+            raise RuntimeError(f"活动菜单尚未完整加载：{snapshot.reason}")
+
+        frame = context.cur_frame(update=True)
+        tokens = tuple(
+            _normalize_ocr_token(token)
+            for token in context.ocr_tokens_in_shapes(
+                source_scene,
+                shapes,
+                frame_data_url=frame,
             )
         )
-        raise RuntimeError(
-            f"活动菜单目标无法安全定位：{plan.reason}；"
-            f"OCR候选={observed_texts}；锚点={plan.anchors}"
+        plan_snapshot = snapshot
+        if gui_name:
+            target_text = str(target).strip()
+            matches = [
+                item
+                for item in snapshot.items
+                if item.key == target_text
+                or (item.activity_id is not None and str(item.activity_id) == target_text)
+                or (item.group_type is not None and str(item.group_type) == target_text)
+            ]
+            if len(matches) != 1:
+                raise RuntimeError("活动菜单 GUI 别名没有唯一 Runtime 身份")
+            plan_snapshot = replace(
+                snapshot,
+                items=tuple(
+                    replace(item, name=gui_name) if item is matches[0] else item
+                    for item in snapshot.items
+                ),
+            )
+        spatial_fragments = tuple(group_ocr_tokens(tokens))
+        # A rendered row may contain two adjacent activity labels.  Prefer the
+        # exact alias span reconstructed from real boxes; a declared alias is
+        # also the visibility gate, so off-screen targets can never be reached
+        # by projecting unrelated anchors across scroll pages.
+        alias_matches = find_text_matches(tokens, gui_name) if gui_name else []
+        if len(alias_matches) > 1:
+            raise RuntimeError("活动菜单 GUI 别名在当前正式 ROI 中不唯一")
+        alias_candidates = tuple(
+            {
+                "key": f"exact-gui-alias:{index}",
+                "text": gui_name,
+                "x": match.x,
+                "y": match.y,
+                "w": match.w,
+                "h": match.h,
+            }
+            for index, match in enumerate(alias_matches, start=1)
         )
+        gui_candidates = alias_candidates + tuple(tokens) + spatial_fragments
+        last_candidates = gui_candidates
+        if gui_name and not alias_candidates:
+            last_reason = f"当前第 {scroll_index + 1} 屏未精确识别 GUI 别名 {gui_name}"
+            last_anchors = ()
+        else:
+            plan = plan_activity_menu_click(
+                plan_snapshot,
+                target,
+                gui_candidates,
+                grid=grid or _default_grid(kind),
+            )
+            last_reason = plan.reason
+            last_anchors = plan.anchors
+            if plan.ready and plan.point is not None:
+                refreshed = read_activity_menu_snapshot(kind)
+                if not _same_menu_snapshot(snapshot, refreshed):
+                    raise RuntimeError("活动菜单在定位后发生变化，拒绝点击旧坐标")
 
-    refreshed = read_activity_menu_snapshot(kind)
-    if not _same_menu_snapshot(snapshot, refreshed):
-        raise RuntimeError("活动菜单在定位后发生变化，拒绝点击旧坐标")
+                context.click_frame_point(source_scene, *plan.point)
+                landed = yield from context.wait_scene(
+                    expected,
+                    wait=timeout_seconds,
+                    label=f"活动菜单：等待 {target} 后继",
+                )
+                landed_scene_id = int(
+                    getattr(landed, "scene_id", getattr(landed, "id", landed))
+                )
+                if landed_scene_id not in expected:
+                    raise RuntimeError(
+                        f"活动菜单 {target} 点击后落在 #{landed_scene_id}，"
+                        f"不是预期后继 {list(expected)}"
+                    )
+                return landed
+        if scroll_index < scroll_limit:
+            changed = yield from context.scroll_shape_content(
+                source_scene,
+                shapes[0],
+                # ``direction`` describes the finger drag.  Drag upward to
+                # reveal later activity rows below the current viewport.
+                direction="up",
+            )
+            if changed:
+                continue
+            last_reason = f"{last_reason}；菜单滚动后画面未变化"
+        break
 
-    context.click_frame_point(source_scene, *plan.point)
-    landed = yield from context.wait_scene(
-        expected,
-        wait=timeout_seconds,
-        label=f"活动菜单：等待 {target} 后继",
+    observed_texts = tuple(
+        dict.fromkeys(
+            str(item.get("text") or "").strip()
+            for item in last_candidates
+            if str(item.get("text") or "").strip()
+        )
     )
-    landed_scene_id = int(getattr(landed, "scene_id", getattr(landed, "id", landed)))
-    if landed_scene_id not in expected:
-        raise RuntimeError(
-            f"活动菜单 {target} 点击后落在 #{landed_scene_id}，"
-            f"不是预期后继 {list(expected)}"
-        )
-    return landed
+    raise RuntimeError(
+        f"活动菜单目标无法安全定位：{last_reason}；"
+        f"OCR候选={observed_texts}；锚点={last_anchors}"
+    )
 
 
 __all__ = ["open_loaded_activity_menu_item"]

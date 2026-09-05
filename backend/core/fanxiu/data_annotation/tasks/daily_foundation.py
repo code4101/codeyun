@@ -71,6 +71,9 @@ from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
 )
 
 
+XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG = "_xianyuan_duel_entry_not_found_date"
+
+
 from backend.core.fanxiu.data_annotation.tasks.lundao import (
     LUNDAO_CLOSE_TIME,
     LUNDAO_DALUO_ROOM_ID,
@@ -4153,6 +4156,58 @@ class DailyFoundationTaskMixin:
             },
         })
 
+    def _handle_daily_xianyuan_duel_entry_not_found(
+        self,
+        payload: dict[str, Any],
+        *,
+        scheduler_task_id: str,
+    ) -> str:
+        """Require two same-day complete #69 traversals before closing the cycle."""
+
+        now = _now()
+        today = now.date().isoformat()
+        previous_not_found_date = str(
+            self._get_scheduler_task_payload_flag(
+                scheduler_task_id,
+                XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG,
+            )
+            or ""
+        )
+        if previous_not_found_date == today:
+            next_time = next_xianyuan_duel_cycle_trigger_at(now).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            # Preserve the conservative two-scan evidence if the scheduling
+            # write fails.  A later retry can then close the same cycle instead
+            # of silently falling back to a new "first" miss.
+            self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
+            self._clear_scheduler_task_payload_flag(
+                scheduler_task_id,
+                XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG,
+            )
+            self._log(
+                "success",
+                "仙缘斗法：同一日连续两轮归一并扫描完整日常列表仍无入口，"
+                f"按本周期无可执行入口收口，下次 {next_time}",
+            )
+            return "skipped"
+
+        if not self._set_scheduler_task_payload_flag(
+            scheduler_task_id,
+            XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG,
+            today,
+        ):
+            raise RuntimeError("仙缘斗法：首次未找到入口，但未能持久化复查标记")
+        self._record_daily_entry_not_found_retry(
+            payload,
+            task_id=scheduler_task_id,
+            task_type="daily_xianyuan_duel",
+            label="仙缘斗法",
+            entry_label="斗法",
+            seconds=int(payload.get("retry_seconds") or 60),
+        )
+        return "skipped"
+
     def _execute_daily_xianyuan_duel_task(
         self,
         ctx: dict[str, Any],
@@ -4179,15 +4234,14 @@ class DailyFoundationTaskMixin:
                 max_scrolls=int(payload.get("max_scrolls") or 30),
             )
             if status == "not_found":
-                self._record_daily_entry_not_found_retry(
+                return self._handle_daily_xianyuan_duel_entry_not_found(
                     payload,
-                    task_id=scheduler_task_id,
-                    task_type="daily_xianyuan_duel",
-                    label="仙缘斗法",
-                    entry_label="斗法",
-                    seconds=int(payload.get("retry_seconds") or 60),
+                    scheduler_task_id=scheduler_task_id,
                 )
-                return "skipped"
+            self._clear_scheduler_task_payload_flag(
+                scheduler_task_id,
+                XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG,
+            )
         if not bool(payload.get("skip_purchase")):
             yield from self._prepare_daily_xianyuan_duel_purchases(context, payload)
         max_runs = int(payload.get("max_runs") or 7)

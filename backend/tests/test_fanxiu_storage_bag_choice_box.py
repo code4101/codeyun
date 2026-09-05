@@ -121,9 +121,7 @@ def _consume(generator):
         return exc.value
 
 
-def _ready(*_args):
-    if False:
-        yield None
+def _ready_plan():
     return StorageBagItemClickPlan(
         "ready",
         "unique",
@@ -132,6 +130,16 @@ def _ready(*_args):
         point=(50.0, 60.0),
         viewport_runtime_start=0,
     )
+
+
+def _ready(*_args):
+    if False:
+        yield None
+    return _ready_plan()
+
+
+def _ready_sync(*_args):
+    return _ready_plan()
 
 
 def _target_detail(_runtime, reward):
@@ -159,11 +167,18 @@ def _adapter(runtime, snapshots, **overrides):
     return StorageBagChoiceBoxGuiAdapter(**options)
 
 
-def test_named_choice_clicks_top_right_checkbox_and_increments_strictly_to_runtime_total() -> None:
+@pytest.mark.parametrize(
+    "click_planner",
+    (_ready, _ready_sync),
+    ids=("generator", "sync"),
+)
+def test_named_choice_clicks_top_right_checkbox_and_increments_strictly_to_runtime_total(
+    click_planner,
+) -> None:
     before = _snapshot([("box", 100, 3)], "before")
     after = _snapshot([("reward", 202, 15)], "after")
     runtime = _Runtime()
-    adapter = _adapter(runtime, iter((before, after)))
+    adapter = _adapter(runtime, iter((before, after)), click_planner=click_planner)
 
     result = _consume(
         adapter.execute(StorageBagChoiceBoxRequest(100, "box", "三宝自选匣", 3, "选择灵石"))

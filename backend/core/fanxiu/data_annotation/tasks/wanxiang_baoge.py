@@ -209,15 +209,16 @@ def execute_wanxiang_baoge_task(
             ocr_shape_names=("左侧菜单",),
             expected_scene_ids=(MAIN_FREE_SCENE, MAIN_REVEALED_SCENE),
             target_gui_name="万象宝阁",
-            # The OCR label sits below the tall activity icon.  One text
-            # height lands on the narrow label/icon seam in the current
-            # 900x1600 layout; two heights stays within the same 150px row
-            # and reaches the icon's stable hit area.
+            # Derive the icon centre from the exact OCR label span.  Live
+            # layouts vary the text height with combat-power overlays; moving
+            # half a text height above the label top remains in the same row,
+            # while larger fixed multiples can hit the preceding activity.
             grid=ActivityMenuGrid(
                 columns=1,
-                click_offset_heights=2.0,
+                click_offset_heights=0.5,
             ),
             timeout_seconds=20,
+            max_scrolls=2,
         )
     # The activity model is globally resident and can be complete on #34.
     # Therefore Runtime completeness cannot substitute for the UI-page

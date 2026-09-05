@@ -322,6 +322,7 @@ def default_kernel_scheduler_tasks(
             "玩法榜",
             description="动态",
             initial_times=("00:30",),
+            dispatch_level=1,
             error_retry_delay_seconds=600,
             payload={"max_execution_seconds": 10800},
         ),
@@ -430,7 +431,7 @@ def default_kernel_scheduler_tasks(
             "wanxiang_baoge_six_yuan",
             "万象宝阁_六元代币宝匣",
             description="动态",
-            error_retry_delay_seconds=0,
+            error_retry_delay_seconds=600,
         ),
         job(
             "xianyuan-auto-gift",
@@ -636,6 +637,7 @@ def default_kernel_scheduler_tasks(
             "活动_每日清单同步",
             description="每日",
             initial_times=("00:20",),
+            dispatch_level=2,
             error_retry_delay_seconds=3600,
         ),
         job(

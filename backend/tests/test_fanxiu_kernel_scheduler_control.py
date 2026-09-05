@@ -1543,6 +1543,43 @@ def test_ranking_lifecycle_is_a_standard_scheduler_job():
     assert any(item["id"] == "ranking-lifecycle" for item in defaults)
 
 
+def test_scheduler_repair_promotes_midnight_narrow_window_chain_only_from_legacy_level_zero():
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_plan as scheduler
+
+    defaults = kernel_scheduler_control.default_kernel_scheduler_tasks()
+    default_by_id = {item["id"]: item for item in defaults}
+    assert default_by_id["activity-daily-list-sync"]["dispatch_level"] == 2
+    assert default_by_id["ranking-lifecycle"]["dispatch_level"] == 1
+
+    sync = deepcopy(default_by_id["activity-daily-list-sync"])
+    ranking = deepcopy(default_by_id["ranking-lifecycle"])
+    sync["dispatch_level"] = 0
+    ranking["dispatch_level"] = 0
+    repaired, changed = scheduler.repair_kernel_scheduler_tasks(
+        [sync, ranking],
+        default_tasks=defaults,
+        facts={},
+        task_supported=lambda _task: True,
+        now=real_datetime(2026, 9, 5, 23, 30, 0),
+    )
+    by_id = {item["id"]: item for item in repaired}
+    assert changed is True
+    assert by_id["activity-daily-list-sync"]["dispatch_level"] == 2
+    assert by_id["ranking-lifecycle"]["dispatch_level"] == 1
+
+    ranking["dispatch_level"] = 3
+    repaired, _changed = scheduler.repair_kernel_scheduler_tasks(
+        [ranking],
+        default_tasks=defaults,
+        facts={},
+        task_supported=lambda _task: True,
+        now=real_datetime(2026, 9, 5, 23, 30, 0),
+    )
+    assert next(
+        item for item in repaired if item["id"] == "ranking-lifecycle"
+    )["dispatch_level"] == 3
+
+
 def test_beast_abyss_initialization_rnd_cell_cannot_be_scheduled():
     register_fanxiu_default_jobs()
     definitions = {
@@ -1613,6 +1650,7 @@ def test_scheduler_repair_removes_retired_wanxiang_paid_refresh_payload():
     wanxiang = deepcopy(
         next(item for item in defaults if item["id"] == "wanxiang-baoge-six-yuan")
     )
+    wanxiang["error_retry_delay_seconds"] = 0
     wanxiang["payload"] = {"max_refreshes": 100}
 
     repaired, changed = scheduler.repair_kernel_scheduler_tasks(
@@ -1627,6 +1665,7 @@ def test_scheduler_repair_removes_retired_wanxiang_paid_refresh_payload():
         item for item in repaired if item["id"] == "wanxiang-baoge-six-yuan"
     )
     assert changed is True
+    assert task["error_retry_delay_seconds"] == 600
     assert task["payload"] == {}
 
 

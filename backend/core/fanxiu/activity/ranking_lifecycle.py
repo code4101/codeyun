@@ -61,6 +61,7 @@ RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 30)
+EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN = timedelta(minutes=5)
 MAGIC_INITIALIZATION_TIME = time(0, 30)
 XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
@@ -452,15 +453,24 @@ def checkpoints_for_occurrence(
         if occurrence.activity_type == "xianyuan-duokui"
         else DAILY_RECONCILE_TIME
     )
-    tail_at = _at(tail_day, tail_time, occurrence.start_at.tzinfo)
+    default_tail_at = _at(tail_day, tail_time, occurrence.start_at.tzinfo)
+    # Some Runtime occurrences close their panel exactly at 00:30.  Waiting
+    # for that labelled boundary lets #66 rotate to the next occurrence before
+    # the old calendar row can be entered.  Keep the ordinary 00:30 slot when
+    # there is ample room, otherwise enter five minutes before the exact
+    # Runtime close while the same occurrence is still provably available.
+    tail_at = min(
+        default_tail_at,
+        occurrence.close_at - EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN,
+    )
     if (
         occurrence_has_exchange_shop(occurrence)
         and not (
             occurrence.activity_type == "tiandi-yiju"
             and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
         )
-        and business_day == tail_day
-        and occurrence.end_at < tail_at <= occurrence.close_at
+        and business_day == tail_at.date()
+        and occurrence.end_at < tail_at < occurrence.close_at
     ):
         checkpoints.append(
             RankingCheckpoint(

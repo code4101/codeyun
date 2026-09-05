@@ -321,7 +321,7 @@ def test_registered_shop_owns_tail_capability_inside_runtime_grace_window(
     assert tail.due_at == datetime(2026, 9, 4, 0, 30, tzinfo=TZ)
 
 
-def test_magic_exchange_tail_uses_runtime_closing_minute_at_0030() -> None:
+def test_magic_exchange_tail_runs_before_runtime_closing_minute_at_0030() -> None:
     occurrence = RankingOccurrence(
         activity_type="magic-invasion",
         family="gameplay_rank",
@@ -336,7 +336,7 @@ def test_magic_exchange_tail_uses_runtime_closing_minute_at_0030() -> None:
 
     due = due_ranking_checkpoints(
         (occurrence,),
-        now=datetime(2026, 9, 6, 0, 30, 20, tzinfo=TZ),
+        now=datetime(2026, 9, 6, 0, 25, tzinfo=TZ),
         production_only=True,
     )
 
@@ -344,7 +344,12 @@ def test_magic_exchange_tail_uses_runtime_closing_minute_at_0030() -> None:
     assert len(tail) == 1
     assert tail[0].runtime_id == occurrence.runtime_id
     assert tail[0].instance_key == occurrence.instance_key
-    assert tail[0].due_at == datetime(2026, 9, 6, 0, 30, tzinfo=TZ)
+    assert tail[0].due_at == datetime(2026, 9, 6, 0, 25, tzinfo=TZ)
+    assert next_ranking_lifecycle_time(
+        (occurrence,),
+        now=datetime(2026, 9, 6, 0, 24, 59, tzinfo=TZ),
+        production_only=True,
+    ) == datetime(2026, 9, 6, 0, 25, tzinfo=TZ)
     assert occurrence_exchange_tail_window_contains(
         occurrence,
         datetime(2026, 9, 6, 0, 30, 59, 999999, tzinfo=TZ),
@@ -387,7 +392,7 @@ def test_activity_without_registered_shop_never_gets_exchange_tail() -> None:
     assert EXCHANGE_TAIL_KIND not in {item.checkpoint_kind for item in rows}
 
 
-def test_shop_capability_does_not_invent_tail_outside_runtime_window() -> None:
+def test_shop_tail_moves_before_an_early_runtime_close() -> None:
     occurrence = RankingOccurrence(
         activity_type="xutian-palace",
         family="gameplay_rank",
@@ -403,6 +408,28 @@ def test_shop_capability_does_not_invent_tail_outside_runtime_window() -> None:
     rows = checkpoints_for_occurrence(
         occurrence,
         business_day=datetime(2026, 9, 4, tzinfo=TZ).date(),
+    )
+
+    tail = next(item for item in rows if item.checkpoint_kind == EXCHANGE_TAIL_KIND)
+    assert tail.due_at == datetime(2026, 9, 4, 0, 10, tzinfo=TZ)
+
+
+def test_shop_capability_does_not_invent_tail_without_five_minute_window() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="xutian-palace",
+        family="gameplay_rank",
+        runtime_id="runtime-xutian",
+        activity_id=8080001,
+        start_at=datetime(2026, 9, 2, 10, tzinfo=TZ),
+        end_at=datetime(2026, 9, 3, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 2, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 3, 22, 5, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    rows = checkpoints_for_occurrence(
+        occurrence,
+        business_day=datetime(2026, 9, 3, tzinfo=TZ).date(),
     )
 
     assert EXCHANGE_TAIL_KIND not in {item.checkpoint_kind for item in rows}

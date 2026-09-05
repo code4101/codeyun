@@ -326,3 +326,103 @@ def test_xianyuan_duel_uses_game_availability_not_strategy_trigger_as_window(mon
     assert xianyuan_duel_scheduler_in_window(datetime(2026, 8, 2, 10, 0, 0)) is True
     assert xianyuan_duel_scheduler_in_window(datetime(2026, 8, 2, 21, 59, 59)) is True
     assert xianyuan_duel_scheduler_in_window(datetime(2026, 8, 2, 22, 0, 0)) is False
+
+
+def test_xianyuan_duel_first_complete_list_miss_records_same_day_recheck(monkeypatch):
+    runner = create_behavior_tree_executor()
+    stored_flags: list[tuple[str, str, str]] = []
+    retries: list[dict] = []
+    monkeypatch.setitem(
+        runner._handle_daily_xianyuan_duel_entry_not_found.__func__.__globals__,
+        "_now",
+        lambda: datetime(2026, 8, 4, 23, 1, 0),
+    )
+    monkeypatch.setattr(runner, "_get_scheduler_task_payload_flag", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "_set_scheduler_task_payload_flag",
+        lambda task_id, flag, value: stored_flags.append((task_id, flag, value)) or True,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_entry_not_found_retry",
+        lambda _payload, **kwargs: retries.append(kwargs),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_scheduler_task_next_time",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("first miss must remain a short retry")
+        ),
+    )
+
+    result = runner._handle_daily_xianyuan_duel_entry_not_found(
+        {"retry_seconds": 75},
+        scheduler_task_id="daily-xianyuan-duel",
+    )
+
+    assert result == "skipped"
+    assert stored_flags == [
+        (
+            "daily-xianyuan-duel",
+            "_xianyuan_duel_entry_not_found_date",
+            "2026-08-04",
+        )
+    ]
+    assert retries == [
+        {
+            "task_id": "daily-xianyuan-duel",
+            "task_type": "daily_xianyuan_duel",
+            "label": "仙缘斗法",
+            "entry_label": "斗法",
+            "seconds": 75,
+        }
+    ]
+
+
+def test_xianyuan_duel_second_same_day_complete_list_miss_advances_cycle(monkeypatch):
+    runner = create_behavior_tree_executor()
+    writes: list[tuple] = []
+    monkeypatch.setattr(runner, "_log", lambda *_args: None)
+    monkeypatch.setitem(
+        runner._handle_daily_xianyuan_duel_entry_not_found.__func__.__globals__,
+        "_now",
+        lambda: datetime(2026, 8, 4, 23, 2, 0),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_get_scheduler_task_payload_flag",
+        lambda *_args: "2026-08-04",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_persist_scheduler_task_next_time",
+        lambda task_id, next_time: writes.append(("next_time", task_id, next_time)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_clear_scheduler_task_payload_flag",
+        lambda task_id, flag: writes.append(("clear", task_id, flag)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_record_daily_entry_not_found_retry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("second same-day miss must not schedule another short retry")
+        ),
+    )
+
+    result = runner._handle_daily_xianyuan_duel_entry_not_found(
+        {},
+        scheduler_task_id="daily-xianyuan-duel",
+    )
+
+    assert result == "skipped"
+    assert writes == [
+        ("next_time", "daily-xianyuan-duel", "2026-08-05 23:00:00"),
+        (
+            "clear",
+            "daily-xianyuan-duel",
+            "_xianyuan_duel_entry_not_found_date",
+        ),
+    ]

@@ -4,6 +4,12 @@ from dataclasses import dataclass
 
 import pytest
 
+from backend.core.fanxiu.data_annotation.tasks import (
+    activity_menu_navigation as navigation_module,
+)
+from backend.core.fanxiu.data_annotation.tasks.activity_menu_navigation import (
+    open_loaded_activity_menu_item,
+)
 from backend.core.fanxiu.instrumentation import activity_menu as module
 from backend.core.fanxiu.instrumentation.activity_menu import (
     ActivityMenuItem,
@@ -563,3 +569,257 @@ def test_planner_refuses_not_loaded_runtime():
 
     assert plan.status == "incomplete_runtime"
     assert plan.point is None
+
+
+class _MenuNavigationContext:
+    def __init__(self, *, landed_scene_id=635):
+        self.landed_scene_id = landed_scene_id
+        self.clicked = []
+
+    def cur_frame(self, *, update):
+        assert update is True
+        return "data:image/png;base64,test"
+
+    def ocr_tokens_in_shapes(self, scene_id, shape_names, *, frame_data_url):
+        assert scene_id == 34
+        assert shape_names == ("world-activity-menu",)
+        assert frame_data_url == "data:image/png;base64,test"
+        return [{"text": "万象宝阁", "box": (100, 200, 80, 20)}]
+
+    def click_frame_point(self, scene_id, x, y):
+        self.clicked.append((scene_id, x, y))
+
+    def wait_scene(self, expected, *, wait, label):
+        assert expected == (635, 636)
+        assert wait == 20.0
+        assert label == "活动菜单：等待 2030001 后继"
+        if False:
+            yield None
+        return self.landed_scene_id
+
+
+def _run_generator(generator):
+    while True:
+        try:
+            next(generator)
+        except StopIteration as exc:
+            return exc.value
+
+
+def _world_navigation_snapshot(items, *, fingerprint="fp"):
+    return ActivityMenuSnapshot(
+        kind="world_left",
+        status="loaded",
+        complete=True,
+        items=tuple(items),
+        pid=1,
+        process_start_ticks=2,
+        fingerprint=fingerprint,
+        reason="",
+        timings=ActivityMenuReadTimings(0, 0, 0, 0, "test"),
+    )
+
+
+def _open_wanxiang(context, *, max_scrolls=0):
+    return open_loaded_activity_menu_item(
+        context,
+        2030001,
+        kind="world_left",
+        source_scene_id=34,
+        ocr_shape_names=("world-activity-menu",),
+        expected_scene_ids=(635, 636),
+        target_gui_name="万象宝阁",
+        grid=ActivityMenuGrid(columns=1, click_offset_heights=0),
+        max_scrolls=max_scrolls,
+    )
+
+
+def test_navigation_gui_alias_is_bound_to_unique_runtime_identity(monkeypatch):
+    snapshot = _world_navigation_snapshot(
+        [
+            ActivityMenuItem(1, "activity:1", "其他活动", activity_id=1),
+            ActivityMenuItem(2, "activity:2030001", "活动2030001", activity_id=2030001),
+        ]
+    )
+    monkeypatch.setattr(
+        navigation_module, "read_activity_menu_snapshot", lambda _kind: snapshot
+    )
+    context = _MenuNavigationContext()
+
+    landed = _run_generator(_open_wanxiang(context))
+
+    assert landed == 635
+    assert context.clicked == [(34, 140.0, 200)]
+
+
+def test_navigation_scrolls_until_exact_alias_is_visible(monkeypatch):
+    snapshot = _world_navigation_snapshot(
+        [ActivityMenuItem(2, "activity:2030001", "活动2030001", activity_id=2030001)]
+    )
+    monkeypatch.setattr(
+        navigation_module, "read_activity_menu_snapshot", lambda _kind: snapshot
+    )
+
+    class ScrollContext(_MenuNavigationContext):
+        def __init__(self):
+            super().__init__()
+            self.screen = 0
+            self.scrolls = []
+
+        def ocr_tokens_in_shapes(self, scene_id, shape_names, *, frame_data_url):
+            if self.screen == 0:
+                return [{"text": "累充豪礼", "box": (100, 200, 80, 20)}]
+            return [{"text": "万象宝阁", "box": (100, 400, 80, 20)}]
+
+        def scroll_shape_content(self, scene_id, shape_name, *, direction):
+            self.scrolls.append((scene_id, shape_name, direction))
+            self.screen += 1
+            if False:
+                yield None
+            return True
+
+    context = ScrollContext()
+    landed = _run_generator(_open_wanxiang(context, max_scrolls=2))
+
+    assert landed == 635
+    assert context.scrolls == [(34, "world-activity-menu", "up")]
+    assert context.clicked == [(34, 140.0, 400)]
+
+
+def test_navigation_prefers_exact_alias_span_over_fuzzy_character(monkeypatch):
+    snapshot = _world_navigation_snapshot(
+        [
+            ActivityMenuItem(3, "activity:505", "累充豪礼", activity_id=505),
+            ActivityMenuItem(
+                8,
+                "group:110001",
+                "特惠",
+                activity_id=0,
+                group_type=110001,
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        navigation_module, "read_activity_menu_snapshot", lambda _kind: snapshot
+    )
+
+    class JoinedLabelContext(_MenuNavigationContext):
+        def ocr_tokens_in_shapes(self, scene_id, shape_names, *, frame_data_url):
+            assert scene_id == 34
+            assert shape_names == ("左侧菜单",)
+            return [
+                {
+                    "text": text,
+                    "x": x,
+                    "y": 875,
+                    "w": width,
+                    "h": 38,
+                    "parent_line_id": "joined-row",
+                    "order": order,
+                }
+                for order, (text, x, width) in enumerate(
+                    (
+                        ("累", 6, 41),
+                        ("充", 38, 41),
+                        ("豪", 64, 40),
+                        ("礼", 102, 41),
+                        ("特", 172, 40),
+                        ("惠", 204, 33),
+                    )
+                )
+            ]
+
+        def wait_scene(self, expected, *, wait, label):
+            assert expected == (403,)
+            assert label == "活动菜单：等待 group:110001 后继"
+            if False:
+                yield None
+            return 403
+
+    context = JoinedLabelContext()
+    landed = _run_generator(
+        open_loaded_activity_menu_item(
+            context,
+            "group:110001",
+            kind="world_left",
+            source_scene_id=34,
+            ocr_shape_names=("左侧菜单",),
+            expected_scene_ids=(403,),
+            target_gui_name="特惠",
+            grid=ActivityMenuGrid(columns=1, click_offset_heights=0.5),
+        )
+    )
+
+    assert landed == 403
+    assert context.clicked == [(34, 204.5, 856.0)]
+
+
+def test_navigation_gui_alias_collision_fails_closed(monkeypatch):
+    snapshot = _world_navigation_snapshot(
+        [
+            ActivityMenuItem(1, "activity:1", "万象宝阁", activity_id=1),
+            ActivityMenuItem(
+                2, "activity:2030001", "活动2030001", activity_id=2030001
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        navigation_module, "read_activity_menu_snapshot", lambda _kind: snapshot
+    )
+    context = _MenuNavigationContext()
+
+    with pytest.raises(RuntimeError, match="目标无法安全定位"):
+        _run_generator(_open_wanxiang(context))
+
+    assert context.clicked == []
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        [ActivityMenuItem(1, "activity:1", "其他活动", activity_id=1)],
+        [
+            ActivityMenuItem(
+                1, "activity:2030001:a", "活动甲", activity_id=2030001
+            ),
+            ActivityMenuItem(
+                2, "activity:2030001:b", "活动乙", activity_id=2030001
+            ),
+        ],
+    ],
+    ids=["missing", "duplicate"],
+)
+def test_navigation_gui_alias_requires_unique_runtime_identity(monkeypatch, items):
+    snapshot = _world_navigation_snapshot(items)
+    monkeypatch.setattr(
+        navigation_module, "read_activity_menu_snapshot", lambda _kind: snapshot
+    )
+    context = _MenuNavigationContext()
+
+    with pytest.raises(RuntimeError, match="GUI 别名没有唯一 Runtime 身份"):
+        _run_generator(_open_wanxiang(context))
+
+    assert context.clicked == []
+
+
+def test_navigation_rejects_changed_runtime_fingerprint_before_click(monkeypatch):
+    first = _world_navigation_snapshot(
+        [
+            ActivityMenuItem(
+                1, "activity:2030001", "活动2030001", activity_id=2030001
+            )
+        ]
+    )
+    changed = _world_navigation_snapshot(first.items, fingerprint="changed")
+    snapshots = iter((first, changed))
+    monkeypatch.setattr(
+        navigation_module,
+        "read_activity_menu_snapshot",
+        lambda _kind: next(snapshots),
+    )
+    context = _MenuNavigationContext()
+
+    with pytest.raises(RuntimeError, match="定位后发生变化"):
+        _run_generator(_open_wanxiang(context))
+
+    assert context.clicked == []

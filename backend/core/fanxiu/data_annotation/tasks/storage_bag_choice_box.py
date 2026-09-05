@@ -96,7 +96,10 @@ class StorageBagPartnerOutcomeProof:
 
 
 SnapshotReader = Callable[[], Mapping[str, Any]]
-ClickPlanner = Callable[[Any, Mapping[str, Any], StorageBagChoiceBoxRequest], StorageBagItemClickPlan]
+ClickPlanner = Callable[
+    [Any, Mapping[str, Any], StorageBagChoiceBoxRequest],
+    StorageBagItemClickPlan | Generator[Any, Any, StorageBagItemClickPlan],
+]
 AssetValidator = Callable[[Any, Sequence[int]], None]
 TargetDetailScanner = Callable[
     [Any, StorageBagChoiceReward],

@@ -85,7 +85,9 @@ def test_formation_hydrates_details_only_below_power_shortcut(monkeypatch) -> No
     dragged: list[tuple[str, str]] = []
 
     class StructuredRuntime:
-        def sample_scene_once(self, _preferred, *, update=False):
+        def current_scene(self, _preferred, *, update=False):
+            if False:
+                yield None
             return 309, 100.0, "frame"
 
         def drag_shape_to_shape(self, _scene, start, end, **_kwargs):
@@ -122,7 +124,9 @@ def test_formation_drags_exact_slots_from_structured_partner_ids(monkeypatch) ->
     dragged: list[tuple[str, str]] = []
 
     class StructuredRuntime:
-        def sample_scene_once(self, _preferred, *, update=False):
+        def current_scene(self, _preferred, *, update=False):
+            if False:
+                yield None
             return 309, 100.0, "frame"
 
         def drag_shape_to_shape(self, _scene, start, end, **_kwargs):

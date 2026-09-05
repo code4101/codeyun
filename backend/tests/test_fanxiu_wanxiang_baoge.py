@@ -152,6 +152,7 @@ def test_standard_job_is_dynamic_without_paid_refresh_budget():
     )
 
     assert job["trigger_description"] == "动态"
+    assert job["error_retry_delay_seconds"] == 600
     assert job["payload"] == {}
 
 

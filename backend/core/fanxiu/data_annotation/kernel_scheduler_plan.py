@@ -307,6 +307,26 @@ def repair_kernel_scheduler_tasks(
             # overlay click therefore formed a cross-attempt click storm.  Only
             # migrate that exact legacy value; preserve any user override.
             migrated_retry_delay = default["error_retry_delay_seconds"]
+        if (
+            task_id == "wanxiang-baoge-six-yuan"
+            and raw_previous.get("error_retry_delay_seconds") == 0
+        ):
+            # This job used to be manual and inherited immediate retry.  It is
+            # now a real 00:30 Scheduler job with an irreversible purchase
+            # branch, so an error must leave room for stop-the-queue diagnosis
+            # instead of forming a same-batch retry storm.
+            migrated_retry_delay = default["error_retry_delay_seconds"]
+        migrated_dispatch_level = previous["dispatch_level"]
+        if (
+            task_id in {"activity-daily-list-sync", "ranking-lifecycle"}
+            and raw_previous.get("dispatch_level", 0) == 0
+        ):
+            # These are narrow-window upstream jobs.  The original level zero
+            # lets a healthy but long midnight assistant/mail Cell consume the
+            # 00:20 inventory refresh and 00:30-00:31 ranking tail window.
+            # Migrate only the former standard value; non-zero operator
+            # overrides remain authoritative.
+            migrated_dispatch_level = default["dispatch_level"]
         migrated_execution_state = {
             key: previous.get(key)
             for key in _SCHEDULER_EXECUTION_STATE_FIELDS
@@ -339,11 +359,7 @@ def repair_kernel_scheduler_tasks(
         tasks.append({
             **default,
             **migrated_execution_state,
-            "dispatch_level": (
-                previous["dispatch_level"]
-                if "dispatch_level" in raw_previous
-                else default["dispatch_level"]
-            ),
+            "dispatch_level": migrated_dispatch_level,
             "dispatch_order": (
                 previous["dispatch_order"]
                 if "dispatch_order" in raw_previous
