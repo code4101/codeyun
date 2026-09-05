@@ -73,13 +73,21 @@ class CodexDispatchStatus:
         return asdict(self)
 
 
-def _resolve_codex_executable() -> str:
+def resolve_codex_executable() -> str:
+    """Return a directly executable Codex CLI binary, avoiding shell shims."""
+
     candidates = ("codex.exe", "codex") if os.name == "nt" else ("codex",)
     for candidate in candidates:
         resolved = shutil.which(candidate)
         if resolved and (os.name != "nt" or Path(resolved).suffix.lower() == ".exe"):
             return resolved
     raise FileNotFoundError("未找到可直接启动的 Codex CLI")
+
+
+def _resolve_codex_executable() -> str:
+    """Backward-compatible private alias for older callers and tests."""
+
+    return resolve_codex_executable()
 
 
 def _normalized_lines(values: tuple[str, ...]) -> tuple[str, ...]:

@@ -4,18 +4,19 @@ import datetime as dt
 import json
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any, Callable
 
 from filelock import FileLock
 
+from backend.core.codex.app_server import CODEX_RATE_LIMITS_METHOD, read_codex_rate_limits
 from backend.core.settings import get_settings
 
 
 CODEX_WEEKLY_QUOTA_TASK_KEY = "codex_weekly_quota_snapshot"
 CODEX_WEEKLY_QUOTA_RUN_TIME = "00:00"
 CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage"
+CODEX_WEEKLY_QUOTA_SOURCE = f"codex_app_server:{CODEX_RATE_LIMITS_METHOD}"
 CODEX_WEEKLY_QUOTA_HISTORY_VERSION = 2
 
 
@@ -25,6 +26,53 @@ class CodexWeeklyQuotaError(RuntimeError):
 
 class CodexWeeklyQuotaLoginRequired(CodexWeeklyQuotaError):
     pass
+
+
+def parse_codex_rate_limits_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract the longest (weekly) rate-limit window from app-server output."""
+
+    snapshots = payload.get("rateLimitsByLimitId")
+    snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else None
+    if not isinstance(snapshot, dict):
+        snapshot = payload.get("rateLimits")
+    if not isinstance(snapshot, dict):
+        raise CodexWeeklyQuotaError("Codex app-server 未返回 codex rateLimits")
+
+    windows = [
+        item
+        for name in ("primary", "secondary")
+        if isinstance((item := snapshot.get(name)), dict)
+    ]
+    if not windows:
+        raise CodexWeeklyQuotaError("Codex app-server 未返回任何限额窗口")
+    weekly = max(
+        enumerate(windows),
+        key=lambda pair: (int(pair[1].get("windowDurationMins") or 0), pair[0]),
+    )[1]
+    try:
+        used_percent = int(weekly["usedPercent"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CodexWeeklyQuotaError("Codex app-server 限额窗口缺少 usedPercent") from exc
+    if not 0 <= used_percent <= 100:
+        raise CodexWeeklyQuotaError(f"Codex app-server usedPercent 超出范围：{used_percent}")
+
+    reset_at = ""
+    raw_reset_at = weekly.get("resetsAt")
+    if raw_reset_at is not None:
+        try:
+            reset_at = dt.datetime.fromtimestamp(
+                int(raw_reset_at),
+                tz=dt.timezone.utc,
+            ).replace(microsecond=0).isoformat()
+        except (OSError, OverflowError, TypeError, ValueError) as exc:
+            raise CodexWeeklyQuotaError(
+                f"Codex app-server resetsAt 无效：{raw_reset_at}"
+            ) from exc
+    return {
+        "remaining_percent": 100 - used_percent,
+        "reset_at": reset_at,
+        "window_duration_minutes": int(weekly.get("windowDurationMins") or 0),
+    }
 
 
 def get_codex_weekly_quota_history_path() -> Path:
@@ -117,6 +165,7 @@ def record_codex_weekly_quota_snapshot(
         "observed_at": observed_at.replace(microsecond=0).isoformat(),
         "reset_at": str(reset_at or "").strip(),
         "source_url": CODEX_USAGE_URL,
+        "source": CODEX_WEEKLY_QUOTA_SOURCE,
     }
 
     lock_path = resolved_path.with_suffix(f"{resolved_path.suffix}.lock")
@@ -139,70 +188,24 @@ def record_codex_weekly_quota_snapshot(
     return record
 
 
-def _find_reusable_usage_tab(browser: Any) -> Any | None:
-    for tab in browser.get_tabs():
-        url = str(getattr(tab, "url", "") or "")
-        if url.startswith("https://chatgpt.com/codex/cloud/settings/analytics") or url == "https://chatgpt.com/#usage":
-            return tab
-    return None
-
-
-def _read_usage_page_text(tab: Any, *, timeout_seconds: float) -> str:
-    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
-    latest_text = ""
-    while time.monotonic() < deadline:
-        body = tab.ele("tag:body", timeout=1)
-        latest_text = str(body.text if body else "")
-        try:
-            return_text = parse_codex_weekly_quota_text(latest_text)
-        except CodexWeeklyQuotaError:
-            return_text = None
-        if return_text is not None:
-            return latest_text
-        tab.wait(0.25)
-    return latest_text
-
-
 def collect_codex_weekly_quota_snapshot(
     *,
     now: dt.datetime | None = None,
     history_path: Path | None = None,
-    browser_factory: Callable[[], Any] | None = None,
+    rate_limits_reader: Callable[..., dict[str, Any]] = read_codex_rate_limits,
     timeout_seconds: float = 25.0,
 ) -> dict[str, Any]:
-    if browser_factory is None:
-        from DrissionPage import Chromium
-
-        browser_factory = Chromium
-
     observed_at = (now or dt.datetime.now()).replace(microsecond=0)
-    browser = browser_factory()
-    tab = _find_reusable_usage_tab(browser)
-    created_tab = tab is None
-    if tab is None:
-        tab = browser.new_tab()
-    try:
-        tab.set.timeouts(base=10, page_load=max(15, int(timeout_seconds)))
-        tab.get(CODEX_USAGE_URL, timeout=max(15, int(timeout_seconds)))
-        page_text = _read_usage_page_text(tab, timeout_seconds=timeout_seconds)
-        page_url = str(getattr(tab, "url", "") or "")
-        if "/codex/cloud/settings/analytics" not in page_url and re.search(r"登录|Log in|Sign in", page_text, re.IGNORECASE):
-            raise CodexWeeklyQuotaLoginRequired(
-                "DrissionPage 默认浏览器尚未登录 ChatGPT；已保留用量页，请先在该窗口完成登录"
-            )
-        parsed = parse_codex_weekly_quota_text(page_text)
-        record = record_codex_weekly_quota_snapshot(
-            remaining_percent=int(parsed["remaining_percent"]),
-            observed_at=observed_at,
-            reset_at=str(parsed.get("reset_at") or ""),
-            path=history_path,
-        )
-        print(
-            "Codex weekly quota recorded: "
-            f"date={record['date']} remaining={record['remaining_percent']}% observed_at={record['observed_at']}"
-        )
-        return record
-    finally:
-        if created_tab and "/codex/cloud/settings/analytics" in str(getattr(tab, "url", "") or ""):
-            if len(browser.tab_ids) > 1:
-                tab.close()
+    payload = rate_limits_reader(timeout_seconds=timeout_seconds)
+    parsed = parse_codex_rate_limits_snapshot(payload)
+    record = record_codex_weekly_quota_snapshot(
+        remaining_percent=int(parsed["remaining_percent"]),
+        observed_at=observed_at,
+        reset_at=str(parsed.get("reset_at") or ""),
+        path=history_path,
+    )
+    print(
+        "Codex weekly quota recorded: "
+        f"date={record['date']} remaining={record['remaining_percent']}% observed_at={record['observed_at']}"
+    )
+    return record

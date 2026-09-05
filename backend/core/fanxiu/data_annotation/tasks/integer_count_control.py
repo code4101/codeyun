@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Mapping, Protocol
 
 
+_MAX_DIRECT_BUTTON_ACTIONS = 30
+
+
 class IntegerCountAssets(Protocol):
     settings_scene_id: int
     count_region: str
@@ -441,6 +444,29 @@ def _fine_tune_batches(
     return current, batches
 
 
+def _estimated_button_actions(
+    assets: IntegerCountAssets,
+    *,
+    current: int,
+    desired: int,
+) -> int:
+    """Return the minimum known +/- button actions for an exact target."""
+
+    residual = abs(desired - current)
+    if residual == 0:
+        return 0
+    increasing = current < desired
+    large_action = (
+        getattr(assets, "count_increase_large", None)
+        if increasing
+        else getattr(assets, "count_decrease_large", None)
+    )
+    large_step = int(getattr(assets, "count_large_step", 0) or 0)
+    if not large_action or large_step <= 1:
+        return residual
+    return residual // large_step + residual % large_step
+
+
 def _set_track_only_count(
     context: Any,
     assets: IntegerCountAssets,
@@ -615,6 +641,32 @@ def set_verified_integer_slider_count(
     )
     if before == desired:
         return {"before": before, "after": before, "phase": "already_exact"}
+    direct_actions = _estimated_button_actions(
+        assets,
+        current=before,
+        desired=desired,
+    )
+    # A short burst of +10/-10 plus the exact unit remainder is both faster
+    # and less fragile than repeatedly locating and calibrating a live thumb.
+    # The stable reread in _fine_tune_batches absorbs dropped queued clicks.
+    if direct_actions <= _MAX_DIRECT_BUTTON_ACTIONS:
+        current, batches = yield from _fine_tune_batches(
+            context,
+            assets,
+            desired,
+            current=before,
+            count_label=count_label,
+            runtime_reader=runtime_count_reader,
+        )
+        return {
+            "before": before,
+            "after": current,
+            "maximum": maximum,
+            "phase": "button_fast_path",
+            "estimated_button_actions": direct_actions,
+            "fine_batches": batches,
+            "fine_adjustment_actions": sum(row["clicks"] for row in batches),
+        }
     if not assets.count_slider_thumb and getattr(assets, "count_slider_track", None):
         return (yield from _set_track_only_count(
             context,

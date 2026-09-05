@@ -417,6 +417,7 @@ class BackgroundTaskRead(BaseModel):
     trigger_warning: str = ""
     active: bool = False
     latest_run: Optional[Dict[str, Any]] = None
+    ai_escalation: Optional[Dict[str, Any]] = None
 
 
 class BackgroundTaskCatalogItem(BaseModel):
@@ -849,8 +850,15 @@ def get_background_task_status(session: Session = Depends(get_session)):
                 next_run_at=task_state.get("next_run_at"),
                 retry_policy=str(task_state.get("retry_label") or spec.retry_label),
                 trigger_warning=spec.manual_warning,
-                active=bool(active_by_key.get(spec.key)),
+                active=bool(active_by_key.get(spec.key)) or str(
+                    (task_state.get("ai_escalation") or {}).get("agent_status") or ""
+                ) in {"starting", "running"},
                 latest_run=latest_by_key.get(spec.key),
+                ai_escalation=(
+                    task_state.get("ai_escalation")
+                    if isinstance(task_state.get("ai_escalation"), dict)
+                    else None
+                ),
             )
         )
     return BackgroundTaskStatusResponse(

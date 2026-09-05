@@ -136,6 +136,55 @@ class DailyRedpacketTaskMixin:
             raise RuntimeError("日常_红包：缺少 #395[红包] 快速门卫标注")
         return self._match_shape(ctx, image, shape, frame, condition="image")
 
+    def _wait_daily_redpacket_world_reference_shape(
+        self,
+        context: Any,
+        ctx: dict[str, Any],
+        title: str,
+        *,
+        timeout: float,
+        label: str,
+    ):
+        """Match a #395 reference shape while guarding the real world scene.
+
+        #395 deliberately has no scene identity: it is a business reference
+        frame layered over the identifiable #34 world page.  Passing it to the
+        generic ``wait_shape`` would require the live scene id to equal 395 and
+        therefore reject every valid #34 frame before shape matching begins.
+        """
+
+        image = (ctx.get("images") or {}).get(395)
+        shape = self._find_shape(image, title)
+        if not isinstance(image, dict) or not isinstance(shape, dict):
+            raise RuntimeError(f"日常_红包：缺少 #395[{title}] 参考标注")
+        deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
+        last_similarity = 0.0
+        while time.monotonic() < deadline:
+            scene_id, _scene_score, frame = yield from context.current_scene(
+                [34],
+                update=True,
+                label=f"{label}：确认世界页 #34",
+            )
+            if int(scene_id or 0) == 34:
+                match_result = self._match_shape(
+                    ctx,
+                    image,
+                    shape,
+                    frame,
+                    condition="image",
+                )
+                last_similarity = max(
+                    last_similarity,
+                    float(match_result.get("similarity") or 0.0),
+                )
+                if bool(match_result.get("matched")):
+                    self._log("success", f"{label}：#395 [{title}] {last_similarity:.0f}%")
+                    return frame, image, shape, match_result
+            yield from context.wait_action_settle(0.25)
+        raise TimeoutError(
+            f"{label}：#395 [{title}] 超时，最后 {last_similarity:.0f}%"
+        )
+
     @staticmethod
     def _daily_redpacket_runtime_candidates() -> dict[str, Any]:
         """Return fresh trigger facts without granting any GUI action."""
@@ -1353,13 +1402,22 @@ class DailyRedpacketTaskMixin:
                 "日常_红包：#395 阴性但 Runtime 有新鲜结构化候选；仅进入聊天做逐层视觉检查",
             )
 
-        yield from context.wait_shape(
-            395,
-            "聊天",
-            timeout=transition_timeout,
-            label="日常_红包：逐帧确认世界页聊天入口",
+        chat_frame, chat_image, chat_shape, chat_match = yield from (
+            self._wait_daily_redpacket_world_reference_shape(
+                context,
+                ctx,
+                "聊天",
+                timeout=transition_timeout,
+                label="日常_红包：逐帧确认世界页聊天入口",
+            )
         )
-        context.click_shape_center(395, "聊天")
+        self._click_shape(
+            ctx,
+            chat_image,
+            chat_shape,
+            frame_data_url=chat_frame,
+            match_result=chat_match,
+        )
         landing = yield from context.wait_scene(
             [332,
             333],

@@ -137,6 +137,35 @@ def test_proportional_drag_can_land_exactly_without_clicks() -> None:
     assert context.clicks == []
 
 
+def test_slider_prefers_bounded_large_step_button_burst() -> None:
+    assets = SimpleNamespace(
+        **ASSETS.__dict__,
+        count_decrease_large="-10",
+        count_increase_large="+10",
+        count_large_step=10,
+    )
+    context = SliderContext(maximum=200)
+
+    result = _finish(set_verified_integer_slider_count(
+        context,
+        assets,
+        168,
+        maximum=200,
+        max_adjustments=10,
+        runtime_count_reader=lambda: {
+            "current": context.count,
+            "maximum": context.maximum,
+        },
+    ))
+
+    assert result["phase"] == "button_fast_path"
+    assert result["after"] == 168
+    assert result["estimated_button_actions"] == 23
+    assert result["fine_adjustment_actions"] == 23
+    assert context.frame_drags == []
+    assert context.fast_clicks == ["+10"] * 16 + ["增加"] * 7
+
+
 def test_coarse_pixel_probe_still_removes_bulk_error_when_grain_exceeds_threshold() -> None:
     context = SliderContext(maximum=5000, gain=0.5)
 
