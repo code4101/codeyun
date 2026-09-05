@@ -18,6 +18,7 @@ from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
     _exchange_shop_business_ready,
     _group_ocr_tokens,
     _resolve_exact_magic_calendar_fallback,
+    _resolve_exact_magic_historical_date_cell,
     _ui_calendar_day_offset,
 )
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
@@ -306,5 +307,50 @@ def test_tail_rejects_truncated_title_without_exact_instance_qualifier() -> None
         ],
         runtime_entity=entity,
         day_offset=0,
+        target_x=317,
+    )
+
+
+def test_tail_projects_unique_exact_title_only_to_historical_date() -> None:
+    entity = SimpleNamespace(
+        key="4070001|4070001400004|6400002",
+        payload={"name": "魔道入侵", "littleName": "跨服[4]"},
+    )
+    lines = [
+        {"text": "魔道入侵", "x": 98, "y": 372, "w": 131, "h": 35},
+        {"text": "跨服[8]", "x": 570, "y": 514, "w": 93, "h": 38},
+    ]
+
+    targets = _resolve_exact_magic_historical_date_cell(
+        calendar_lines=lines,
+        runtime_entity=entity,
+        day_offset=-1,
+        target_x=317,
+    )
+
+    assert len(targets) == 1
+    assert targets[0].x == 317
+    assert targets[0].runtime_key == entity.key
+    assert not _resolve_exact_magic_historical_date_cell(
+        calendar_lines=lines,
+        runtime_entity=entity,
+        day_offset=0,
+        target_x=447,
+    )
+
+
+def test_tail_rejects_ambiguous_historical_magic_rows() -> None:
+    entity = SimpleNamespace(
+        key="4070001|4070001400004|6400002",
+        payload={"name": "魔道入侵", "littleName": "跨服[4]"},
+    )
+
+    assert not _resolve_exact_magic_historical_date_cell(
+        calendar_lines=[
+            {"text": "魔道入侵", "x": 98, "y": 372, "w": 131, "h": 35},
+            {"text": "魔道入侵", "x": 570, "y": 514, "w": 131, "h": 35},
+        ],
+        runtime_entity=entity,
+        day_offset=-1,
         target_x=317,
     )

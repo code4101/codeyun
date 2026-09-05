@@ -109,13 +109,19 @@ def resolve_exchange_shop_item(
                     and (price_left + price_right) / 2 <= row_midpoint
                 ):
                     price_lines.append((price_left, price))
-            if not price_lines:
+            matching_prices = [
+                (price_left, price)
+                for price_left, price in price_lines
+                if price == int(expected_unit_price)
+            ]
+            if not matching_prices:
                 continue
-            # The discounted/current value is the leftmost eligible price.
-            # Right-column crossed-out originals were excluded above.
-            current_price = min(price_lines, key=lambda item: item[0])[1]
-            if current_price != int(expected_unit_price):
-                continue
+            # Item-stack counts and the purple currency glyph can also be
+            # OCR'd as small numbers before the actual price.  Match the
+            # Runtime price first, then take its rightmost occurrence inside
+            # the left/current-price half.  Crossed-out originals remain
+            # excluded by the midpoint boundary above.
+            current_price = max(matching_prices, key=lambda item: item[0])[1]
         aligned.append((line, row_index, current_price))
 
     if len(aligned) != 1:

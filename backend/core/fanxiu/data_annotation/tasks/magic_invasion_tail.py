@@ -28,12 +28,14 @@ from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
 from backend.core.fanxiu.runtime_gui.activity_bottom_tab import (
     resolve_vertical_bottom_tab as resolve_magic_invasion_bottom_tab,
 )
+from backend.core.fanxiu.runtime_gui.exchange_shop import resolve_exchange_shop_item
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 
 
 MAGIC_SHOP_SCENE = 519
 MAGIC_ENDED_HOME_SCENE = 522
 COMMON_SHOP_DIALOG_SCENE = 566
+SHOP_TRAVERSAL_RATIO = 0.65
 
 
 def _compact(value: Any) -> str:
@@ -178,6 +180,61 @@ def _resolve_exact_magic_calendar_fallback(
     )
 
 
+def _resolve_exact_magic_historical_date_cell(
+    *,
+    calendar_lines: list[dict[str, Any]],
+    runtime_entity: Any,
+    day_offset: int,
+    target_x: float,
+) -> tuple[Any, ...]:
+    """Project one unique Magic row onto a historical date column.
+
+    Ended gold cards sometimes omit their stylized qualifier from both the
+    shared and cropped OCR.  This fallback is historical-only and retains the
+    exact Runtime occurrence key.  The entered shop is still independently
+    checked against the occurrence cross count before any purchase.
+    """
+
+    from backend.core.fanxiu.data_annotation.schedule_navigation import (
+        ScheduleActivityTarget,
+    )
+
+    if int(day_offset) >= 0:
+        return ()
+    activity_name = str(runtime_entity.payload.get("name") or "魔道入侵")
+    title_rows = [
+        row
+        for row in calendar_lines
+        if ocr_name_similarity(activity_name, str(row.get("text") or "")) >= 0.90
+    ]
+    unique_rows: list[dict[str, Any]] = []
+    for row in sorted(title_rows, key=lambda item: float(item.get("y") or 0)):
+        center_y = float(row.get("y") or 0) + float(row.get("h") or 0) / 2
+        if any(
+            abs(
+                center_y
+                - (float(existing.get("y") or 0) + float(existing.get("h") or 0) / 2)
+            )
+            < 12
+            for existing in unique_rows
+        ):
+            continue
+        unique_rows.append(row)
+    if len(unique_rows) != 1:
+        return ()
+    title = unique_rows[0]
+    return (
+        ScheduleActivityTarget(
+            day_offset=int(day_offset),
+            x=float(target_x),
+            y=float(title.get("y") or 0) + float(title.get("h") or 0) / 2,
+            matched_text=str(title.get("text") or "").strip(),
+            runtime_key=str(runtime_entity.key),
+            alignment_score=1.0,
+        ),
+    )
+
+
 def _verify_dialog(context: Any, *, name: str, unit_price: int) -> None:
     title = context.ocr_text_in_shapes(
         COMMON_SHOP_DIALOG_SCENE,
@@ -196,6 +253,137 @@ def _verify_dialog(context: Any, *, name: str, unit_price: int) -> None:
         raise RuntimeError(
             f"魔道_兑换收尾：{name} 单价未对齐 Runtime {unit_price}：{text}"
         )
+
+
+def _open_verified_shop_product(
+    context: Any,
+    *,
+    name: str,
+    unit_price: int,
+    max_scrolls: int,
+):
+    """Find the next planned product by live row identity before clicking it."""
+
+    view = context.view(MAGIC_SHOP_SCENE)
+    product_list = view.get_shape("商品列表")
+    rows = [view.get_shape(f"商品行{slot}") for slot in range(1, 6)]
+    if product_list is None or any(row is None for row in rows):
+        raise RuntimeError("魔道_兑换收尾：缺少 #519 商品列表正式几何")
+
+    # A completed purchase may remove or reorder rows.  Re-establish the list
+    # origin before resolving every next action, then scan from top to bottom.
+    # ``scroll_shape_content`` follows the same direction contract as the
+    # auto-configurator: ``up`` returns to the top and ``down`` advances to
+    # later rows.
+    for _attempt in range(max(0, int(max_scrolls)) + 1):
+        changed = yield from context.scroll_shape_content(
+            MAGIC_SHOP_SCENE,
+            "商品列表",
+            direction="up",
+            ratio=SHOP_TRAVERSAL_RATIO,
+            duration=0.12,
+            unchanged_confirmations=2,
+        )
+        if not changed:
+            break
+    else:
+        raise RuntimeError("魔道_兑换收尾：商品列表在有界次数内未能归顶")
+
+    last_error = ""
+    for scroll_index in range(max(0, int(max_scrolls)) + 1):
+        # The shop title/wallet become ready before its rows finish rerendering
+        # after a purchase.  Re-sample the same viewport before scrolling so a
+        # transient empty/old frame cannot skip a target that appears at row 1.
+        for recognition_attempt in range(3):
+            raw_tokens = tuple(context.full_frame_ocr_tokens(update=True))
+            # Product names need their linked Paddle parent line, while a
+            # price may share that line with ``所需：``.  Preserve raw pure-
+            # numeric word tokens for price disambiguation instead of
+            # weakening the resolver to accept arbitrary embedded numbers.
+            lines = tuple(_group_ocr_tokens(raw_tokens)) + tuple(
+                token
+                for token in raw_tokens
+                if re.fullmatch(r"\d+", _compact(token.get("text")))
+            )
+            try:
+                target = resolve_exchange_shop_item(
+                    lines,
+                    product_list_box=product_list.box(),
+                    product_row_boxes=[row.box() for row in rows],
+                    expected_name=name,
+                    expected_unit_price=unit_price,
+                )
+            except RuntimeError as exc:
+                last_error = str(exc)
+                if recognition_attempt < 2:
+                    # A list drag can leave a persistent item-description
+                    # tooltip over row 1.  Clear it through the formal inert
+                    # shop title before deciding that the product is absent.
+                    context.click_shape_center(MAGIC_SHOP_SCENE, "兑换宝阁标题")
+                    yield from context.wait_action_settle(0.35)
+                continue
+            context.click_frame_point(MAGIC_SHOP_SCENE, target.x, target.y)
+            landed = yield from context.wait_scene(
+                [COMMON_SHOP_DIALOG_SCENE],
+                wait=15.0,
+                label=f"魔道_兑换收尾：等待 {name} 购买框",
+            )
+            _verify_dialog(context, name=name, unit_price=unit_price)
+            return landed
+
+        # Full-frame OCR can merge the item title with rotating effect text
+        # below it (observed: 咒残页 -> 九转炽阳).  A cropped pass over the
+        # formal list restores the product line while retaining global row
+        # coordinates.  Keep this as a fallback so the common fast path stays
+        # cheap.
+        context.click_shape_center(MAGIC_SHOP_SCENE, "兑换宝阁标题")
+        yield from context.wait_action_settle(0.35)
+        cropped_tokens = tuple(context.ocr_tokens_in_shapes(
+            MAGIC_SHOP_SCENE,
+            ("商品列表",),
+            padding=0,
+            crop=True,
+        ))
+        cropped_lines = tuple(_group_ocr_tokens(cropped_tokens)) + tuple(
+            token
+            for token in cropped_tokens
+            if re.fullmatch(r"\d+", _compact(token.get("text")))
+        )
+        try:
+            target = resolve_exchange_shop_item(
+                cropped_lines,
+                product_list_box=product_list.box(),
+                product_row_boxes=[row.box() for row in rows],
+                expected_name=name,
+                expected_unit_price=unit_price,
+            )
+        except RuntimeError as exc:
+            last_error = str(exc)
+        else:
+            context.click_frame_point(MAGIC_SHOP_SCENE, target.x, target.y)
+            landed = yield from context.wait_scene(
+                [COMMON_SHOP_DIALOG_SCENE],
+                wait=15.0,
+                label=f"魔道_兑换收尾：等待 {name} 购买框",
+            )
+            _verify_dialog(context, name=name, unit_price=unit_price)
+            return landed
+
+        if scroll_index >= max_scrolls:
+            break
+        changed = yield from context.scroll_shape_content(
+            MAGIC_SHOP_SCENE,
+            "商品列表",
+            direction="down",
+            ratio=SHOP_TRAVERSAL_RATIO,
+            duration=0.12,
+            unchanged_confirmations=2,
+        )
+        if not changed:
+            break
+    raise RuntimeError(
+        f"魔道_兑换收尾：有界滚动后未找到商品 {name}({unit_price})：{last_error}"
+    )
 
 
 def execute_magic_invasion_tail_checkpoint(
@@ -275,6 +463,8 @@ def execute_magic_invasion_tail_checkpoint(
         # activity return before asking the global navigator for #34/#66;
         # otherwise the intentionally OCR-heavy shop can be confused with an
         # unrelated full-frame candidate and safe navigation will refuse it.
+        context.click_shape_center(MAGIC_SHOP_SCENE, "兑换宝阁标题")
+        yield from context.wait_action_settle(0.35)
         context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
         yield from context.wait_scene(
             [34,
@@ -287,15 +477,18 @@ def execute_magic_invasion_tail_checkpoint(
         (34, 66),
         update=True,
     ))
-    if current_scene == 34:
-        yield from context.go_scene(66)
-    elif current_scene != 66:
-        # Only fall back to the standard bounded navigation chain when the
-        # task did not start on either of its two known safe entry scenes.
-        # In particular, do not leave #66 for the world and immediately enter
-        # it again: that needlessly crosses the HUD readiness boundary.
+    if current_scene != 34:
+        # Normalize every retry through the world.  Item-description overlays
+        # can survive the shop's return action and corrupt #66 calendar OCR;
+        # a fresh #34 -> #66 entry must not inherit that prior-attempt UI.
         yield from context.go_scene(34)
-        yield from context.go_scene(66)
+    yield from context.go_scene(66)
+    # Item tooltips are global overlays and can survive scene navigation.
+    # The annotated #66 title has no jump/action; tapping it dismisses the
+    # overlay before any calendar OCR or qualifier comparison.
+    context.click_shape_center(66, "日程")
+    yield from context.wait_action_settle(0.35)
+    yield from context.wait_scene([66], wait=10.0, label=f"{label}：清理日程浮层")
     # Settlement cards may have left the rotating promo carousel even though
     # their dated calendar cell and shop are still open.  Resolve the exact
     # historical cell from Runtime identity + visible date axis, then click
@@ -338,27 +531,71 @@ def execute_magic_invasion_tail_checkpoint(
             runtime_entities=exact_entities,
             day_offset=day_offset,
             anchor_date=ui_today,
+            expected_cross_count=int(occurrence.cross_count),
         )
     except RuntimeError as exc:
+        resolution_error = exc
+        targets = ()
+        # Stylized gold activity cards can be completely absent from shared
+        # full-frame Paddle tokens even while they are plainly visible.  Run
+        # one targeted OCR pass over the formal #66 header/calendar shapes
+        # before falling back to any weaker identity rule.
+        cropped_tokens = context.ocr_tokens_in_shapes(
+            66,
+            ("表头", "日历"),
+            padding=0,
+            crop=True,
+        )
+        cropped_lines = _group_ocr_tokens(cropped_tokens)
+        cropped_header = [
+            line for line in cropped_lines if 200 <= float(line["y"]) < 340
+        ]
+        cropped_calendar = [
+            line for line in cropped_lines if 295 <= float(line["y"]) < 750
+        ]
+        if cropped_header and cropped_calendar:
+            try:
+                targets = resolve_schedule_runtime_activity_targets(
+                    header_lines=cropped_header,
+                    calendar_lines=cropped_calendar,
+                    runtime_entities=exact_entities,
+                    day_offset=day_offset,
+                    anchor_date=ui_today,
+                    expected_cross_count=int(occurrence.cross_count),
+                )
+                header_lines = cropped_header
+                calendar_lines = cropped_calendar
+            except RuntimeError as cropped_exc:
+                resolution_error = cropped_exc
         # OCR may corrupt only the small ``(预赛)`` qualifier while the main
         # title, exact date column and Runtime occurrence remain unambiguous.
         # Permit that narrow three-fact alignment instead of weakening the
         # shared scorer globally.
-        header = parse_schedule_header(header_lines, anchor_date=ui_today)
-        target_x = header.x_for_day_offset(day_offset)
-        targets = _resolve_exact_magic_calendar_fallback(
-            calendar_lines=calendar_lines,
-            runtime_entity=exact_entities[0],
-            day_offset=day_offset,
-            target_x=target_x,
-        )
+        if not targets:
+            header = parse_schedule_header(header_lines, anchor_date=ui_today)
+            target_x = header.x_for_day_offset(day_offset)
+            targets = _resolve_exact_magic_calendar_fallback(
+                calendar_lines=calendar_lines,
+                runtime_entity=exact_entities[0],
+                day_offset=day_offset,
+                target_x=target_x,
+            )
+        if not targets:
+            targets = _resolve_exact_magic_historical_date_cell(
+                calendar_lines=calendar_lines,
+                runtime_entity=exact_entities[0],
+                day_offset=day_offset,
+                target_x=target_x,
+            )
         if not targets:
             visible = " | ".join(
                 str(item.get("text") or "").strip()
                 for item in calendar_lines
                 if str(item.get("text") or "").strip()
             )
-            raise RuntimeError(f"{exc}；当前日历OCR={visible[:1200]}") from exc
+            raise RuntimeError(
+                f"{resolution_error}；当前日历OCR={visible[:1200]}"
+            ) from resolution_error
     exact = [
         target
         for target in targets
@@ -431,26 +668,20 @@ def execute_magic_invasion_tail_checkpoint(
     )
     executed: list[dict[str, Any]] = []
 
-    # The shop exposes five rows.  Allocation is already fixed by business
-    # priority, so physical execution may use the cheaper source-order walk.
+    # Allocation is fixed by Runtime business priority, but completed rows do
+    # not have a stable remove/reorder contract across shop variants.  Walk
+    # monotonically downward and require live name+unit-price row identity
+    # before every click; the dialog check remains an independent second gate.
+    remaining_scroll_budget = len(detail.shop_items) + 5
     for action in actions:
         if stop_event.is_set():
             raise InterruptedError()
-        for _ in range(action.scroll_rows):
-            context.drag_frame_point(MAGIC_SHOP_SCENE, 450, 900, 450, 775, duration_ms=800)
-            yield from context.wait_action_settle(0.25)
-        # Reuse the proven exchange-tail alignment: Runtime source order and
-        # purchase limits determine ``slot``; completed finite rows disappear
-        # from the active prefix, so the next item shifts into that same
-        # annotated row.  Product-name OCR is only a post-click dialog guard,
-        # never the row locator.
-        context.click_shape_center(MAGIC_SHOP_SCENE, f"商品行{action.slot}")
-        yield from context.wait_scene(
-            [COMMON_SHOP_DIALOG_SCENE],
-            wait=15.0,
-            label=f"{label}：等待 {action.name} 购买框",
+        yield from _open_verified_shop_product(
+            context,
+            name=action.name,
+            unit_price=action.unit_price,
+            max_scrolls=remaining_scroll_budget,
         )
-        _verify_dialog(context, name=action.name, unit_price=action.unit_price)
         quantity_proof = yield from set_verified_common_shop_quantity(
             context,
             action.quantity,

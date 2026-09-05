@@ -58,6 +58,23 @@ def test_crossed_out_original_price_alone_cannot_match_current_price() -> None:
         )
 
 
+def test_item_or_currency_glyph_number_before_price_is_not_treated_as_price() -> None:
+    target = resolve_exchange_shop_item(
+        [
+            {"text": "灵晶碎片仙", "x": 210, "y": 330, "w": 180, "h": 30},
+            {"text": "2", "x": 330, "y": 385, "w": 8, "h": 20},
+            {"text": "2000", "x": 370, "y": 385, "w": 60, "h": 25},
+        ],
+        product_list_box=LIST_BOX,
+        product_row_boxes=ROW_BOXES,
+        expected_name="灵晶碎片·仙",
+        expected_unit_price=2000,
+    )
+
+    assert target.row_index == 1
+    assert target.current_unit_price == 2000
+
+
 def test_duplicate_exact_rows_fail_closed_when_price_is_still_ambiguous() -> None:
     with pytest.raises(RuntimeError, match="唯一命中数为 2"):
         resolve_exchange_shop_item(

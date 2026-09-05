@@ -47,6 +47,8 @@ def _leave_loaded_magic_shop(context: Any, *, label: str) -> Iterator[Any]:
     )
     if not shop_ready:
         return
+    context.click_shape_center(MAGIC_SHOP_SCENE, "兑换宝阁标题")
+    yield from context.wait_action_settle(0.35)
     context.click_shape_center(MAGIC_SHOP_SCENE, "返回")
     yield from context.wait_scene(
         [34, *MAGIC_HOME_SCENES],
