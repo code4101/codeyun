@@ -606,7 +606,7 @@ def test_daily_runtime_wrapper_does_not_interpret_business_result_as_run_error()
         flow=lambda _runtime: {"result": "failed", "message": "业务判断失败"},
     ))
 
-    assert result == "success"
+    assert result == {"result": "success", "message": "业务判断失败"}
     assert updates == []
     assert runner._status["message"] == "业务判断失败"
 

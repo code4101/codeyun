@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import GeneratorType
-from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta
 
@@ -7475,7 +7475,7 @@ class BehaviorTreeExecutor(
         task_type: str,
         label: str,
         flow: Callable[[BehaviorTreeContext], Any],
-    ) -> str:
+    ) -> Iterator[Any]:
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
@@ -7501,13 +7501,18 @@ class BehaviorTreeExecutor(
         completion_message = str(context_attrs.get("completion_message") or "").strip() if isinstance(context_attrs, dict) else ""
         if isinstance(flow_result, dict):
             completion_message = str(flow_result.get("message") or completion_message).strip()
+        resolved_message = completion_message or f"{label}完成，已回到世界"
         self._finish_daily_task(
             task_type=task_type,
             label=label,
-            message=completion_message or f"{label}完成，已回到世界",
+            message=resolved_message,
             current_scene=flow_result.get("current_scene", 34) if isinstance(flow_result, dict) else 34,
         )
-        return "success"
+        # Wrappers commonly perform a final go_scene after this helper returns.
+        # That navigation updates the live progress message, so returning only
+        # the framework string "success" lets Scheduler history persist the
+        # later progress text instead of the verified business terminal.
+        return {"result": "success", "message": resolved_message}
 
     def _task_cell_log_message(self, task_id: str, message: str) -> str:
         task_id = str(task_id or "").strip()

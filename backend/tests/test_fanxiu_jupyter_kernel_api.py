@@ -909,6 +909,8 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
 
         @staticmethod
         def _normalize_task_result(value):
+            if isinstance(value, dict):
+                return str(value.get("result") or "success"), str(value.get("message") or "")
             return str(value), ""
 
     binding = object.__new__(FanxiuJupyterBinding)
@@ -948,6 +950,19 @@ def test_managed_task_cell_persists_success_terminal_status() -> None:
     ) == {
         "result": "success",
         "message": "测试成功终态完成",
+    }
+
+    def run_task_with_later_progress(_task_type, _payload):
+        binding.runner._status["message"] = "后置导航：等待 #34"
+        return {"result": "success", "message": "业务终态已确认"}
+
+    binding.run_task = run_task_with_later_progress
+    assert binding.run_task_cell(
+        "test_managed_success_terminal",
+        {"__scheduler_task_id": "job-a"},
+    ) == {
+        "result": "success",
+        "message": "业务终态已确认",
     }
 
 

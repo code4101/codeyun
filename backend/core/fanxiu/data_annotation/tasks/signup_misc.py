@@ -1,11 +1,66 @@
 from __future__ import annotations
 
+import time
 from typing import Any
+
+
+def daily_signup_traversal_limits(payload: dict[str, Any] | None = None) -> tuple[float, int, int]:
+    """Return the absolute flow budget, item cap, and scroll cap."""
+
+    options = payload if isinstance(payload, dict) else {}
+    timeout_seconds = max(30.0, float(options.get("signup_flow_timeout_seconds") or 300.0))
+    max_items = max(1, int(options.get("signup_max_items") or 20))
+    max_scrolls = max(1, int(options.get("signup_max_scrolls") or 30))
+    return timeout_seconds, max_items, max_scrolls
+
+
+def ensure_daily_signup_traversal_budget(
+    *,
+    deadline: float,
+    now: float,
+    claimed: int,
+    scrolls: int,
+    max_items: int,
+    max_scrolls: int,
+    phase: str,
+    before_item: bool = False,
+    before_scroll: bool = False,
+) -> None:
+    """Fail closed when the one-attempt signup traversal budget is exhausted."""
+
+    if float(now) >= float(deadline):
+        raise TimeoutError(
+            f"日常_报名：{phase}超过本次绝对截止时间；"
+            f"已领取 {claimed} 项、已滚动 {scrolls} 次"
+        )
+    if before_item and int(claimed) >= int(max_items):
+        raise RuntimeError(
+            f"日常_报名：报名项超过单次上限 {max_items}；"
+            "拒绝继续点击，防止重复条目长期占用 Kernel"
+        )
+    if before_scroll and int(scrolls) >= int(max_scrolls):
+        raise RuntimeError(
+            f"日常_报名：报名列已滚动 {scrolls} 次，达到单次上限 {max_scrolls}；"
+            "仍未确认列表底部，拒绝继续滚动"
+        )
 
 
 class SignupMiscTaskMixin:
     def 日常报名流程(self, context: Any):
+        payload = getattr(context, "payload", {})
+        payload = payload if isinstance(payload, dict) else {}
+        timeout_seconds, max_items, max_scrolls = daily_signup_traversal_limits(payload)
+        deadline = time.monotonic() + timeout_seconds
         起点状态 = yield from self._日常报名进入日常页(context)
+        ensure_daily_signup_traversal_budget(
+            deadline=deadline,
+            now=time.monotonic(),
+            claimed=0,
+            scrolls=0,
+            max_items=max_items,
+            max_scrolls=max_scrolls,
+            phase="进入日常页",
+        )
         if 起点状态 == "活动页":
             yield from self._日常报名返回世界(context)
             context.set_next_time(self._next_daily_boss_reset_time_text())
@@ -13,7 +68,12 @@ class SignupMiscTaskMixin:
         if 起点状态 != "报名页":
             yield from self._日常报名打开活动报名(context)
 
-        报名结果 = yield from self._日常报名处理报名列(context)
+        报名结果 = yield from self._日常报名处理报名列(
+            context,
+            deadline=deadline,
+            max_items=max_items,
+            max_scrolls=max_scrolls,
+        )
         领取数量 = int(报名结果.get("claimed") or 0)
         yield from self._日常报名返回日常页(context)
         yield from self._日常报名返回世界(context)
@@ -106,17 +166,37 @@ class SignupMiscTaskMixin:
         )
         return "报名页"
 
-    def _日常报名处理报名列(self, context: Any) -> dict[str, Any]:
+    def _日常报名处理报名列(
+        self,
+        context: Any,
+        *,
+        deadline: float,
+        max_items: int,
+        max_scrolls: int,
+    ) -> dict[str, Any]:
         领取数量 = 0
+        滚动次数 = 0
         无变化确认次数 = 0
         看到已报名项 = False
         payload = getattr(context, "payload", {})
         payload = payload if isinstance(payload, dict) else {}
-        底部确认轮数 = int(payload.get("signup_bottom_confirmations", 2) or 2)
+        底部确认轮数 = max(
+            1,
+            min(3, int(payload.get("signup_bottom_confirmations", 2) or 2)),
+        )
         同项打开上限 = max(1, int(payload.get("signup_claim_open_attempts", 3) or 3))
         上次报名项: tuple[int, str] | None = None
         同项打开次数 = 0
         while True:
+            ensure_daily_signup_traversal_budget(
+                deadline=deadline,
+                now=time.monotonic(),
+                claimed=领取数量,
+                scrolls=滚动次数,
+                max_items=max_items,
+                max_scrolls=max_scrolls,
+                phase="扫描报名列",
+            )
             已报名项 = context.ocr_row_clicks_in_shape(
                 23,
                 "报名列",
@@ -131,6 +211,16 @@ class SignupMiscTaskMixin:
                 click_target="unoccluded_text",
             )
             if matches:
+                ensure_daily_signup_traversal_budget(
+                    deadline=deadline,
+                    now=time.monotonic(),
+                    claimed=领取数量,
+                    scrolls=滚动次数,
+                    max_items=max_items,
+                    max_scrolls=max_scrolls,
+                    phase="领取报名项",
+                    before_item=True,
+                )
                 x, y, text = matches[0]
                 当前报名项 = (round(y), str(text or "").strip())
                 if 当前报名项 == 上次报名项:
@@ -162,6 +252,22 @@ class SignupMiscTaskMixin:
                     }
                 continue
 
+            # Once a no-change probe is observed, allow the configured second
+            # bottom confirmation even when the first probe landed exactly on
+            # the traversal cap. The absolute deadline still bounds that
+            # confirmation and any changed result is rejected next round.
+            if 无变化确认次数 == 0:
+                ensure_daily_signup_traversal_budget(
+                    deadline=deadline,
+                    now=time.monotonic(),
+                    claimed=领取数量,
+                    scrolls=滚动次数,
+                    max_items=max_items,
+                    max_scrolls=max_scrolls,
+                    phase="查找报名列底部",
+                    before_scroll=True,
+                )
+            滚动次数 += 1
             滚动有变化 = yield from context.scroll_shape_content(23, "报名列")
             if 滚动有变化:
                 无变化确认次数 = 0

@@ -30,6 +30,11 @@ from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
     DAILY_XIANYUAN_LAYER0_SCENE_IDS,
     DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS,
 )
+from backend.core.fanxiu.data_annotation.tasks.xianyuan_reentry import (
+    DAILY_XIANYUAN_REENTRY_REQUESTED,
+    DAILY_XIANYUAN_SHARED_DEADLINE_KEY,
+    daily_xianyuan_shared_deadline,
+)
 
 
 _DAILY_ASSISTANT_LILIAN_TRIGGER_FACT = "daily_assistant_lilian_event_trigger"
@@ -2703,7 +2708,10 @@ class DailyChallengeTaskMixin:
         width, height = self._frame_size(ref_image)
         challenge_scene_ids = DAILY_XIANYUAN_LAYER0_SCENE_IDS
 
+        existing_deadline = payload.get(DAILY_XIANYUAN_SHARED_DEADLINE_KEY)
         teach_deadline = time.monotonic() + float(payload.get("teach_disappear_timeout") or 15.0)
+        if isinstance(existing_deadline, (int, float)):
+            teach_deadline = min(teach_deadline, float(existing_deadline))
         while time.monotonic() < teach_deadline:
             self._raise_if_stopped(stop_event)
             observer.clear_frame()
@@ -2728,10 +2736,15 @@ class DailyChallengeTaskMixin:
             observer.click_frame_point(View(ref_image), x, y)
             yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
 
-        attack_deadline = time.monotonic() + float(payload.get("attack_dialogue_timeout") or 45.0)
+        attack_deadline = daily_xianyuan_shared_deadline(
+            payload,
+            now=time.monotonic(),
+        )
         last_advance = 0.0
         while True:
             self._raise_if_stopped(stop_event)
+            if time.monotonic() >= attack_deadline:
+                raise TimeoutError("日常_挑战仙缘：等待「看招吧」超过共享挑战 deadline")
             observer.clear_frame()
             yield BehaviorTreeStatus.RUNNING
             scene_id, _score, frame = (yield from observer.current_scene(challenge_scene_ids, update=True))
@@ -2774,7 +2787,7 @@ class DailyChallengeTaskMixin:
             )):
                 with self._lock:
                     self._log_locked("action", "日常_挑战仙缘：离开场景后重新复核日常进度")
-                return (yield from self._execute_daily_xianyuan_task(ctx, stop_event, payload))
+                return DAILY_XIANYUAN_REENTRY_REQUESTED
             now = time.monotonic()
             if now >= attack_deadline:
                 raise TimeoutError(f"日常_挑战仙缘：等待「看招吧」超时，OCR={text[:120]}")

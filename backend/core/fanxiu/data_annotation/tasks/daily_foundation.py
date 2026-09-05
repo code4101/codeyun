@@ -69,9 +69,21 @@ from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
     DAILY_XIANYUAN_CHALLENGE_LAYER0_SCENE_IDS,
     DAILY_XIANYUAN_LAYER0_SCENE_IDS,
 )
+from backend.core.fanxiu.data_annotation.tasks.daily_boss_scan import (
+    DAILY_BOSS_FIND_MAX_SCROLLS,
+    DAILY_BOSS_FIND_TIMEOUT_SECONDS,
+    daily_boss_list_page_fingerprint as _daily_boss_list_page_fingerprint,
+    daily_boss_scan_bound_reason as _daily_boss_scan_bound_reason,
+)
+from backend.core.fanxiu.data_annotation.tasks.xianyuan_reentry import (
+    DAILY_XIANYUAN_REENTRY_REQUESTED,
+    DAILY_XIANYUAN_SHARED_DEADLINE_KEY,
+    daily_xianyuan_reentry_limit,
+)
 
 
 XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG = "_xianyuan_duel_entry_not_found_date"
+DAILY_ACTIVITY_OCR_MAX_ATTEMPTS = 5
 
 
 from backend.core.fanxiu.data_annotation.tasks.lundao import (
@@ -454,7 +466,7 @@ class DailyFoundationTaskMixin:
         yield from context.go_scene(69)
 
         attempt = 0
-        while True:
+        while attempt < DAILY_ACTIVITY_OCR_MAX_ATTEMPTS:
             attempt += 1
             scene_id, score, frame = yield from context.current_scene([69], update=True)
             if scene_id != 69:
@@ -471,8 +483,16 @@ class DailyFoundationTaskMixin:
                 self._log("detail", f"日常_活跃度：第 {attempt} 次读取总活跃度={total_activity}，OCR={text!r}")
                 break
 
-            self._log("detail", f"日常_活跃度：第 {attempt} 次未读到总活跃度数值，OCR={text!r}，继续识别")
-            yield from context.wait_action_settle(0.8)
+            if attempt < DAILY_ACTIVITY_OCR_MAX_ATTEMPTS:
+                self._log("detail", f"日常_活跃度：第 {attempt} 次未读到总活跃度数值，OCR={text!r}，继续识别")
+                yield from context.wait_action_settle(0.8)
+            else:
+                self._log("detail", f"日常_活跃度：第 {attempt} 次仍未读到总活跃度数值，OCR={text!r}，停止本次识别")
+        else:
+            raise RuntimeError(
+                "日常_活跃度：连续 "
+                f"{DAILY_ACTIVITY_OCR_MAX_ATTEMPTS} 次未读到总活跃度数值，停止本次作业等待技术重试"
+            )
 
         if total_activity < 500:
             yield from context.go_scene(34)
@@ -1115,17 +1135,80 @@ class DailyFoundationTaskMixin:
             yield from context.wait_action_settle(1.5)
             yield from self._wait_daily_boss_list(ctx, stop_event, timeout=12.0, label="日常_首领：等待仙界首领列表 #178")
 
+        max_scrolls = max(
+            0,
+            min(
+                50,
+                self._payload_int(
+                    payload,
+                    "daily_boss_find_max_scrolls",
+                    default=DAILY_BOSS_FIND_MAX_SCROLLS,
+                ),
+            ),
+        )
+        find_timeout_seconds = max(
+            10.0,
+            min(
+                600.0,
+                float(payload.get("daily_boss_find_timeout_seconds") or DAILY_BOSS_FIND_TIMEOUT_SECONDS),
+            ),
+        )
+        find_deadline = time.monotonic() + find_timeout_seconds
+        seen_page_fingerprints: set[str] = set()
         scroll_index = 0
         while True:
             self._raise_if_stopped(stop_event)
+            bound_reason = _daily_boss_scan_bound_reason(
+                now=time.monotonic(),
+                deadline=find_deadline,
+                scroll_count=scroll_index,
+                max_scrolls=max_scrolls,
+            )
+            if bound_reason == "deadline":
+                raise TimeoutError(
+                    "日常_首领：查找仙界注视中首领超过绝对截止时间 "
+                    f"{find_timeout_seconds:g} 秒（已滚动 {scroll_index}/{max_scrolls} 次）"
+                )
             with self._lock:
                 self._set_status_locked(
                     "running",
-                    f"日常_首领：查找仙界注视中首领 {scroll_index}",
+                    f"日常_首领：查找仙界注视中首领 {scroll_index}/{max_scrolls}",
                     phase="daily_boss_find_watched",
                     current_scene=178,
                 )
             frame = context.cur_frame(update=True)
+            page_text = context.ocr_text_in_shapes(
+                View(image178),
+                ("首领列表",),
+                frame_data_url=frame,
+            )
+            page_fingerprint = _daily_boss_list_page_fingerprint(page_text)
+            if not page_fingerprint:
+                page_fingerprint = context.image_signature_in_shape(
+                    View(image178),
+                    "首领列表",
+                    frame_data_url=frame,
+                )
+            bound_reason = _daily_boss_scan_bound_reason(
+                now=time.monotonic(),
+                deadline=find_deadline,
+                scroll_count=scroll_index,
+                max_scrolls=max_scrolls,
+                page_fingerprint=page_fingerprint,
+                seen_fingerprints=seen_page_fingerprints,
+            )
+            if bound_reason == "deadline":
+                raise TimeoutError(
+                    "日常_首领：查找仙界注视中首领超过绝对截止时间 "
+                    f"{find_timeout_seconds:g} 秒（已滚动 {scroll_index}/{max_scrolls} 次）"
+                )
+            if bound_reason == "repeated_page":
+                raise RuntimeError(
+                    "日常_首领：查找仙界注视中首领检测到重复列表页指纹，"
+                    f"已滚动 {scroll_index}/{max_scrolls} 次；停止扫描以避免振荡"
+                )
+            if page_fingerprint:
+                seen_page_fingerprints.add(page_fingerprint)
             item = context.find_floating_item_by_anchor(
                 178,
                 "条目",
@@ -1167,8 +1250,28 @@ class DailyFoundationTaskMixin:
                 )
                 return "opened"
 
+            bound_reason = _daily_boss_scan_bound_reason(
+                now=time.monotonic(),
+                deadline=find_deadline,
+                scroll_count=scroll_index,
+                max_scrolls=max_scrolls,
+                before_scroll=True,
+            )
+            if bound_reason == "deadline":
+                raise TimeoutError(
+                    "日常_首领：查找仙界注视中首领超过绝对截止时间 "
+                    f"{find_timeout_seconds:g} 秒（已滚动 {scroll_index}/{max_scrolls} 次）"
+                )
+            if bound_reason == "max_scrolls":
+                raise RuntimeError(
+                    "日常_首领：查找仙界注视中首领达到最大滚动次数 "
+                    f"{max_scrolls}，仍未找到目标；本次作业失败"
+                )
             with self._lock:
-                self._log_locked("action", f"日常_首领：未找到「注视中」，滚动首领列表 {scroll_index + 1}")
+                self._log_locked(
+                    "action",
+                    f"日常_首领：未找到「注视中」，滚动首领列表 {scroll_index + 1}/{max_scrolls}",
+                )
             changed = yield from self._scroll_shape_content_changed(ctx, image178, list_shape, stop_event)
             if not changed:
                 break
@@ -4045,6 +4148,41 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any] | None = None,
     ) -> str:
         payload = dict(payload or {})
+        max_reentries = daily_xianyuan_reentry_limit(payload)
+        for reentry_count in range(max_reentries + 1):
+            result = yield from self._execute_daily_xianyuan_task_once(
+                ctx,
+                stop_event,
+                payload,
+            )
+            if result is not DAILY_XIANYUAN_REENTRY_REQUESTED:
+                return result
+
+            deadline = payload.get(DAILY_XIANYUAN_SHARED_DEADLINE_KEY)
+            now = time.monotonic()
+            if isinstance(deadline, (int, float)) and now >= float(deadline):
+                raise TimeoutError(
+                    "日常_挑战仙缘：离开场景后整单重入已超过共享挑战 deadline，停止"
+                )
+            if reentry_count >= max_reentries:
+                raise RuntimeError(
+                    "日常_挑战仙缘：离开场景后整单重入次数超过上限 "
+                    f"{max_reentries}，停止"
+                )
+            self._log(
+                "warning",
+                "日常_挑战仙缘：离开场景后从稳定入口整单重入 "
+                f"{reentry_count + 1}/{max_reentries}",
+            )
+
+        raise RuntimeError("日常_挑战仙缘：整单重入状态异常")
+
+    def _execute_daily_xianyuan_task_once(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        payload: dict[str, Any],
+    ) -> str:
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
             raise RuntimeError("缺少日常_挑战仙缘资产树路径，无法执行作业")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import Any, Iterator
 
 
 class XianqiaoTrialTaskMixin:
@@ -12,7 +12,7 @@ class XianqiaoTrialTaskMixin:
         ctx: dict[str, Any],
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
-    ) -> str:
+    ) -> Iterator[Any]:
         return self._execute_daily_task(
             ctx,
             stop_event,
