@@ -233,7 +233,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 新的优先级 1E：
 
-- `object`: `docs/领域/凡修/上下文/凡修逆向上下文.md` 旧 core 模块名漂移
+- `object`: `skills/凡修/references/接口层/凡修逆向上下文.md` 旧 core 模块名漂移
 - `action`: 对扫描前排的旧 Fanxiu 扁平 core 模块候选做事实核验，区分已迁移模块、已删除模块和应改为当前入口的模块
 - `success_metric`: 生成候选排序；若事实明确，修正 1-3 个旧路径引用
 - `risk`: low
@@ -241,7 +241,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 优先级 1E 已完成：
 
-- `object`: `docs/领域/凡修/上下文/凡修逆向上下文.md` 旧 Fanxiu 扁平 core 模块路径
+- `object`: `skills/凡修/references/接口层/凡修逆向上下文.md` 旧 Fanxiu 扁平 core 模块路径
 - `action`: 已将模块表和高价值 addendum 中的旧路径更新为当前 `backend/core/fanxiu/catalog/...` 或 `backend/core/fanxiu/client/download_bridge.py` 路径
 - `success_metric`: 13 个旧路径均核验到当前存在文件；旧 Fanxiu 扁平 core 模块路径无剩余匹配；`docs_sync_scan` 中该文档旧扁平模块候选清零
 - `risk`: low
@@ -250,7 +250,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 新的优先级 1F：
 
-- `object`: `docs/领域/凡修/上下文/凡修逆向上下文.md` 前端页面路径漂移
+- `object`: `skills/凡修/references/接口层/凡修逆向上下文.md` 前端页面路径漂移
 - `action`: 核验旧 packet-capture 与 protocol-semantics 独立页面是否迁移、合并或已废弃，并修正文档事实
 - `success_metric`: `docs_sync_scan` 中该文档剩余前端页面路径候选减少；不误删仍有产品意义的历史说明
 - `risk`: low
@@ -258,9 +258,9 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 优先级 1F 已完成：
 
-- `object`: `docs/领域/凡修/上下文/凡修逆向上下文.md` 前端页面路径漂移
+- `object`: `skills/凡修/references/接口层/凡修逆向上下文.md` 前端页面路径漂移
 - `action`: 已确认旧 packet-capture 与 protocol-semantics 独立页面合并进 `frontend/src/standard/fanxiu/wiki/page.vue`，入口分别为 `/fanxiu/wiki?tab=packet` 与 `/fanxiu/wiki?tab=protocol`
-- `success_metric`: `docs_sync_scan` 中 `docs/领域/凡修/上下文/凡修逆向上下文.md` 的缺失路径候选清零；前端和 API 集成的说明性短语也改为非路径措辞
+- `success_metric`: `docs_sync_scan` 中 `skills/凡修/references/接口层/凡修逆向上下文.md` 的缺失路径候选清零；前端和 API 集成的说明性短语也改为非路径措辞
 - `risk`: low
 - `verification`: `rg --files frontend/src/standard/fanxiu` 路径核验；`uv run pytest backend/tests/test_idle_maintenance.py -q --durations=10` 通过，`11 passed`；只读 `docs_sync_scan` 为 39 条且该文档无候选
 - `report`: `%TEMP%\codeyun\idle-maintenance\20260618-210214-docs_sync_scan.json`
@@ -309,7 +309,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 优先级 1I 已完成：
 
-- `object`: `docs/领域/凡修/运行手册/凡修数据标注运行设备约定.md` 与 `docs/领域/凡修/架构/凡修抓包服务架构约定.md` 旧 core 路径
+- `object`: `skills/凡修/references/接口层/凡修数据标注运行设备约定.md` 与 `skills/凡修/references/接口层/凡修抓包服务架构约定.md` 旧 core 路径
 - `action`: 已将 MuMu 控制、窗口捕获、抓包 runtime、tcp flow、洞察 worker、活动同步、业务 store、玩家面板 store 等旧扁平路径更新为当前 `backend/core/fanxiu/client/...`、`backend/core/fanxiu/packet/...` 或 `backend/core/devices/...` 路径
 - `success_metric`: 9 个替换路径均通过 `Test-Path`；两个目标文档旧路径候选清零；`docs_sync_scan` 总候选从 28 降到 19
 - `risk`: low
@@ -318,7 +318,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 新的优先级 1J：
 
-- `object`: `docs/领域/凡修/架构/凡修行为树运行框架约定.md` 旧 core 路径漂移
+- `object`: `skills/凡修/references/调度层/凡修行为树运行框架约定.md` 旧 core 路径漂移
 - `action`: 核验行为树、data-annotation runner/runtime_control、game window actions 等旧扁平路径的当前包路径，优先修正前排候选
 - `success_metric`: `docs_sync_scan` 中行为树文档旧路径候选减少；每个替换路径都有存在性证据
 - `risk`: low
@@ -326,7 +326,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 优先级 1J 已完成：
 
-- `object`: `docs/领域/凡修/架构/凡修行为树运行框架约定.md` 旧 core 路径漂移
+- `object`: `skills/凡修/references/调度层/凡修行为树运行框架约定.md` 旧 core 路径漂移
 - `action`: 已将行为树门面、data-annotation runner/runtime_control/default_jobs/debug_eval、game window actions、runtime errors、mail runtime store 等旧扁平 import/path 更新为当前包路径
 - `success_metric`: 9 个当前路径均通过 `Test-Path`；行为树文档旧路径候选清零；`docs_sync_scan` 总候选从 19 降到 14
 - `risk`: low
@@ -335,7 +335,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 新的优先级 1K：
 
-- `object`: `docs/领域/凡修/架构/凡修逆向资源安全边界.md` 旧资源模块路径漂移
+- `object`: `skills/凡修/references/接口层/凡修逆向资源安全边界.md` 旧资源模块路径漂移
 - `action`: 核验旧资源模块路径当前是否迁移到 `backend/core/fanxiu/catalog/resources.py`，并修正事实性路径
 - `success_metric`: `docs_sync_scan` 中该文档旧资源模块候选清零；替换路径有存在性证据
 - `risk`: low
@@ -343,7 +343,7 @@ uv run pytest tests/backend/test_device_entry_proxy.py::test_local_entry_proxy_l
 
 优先级 1K 已完成：
 
-- `object`: `docs/领域/凡修/架构/凡修逆向资源安全边界.md` 旧资源模块路径
+- `object`: `skills/凡修/references/接口层/凡修逆向资源安全边界.md` 旧资源模块路径
 - `action`: 已将旧资源模块路径更新为当前 `backend/core/fanxiu/catalog/resources.py`
 - `success_metric`: 替换路径通过 `Test-Path`；该文档旧资源模块候选清零；`docs_sync_scan` 总候选从 14 降到 13
 - `risk`: low

@@ -26,6 +26,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     discover_ranking_occurrences,
     due_ranking_checkpoints,
     next_ranking_lifecycle_time,
+    ranking_checkpoint_is_production,
 )
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     completed_ranking_checkpoint_keys,
@@ -41,6 +42,37 @@ def test_tiandi_yiju_capability_status_matches_production_assembly() -> None:
     assert RANKING_CAPABILITY_STATUS["tiandi-yiju"] == (
         "implemented_active_and_idempotent_exchange_tail"
     )
+
+
+def test_production_due_excludes_unpromoted_gameplay_checkpoints() -> None:
+    magic = RankingOccurrence(
+        activity_type="magic-invasion",
+        family="gameplay_rank",
+        runtime_id="8070001400004",
+        activity_id=8070001,
+        start_at=datetime(2026, 8, 22, 0, 0, tzinfo=TZ),
+        end_at=datetime(2026, 8, 22, 22, 0, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 22, 0, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 23, 23, 59, 59, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    catalog_due = due_ranking_checkpoints(
+        (magic,), now=datetime(2026, 8, 22, 19, 0, tzinfo=TZ)
+    )
+    production_due = due_ranking_checkpoints(
+        (magic,),
+        now=datetime(2026, 8, 22, 19, 0, tzinfo=TZ),
+        production_only=True,
+    )
+
+    assert {item.checkpoint_kind for item in catalog_due} >= {
+        DAILY_RECONCILE_KIND,
+        MAGIC_MAIL_KIND,
+        MAGIC_ACTIVE_KIND,
+    }
+    assert production_due == ()
+    assert not any(ranking_checkpoint_is_production(item) for item in catalog_due)
 
 RESOURCE_RANK_ACTIVITY_ID_CASES = (
     *((value, "lingzhuang-huadao") for value in (

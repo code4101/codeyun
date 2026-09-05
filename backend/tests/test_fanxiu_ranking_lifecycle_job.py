@@ -35,12 +35,26 @@ def _drain(generator):
             return exc.value
 
 
-def _occurrence() -> RankingOccurrence:
+def _magic_occurrence() -> RankingOccurrence:
     return RankingOccurrence(
         activity_type="magic-invasion",
         family="gameplay_rank",
         runtime_id="server-magic",
         activity_id=700014,
+        start_at=datetime(2026, 8, 21, 10, tzinfo=TZ),
+        end_at=datetime(2026, 8, 21, 22, tzinfo=TZ),
+        prepare_at=datetime(2026, 8, 21, 0, tzinfo=TZ),
+        close_at=datetime(2026, 8, 22, 23, 59, 59, tzinfo=TZ),
+        cross_count=1,
+    )
+
+
+def _occurrence() -> RankingOccurrence:
+    return RankingOccurrence(
+        activity_type="tiandi-yiju",
+        family="gameplay_rank",
+        runtime_id="server-tiandi",
+        activity_id=8090004,
         start_at=datetime(2026, 8, 21, 10, tzinfo=TZ),
         end_at=datetime(2026, 8, 21, 22, tzinfo=TZ),
         prepare_at=datetime(2026, 8, 21, 0, tzinfo=TZ),
@@ -234,8 +248,8 @@ def test_job_records_daily_checkpoint_and_persists_wake_before_and_after_work(
     ]
     assert result["result"] == "success"
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ))
+        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ))
     ]
 
 
@@ -260,7 +274,7 @@ def test_job_isolates_checkpoint_error_and_schedules_retry(monkeypatch) -> None:
     assert row.status == "error"
     assert row.retry_at == "2026-08-21T10:00:00+08:00"
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ)),
         ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ)),
     ]
     assert result["result"] == "success"
@@ -311,10 +325,10 @@ def test_job_defers_future_occurrence_to_its_start_instead_of_spinning(
         },
     )
     future = RankingOccurrence(
-        activity_type="magic-invasion",
+        activity_type="tiandi-yiju",
         family="gameplay_rank",
         runtime_id="future-beast",
-        activity_id=110001,
+        activity_id=8090004,
         start_at=datetime(2026, 8, 21, 10, tzinfo=TZ),
         end_at=datetime(2026, 8, 22, 22, tzinfo=TZ),
         prepare_at=datetime(2026, 8, 21, 0, tzinfo=TZ),
@@ -380,7 +394,7 @@ def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
     ctx = {"scheduler_task_id": "ranking-lifecycle"}
     payload = {"expected": "cross"}
     stop_event = Event()
-    occurrence = _occurrence()
+    occurrence = _magic_occurrence()
 
     result = _drain(
         lifecycle_job._execute_magic_active_checkpoint(
@@ -402,7 +416,7 @@ def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
     }
 
 
-def test_gameplay_job_dispatches_one_account_magic_mail_checkpoint(monkeypatch) -> None:
+def test_gameplay_job_skips_unpromoted_magic_mail_checkpoint(monkeypatch) -> None:
     engine = _arrange(
         monkeypatch,
         reconcile=lambda *_args, **_kwargs: {
@@ -414,6 +428,11 @@ def test_gameplay_job_dispatches_one_account_magic_mail_checkpoint(monkeypatch) 
         lifecycle_job,
         "job_now",
         lambda: datetime(2026, 8, 21, 12, 0, tzinfo=TZ),
+    )
+    monkeypatch.setattr(
+        lifecycle_job,
+        "discover_ranking_occurrences",
+        lambda _schedule: (_magic_occurrence(),),
     )
     seen = []
 
@@ -433,13 +452,8 @@ def test_gameplay_job_dispatches_one_account_magic_mail_checkpoint(monkeypatch) 
 
     with Session(engine) as session:
         rows = list(session.exec(select(FanxiuRankingLifecycleCheckpoint)).all())
-    assert seen == [
-        ("account:magic-invasion-mail", "magic_mail_1200", "2026-08-21")
-    ]
-    assert {(row.checkpoint_kind, row.status) for row in rows} == {
-        ("daily_reconcile", "completed"),
-        ("magic_mail_1200", "completed"),
-    }
+    assert seen == []
+    assert rows == []
     assert result["result"] == "success"
 
 
@@ -488,7 +502,7 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     monkeypatch,
 ) -> None:
     def reconcile(_session, occurrence, **_kwargs):
-        if occurrence.runtime_id == "server-magic":
+        if occurrence.runtime_id == "server-tiandi":
             raise RuntimeError("gameplay adapter unavailable")
         return {"status": "completed", "message": "资源榜静态事实已对齐"}
 
@@ -518,7 +532,7 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
             ).all()
         )
     assert [(row.runtime_id, row.status) for row in rows] == [
-        ("server-magic", "error"),
+        ("server-tiandi", "error"),
     ]
     assert result["family"] == "gameplay_rank"
     assert rows[0].completed_at == ""
@@ -526,7 +540,7 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     assert result["result"] == "success"
     assert "成功 0，待重试 1" in result["message"]
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 12, tzinfo=TZ)),
+        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ)),
         ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ))
     ]
 

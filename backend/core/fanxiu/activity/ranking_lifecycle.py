@@ -92,6 +92,32 @@ RANKING_CAPABILITY_STATUS = {
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
 }
 
+# Production Scheduler allowlist.  Checkpoint definitions outside this list
+# remain available to explicit R&D Cells, but the unified gameplay-ranking Job
+# must never discover or wake for them until live idempotent acceptance has
+# promoted the capability here.
+PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
+    "beast-abyss",
+    "magic-invasion",
+    "yunmeng-trial",
+    "xianyuan-duokui",
+    "tiandi-yiju",
+})
+PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
+    "tiandi-yiju": frozenset({DAILY_RECONCILE_KIND, TIANDI_YIJU_ACTIVE_KIND}),
+}
+
+
+def ranking_checkpoint_is_production(checkpoint: "RankingCheckpoint") -> bool:
+    if checkpoint.family == "resource_rank":
+        return True
+    if checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
+        return checkpoint.activity_type in PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES
+    return checkpoint.checkpoint_kind in PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS.get(
+        checkpoint.activity_type,
+        frozenset(),
+    )
+
 # 8090002 is the cross-server group-selection/schedule surface.  It overlaps
 # the real 8090004 board interval, so giving both occurrences an action
 # checkpoint would spend the same account stamina twice under two identities.
@@ -578,6 +604,7 @@ def due_ranking_checkpoints(
     *,
     now: datetime,
     completed_keys: Iterable[tuple[str, str, str]] = (),
+    production_only: bool = False,
 ) -> tuple[RankingCheckpoint, ...]:
     """Return all incomplete checkpoints due by ``now`` in stable order."""
 
@@ -647,6 +674,7 @@ def due_ranking_checkpoints(
             item
             for item in candidates
             if item.key not in completed and item.due_at <= now
+            and (not production_only or ranking_checkpoint_is_production(item))
         ),
         key=lambda item: (
             item.due_at,
@@ -670,6 +698,7 @@ def next_ranking_lifecycle_time(
     now: datetime,
     completed_keys: Iterable[tuple[str, str, str]] = (),
     retry_times: Iterable[datetime] = (),
+    production_only: bool = False,
 ) -> datetime:
     """Return the next absolute wake-up for the sole lifecycle Job."""
 
@@ -688,7 +717,11 @@ def next_ranking_lifecycle_time(
                 occurrence,
                 business_day=day,
             ):
-                if checkpoint.key not in completed and checkpoint.due_at > now:
+                if (
+                    checkpoint.key not in completed
+                    and checkpoint.due_at > now
+                    and (not production_only or ranking_checkpoint_is_production(checkpoint))
+                ):
                     candidates.append(checkpoint.due_at)
     candidates.extend(value for value in retry_times if value > now)
     return min(candidates)
@@ -712,6 +745,9 @@ __all__ = [
     "DANDAO_REWARDS_KIND",
     "YUANDING_GIFT_KIND",
     "RANKING_CAPABILITY_STATUS",
+    "PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS",
+    "PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES",
+    "ranking_checkpoint_is_production",
     "RANKING_LIFECYCLE_TASK_ID",
     "RANKING_LIFECYCLE_TASK_TYPE",
     "RESOURCE_RANKING_TASK_ID",

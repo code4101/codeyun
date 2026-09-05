@@ -19,6 +19,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     MAGIC_ACTIVE_KIND,
     MAGIC_MAIL_KIND,
     RANKING_CAPABILITY_STATUS,
+    PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES,
     RANKING_LIFECYCLE_TASK_ID,
     RESOURCE_FREE_GIFT_KIND,
     RESOURCE_RANKING_TASK_ID,
@@ -50,13 +51,9 @@ MAX_DEFAULT_CHECKPOINT_ATTEMPTS = 3
 # business fact from ExchangeActivitySpec.page.has_shop and Runtime's
 # endTime/closePanelTime window.  Add an activity here only after its purchase
 # flow has passed live, idempotent acceptance.
-PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES = frozenset({
-    "beast-abyss",
-    "magic-invasion",
-    "yunmeng-trial",
-    "xianyuan-duokui",
-    "tiandi-yiju",
-})
+PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES = (
+    PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES
+)
 
 
 def exchange_tail_executor_is_production(activity_type: str) -> bool:
@@ -312,6 +309,7 @@ def _execute_family_job(
             occurrences,
             now=now,
             completed_keys=completed,
+            production_only=True,
         )
         deferred_exchange_tails = tuple(
             checkpoint
@@ -329,6 +327,7 @@ def _execute_family_job(
             now=now,
             completed_keys=completed,
             retry_times=ranking_checkpoint_retry_times(session, family=family),
+            production_only=True,
         )
 
     # Persist a future wake before running any checkpoint.  Ranking checkpoints
@@ -515,6 +514,7 @@ def _execute_family_job(
             now=now,
             completed_keys=completed,
             retry_times=ranking_checkpoint_retry_times(session, family=family),
+            production_only=True,
         )
     runner._persist_scheduler_task_next_time(scheduler_task_id, next_time)
     pending = [

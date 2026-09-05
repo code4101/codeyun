@@ -75,11 +75,11 @@
 
 - 状态：accepted
 - 来源自动化：CodeYun 前端设计巡检 / 凡修自动化复盘
-- 来源报告：`docs/领域/凡修/规划/凡修拜谒与行为树基础设施任务清单.md`
+- 来源报告：`skills/凡修/references/业务层/规划/凡修拜谒与行为树基础设施任务清单.md`
 - 触发范围：`/fanxiu/data-annotation`、`/fanxiu/kernel-scheduler`、凡修行为树业务节点
 - 表层症状：滚动查找、候选复位、点击后等待目标场景、OCR 精细点击这些通用动作已经反复出现，但业务实现仍容易临时覆盖滚动比例、手写等待、或把 OCR line 级结果当成可点击对象。
 - 非前端根因判断：这不是单纯页面提示或文案问题，而是 Runtime/标注数据/API 之间的行为模型还不够正交。业务层需要的其实是“在某识别区滚动查找候选”“点击 shape 并等待声明落点”“按词/字级 OCR 计算动作落点”等通用能力；如果接口只暴露底层滚动、OCR 行和点击原语，前端标注页与业务节点都会重复解释同一套规则。
-- 涉及对象：`backend/core/fanxiu/data_annotation/behavior_tree_executor.py`、`backend/core/fanxiu/data_annotation/tasks/*`、`backend/core/ocr/preview.py`、`frontend/src/standard/fanxiu/data-annotation/page.vue`、`docs/领域/凡修/架构/凡修行为树业务能力约定.md`
+- 涉及对象：`backend/core/fanxiu/data_annotation/behavior_tree_executor.py`、`backend/core/fanxiu/data_annotation/tasks/*`、`backend/core/ocr/preview.py`、`frontend/src/standard/fanxiu/data-annotation/page.vue`、`skills/凡修/references/调度层/凡修行为树业务能力约定.md`
 - 已做前端止血：无前端止血。本轮已在 Runtime 层补默认滚动常量、`wait_click_then_view()` 和 `ocr_words_in_shapes()`，但仍缺少一次面向“业务节点是否还能绕过通用接口”的只读审计。
 - 建议接手动作：只读模型审计，盘点凡修业务节点里直接调用底层滚动/OCR/点击的残留；将可复用模式归并为小型行为树 helper 或标注协议字段；先产出候选清单，不直接大规模重构。
 - 验证建议：`rg -n "scroll_shape_content\\(|drag|ocr_in_shape|ocr_words_in_shapes|wait_click_then_view|wait_click\\(" backend/core/fanxiu/data_annotation/tasks backend/core/fanxiu/data_annotation/behavior_tree_executor.py -S`，再按候选运行对应 focused pytest；涉及真实动作的修改必须另走凡修真实运行验收。
