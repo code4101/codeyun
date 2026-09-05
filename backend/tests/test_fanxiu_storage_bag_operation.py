@@ -200,6 +200,33 @@ def test_storage_bag_rejects_mismatched_read_only_settings_without_checkbox_clic
     assert not [call for call in runtime.calls if call[0] == "checkbox"]
 
 
+def test_quick_settings_runtime_is_read_only_after_scene_526(monkeypatch):
+    runtime = _Runtime(["empty"])
+
+    def settings_reader():
+        assert runtime.scene == 526
+        assert ("wait_scene", 525) in runtime.calls
+        return {
+            "ok": True,
+            "complete": True,
+            "values": dict(EXPECTED_QUICK_SETTING_VALUES),
+            "captured_at_epoch": storage_bag_operation.time.time(),
+            "evidence": {"pid": 123, "process_start_ticks": 456, "read_only": True},
+        }
+
+    monkeypatch.setattr(
+        storage_bag_operation.fanxiu_instrumentation_service,
+        "backpack_quick_settings_snapshot",
+        settings_reader,
+    )
+
+    result = _consume(execute_storage_bag_operation_task(
+        _Runner(runtime), {}, {}, threading.Event()
+    ))
+
+    assert result["ok"] is True
+
+
 @pytest.mark.parametrize(
     "snapshot",
     [

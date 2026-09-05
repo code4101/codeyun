@@ -75,6 +75,22 @@ def test_item_or_currency_glyph_number_before_price_is_not_treated_as_price() ->
     assert target.current_unit_price == 2000
 
 
+def test_explicit_owned_state_suffix_is_not_part_of_runtime_product_name() -> None:
+    target = resolve_exchange_shop_item(
+        [
+            {"text": "乌龙夺[已认主]", "x": 210, "y": 330, "w": 220, "h": 30},
+            {"text": "5000", "x": 370, "y": 385, "w": 60, "h": 25},
+        ],
+        product_list_box=LIST_BOX,
+        product_row_boxes=ROW_BOXES,
+        expected_name="乌龙夺",
+        expected_unit_price=5000,
+    )
+
+    assert target.row_index == 1
+    assert target.current_unit_price == 5000
+
+
 def test_duplicate_exact_rows_fail_closed_when_price_is_still_ambiguous() -> None:
     with pytest.raises(RuntimeError, match="唯一命中数为 2"):
         resolve_exchange_shop_item(

@@ -64,6 +64,7 @@ import {
   getFanxiuPlayerProfiles,
   getFanxiuServerRelations,
   getFanxiuBusinessStorageBag,
+  syncFanxiuBusinessStorageBag,
   deleteFanxiuStorageBagAtlasItem,
   setFanxiuStorageBagAutoClaim,
   setFanxiuStorageBagNote,
@@ -595,6 +596,7 @@ const businessSnapshots = ref<Record<string, any> | null>(null)
 const storageBagRuntimeState = ref('')
 const storageBagRuntimeReason = ref('')
 const loadingStorageBagRuntime = ref(false)
+const syncingStorageBagRuntime = ref(false)
 const mailRecords = ref<FanxiuMailRecord[]>([])
 const syncingMailRuntime = ref(false)
 const mailFilterStatusSnapshot = ref<Record<string, MailStatusFilter>>({})
@@ -6475,6 +6477,24 @@ async function syncMailFromRuntime() {
   }
 }
 
+function applyStorageBagResponse(response: Record<string, any>) {
+  storageBagRuntimeState.value = response.state || (response.ok ? 'complete' : 'runtime_unavailable')
+  storageBagRuntimeReason.value = response.reason || ''
+  businessSnapshots.value = { ...(businessSnapshots.value ?? {}), bag: response.bag ?? null }
+  savedStorageBagNotes.value = Object.fromEntries(
+    (response.bag?.items || []).map((row: Record<string, any>) => [Number(row.base_id), String(row.note || '')]),
+  )
+  total.value = storageBagItems.value.length
+  selectedId.value = ''
+  selectedCard.value = null
+  selectedItem.value = null
+  selectedActivity.value = null
+  selectedLingjieCard.value = null
+  selectedDoupoTDPartner.value = null
+  selectedDoupoTDReward.value = null
+  clearHomeMakeStaticDetail()
+}
+
 async function loadStorageBagSnapshot(options: { silent?: boolean } = {}) {
   if (loadingStorageBagRuntime.value) return
   loadingStorageBagRuntime.value = true
@@ -6487,21 +6507,7 @@ async function loadStorageBagSnapshot(options: { silent?: boolean } = {}) {
   try {
     const response = await getFanxiuBusinessStorageBag()
     if (requestSeq !== listRequestSeq) return
-    storageBagRuntimeState.value = response.state || (response.ok ? 'complete' : 'runtime_unavailable')
-    storageBagRuntimeReason.value = response.reason || ''
-    businessSnapshots.value = { ...(businessSnapshots.value ?? {}), bag: response.bag ?? null }
-    savedStorageBagNotes.value = Object.fromEntries(
-      (response.bag?.items || []).map((row: Record<string, any>) => [Number(row.base_id), String(row.note || '')]),
-    )
-    total.value = storageBagItems.value.length
-    selectedId.value = ''
-    selectedCard.value = null
-    selectedItem.value = null
-    selectedActivity.value = null
-    selectedLingjieCard.value = null
-    selectedDoupoTDPartner.value = null
-    selectedDoupoTDReward.value = null
-    clearHomeMakeStaticDetail()
+    applyStorageBagResponse(response)
   } catch (error: any) {
     if (!silent && requestSeq === listRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取储物袋快照失败')
@@ -6529,6 +6535,24 @@ function startStorageBagAutoRefresh() {
       void loadStorageBagSnapshot({ silent: true })
     }
   }, 30000)
+}
+
+async function syncStorageBagFromRuntime() {
+  if (syncingStorageBagRuntime.value) return
+  syncingStorageBagRuntime.value = true
+  try {
+    const response = await syncFanxiuBusinessStorageBag()
+    applyStorageBagResponse(response)
+    if (response.ok) {
+      ElMessage.success('储物袋已从游戏显式同步')
+    } else {
+      ElMessage.warning(response.reason || '储物袋 Runtime 当前不可用，已保留上次缓存')
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '储物袋同步失败')
+  } finally {
+    syncingStorageBagRuntime.value = false
+  }
 }
 
 function refreshActiveBusinessTab() {
@@ -12249,14 +12273,19 @@ onBeforeUnmount(() => {
           <span v-if="storageBagSnapshot">
             图鉴 {{ storageBagSnapshot.atlas_count || 0 }} 种 · 当前 {{ storageBagSnapshot.current_type_count || 0 }} 种
             · 数量为 0 的 {{ storageBagSnapshot.zero_count || 0 }} 种
-            {{ storageBagRuntimeState === 'cached' ? ' · 上次完整同步' : ' · Runtime 已同步' }}
+            {{ storageBagRuntimeState === 'complete' ? ' · Runtime 已同步' : ' · 上次完整同步' }}
             {{ storageBagSnapshot.captured_at ? ` · ${formatBusinessSnapshotTime(storageBagSnapshot.captured_at)}` : '' }}
           </span>
           <span v-else-if="storageBagRuntimeState === 'runtime_unavailable'">
             请先在游戏中打开储物袋{{ storageBagRuntimeReason ? ` · ${storageBagRuntimeReason}` : '' }}
           </span>
-          <span v-else>正在读取游戏中的储物袋</span>
+          <span v-else>正在读取储物袋缓存</span>
         </div>
+        <el-button
+          size="small"
+          :loading="syncingStorageBagRuntime"
+          @click="syncStorageBagFromRuntime"
+        >从游戏同步</el-button>
       </section>
       <section v-if="storageBagSnapshot" class="storage-bag-facts">
         <span>来源 <b>Runtime 增量图鉴</b></span>

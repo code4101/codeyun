@@ -5773,6 +5773,12 @@ export const getFanxiuBusinessStorageBag = () => {
     .then(res => res.data);
 };
 
+export const syncFanxiuBusinessStorageBag = () => {
+  return api
+    .post<FanxiuStorageBagResponse>('/fanxiu/business-data/storage-bag/sync', undefined, { timeout: 120000 })
+    .then(res => res.data);
+};
+
 export const getFanxiuActivityCard = (activityId: string | number, params: { server_scope?: string } = {}) => {
   return api
     .get<FanxiuActivityCardResponse>('/fanxiu/resources/activities/card', { params: { activity_id: activityId, ...params } })

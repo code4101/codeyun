@@ -217,6 +217,7 @@ from backend.core.fanxiu.catalog.status_models import (
     FanxiuStorageBagAutoClaimUpdateResponse,
     FanxiuStorageBagNoteUpdateRequest,
     FanxiuStorageBagNoteUpdateResponse,
+    FanxiuStorageBagSnapshotResponse,
     FanxiuProcessItem,
     FanxiuProcessListResponse,
     FanxiuProcessTerminateError,
@@ -2784,8 +2785,36 @@ def sync_fanxiu_mail_records_from_runtime(
 
 
 
-@status_router.get("/business-data/storage-bag")
+@status_router.get(
+    "/business-data/storage-bag",
+    response_model=FanxiuStorageBagSnapshotResponse,
+)
 def get_fanxiu_business_storage_bag(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    del current_user
+    bag = load_storage_bag_atlas()
+    if bag is None:
+        return {
+            "ok": False,
+            "state": "cache_empty",
+            "reason": "尚无储物袋缓存；请显式从游戏同步",
+            "bag": None,
+        }
+    return {
+        "ok": True,
+        "state": "cached",
+        "reason": None,
+        "bag": apply_storage_bag_item_settings(session, bag),
+    }
+
+
+@status_router.post(
+    "/business-data/storage-bag/sync",
+    response_model=FanxiuStorageBagSnapshotResponse,
+)
+def sync_fanxiu_business_storage_bag(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
 ):
@@ -2800,20 +2829,15 @@ def get_fanxiu_business_storage_bag(
         )
     except (FanxiuRuntimeMemoryError, KeyError, TypeError, ValueError) as exc:
         bag = load_storage_bag_atlas(reason=str(exc))
-        if bag is not None:
-            ensure_storage_bag_atlas_analysis(session, bag)
-            session.commit()
-            return {
-                "ok": True,
-                "state": "cached",
-                "reason": str(exc),
-                "bag": apply_storage_bag_item_settings(session, bag),
-            }
         return {
             "ok": False,
             "state": "runtime_unavailable",
             "reason": str(exc),
-            "bag": None,
+            "bag": (
+                apply_storage_bag_item_settings(session, bag)
+                if bag is not None
+                else None
+            ),
         }
     ensure_storage_bag_atlas_analysis(session, bag)
     session.commit()

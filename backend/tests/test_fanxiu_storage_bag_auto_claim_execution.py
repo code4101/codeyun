@@ -31,6 +31,7 @@ def _yielding(value=None):
 class _Runtime:
     def __init__(self):
         self.clicks = []
+        self.waited_scenes = []
 
     def go_scene(self, scene_id):
         return _yielding(scene_id)
@@ -41,6 +42,7 @@ class _Runtime:
 
     def wait_scene(self, layer0, **_kwargs):
         scene_id = layer0[0]
+        self.waited_scenes.append(scene_id)
         return _yielding(scene_id)
 
 
@@ -318,3 +320,26 @@ def test_preflight_validates_supported_batch_without_item_action(monkeypatch):
     assert result["outcome"] == "ready"
     assert result["action_count"] == 1
     assert runtime.clicks == [(34, "右侧菜单/储物袋"), (525, "返回")]
+
+
+def test_preflight_reads_backpack_runtime_only_after_scene_525(monkeypatch):
+    db_engine = _db()
+    atlas = _atlas_row()
+    monkeypatch.setattr(execution, "sync_storage_bag_atlas", lambda *_args, **_kwargs: atlas)
+    runtime = _Runtime()
+
+    def snapshot_reader():
+        assert runtime.waited_scenes == [525]
+        return _runtime_item()
+
+    result = _consume(execution.preflight_storage_bag_auto_claim_task(
+        _Runner(runtime),
+        {},
+        {},
+        threading.Event(),
+        snapshot_reader=snapshot_reader,
+        catalog_reader=lambda: {},
+        session_factory=lambda: Session(db_engine),
+    ))
+
+    assert result["ok"] is True

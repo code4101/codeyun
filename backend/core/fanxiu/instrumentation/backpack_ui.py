@@ -427,10 +427,13 @@ def backpack_ui_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
 
 def read_backpack_ui_snapshot() -> dict[str, Any]:
     started = time.perf_counter()
+    observed_at = time.time()
     context: UiRuntimeContext | None = None
     try:
         context = acquire_ui_runtime_context(_BACKPACK_KEYS)
         result = _snapshot(context)
+        result["observed_at"] = observed_at
+        result["captured_at_epoch"] = observed_at
         result["fingerprint"] = backpack_ui_snapshot_fingerprint(result)
         serialization_started = time.perf_counter()
         json.dumps(result, ensure_ascii=False, separators=(",", ":"))
@@ -447,6 +450,8 @@ def read_backpack_ui_snapshot() -> dict[str, Any]:
             "source": "active_backpack_panel_item_info_list",
             "state": "NotLoaded" if "NotLoaded" in reason else "Incomplete",
             "reason": reason,
+            "observed_at": observed_at,
+            "captured_at_epoch": observed_at,
             "items": [],
             "elapsed_seconds": time.perf_counter() - started,
             "evidence": {

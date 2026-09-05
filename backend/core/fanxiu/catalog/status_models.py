@@ -133,6 +133,13 @@ class FanxiuStorageBagAutoClaimUpdateRequest(BaseModel):
     auto_claim: bool
 
 
+class FanxiuStorageBagSnapshotResponse(BaseModel):
+    ok: bool
+    state: str
+    reason: Optional[str] = None
+    bag: Optional[dict[str, Any]] = None
+
+
 class FanxiuStorageBagAutoClaimUpdateResponse(BaseModel):
     ok: bool = True
     base_id: int

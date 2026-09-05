@@ -369,6 +369,36 @@ def test_job_terminalizes_implicit_retry_after_three_attempts(monkeypatch) -> No
     assert retry_at is None
 
 
+def test_job_reports_terminal_unavailable_separately_from_success(monkeypatch) -> None:
+    engine = _arrange(
+        monkeypatch,
+        reconcile=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("terminal adapter failure")
+        ),
+    )
+    monkeypatch.setattr(
+        lifecycle_job,
+        "_default_retry_policy",
+        lambda **_kwargs: ("unavailable", None),
+    )
+    runner = _Runner()
+
+    result = _drain(lifecycle_job.execute_ranking_lifecycle_job(
+        runner,
+        {"scheduler_task_id": "ranking-lifecycle"},
+        {},
+        Event(),
+    ))
+
+    with Session(engine) as session:
+        row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
+    assert row.status == "unavailable"
+    assert result["result"] == "partial"
+    assert result["successful_checkpoint_count"] == 0
+    assert result["unavailable_checkpoint_count"] == 1
+    assert "成功 0，待重试 0，不可用 1" in result["message"]
+
+
 def test_magic_active_dispatches_the_compound_checkpoint(monkeypatch) -> None:
     from backend.core.fanxiu.data_annotation.tasks import magic_invasion_compound
 

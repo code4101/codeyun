@@ -248,6 +248,40 @@ def test_fine_adjustment_falls_back_when_fast_click_is_unavailable() -> None:
     assert context.clicks == ["增加", "增加", "增加"]
 
 
+def test_fine_adjustment_paces_fast_clicks_so_game_does_not_drop_burst() -> None:
+    class DropUnpacedClicksContext(SliderContext):
+        def __init__(self):
+            super().__init__()
+            self.ready = True
+
+        def click_shape_center_fast(self, _scene, title):
+            self.fast_clicks.append(title)
+            if self.ready:
+                self.count += 1 if title == "增加" else -1
+                self.ready = False
+
+        def wait_action_settle(self, _seconds):
+            self.ready = True
+            if False:
+                yield None
+
+    context = DropUnpacedClicksContext()
+    context.count = 1
+
+    after, batches = _finish(_fine_tune_batches(
+        context,
+        ASSETS,
+        4,
+        current=1,
+        count_label="测试次数",
+        runtime_reader=None,
+    ))
+
+    assert after == 4
+    assert len(batches) == 1
+    assert context.fast_clicks == ["增加", "增加", "增加"]
+
+
 def test_button_only_controller_uses_large_and_unit_steps_with_stable_reread() -> None:
     assets = IntegerButtonAssets(
         settings_scene_id=470,
@@ -395,6 +429,21 @@ def test_ocr_failure_uses_explicit_runtime_reader() -> None:
     assert value == 42
 
 
+def test_explicit_runtime_reader_precedes_noisy_ocr() -> None:
+    context = SimpleNamespace(
+        ocr_numbers_in_shapes=lambda *_args: ([7], "7"),
+    )
+
+    value = read_positive_integer_count(
+        context,
+        ASSETS,
+        count_label="购买数量",
+        runtime_reader=lambda: {"current": 4},
+    )
+
+    assert value == 4
+
+
 def test_stable_read_tolerates_transitional_value_until_two_samples_agree() -> None:
     context = SliderContext()
     context.ocr_numbers_in_shapes = lambda *_args: ([], "")
@@ -439,6 +488,25 @@ def test_pixel_trace_uses_actual_thumb_motion_and_gesture_gain() -> None:
         result["proportional_drag"]["actual_pixels"]
         < result["proportional_drag"]["commanded_pixels"]
     )
+    assert result["after"] == 100
+
+
+def test_proportional_stage_hands_residual_to_runtime_feedback_after_pixel_budget() -> None:
+    context = SliderContext(maximum=1000, gain=0.1)
+
+    result = _finish(set_verified_integer_slider_count(
+        context,
+        ASSETS,
+        100,
+        maximum=1000,
+        max_adjustments=10,
+        runtime_count_reader=lambda: {
+            "current": context.count,
+            "maximum": context.maximum,
+        },
+    ))
+
+    assert len(result["proportional_drag"]["drag_attempts"]) == 8
     assert result["after"] == 100
 
 

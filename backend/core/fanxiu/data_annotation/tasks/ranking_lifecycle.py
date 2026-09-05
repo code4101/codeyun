@@ -539,16 +539,33 @@ def _execute_family_job(
         for item in results
         if item["result"].get("status") in {"error", "blocked", "pending"}
     ]
+    unavailable = [
+        item
+        for item in results
+        if item["result"].get("status") == "unavailable"
+    ]
+    succeeded = [
+        item
+        for item in results
+        if item["result"].get("status") in {"completed", "retained"}
+    ]
     message = (
-        f"{label}：处理 {len(results)} 个 checkpoint，成功 {len(results) - len(pending)}，"
-        f"待重试 {len(pending)}；下次 {next_time:%Y-%m-%d %H:%M:%S}"
+        f"{label}：处理 {len(results)} 个 checkpoint，成功 {len(succeeded)}，"
+        f"待重试 {len(pending)}，不可用 {len(unavailable)}；"
+        f"下次 {next_time:%Y-%m-%d %H:%M:%S}"
     )
-    runner._log("warning" if pending else "success", message)
+    runner._log("warning" if pending or unavailable else "success", message)
     return {
-        "result": "success",
+        # Retriable checkpoint isolation is a successful Scheduler pass; a
+        # terminal unavailable outcome is not and must not be reported as a
+        # clean success.
+        "result": "partial" if unavailable else "success",
         "message": message,
         "performed_actions": bool(results),
         "family": family,
+        "successful_checkpoint_count": len(succeeded),
+        "pending_checkpoint_count": len(pending),
+        "unavailable_checkpoint_count": len(unavailable),
         "checkpoint_results": results,
         "deferred_exchange_tails": [
             {

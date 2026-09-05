@@ -9,6 +9,17 @@ from typing import Any, Iterable, Mapping, Sequence
 from backend.core.fanxiu.runtime_gui.text import normalize_ocr_name
 
 
+_UI_OWNERSHIP_SUFFIXES = ("已认主", "已拥有", "已激活")
+
+
+def _normalize_product_name(value: Any) -> str:
+    normalized = normalize_ocr_name(value)
+    for suffix in _UI_OWNERSHIP_SUFFIXES:
+        if normalized.endswith(suffix) and len(normalized) > len(suffix):
+            return normalized[:-len(suffix)]
+    return normalized
+
+
 @dataclass(frozen=True)
 class ExchangeShopItemTarget:
     """One uniquely aligned product-name click target."""
@@ -67,7 +78,7 @@ def resolve_exchange_shop_item(
     """
 
     grouped_lines = list(lines)
-    expected_key = normalize_ocr_name(expected_name)
+    expected_key = _normalize_product_name(expected_name)
     if not expected_key:
         raise RuntimeError("兑换商品名不能为空")
     if not product_row_boxes:
@@ -75,7 +86,7 @@ def resolve_exchange_shop_item(
 
     candidates: list[tuple[Mapping[str, Any], int, Mapping[str, Any]]] = []
     for line in grouped_lines:
-        if normalize_ocr_name(line.get("text")) != expected_key:
+        if _normalize_product_name(line.get("text")) != expected_key:
             continue
         if not _contained(line, product_list_box):
             continue

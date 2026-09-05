@@ -114,22 +114,24 @@ def read_positive_integer_count(
     count_label: str,
     runtime_reader: Callable[[], int | Mapping[str, Any]] | None = None,
 ) -> int:
-    """Read via OCR first and use an explicit read-only Runtime fallback."""
+    """Prefer an explicit read-only Runtime fact, then fall back to OCR."""
 
+    runtime_error: Exception | None = None
+    if runtime_reader is not None:
+        try:
+            raw = runtime_reader()
+            raw = raw.get("current") if isinstance(raw, Mapping) else raw
+            value = int(raw)
+            if value <= 0:
+                raise ValueError("Runtime 回退值必须为正数")
+            return value
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+            runtime_error = exc
     try:
         return _ocr_count(context, assets)
     except (AttributeError, KeyError, RuntimeError, ValueError) as ocr_error:
-        if runtime_reader is None:
-            raise RuntimeError(f"{count_label}无法读回：{ocr_error}") from ocr_error
-        raw = runtime_reader()
-        raw = raw.get("current") if isinstance(raw, Mapping) else raw
-        try:
-            value = int(raw)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(f"{count_label} Runtime 回退值无效") from exc
-        if value <= 0:
-            raise RuntimeError(f"{count_label} Runtime 回退值必须为正数")
-        return value
+        detail = f"；Runtime={runtime_error}" if runtime_error is not None else ""
+        raise RuntimeError(f"{count_label}无法读回：{ocr_error}{detail}") from ocr_error
 
 
 def read_integer_slider_count(context: Any, assets: IntegerCountAssets) -> int:
@@ -269,10 +271,11 @@ def _proportional_position(
             # pixels and can discover the minimum effective gesture distance.
             stalled = True
             break
-    else:
-        raise RuntimeError(f"{count_label}比例定位未在有界次数内到达目标像素")
-    # The thumb is now at the proportional target.  Require a stable value
-    # before stage 2 measures its local Δd -> Δn relation.
+    # The proportional pixel target is only a coarse estimate: the game's
+    # visible track anchors and the Runtime integer range need not share the
+    # same exact endpoints.  Even when eight bounded drags cannot reach the
+    # theoretical ±2px coordinate, continue with the authoritative count;
+    # stage 2 measures the local Δd -> Δn relation and closes the residual.
     current = yield from _stable_read(
         context,
         assets,
@@ -413,12 +416,17 @@ def _fine_tune_batches(
         before = current
         for _ in range(large_clicks):
             click(assets.settings_scene_id, large_action)
+            # The game drops back-to-back ADB taps while the slider is still
+            # animating.  Pace the burst locally so one batch expresses the
+            # requested delta instead of burning five OCR-heavy retries.
+            yield from context.wait_action_settle(0.18)
         for _ in range(unit_clicks):
             click(assets.settings_scene_id, unit_action)
+            yield from context.wait_action_settle(0.18)
         # Fast clicks are queued by the game UI.  Read once only after the
         # whole batch has drained; otherwise a transient x == y can be
         # followed by late clicks from the same batch.
-        yield from context.wait_action_settle(1.5)
+        yield from context.wait_action_settle(0.75)
         current = yield from _stable_read(
             context,
             assets,
