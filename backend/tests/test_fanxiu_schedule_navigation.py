@@ -677,3 +677,144 @@ def test_select_duplicate_title_by_expected_runtime_activity_id() -> None:
 
     assert "8090004400004" in selected.runtime_key
     assert len(runtime.clicked_points) == 1
+
+
+def test_select_magic_cross_occurrence_by_runtime_id_and_cross_count() -> None:
+    class Runtime:
+        def __init__(self):
+            self.clicked_points = []
+            self.clicked_shapes = []
+
+        def cur_frame(self, *, update=False):
+            return "frame"
+
+        def ocr_fragments_in_shapes(self, _scene, shapes, **_kwargs):
+            if shapes == ["表头"]:
+                return HEADER
+            return [
+                _line("魔道入侵", 175, y=370, w=134, h=38),
+                _line("魔道入侵", 175, y=477, w=134, h=38),
+                _line("跨服[4]", 190, y=514, w=110, h=30),
+            ]
+
+        def paged_content_snapshot(self, *_args, **_kwargs):
+            # A title/date-perfect card without 跨服[4] may be the local
+            # instance.  The exact-card fast path must not bypass the
+            # occurrence's cross-count constraint.
+            return {
+                "lines": [
+                    _line(
+                        "魔道入侵 活动时间：09月05日-09月05日 前往参与",
+                        80,
+                    )
+                ]
+            }
+
+        def click_frame_point(self, *args):
+            self.clicked_points.append(args)
+
+        def click_shape(self, *args, **kwargs):
+            self.clicked_shapes.append((args, kwargs))
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+    schedule = {
+        "available": True,
+        "items": [
+            {
+                "activityId": 4070000,
+                "id": 4070000400004,
+                "serverCount": 1,
+                "name": "魔道入侵",
+                "startTime": _millis("2026-09-05 10:00:00"),
+                "endTime": _millis("2026-09-05 22:00:00"),
+            },
+            {
+                "activityId": 4070001,
+                "id": 4070001400004,
+                "serverCount": 4,
+                "name": "魔道入侵",
+                "startTime": _millis("2026-09-05 10:00:00"),
+                "endTime": _millis("2026-09-05 22:00:00"),
+            },
+        ],
+    }
+    runtime = Runtime()
+
+    selected = _finish(
+        select_schedule_activity(
+            runtime,
+            r"魔道入侵",
+            enter=True,
+            runtime_schedule=schedule,
+            require_runtime_alignment=True,
+            expected_runtime_id="4070001400004",
+            expected_activity_id=4070001,
+            expected_cross_count=4,
+            now=datetime(2026, 9, 5, 19, 0),
+        )
+    )
+
+    assert selected.runtime_key == "4070001|4070001400004"
+    assert "跨服[4]" in selected.matched_text
+    assert len(runtime.clicked_points) == 1
+    assert runtime.clicked_points[0][2] == pytest.approx(496)
+    assert runtime.clicked_shapes == []
+
+
+def test_select_duplicate_magic_rows_without_instance_constraint_is_ambiguous() -> None:
+    class Runtime:
+        def cur_frame(self, *, update=False):
+            return "frame"
+
+        def ocr_fragments_in_shapes(self, _scene, shapes, **_kwargs):
+            if shapes == ["表头"]:
+                return HEADER
+            return [
+                _line("魔道入侵", 175, y=370, w=134, h=38),
+                _line("魔道入侵", 175, y=477, w=134, h=38),
+                _line("跨服[4]", 190, y=514, w=110, h=30),
+            ]
+
+        def paged_content_snapshot(self, *_args, **_kwargs):
+            return {"lines": [_line("云梦试剑", 80)]}
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
+
+    schedule = {
+        "available": True,
+        "items": [
+            {
+                "activityId": 4070000,
+                "id": 4070000400004,
+                "serverCount": 1,
+                "name": "魔道入侵",
+                "startTime": _millis("2026-09-05 10:00:00"),
+                "endTime": _millis("2026-09-05 22:00:00"),
+            },
+            {
+                "activityId": 4070001,
+                "id": 4070001400004,
+                "serverCount": 4,
+                "name": "魔道入侵",
+                "startTime": _millis("2026-09-05 10:00:00"),
+                "endTime": _millis("2026-09-05 22:00:00"),
+            },
+        ],
+    }
+
+    with pytest.raises(RuntimeError, match="命中 2 个，拒绝猜测入口"):
+        _finish(
+            select_schedule_activity(
+                Runtime(),
+                r"魔道入侵",
+                enter=True,
+                runtime_schedule=schedule,
+                require_runtime_alignment=True,
+                now=datetime(2026, 9, 5, 19, 0),
+            )
+        )

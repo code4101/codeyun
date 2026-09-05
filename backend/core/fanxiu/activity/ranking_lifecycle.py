@@ -397,6 +397,27 @@ def occurrence_has_exchange_shop(occurrence: RankingOccurrence) -> bool:
     return bool(spec.page.has_shop and spec.shop is not None)
 
 
+def occurrence_exchange_tail_window_contains(
+    occurrence: RankingOccurrence,
+    value: datetime,
+) -> bool:
+    """Whether ``value`` is inside the occurrence's exchange-tail window.
+
+    Runtime ``closePanelTime`` is minute-granular for some activities (Magic
+    Invasion currently reports exactly ``00:30:00``).  That labelled closing
+    minute is still the scheduled 00:30 exchange slot, so admit the remainder
+    of that minute for normal Scheduler dispatch jitter.  All later work still
+    has to prove the exact Runtime occurrence before any physical action.
+    """
+
+    local_value = value.astimezone(occurrence.start_at.tzinfo)
+    closing_minute_end = occurrence.close_at.replace(
+        second=0,
+        microsecond=0,
+    ) + timedelta(minutes=1)
+    return occurrence.end_at < local_value < closing_minute_end
+
+
 def checkpoints_for_occurrence(
     occurrence: RankingOccurrence,
     *,
@@ -439,7 +460,7 @@ def checkpoints_for_occurrence(
             and occurrence.activity_id not in TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS
         )
         and business_day == tail_day
-        and occurrence.end_at < tail_at < occurrence.close_at
+        and occurrence.end_at < tail_at <= occurrence.close_at
     ):
         checkpoints.append(
             RankingCheckpoint(
@@ -657,7 +678,10 @@ def due_ranking_checkpoints(
                 )
                 or (
                     checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND
-                    and occurrence.end_at < local_now < occurrence.close_at
+                    and occurrence_exchange_tail_window_contains(
+                        occurrence,
+                        local_now,
+                    )
                 )
             )
             business_day += timedelta(days=1)
@@ -792,6 +816,7 @@ __all__ = [
     "discover_ranking_occurrences",
     "due_ranking_checkpoints",
     "next_ranking_lifecycle_time",
+    "occurrence_exchange_tail_window_contains",
     "occurrence_has_exchange_shop",
     "occurrence_relevant_on",
     "ranking_activity_identities",

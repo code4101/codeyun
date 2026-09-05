@@ -27,6 +27,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     discover_ranking_occurrences,
     due_ranking_checkpoints,
     next_ranking_lifecycle_time,
+    occurrence_exchange_tail_window_contains,
     ranking_checkpoint_is_production,
 )
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
@@ -318,6 +319,51 @@ def test_registered_shop_owns_tail_capability_inside_runtime_grace_window(
 
     tail = next(item for item in rows if item.checkpoint_kind == EXCHANGE_TAIL_KIND)
     assert tail.due_at == datetime(2026, 9, 4, 0, 30, tzinfo=TZ)
+
+
+def test_magic_exchange_tail_uses_runtime_closing_minute_at_0030() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="magic-invasion",
+        family="gameplay_rank",
+        runtime_id="8070001400008",
+        activity_id=8070001,
+        start_at=datetime(2026, 9, 4, 19, 0, tzinfo=TZ),
+        end_at=datetime(2026, 9, 5, 21, 59, 59, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 4, 19, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 6, 0, 30, tzinfo=TZ),
+        cross_count=8,
+    )
+
+    due = due_ranking_checkpoints(
+        (occurrence,),
+        now=datetime(2026, 9, 6, 0, 30, 20, tzinfo=TZ),
+        production_only=True,
+    )
+
+    tail = [item for item in due if item.checkpoint_kind == EXCHANGE_TAIL_KIND]
+    assert len(tail) == 1
+    assert tail[0].runtime_id == occurrence.runtime_id
+    assert tail[0].instance_key == occurrence.instance_key
+    assert tail[0].due_at == datetime(2026, 9, 6, 0, 30, tzinfo=TZ)
+    assert occurrence_exchange_tail_window_contains(
+        occurrence,
+        datetime(2026, 9, 6, 0, 30, 59, 999999, tzinfo=TZ),
+    )
+    assert not occurrence_exchange_tail_window_contains(
+        occurrence,
+        datetime(2026, 9, 6, 0, 31, tzinfo=TZ),
+    )
+
+    completed = {tail[0].key}
+    assert EXCHANGE_TAIL_KIND not in {
+        item.checkpoint_kind
+        for item in due_ranking_checkpoints(
+            (occurrence,),
+            now=datetime(2026, 9, 6, 0, 30, 30, tzinfo=TZ),
+            completed_keys=completed,
+            production_only=True,
+        )
+    }
 
 
 def test_activity_without_registered_shop_never_gets_exchange_tail() -> None:

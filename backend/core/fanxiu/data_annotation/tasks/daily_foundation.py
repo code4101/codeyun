@@ -9519,26 +9519,38 @@ class DailyFoundationTaskMixin:
     ):
         """在 #314 通过已标注滚动条选择最大体力并确认。"""
         self._log("action", f"{task_label}：拖动 #314「滚动条」到最右端选择最大体力")
-        context.drag_shape_to_frame_edge(
-            314,
-            "滚动条",
-            direction="right",
-            duration=float(payload.get("lingmai_amount_drag_seconds") or 0.6),
-        )
-        yield from context.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
-        frame = context.cur_frame(update=True)
-        amount_text = context.ocr_text_in_shapes(
-            314,
-            ("消耗体力",),
-            frame_data_url=frame,
-        )
-        amount = self._parse_daily_lingmai_clear_stamina(amount_text)
-        if amount is None:
-            raise RuntimeError(
-                f"{task_label}：#314 拖动后未可靠读取消耗体力「{amount_text}」，禁止确认"
+        selected = available = remainder = -1
+        amount_text = ""
+        start_ratio: float | None = None
+        for drag_attempt in range(3):
+            context.drag_shape_to_frame_edge(
+                314,
+                "滚动条",
+                direction="right",
+                duration=float(payload.get("lingmai_amount_drag_seconds") or 0.6),
+                start_ratio=start_ratio,
             )
-        selected, available = amount
-        remainder = available - selected
+            yield from context.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
+            frame = context.cur_frame(update=True)
+            amount_text = context.ocr_text_in_shapes(
+                314,
+                ("消耗体力",),
+                frame_data_url=frame,
+            )
+            amount = self._parse_daily_lingmai_clear_stamina(amount_text)
+            if amount is None:
+                raise RuntimeError(
+                    f"{task_label}：#314 拖动后未可靠读取消耗体力「{amount_text}」，禁止确认"
+                )
+            selected, available = amount
+            remainder = available - selected
+            if remainder < 30 or available <= 0:
+                break
+            start_ratio = selected / available
+            self._log(
+                "warning",
+                f"{task_label}：#314 第 {drag_attempt + 1} 次拖动仅到 {selected}/{available}，从当前比例继续推到末端",
+            )
         self._log(
             "detail",
             f"{task_label}：#314 拖动后消耗体力={selected}/{available}，差值={remainder}",

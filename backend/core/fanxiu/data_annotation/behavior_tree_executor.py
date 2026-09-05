@@ -5554,6 +5554,7 @@ class BehaviorTreeContext(AutomationContext):
         *,
         direction: str,
         duration: float = 0.6,
+        start_ratio: float | None = None,
     ) -> None:
         """从指定 shape 内部起拖，并一直拖到画面的安全边缘。
 
@@ -5587,7 +5588,11 @@ class BehaviorTreeContext(AutomationContext):
             )
 
         if normalized_direction == "right":
-            start_x, start_y = live_center or (left + inset_x, top + height / 2)
+            ratio_x = None if start_ratio is None else max(0.0, min(1.0, float(start_ratio)))
+            start_x, start_y = live_center or (
+                left + (inset_x if ratio_x is None else width * ratio_x),
+                top + height / 2,
+            )
             end_x, end_y = frame_width - margin_x, start_y
         elif normalized_direction == "left":
             start_x, start_y = live_center or (left + width - inset_x, top + height / 2)

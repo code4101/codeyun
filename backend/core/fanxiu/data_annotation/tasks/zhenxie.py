@@ -4,6 +4,11 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
+from backend.core.fanxiu.data_annotation.effective_time import job_now
+from backend.core.fanxiu.data_annotation.schedule_navigation import (
+    select_schedule_activity,
+)
+
 
 _ZHENXIE_PARTICIPATION_SECONDS = 30.0
 
@@ -11,7 +16,7 @@ _ZHENXIE_PARTICIPATION_SECONDS = 30.0
 class ZhenxieTaskMixin:
     def daily_zhenxie_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
-        now = datetime.now()
+        now = job_now()
         window_start = now.replace(hour=21, minute=0, second=0, microsecond=0)
         window_end = now.replace(hour=21, minute=5, second=0, microsecond=0)
         if window_start <= now <= window_end:
@@ -36,29 +41,41 @@ class ZhenxieTaskMixin:
         """Enter the event from any valid timed-event landing scene."""
 
         scene_id, _score, _frame = (yield from context.current_scene(
-            [63, 271, 272, 85, 34, 66],
+            [63, 271, 272, 85, 86, 34, 66],
             update=True,
         ))
         current = scene_id
-        if current not in {63, 271, 272, 85}:
-            yield from context.go_scene(66)
+        if current not in {63, 271, 272, 85, 86}:
+            yield from context.go_scene(34)
+            yield from context.wait_click_then_scene(34, "日程", 66)
             yield from context.wait_action_settle(3.0)
+            yield from select_schedule_activity(
+                context,
+                r"镇邪",
+                enter=True,
+                require_runtime_alignment=True,
+                allow_unique_runtime_card_with_bad_time_ocr=True,
+                now=job_now(),
+            )
             current = self._zhenxie_scene_id(
                 (
-                    yield from context.wait_click_then_scene(
-                        66,
-                        "前往",
-                        63,
-                        271,
-                        272,
-                        85,
-                        timeout=20.0,
+                    yield from context.wait_scene(
+                        [63, 271, 272, 85],
+                        wait=20.0,
+                        label="日常_镇邪：等待已校验的活动卡片进入镇邪场景",
                     )
                 )
             )
 
         if current == 63:
-            yield from context.wait_click(63, "前往")
+            frame = context.cur_frame(update=True)
+            if context.shape_matches(63, "参加宗门镇邪", frame_data_url=frame) is not None:
+                schedule_shape = "参加宗门镇邪"
+            elif context.shape_matches(63, "前往", frame_data_url=frame) is not None:
+                schedule_shape = "前往"
+            else:
+                raise RuntimeError("日常_镇邪：#63 未识别到“参加宗门镇邪/前往”入口")
+            yield from context.wait_click(63, schedule_shape)
             yield from context.wait_action_settle(1.0)
             current = self._zhenxie_scene_id(
                 (
@@ -71,27 +88,42 @@ class ZhenxieTaskMixin:
             )
         if current == 271:
             frame = context.cur_frame(update=True)
-            if context.shape_matches(271, "前往", frame_data_url=frame) is not None:
+            if context.shape_matches(271, "参加宗门镇邪", frame_data_url=frame) is not None:
+                participation_shape = "参加宗门镇邪"
+            elif context.shape_matches(271, "前往", frame_data_url=frame) is not None:
                 participation_shape = "前往"
             elif context.shape_matches(271, "参加", frame_data_url=frame) is not None:
                 participation_shape = "参加"
+            elif context.shape_matches(271, "参战效果", frame_data_url=frame) is not None:
+                return
             else:
-                raise RuntimeError("日常_镇邪：#271 未识别到“前往/参加”入口")
+                raise RuntimeError("日常_镇邪：#271 既无参加入口，也无已参战效果证据")
             current = self._zhenxie_scene_id(
                 (
                     yield from context.wait_click_then_scene(
                         271,
                         participation_shape,
+                        271,
                         272,
                         85,
                         timeout=20.0,
                     )
                 )
             )
+            if current == 271:
+                frame = context.cur_frame(update=True)
+                if any(
+                    context.shape_matches(271, title, frame_data_url=frame) is not None
+                    for title in ("参加宗门镇邪", "前往", "参加")
+                ):
+                    raise RuntimeError("日常_镇邪：#271 参加按钮仍可见，未确认参战")
+                if context.shape_matches(271, "参战效果", frame_data_url=frame) is None:
+                    raise RuntimeError("日常_镇邪：#271 参加后未识别到参战效果")
+                return
         if current == 272:
             yield from context.wait_click(272, "前往")
             return
-        if current == 85:
+        if current in {85, 86}:
             return
         raise RuntimeError(
             f"日常_镇邪：未能到达 #272/#85，当前 #{current if current is not None else 'unknown'}"
@@ -104,6 +136,7 @@ class ZhenxieTaskMixin:
         landing = yield from context.wait_scene(
             [34,
             85,
+            86,
             186,
             272,
             271],
@@ -119,12 +152,13 @@ class ZhenxieTaskMixin:
                 return 34
             if current == 271:
                 raise RuntimeError("日常_镇邪：仍停在 #271 报名页，未参加且该页没有安全离场动作")
-            if current in {85, 186}:
+            if current in {85, 86, 186}:
                 context.click_shape(current, "离开")
                 yield from context.wait_action_settle(2.0)
                 landed = yield from context.wait_scene(
                     [34,
                     85,
+                    86,
                     186],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：点击离开后重新识别多层落点",
@@ -142,6 +176,7 @@ class ZhenxieTaskMixin:
                 landed = yield from context.wait_scene(
                     [34,
                     85,
+                    86,
                     186],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：重新识别多层离场上下文",
@@ -153,7 +188,7 @@ class ZhenxieTaskMixin:
         raise RuntimeError(f"日常_镇邪：多层离场动作次数耗尽，当前 #{current or 'unknown'}")
 
     def daily_zhenxie_flow(self, context: Any):
-        now = datetime.now()
+        now = job_now()
         window_start = now.replace(hour=21, minute=0, second=0, microsecond=0)
         next_run_text = (window_start + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
 

@@ -8,7 +8,10 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
+from backend.core.fanxiu.activity.ranking_lifecycle import (
+    RankingOccurrence,
+    occurrence_exchange_tail_window_contains,
+)
 from backend.core.fanxiu.data_annotation.ocr_spatial import (
     group_ocr_tokens as _group_ocr_tokens,
 )
@@ -230,7 +233,7 @@ def execute_magic_invasion_tail_checkpoint(
     if business_now.tzinfo is None:
         business_now = business_now.astimezone()
     ui_today = datetime.now().astimezone().date()
-    if not occurrence.end_at < business_now < occurrence.close_at:
+    if not occurrence_exchange_tail_window_contains(occurrence, business_now):
         raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
     schedule = read_fanxiu_activity_runtime_schedule(

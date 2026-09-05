@@ -313,6 +313,23 @@ def _packet_time_date(value: Any) -> date | None:
     return None
 
 
+def _activity_text_matches_cross_count(text: str, expected_cross_count: int) -> bool:
+    resolved = int(expected_cross_count)
+    if resolved <= 0:
+        raise RuntimeError("#66 Runtime 活动跨数约束无效")
+    compact = re.sub(r"\s+", "", str(text or ""))
+    visible_cross_counts = {
+        int(value)
+        for value in re.findall(
+            r"跨服[\[【(（]?\s*(\d+)\s*[\]】)）]?",
+            compact,
+        )
+    }
+    if resolved > 1:
+        return visible_cross_counts == {resolved}
+    return not visible_cross_counts
+
+
 def runtime_activity_entities_for_date(
     schedule: Mapping[str, Any],
     activity_pattern: str | Pattern[str],
@@ -361,6 +378,7 @@ def resolve_schedule_runtime_activity_targets(
     day_offset: int = 0,
     minimum_pair_score: float = 0.55,
     anchor_date: date | None = None,
+    expected_cross_count: int | None = None,
 ) -> tuple[ScheduleActivityTarget, ...]:
     """Use Runtime names to locate noisy OCR rows while preserving all instances."""
 
@@ -376,6 +394,20 @@ def resolve_schedule_runtime_activity_targets(
             raise
         header = None
     entities = tuple(runtime_entities)
+    resolved_cross_count = (
+        int(expected_cross_count) if expected_cross_count is not None else None
+    )
+    if resolved_cross_count is not None and resolved_cross_count <= 0:
+        raise RuntimeError("#66 Runtime 活动跨数约束无效")
+
+    def matches_expected_cross_count(rows: Iterable[Mapping[str, Any]]) -> bool:
+        if resolved_cross_count is None:
+            return True
+        return _activity_text_matches_cross_count(
+            " ".join(str(row.get("text") or "") for row in rows),
+            resolved_cross_count,
+        )
+
     scored: list[ScheduleActivityTarget] = []
     rows = [dict(raw) for raw in calendar_lines]
     for index, item in enumerate(rows):
@@ -395,6 +427,8 @@ def resolve_schedule_runtime_activity_targets(
             and abs(_center(row)[0] - anchor_x) <= 110
         ]
         nearby.sort(key=lambda row: (_center(row)[1], _center(row)[0]))
+        if not matches_expected_cross_count(nearby):
+            continue
         combined_text = " ".join(
             str(row.get("text") or "").strip() for row in nearby
         )
@@ -674,6 +708,7 @@ def select_schedule_activity(
     expected_activity_id: int | None = None,
     expected_runtime_id: str | None = None,
     expected_cross_count: int | None = None,
+    allow_unique_runtime_card_with_bad_time_ocr: bool = False,
     now: datetime | None = None,
 ) :
     """Select and verify a #66 activity without encoding rotating content."""
@@ -729,6 +764,30 @@ def select_schedule_activity(
         target_moment=target_moment,
         runtime_entities=runtime_entities,
     )
+
+    def constrain_to_expected_instance(
+        projection: ScheduleCardProjection,
+    ) -> ScheduleCardProjection:
+        if (
+            expected_cross_count is None
+            or not projection.exact_match
+            or _activity_text_matches_cross_count(
+                projection.text,
+                int(expected_cross_count),
+            )
+        ):
+            return projection
+        return ScheduleCardProjection(
+            projection.kind,
+            projection.text,
+            False,
+            projection.runtime_key,
+            projection.name_score,
+            projection.covers_moment,
+            "cross_count_mismatch",
+        )
+
+    current_projection = constrain_to_expected_instance(current_projection)
     selected_page = current_page
     selected_projection = current_projection
     card_diagnostics = [current_projection]
@@ -762,6 +821,7 @@ def select_schedule_activity(
                     runtime_entities=runtime_entities,
                     day_offset=day_offset,
                     anchor_date=current_moment.date(),
+                    expected_cross_count=expected_cross_count,
                 )
                 alignment_error = None
             except RuntimeError as exc:
@@ -787,7 +847,7 @@ def select_schedule_activity(
             )
             yield from context.wait_action_settle(settle_seconds)
             return selected_target
-        if require_runtime_alignment:
+        if require_runtime_alignment and not allow_unique_runtime_card_with_bad_time_ocr:
             if alignment_error is not None:
                 raise alignment_error
             raise RuntimeError(
@@ -802,13 +862,34 @@ def select_schedule_activity(
         # enters the activity main page immediately.  Search only through the
         # card's own paged window; otherwise ``enter=False`` would still leave
         # #66 and a failed lookup could produce an unintended business action.
-        def card_matches(page: Mapping[str, Any]) -> bool:
-            projection = classify_activity_card(
-                page.get("lines") or (),
-                activity_pattern,
-                target_date=target_date,
-                target_moment=target_moment,
-                runtime_entities=runtime_entities,
+        unique_runtime_key = runtime_entities[0].key if len(runtime_entities) == 1 else ""
+
+        def runtime_name_only_match(projection: ScheduleCardProjection) -> bool:
+            compact = re.sub(r"\s+", "", projection.text)
+            pattern = (
+                re.compile(activity_pattern)
+                if isinstance(activity_pattern, str)
+                else activity_pattern
+            )
+            return bool(
+                allow_unique_runtime_card_with_bad_time_ocr
+                and unique_runtime_key
+                and projection.runtime_key == unique_runtime_key
+                and projection.name_score >= 0.95
+                and projection.rejection_reason == "date_or_time_mismatch"
+                and pattern.search(compact)
+                and re.search(r"前往(?:参与)?", compact)
+            )
+
+        def classify_page(page: Mapping[str, Any]) -> ScheduleCardProjection:
+            projection = constrain_to_expected_instance(
+                classify_activity_card(
+                    page.get("lines") or (),
+                    activity_pattern,
+                    target_date=target_date,
+                    target_moment=target_moment,
+                    runtime_entities=runtime_entities,
+                )
             )
             previous = card_diagnostics[-1]
             if (
@@ -821,9 +902,13 @@ def select_schedule_activity(
                 previous.rejection_reason,
             ):
                 card_diagnostics.append(projection)
-            return projection.exact_match
+            return projection
+
+        def card_matches(page: Mapping[str, Any]) -> bool:
+            return classify_page(page).exact_match
 
         found = None
+        runtime_name_only_candidates: list[tuple[float, float, Mapping[str, Any]]] = []
         indicator_points = _activity_card_indicator_points(context, frame)
         for x, y in indicator_points:
             context.click_frame_point(SCHEDULE_SCENE_ID, x, y)
@@ -832,15 +917,29 @@ def select_schedule_activity(
                 SCHEDULE_SCENE_ID,
                 ACTIVITY_CARD_SHAPE,
             )
-            if card_matches(candidate):
+            projection = classify_page(candidate)
+            if projection.exact_match:
                 found = candidate
                 break
+            if runtime_name_only_match(projection):
+                runtime_name_only_candidates.append((x, y, candidate))
         if found is None and not indicator_points:
             found = yield from context.find_paged_content(
                 SCHEDULE_SCENE_ID,
                 card_matches,
                 ACTIVITY_CARD_SHAPE,
             )
+        if found is None and len(runtime_name_only_candidates) == 1:
+            x, y, _candidate = runtime_name_only_candidates[0]
+            context.click_frame_point(SCHEDULE_SCENE_ID, x, y)
+            yield from context.wait_action_settle(settle_seconds)
+            confirmed = context.paged_content_snapshot(
+                SCHEDULE_SCENE_ID,
+                ACTIVITY_CARD_SHAPE,
+            )
+            confirmed_projection = classify_page(confirmed)
+            if runtime_name_only_match(confirmed_projection):
+                found = confirmed
         _log_schedule_card_diagnostics(context, card_diagnostics)
         if found is None:
             diagnostic_summary = _schedule_card_diagnostics_summary(card_diagnostics)
@@ -850,12 +949,14 @@ def select_schedule_activity(
                 exhaustive=bool(indicator_points),
             )
         selected_page = found
-        selected_projection = classify_activity_card(
-            found.get("lines") or (),
-            activity_pattern,
-            target_date=target_date,
-            target_moment=target_moment,
-            runtime_entities=runtime_entities,
+        selected_projection = constrain_to_expected_instance(
+            classify_activity_card(
+                found.get("lines") or (),
+                activity_pattern,
+                target_date=target_date,
+                target_moment=target_moment,
+                runtime_entities=runtime_entities,
+            )
         )
 
     # Calendar rows describe the date grid; they are useful corroborating
@@ -871,6 +972,7 @@ def select_schedule_activity(
                 runtime_entities=runtime_entities,
                 day_offset=day_offset,
                 anchor_date=date.today(),
+                expected_cross_count=expected_cross_count,
             )
         else:
             targets = resolve_schedule_activity_targets(
