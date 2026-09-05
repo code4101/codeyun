@@ -65,6 +65,10 @@ def _runtime_currency_snapshot(*, cross_count: int) -> dict[str, Any]:
     )
     return read_wallet_currency_snapshot(
         currency_type,
+        # WalletData.GetCurrencyByType returns zero for an omitted event
+        # currency.  A newly opened Magic occurrence commonly has exactly
+        # that shape before the account earns its first Magic crystal.
+        missing_as_zero=True,
         # This path is only reached by the explicit collect endpoint. A cold
         # cache may perform the existing process-external read-only discovery;
         # GET/ensure never enters it.

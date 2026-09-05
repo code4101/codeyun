@@ -208,6 +208,10 @@ def test_delete_note_removes_connected_edges(client, session, auth_user):
     assert session.get(NoteNode, target.id) is not None
     assert session.get(NoteEdge, edge_id) is None
 
+    repeated_response = client.delete(f"/api/notes/{source.numeric_id}")
+    assert repeated_response.status_code == 200
+    assert repeated_response.json() == {"ok": True}
+
 
 def test_fanxiu_public_read_returns_can_edit_for_current_viewer(client, session):
     fanxiu_user = get_fanxiu_user(session)

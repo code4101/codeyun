@@ -818,6 +818,24 @@ class FanxiuInstrumentationService:
 
         return read_backpack_quick_settings_snapshot()
 
+    def magic_invasion_auto_settings_snapshot(self) -> dict[str, Any]:
+        """Read active Magic Invasion auto-banish settings without Lua calls."""
+
+        from backend.core.fanxiu.instrumentation.magic_invasion_auto_settings import (
+            read_magic_invasion_auto_settings_snapshot,
+        )
+
+        return read_magic_invasion_auto_settings_snapshot()
+
+    def magic_invasion_auto_running_snapshot(self) -> dict[str, Any]:
+        """Read active Magic native-auto loop state without Lua calls."""
+
+        from backend.core.fanxiu.instrumentation.magic_invasion_auto_running import (
+            read_magic_invasion_auto_running_snapshot,
+        )
+
+        return read_magic_invasion_auto_running_snapshot()
+
     def beast_spirit_quick_synthesis_snapshot(self) -> dict[str, Any]:
         """Read the active quick-synthesis selection without invoking Lua."""
 

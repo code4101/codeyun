@@ -70,11 +70,18 @@ class ZhenxieTaskMixin:
                 )
             )
         if current == 271:
+            frame = context.cur_frame(update=True)
+            if context.shape_matches(271, "前往", frame_data_url=frame) is not None:
+                participation_shape = "前往"
+            elif context.shape_matches(271, "参加", frame_data_url=frame) is not None:
+                participation_shape = "参加"
+            else:
+                raise RuntimeError("日常_镇邪：#271 未识别到“前往/参加”入口")
             current = self._zhenxie_scene_id(
                 (
                     yield from context.wait_click_then_scene(
                         271,
-                        "参加",
+                        participation_shape,
                         272,
                         85,
                         timeout=20.0,

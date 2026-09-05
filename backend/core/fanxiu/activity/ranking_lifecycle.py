@@ -106,6 +106,7 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "tiandi-yiju",
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
+    "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND}),
     "tiandi-yiju": frozenset({DAILY_RECONCILE_KIND, TIANDI_YIJU_ACTIVE_KIND}),
 }
 

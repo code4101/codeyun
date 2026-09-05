@@ -45,7 +45,7 @@ def test_tiandi_yiju_capability_status_matches_production_assembly() -> None:
     )
 
 
-def test_production_due_excludes_unpromoted_gameplay_checkpoints() -> None:
+def test_production_due_includes_only_promoted_magic_initialization() -> None:
     magic = RankingOccurrence(
         activity_type="magic-invasion",
         family="gameplay_rank",
@@ -72,8 +72,14 @@ def test_production_due_excludes_unpromoted_gameplay_checkpoints() -> None:
         MAGIC_MAIL_KIND,
         MAGIC_ACTIVE_KIND,
     }
-    assert production_due == ()
-    assert not any(ranking_checkpoint_is_production(item) for item in catalog_due)
+    assert [item.checkpoint_kind for item in production_due] == [
+        MAGIC_INITIALIZATION_KIND,
+    ]
+    assert {
+        item.checkpoint_kind
+        for item in catalog_due
+        if ranking_checkpoint_is_production(item)
+    } == {MAGIC_INITIALIZATION_KIND}
 
 RESOURCE_RANK_ACTIVITY_ID_CASES = (
     *((value, "lingzhuang-huadao") for value in (

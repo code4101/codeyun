@@ -9,6 +9,7 @@ from backend.core.fanxiu.activity.magic_invasion_explore import (
     completed_magic_invasion_batches,
     observe_magic_invasion_effect,
     plan_magic_invasion_explore,
+    plan_magic_invasion_reward_batches,
 )
 from backend.core.fanxiu.runtime_gui.magic_invasion import (
     resolve_magic_invasion_bottom_tab,
@@ -137,6 +138,44 @@ def test_direct_mount_effect_does_not_mean_pending_events_are_complete() -> None
     assert observation.effect_observed is True
     assert observation.manual_challenge_required is True
     assert observation.rewards_complete is False
+
+
+def test_three_batches_with_currency_gain_do_not_add_fourth_batch() -> None:
+    plan = plan_magic_invasion_reward_batches(
+        completed_batches=3,
+        currency_before=0,
+        currency_after=198_480,
+    )
+
+    assert plan.currency_delta == 198_480
+    assert plan.reward_observed is True
+    assert plan.fourth_batch_required is False
+    assert plan.required_batches == 3
+
+
+def test_three_batches_without_currency_gain_add_exactly_one_batch() -> None:
+    plan = plan_magic_invasion_reward_batches(
+        completed_batches=3,
+        currency_before=12_000,
+        currency_after=12_000,
+    )
+
+    assert plan.currency_delta == 0
+    assert plan.reward_observed is False
+    assert plan.fourth_batch_required is True
+    assert plan.required_batches == 4
+
+
+def test_fourth_batch_always_ends_local_reward_loop() -> None:
+    plan = plan_magic_invasion_reward_batches(
+        completed_batches=4,
+        currency_before=12_000,
+        currency_after=12_000,
+    )
+
+    assert plan.reward_observed is False
+    assert plan.fourth_batch_required is False
+    assert plan.required_batches == 4
 
 
 def test_bottom_tab_alignment_rejects_horizontal_title_ocr_collision() -> None:

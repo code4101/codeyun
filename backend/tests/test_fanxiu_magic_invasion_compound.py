@@ -1,5 +1,6 @@
 from datetime import datetime
 from threading import Event
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -22,6 +23,11 @@ class _Runtime:
     def wait_scene(self, layer0, **_kwargs):
         scene = layer0[0]
         self.events.append(("wait_scene", scene))
+        yield None
+        return SimpleNamespace(scene_id=scene)
+
+    def wait_action_settle(self, seconds):
+        self.events.append(("settle", seconds))
         yield None
 
 

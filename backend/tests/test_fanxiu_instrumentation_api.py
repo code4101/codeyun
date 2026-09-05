@@ -118,6 +118,48 @@ def test_peakrace_business_state_route_uses_standard_fanxiu_authorization(monkey
     assert authorized == [(user, session)]
 
 
+def test_magic_invasion_auto_settings_route_uses_standard_authorization(
+    monkeypatch,
+):
+    authorized = []
+    monkeypatch.setattr(
+        api, "_authorize", lambda user, session: authorized.append((user, session))
+    )
+    monkeypatch.setattr(
+        api.fanxiu_instrumentation_service,
+        "magic_invasion_auto_settings_snapshot",
+        lambda: {"kind": "magic-invasion-auto-settings"},
+    )
+    user = object()
+    session = object()
+
+    assert api.get_fanxiu_magic_invasion_auto_settings_snapshot(
+        current_user=user,
+        session=session,
+    ) == {"kind": "magic-invasion-auto-settings"}
+    assert authorized == [(user, session)]
+
+
+def test_magic_invasion_auto_running_route_uses_standard_authorization(monkeypatch):
+    authorized = []
+    monkeypatch.setattr(
+        api, "_authorize", lambda user, session: authorized.append((user, session))
+    )
+    monkeypatch.setattr(
+        api.fanxiu_instrumentation_service,
+        "magic_invasion_auto_running_snapshot",
+        lambda: {"kind": "magic-invasion-auto-running"},
+    )
+    user = object()
+    session = object()
+
+    assert api.get_fanxiu_magic_invasion_auto_running_snapshot(
+        current_user=user,
+        session=session,
+    ) == {"kind": "magic-invasion-auto-running"}
+    assert authorized == [(user, session)]
+
+
 def test_beast_spirit_route_uses_standard_authorization_and_optimize_flag(monkeypatch):
     authorized = []
     calls = []

@@ -12,6 +12,9 @@ from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.core.fanxiu.data_annotation.schedule_navigation import (
     select_schedule_activity,
 )
+from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
+    wait_magic_invasion_cover_after_schedule_entry,
+)
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
     open_magic_invasion_exchange_tab,
     wait_magic_invasion_exchange_shop_ready,
@@ -84,9 +87,10 @@ def _enter_exact_magic_occurrence(
     )
     if not str(getattr(selected, "runtime_key", "") or ""):
         raise RuntimeError(f"{label}：#66 未回读精确 Runtime 实例标识")
-    match = yield from context.wait_scene(
+    match = yield from wait_magic_invasion_cover_after_schedule_entry(
+        context,
         [MAGIC_SHOP_SCENE, *MAGIC_HOME_SCENES],
-        wait=30.0,
+        wait_seconds=30.0,
         label=f"{label}：等待魔道活动页",
     )
     scene = int(getattr(match, "scene_id", match))

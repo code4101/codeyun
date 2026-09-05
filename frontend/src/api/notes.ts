@@ -2402,9 +2402,31 @@ export const useNoteStore = defineStore('notes', () => {
         delete edgeTouchedAt.value[edgeId];
       });
 
-      Object.values(tabSessions.value).forEach(session => {
-        session.noteIds = session.noteIds.filter(noteId => noteId !== key);
-        session.edgeIds = session.edgeIds.filter(edgeId => !removedEdgeIds.includes(edgeId));
+      noteRevision.value += 1;
+      if (removedEdgeIds.length > 0) {
+        edgeRevision.value += 1;
+      }
+
+      const removedEdgeIdSet = new Set(removedEdgeIds);
+      Object.entries(tabSessions.value).forEach(([tabId, session]) => {
+        const nextNoteIds = session.noteIds.filter(noteId => noteId !== key);
+        const nextEdgeIds = session.edgeIds.filter(edgeId => !removedEdgeIdSet.has(edgeId));
+        const noteListChanged = nextNoteIds.length !== session.noteIds.length;
+        const edgeListChanged = nextEdgeIds.length !== session.edgeIds.length;
+
+        if (noteListChanged) {
+          session.noteIds = nextNoteIds;
+          session.noteDataVersion += 1;
+          tabNoteListCache.delete(tabId);
+        }
+        if (edgeListChanged) {
+          session.edgeIds = nextEdgeIds;
+          session.edgeDataVersion += 1;
+          tabEdgeListCache.delete(tabId);
+        }
+        if (noteListChanged || edgeListChanged) {
+          session.dataVersion += 1;
+        }
       });
 
       pruneCaches();

@@ -132,6 +132,24 @@ def get_fanxiu_mail_snapshot(
     return fanxiu_instrumentation_service.mail_snapshot()
 
 
+@router.get("/dynamic-instrumentation/magic-invasion/auto-settings")
+def get_fanxiu_magic_invasion_auto_settings_snapshot(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _authorize(current_user, session)
+    return fanxiu_instrumentation_service.magic_invasion_auto_settings_snapshot()
+
+
+@router.get("/dynamic-instrumentation/magic-invasion/auto-running")
+def get_fanxiu_magic_invasion_auto_running_snapshot(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _authorize(current_user, session)
+    return fanxiu_instrumentation_service.magic_invasion_auto_running_snapshot()
+
+
 @router.get("/dynamic-instrumentation/beast-spirit")
 def get_fanxiu_beast_spirit_snapshot(
     optimize: bool = True,

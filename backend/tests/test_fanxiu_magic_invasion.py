@@ -27,8 +27,28 @@ def _session() -> Session:
     return Session(engine)
 
 
+def test_magic_runtime_currency_uses_wallet_zero_semantics(monkeypatch) -> None:
+    calls = []
+
+    def fake_read(currency_type, **kwargs):
+        calls.append((currency_type, kwargs))
+        return {"exchange_currency": 0, "cumulative_currency": 0}
+
+    from backend.core.fanxiu.instrumentation import wallet
+
+    monkeypatch.setattr(wallet, "read_wallet_currency_snapshot", fake_read)
+
+    assert magic_invasion._runtime_currency_snapshot(cross_count=4) == {
+        "exchange_currency": 0,
+        "cumulative_currency": 0,
+    }
+    assert calls == [(17, {"missing_as_zero": True, "allow_discovery": True})]
+
+
 @pytest.fixture(autouse=True)
-def _cold_runtime_wallet(monkeypatch) -> None:
+def _cold_runtime_wallet(monkeypatch, request) -> None:
+    if request.node.name == "test_magic_runtime_currency_uses_wallet_zero_semantics":
+        return
     monkeypatch.setattr(
         magic_invasion,
         "_runtime_currency_snapshot",

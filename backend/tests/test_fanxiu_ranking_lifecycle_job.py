@@ -6,6 +6,7 @@ import pytest
 from sqlmodel import Session, create_engine, select
 
 import backend.core.fanxiu.activity.runtime_schedule as runtime_schedule
+import backend.core.fanxiu.data_annotation.tasks.magic_invasion_initialization as magic_initialization
 import backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle as lifecycle_job
 import backend.db as backend_db
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
@@ -434,6 +435,19 @@ def test_gameplay_job_skips_unpromoted_magic_mail_checkpoint(monkeypatch) -> Non
         "discover_ranking_occurrences",
         lambda _schedule: (_magic_occurrence(),),
     )
+    initialized = []
+
+    def initialize(*_args, occurrence, **_kwargs):
+        initialized.append(occurrence.instance_key)
+        if False:
+            yield None
+        return {"status": "completed", "message": "魔道实例化完成"}
+
+    monkeypatch.setattr(
+        magic_initialization,
+        "execute_magic_invasion_initialization_checkpoint",
+        initialize,
+    )
     seen = []
 
     def execute(*_args, checkpoint, **_kwargs):
@@ -453,7 +467,10 @@ def test_gameplay_job_skips_unpromoted_magic_mail_checkpoint(monkeypatch) -> Non
     with Session(engine) as session:
         rows = list(session.exec(select(FanxiuRankingLifecycleCheckpoint)).all())
     assert seen == []
-    assert rows == []
+    assert initialized == [_magic_occurrence().instance_key]
+    assert len(rows) == 1
+    assert rows[0].checkpoint_kind == "magic_initialization_0030"
+    assert rows[0].status == "completed"
     assert result["result"] == "success"
 
 

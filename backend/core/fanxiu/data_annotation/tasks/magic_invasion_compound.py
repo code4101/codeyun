@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.core.fanxiu.activity.magic_invasion_explore import (
     MAGIC_INVASION_EXPLORE_BATCH_SIZE,
+    MAGIC_INVASION_MAX_BATCHES,
     MAGIC_INVASION_TARGET_BATCHES,
     TIANYAN_ITEM_ID,
 )
@@ -15,6 +16,7 @@ from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
     execute_magic_invasion_explore_job,
     load_magic_invasion_occurrence_progress,
+    wait_magic_invasion_cover_after_schedule_entry,
 )
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_task_rewards import (
     claim_magic_invasion_task_rewards,
@@ -56,14 +58,32 @@ def _remaining_tianyan_requirement(
         and state not in {"", "complete"}
     ):
         raise RuntimeError("上一魔道 occurrence 的不可逆进度尚未闭合")
-    if progress_occurrence == occurrence.runtime_id and state not in {"", "ready", "complete"}:
-        raise RuntimeError("魔道存在未闭合不可逆证据，禁止从 GUI 中间步骤恢复")
+    resumable_states = {
+        "confirmed",
+        "use_armed",
+        "topup_confirmed",
+        "explore_armed",
+        "result_observed",
+    }
+    if (
+        progress_occurrence == occurrence.runtime_id
+        and state not in {"", "ready", "complete", *resumable_states}
+    ):
+        raise RuntimeError("魔道存在无法恢复的不可逆证据，禁止继续")
     confirmed = (
         list(progress.get("confirmed_batches") or [])
         if progress_occurrence == occurrence.runtime_id
         else []
     )
-    remaining_batches = max(0, MAGIC_INVASION_TARGET_BATCHES - len(confirmed))
+    if progress_occurrence == occurrence.runtime_id and state == "complete":
+        return 0
+    fourth_decision = progress.get("fourth_batch_required")
+    required_batches = (
+        MAGIC_INVASION_TARGET_BATCHES
+        if fourth_decision is False
+        else MAGIC_INVASION_MAX_BATCHES
+    )
+    remaining_batches = max(0, required_batches - len(confirmed))
     return remaining_batches * MAGIC_INVASION_EXPLORE_BATCH_SIZE
 
 
@@ -75,7 +95,7 @@ def execute_magic_invasion_compound_checkpoint(
     *,
     occurrence: RankingOccurrence,
 ):
-    """Run one occurrence: enter → ensure supply → 3×500 → claim rewards."""
+    """Run one occurrence: enter → ensure supply → 3×500 (+1 on miss) → rewards."""
 
     required_tianyan = _remaining_tianyan_requirement(payload, occurrence)
 
@@ -102,9 +122,10 @@ def execute_magic_invasion_compound_checkpoint(
         require_runtime_alignment=True,
         now=job_now(),
     )
-    yield from context.wait_scene(
+    yield from wait_magic_invasion_cover_after_schedule_entry(
+        context,
         [509],
-        wait=30.0,
+        wait_seconds=30.0,
         label="魔道入侵：等待活动主页",
     )
     counts, inventory_evidence = read_backpack_item_counts(
@@ -179,15 +200,31 @@ def execute_magic_invasion_compound_checkpoint(
     confirmed_batches = (
         list(confirmed_batches) if isinstance(confirmed_batches, list) else []
     )
+    confirmed_count = len(confirmed_batches)
+    valid_batch_count = confirmed_count in {
+        MAGIC_INVASION_TARGET_BATCHES,
+        MAGIC_INVASION_MAX_BATCHES,
+    }
+    valid_fourth_decision = (
+        confirmed_count == MAGIC_INVASION_TARGET_BATCHES
+        and not bool(explore_progress.get("fourth_batch_required"))
+    ) or (
+        confirmed_count == MAGIC_INVASION_MAX_BATCHES
+        and bool(explore_progress.get("fourth_batch_required"))
+    )
     if (
         str(explore_progress.get("occurrence_id") or "")
         != occurrence.runtime_id
         or str(explore_progress.get("state") or "") != "complete"
-        or int(explore_progress.get("base_explore_count") or 0) != 1500
-        or len(confirmed_batches) != MAGIC_INVASION_TARGET_BATCHES
+        or not valid_batch_count
+        or not valid_fourth_decision
+        or int(explore_progress.get("base_explore_count") or 0)
+        != confirmed_count * MAGIC_INVASION_EXPLORE_BATCH_SIZE
     ):
         raise RuntimeError(
-            "魔道探查缺少同一 occurrence 的 3×500 完成证据，拒绝提交复合 checkpoint"
+            "魔道探查缺少同一 occurrence 的 3×500 完成证据，或无兑币时的 "
+            "4×500 完成证据，"
+            "拒绝提交复合 checkpoint"
         )
 
     # 探查任务奖励属于本轮探查的后置收尾。首次进入 #509 时不领取，
@@ -201,9 +238,10 @@ def execute_magic_invasion_compound_checkpoint(
         require_runtime_alignment=True,
         now=job_now(),
     )
-    yield from context.wait_scene(
+    yield from wait_magic_invasion_cover_after_schedule_entry(
+        context,
         [509],
-        wait=30.0,
+        wait_seconds=30.0,
         label="魔道入侵：探查完成后等待活动主页领取任务",
     )
     task_result = yield from claim_magic_invasion_task_rewards(
@@ -213,7 +251,8 @@ def execute_magic_invasion_compound_checkpoint(
     return {
         "status": "completed",
         "message": (
-            f"魔道 occurrence {occurrence.runtime_id}：补给、3×500 探查、"
+            f"魔道 occurrence {occurrence.runtime_id}：补给、"
+            f"{confirmed_count}×500 探查、"
             "任务奖励闭环完成"
         ),
         "tasks": task_result,

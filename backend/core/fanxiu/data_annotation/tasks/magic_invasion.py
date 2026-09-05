@@ -5,7 +5,8 @@ from __future__ import annotations
 The workflow is intentionally occurrence-scoped.  A server-internal preview
 and the following cross-server round reuse the same actions, but each exact
 Runtime occurrence independently owes three confirmed 500-base-explore
-batches.  Mail is outside the critical path: rank mail is handled by the
+batches, plus one compensation batch only when those three produce no
+currency. Mail is outside the critical path: rank mail is handled by the
 idempotent mail job and its absence never blocks exploration.
 """
 
@@ -14,14 +15,19 @@ from datetime import datetime, timedelta
 import re
 import threading
 import time
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
 from backend.core.fanxiu.activity.magic_invasion_explore import (
     MAGIC_INVASION_EXPLORE_BATCH_SIZE,
+    MAGIC_INVASION_MAX_BATCHES,
     MAGIC_INVASION_TARGET_BATCHES,
     TIANYAN_ITEM_ID,
     WHITE_DRAGON_EFFECT_ALIASES,
     actual_magic_invasion_topup,
+    plan_magic_invasion_reward_batches,
+)
+from backend.core.fanxiu.activity.magic_invasion import (
+    resolve_magic_invasion_shop_identity,
 )
 from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
     IntegerSliderAssets,
@@ -34,6 +40,7 @@ from backend.core.fanxiu.instrumentation.magic_invasion_task_rewards import (
 from backend.core.fanxiu.instrumentation.item_batch_use_dialog import (
     read_item_batch_use_dialog_snapshot,
 )
+from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
 
 
 MAGIC_INVASION_PROGRESS_KEY = "magic_invasion_progress"
@@ -49,10 +56,55 @@ MAGIC_INVASION_EVENT_SCENE_ID = 516
 MAGIC_INVASION_MAP_ENTRY_CONFIRM_SCENE_ID = 517
 MAGIC_INVASION_OVERFLOW_SCENE_ID = 518
 MAGIC_INVASION_ENTRY_TRANSITION_SCENE_ID = 641
+MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID = 697
 MAGIC_INVASION_WORLD_MAP_SCENE_ID = 425
 MAGIC_INVASION_TIANNAN_COMPLETE_SCENE_TITLE = "魔道入侵·天南大陆完成"
 MAGIC_INVASION_ENTRY_SETTLE_TIMEOUT_SECONDS = 90.0
 MAGIC_INVASION_ENTRY_MAX_OPTIONAL_STEPS = 128
+
+
+def wait_magic_invasion_cover_after_schedule_entry(
+    context: Any,
+    target_scene_ids: Sequence[int],
+    *,
+    settle_seconds: float = 3.0,
+    wait_seconds: float = 30.0,
+    label: str = "魔道入侵：等待活动页",
+) -> Iterator[Any]:
+    """Wait immediately after #66 enters Magic, consuming only cover-entry noise.
+
+    This helper defines a deliberately narrow business Layer 0.  It must not be
+    reused by exploration, rewards, shops, or any other already-entered Magic
+    workflow.
+    """
+
+    targets = tuple(
+        dict.fromkeys(
+            int(scene_id)
+            for scene_id in target_scene_ids
+            if int(scene_id) != MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID
+        )
+    )
+    if not targets:
+        raise ValueError("魔道入侵入口缺少目标场景")
+
+    yield from context.wait_action_settle(max(0.0, float(settle_seconds)))
+    deadline = time.monotonic() + max(1.0, float(wait_seconds))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            expected = "/".join(f"#{scene_id}" for scene_id in targets)
+            raise TimeoutError(f"{label}：处理入口噪声后仍未到达 {expected}")
+        match = yield from context.wait_scene(
+            [*targets, MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID],
+            wait=min(remaining, 30.0),
+            label=label,
+        )
+        scene_id = int(getattr(match, "scene_id", match))
+        if scene_id != MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID:
+            return match
+        context.click_shape_center(MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID, "返回")
+        yield from context.wait_action_settle(1.0)
 
 
 @dataclass(frozen=True)
@@ -229,11 +281,13 @@ def _magic_entry_scene_ids(context: Any) -> tuple[int, ...]:
         MAGIC_INVASION_TIANNAN_COMPLETE_SCENE_TITLE,
     )
     return tuple(dict.fromkeys([
+        MAGIC_INVASION_MAIN_SCENE_ID,
         MAGIC_INVASION_MAP_SCENE_ID,
         MAGIC_INVASION_MAP_ENTRY_CONFIRM_SCENE_ID,
         MAGIC_INVASION_TASK_DEMON_SCENE_ID,
         MAGIC_INVASION_TASK_CULTIVATION_SCENE_ID,
         MAGIC_INVASION_ENTRY_TRANSITION_SCENE_ID,
+        MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID,
         MAGIC_INVASION_WORLD_MAP_SCENE_ID,
         *([optional_transition] if optional_transition is not None else []),
     ]))
@@ -252,9 +306,13 @@ def _wait_magic_entry_scene(context: Any, *, wait_seconds: float = 30.0) -> Iter
 
 
 def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
-    """Enter #512, consuming only optional Magic-specific entry layers encountered."""
+    """Move from the Magic cover #509 to challenge cover #512.
 
-    context.click_shape(MAGIC_INVASION_MAIN_SCENE_ID, "前往大地图")
+    Its dynamic Layer 0 exists only for this transition.  In particular, #697
+    is local cover-entry noise and is never exposed to the rest of Magic.
+    """
+
+    yield from context.wait_action_settle(3.0)
     optional_transition = _optional_scene_id(
         context,
         MAGIC_INVASION_TIANNAN_COMPLETE_SCENE_TITLE,
@@ -273,6 +331,17 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
         visited.append(scene)
         if scene == MAGIC_INVASION_MAP_SCENE_ID:
             return
+        if scene == MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID:
+            context.click_shape_center(
+                MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID,
+                "返回",
+            )
+            yield from context.wait_action_settle(1.0)
+            continue
+        if scene == MAGIC_INVASION_MAIN_SCENE_ID:
+            context.click_shape(MAGIC_INVASION_MAIN_SCENE_ID, "前往大地图")
+            yield from context.wait_action_settle(0.5)
+            continue
         if scene in {
             MAGIC_INVASION_TASK_DEMON_SCENE_ID,
             MAGIC_INVASION_TASK_CULTIVATION_SCENE_ID,
@@ -305,6 +374,13 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
         "魔道入侵入口处理可选页面超时，仍未稳定落到 #512："
         f"{sequence or '无已识别场景'}"
     )
+
+
+def enter_magic_invasion_challenge_page(context: Any) -> Iterator[Any]:
+    """Enter the Magic challenge map (#512) from its stable cover (#509)."""
+
+    yield from _enter_magic_invasion_map(context)
+    return MAGIC_INVASION_MAP_SCENE_ID
 
 
 def _leave_magic_invasion_map(context: Any) -> Iterator[Any]:
@@ -358,28 +434,18 @@ def _set_progress(
 ) -> None:
     """Persist irreversible evidence on the occurrence checkpoint, never a Job."""
 
-    from sqlmodel import Session
-
-    from backend.core.fanxiu.activity.ranking_lifecycle_store import (
-        ensure_ranking_lifecycle_checkpoint_table,
-        record_ranking_checkpoint_evidence,
+    store_magic_invasion_occurrence_evidence(
+        occurrence,
+        {MAGIC_INVASION_PROGRESS_KEY: dict(progress)},
+        message=f"魔道入侵不可逆对账证据：{progress.get('state') or 'unknown'}",
     )
-    from backend.db import engine
-
-    checkpoint = _magic_occurrence_checkpoint(occurrence)
-    ensure_ranking_lifecycle_checkpoint_table(engine)
-    with Session(engine) as session:
-        record_ranking_checkpoint_evidence(
-            session,
-            checkpoint,
-            evidence={MAGIC_INVASION_PROGRESS_KEY: dict(progress)},
-            message=f"魔道入侵不可逆对账证据：{progress.get('state') or 'unknown'}",
-        )
 
 
-def load_magic_invasion_occurrence_progress(
+def load_magic_invasion_occurrence_evidence(
     occurrence: MagicInvasionOccurrence,
 ) -> dict[str, Any]:
+    """Read the complete durable evidence map for one exact occurrence."""
+
     from sqlmodel import Session
 
     from backend.core.fanxiu.activity.ranking_lifecycle_store import (
@@ -391,7 +457,46 @@ def load_magic_invasion_occurrence_progress(
     checkpoint = _magic_occurrence_checkpoint(occurrence)
     ensure_ranking_lifecycle_checkpoint_table(engine)
     with Session(engine) as session:
+        return ranking_checkpoint_evidence(session, checkpoint)
+
+
+def store_magic_invasion_occurrence_evidence(
+    occurrence: MagicInvasionOccurrence,
+    updates: Mapping[str, Any],
+    *,
+    message: str = "",
+) -> dict[str, Any]:
+    """Merge namespaced evidence without deleting sibling workflow state."""
+
+    from sqlmodel import Session
+
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import (
+        ensure_ranking_lifecycle_checkpoint_table,
+        ranking_checkpoint_evidence,
+        record_ranking_checkpoint_evidence,
+    )
+    from backend.db import engine
+
+    if not isinstance(updates, Mapping) or not updates:
+        raise ValueError("魔道入侵 occurrence evidence 更新为空")
+    checkpoint = _magic_occurrence_checkpoint(occurrence)
+    ensure_ranking_lifecycle_checkpoint_table(engine)
+    with Session(engine) as session:
         evidence = ranking_checkpoint_evidence(session, checkpoint)
+        evidence.update(dict(updates))
+        row = record_ranking_checkpoint_evidence(
+            session,
+            checkpoint,
+            evidence=evidence,
+            message=message,
+        )
+        return dict(row.evidence or {})
+
+
+def load_magic_invasion_occurrence_progress(
+    occurrence: MagicInvasionOccurrence,
+) -> dict[str, Any]:
+    evidence = load_magic_invasion_occurrence_evidence(occurrence)
     existing = evidence.get(MAGIC_INVASION_PROGRESS_KEY)
     existing = dict(existing) if isinstance(existing, Mapping) else {}
     old_id = str(existing.get("occurrence_id") or "")
@@ -401,6 +506,58 @@ def load_magic_invasion_occurrence_progress(
             "上一魔道入侵实例存在未闭合不可逆批次，拒绝用新实例覆盖防重复证据"
         )
     if old_id == occurrence.occurrence_id and old_state == "complete":
+        return dict(existing)
+    resumable_states = {
+        "confirmed",
+        "use_armed",
+        "topup_confirmed",
+        "explore_armed",
+        "result_observed",
+    }
+    if old_id == occurrence.occurrence_id and old_state in resumable_states:
+        confirmed = list(existing.get("confirmed_batches") or [])
+        expected_indexes = list(range(1, len(confirmed) + 1))
+        actual_indexes = [int(item.get("batch_index") or 0) for item in confirmed]
+        expected_base_count = len(confirmed) * MAGIC_INVASION_EXPLORE_BATCH_SIZE
+        if (
+            len(confirmed) > MAGIC_INVASION_MAX_BATCHES
+            or (
+                len(confirmed) == MAGIC_INVASION_MAX_BATCHES
+                and old_state != "confirmed"
+            )
+            or actual_indexes != expected_indexes
+            or int(existing.get("base_explore_count") or 0) != expected_base_count
+            or any(
+                int(item.get("base_explore_after") or 0)
+                != index * MAGIC_INVASION_EXPLORE_BATCH_SIZE
+                or int(
+                    item.get("available_explore_count_after_result")
+                    if item.get("available_explore_count_after_result") is not None
+                    else -1
+                )
+                != 0
+                for index, item in enumerate(confirmed, start=1)
+            )
+        ):
+            raise RuntimeError("魔道入侵已确认批次证据不连续，拒绝恢复")
+        if old_state == "confirmed":
+            if not confirmed:
+                raise RuntimeError("魔道入侵 confirmed 状态缺少已确认批次")
+            return dict(existing)
+
+        transaction_evidence = existing.get("transaction_evidence")
+        expected_batch_index = len(confirmed) + 1
+        if (
+            not isinstance(transaction_evidence, Mapping)
+            or int(existing.get("batch_index") or 0) != expected_batch_index
+            or int(
+                transaction_evidence.get("base_explore_before")
+                if transaction_evidence.get("base_explore_before") is not None
+                else -1
+            )
+            != expected_base_count
+        ):
+            raise RuntimeError("魔道入侵在途批次证据与已确认前缀不连续，拒绝恢复")
         return dict(existing)
     if old_id == occurrence.occurrence_id and old_state:
         raise RuntimeError(
@@ -560,6 +717,38 @@ def _commit_prepared_top_up(context: Any) -> Iterator[Any]:
     return verified
 
 
+def ensure_magic_invasion_explore_batch_ready(context: Any) -> Iterator[Any]:
+    """Idempotently fill the current challenge-page explore count to exactly 500."""
+
+    scene, _score, _frame = yield from _wait_scene(
+        context,
+        (MAGIC_INVASION_MAP_SCENE_ID, MAGIC_INVASION_ITEM_SCENE_ID),
+    )
+    if scene == MAGIC_INVASION_ITEM_SCENE_ID:
+        context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
+        yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
+
+    available_before = parse_available_explore_count(
+        _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
+    )
+    prepared = yield from _prepare_top_up_to_batch(
+        context,
+        available_count=available_before,
+    )
+    requested_topup = int(prepared.get("requested_topup") or 0)
+    available_after = (
+        yield from _commit_prepared_top_up(context)
+        if requested_topup
+        else available_before
+    )
+    return {
+        "available_before": available_before,
+        "requested_topup": requested_topup,
+        "available_after": available_after,
+        **dict(prepared),
+    }
+
+
 def _read_tianyan_inventory() -> dict[str, Any]:
     counts, evidence = read_backpack_item_counts(
         (TIANYAN_ITEM_ID,),
@@ -651,6 +840,29 @@ def _white_dragon_result(result_text: str) -> dict[str, Any]:
     }
 
 
+def _reward_currency_snapshot(occurrence: MagicInvasionOccurrence) -> dict[str, Any]:
+    """Read the exact occurrence family's current Magic currency from Runtime."""
+
+    _shop_id, currency_type, _cross_count = resolve_magic_invasion_shop_identity(
+        cross_count=occurrence.server_count
+    )
+    snapshot = read_wallet_currency_snapshot(
+        currency_type,
+        allow_discovery=False,
+        missing_as_zero=True,
+    )
+    if int(snapshot.get("currency_type") or 0) != int(currency_type):
+        raise RuntimeError("魔道入侵兑币 Runtime 返回了错误币种")
+    return {
+        "currency_type": int(currency_type),
+        "exchange_currency": int(snapshot.get("exchange_currency") or 0),
+        "cumulative_currency": int(snapshot.get("cumulative_currency") or 0),
+        "captured_at": str(snapshot.get("captured_at") or ""),
+        "source": str(snapshot.get("source") or "runtime_memory"),
+        "evidence": dict(snapshot.get("evidence") or {}),
+    }
+
+
 def execute_magic_invasion_explore_job(
     runner: Any,
     ctx: dict[str, Any],
@@ -673,7 +885,7 @@ def execute_magic_invasion_explore_job(
     target_batches = int(payload.get("target_batches") or MAGIC_INVASION_TARGET_BATCHES)
     batch_size = int(payload.get("batch_size") or MAGIC_INVASION_EXPLORE_BATCH_SIZE)
     if target_batches != 3 or batch_size != 500:
-        raise ValueError("魔道入侵生产策略固定为每实例 3×500 基础探查")
+        raise ValueError("魔道入侵生产策略固定为 3×500，未出兑币时至多补第 4 批")
     now = datetime.now().astimezone()
     schedule = dict(prepared_schedule) if prepared_schedule is not None else (
         read_fanxiu_activity_runtime_schedule(
@@ -708,12 +920,63 @@ def execute_magic_invasion_explore_job(
     progress = load_magic_invasion_occurrence_progress(occurrence)
     progress["state"] = _legacy_phase(progress.get("state"))
     confirmed = list(progress.get("confirmed_batches") or [])
-    if len(confirmed) >= target_batches:
-        progress["state"] = "complete"
-        _set_progress(occurrence, progress)
+    if progress["state"] == "complete":
+        completed_count = len(confirmed)
         return {
             "result": "success",
-            "message": f"魔道入侵 {occurrence.mode} 实例已幂等完成 1500 次",
+            "message": (
+                f"魔道入侵 {occurrence.mode} 实例已幂等完成 "
+                f"{completed_count}×500={completed_count * 500} 次"
+            ),
+            "performed_actions": False,
+            "progress": progress,
+        }
+
+    baseline = progress.get("reward_currency_baseline")
+    if not isinstance(baseline, Mapping):
+        if confirmed:
+            raise RuntimeError("魔道入侵已有探查批次但缺少开跑前兑币基线，拒绝猜测补第 4 批")
+        baseline = _reward_currency_snapshot(occurrence)
+        progress["reward_currency_baseline"] = baseline
+        _set_progress(occurrence, progress)
+    baseline_amount = int(baseline.get("exchange_currency") or 0)
+
+    required_batches = MAGIC_INVASION_TARGET_BATCHES
+    stored_reward_probe = progress.get("reward_currency_after_three")
+    if len(confirmed) == MAGIC_INVASION_TARGET_BATCHES:
+        if not isinstance(stored_reward_probe, Mapping):
+            stored_reward_probe = _reward_currency_snapshot(occurrence)
+            reward_plan = plan_magic_invasion_reward_batches(
+                completed_batches=len(confirmed),
+                currency_before=baseline_amount,
+                currency_after=int(stored_reward_probe.get("exchange_currency") or 0),
+            )
+            progress.update({
+                "reward_currency_after_three": stored_reward_probe,
+                "reward_currency_delta_after_three": reward_plan.currency_delta,
+                "reward_currency_observed_after_three": reward_plan.reward_observed,
+                "fourth_batch_required": reward_plan.fourth_batch_required,
+            })
+            _set_progress(occurrence, progress)
+        required_batches = (
+            MAGIC_INVASION_MAX_BATCHES
+            if bool(progress.get("fourth_batch_required"))
+            else MAGIC_INVASION_TARGET_BATCHES
+        )
+    elif len(confirmed) >= MAGIC_INVASION_MAX_BATCHES:
+        required_batches = MAGIC_INVASION_MAX_BATCHES
+
+    if len(confirmed) >= required_batches:
+        progress["state"] = "complete"
+        progress["completed_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        _set_progress(occurrence, progress)
+        completed_count = len(confirmed)
+        return {
+            "result": "success",
+            "message": (
+                f"魔道入侵 {occurrence.mode} 实例已完成 "
+                f"{completed_count}×500={completed_count * 500} 次"
+            ),
             "performed_actions": False,
             "progress": progress,
         }
@@ -724,9 +987,7 @@ def execute_magic_invasion_explore_job(
         if already_on_map_scene:
             yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,), timeout_seconds=15.0)
         else:
-            if already_on_main_scene:
-                yield from _wait_scene(context, (MAGIC_INVASION_MAIN_SCENE_ID,), timeout_seconds=15.0)
-            else:
+            if not already_on_main_scene:
                 yield from context.go_scene(66)
                 yield from select_schedule_activity(
                     context,
@@ -736,17 +997,25 @@ def execute_magic_invasion_explore_job(
                     require_runtime_alignment=True,
                     now=now,
                 )
-                yield from _wait_scene(context, (MAGIC_INVASION_MAIN_SCENE_ID,), timeout_seconds=30.0)
-            yield from _enter_magic_invasion_map(context)
+            yield from enter_magic_invasion_challenge_page(context)
 
     def ensure_fast_explore_enabled() -> Iterator[Any]:
-        if context.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is None:
-            context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开关")
+        # The result animation can briefly cover the checkmark after a batch.
+        # Sample stable fresh frames before deciding that the switch is off.
+        yield from context.wait_action_settle(1.0)
+        for _attempt in range(4):
+            if context.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is not None:
+                return
             yield from context.wait_action_settle(0.5)
-            if context.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is None:
-                raise RuntimeError("魔道入侵快速探索开关未进入开启态")
 
-    while len(confirmed) < target_batches:
+        context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开关")
+        for _attempt in range(6):
+            yield from context.wait_action_settle(0.5)
+            if context.shape_matches(MAGIC_INVASION_MAP_SCENE_ID, "快速探索开启态") is not None:
+                return
+        raise RuntimeError("魔道入侵快速探索开关未进入开启态")
+
+    while len(confirmed) < required_batches:
         if stop_event.is_set():
             raise InterruptedError()
         batch_index = len(confirmed) + 1
@@ -968,6 +1237,35 @@ def execute_magic_invasion_explore_job(
         ):
             progress.pop(key, None)
         _set_progress(occurrence, progress)
+
+        if len(confirmed) == MAGIC_INVASION_TARGET_BATCHES:
+            reward_after_three = _reward_currency_snapshot(occurrence)
+            reward_plan = plan_magic_invasion_reward_batches(
+                completed_batches=len(confirmed),
+                currency_before=baseline_amount,
+                currency_after=int(reward_after_three.get("exchange_currency") or 0),
+            )
+            progress.update({
+                "reward_currency_after_three": reward_after_three,
+                "reward_currency_delta_after_three": reward_plan.currency_delta,
+                "reward_currency_observed_after_three": reward_plan.reward_observed,
+                "fourth_batch_required": reward_plan.fourth_batch_required,
+            })
+            required_batches = reward_plan.required_batches
+            _set_progress(occurrence, progress)
+            runner._log(
+                "success" if reward_plan.reward_observed else "info",
+                (
+                    "魔道前三批兑币对账："
+                    f"{baseline_amount}->{int(reward_after_three['exchange_currency'])}，"
+                    f"增量 {reward_plan.currency_delta}；"
+                    + (
+                        "已触发兑币奖励，不执行第 4 批"
+                        if reward_plan.reward_observed
+                        else "未触发兑币奖励，仅追加第 4 批"
+                    )
+                ),
+            )
         inventory_before_count = int(
             dict(evidence.get("tianyan_before") or {}).get("count") or 0
         )
@@ -977,7 +1275,7 @@ def execute_magic_invasion_explore_job(
         )
         runner._log(
             "success",
-            f"魔道第 {batch_index}/3 批对账：基础探查 "
+            f"魔道第 {batch_index}/{required_batches} 批对账：基础探查 "
             f"{base_explore_before}->{base_explore_before + 500}，"
             f"可用探查次数 {evidence['available_explore_count_before']}->500->0，"
             f"天眼符 {inventory_before_count}->{inventory_after_count}，"
@@ -989,10 +1287,15 @@ def execute_magic_invasion_explore_job(
     _set_progress(occurrence, progress)
 
     # Departure is best effort after the business terminal is durably stored.
+    completed_count = len(confirmed)
+    completed_explores = completed_count * MAGIC_INVASION_EXPLORE_BATCH_SIZE
     try:
         yield from _leave_magic_invasion_map(context)
     except Exception as exc:
-        runner._log("info", f"魔道入侵 1500 次已提交；返回世界留待通用恢复：{exc}")
+        runner._log(
+            "info",
+            f"魔道入侵 {completed_explores} 次已提交；返回世界留待通用恢复：{exc}",
+        )
 
     white_dragon_batches = [
         int(item.get("batch_index") or 0)
@@ -1002,11 +1305,18 @@ def execute_magic_invasion_explore_job(
     white_dragon_message = (
         f"白龙马于第 {','.join(str(value) for value in white_dragon_batches)} 批触发"
         if white_dragon_batches
-        else "本次 1500 次未观察到白龙马触发"
+        else f"本次 {completed_explores} 次未从结果文字观察到白龙马"
+    )
+    reward_delta = int(progress.get("reward_currency_delta_after_three") or 0)
+    reward_message = (
+        f"前三批兑币增量 {reward_delta}，不补第 4 批"
+        if reward_delta > 0
+        else "前三批兑币无正增量，已且仅已补第 4 批"
     )
     message = (
         f"魔道入侵 {occurrence.mode} 实例 {occurrence.occurrence_id}："
-        f"完成 3×500=1500 次基础探查；{white_dragon_message}；"
+        f"完成 {completed_count}×500={completed_explores} 次基础探查；"
+        f"{reward_message}；{white_dragon_message}；"
         "邮件为可选独立流程"
     )
     runner._log("success", message)
@@ -1027,12 +1337,17 @@ __all__ = [
     "MAGIC_INVASION_PROGRESS_KEY",
     "MagicInvasionOccurrence",
     "current_magic_invasion_occurrence",
+    "enter_magic_invasion_challenge_page",
+    "ensure_magic_invasion_explore_batch_ready",
     "execute_magic_invasion_explore_job",
     "parse_magic_invasion_result_explore_count",
+    "load_magic_invasion_occurrence_evidence",
     "load_magic_invasion_occurrence_progress",
     "magic_invasion_occurrences",
     "next_magic_invasion_probe_time",
     "parse_available_explore_count",
     "parse_owned_item_count",
     "parse_selected_item_count",
+    "store_magic_invasion_occurrence_evidence",
+    "wait_magic_invasion_cover_after_schedule_entry",
 ]

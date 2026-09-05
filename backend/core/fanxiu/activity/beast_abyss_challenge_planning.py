@@ -10,6 +10,10 @@ from math import ceil, floor
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from backend.core.fanxiu.activity.batch_stability import (
+    positive_relative_change_is_stable,
+)
+
 
 BEAST_ABYSS_MEASUREMENT_EXPLORES = 100
 
@@ -344,11 +348,10 @@ def is_beast_abyss_currency_yield_stable(
         raise ValueError("兽渊稳定性比较必须使用等大批次")
     if previous.new_currency <= 0 or current.new_currency <= 0:
         raise ValueError("兽渊稳定性比较缺少正数兑币产出")
-    if maximum_change < 0:
-        raise ValueError("兽渊稳定性阈值无效")
-    return (
-        Fraction(abs(current.new_currency - previous.new_currency), previous.new_currency)
-        <= maximum_change
+    return positive_relative_change_is_stable(
+        previous.new_currency,
+        current.new_currency,
+        maximum_change=maximum_change,
     )
 def plan_beast_abyss_measurement_batch(
     snapshot: BeastAbyssResourceLedger,

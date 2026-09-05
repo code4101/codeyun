@@ -7,6 +7,7 @@ from typing import Iterable
 MAGIC_INVASION_FAMILY_KEY = "magic-invasion"
 MAGIC_INVASION_EXPLORE_BATCH_SIZE = 500
 MAGIC_INVASION_TARGET_BATCHES = 3
+MAGIC_INVASION_MAX_BATCHES = 4
 TIANYAN_ITEM_ID = 1_010_004
 WHITE_DRAGON_EFFECT_ALIASES = (
     "御灵·白龙马",
@@ -48,6 +49,17 @@ class MagicInvasionEffectObservation:
     direct_currency_delta: int
     manual_challenge_required: bool
     rewards_complete: bool
+
+
+@dataclass(frozen=True)
+class MagicInvasionRewardBatchPlan:
+    """Decide whether the one allowed reward-miss compensation batch is owed."""
+
+    completed_batches: int
+    required_batches: int
+    currency_delta: int
+    reward_observed: bool
+    fourth_batch_required: bool
 
 
 def completed_magic_invasion_batches(
@@ -125,6 +137,39 @@ def actual_magic_invasion_topup(*, inventory_before: int, inventory_after: int) 
     return actual
 
 
+def plan_magic_invasion_reward_batches(
+    *,
+    completed_batches: int,
+    currency_before: int,
+    currency_after: int,
+) -> MagicInvasionRewardBatchPlan:
+    """Plan the local 3+1 loop from authoritative activity-currency facts.
+
+    Three batches are always required. Once those batches are confirmed, any
+    positive wallet delta ends the loop. A non-positive delta permits exactly
+    one fourth batch; completing that batch always ends the loop.
+    """
+
+    completed = int(completed_batches)
+    if completed < 0 or completed > MAGIC_INVASION_MAX_BATCHES:
+        raise ValueError("魔道入侵已完成批次数超出 0..4")
+    currency_delta = max(0, int(currency_after) - int(currency_before))
+    reward_observed = currency_delta > 0
+    fourth_required = completed == MAGIC_INVASION_TARGET_BATCHES and not reward_observed
+    required = (
+        MAGIC_INVASION_MAX_BATCHES
+        if completed >= MAGIC_INVASION_MAX_BATCHES or fourth_required
+        else MAGIC_INVASION_TARGET_BATCHES
+    )
+    return MagicInvasionRewardBatchPlan(
+        completed_batches=completed,
+        required_batches=required,
+        currency_delta=currency_delta,
+        reward_observed=reward_observed,
+        fourth_batch_required=fourth_required,
+    )
+
+
 def observe_magic_invasion_effect(
     *,
     result_text: str = "",
@@ -161,14 +206,17 @@ def observe_magic_invasion_effect(
 __all__ = [
     "MAGIC_INVASION_EXPLORE_BATCH_SIZE",
     "MAGIC_INVASION_FAMILY_KEY",
+    "MAGIC_INVASION_MAX_BATCHES",
     "MAGIC_INVASION_TARGET_BATCHES",
     "TIANYAN_ITEM_ID",
     "WHITE_DRAGON_EFFECT_ALIASES",
     "MagicInvasionEffectObservation",
     "MagicInvasionExploreEvidence",
     "MagicInvasionExplorePlan",
+    "MagicInvasionRewardBatchPlan",
     "actual_magic_invasion_topup",
     "completed_magic_invasion_batches",
     "observe_magic_invasion_effect",
     "plan_magic_invasion_explore",
+    "plan_magic_invasion_reward_batches",
 ]
