@@ -495,6 +495,55 @@ def test_trial_difficulty_final_verification_tolerates_a_transient_empty_ocr_fra
     assert waits == [2.0]
 
 
+def test_trial_difficulty_bootstraps_level_one_with_a_first_axis_nudge(monkeypatch):
+    runner = create_behavior_tree_executor()
+    context = runner._behavior_tree_context(
+        {"images": {358: {"id": 358, "title": "设置难度", "width": 900, "height": 1600, "shapes": []}}},
+        stop_event=threading.Event(),
+    )
+    slider_targets: list[tuple[str, int]] = []
+    reads = iter((
+        ObservedTrialDifficulty(level=1, text="当前难度为1级"),
+        ObservedTrialDifficulty(level=6, text="当前难度为6级"),
+    ))
+    monkeypatch.setattr(
+        runner,
+        "_shared_spatial_ocr_result",
+        lambda *_args, **_kwargs: {
+            "tokens": [
+                {"text": axis.label, "x": 1, "y": index * 10, "w": 10, "h": 5}
+                for index, axis in enumerate(TRIAL_DIFFICULTY_AXES)
+            ]
+        },
+    )
+    monkeypatch.setattr(context, "cur_frame", lambda **_kwargs: "frame")
+
+    def set_slider(_view, label, target, **_kwargs):
+        slider_targets.append((label, int(target)))
+        if False:
+            yield None
+        return {"label": label, "target": int(target)}
+
+    monkeypatch.setattr(context, "set_slider_value", set_slider)
+    monkeypatch.setattr(context, "read_current_trial_difficulty", lambda *_args, **_kwargs: next(reads))
+
+    result = _finish(context.configure_even_trial_difficulty(358, 6))
+
+    assert result["final_level"] == 6
+    assert slider_targets[:5] == [
+        ("伤害降低", 2),
+        ("攻击提升", 2),
+        ("暴击", 3),
+        ("致命抵御", 2),
+        ("攻击频率", 10),
+    ]
+    assert slider_targets[5:] == [
+        pair
+        for axis, target in zip(TRIAL_DIFFICULTY_AXES, (2, 2, 3, 2, 10))
+        for pair in ((axis.label, axis.value_at(2)), (axis.label, target))
+    ]
+
+
 def test_trial_scroll_can_use_safe_cross_axis_band(monkeypatch):
     runner = create_behavior_tree_executor()
     context = runner._behavior_tree_context(

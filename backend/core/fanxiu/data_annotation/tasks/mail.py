@@ -56,6 +56,7 @@ class MailTaskMixin:
     # 邮件详情偶尔会在服务器结算或连续翻页后延迟二十余秒才稳定为
     # #122/#123。12 秒会把仍在加载的真实详情误判成 unknown。
     _MAIL_DETAIL_READY_TIMEOUT_SECONDS = 30.0
+    _MAIL_RUNTIME_READ_ATTEMPTS = 3
 
     def _execute_mail_selective_claim_task(
         self,
@@ -456,6 +457,98 @@ class MailTaskMixin:
                 protected_claim_authorizer=protected_claim_authorizer,
             )
         )
+
+    @staticmethod
+    def _first_screen_runtime_mapping(
+        snapshot: dict[str, Any],
+        image121: dict[str, Any],
+        fragments: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Infer Runtime #0 exclusively from the ordered OCR rows 2/3/4."""
+
+        items = snapshot.get("items")
+        if (
+            not snapshot.get("complete")
+            or not isinstance(items, list)
+            or int(snapshot.get("decoded_count") or -1) != len(items)
+            or len(items) < 4
+        ):
+            raise RuntimeError("邮件_选择性领取：首屏领取缺少完整 Runtime #0..#3 序列")
+        geometry = mail_window_geometry_from_asset(image121)
+        observations = build_mail_visual_observations(
+            fragments,
+            geometry,
+            visible_slots=(1, 2, 3),
+        )
+        by_slot = {item.slot_index: item for item in observations}
+        evidence: list[dict[str, Any]] = []
+        known_title_anchor_count = 0
+        for slot in (1, 2, 3):
+            observation = by_slot.get(slot)
+            runtime_item = items[slot]
+            if observation is None:
+                raise RuntimeError(
+                    f"邮件_选择性领取：首屏第 {slot + 1} 行 OCR 缺失，不能反推第1行"
+                )
+            expected_title = str(runtime_item.get("title") or "")
+            title_score = max(
+                (
+                    ocr_name_similarity(expected_title, candidate)
+                    for candidate in observation.title_candidates
+                ),
+                default=0.0,
+            )
+            expected_time = re.sub(
+                r"\D+",
+                "",
+                str(
+                    runtime_item.get("create_time_text")
+                    or runtime_item.get("create_time")
+                    or runtime_item.get("create_time_ms")
+                    or ""
+                ),
+            )
+            time_matched = any(
+                len(candidate_digits) >= 4
+                and len(expected_time) >= 4
+                and candidate_digits[-4:] == expected_time[-4:]
+                for candidate in observation.time_candidates
+                if (candidate_digits := re.sub(r"\D+", "", candidate))
+            )
+            runtime_title_unknown = expected_title.startswith("未知邮件类型")
+            if not runtime_title_unknown and title_score >= 0.68:
+                known_title_anchor_count += 1
+            if (title_score < 0.68 and not runtime_title_unknown) or not time_matched:
+                raise RuntimeError(
+                    f"邮件_选择性领取：首屏第 {slot + 1} 行未按序匹配 Runtime #{slot}；"
+                    f"title_score={title_score:.2f} time_matched={time_matched} "
+                    f"ocr_titles={list(observation.title_candidates)} "
+                    f"ocr_times={list(observation.time_candidates)} "
+                    f"runtime_title={expected_title} runtime_time={expected_time}"
+                )
+            evidence.append(
+                {
+                    "slot_index": slot,
+                    "runtime_index": slot,
+                    "title_score": round(title_score, 4),
+                    "time_matched": True,
+                    "runtime_title_unknown": runtime_title_unknown,
+                }
+            )
+        if known_title_anchor_count < 1:
+            raise RuntimeError(
+                "邮件_选择性领取：首屏第2/3/4行仅有未知 Runtime 标题与时间证据，"
+                "缺少至少一条真实标题锚点，不能反推第1行"
+            )
+        first = items[0]
+        return {
+            "slot_index": 0,
+            "runtime_index": int(first.get("runtime_index") or 0),
+            "mail_id": str(first.get("id") or first.get("mail_id") or ""),
+            "title": str(first.get("title") or ""),
+            "create_time_text": str(first.get("create_time_text") or ""),
+            "evidence": evidence,
+        }
 
     @staticmethod
     def _ordered_runtime_window_mapping(
@@ -975,18 +1068,30 @@ class MailTaskMixin:
         *,
         reason: str,
     ) -> dict[str, Any]:
-        self._raise_if_stopped(stop_event)
-        if not self._refresh_runtime_mail_snapshot(reason, force_refresh=True):
-            raise RuntimeError(f"邮件_选择性领取：{reason} Runtime 读取失败")
-        current = current_runtime_mail_sequence_snapshot(_db_engine)
-        items = current.get("items")
-        if (
-            not current.get("complete")
-            or not isinstance(items, list)
-            or int(current.get("decoded_count") or -1) != len(items)
-        ):
-            raise RuntimeError(f"邮件_选择性领取：{reason}未得到完整 Runtime 邮件序列")
-        return current
+        last_error = f"邮件_选择性领取：{reason} Runtime 读取失败"
+        attempts = max(1, int(self._MAIL_RUNTIME_READ_ATTEMPTS))
+        for attempt in range(attempts):
+            self._raise_if_stopped(stop_event)
+            if self._refresh_runtime_mail_snapshot(reason, force_refresh=True):
+                current = current_runtime_mail_sequence_snapshot(_db_engine)
+                items = current.get("items")
+                if (
+                    current.get("complete")
+                    and isinstance(items, list)
+                    and int(current.get("decoded_count") or -1) == len(items)
+                ):
+                    return current
+                last_error = (
+                    f"邮件_选择性领取：{reason}未得到完整 Runtime 邮件序列"
+                )
+            if attempt + 1 < attempts:
+                self._log(
+                    "wait",
+                    f"邮件_选择性领取：{reason}第 {attempt + 1}/{attempts} 次 Runtime "
+                    "快照未物化，保留当前邮件页后重读",
+                )
+                time.sleep(0.6)
+        raise RuntimeError(last_error)
 
     @staticmethod
     def _precise_mail_click_point(

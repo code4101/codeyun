@@ -64,6 +64,11 @@ class _Runtime:
         self.actions.append(("current_scene", tuple(views), update))
         return self.scene_id, 100.0, "frame"
 
+    def current_scene(self, views, update=False, **_options):
+        if False:
+            yield None
+        return self.sample_scene_once(views, update=update)
+
     def wait_click_then_scene(self, scene, shape, *targets, **options):
         self.actions.append(
             (
@@ -683,6 +688,37 @@ def test_lilian_event_enters_from_world_before_base_flow(monkeypatch):
             (427, "事件", (428, 429)),
             (429, "关闭事件页", (425,)),
     ]
+
+
+def test_lilian_event_retries_prepare_after_global_popup_returns_to_434(monkeypatch):
+    test_engine = create_engine("sqlite://")
+    FanxiuChoiceKnowledge.__table__.create(test_engine)
+    monkeypatch.setattr(lilian_task, "engine", test_engine)
+    runtime = _Runtime(
+        34,
+        landings=(
+            425, 427, 428,
+            434, 434, 435, 436, 437, 438, 425,
+            427, 429, 425, 34,
+        ),
+        prompt="未知事件",
+        options=("甲", "乙"),
+    )
+
+    result = _drain(
+        execute_lilian_event_task(
+            _Runner(runtime, datetime(2026, 7, 30, 17, 30)),
+            _ctx(),
+            {},
+            threading.Event(),
+        )
+    )
+
+    assert result["result"] == "success"
+    assert sum(
+        action[:3] == ("wait_click_then_scene", 434, "历练")
+        for action in runtime.actions
+    ) == 2
 
 
 def test_lilian_event_processes_every_event_until_fresh_429(monkeypatch):

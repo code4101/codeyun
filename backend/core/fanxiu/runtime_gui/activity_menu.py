@@ -41,15 +41,16 @@ class ActivityMenuGrid:
 WORLD_LEFT_ACTIVITY_GRID = ActivityMenuGrid(columns=1)
 # The current ActivityBtnGroup popup renders four columns.  Measurements are
 # from live 900x1600 #403 frames: neighbouring icon-label centres are
-# about 145 px apart horizontally and 170 px vertically.  The first row is
-# around y=410; the former y>=620 envelope silently discarded it. Runtime owns
-# identity/order; these values only let any reliable OCR anchor project a
-# target whose own label was missed.
+# about 145 px apart horizontally and 170 px vertically.  The popup is now
+# anchored in the lower half of the screen, with label rows around
+# y=895/1065/1235.  Keep the envelope on the popup itself: accepting the
+# visible world-menu labels behind the translucent popup can otherwise project
+# a perfectly plausible but completely wrong activity coordinate.
 GROUP_POPUP_ACTIVITY_GRID = ActivityMenuGrid(
     columns=4,
     column_pitch=145.0,
     row_pitch=170.0,
-    candidate_bounds=(285.0, 380.0, 850.0, 820.0),
+    candidate_bounds=(270.0, 840.0, 875.0, 1310.0),
 )
 
 
@@ -232,18 +233,13 @@ def plan_activity_menu_click(
     )
     if grid.candidate_bounds is not None:
         left, top, right, bottom = grid.candidate_bounds
-        bounded_candidates = tuple(
+        candidates = tuple(
             candidate
             for candidate in candidates
             if candidate.box is not None
             and left <= candidate.box[0] + candidate.box[2] / 2.0 <= right
             and top <= candidate.box[1] + candidate.box[3] / 2.0 <= bottom
         )
-        # Geometry-only unit consumers may use a cropped/local coordinate
-        # system.  Apply the absolute full-frame envelope only when this frame
-        # actually contains candidates in that envelope.
-        if bounded_candidates:
-            candidates = bounded_candidates
     anchors = _anchors(
         snapshot.items,
         candidates,

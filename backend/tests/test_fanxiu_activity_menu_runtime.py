@@ -464,13 +464,35 @@ def test_planner_uses_runtime_identity_with_one_glyph_ocr_error():
     plan = plan_activity_menu_click(
         snapshot,
         "每日签到",
-        [{"text": "每曰签到", "x": 100, "y": 300, "w": 80, "h": 30}],
+        [{"text": "每曰签到", "x": 300, "y": 880, "w": 80, "h": 30}],
         grid=GROUP_POPUP_ACTIVITY_GRID,
     )
 
     assert plan.ready is True
     assert plan.target and plan.target.activity_id == 101
-    assert plan.point == (140.0, 270.0)
+    assert plan.point == (340.0, 850.0)
+
+
+def test_group_popup_planner_rejects_matching_world_menu_text_behind_popup():
+    snapshot = _snapshot(
+        [
+            ActivityMenuItem(1, "activity:101", "每日签到", activity_id=101),
+            ActivityMenuItem(2, "activity:102", "每日限购", activity_id=102),
+        ]
+    )
+
+    plan = plan_activity_menu_click(
+        snapshot,
+        "每日签到",
+        [
+            {"text": "每日签到", "x": 400, "y": 190, "w": 80, "h": 30},
+            {"text": "每日签到", "x": 300, "y": 880, "w": 80, "h": 30},
+        ],
+        grid=GROUP_POPUP_ACTIVITY_GRID,
+    )
+
+    assert plan.ready is True
+    assert plan.point == (340.0, 850.0)
 
 
 def test_planner_projects_target_from_ordered_grid_anchor():

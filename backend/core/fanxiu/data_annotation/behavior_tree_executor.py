@@ -110,6 +110,7 @@ from backend.core.fanxiu.data_annotation.slider_control import (
 )
 from backend.core.fanxiu.data_annotation.trial_difficulty import (
     TRIAL_DIFFICULTY_AXES,
+    TRIAL_DIFFICULTY_BASE_LEVEL,
     TRIAL_DIFFICULTY_MIN_LEVEL,
     ObservedTrialDifficulty,
     build_even_trial_difficulty_plan,
@@ -749,6 +750,7 @@ class BehaviorTreeContext(AutomationContext):
                     self,
                     candidate,
                     score=float(layer0_score or 0.0),
+                    expected_scene_ids=business_id_set,
                 ):
                     raise RuntimeError(
                         f"场景识别命中弹窗 #{layer0_scene_id}，但该节点没有可执行的中断处理动作"
@@ -2117,6 +2119,8 @@ class BehaviorTreeContext(AutomationContext):
         *,
         frame_data_url: str | None = None,
         match_result: dict[str, Any] | None = None,
+        x_ratio: float = 0.5,
+        y_ratio: float = 0.5,
     ) -> Any:
         target_view = self.view(view)
         if not isinstance(target_view.raw, dict):
@@ -2147,6 +2151,8 @@ class BehaviorTreeContext(AutomationContext):
                 raw_shape,
                 frame,
                 match_result=action_match_result,
+                x_ratio=float(x_ratio),
+                y_ratio=float(y_ratio),
             )
         except RuntimeError as exc:
             if not self.runner._scene_route_fixed_click_fallback_allowed(source_view.raw, raw_shape, exc):
@@ -3417,6 +3423,41 @@ class BehaviorTreeContext(AutomationContext):
             )
             results.append(result)
 
+        # A newly unlocked trial reports a level below 6 even though each
+        # slider row already renders its first non-zero label. Merely observing
+        # those labels as equal to the level-6 plan performs no gesture, so the
+        # game never activates that axis. Nudge every axis up one step and back
+        # only for this proven bootstrap state.
+        bootstrap_observation: ObservedTrialDifficulty | None = None
+        if plan.level == TRIAL_DIFFICULTY_MIN_LEVEL:
+            try:
+                bootstrap_observation = self.read_current_trial_difficulty(target_view)
+            except RuntimeError:
+                bootstrap_observation = None
+        if (
+            bootstrap_observation is not None
+            and TRIAL_DIFFICULTY_BASE_LEVEL <= bootstrap_observation.level < TRIAL_DIFFICULTY_MIN_LEVEL
+        ):
+            for index, (axis, target_value) in enumerate(zip(TRIAL_DIFFICULTY_AXES, plan.values)):
+                yield from ensure_axis_visible(axis.label, "up" if index < 3 else "down")
+                nudge_value = axis.value_at(2)
+                for value in (nudge_value, target_value):
+                    results.append((yield from self.set_slider_value(
+                        target_view,
+                        axis.label,
+                        value,
+                        track=track_shape,
+                        anchor=title_anchor_shape,
+                        minimum=axis.minimum,
+                        maximum=axis.maximum,
+                        step=axis.step,
+                        settle_seconds=settle_seconds,
+                    )))
+            self.runner._log(
+                "detail",
+                "仙窍试炼难度：已通过逐轴往返激活新解锁线路的最低 6 级配置",
+            )
+
         final_observation: ObservedTrialDifficulty | None = None
         last_read_error: RuntimeError | None = None
         # A global scrolling announcement can cross the ``当前难度`` label for
@@ -3933,6 +3974,8 @@ class BehaviorTreeContext(AutomationContext):
         sweep_confirm_view: View | int | str = 366,
         max_polls: int = 30,
         stable_departure_polls: int = 5,
+        max_action_attempts: int = 3,
+        action_retry_polls: int = 3,
         settle_seconds: float = 0.8,
         sweep_result_delay: float = 5.0,
         sweep_return_timeout: float = 15.0,
@@ -3981,7 +4024,11 @@ class BehaviorTreeContext(AutomationContext):
         terminal_confirmation_ids = {continue_id}
         max_polls = max(1, int(max_polls))
         stable_departure_polls = max(1, int(stable_departure_polls))
+        max_action_attempts = max(1, int(max_action_attempts))
+        action_retry_polls = max(1, int(action_retry_polls))
         handled: set[int] = set()
+        action_attempts: dict[int, int] = {}
+        last_action_poll: dict[int, int] = {}
         actions: list[dict[str, Any]] = []
         absent_polls = 0
         last_scene_id: int | None = None
@@ -3995,14 +4042,38 @@ class BehaviorTreeContext(AutomationContext):
                 last_scene_id = scene_id
                 if scene_id in views:
                     absent_polls = 0
-                    if scene_id not in handled:
+                    attempts = int(action_attempts.get(scene_id) or 0)
+                    retry_ready = (
+                        attempts == 0
+                        or poll_index - int(last_action_poll.get(scene_id) or 0) >= action_retry_polls
+                    )
+                    if attempts < max_action_attempts and retry_ready:
                         shape = views[scene_id]
-                        self.click_shape(scene_id, shape, frame_data_url=frame)
+                        click_ratios = (0.5, 0.72, 0.28)
+                        x_ratio = click_ratios[min(attempts, len(click_ratios) - 1)]
+                        if attempts:
+                            self.runner._log(
+                                "warning",
+                                (
+                                    f"仙窍试炼：#{scene_id}「{shape}」点击后仍在原场景，"
+                                    f"框内换点重试 {attempts + 1}/{max_action_attempts}"
+                                ),
+                            )
+                        self.click_shape(
+                            scene_id,
+                            shape,
+                            frame_data_url=frame,
+                            x_ratio=x_ratio,
+                        )
                         handled.add(scene_id)
+                        action_attempts[scene_id] = attempts + 1
+                        last_action_poll[scene_id] = poll_index
                         actions.append({
                             "scene": scene_id,
                             "shape": shape,
                             "score": float(score),
+                            "attempt": attempts + 1,
+                            "x_ratio": x_ratio,
                         })
                         if scene_id == sweep_id:
                             yield from self.wait_action_settle(sweep_result_delay)
@@ -13659,6 +13730,7 @@ class BehaviorTreeExecutor(
         last_score = 0.0
         last_frame = ""
         history: list[str] = []
+        handled_intermediate_scene_ids: set[int] = set()
         left_source = False
         shape_jump_target = str(shape.get("sceneJumpTarget") or "").strip()
         dynamic_landing = bool(edge.get("_dynamic_confirm_edge")) or shape_jump_target == "-1" or shape_jump_target.startswith("-1(")

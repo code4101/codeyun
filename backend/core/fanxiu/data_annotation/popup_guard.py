@@ -282,6 +282,7 @@ class SceneInterruptionMixin:
         *,
         score: float,
         candidate: dict[str, Any] | None = None,
+        expected_scene_ids: set[int] | None = None,
     ) -> bool:
         view_id = int(view.id or 0)
         view_label = f"#{view_id}" if view_id else "#?"
@@ -292,26 +293,16 @@ class SceneInterruptionMixin:
         pending_title = str(
             (pending_shape.title if isinstance(pending_shape, Shape) else "") or ""
         ).strip()
-        tree = getattr(context, "ctx", {}).get("asset_tree")
-        declared_ids = (
-            self._scene_jump_target_ids(
-                tree if isinstance(tree, list) else [],
-                pending_shape.raw,
-            )
-            if isinstance(pending_shape, Shape)
-            else []
-        )
-        confirmation_ids = self._scene_jump_confirmation_scene_ids(
-            tree if isinstance(tree, list) else []
-        )
         # A leave confirmation may be accepted only as the immediate declared
-        # landing of the action just executed.  Merely listing #86/#289 as a
-        # business candidate grants no ownership; unexpected instances still
-        # use the inherited parent-background dismissal below.
+        # response to an exit-like action just executed. Merely listing
+        # #86/#289 as a business candidate grants no ownership; unexpected
+        # instances still use the inherited parent-background dismissal below.
         if (
-            pending_age <= 15.0
-            and (view_id in declared_ids or view_id in confirmation_ids)
-            and pending_title in {"离开", "返回", "退出", "关闭", "回到世界"}
+            (
+                pending_age <= 15.0
+                and pending_title in {"离开", "返回", "退出", "关闭", "回到世界"}
+            )
+            or view_id in (expected_scene_ids or set())
         ):
             confirm_shape = view.get_shape("确认")
             if confirm_shape is None:
@@ -481,6 +472,7 @@ class SceneInterruptionMixin:
         *,
         score: float,
         allow_confirm_actions: bool = True,
+        expected_scene_ids: set[int] | None = None,
     ) -> bool:
         """Execute the action bound to the popup node selected by the graph.
 
@@ -541,6 +533,9 @@ class SceneInterruptionMixin:
             pending_age <= 15.0
             and (view.id in declared_ids or described_result)
             and isinstance(intended_shape, dict)
+        ) or (
+            view.id in (expected_scene_ids or set())
+            and isinstance(intended_shape, dict)
         ):
             intended = Shape(intended_shape, parent_view=view)
             context.click_shape(view, intended, frame_data_url=context.cur_frame())
@@ -567,6 +562,7 @@ class SceneInterruptionMixin:
                 event,
                 score=score,
                 candidate=candidate,
+                expected_scene_ids=expected_scene_ids,
             )
         if view.id == 287:
             return self._handle_auto_close_popup_287(

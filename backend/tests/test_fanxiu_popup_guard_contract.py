@@ -115,6 +115,83 @@ def test_declared_leave_action_is_confirmed_inside_layer0_guard() -> None:
     assert runner.status()["last_guard_event"]["action"] == "click:确认"
 
 
+def test_immediate_leave_confirmation_does_not_require_a_declared_popup_edge() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "filename": "0086.png",
+        "title": "离开场景",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "离开场景标识", "isSceneIdentity": True},
+            {"title": "确认", "x": 0.62, "y": 0.64, "w": 0.12, "h": 0.04},
+        ],
+    }
+    source = View({"type": "image", "filename": "0171.png", "shapes": []})
+    pending = Shape({"title": "离开"}, parent_view=source)
+    clicks: list[tuple[int, str]] = []
+
+    class Context:
+        ctx = {"asset_tree": [source.raw, popup]}
+        last_clicked_shape = pending
+        last_clicked_at = __import__("time").monotonic()
+
+        def cur_frame(self) -> str:
+            return "frame"
+
+        def click_shape(self, view: Any, shape: Any, **_options: Any) -> None:
+            clicks.append((int(view.id), str(shape.title)))
+
+    candidate = {
+        "image": popup,
+        "action_shape": {"title": "空白"},
+        "action_view": {"type": "image", "filename": "0047.png"},
+    }
+
+    assert runner._handle_recognized_popup_candidate(Context(), candidate, score=99.0)
+    assert clicks == [(86, "确认")]
+    assert runner.status()["last_guard_event"]["action"] == "click:确认"
+
+
+def test_expected_leave_popup_is_confirmed_after_click_context_was_consumed() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "filename": "0086.png",
+        "title": "离开场景",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "离开场景标识", "isSceneIdentity": True},
+            {"title": "确认", "x": 0.62, "y": 0.64, "w": 0.12, "h": 0.04},
+        ],
+    }
+    clicks: list[tuple[int, str]] = []
+
+    class Context:
+        ctx = {"asset_tree": [popup]}
+        last_clicked_shape = None
+        last_clicked_at = 0.0
+
+        def cur_frame(self) -> str:
+            return "frame"
+
+        def click_shape(self, view: Any, shape: Any, **_options: Any) -> None:
+            clicks.append((int(view.id), str(shape.title)))
+
+    candidate = {
+        "image": popup,
+        "action_shape": {"title": "空白"},
+        "action_view": {"type": "image", "filename": "0047.png"},
+    }
+
+    assert runner._handle_recognized_popup_candidate(
+        Context(), candidate, score=99.0, expected_scene_ids={171, 86, 34}
+    )
+    assert clicks == [(86, "确认")]
+
+
 def test_declared_business_popup_is_continued_inside_layer0_guard() -> None:
     runner = create_behavior_tree_executor()
     popup = {

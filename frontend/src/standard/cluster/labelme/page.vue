@@ -3963,9 +3963,21 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
+.directory-recursive-toggle :deep(.el-switch__core .el-switch__inner) {
+  padding: 0 4px 0 28px;
+}
+
 .directory-recursive-toggle :deep(.el-switch__action) {
   width: 24px;
   height: 24px;
+}
+
+.directory-recursive-toggle.is-checked :deep(.el-switch__core .el-switch__inner) {
+  padding: 0 28px 0 4px;
+}
+
+.directory-recursive-toggle.is-checked :deep(.el-switch__action) {
+  left: calc(100% - 25px);
 }
 
 .directory-section-count {

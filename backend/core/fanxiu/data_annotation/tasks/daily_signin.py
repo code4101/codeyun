@@ -914,21 +914,26 @@ class DailySigninTaskMixin:
                 retry_wait_seconds=return_settle_seconds,
             )
             try:
-                yield from context.wait_scene(
+                landing_scene = yield from context.wait_scene(
                     [403],
                     wait=view_timeout,
                     label="日常_签到：等待特惠页 #403",
                 )
-                break
+                scene_id = int(getattr(landing_scene, "id", landing_scene))
             except TimeoutError:
                 scene_id, _score, _frame = (yield from context.current_scene([34, 403], update=True))
-                if scene_id != 34 or entry_attempt >= 1:
-                    raise
-                self._log(
-                    "wait",
-                    "日常_签到：特惠入口首次点击未生效且仍可靠位于 #34，重读菜单后再试一次",
+            if int(scene_id) == 403:
+                break
+            if int(scene_id) != 34 or entry_attempt >= 1:
+                raise RuntimeError(
+                    "日常_签到：点击‘特惠’后未进入 #403，"
+                    f"实际识别为 #{scene_id}"
                 )
-                yield from context.wait_action_settle(return_settle_seconds)
+            self._log(
+                "wait",
+                "日常_签到：特惠入口首次点击未生效且仍可靠位于 #34，重读菜单后再试一次",
+            )
+            yield from context.wait_action_settle(return_settle_seconds)
 
         yield from self._daily_signin_click_menu_target(
             context,
@@ -943,7 +948,16 @@ class DailySigninTaskMixin:
             ocr_shape_names=("每日签到",),
             fallback_ocr_shape_names=("特惠活动网格",),
         )
-        yield from context.wait_scene([404], wait=view_timeout, label="日常_签到：等待签到页 #404")
+        landing_scene = yield from context.wait_scene(
+            [404],
+            wait=view_timeout,
+            label="日常_签到：等待签到页 #404",
+        )
+        if int(getattr(landing_scene, "id", landing_scene)) != 404:
+            raise RuntimeError(
+                "日常_签到：点击‘每日签到’后未进入 #404，"
+                f"实际识别为 #{getattr(landing_scene, 'id', landing_scene)}"
+            )
 
         effective_now = job_now()
         business_date = effective_now.date().isoformat()

@@ -482,14 +482,35 @@ def execute_lilian_event_task(
             ("事件",),
             padding=int(payload.get("lilian_prompt_padding") or 8),
         )
-        landed = yield from context.wait_click_then_scene(
-            434,
-            "历练",
-            435,
-            timeout=float(payload.get("lilian_prepare_timeout") or 20.0),
+        prepare_attempts = max(
+            1,
+            int(payload.get("lilian_prepare_attempts") or 2),
         )
-        if _view_id(landed) != 435:
-            raise LilianEventFlowError("历练_事件：#434 历练后未进入 #435")
+        for prepare_attempt in range(prepare_attempts):
+            landed = yield from context.wait_click_then_scene(
+                434,
+                "历练",
+                435,
+                timeout=float(payload.get("lilian_prepare_timeout") or 20.0),
+            )
+            prepare_scene_id = _view_id(landed)
+            if prepare_scene_id == 435:
+                break
+            if prepare_scene_id != 434 or prepare_attempt + 1 >= prepare_attempts:
+                raise LilianEventFlowError(
+                    "历练_事件：#434 历练后未进入 #435，"
+                    f"实际为 #{prepare_scene_id or 'unknown'}"
+                )
+            # A recognized global popup can interrupt the first click and be
+            # dismissed by the scene guard.  Returning to the same reliable
+            # #434 is not a completed edge; retry the same formally annotated
+            # action once on the fresh frame.
+            logger = getattr(runner, "_log", None)
+            if callable(logger):
+                logger(
+                    "wait",
+                    "历练_事件：历练动作被全局弹窗打断并回到 #434，刷新后重试一次",
+                )
 
         catalog_event, selected_partner, partner_snapshot = yield from _prepare_lilian_special_team(
             context,
