@@ -1,7 +1,7 @@
 """Latency-sensitive, idempotent 15-question job for 活动_答题.
 
 This is a daily one-shot activity.  Agents must read
-``skills/凡修/references/业务层/作业/凡修活动答题作业.md`` before starting it: an explicit user command is
+``skills/凡修/references/业务层/活动答题.md`` before starting it: an explicit user command is
 required, and heavyweight screenshots/diagnostics are forbidden while the
 countdown is running.
 """

@@ -50,8 +50,99 @@ WANXIANG_SPIRIT_STONE_CURRENCY_TYPE = 1
 _WANXIANG_MANAGER_METHODS = frozenset({"LuaWanxiangshopMgr", "Inst_get"})
 
 
+def read_wanxiang_shop_page() -> dict[str, Any]:
+    """Read the active shop's five display slots, including current-season IDs.
+
+    Requires the caller to have landed on the shop page. Uses the loaded
+    ShenMiShopMainView configuration, never an old exported goods-ID list.
+    This is read-only and does not initialize the activity or refresh it.
+    """
+    from backend.core.fanxiu.instrumentation.runtime_memory import table_ref
+    from backend.core.fanxiu.instrumentation.ui_runtime_context import (
+        active_ui_component_objects,
+        read_ui_runtime_snapshot,
+    )
+
+    keys = {"goodsItemDataList", "activityVo", "activityId", "V_CostResourceType",
+            "V_CostNum", "goodsId", "cfg", "isHasBuy", "isSellOut", "offsetNum",
+            "isClick", "ClickCount", "isEnoughNum"}
+
+    def project(ui):
+        panels = [obj for obj in active_ui_component_objects(ui)
+                  if table_ref(ui.field(obj.address, "goodsItemDataList")) is not None
+                  and table_ref(ui.field(obj.address, "activityVo")) is not None]
+        if len(panels) != 1:
+            raise FanxiuRuntimeMemoryError("万象宝阁当前页面不唯一或尚未加载")
+        panel = panels[0]
+        activity = table_ref(ui.field(panel.address, "activityVo"))
+        items, count = ui.reader.list_items(ui.field(panel.address, "goodsItemDataList"))
+        if count != len(items) or count != 5:
+            raise FanxiuRuntimeMemoryError("万象宝阁当前页面不是五个商品槽")
+        goods = []
+        for slot, value in enumerate(items, 1):
+            item = table_ref(value)
+            if item is None:
+                raise FanxiuRuntimeMemoryError("万象宝阁商品槽数据不完整")
+            goods_id = as_int(ui.field(item.address, "goodsId")) or 0
+            cfg = table_ref(ui.field(item.address, "cfg"))
+            row = ui.reader.table(cfg.address)["array"] if cfg else []
+            if goods_id > 0 and (len(row) <= 11 or as_int(row[1]) != goods_id):
+                raise FanxiuRuntimeMemoryError("万象宝阁商品身份与当前配置不一致")
+            goods.append({
+                "slot": slot, "goods_id": goods_id,
+                "gift_reward": row[3] if cfg else "",
+                "pay_id": as_int(row[6]) if cfg else None,
+                "original_price": as_int(row[8]) if cfg else None,
+                "discount": row[9] if cfg else None,
+                "is_prize": as_int(row[11]) if cfg else None,
+                "purchased": ui.field(item.address, "isHasBuy"),
+                "sold_out": ui.field(item.address, "isSellOut"),
+                "remaining": as_int(ui.field(item.address, "offsetNum")),
+            })
+        return {
+            "complete": True,
+            "activity_id": as_int(ui.field(activity.address, "activityId")),
+            "refresh_currency_type": as_int(ui.field(panel.address, "V_CostResourceType")),
+            "refresh_cost": as_int(ui.field(panel.address, "V_CostNum")),
+            "refresh_click_pending": ui.field(panel.address, "isClick") is True,
+            "refresh_ignored_clicks": as_int(ui.field(panel.address, "ClickCount")) or 0,
+            "refresh_resource_sufficient": ui.field(panel.address, "isEnoughNum"),
+            "remaining_purchases": as_int(ui.field(panel.address, "offsetNum")),
+            "goods": goods,
+            "evidence": {"pid": ui.binding.pid,
+                         "process_start_ticks": ui.binding.process_start_ticks,
+                         "read_only": True},
+        }
+
+    return read_ui_runtime_snapshot(keys, project)
+
+
 class WanxiangRefundContractError(ValueError):
     """The exported client configuration no longer proves the offer contract."""
+
+
+def select_wanxiang_refund_offer(page: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Select the exact refund item/payment contract in the current five slots.
+
+    Goods IDs change each season. Item 1201 and its six-voucher payment are
+    the whitelist; an unrelated low-price/prize card is never a substitute.
+    """
+    if page.get("complete") is not True or len(page.get("goods") or []) != 5:
+        raise WanxiangRefundContractError("万象宝阁页面商品不完整")
+    matches = [item for item in page["goods"] if item.get("gift_reward") == "Item|1201_1"]
+    if len(matches) > 1:
+        raise WanxiangRefundContractError("当前五个商品含多个代币宝匣")
+    if not matches:
+        return None
+    target = matches[0]
+    if (target.get("pay_id") != WANXIANG_REFUND_PAY_ID
+            or target.get("original_price") != 120
+            or target.get("discount") != 0.5
+            or target.get("is_prize") != 1
+            or int(target.get("goods_id") or 0) <= 0
+            or not isinstance(target.get("purchased"), bool)):
+        raise WanxiangRefundContractError("当前代币宝匣不符合六元白名单契约")
+    return dict(target)
 
 
 def _rows(export_root: str | Path | None, table: str) -> list[dict[str, Any]]:
@@ -81,24 +172,11 @@ def _unique_row(
 def load_wanxiang_refund_offer_contract(
     export_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Load and cross-check the immutable six-yuan refund offer facts.
+    """Validate the stable payment/item contract, independent of season IDs.
 
-    The displayed price is insufficient authorization.  The complete join is
-    ``WanXiangShopPool -> ChargeGoods -> Item -> OptionalGift``.
+    The current shop's item/payment binding is read by read_wanxiang_shop_page
+    and checked by select_wanxiang_refund_offer, not by an old shop-pool export.
     """
-
-    offer = _unique_row(
-        _rows(export_root, "WanXiangShopPool"),
-        table="WanXiangShopPool",
-        key="id",
-        value=WANXIANG_REFUND_GOODS_ID,
-    )
-    pool = _unique_row(
-        _rows(export_root, "ShopPoolBase"),
-        table="ShopPoolBase",
-        key="poolId",
-        value=WANXIANG_REFUND_POOL_ID,
-    )
     charge = _unique_row(
         _rows(export_root, "ChargeGoods"),
         table="ChargeGoods",
@@ -118,15 +196,6 @@ def load_wanxiang_refund_offer_contract(
         value=WANXIANG_REFUND_VOUCHER_ITEM_ID,
     )
 
-    if (
-        int(offer.get("poolId") or 0) != WANXIANG_REFUND_POOL_ID
-        or str(offer.get("giftReward") or "") != "Item|1201_1"
-        or int(offer.get("payId") or 0) != WANXIANG_REFUND_PAY_ID
-        or int(offer.get("isPrize") or 0) != 1
-    ):
-        raise WanxiangRefundContractError("万象宝阁 6 元商品定义与已证明契约不一致")
-    if int(pool.get("activityLimit") or 0) != 1:
-        raise WanxiangRefundContractError("万象宝阁 6 元商品活动限购不再是 1")
     if (
         int(charge.get("payId") or 0) != WANXIANG_REFUND_PAY_ID
         or int(charge.get("priceValue") or 0) != 600
@@ -158,9 +227,6 @@ def load_wanxiang_refund_offer_contract(
     return {
         "complete": True,
         "activity_base_id": WANXIANG_ACTIVITY_BASE_ID,
-        "goods_id": WANXIANG_REFUND_GOODS_ID,
-        "pool_id": WANXIANG_REFUND_POOL_ID,
-        "activity_limit": 1,
         "pay_id": WANXIANG_REFUND_PAY_ID,
         "price_cny_fen": 600,
         "voucher_cost": 6,
@@ -170,7 +236,6 @@ def load_wanxiang_refund_offer_contract(
         "spirit_stone_item_id": WANXIANG_SPIRIT_STONE_ITEM_ID,
         "spirit_stone_reward": 1140,
         "source_chain": [
-            "WanXiangShopPool:99001",
             "ChargeGoods:310001",
             "Item:1201",
             f"OptionalGift:{optional_group}",
@@ -394,7 +459,9 @@ class WanxiangRefundLedger:
         return self.voucher + self.bound_voucher
 
 
-def ledger_from_snapshot(snapshot: Mapping[str, Any]) -> WanxiangRefundLedger:
+def ledger_from_snapshot(
+    snapshot: Mapping[str, Any], *, goods_id: int = WANXIANG_REFUND_GOODS_ID
+) -> WanxiangRefundLedger:
     if snapshot.get("complete") is not True:
         raise WanxiangRefundContractError("万象宝阁 Runtime 快照不完整")
     if int(snapshot.get("activity_base_id") or 0) != WANXIANG_ACTIVITY_BASE_ID:
@@ -412,11 +479,11 @@ def ledger_from_snapshot(snapshot: Mapping[str, Any]) -> WanxiangRefundLedger:
         activity_id=int(snapshot.get("activity_id") or 0),
         process_start_ticks=int(evidence.get("process_start_ticks") or 0),
         target_purchase_count=int(
-            purchase_counts.get(WANXIANG_REFUND_GOODS_ID)
-            or purchase_counts.get(str(WANXIANG_REFUND_GOODS_ID))
+            purchase_counts.get(goods_id)
+            or purchase_counts.get(str(goods_id))
             or 0
         ),
-        target_visible=WANXIANG_REFUND_GOODS_ID
+        target_visible=goods_id
         in {int(value) for value in goods_ids},
         voucher=int(snapshot.get("voucher") or 0),
         bound_voucher=int(snapshot.get("bound_voucher") or 0),

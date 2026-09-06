@@ -1697,7 +1697,7 @@ def read_dongtian_snapshot(*, allow_legacy_scan: bool = False) -> dict[str, Any]
     ``XianLvMinesMgr`` was present, but a version-sensitive method-set check
     rejected it.  A later structural read decoded all 39 mines, but the cold
     global-table lookup took 108 seconds.  See
-    ``skills/凡修/references/业务层/作业/凡修洞天行动力作业.md`` before changing this resolver.
+    ``skills/凡修/references/业务层/洞天行动力.md`` before changing this resolver.
     """
 
     started_at = time.perf_counter()
