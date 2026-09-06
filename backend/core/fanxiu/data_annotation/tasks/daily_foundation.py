@@ -4582,6 +4582,18 @@ class DailyFoundationTaskMixin:
             f"仙缘斗法：达到单轮安全上限 {max_runs}，已挑战 {completed} 次但 #308[次数] 仍大于 0"
         )
 
+    def daily_mojie_raid_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Sunday's 22:00 closure skips all navigation and resumes next Monday."""
+        now = _behavior_tree_executor._now()
+        if now.weekday() != 6 or now.time() < time_cls(22, 0):
+            return None
+        return self._persist_admission_decision(dict(payload or {}), {
+            "result": "success",
+            "message": "日常_奇袭魔界：周日 22:00 窗口已关闭，直接顺延下周一，未执行游戏操作",
+            "next_time": self._next_mojie_raid_week_start_time_text(now),
+            "current_scene": None,
+        })
+
     def _execute_daily_mojie_raid_task(
         self,
         ctx: dict[str, Any],
@@ -4601,10 +4613,15 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少日常_奇袭魔界资产树路径，无法执行作业")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         raid_scenes = {319, 320, 321, 322, 323, 324}
+        settlement_only = self._mojie_raid_settlement_only()
         joined_existing_team = False
         scene_id, _score, frame = (yield from context.current_scene([331, 330, *sorted(raid_scenes), 69, 34, 20], update=True))
         text = context.ocr_text(frame)
         if scene_id == 331:
+            if settlement_only:
+                next_time = self._schedule_mojie_raid_settled_week(payload)
+                yield from context.go_scene(34)
+                return terminal(f"周日自动挑战已结束，已加入页面收尾完成；下次 {next_time}")
             # #331 is the already-joined team page.  Whether it was reached after
             # a committed #324 transaction or after replaying #320 against an
             # already-changed game state, the current trigger must not attack
@@ -4637,6 +4654,9 @@ class DailyFoundationTaskMixin:
                 max_scrolls=int(payload.get("max_scrolls") or 30),
             )
             if status == "not_found":
+                if settlement_only:
+                    next_time = self._schedule_mojie_raid_settled_week(payload)
+                    return terminal(f"周日自动挑战已结束，日常入口已消失；下次 {next_time}")
                 self._record_daily_entry_not_found_retry(
                     payload,
                     task_id="legacy-daily-mojie-raid",
@@ -4666,6 +4686,12 @@ class DailyFoundationTaskMixin:
             except TimeoutError as exc:
                 yield from self._handle_daily_mojie_raid_open_blocker_placeholder(context, payload)
                 raise RuntimeError("日常_奇袭魔界：入口点击后未到达 #319，疑似遇到未实现的特殊弹窗") from exc
+        if settlement_only:
+            # 周日 13:00 是最后报名机会，21:30 自动挑战；此后仅收尾，
+            # 即使页面仍显示剩余次数，也不能重新提交参与进攻。
+            next_time = self._schedule_mojie_raid_settled_week(payload)
+            yield from context.go_scene(34)
+            return terminal(f"周日自动挑战已结束，已完成页面收尾；下次 {next_time}")
         if scene_id == 319:
             self._log("success", "日常_奇袭魔界：已到达 #319")
             shape_matches = getattr(context, "shape_matches", None)
@@ -5159,9 +5185,11 @@ class DailyFoundationTaskMixin:
         self,
         now: datetime | None = None,
     ) -> str:
-        """Choose the next 13:00/21:30 check until rewards reach zero."""
+        """Check at 13:00/21:30; Sunday's final check closes the weekly cycle."""
 
         current = now or _behavior_tree_executor._now()
+        if self._mojie_raid_settlement_only(current):
+            return self._next_mojie_raid_week_start_time_text(current)
         for hour, minute in ((13, 0), (21, 30)):
             candidate = current.replace(
                 hour=hour,
@@ -5179,6 +5207,23 @@ class DailyFoundationTaskMixin:
             second=0,
             microsecond=0,
         ).strftime("%Y-%m-%d %H:%M:%S")
+
+    def _mojie_raid_settlement_only(self, now: datetime | None = None) -> bool:
+        """Sunday 21:30 automatic battle ends the week's registration cycle."""
+        current = now or _behavior_tree_executor._now()
+        return current.weekday() == 6 and current.time() >= time_cls(21, 30)
+
+    def _schedule_mojie_raid_settled_week(self, payload: dict[str, Any]) -> str:
+        """Close by the weekly settlement boundary, without fabricating zero attempts."""
+        if not self._mojie_raid_settlement_only():
+            raise ValueError("奇袭魔界日历收尾仅适用于周日 21:30 后")
+        next_time = self._next_mojie_raid_week_start_time_text()
+        self._persist_scheduler_task_next_time(
+            str(payload.get("__scheduler_task_id") or "legacy-daily-mojie-raid"),
+            next_time,
+        )
+        self._log("success", f"日常_奇袭魔界：周日自动挑战已结束，下次 {next_time}")
+        return next_time
 
     def _schedule_next_mojie_raid_week(
         self,
@@ -9157,8 +9202,16 @@ class DailyFoundationTaskMixin:
 
         task_label = "灵脉_座位"
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, frame = (yield from context.current_scene([443, 318, 588, 305, 288, 286, 285, 69, 34], update=True))
+        scene_id, score, frame = (yield from context.current_scene([382, 375, 374, 443, 318, 588, 306, 305, 288, 286, 285, 69, 34], update=True))
         text = context.ocr_text(frame)
+        if scene_id == 306:
+            return (yield from self._finish_daily_lingmai_to_world(
+                context, payload, task_label=task_label, scene_id=scene_id, frame=frame
+            ))
+        if scene_id in {374, 382, 375}:
+            return (yield from self._finish_daily_lingmai_kick_battle(
+                context, payload, task_label=task_label, battle_scene_id=int(scene_id)
+            ))
         if scene_id in {34, 69}:
             runtime_guard = yield from self._daily_lingmai_world_runtime_guard(
                 context,
@@ -9169,7 +9222,7 @@ class DailyFoundationTaskMixin:
             if runtime_guard is not None:
                 return runtime_guard
         if scene_id == 318:
-            self._log("success", f"{task_label}：当前已在 #318 灵脉奖励确认，场景分 {score:.0f}%，OCR={text[:160]}")
+            self._log("success", f"{task_label}：当前已在 #318 灵脉对白/确认，场景分 {score:.0f}%，OCR={text[:160]}")
             return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
         if scene_id == 588:
             self._log(
@@ -9219,7 +9272,7 @@ class DailyFoundationTaskMixin:
                         frame=frame,
                     ))
                 if scene_id == 318:
-                    self._log("success", f"{task_label}：当前已在 #318 灵脉奖励确认，场景分 {score:.0f}%，OCR={text[:160]}")
+                    self._log("success", f"{task_label}：当前已在 #318 灵脉对白/确认，场景分 {score:.0f}%，OCR={text[:160]}")
                     return (yield from self._confirm_daily_lingmai_reward(context, payload, task_label=task_label))
                 if scene_id == 588:
                     self._log(
@@ -10749,19 +10802,12 @@ class DailyFoundationTaskMixin:
         *,
         task_label: str,
     ) -> str:
-        yield from context.wait_click_then_scene(
-            318,
-            "确认",
-            wait_leave=True,
-            timeout=float(payload.get("lingmai_reward_confirm_timeout") or 20.0),
-        )
-        yield from context.wait_action_settle(float(payload.get("lingmai_reward_confirm_settle_seconds") or 2.0))
-        scene_after, score_after, frame_after = (yield from context.current_scene([306, 303, 285, 186, 34, 318], update=True))
-        text_after = context.ocr_text(frame_after)
-        if scene_after == 318:
-            raise RuntimeError(f"{task_label}：点击 #318「确认」后仍停留在灵脉奖励确认，OCR={text_after[:160]}")
-        self._log("success", f"{task_label}：已关闭 #318 灵脉奖励确认，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，OCR={text_after[:160]}")
-        return (yield from self._finish_daily_lingmai_to_world(context, payload, task_label=task_label, scene_id=scene_after, frame=frame_after))
+        # Reward text and post-battle speech share #318 and its confirmed
+        # arrow. Drain the bounded dialogue chain, rather than assuming one
+        # click must leave this scene identity.
+        return (yield from self._finish_daily_lingmai_post_battle(
+            context, payload, task_label=task_label
+        ))
 
     def _finish_daily_lingmai_to_world(
         self,
@@ -10774,6 +10820,12 @@ class DailyFoundationTaskMixin:
     ) -> str:
         if scene_id is None:
             scene_id, _score, frame = (yield from context.current_scene([34, 306, 318, 285, 286, 288, 305, 186, 588], update=True))
+        if scene_id in {318, 303}:
+            return (yield from self._finish_daily_lingmai_post_battle(
+                context, payload, task_label=task_label
+            ))
+        if scene_id is None:
+            raise RuntimeError(f"{task_label}：离场前场景仍为 unknown，保留现场且未调用世界导航")
         text = context.ocr_text(frame) if isinstance(frame, str) and frame else context.ocr_text(update=True)
         daily_remaining_seconds = self._parse_daily_lingmai_remaining_seconds(text)
         if scene_id == 588:
@@ -10784,10 +10836,25 @@ class DailyFoundationTaskMixin:
             landed = yield from context.wait_click_then_scene(
                 588,
                 "离开",
-                [186, 85, 34, 285],
+                [306, 318, 186, 85, 34, 285],
                 timeout=float(payload.get("lingmai_occupied_leave_timeout") or 30.0),
             )
-            scene_id, _score, frame = (yield from context.current_scene([186, 85, 34, 285], update=True))
+            scene_id, _score, frame = (yield from context.current_scene([306, 318, 186, 85, 34, 285], update=True))
+        if scene_id == 186:
+            # The room-exit animation reveals #186 before the gathering
+            # summary arrives. Give that business popup ownership and a
+            # bounded foreground window before clicking the world exit.
+            with context.expect_views(306, 318):
+                summary = yield from context.wait_scene(
+                    [306, 318], wait=15.0, required=False,
+                    label=f"{task_label}：离开房间后等待延迟结算或稳定外层",
+                )
+                scene_id = int(summary) if summary is not None else None
+                frame = getattr(summary, "frame_data_url", None)
+        if scene_id in {318, 303}:
+            return (yield from self._finish_daily_lingmai_post_battle(
+                context, payload, task_label=task_label
+            ))
         if scene_id == 306:
             yield from self._confirm_daily_lingmai_summary_popup(context, payload, task_label=task_label, scene_id=scene_id, frame=frame)
             landed = yield from context.wait_scene(
@@ -10821,6 +10888,8 @@ class DailyFoundationTaskMixin:
             # an unrelated global recognition pass and can replace a valid
             # #186 exit scene with another business frame before clicking.
             context.ctx["_go_scene_known_scene_id"] = int(scene_id)
+        if scene_id is None:
+            raise RuntimeError(f"{task_label}：结算后场景仍为 unknown，保留现场且未调用世界导航")
         if daily_remaining_seconds == 0:
             if scene_id != 34:
                 yield from context.go_scene(34)
@@ -11976,20 +12045,30 @@ class DailyFoundationTaskMixin:
         # matching is performed only after ``wait_click``'s mandatory popup
         # guard has cleared interruptions.
         if confirmation_scene_id == 381:
-            yield from context.wait_click(
-                381,
-                "确定",
-                timeout=float(payload.get("lingmai_kick_confirm_timeout") or 20.0),
-            )
-            pre_battle_scene = yield from context.wait_scene(
-                [318,
-                443],
-                wait=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
-                label=f"{task_label}：点击 #381「确定」后等待更换确认或战前对白",
-            )
-            pre_battle_scene_id = int(
-                pre_battle_scene.id if isinstance(pre_battle_scene, View) else pre_battle_scene
-            )
+            # #47 can carry a challenge rejection. Claim it before clicking:
+            # the generic popup guard otherwise dismisses the only evidence
+            # and the flow later mistakes the room background for progress.
+            with context.expect_views(47):
+                pre_battle_scene = yield from context.wait_click_then_scene(
+                    381,
+                    "确定",
+                    [47, 318, 443],
+                    timeout=float(payload.get("lingmai_kick_battle_dialogue_timeout") or 45.0),
+                    max_clicks=1,
+                    label=f"{task_label}：点击 #381「确定」后等待提示、更换确认或战前对白",
+                )
+                pre_battle_scene_id = int(
+                    pre_battle_scene.id if isinstance(pre_battle_scene, View) else pre_battle_scene
+                )
+                if pre_battle_scene_id == 47:
+                    # Keep the exact matched prompt frame; a fresh capture
+                    # could already contain the next transition instead.
+                    prompt_frame = getattr(pre_battle_scene, "frame_data_url", None)
+                    prompt_text = context.ocr_text(prompt_frame)
+                    raise RuntimeError(
+                        f"{task_label}：驱离确认后出现 #47 提示，保留现场且未关闭；"
+                        f"OCR={prompt_text[:800]}"
+                    )
         else:
             pre_battle_scene_id = int(confirmation_scene_id or 0)
         if pre_battle_scene_id == 443:
@@ -12006,45 +12085,57 @@ class DailyFoundationTaskMixin:
             )
         battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
             context,
-            # #318 also lands directly on the occupied-room page #588. It
-            # may be a completed seat or a battle-transition background;
-            # validate the actual seat below before authorizing any exit.
+            # #588 is a pre-battle background even when the server already
+            # assigned the seat. It enters result waiting, never early exit.
             terminal_scene_ids=(374, 382, 375, 588),
             timeout=float(payload.get("lingmai_kick_battle_start_timeout") or 60.0),
             label=f"{task_label}：推进战前对白直到战斗或胜利",
         )
-        if battle_scene_id == 588:
-            status = refresh_lingmai_daily_status()
-            seat = status.get("self_seat_facts") or {}
-            expected_room = int(payload.get("__lingmai_expected_room_id") or 0)
-            actual_room = int(seat.get("room_id") or status.get("own_room_id") or 0)
-            completed = status.get("completed") is True or status.get("remaining_milliseconds") == 0
-            confirmed_seat = expected_room > 0 and actual_room == expected_room and seat.get("seated") is True
-            if not (status.get("available") and status.get("complete") and (completed or confirmed_seat)):
-                raise RuntimeError(
-                    f"{task_label}：#588 尚未证明目标占位终态，保留现场且未点击离开；"
-                    f"expected_room={expected_room}, actual_room={actual_room}, seated={seat.get('seated')}"
-                )
-            self._log("detail", f"{task_label}：#588 Runtime 已确认目标占位或今日完成，进入既有离场收口")
+        return (yield from self._finish_daily_lingmai_kick_battle(
+            context, payload, task_label=task_label, battle_scene_id=battle_scene_id
+        ))
+
+    def _finish_daily_lingmai_kick_battle(
+        self,
+        context: BehaviorTreeContext,
+        payload: dict[str, Any],
+        *,
+        task_label: str,
+        battle_scene_id: int,
+        remaining_battles: int = 8,
+    ) -> str:
+        """Close a real result, including when a new formal attempt starts there.
+
+        The server may assign the seat before the client plays the battle.
+        Neither #588 nor Runtime seated authorizes skipping the result layer.
+        """
         victory_scene_id = battle_scene_id
-        if battle_scene_id == 374:
-            victory_scene = yield from context.wait_scene(
-                [382,
-                375,
-                588],
-                wait=float(payload.get("lingmai_kick_battle_finish_timeout") or 180.0),
-                label=f"{task_label}：等待战斗结束到胜利浮层 #382/#375",
+        if battle_scene_id in {374, 588}:
+            deadline = time.monotonic() + float(
+                payload.get("lingmai_kick_battle_finish_timeout") or 180.0
             )
-            victory_scene_id = int(victory_scene.id if isinstance(victory_scene, View) else victory_scene)
-        if victory_scene_id == 588:
-            scene_id, _score, frame = (yield from context.current_scene([588], update=True))
-            return (yield from self._finish_daily_lingmai_to_world(
-                context,
-                payload,
-                task_label=task_label,
-                scene_id=scene_id,
-                frame=frame,
-            ))
+            with context.expect_views(382, 375, 47):
+                while time.monotonic() < deadline:
+                    landed = yield from context.wait_scene(
+                        [382, 375],
+                        wait=min(10.0, max(0.0, deadline - time.monotonic())),
+                        required=False,
+                        label=f"{task_label}：等待真实战斗结果 #382/#375，过渡背景不授权离场",
+                    )
+                    victory_scene_id = int(landed) if landed is not None else None
+                    if victory_scene_id in {382, 375}:
+                        break
+                    if victory_scene_id not in {None, 374, 588}:
+                        evidence = context.ocr_text(getattr(landed, "frame_data_url", None))
+                        raise RuntimeError(
+                            f"{task_label}：战斗结果等待出现未声明场景 #{victory_scene_id}，"
+                            f"保留现场；OCR={evidence[:500]}"
+                        )
+                    yield from context.wait_action_settle(1.0)
+                else:
+                    raise RuntimeError(f"{task_label}：等待战斗结果超时，保留现场且未离场")
+        if victory_scene_id not in {382, 375}:
+            raise RuntimeError(f"{task_label}：#{victory_scene_id} 不是可关闭的战斗结果")
         if victory_scene_id == 382:
             yield from self._close_daily_lingmai_victory_layers(
                 context,
@@ -12056,12 +12147,28 @@ class DailyFoundationTaskMixin:
             yield from context.wait_action_settle(
                 float(payload.get("lingmai_kick_victory_close_settle_seconds") or 2.0)
             )
+        return (yield from self._finish_daily_lingmai_post_battle(
+            context, payload, task_label=task_label, remaining_battles=remaining_battles
+        ))
+
+    def _finish_daily_lingmai_post_battle(
+        self, context: BehaviorTreeContext, payload: dict[str, Any], *, task_label: str,
+        remaining_battles: int = 8,
+    ) -> str:
+        """Drain real #318/#303 dialogue before leaving a stable room."""
         post_battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
             context,
-            terminal_scene_ids=(443, 305, 306, 85, 186, 285, 588),
+            terminal_scene_ids=(374, 382, 375, 443, 305, 306, 85, 186, 285, 588, 34),
             timeout=float(payload.get("lingmai_kick_summary_timeout") or 45.0),
             label=f"{task_label}：推进战后对白直到换座/入座确认或稳定灵脉场景",
         )
+        if post_battle_scene_id in {374, 382, 375}:
+            if remaining_battles <= 0:
+                raise RuntimeError(f"{task_label}：连续战斗达到上限，保留现场")
+            return (yield from self._finish_daily_lingmai_kick_battle(
+                context, payload, task_label=task_label,
+                battle_scene_id=post_battle_scene_id, remaining_battles=remaining_battles - 1,
+            ))
         if post_battle_scene_id == 443:
             return (yield from self._confirm_daily_lingmai_switch_popup(
                 context,
@@ -12143,6 +12250,17 @@ class DailyFoundationTaskMixin:
                 label=label,
             )
             scene_id = int(scene.id if isinstance(scene, View) else scene)
+            if scene_id == 588 and 588 in terminals:
+                settled = yield from context.wait_scene(
+                    [318, 303, *[sid for sid in terminals if sid != 588]],
+                    wait=min(10.0, timeout),
+                    required=False,
+                    label=f"{label}：#588 可能是对白间背景，等待真实后继或稳定房间",
+                )
+                if settled is None:
+                    yield from context.wait_action_settle(1.0)
+                    continue
+                scene_id = int(settled)
             if scene_id in terminals:
                 return scene_id
             if scene_id == 318:

@@ -275,6 +275,43 @@ def prepare_activity_rank_runtime(
     }
 
 
+def read_activity_rank_self_snapshot(activity_id: int) -> dict[str, Any]:
+    """Read only the cached actor's score/rank, without traversing rankVOS.
+
+    ``complete`` applies to this self-scoped observation, never the full board.
+    This read does not refresh server data: a verified GUI refresh is still
+    needed after resource use when the client has not received a new packet.
+    """
+    started_at = time.perf_counter()
+    base = {"scope": "self", "source": "runtime_memory",
+            "rank_activity_id": int(activity_id), "rankings": []}
+    try:
+        memory = MumuProcessMemory.discover_cached(fallback_to_discovery=False)
+        root, cache_hit = resolve_activity_rank_root(memory, allow_discovery=False)
+        reader = LuaJitReader(memory)
+        ranks = _activity_rank_dictionary(reader, root)
+        value = next((v for key, v in ranks.items() if as_int(key) == int(activity_id)), None)
+        if value is None:
+            raise FanxiuRuntimeMemoryError("自身活动排名尚未加载", code="data_not_loaded")
+        fields = required_runtime_fields(reader, value, ("selfRankVO",), "自身活动排名")
+        actor = _ranking_row(reader, fields["selfRankVO"])
+        if actor is None or not (actor.get("role_id") or actor.get("role_key")):
+            raise FanxiuRuntimeMemoryError("自身活动排名身份或积分无效", code="snapshot_incoherent")
+        return {**base, "ok": True, "available": True, "complete": True,
+                "self_ranking": actor,
+                "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
+                             "root_cache_hit": cache_hit}}
+    except Exception as exc:
+        code = exc.code if isinstance(exc, FanxiuRuntimeMemoryError) else "unexpected_error"
+        return {**base, "ok": False, "available": False, "complete": False,
+                "self_ranking": None, "error_code": code, "reason": str(exc),
+                "recovery_required": code in {"process_cache_miss", "root_cache_miss", "data_not_loaded"},
+                "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "elapsed_seconds": time.perf_counter() - started_at}
+
+
 def read_activity_rank_runtime_snapshot(activity_id: int) -> dict[str, Any]:
     """Fast, fail-closed snapshot for any already-loaded activity leaderboard."""
 

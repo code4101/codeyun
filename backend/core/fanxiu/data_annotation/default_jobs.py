@@ -1212,6 +1212,7 @@ def register_fanxiu_default_jobs() -> None:
         "daily_mojie_raid",
         "日常_奇袭魔界",
         scheduler_supported=True,
+        admission=lambda runner, payload: runner.daily_mojie_raid_admission(payload),
     )
     def _run_data_annotation_daily_mojie_raid_task_cell(
         runner: Any,

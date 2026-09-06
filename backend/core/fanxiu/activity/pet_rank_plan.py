@@ -100,13 +100,15 @@ def read_pet_rank_plan(*, activity_id: int, pet_id: int, occurrence: str,
     capture timestamp alone is not evidence of a server refresh.
     """
     identity = {"activity_id": activity_id, "pet_id": pet_id, "occurrence": occurrence}
+    history = read_pet_resource_receipts(activity_id, occurrence)
+    if any(r.get("status") == "submitted" for r in history):
+        return {**identity, "status": "resource_action_pending"}
+    if any(r.get("status") == "rank_observation_pending" for r in history):
+        return {**identity, "status": "rank_calibration_pending"}
     rank = rank_snapshot if rank_snapshot is not None else read_activity_rank_runtime_snapshot(activity_id)
     board = validate_pet_rank_snapshot(rank, activity_id=activity_id)
     if board["status"] != "ready":
         return {**identity, **board, "rank": rank}
-    history = read_pet_resource_receipts(activity_id, occurrence)
-    if any(r.get("status") == "submitted" for r in history):
-        return {**identity, "status": "resource_action_pending"}
     samples = select_pet_rank_samples(history, **identity)
     if not any(r.get("item_id") != 8022009 for r in samples):
         return {**identity, "status": "ordinary_resource_sample_required"}
@@ -130,6 +132,8 @@ def read_pet_rank_plan(*, activity_id: int, pet_id: int, occurrence: str,
         reward_boundaries=[r["rank_end"] for r in tiers])
     return {**identity, **plan, "current_score": rank["self_ranking"]["score"],
             "self_ranking": rank["self_ranking"], "estimate": estimate,
+            "inventory_baseline_action_ids": [r["action_id"] for r in history
+                if r.get("status") == "verified" and r.get("pet_id") == pet_id],
             "reward_boundaries": [r["rank_end"] for r in tiers],
             "rank_captured_at": rank.get("captured_at"),
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds")}
@@ -146,6 +150,8 @@ def replan_pet_rank_from_snapshot(plan: dict, rank: dict) -> dict:
         reward_boundaries=plan["reward_boundaries"])
     metadata = {key: plan[key] for key in
                 ("activity_id", "pet_id", "occurrence", "estimate", "reward_boundaries")}
+    if "inventory_baseline_action_ids" in plan:
+        metadata["inventory_baseline_action_ids"] = list(plan["inventory_baseline_action_ids"])
     return {**metadata, **result, "self_ranking": rank.get("self_ranking"),
             "current_score": (rank.get("self_ranking") or {}).get("score"),
             "rank_captured_at": rank.get("captured_at"),

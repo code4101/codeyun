@@ -40,6 +40,33 @@ def test_same_item_aggregate_is_atomic_and_idempotent(ledger):
             **kwargs, "before_rank": rank(1000, 0, role=10), "after_rank": rank(1692, 30, role=10)})
 
 
+@pytest.mark.parametrize("effect", [None, "submitted", "verified"])
+def test_cancel_observation_only_before_resource_submission(ledger, effect):
+    old = ledger(10, 0)
+    observation = receipts.record_pet_resource_receipt(1, "2026-09-06", {
+        "status": "rank_observation_pending", "pet_id": 7, "prior_action_ids": [old]})
+    if effect == "verified":
+        ledger(5, 10)
+    elif effect == "submitted":
+        receipts.record_pet_resource_receipt(1, "2026-09-06", {"status": "submitted"})
+    kwargs = dict(observation_action_id=observation, pet_id=7, reason="quantity preparation failed")
+    assert receipts.cancel_unsubmitted_pet_rank_observation(1, "2026-09-06", **kwargs) is (effect is None)
+    assert receipts.cancel_unsubmitted_pet_rank_observation(1, "2026-09-06", **kwargs) is (effect is None)
+    rows = receipts.read_pet_resource_receipts(1, "2026-09-06")
+    saved = next(r for r in rows if r["action_id"] == observation)
+    assert saved["status"] == ("rank_observation_cancelled" if effect is None else "rank_observation_pending")
+    assert next(r for r in rows if r["action_id"] == old)["status"] == "verified"
+
+
+def test_cancel_observation_requires_identity_and_prior_history(ledger):
+    observation = receipts.record_pet_resource_receipt(1, "2026-09-06", {
+        "status": "rank_observation_pending", "pet_id": 7})
+    kwargs = dict(observation_action_id=observation, reason="preparation failed")
+    with pytest.raises(ValueError, match="identity"):
+        receipts.cancel_unsubmitted_pet_rank_observation(1, "2026-09-06", pet_id=8, **kwargs)
+    assert not receipts.cancel_unsubmitted_pet_rank_observation(1, "2026-09-06", pet_id=7, **kwargs)
+
+
 def test_rank_sample_completes_observation_in_same_atomic_write(ledger):
     before = rank(1000, 0)
     observation = receipts.record_pet_resource_receipt(1, "2026-09-06", {

@@ -124,6 +124,37 @@ def test_mojie_raid_followups_use_thirteen_and_twenty_one_thirty():
     ) == "2026-08-04 13:00:00"
 
 
+def test_mojie_raid_sunday_settlement_boundary():
+    runner = create_behavior_tree_executor()
+    assert not runner._mojie_raid_settlement_only(datetime(2026, 9, 6, 21, 29, 59))
+    assert runner._mojie_raid_settlement_only(datetime(2026, 9, 6, 21, 30))
+    assert not runner._mojie_raid_settlement_only(datetime(2026, 9, 5, 22))
+    assert runner._next_mojie_raid_followup_time_text(
+        datetime(2026, 9, 6, 13)
+    ) == "2026-09-06 21:30:00"
+    assert runner._next_mojie_raid_followup_time_text(
+        datetime(2026, 9, 6, 21, 30)
+    ) == "2026-09-07 10:00:00"
+
+
+def test_mojie_raid_closed_admission_persists_next_week(monkeypatch):
+    from backend.core.fanxiu.data_annotation import behavior_tree_executor
+
+    runner = create_behavior_tree_executor()
+    persisted = []
+    monkeypatch.setattr(runner, "_persist_scheduler_task_next_time",
+                        lambda task_id, next_time: persisted.append((task_id, next_time)))
+    payload = {"__scheduler_task_id": "legacy-daily-mojie-raid"}
+    monkeypatch.setattr(behavior_tree_executor, "_now", lambda: datetime(2026, 9, 6, 21, 59, 59))
+    assert runner.daily_mojie_raid_admission(payload) is None
+    assert persisted == []
+    monkeypatch.setattr(behavior_tree_executor, "_now", lambda: datetime(2026, 9, 6, 22))
+    decision = runner.daily_mojie_raid_admission(payload)
+    assert decision["result"] == "success"
+    assert "next_time" not in decision
+    assert persisted == [("legacy-daily-mojie-raid", "2026-09-07 10:00:00")]
+
+
 def test_business_time_primitive_supports_daily_and_weekday_rules():
     assert next_business_time(
         ("13:00", "21:30"),

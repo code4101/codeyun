@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from starlette.concurrency import run_in_threadpool
+
 import contextlib
 from collections import OrderedDict
 from copy import deepcopy
@@ -19219,7 +19221,7 @@ def _reject_independent_attendance_legacy_mutation(
         workbook_id=workbook_id,
     ) is not None:
         raise HTTPException(
-            status_code=409,
+            status_code=422,
             detail=(
                 "该表由独立考勤数据库管理；此 CodeYun 旧写入入口已关闭，"
                 "请使用考勤独立表格 API"
@@ -20331,7 +20333,7 @@ def update_note_sheet(
         required_role="viewer",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    independent_source = _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -20349,6 +20351,8 @@ def update_note_sheet(
     if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
         raise HTTPException(status_code=409, detail="工作表已更新，请刷新后重试")
 
+    if independent_source is not None and next_title != document.title:
+        raise HTTPException(status_code=422, detail="请通过考勤工作簿管理修改表名")
     current_document = dict(document.document_json or {})
     if payload.document_json is None:
         next_document = current_document
@@ -20385,7 +20389,12 @@ def update_note_sheet(
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
 
-    if document.title != next_title or current_document != next_document:
+    if independent_source is not None:
+        independent_source = _replace_independent_attendance_summary_document(
+            document, independent_source, next_document,
+            sheet_id=sheet_id, workbook_id=workbook_id,
+        )
+    elif document.title != next_title or current_document != next_document:
         document.title = next_title
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
@@ -20411,6 +20420,9 @@ def update_note_sheet(
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
+    if independent_source is not None:
+        for field in ("title", "engine", "version", "updated_at", "document_json"):
+            attributes.set_committed_value(document, field, independent_source[field])
     response_document = dict(document.document_json or {})
     response_pagination: NoteSheetPaginationResponse | None = None
     response_paginate_enabled, _response_page_size = _get_document_pagination_settings(response_document)
@@ -20455,7 +20467,7 @@ async def import_note_sheet_excel_reset(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    independent_source = _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -20473,7 +20485,8 @@ async def import_note_sheet_excel_reset(
     raw_bytes = await file.read()
     workbook_payload = _extract_excel_workbook_payload(raw_bytes, filename or "未命名.xlsx")
     current_document = _normalize_document_json(dict(document.document_json or {}))
-    import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_deepseek(
+    import_rows, extra_columns, warnings, mapping_notes = await run_in_threadpool(
+        _run_note_sheet_excel_import_deepseek,
         document_json=current_document,
         workbook_payload=workbook_payload,
         instruction=instruction,
@@ -20486,7 +20499,15 @@ async def import_note_sheet_excel_reset(
     # AI normalization can take minutes. Re-read the sheet before committing so
     # an update that happened during inference cannot be overwritten by a stale
     # document snapshot.
-    session.refresh(document)
+    if independent_source is not None:
+        initial_version = int(independent_source["version"])
+        independent_source = _bind_independent_attendance_document(
+            document, sheet_id=sheet_id, workbook_id=workbook_id,
+        )
+        if independent_source is None or int(independent_source["version"]) != initial_version:
+            raise HTTPException(status_code=409, detail="表格数据在导入处理中已更新，请刷新后重试")
+    else:
+        session.refresh(document)
     if base_version is not None and int(base_version) != int(document.version or 1):
         raise HTTPException(status_code=409, detail="表格数据在导入处理中已更新，请刷新后重试")
     current_document = _normalize_document_json(dict(document.document_json or {}))
@@ -20565,7 +20586,12 @@ async def import_note_sheet_excel_reset(
 
     next_document = _remove_orphan_document_entity_cells(next_document)
 
-    if current_document != next_document:
+    if independent_source is not None:
+        independent_source = _replace_independent_attendance_summary_document(
+            document, independent_source, next_document,
+            sheet_id=sheet_id, workbook_id=workbook_id,
+        )
+    elif current_document != next_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_by_user_id = current_user.id
@@ -20585,6 +20611,9 @@ async def import_note_sheet_excel_reset(
 
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
+    if independent_source is not None:
+        for field in ("title", "engine", "version", "updated_at", "document_json"):
+            attributes.set_committed_value(document, field, independent_source[field])
     detail = NoteSheetDetailResponse.model_validate(
         _serialize_sheet_detail(
             document,

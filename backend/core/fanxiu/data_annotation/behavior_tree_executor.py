@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import GeneratorType
-from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, NoReturn, Sequence
 
 from pyxllib.prog import BehaviorTreeStatus, scheduled_task_payload_with_meta
 
@@ -82,7 +82,9 @@ from backend.core.fanxiu.data_annotation.scene_diagnostics import (
     save_scene_diagnostic_frame,
 )
 from backend.core.fanxiu.data_annotation.scene_escalation import (
+    SceneRepairRequired,
     escalate_persistent_scene_unknown,
+    escalate_scene_repair_required,
 )
 from backend.core.fanxiu.data_annotation.popup_guard import (
     FanxiuEmulatorRestartRequired,
@@ -744,7 +746,11 @@ class BehaviorTreeContext(AutomationContext):
             if layer0_scene_id in popup_by_scene_id:
                 if len(handled_popup_ids) >= 9:
                     sequence = " -> ".join(f"#{item}" for item in handled_popup_ids)
-                    raise RuntimeError(f"场景识别连续处理弹窗超过上限：{sequence or 'unknown'}")
+                    self.require_scene_repair(
+                        int(layer0_scene_id), frame,
+                        reason=f"场景识别连续处理弹窗超过上限：{sequence or 'unknown'}",
+                        expected_scene_ids=business_ids,
+                    )
                 candidate = popup_by_scene_id[int(layer0_scene_id)]
                 if not self.runner._handle_recognized_popup_candidate(
                     self,
@@ -752,8 +758,10 @@ class BehaviorTreeContext(AutomationContext):
                     score=float(layer0_score or 0.0),
                     expected_scene_ids=business_id_set,
                 ):
-                    raise RuntimeError(
-                        f"场景识别命中弹窗 #{layer0_scene_id}，但该节点没有可执行的中断处理动作"
+                    self.require_scene_repair(
+                        int(layer0_scene_id), frame,
+                        reason=f"场景识别命中弹窗 #{layer0_scene_id}，但该节点没有可执行的中断处理动作",
+                        expected_scene_ids=business_ids,
                     )
                 handled_popup_ids.append(int(layer0_scene_id))
                 # Popup handling is inserted into the business flow. A new
@@ -1809,7 +1817,7 @@ class BehaviorTreeContext(AutomationContext):
         codex_request_path: str | None = None
         codex_escalation_error: str | None = None
         scheduler_task_id = str(self.payload.get("__scheduler_task_id") or "").strip()
-        if scheduler_task_id and evidence_frame_path:
+        if scheduler_task_id:
             try:
                 dispatch = escalate_persistent_scene_unknown(
                     task_id=scheduler_task_id,
@@ -1820,10 +1828,14 @@ class BehaviorTreeContext(AutomationContext):
                     asset_tree_path=self.asset_tree_path,
                     layer0_wait_seconds=wait_timeout,
                     unmatched_guard_seconds=guard_seconds,
+                    attempt_id=str(self.payload.get("__scheduler_attempt_id") or ""),
                 )
-                codex_dispatch_id = dispatch.dispatch_id
-                codex_request_path = dispatch.request_path
-                evidence_text += f"，Codex投递={codex_dispatch_id}"
+                if dispatch is not None:
+                    codex_dispatch_id = dispatch.dispatch_id
+                    codex_request_path = dispatch.request_path
+                    evidence_text += f"，Codex投递={codex_dispatch_id}"
+                else:
+                    evidence_text += "，由当前 AI 运行权持有者处理"
             except Exception as exc:
                 codex_escalation_error = f"{type(exc).__name__}: {exc}"
                 evidence_text += f"，Codex投递失败={codex_escalation_error}"
@@ -1831,7 +1843,7 @@ class BehaviorTreeContext(AutomationContext):
             "warning",
             f"{label}：全层持续未匹配 {guard_seconds:.0f}s{evidence_text}",
         )
-        raise SceneWaitTimeout(
+        error = SceneWaitTimeout(
             f"{label} 全层持续未匹配，期望业务场景 {expected}{evidence_text}",
             expected_scene_ids=view_ids,
             last_match=None,
@@ -1841,6 +1853,8 @@ class BehaviorTreeContext(AutomationContext):
             codex_request_path=codex_request_path,
             codex_escalation_error=codex_escalation_error,
         )
+        self.runner._scene_repair_error = error
+        raise error
 
     def current_scene(
         self,
@@ -1871,6 +1885,50 @@ class BehaviorTreeContext(AutomationContext):
             float(match.score or 0.0),
             str(match.frame_data_url or self.frame_data_url or ""),
         )
+
+    def require_scene_repair(
+        self, scene_id: int | None, frame: str, *, reason: str,
+        expected_scene_ids: Iterable[int] = (),
+    ) -> NoReturn:
+        """Preserve this failed observation and stop rather than retry bad assets.
+
+        Engineering Jobs hand off to an independent Agent. AI-owned Jobs and
+        ordinary diagnostic Cells raise to their existing caller without spawning.
+        No recapture or click is performed here.
+        """
+        expected_scene_ids = tuple(expected_scene_ids)
+        evidence = save_scene_diagnostic_frame(
+            self.runner, frame, kind="scene_repair", label=reason,
+            expected_scene_ids=expected_scene_ids, matched_scene_id=scene_id,
+        )
+        dispatch = None
+        escalation_error = None
+        task_id = str(self.payload.get("__scheduler_task_id") or "").strip()
+        if task_id:
+            try:
+                dispatch = escalate_scene_repair_required(
+                    task_id=task_id, task_label=reason,
+                    entry_id=str(self.ctx.get("entry_id") or ""), scene_id=scene_id,
+                    expected_scene_ids=expected_scene_ids, evidence_frame_path=evidence,
+                    asset_tree_path=self.asset_tree_path, reason=reason,
+                    attempt_id=str(self.payload.get("__scheduler_attempt_id") or ""),
+                )
+            except Exception as exc:
+                escalation_error = f"{type(exc).__name__}: {exc}"
+        detail = f"{reason}；原始帧={evidence}"
+        if dispatch is not None:
+            detail += f"；Codex投递={dispatch.dispatch_id}"
+        elif escalation_error:
+            detail += f"；自动升级失败={escalation_error}"
+        else:
+            detail += "；由当前调用方/AI 处理"
+        self.runner._log("error", detail)
+        error = SceneRepairRequired(
+            detail, scene_id=scene_id, evidence_frame_path=evidence,
+            dispatch=dispatch, escalation_error=escalation_error,
+        )
+        self.runner._scene_repair_error = error
+        raise error
 
     def render_scene_comparison(
         self,
@@ -6332,13 +6390,19 @@ class BehaviorTreeContext(AutomationContext):
             tokens=tokens,
         )
 
-    def _ensure_daily_list_frame(self, frame: str, lines: list[dict[str, Any]], *, label: str) -> None:
+    def _ensure_daily_list_frame(self, frame: str, lines: list[dict[str, Any]], *, label: str):
         scene_id, score = self.runner._identify_scene_number(self.ctx, frame, [69, 34])
-        text = self.runner._ocr_text(lines)
         if scene_id == 69:
-            return
-        scene_text = f"#{scene_id}" if scene_id is not None else "unknown"
-        raise RuntimeError(f"{label}：未确认当前在 #69 日常列表，禁止滚动查找；当前 {scene_text} {score:.0f}% OCR={text[:120]}")
+            return frame, lines
+        # A popup may arrive between the scroll and its observation. Use the
+        # shared guarded wait before declaring the list lost; never reuse the
+        # popup's OCR as list evidence after it has been dismissed.
+        match = yield from self.wait_scene(
+            [69], wait=20.0, label=f"{label}：处理干扰并重新确认日常列表"
+        )
+        frame = match.frame_data_url
+        lines = self.runner._ocr_fragments_in_scene_shapes(self.ctx, frame, self.view(69).raw)
+        return frame, lines
 
     def open_daily_entry(
         self,
@@ -6374,7 +6438,7 @@ class BehaviorTreeContext(AutomationContext):
                 before_lines = self.runner._ocr_fragments_in_scene_shapes(
                     self.ctx, before_frame, view69.raw
                 )
-                self._ensure_daily_list_frame(before_frame, before_lines, label=label)
+                before_frame, before_lines = yield from self._ensure_daily_list_frame(before_frame, before_lines, label=label)
                 before_signature = self._daily_visible_list_signature(
                     before_lines,
                     view69,
@@ -6390,7 +6454,7 @@ class BehaviorTreeContext(AutomationContext):
                 after_lines = self.runner._ocr_fragments_in_scene_shapes(
                     self.ctx, after_frame, view69.raw
                 )
-                self._ensure_daily_list_frame(after_frame, after_lines, label=label)
+                after_frame, after_lines = yield from self._ensure_daily_list_frame(after_frame, after_lines, label=label)
                 after_signature = self._daily_visible_list_signature(
                     after_lines,
                     view69,
@@ -6443,7 +6507,7 @@ class BehaviorTreeContext(AutomationContext):
                     else:
                         frame = self.cur_frame(update=True)
                         lines = self.runner._ocr_fragments_in_scene_shapes(self.ctx, frame, view69.raw)
-                    self._ensure_daily_list_frame(frame, lines, label=label)
+                    frame, lines = yield from self._ensure_daily_list_frame(frame, lines, label=label)
                     # `_daily_entry_matches` 已按日常列表本身约束候选，并排除
                     # 固定头尾。较窄的 safe_scroll_shape 只用于判断列表是否
                     # 真正滚动；若也用于标题搜索，回到顶部后会永久滤掉被
@@ -9516,8 +9580,11 @@ class BehaviorTreeExecutor(
 
 
 
-    def _raise_if_stopped(self, stop_event: threading.Event) -> None:
-        if stop_event.is_set():
+    def _raise_if_stopped(self, stop_event: threading.Event | None) -> None:
+        repair_error = getattr(self, "_scene_repair_error", None)
+        if repair_error is not None:
+            raise repair_error
+        if stop_event is not None and stop_event.is_set():
             raise InterruptedError()
 
     def _load_asset_tree(self, path: Path) -> list[dict[str, Any]]:
@@ -11406,7 +11473,11 @@ class BehaviorTreeExecutor(
             )
             ctx.pop("_navigation_incident_recorder", None)
         self._log("error", f"场景跳转缺少可靠标注，已中断：{detail}{diagnostic}")
-        raise RuntimeError(f"场景跳转缺少可靠标注，已中断，请人工补标/修标后重试：{detail}{diagnostic}")
+        context = self._behavior_tree_context(ctx, asset_tree_path)
+        context.require_scene_repair(
+            current_scene_id, frame_data_url, expected_scene_ids=[target_scene_id],
+            reason=f"场景导航的有界恢复已耗尽：{detail}{diagnostic}",
+        )
 
     def _require_assets(self, ctx: dict[str, Any]) -> None:
         images: dict[int, dict[str, Any]] = ctx["images"]
@@ -12571,6 +12642,7 @@ class BehaviorTreeExecutor(
         x_ratio: float = 0.5,
         y_ratio: float = 0.5,
     ) -> None:
+        self._raise_if_stopped(getattr(self, "_stop_event", None))
         xuanhuang_forward = (
             self._image_number(image) == 418
             and str(shape.get("title") or "").strip() == "前往"
@@ -12979,6 +13051,7 @@ class BehaviorTreeExecutor(
         *,
         save_action_trace: bool = True,
     ) -> None:
+        self._raise_if_stopped(getattr(self, "_stop_event", None))
         payload = ActionPlanner().click_point_payload(image, x, y)
         entry: Any = ctx["entry"]
         if save_action_trace:
@@ -13008,6 +13081,7 @@ class BehaviorTreeExecutor(
         end_y: float,
         duration_ms: int = 300,
     ) -> None:
+        self._raise_if_stopped(getattr(self, "_stop_event", None))
         payload = ActionPlanner().drag_point_payload(
             image,
             start_x,
@@ -14654,22 +14728,11 @@ class BehaviorTreeExecutor(
                         message="Layer 1 枢纽缺少可靠路径，已保留现场",
                     )
                     ctx.pop("_navigation_incident_recorder", None)
-                    raise RuntimeError(
-                        f"go_scene({target_scene_id}) 失败：当前 #{current_scene_id} 是 Layer 1 枢纽，"
-                        "但场景图没有可靠路径；已拒绝空白/#424 猜测点击。"
-                    )
-                if last_failed_edge is not None:
-                    failed_shape = last_failed_edge.get("shape") if isinstance(last_failed_edge, dict) else None
-                    return self._save_unknown_scene_frame(
-                        ctx,
-                        asset_tree_path,
-                        tree,
-                        frame,
-                        target_scene_id=target_scene_id,
-                        current_scene_id=current_scene_id,
-                        action_shape=failed_shape,
-                        elapsed_seconds=0.0,
-                        history=[f"#{current_scene_id} 已尝试 {len(failed_edge_keys)} 个候选仍未离开源场景"],
+                    context.require_scene_repair(
+                        int(current_scene_id), frame,
+                        expected_scene_ids=[target_scene_id],
+                        reason=f"go_scene({target_scene_id}) 失败：当前 #{current_scene_id} 是 Layer 1 枢纽，"
+                               "但场景图没有可靠路径；已拒绝空白/#424 猜测点击。",
                     )
                 incident_recorder.trigger(
                     trigger_type="normal_actions_exhausted",
@@ -14688,8 +14751,11 @@ class BehaviorTreeExecutor(
                     message="无可用低风险导航动作",
                 )
                 ctx.pop("_navigation_incident_recorder", None)
-                raise RuntimeError(
-                    f"go_scene({target_scene_id}) 失败：无法从当前#{current_scene_id}找到可达#{target_scene_id}的路径，请检查标注shape。"
+                context.require_scene_repair(
+                    int(current_scene_id), frame,
+                    expected_scene_ids=[target_scene_id],
+                    reason=f"go_scene({target_scene_id}) 失败：无法从当前#{current_scene_id}找到可达#{target_scene_id}的安全路径，"
+                           f"已失败动作 {len(failed_edge_keys)} 个；需要核对身份及出口标注。",
                 )
             edge = decision["edge"]
             image = edge["image"]

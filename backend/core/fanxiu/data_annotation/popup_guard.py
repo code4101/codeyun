@@ -75,41 +75,14 @@ class SceneInterruptionMixin:
         )
         return not any(marker in text for marker in blocked_markers)
 
-    def _popup_candidate_has_executable_action(
-        self,
-        image: dict[str, Any],
-        action_shape: dict[str, Any] | None,
-    ) -> bool:
-        """Only inject popup nodes with an executable interruption action."""
-
-        scene_id = self._image_number(image)
-        specialized_scene_ids = {
-            84,
-            287,
-            300,
-            355,
-            393,
-            # #546 is an actionless login maintenance prompt.  It must join
-            # the global interruption graph so ordinary business jobs can
-            # promote it into the maintenance domain before #47's generic
-            # close action runs.  BehaviorTreeContext handles #546 by raising
-            # FanxiuMaintenanceDetected and never consumes its confirm button.
-            546,
-            *self._LEAVE_CONFIRM_VIEW_IDS,
-        }
-        return (
-            scene_id in specialized_scene_ids
-            or self._auto_close_guard_action_allowed(action_shape)
-        )
-
     def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Flatten executable identity-bearing global interruption scenes.
+        """Flatten identity-bearing global interruption scenes.
 
         The regular source is every ``弹窗`` folder. A business scene can also
         opt in explicitly with ``behaviorTreeInterruption=true`` when the game may
         surface it over unrelated jobs. This keeps its business grouping and
         avoids unsafe heuristics such as treating every scene with a Return
-        button as a popup. An actionless scene is never indexed.
+        button as a popup. Missing actions remain visible to the repair boundary.
         """
 
         candidates: list[dict[str, Any]] = []
@@ -186,14 +159,16 @@ class SceneInterruptionMixin:
                         action_view, action_shape = inherited_close
                     else:
                         action_view, action_shape = item, None
-                    if self._popup_candidate_has_executable_action(item, action_shape):
-                        add_candidate(
-                            item,
-                            "/".join(path),
-                            action_shape,
-                            action_view,
-                            intended_action(item),
-                        )
+                    # Identity must not depend on annotation completeness. An
+                    # actionless popup still masks the business scene and must
+                    # reach the repair boundary when recognized.
+                    add_candidate(
+                        item,
+                        "/".join(path),
+                        action_shape,
+                        action_view,
+                        intended_action(item),
+                    )
                     if (
                         self._auto_close_guard_action_allowed(own_action)
                         and own_title not in {"确定", "确认"}
@@ -229,13 +204,12 @@ class SceneInterruptionMixin:
                         ),
                         None,
                     ) if action_title else None
-                    if self._popup_candidate_has_executable_action(item, action_shape):
-                        add_candidate(
-                            item,
-                            "/".join(path),
-                            action_shape,
-                            intended_action_shape=intended_action(item),
-                        )
+                    add_candidate(
+                        item,
+                        "/".join(path),
+                        action_shape,
+                        intended_action_shape=intended_action(item),
+                    )
                 if str(item.get("type") or "") == "folder" and title == "弹窗":
                     if isinstance(children, list):
                         collect_popup_scenes(

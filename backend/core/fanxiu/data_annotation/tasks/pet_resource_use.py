@@ -5,6 +5,7 @@ initialization replans from fresh task progress after every completed batch.
 """
 
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from backend.core.fanxiu.activity.lingchong_jingwu import (
@@ -45,7 +46,8 @@ def enter_peakrace_pet_resources(context: Any, *, pet_name: str):
     stage = current_peakrace_lingchong_stage()
     if scene == 34:
         yield from open_loaded_activity_menu_item(context, stage["outer_activity_id"], kind="world_left",
-            source_scene_id=34, ocr_shape_names=["左侧菜单"], expected_scene_ids=[701], target_gui_name="天道巅峰")
+            source_scene_id=34, ocr_shape_names=["左侧菜单"], expected_scene_ids=[701], target_gui_name="天道巅峰",
+            max_scrolls=12)
         scene = 701
     if scene == 701:
         yield from context.wait_action_settle(1)
@@ -67,76 +69,119 @@ def enter_peakrace_pet_resources(context: Any, *, pet_name: str):
 
 
 def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
-                           item_id: int, item_name: str, quantity: int, base_gain: int | None = None):
+                           item_id: int, item_name: str, quantity: int, base_gain: int | None = None,
+                           verify_task_progress: bool = True):
     """Use one explicit batch and verify its positive, settled pet/task effect.
 
     The active dialog identity includes the chosen pet. An uncertain result is
     never retried automatically; the caller must inspect current game facts.
+    Ranking after initialization may omit task progress reads explicitly;
+    inventory and settled positive pet effects are always observed.
     """
-    before_pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)
-    if before_pet["pending_swallow_count"]:
-        raise RuntimeError("已有灵兽吞噬进行中")
-    before_progress = read_pet_resource_progress(activity_id)
-    scene = int((yield from context.wait_scene([545, 706], wait=15)))
-    initial_dialog = None
-    if scene == 545:
-        initial_dialog = yield from open_pet_aptitude_pill(context, item_name=item_name, item_id=item_id)
-    elif scene != 706:
-        raise RuntimeError("未处于资质页或使用弹窗")
-    dialog = yield from prepare_pet_pill_quantity(context, item_id=item_id, quantity=quantity, initial_snapshot=initial_dialog)
-    if dialog.get("pet_id") != pet_id:
-        raise RuntimeError("使用弹窗选中的灵兽不符")
-    final_dialog = dialog
-    if final_dialog["current"] != quantity or final_dialog.get("pet_id") != pet_id:
-        raise RuntimeError("提交前的道具数量或灵兽身份改变")
-    occurrence = datetime.now().astimezone().date().isoformat()
-    action_id = record_pet_resource_receipt(activity_id, occurrence,
-        {"status": "submitted", "pet_id": pet_id, "item_id": item_id, "quantity": quantity,
-         "task_before": before_progress["progress"], "inventory_before": dialog["owned_count"],
-         "aptitude_before": before_pet["target"]["aptitude_total"]})
-    yield from context.wait_click(706, "使用")
-    yield from context.wait_action_settle(2)
-    scene = int((yield from context.wait_scene([545], wait=15)))
-    if scene != 545:
-        raise RuntimeError("使用后出现未验证页面，保留现场")
-    previous = None
-    stable = 0
-    for _ in range(20):
-        after_pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)
-        inventory = read_backpack_item_counts([item_id], manager_key="lingchong-jingwu-resources")[0][item_id]
-        after_progress = read_pet_resource_progress(activity_id)
-        observation = (after_pet["target"]["aptitude_total"], inventory, after_progress["progress"])
-        positive = observation[0] > before_pet["target"]["aptitude_total"]
-        stable = stable + 1 if observation == previous and positive and not after_pet["pending_swallow_count"] else 0
-        if stable >= 2:
-            receipt = {"activity_id": activity_id, "pet_id": pet_id, "item_id": item_id,
-                    "quantity": quantity, "inventory_before": dialog["owned_count"],
-                    "inventory_after": inventory, "task_before": before_progress["progress"],
-                    "task_after": after_progress["progress"],
-                    "aptitude_delta": observation[0] - before_pet["target"]["aptitude_total"],
-                    "base_total": quantity * base_gain if base_gain is not None else None,
-                    "quantity_control": dialog.get("quantity_control"),
-                    "captured_at": datetime.now().astimezone().isoformat(timespec="seconds")}
-            record_pet_resource_receipt(activity_id, occurrence, {**receipt, "status": "verified"}, action_id=action_id)
-            return receipt
-        previous = observation
-        yield from context.wait_action_settle(1)
-    raise RuntimeError("资源使用尚未得到稳定结果，禁止重复提交")
+    started = perf_counter()
+    timings = {}
+    phase = 'before_state'
+    phase_started = started
+    try:
+        before_pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)
+        if before_pet["pending_swallow_count"]:
+            raise RuntimeError("已有灵兽吞噬进行中")
+        before_progress = read_pet_resource_progress(activity_id) if verify_task_progress else None
+        timings["before_state"] = perf_counter() - started
+        phase = 'open_dialog'
+        phase_started = perf_counter()
+        scene_match = yield from context.wait_scene([545, 706], wait=15)
+        scene = int(scene_match)
+        initial_dialog = None
+        if scene == 545:
+            initial_dialog = yield from open_pet_aptitude_pill(
+                context, item_name=item_name, item_id=item_id, initial_scene=scene_match,
+            )
+        elif scene == 706:
+            initial_dialog = read_item_batch_use_dialog_snapshot(expected_item_id=item_id)
+        else:
+            raise RuntimeError("未处于资质页或使用弹窗")
+        if initial_dialog.get("pet_id") != pet_id:
+            raise RuntimeError("使用弹窗所属灵兽与预期不符")
+        timings["open_dialog"] = perf_counter() - phase_started
+        phase = 'configure_quantity'
+        phase_started = perf_counter()
+        dialog = yield from prepare_pet_pill_quantity(context, item_id=item_id, quantity=quantity, initial_snapshot=initial_dialog)
+        timings["configure_quantity"] = perf_counter() - phase_started
+        if dialog["current"] != quantity or dialog.get("pet_id") != pet_id:
+            raise RuntimeError("提交前的道具数量或灵兽身份改变")
+        occurrence = datetime.now().astimezone().date().isoformat()
+        action_id = record_pet_resource_receipt(activity_id, occurrence,
+            {"status": "submitted", "pet_id": pet_id, "item_id": item_id, "quantity": quantity,
+             "task_before": before_progress["progress"] if before_progress is not None else None,
+             "inventory_before": dialog["owned_count"],
+             "aptitude_before": before_pet["target"]["aptitude_total"]})
+        phase = 'submit'
+        phase_started = perf_counter()
+        yield from context.wait_click(706, "使用")
+        yield from context.wait_action_settle(2)
+        scene = int((yield from context.wait_scene([545], wait=15)))
+        if scene != 545:
+            raise RuntimeError("使用后出现未验证页面，保留现场")
+        timings["submit"] = perf_counter() - phase_started
+        phase = 'verify_effect'
+        phase_started = perf_counter()
+        previous = None
+        stable = 0
+        for _ in range(20):
+            after_pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)
+            observation = after_pet["target"]["aptitude_total"]
+            positive = observation > before_pet["target"]["aptitude_total"]
+            stable = stable + 1 if observation == previous and positive and not after_pet["pending_swallow_count"] else 0
+            if stable >= 2:
+                # Wait on the pet's actual completion, then capture the other
+                # effects once. Avoid rescanning three Runtime models per tick.
+                inventory = read_backpack_item_counts([item_id], manager_key="lingchong-jingwu-resources")[0][item_id]
+                after_progress = read_pet_resource_progress(activity_id) if verify_task_progress else None
+                timings["verify_effect"] = perf_counter() - phase_started
+                timings["total"] = perf_counter() - started
+                receipt = {"activity_id": activity_id, "pet_id": pet_id, "item_id": item_id,
+                        "quantity": quantity, "inventory_before": dialog["owned_count"],
+                        "inventory_after": inventory,
+                        "task_before": before_progress["progress"] if before_progress is not None else None,
+                        "task_after": after_progress["progress"] if after_progress is not None else None,
+                        "aptitude_delta": observation - before_pet["target"]["aptitude_total"],
+                        "base_total": quantity * base_gain if base_gain is not None else None,
+                        "quantity_control": dialog.get("quantity_control"),
+                        "timings_seconds": timings,
+                        "captured_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+                record_pet_resource_receipt(activity_id, occurrence, {**receipt, "status": "verified"}, action_id=action_id)
+                return receipt
+            previous = observation
+            yield from context.wait_action_settle(1)
+        raise RuntimeError("资源使用尚未得到稳定结果，禁止重复提交")
+    except Exception as exc:
+        timings[phase] = perf_counter() - phase_started
+        timings['total'] = perf_counter() - started
+        diagnostic = f'灵兽单批停在 {phase}；耗时秒：{timings}'
+        print(diagnostic, flush=True)
+        exc.add_note(diagnostic)
+        raise
 
 
 def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
-                             seed_already_used: bool = False, max_batches: int = 12):
+                             seed_already_used: bool = False, max_batches: int = 1):
     """Current aptitude page -> 30 beast pills once -> task progress >=6000.
 
     ``seed_already_used`` requires an existing verified receipt for this
     occurrence. Partial task progress alone is not proof of that seed batch.
-    The generator yields one batch before reading/replanning the next.
+    The default call uses one batch, including the seed. Further calls resume
+    from verified receipts and freshly observed task progress.
     """
+    if isinstance(max_batches, bool) or not isinstance(max_batches, int) or max_batches < 1:
+        raise ValueError("初始化批数必须为正整数")
     receipts = []
     occurrence = datetime.now().astimezone().date().isoformat()
     history = read_pet_resource_receipts(activity_id, occurrence)
     if any(r.get("status") == "submitted" for r in history):
         raise RuntimeError("上一批使用结果尚未核实")
+    if any(r.get("status") == "rank_observation_pending" for r in history):
+        raise RuntimeError("上一批排名积分尚未核实")
     verified = [r for r in history if r.get("status") == "verified" and r.get("pet_id") == pet_id]
     seed_verified = any(r.get("item_id") == 8022009 and r.get("quantity") == 30 for r in verified)
     if seed_already_used and not seed_verified:
@@ -151,7 +196,7 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
         receipt = yield from use_pet_resource_batch(context, activity_id=activity_id, pet_id=pet_id,
                                                     item_id=8022009, item_name="兽神饲灵丸", quantity=30, base_gain=100)
         receipts.append(receipt)
-    for _ in range(max_batches):
+    for _ in range(max_batches - len(receipts)):
         progress = read_pet_resource_progress(activity_id)
         if progress["complete"]:
             return {"status": "complete", "progress": progress, "receipts": receipts}
@@ -170,4 +215,6 @@ def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
         receipt["base_total"] = base_gain * plan["quantity"]
         samples[item.item_id] = receipt["aptitude_delta"] / receipt["base_total"]
         receipts.append(receipt)
-    return {"status": "batch_limit", "progress": read_pet_resource_progress(activity_id), "receipts": receipts}
+    progress = read_pet_resource_progress(activity_id)
+    return {"status": "complete" if progress["complete"] else "batch_limit",
+            "progress": progress, "receipts": receipts}

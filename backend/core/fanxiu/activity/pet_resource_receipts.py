@@ -44,6 +44,46 @@ def record_pet_resource_receipt(activity_id: int, occurrence: str, receipt: dict
         return action_id
 
 
+def cancel_unsubmitted_pet_rank_observation(
+    activity_id: int, occurrence: str, *, observation_action_id: str,
+    pet_id: int, reason: str,
+) -> bool:
+    """Cancel a failed preparation only when the locked ledger proves no use.
+
+    Call after the exclusive resource operation has stopped. The caller must
+    not use this to reconcile a cross-date operation: submissions are stored
+    under their actual submission date. Uncertain effects stay pending.
+    """
+    path = _path(activity_id, occurrence)
+    with FileLock(str(path) + ".lock", timeout=5):
+        rows = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        observation = next((r for r in rows if r.get("action_id") == observation_action_id), None)
+        if observation is None or observation.get("pet_id") != pet_id:
+            raise ValueError("Rank observation identity changed")
+        if observation.get("status") == "rank_observation_cancelled":
+            return True
+        if observation.get("status") != "rank_observation_pending":
+            return False
+        prior_ids = observation.get("prior_action_ids")
+        if not isinstance(prior_ids, list) or any(not isinstance(x, str) for x in prior_ids):
+            return False
+        prior = set(prior_ids)
+        if not prior.issubset({r.get("action_id") for r in rows}):
+            return False
+        if any(r.get("status") == "submitted" or (
+            r.get("status") == "verified" and r.get("action_id") not in prior
+        ) for r in rows):
+            return False
+        observation.update(
+            status="rank_observation_cancelled", cancellation_reason=str(reason),
+            cancelled_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        )
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+        return True
+
+
 def record_pet_rank_sample(activity_id: int, occurrence: str, *, pet_id: int,
                            action_ids: list[str], before_rank: dict, after_rank: dict,
                            observation_action_id: str | None = None) -> dict:

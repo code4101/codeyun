@@ -232,6 +232,10 @@ class FanxiuJupyterBinding:
         self.execution_lock.acquire()
         self._cell_lock_acquired = True
         try:
+            # A repair latch belongs to one Cell, never to the next attempt.
+            # Clear it only after acquiring exclusive execution ownership.
+            with self.runner._lock:
+                self.runner._scene_repair_error = None
             self._shell = shell
             source = str(getattr(info, "raw_cell", "") or "")
             self._managed_task_cell = source.lstrip().startswith("# fanxiu:managed-task-cell")
@@ -258,6 +262,7 @@ class FanxiuJupyterBinding:
 
     def end_cell(self, result: Any) -> None:
         error = getattr(result, "error_in_exec", None) or getattr(result, "error_before_exec", None)
+        error = getattr(self.runner, "_scene_repair_error", None) or error
         try:
             with self.runner._lock:
                 if getattr(self.runner, "_stop_event", None) is self.stop_event:
@@ -537,7 +542,15 @@ class FanxiuJupyterBinding:
             })
         self.runner._persist_status()
         try:
+            repair_error = getattr(self.runner, "_scene_repair_error", None)
+            if repair_error is not None:
+                raise repair_error
             result = self.run_task(task_type, normalized_payload)
+            # Business handlers may catch Exception for local recovery. Once
+            # scene repair took ownership, a normal return cannot seal success.
+            repair_error = getattr(self.runner, "_scene_repair_error", None)
+            if repair_error is not None:
+                raise repair_error
         except KeyboardInterrupt:
             detail = "Cell 已由 interrupt 中断"
             with self.runner._lock:

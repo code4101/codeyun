@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Iterable
 
 from backend.core.fanxiu.data_annotation.effective_time import job_now
+from backend.core.jobs.time_windows import clip_daily_retry_to_window as _clip_daily_retry_to_window
 
 
 def clip_daily_retry_to_window(
@@ -20,21 +21,7 @@ def clip_daily_retry_to_window(
     boundary, the next meaningful attempt is tomorrow's first trigger.
     """
 
-    current = now or job_now()
-    start_clock = (
-        datetime.strptime(start, "%H:%M").time()
-        if isinstance(start, str)
-        else start
-    )
-    end_clock = (
-        datetime.strptime(end, "%H:%M").time()
-        if isinstance(end, str)
-        else end
-    )
-    close_at = datetime.combine(current.date(), end_clock)
-    if current >= close_at or candidate >= close_at:
-        return datetime.combine(current.date() + timedelta(days=1), start_clock)
-    return candidate
+    return _clip_daily_retry_to_window(candidate, now=now or job_now(), start=start, end=end)
 
 
 def next_business_time(

@@ -6490,6 +6490,7 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
   try {
     commitPendingSheetGridEdit()
     await flushRemoteSave()
+    if (sheetRemoteConflictActive) return
     clearSaveTimer()
     const result = await importNoteSheetFromExcel(
       props.sheetId,

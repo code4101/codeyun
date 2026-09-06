@@ -151,7 +151,7 @@ def test_codeyun_rejects_legacy_mutation_for_attendance_owned_sheet(monkeypatch)
             workbook_id=20,
         )
     except HTTPException as exc:
-        assert exc.status_code == 409
+        assert exc.status_code == 422
         assert "旧写入入口已关闭" in str(exc.detail)
     else:
         raise AssertionError("独立考勤表不得继续写入 CodeYun 旧副本")

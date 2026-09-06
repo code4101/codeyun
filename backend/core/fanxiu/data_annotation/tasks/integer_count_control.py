@@ -95,7 +95,7 @@ class IntegerSliderAssets:
 
 def _ocr_count(context: Any, assets: IntegerCountAssets) -> int:
     values, text = context.ocr_numbers_in_shapes(
-        assets.settings_scene_id, [assets.count_region]
+        assets.settings_scene_id, [assets.count_region], crop=True
     )
     unique = sorted({int(value) for value in values if int(value) > 0})
     minimum_marker = getattr(assets, "count_minimum_marker", None)
@@ -253,36 +253,14 @@ def _proportional_position(
     start = _live_thumb_center(context, assets, geometry)
     target_x = geometry["left_x"] + fraction * (geometry["right_x"] - geometry["left_x"])
     drag_attempts: list[dict[str, float]] = []
-    landed = start
     position_tolerance = 2.0
-    stalled = False
-    for _ in range(8):
-        live = _live_thumb_center(context, assets, geometry)
-        remaining = target_x - live[0]
-        if abs(remaining) <= position_tolerance:
-            break
-        _drag_pixels(context, assets, live[0], target_x, live[1])
+    moved = abs(target_x - start[0]) > position_tolerance
+    if moved:
+        _drag_pixels(context, assets, start[0], target_x, start[1])
         yield from context.wait_action_settle(0.75)
-        landed = _live_thumb_center(context, assets, geometry)
-        drag_attempts.append({
-            "start_x": live[0],
-            "commanded_end_x": target_x,
-            "actual_end_x": landed[0],
-            "remaining_pixels": target_x - landed[0],
-        })
-        if abs(target_x - landed[0]) <= position_tolerance:
-            break
-        if abs(landed[0] - live[0]) < 0.5:
-            # Some UIs swallow a short first drag.  That does not prove the
-            # slider is unusable: stage 2 deliberately probes 1, 2, 4, ...
-            # pixels and can discover the minimum effective gesture distance.
-            stalled = True
-            break
-    # The proportional pixel target is only a coarse estimate: the game's
-    # visible track anchors and the Runtime integer range need not share the
-    # same exact endpoints.  Even when eight bounded drags cannot reach the
-    # theoretical ±2px coordinate, continue with the authoritative count;
-    # stage 2 measures the local Δd -> Δn relation and closes the residual.
+    # Stage 1 makes one proportional estimate. Repeating that same estimate
+    # cannot correct inaccurate track anchors: stage 2 measures the actual
+    # local count/pixel relation and owns all subsequent approach drags.
     current = yield from _stable_read(
         context,
         assets,
@@ -290,6 +268,13 @@ def _proportional_position(
         runtime_reader=runtime_reader, read_counts=read_counts,
     )
     landed = _live_thumb_center(context, assets, geometry)
+    if moved:
+        drag_attempts.append({
+            "start_x": start[0],
+            "commanded_end_x": target_x,
+            "actual_end_x": landed[0],
+            "remaining_pixels": target_x - landed[0],
+        })
     return current, maximum, range_probe, fraction, {
         "before": before,
         "after": current,
@@ -299,7 +284,7 @@ def _proportional_position(
         "actual_start_x": start[0],
         "actual_end_x": landed[0],
         "actual_pixels": abs(landed[0] - start[0]),
-        "stalled": stalled,
+        "stalled": moved and abs(landed[0] - start[0]) < 0.5,
         "drag_attempts": drag_attempts,
     }
 
@@ -354,9 +339,11 @@ def _coarse_pixel_converge(
                 "actual_pixels": abs(actual_delta),
                 "count_delta": delta,
             })
-            commanded_delta = target_x - start_x
             if delta * sign > 0 and actual_delta * sign > 0:
-                effective = (commanded_delta, delta)
+                # Calibrate against observed thumb movement. The game may
+                # stop short of the commanded endpoint; using that command
+                # would bias every subsequent count-to-pixel correction.
+                effective = (actual_delta, delta)
                 break
             # A sub-pixel/one-pixel gesture may be interpreted as a tap while
             # the thumb is still settling.  It is not yet a usable d/n probe;
@@ -364,8 +351,6 @@ def _coarse_pixel_converge(
         if effective is None:
             raise RuntimeError(f"{count_label}递增像素拖拽未产生有效变化")
         probe_pixel_delta, probe_count_delta = effective
-        if abs(desired - current) < abs(probe_count_delta):
-            return current, probes, interpolation_rows, "within_drag_grain"
         start = _live_thumb_center(context, assets, geometry)
         # A probe establishes the local linear relation Δd -> Δn.  With
         # e = y - x, the next signed drag is D = e / Δn * Δd.  The signed
@@ -395,6 +380,12 @@ def _coarse_pixel_converge(
             "probe_count_delta": probe_count_delta,
             "calculated_drag_delta": drag_delta,
         })
+        # The probe is calibration, not the approach itself. Only after
+        # applying D may a small residual enter the button phase.
+        if (_estimated_button_actions(assets, current=current, desired=desired)
+                <= _MAX_DIRECT_BUTTON_ACTIONS
+                and abs(desired - current) < abs(probe_count_delta)):
+            return current, probes, interpolation_rows, "within_drag_grain"
     raise RuntimeError(
         f"{count_label}拖拽逼近未进入颗粒度范围："
         f"current={current}, target={desired}"
@@ -405,6 +396,7 @@ def _fine_tune_batches(
     context, assets, desired, *, current, count_label, runtime_reader, read_counts=None
 ) -> Iterator[Any]:
     batches: list[dict[str, int]] = []
+    remaining_clicks = _MAX_DIRECT_BUTTON_ACTIONS
     click = getattr(context, "click_shape_center_fast", None)
     if not callable(click):
         click = context.click_shape_center
@@ -420,6 +412,12 @@ def _fine_tune_batches(
         large_action = large_increase if increasing else large_decrease
         large_clicks = residual // large_step if large_action and large_step > 1 else 0
         unit_clicks = residual - large_clicks * large_step
+        if large_clicks + unit_clicks > remaining_clicks:
+            raise RuntimeError(
+                f"{count_label}尚需 {large_clicks + unit_clicks} 次加减，"
+                f"超过剩余精调预算 {remaining_clicks}；必须继续拖拽逼近，未继续逐个点击"
+            )
+        remaining_clicks -= large_clicks + unit_clicks
         before = current
         for _ in range(large_clicks):
             click(assets.settings_scene_id, large_action)
@@ -535,6 +533,7 @@ def _set_track_only_count(
     )
     probes: list[dict[str, Any]] = []
     interpolation_rows: list[dict[str, Any]] = []
+    position_x = initial_target_x
     coarse_exit = "within_threshold"
     for _ in range(5):
         error = desired - current
@@ -542,12 +541,12 @@ def _set_track_only_count(
             coarse_exit = "within_threshold"
             break
         sign = 1 if error > 0 else -1
-        count_x = left + width * ((current - 1) / (maximum - 1))
+        count_x = position_x
         available = left + width - count_x if sign > 0 else count_x - left
         effective: tuple[float, int] | None = None
         distance = 1.0
         while distance <= max(1.0, available):
-            count_x = left + width * ((current - 1) / (maximum - 1))
+            count_x = position_x
             available = left + width - count_x if sign > 0 else count_x - left
             commanded = min(distance, available)
             if commanded < 0.5:
@@ -569,6 +568,7 @@ def _set_track_only_count(
                 count_label=count_label,
                 runtime_reader=runtime_reader, read_counts=read_counts,
             )
+            position_x = probe_x
             delta = current - before_probe
             probes.append({
                 "commanded_pixels": commanded,
@@ -582,10 +582,9 @@ def _set_track_only_count(
             raise RuntimeError(f"{count_label}递增像素拖拽未产生有效变化")
         probe_pixels, probe_delta = effective
         error = desired - current
-        if abs(error) < abs(probe_delta):
-            coarse_exit = "within_drag_grain"
-            break
-        start_x = left + width * ((current - 1) / (maximum - 1))
+        # Keep the last actual commanded position. Reconstructing it from
+        # the original proportional model discards the local calibration.
+        start_x = position_x
         drag_delta = error / probe_delta * probe_pixels
         end_x = min(left + width, max(left, start_x + drag_delta))
         before_interpolation = current
@@ -604,6 +603,7 @@ def _set_track_only_count(
             count_label=count_label,
             runtime_reader=runtime_reader, read_counts=read_counts,
         )
+        position_x = end_x
         interpolation_rows.append({
             "before": before_interpolation,
             "after": current,
@@ -611,6 +611,11 @@ def _set_track_only_count(
             "probe_pixel_delta": probe_pixels,
             "probe_count_delta": probe_delta,
         })
+        if (_estimated_button_actions(assets, current=current, desired=desired)
+                <= _MAX_DIRECT_BUTTON_ACTIONS
+                and abs(desired - current) < abs(probe_delta)):
+            coarse_exit = "within_drag_grain"
+            break
     else:
         raise RuntimeError(
             f"{count_label}拖拽逼近未进入颗粒度范围：current={current}, target={desired}"
@@ -658,15 +663,25 @@ def set_verified_integer_slider_count(
     no GUI action may intervene before this call. Pass no Runtime reader to
     use local OCR for feedback, retaining business identity checks at the caller.
     ``count_reads`` counts attempted OCR/Runtime reads inside this invocation.
+    An explicit maximum gates every path, including already-exact and short
+    button adjustments. The slider's fine stage permits at most 30 clicks
+    across five batches; a large residual must be resolved by dragging.
     """
 
     if isinstance(desired, bool) or not isinstance(desired, int) or desired <= 0:
         raise ValueError(f"{count_label}必须为正整数")
+    if maximum is not None:
+        if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
+            raise ValueError(f"{count_label}上限必须为正整数")
+        if desired > maximum:
+            raise ValueError(f"{count_label}目标 {desired} 超出上限 {maximum}")
     threshold = max(1, int(max_adjustments))
     read_counts = {"ocr": 0, "runtime": 0}
     if initial_count is not None:
         if isinstance(initial_count, bool) or not isinstance(initial_count, int) or initial_count <= 0:
             raise ValueError(f"{count_label}初始值必须为正整数")
+        if maximum is not None and initial_count > maximum:
+            raise ValueError(f"{count_label}初始值超出上限")
         before = initial_count
     else:
         before = read_positive_integer_count(

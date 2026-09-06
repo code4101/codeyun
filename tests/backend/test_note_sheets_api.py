@@ -10436,3 +10436,89 @@ def test_v30_backfills_numeric_sheet_and_workbook_ids(session):
 
     assert workbook.numeric_id == 1
     assert sheet.numeric_id == 1
+
+
+
+def test_independent_registration_excel_import_and_presave_use_authoritative_store(client, session, monkeypatch, tmp_path):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+    from xlsln.kq5034.engine.db import get_engine, init_db
+    from xlsln.kq5034.engine.models import SheetDocument as AttendanceSheet
+
+    monkeypatch.setenv("KQ_DATABASE_PATH", str(tmp_path / "attendance.sqlite3"))
+    init_db()
+    user = _create_user(session, username="independent-import", is_superuser=True)
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+    columns = ["姓名", "手机号", "微信支付订单号", "备注"]
+    original = {"columns": columns, "rows": [["旧学员", "13000000000", "old-order", "保留"]],
+                "grid_rows": [columns, ["旧学员", "13000000000", "old-order", "保留"]],
+                "data_start_row": 1, "field_row_index": 0}
+    try:
+        created = client.post("/api/note-sheets/sheets", json={"title": "报名表", "document_json": original})
+        assert created.status_code == 200, created.text
+        sheet_id = created.json()["id"]
+        with Session(get_engine()) as attendance_session:
+            attendance_session.add(AttendanceSheet(numeric_id=sheet_id, title="报名表", version=40,
+                                                   document_json=deepcopy(original)))
+            attendance_session.commit()
+        store = LocalAttendanceSheetClient()
+        ref = SimpleNamespace(sheet_id=sheet_id)
+        before = store.get_document(ref)
+        # Import first flushes the browser's current document; this used to fail.
+        saved = client.put(f"/api/note-sheets/sheets/{sheet_id}", json={
+            "base_version": 40, "document_json": original,
+        })
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["version"] >= 40
+        version = store.get_document(ref)["version"]
+        source = Workbook()
+        source.active.append(["真实姓名（必填）", "手机号（必填）", "交易单号（必填）"])
+        source.active.append(["新增学员", "13100000000", "new-order"])
+        stream = io.BytesIO(); source.save(stream)
+        def normalize(**kwargs):
+            return [["新增学员", "13100000000", "new-order", ""]], [], [], []
+        monkeypatch.setattr(note_sheets_api, "_run_note_sheet_excel_import_deepseek", normalize)
+        def upload(base_version):
+            return client.post(f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
+                               data={"mode": "append", "base_version": str(base_version)},
+                               files={"file": ("registration.xlsx", stream.getvalue())})
+        response = upload(version)
+        assert response.status_code == 200, response.text
+        assert response.json()["imported_count"] == 1
+        live = store.get_table(ref)
+        assert [r["姓名"] for r in live["rows"]] == ["旧学员", "新增学员"]
+        assert live["rows"][0]["备注"] == "保留"
+        assert response.json()["sheet"]["version"] == live["version"]
+        assert upload(live["version"]).json()["skipped_duplicate_count"] == 1
+        assert upload(version).status_code == 409
+        # A writer racing with AI normalization must win, without stale overwrite.
+        def racing_normalize(**kwargs):
+            current = store.get_table(ref)
+            store.write_fields(ref, key_field="姓名", fields=["备注"],
+                               rows=[{"姓名": "旧学员", "备注": "并发更新"}],
+                               expected_version=current["version"])
+            return normalize(**kwargs)
+        monkeypatch.setattr(note_sheets_api, "_run_note_sheet_excel_import_deepseek", racing_normalize)
+        assert upload(store.get_table(ref)["version"]).status_code == 409
+        assert store.get_table(ref)["rows"][0]["备注"] == "并发更新"
+        session.expire_all()
+        legacy = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet_id)).one()
+        assert len(legacy.document_json["rows"]) == 1
+        assert legacy.version < 40
+    finally:
+        _clear_user_override()
+
+
+
+def test_excel_append_allows_repeat_registration_with_same_phone_and_new_order():
+    columns = ["姓名", "手机号", "微信支付订单号"]
+    existing = {"columns": columns, "rows": [["学员", "13000000000", "order-1"]]}
+    rows, skipped = note_sheets_api._filter_duplicate_excel_import_payment_order_rows(
+        existing, [["学员", "13000000000", "order-2"], ["学员", "13000000000", "order-1"]], columns,
+    )
+    assert rows == [["学员", "13000000000", "order-2"]]
+    assert skipped == 1
