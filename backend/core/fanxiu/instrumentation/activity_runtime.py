@@ -317,3 +317,37 @@ def read_worldline_activity_runtime_snapshot(
                 ),
             },
         }
+
+
+def read_activity_period_runtime_snapshot(activity_id: int) -> dict[str, Any]:
+    """Read one exact ActivityVO period without loading or operating the game.
+
+    Raises on missing or ambiguous instances; presence alone never proves an
+    opening date. Times are the server's epoch milliseconds.
+    """
+    memory = MumuProcessMemory.discover_cached(fallback_to_discovery=False)
+    root, _, _ = _resolve_activity_manager_runtime(
+        memory, allow_discovery=False, force_refresh=False
+    )
+    reader = LuaJitReader(memory)
+    data = _activity_data_fields(reader, root)
+    matches = []
+    for value in reader.dictionary_fields(data.get("_ActivityInfo")).values():
+        row = reader.fields(value)
+        if as_int(row.get("activityId")) == int(activity_id):
+            matches.append(row)
+    if len(matches) != 1:
+        raise FanxiuRuntimeMemoryError(f"活动 {activity_id} 的周期实例不唯一")
+    row = matches[0]
+    start = _long_or_int(reader, row.get("startTime"))
+    end = _long_or_int(reader, row.get("endTime"))
+    if start is None or end is None or start <= 0 or end < start:
+        raise FanxiuRuntimeMemoryError(f"活动 {activity_id} 的开启时间不完整")
+    return {
+        "complete": True,
+        "activity_id": int(activity_id),
+        "start_time_ms": start,
+        "end_time_ms": end,
+        "evidence": {"pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
+                     "read_only": True},
+    }

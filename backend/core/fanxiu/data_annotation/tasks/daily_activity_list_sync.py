@@ -280,6 +280,25 @@ def run_daily_activity_list_sync_flow(
     if primary_error is not None:
         raise primary_error
     assert result is not None
+    source = dict(plan.get("source_evidence") or {}).get("supplemental_activity_observation") or {}
+    if source.get("complete") is True:
+        wanxiang = [row for row in plan.get("activity_observations", [])
+                    if row.get("name") == "万象宝阁" and row.get("is_schedule_occurrence") is False]
+        if len(wanxiang) > 1:
+            raise RuntimeError("每日清单中的万象宝阁实例不唯一")
+        if wanxiang:
+            from backend.core.fanxiu.instrumentation.activity_runtime import read_activity_period_runtime_snapshot
+            from backend.core.fanxiu.data_annotation.tasks.wanxiang_baoge import (
+                run_wanxiang_baoge_flow, wanxiang_opens_on_date,
+            )
+            period = read_activity_period_runtime_snapshot(int(wanxiang[0]["activity_id"]))
+            evidence = source.get("evidence") or {}
+            if any(period["evidence"].get(key) != evidence.get(key)
+                   for key in ("pid", "process_start_ticks")):
+                raise RuntimeError("万象宝阁开启时间与每日清单不属于同一进程")
+            if wanxiang_opens_on_date(period, plan["target_date"], timezone_name):
+                result["wanxiang_baoge"] = yield from run_wanxiang_baoge_flow(context)
+
     desired_next_times = result["job_schedule"]["desired_next_times"]
     retired_writes = sorted(
         set(desired_next_times).intersection(
@@ -302,6 +321,9 @@ def run_daily_activity_list_sync_flow(
         f"待复核 {result['review_count']}，"
         f"活动作业 {len(result['job_schedule']['decisions'])} 项"
     )
+    if "wanxiang_baoge" in result:
+        review = result["wanxiang_baoge"]
+        result["message"] += "；万象宝阁：" + str(review.get("reason") or review["outcome"])
     return result
 
 

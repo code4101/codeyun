@@ -254,6 +254,8 @@ def repair_kernel_scheduler_tasks(
         for item in (raw if isinstance(raw, list) else [])
         if (task := normalize_kernel_scheduler_task(item)) is not None
     }
+    # This former standalone job now runs inside daily activity synchronization.
+    existing.pop("wanxiang-baoge-six-yuan", None)
     defaults = [
         task
         for item in default_tasks
@@ -307,15 +309,6 @@ def repair_kernel_scheduler_tasks(
             # overlay click therefore formed a cross-attempt click storm.  Only
             # migrate that exact legacy value; preserve any user override.
             migrated_retry_delay = default["error_retry_delay_seconds"]
-        if (
-            task_id == "wanxiang-baoge-six-yuan"
-            and raw_previous.get("error_retry_delay_seconds") == 0
-        ):
-            # This job used to be manual and inherited immediate retry.  It is
-            # now a real 00:30 Scheduler job with an irreversible purchase
-            # branch, so an error must leave room for stop-the-queue diagnosis
-            # instead of forming a same-batch retry storm.
-            migrated_retry_delay = default["error_retry_delay_seconds"]
         migrated_dispatch_level = previous["dispatch_level"]
         if (
             task_id in {"activity-daily-list-sync", "ranking-lifecycle"}
@@ -350,12 +343,6 @@ def repair_kernel_scheduler_tasks(
             **default.get("payload", {}),
             **previous.get("payload", {}),
         }
-        if task_id == "wanxiang-baoge-six-yuan":
-            # The first implementation allowed up to 100 paid refreshes.
-            # The production contract now permits only the free five-card
-            # reveal, so remove the exact retired knob from live state rather
-            # than preserving a misleading/unsafe historical payload forever.
-            migrated_payload.pop("max_refreshes", None)
         tasks.append({
             **default,
             **migrated_execution_state,

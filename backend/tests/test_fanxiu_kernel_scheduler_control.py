@@ -1643,30 +1643,19 @@ def test_scheduler_repair_migrates_legacy_bubble_immediate_retry_only():
     assert task["error_retry_delay_seconds"] == 1800
 
 
-def test_scheduler_repair_removes_retired_wanxiang_paid_refresh_payload():
+def test_scheduler_repair_removes_standalone_wanxiang_job():
     from backend.core.fanxiu.data_annotation import kernel_scheduler_plan as scheduler
 
     defaults = kernel_scheduler_control.default_kernel_scheduler_tasks()
-    wanxiang = deepcopy(
-        next(item for item in defaults if item["id"] == "wanxiang-baoge-six-yuan")
-    )
-    wanxiang["error_retry_delay_seconds"] = 0
-    wanxiang["payload"] = {"max_refreshes": 100}
-
+    assert all(task["id"] != "wanxiang-baoge-six-yuan" for task in defaults)
+    legacy = {"id": "wanxiang-baoge-six-yuan", "task_type": "wanxiang_baoge_six_yuan",
+              "label": "万象宝阁_六元代币宝匣", "next_time": "2026-09-05 00:30:00"}
     repaired, changed = scheduler.repair_kernel_scheduler_tasks(
-        [wanxiang],
-        default_tasks=defaults,
-        facts={},
-        task_supported=lambda _task: True,
+        [legacy], default_tasks=defaults, facts={}, task_supported=lambda _task: True,
         now=real_datetime(2026, 9, 5, 22, 40, 0),
     )
-
-    task = next(
-        item for item in repaired if item["id"] == "wanxiang-baoge-six-yuan"
-    )
-    assert changed is True
-    assert task["error_retry_delay_seconds"] == 600
-    assert task["payload"] == {}
+    assert changed
+    assert all(task["id"] != "wanxiang-baoge-six-yuan" for task in repaired)
 
 
 def test_scheduler_same_level_due_task_does_not_preempt_live_attempt(monkeypatch):

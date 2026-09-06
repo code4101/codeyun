@@ -7,7 +7,6 @@ from backend.core.fanxiu.activity.daily_activity_job_registry import (
 
 
 MANAGED_IDS = {
-    "wanxiang-baoge-six-yuan",
     "penglai-xianzang-config",
     "penglai-xianzang-lottery",
     "kunlun-secret-config",
@@ -60,7 +59,6 @@ def test_observed_activity_schedules_only_its_two_jobs() -> None:
     )
 
     assert result["desired_next_times"] == {
-        "wanxiang-baoge-six-yuan": None,
         "penglai-xianzang-config": None,
         "penglai-xianzang-lottery": None,
         "kunlun-secret-config": "2026-08-16 00:05:00",
@@ -69,23 +67,12 @@ def test_observed_activity_schedules_only_its_two_jobs() -> None:
     assert {item["activity_name"] for item in result["decisions"]} == {"昆仑秘藏"}
 
 
-def test_observed_wanxiang_baoge_dynamically_wakes_exact_refund_job() -> None:
+def test_wanxiang_does_not_create_standalone_job() -> None:
     result = build_authorized_daily_activity_job_schedule(
-        _plan(_observation("万象宝阁", 2030001))
+        _plan(_observation("万象宝阁", 1240041))
     )
-
-    assert result["desired_next_times"]["wanxiang-baoge-six-yuan"] == (
-        "2026-08-16 00:30:00"
-    )
-    assert result["decisions"] == [
-        {
-            "binding_id": "wanxiang-baoge-six-yuan-from-daily-list",
-            "task_id": "wanxiang-baoge-six-yuan",
-            "task_label": "万象宝阁_六元代币宝匣",
-            "next_time": "2026-08-16 00:30:00",
-            "activity_name": "万象宝阁",
-        }
-    ]
+    assert "wanxiang-baoge-six-yuan" not in result["desired_next_times"]
+    assert result["decisions"] == []
 
 
 def test_incomplete_activity_observation_preserves_existing_job_times() -> None:

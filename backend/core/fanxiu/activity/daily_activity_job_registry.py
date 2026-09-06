@@ -39,13 +39,6 @@ class AuthorizedActivityJobBinding:
 # activity Jobs. Ranking child Jobs remain owned by their ranking parents.
 AUTHORIZED_ACTIVITY_JOB_BINDINGS: tuple[AuthorizedActivityJobBinding, ...] = (
     AuthorizedActivityJobBinding(
-        binding_id="wanxiang-baoge-six-yuan-from-daily-list",
-        activity_names=frozenset({"万象宝阁"}),
-        task_id="wanxiang-baoge-six-yuan",
-        task_label="万象宝阁_六元代币宝匣",
-        trigger_at=time(0, 30),
-    ),
-    AuthorizedActivityJobBinding(
         binding_id="penglai-xianzang-config-from-daily-list",
         activity_names=frozenset({"蓬莱仙藏"}),
         task_id="penglai-xianzang-config",

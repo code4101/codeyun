@@ -74,8 +74,8 @@ def load_fanxiu_schedule_ranking_snapshot(
 ) -> FanxiuScheduleRankingSnapshot:
     """Project today's persisted ranking pages without reading the game.
 
-    Special resource rankings such as Peak Race remain in the resource-ranking
-    business family, but are absent until they gain a page adapter.
+    Peak Race uses the same resource family selection, with its persisted total
+    board and reward matrix rendered by a dedicated page component.
     """
 
     resolved_date = business_date or datetime.now().astimezone().date()

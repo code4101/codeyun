@@ -5,14 +5,19 @@ from __future__ import annotations
 from typing import Any
 import re
 
-from backend.core.fanxiu.data_annotation.tasks.activity_menu_navigation import open_loaded_activity_menu_item
-from backend.core.fanxiu.instrumentation.activity_menu import read_activity_menu_snapshot
+from backend.core.fanxiu.data_annotation.tasks.activity_menu_navigation import (
+    open_loaded_activity_menu_item,
+)
+from backend.core.fanxiu.instrumentation.activity_menu import (
+    read_activity_menu_snapshot,
+)
 from backend.core.fanxiu.instrumentation.wanxiang_baoge import (
     WANXIANG_ACTIVITY_BASE_ID,
     ledger_from_snapshot,
     load_wanxiang_refund_offer_contract,
     read_wanxiang_baoge_runtime,
     read_wanxiang_shop_page,
+    require_wanxiang_refresh_allowed,
     select_wanxiang_refund_offer,
     verify_wanxiang_purchase_transition,
 )
@@ -21,14 +26,15 @@ from backend.core.fanxiu.runtime_gui.activity_menu import ActivityMenuGrid
 WORLD = 34
 FREE = 635
 REVEALED = 636
-DETAIL = 639
 CONFIRM = 640
 REFRESH_CONFIRM = 700
 
 
 def wait_wanxiang_page(context: Any):
     """Prove the active shop page before reading its loaded UI model."""
-    match = yield from context.wait_scene([FREE, REVEALED], wait=10, label="万象宝阁：确认页面")
+    match = yield from context.wait_scene(
+        [FREE, REVEALED], wait=10, label="万象宝阁：确认页面"
+    )
     if match.scene_id not in {FREE, REVEALED}:
         raise RuntimeError(f"万象宝阁页面未就绪，实际为 #{match.scene_id}")
     return match
@@ -42,10 +48,16 @@ def enter_wanxiang_shop(context: Any):
     if not menu.complete or len(targets) != 1 or targets[0].activity_id is None:
         raise RuntimeError("世界左侧菜单没有唯一万象宝阁实例")
     yield from open_loaded_activity_menu_item(
-        context, targets[0].activity_id, kind="world_left", source_scene_id=WORLD,
-        ocr_shape_names=("左侧菜单",), expected_scene_ids=(FREE, REVEALED),
-        target_gui_name="万象宝阁", grid=ActivityMenuGrid(columns=1, click_offset_heights=0.5),
-        timeout_seconds=20, max_scrolls=2,
+        context,
+        targets[0].activity_id,
+        kind="world_left",
+        source_scene_id=WORLD,
+        ocr_shape_names=("左侧菜单",),
+        expected_scene_ids=(FREE, REVEALED),
+        target_gui_name="万象宝阁",
+        grid=ActivityMenuGrid(columns=1, click_offset_heights=0.5),
+        timeout_seconds=20,
+        max_scrolls=2,
     )
     return (yield from wait_wanxiang_page(context)).scene_id
 
@@ -62,7 +74,11 @@ def reveal_wanxiang_free_goods(context: Any):
         for _ in range(20):
             yield from context.wait_action_settle(0.5)
             after = read_wanxiang_baoge_runtime()
-            if after.get("complete") and after.get("refresh_times") == 1 and len(after.get("goods_ids") or []) == 5:
+            if (
+                after.get("complete")
+                and after.get("refresh_times") == 1
+                and len(after.get("goods_ids") or []) == 5
+            ):
                 break
         else:
             raise RuntimeError("免费首抽后未取得五个商品")
@@ -87,28 +103,18 @@ def leave_wanxiang_shop(context: Any):
     return {"scene_id": WORLD}
 
 
-def begin_wanxiang_refresh(context: Any):
-    """Click one paid refresh; stop before any optional confirmation.
+def refresh_wanxiang_goods(context: Any):
+    """Refresh only while no target and no prior purchase exists.
 
-    This single-action module is also a development boundary. The composed
-    search loop calls it only when the current five goods lack the box.
+    Owns the entire click/confirmation transaction. There is no separate
+    confirmation entry point or caller-supplied authorization snapshot.
     """
     yield from wait_wanxiang_page(context)
     page = read_wanxiang_shop_page()
-    snapshot = read_wanxiang_baoge_runtime()
-    _ledger_for_page(page, snapshot, 0)
-    if page["refresh_currency_type"] != 1 or page["refresh_cost"] != 100:
-        raise RuntimeError("试试手气的消耗不再是 100 灵石")
-    if snapshot["spirit_stone"] < page["refresh_cost"]:
-        raise RuntimeError("灵石不足，无法继续刷新万象宝阁")
+    before = read_wanxiang_baoge_runtime()
+    require_wanxiang_refresh_allowed(page, before)
     yield from context.wait_click(REVEALED, "试试手气", timeout=10)
     yield from context.wait_action_settle(1)
-    return {"page": page, "before": snapshot}
-
-
-def finish_wanxiang_refresh(context: Any, transaction: dict[str, Any]):
-    """Accept only this refresh's dialog, then verify one refresh and its cost."""
-    before = transaction["before"]
     confirmed = False
     extra_clicks = 0
     for attempt in range(20):
@@ -119,10 +125,18 @@ def finish_wanxiang_refresh(context: Any, transaction: dict[str, Any]):
             if confirmed:
                 raise RuntimeError("确认刷新后仍停留在确认页，停止重复确认")
             current = read_wanxiang_baoge_runtime()
-            if not current.get("complete") or any(current.get(key) != before.get(key) for key in (
-                "activity_id", "refresh_times", "purchase_counts", "goods_ids", "spirit_stone"
-            )):
+            if not current.get("complete") or any(
+                current.get(key) != before.get(key)
+                for key in (
+                    "activity_id",
+                    "refresh_times",
+                    "purchase_counts",
+                    "goods_ids",
+                    "spirit_stone",
+                )
+            ):
                 raise RuntimeError("刷新确认前活动或账本发生变化")
+            require_wanxiang_refresh_allowed(page, current)
             yield from context.wait_click(REFRESH_CONFIRM, "确认刷新", timeout=8)
             confirmed = True
             yield from context.wait_action_settle(2)
@@ -133,15 +147,20 @@ def finish_wanxiang_refresh(context: Any, transaction: dict[str, Any]):
         if not after.get("complete"):
             yield from context.wait_action_settle(0.5)
             continue
-        if (after["activity_id"] != before["activity_id"]
-                or after["evidence"]["pid"] != before["evidence"]["pid"]
-                or after["evidence"]["process_start_ticks"] != before["evidence"]["process_start_ticks"]):
+        if (
+            after["activity_id"] != before["activity_id"]
+            or after["evidence"]["pid"] != before["evidence"]["pid"]
+            or after["evidence"]["process_start_ticks"]
+            != before["evidence"]["process_start_ticks"]
+        ):
             raise RuntimeError("刷新前后活动或进程变化")
         if after["refresh_times"] == before["refresh_times"] + 1:
-            if (after["spirit_stone"] != before["spirit_stone"] - 100
-                    or after["purchase_counts"] != before["purchase_counts"]
-                    or after["voucher"] != before["voucher"]
-                    or after["bound_voucher"] != before["bound_voucher"]):
+            if (
+                after["spirit_stone"] != before["spirit_stone"] - 100
+                or after["purchase_counts"] != before["purchase_counts"]
+                or after["voucher"] != before["voucher"]
+                or after["bound_voucher"] != before["bound_voucher"]
+            ):
                 raise RuntimeError("刷新消耗或购买账本与预期不符")
             page = read_wanxiang_shop_page()
             _ledger_for_page(page, after, 0)
@@ -153,19 +172,22 @@ def finish_wanxiang_refresh(context: Any, transaction: dict[str, Any]):
         # once confirmation is submitted, never replay it.
         page = read_wanxiang_shop_page()
         _ledger_for_page(page, after, 0)
-        if not confirmed and not page["refresh_click_pending"] and extra_clicks < 2 and attempt >= 1:
-            if any(after[key] != before[key] for key in ("goods_ids", "spirit_stone", "purchase_counts")):
+        if (
+            not confirmed
+            and not page["refresh_click_pending"]
+            and extra_clicks < 2
+            and attempt >= 1
+        ):
+            if any(
+                after[key] != before[key]
+                for key in ("goods_ids", "spirit_stone", "purchase_counts")
+            ):
                 raise RuntimeError("刷新重试前账本已变化")
+            require_wanxiang_refresh_allowed(page, after)
             yield from context.wait_click(REVEALED, "试试手气", timeout=10)
             extra_clicks += 1
         yield from context.wait_action_settle(1)
     raise RuntimeError("刷新后未取得新的五个商品")
-
-
-def refresh_wanxiang_goods(context: Any):
-    """Perform one 100-stone refresh, including its optional confirmation."""
-    transaction = yield from begin_wanxiang_refresh(context)
-    return (yield from finish_wanxiang_refresh(context, transaction))
 
 
 def find_wanxiang_refund_offer(context: Any):
@@ -181,9 +203,11 @@ def find_wanxiang_refund_offer(context: Any):
 
 def _ledger_for_page(page, snapshot, goods_id):
     ledger = ledger_from_snapshot(snapshot, goods_id=goods_id)
-    if (page["activity_id"] != ledger.activity_id
-            or page["evidence"]["process_start_ticks"] != ledger.process_start_ticks
-            or page["evidence"]["pid"] != snapshot["evidence"]["pid"]):
+    if (
+        page["activity_id"] != ledger.activity_id
+        or page["evidence"]["process_start_ticks"] != ledger.process_start_ticks
+        or page["evidence"]["pid"] != snapshot["evidence"]["pid"]
+    ):
         raise RuntimeError("万象宝阁页面与账本不属于同一活动和进程")
     if [row["goods_id"] for row in page["goods"]] != snapshot["goods_ids"]:
         raise RuntimeError("万象宝阁画面商品与账本不同步")
@@ -191,8 +215,13 @@ def _ledger_for_page(page, snapshot, goods_id):
 
 
 def _shape_text(context, scene, shape):
-    tokens = context.ocr_tokens_in_shapes(scene, (shape,), frame_data_url=context.cur_frame(update=True))
-    return "".join(str(t.get("text") or "") for t in sorted(tokens, key=lambda t: (t.get("y", 0), t.get("x", 0))))
+    tokens = context.ocr_tokens_in_shapes(
+        scene, (shape,), frame_data_url=context.cur_frame(update=True)
+    )
+    return "".join(
+        str(t.get("text") or "")
+        for t in sorted(tokens, key=lambda t: (t.get("y", 0), t.get("x", 0)))
+    )
 
 
 def purchase_wanxiang_refund_offer(context: Any):
@@ -206,11 +235,11 @@ def purchase_wanxiang_refund_offer(context: Any):
     if target is None:
         raise RuntimeError("当前商品中没有代币宝匣")
     goods_id = target["goods_id"]
-    before = _ledger_for_page(page, read_wanxiang_baoge_runtime(), goods_id)
-    if target["purchased"] != (before.target_purchase_count >= 1):
-        raise RuntimeError("代币宝匣界面已购状态与账本不一致")
     if target["purchased"]:
         return {"ok": True, "outcome": "already_purchased", "goods_id": goods_id}
+    before = _ledger_for_page(page, read_wanxiang_baoge_runtime(), goods_id)
+    if before.target_purchase_count >= 1:
+        raise RuntimeError("代币宝匣界面已购状态与账本不一致")
     if target["sold_out"] is not False or target["remaining"] != 1:
         raise RuntimeError("代币宝匣当前库存不是 1")
     if before.voucher_total < 6:
@@ -218,20 +247,10 @@ def purchase_wanxiang_refund_offer(context: Any):
     # This stable payment/item join also proves what the six vouchers buy.
     load_wanxiang_refund_offer_contract()
     slot = target["slot"]
-    yield from context.wait_click(REVEALED, f"查看商品{slot}", timeout=10)
-    match = yield from context.wait_scene([DETAIL], wait=10, label="万象宝阁：宝匣详情")
-    if match.scene_id != DETAIL:
-        raise RuntimeError("未进入代币宝匣详情")
-    yield from context.wait_click(DETAIL, "关闭详情", timeout=8)
-    yield from wait_wanxiang_page(context)
-    page = read_wanxiang_shop_page()
-    if select_wanxiang_refund_offer(page) != target:
-        raise RuntimeError("代币宝匣在查看详情后发生变化")
-    before = _ledger_for_page(page, read_wanxiang_baoge_runtime(), goods_id)
-    if before.target_purchase_count != 0 or before.voucher_total < 6:
-        raise RuntimeError("代币宝匣购买前状态已变化")
     yield from context.wait_click(REVEALED, f"购买商品{slot}", timeout=10)
-    match = yield from context.wait_scene([CONFIRM], wait=10, label="万象宝阁：代币确认")
+    match = yield from context.wait_scene(
+        [CONFIRM], wait=10, label="万象宝阁：代币确认"
+    )
     if match.scene_id != CONFIRM:
         raise RuntimeError("未进入代币购买确认页")
     name = re.sub(r"\s", "", _shape_text(context, CONFIRM, "商品代币宝匣"))
@@ -257,8 +276,18 @@ def purchase_wanxiang_refund_offer(context: Any):
     yield from wait_wanxiang_page(context)
     page = read_wanxiang_shop_page()
     target_after = select_wanxiang_refund_offer(page)
-    if target_after is None or target_after["goods_id"] != goods_id or not target_after["purchased"]:
+    if (
+        target_after is None
+        or target_after["goods_id"] != goods_id
+        or not target_after["purchased"]
+    ):
         raise RuntimeError("购买账本已变化，但商品页面尚未标记已购")
-    return {"ok": True, "outcome": "purchased", "goods_id": goods_id,
-            "voucher_before": before.voucher_total, "voucher_after": after.voucher_total,
-            "box_before": before.refund_box_count, "box_after": after.refund_box_count}
+    return {
+        "ok": True,
+        "outcome": "purchased",
+        "goods_id": goods_id,
+        "voucher_before": before.voucher_total,
+        "voucher_after": after.voucher_total,
+        "box_before": before.refund_box_count,
+        "box_after": after.refund_box_count,
+    }

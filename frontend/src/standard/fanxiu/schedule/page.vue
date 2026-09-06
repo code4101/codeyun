@@ -9,6 +9,7 @@ import {
 } from '@/api/fanxiu'
 import ResourceRankingPage from '../resource-ranking/page.vue'
 import TopActivityPage from '../top-activity/page.vue'
+import PeakraceTotal from './PeakraceTotal.vue'
 
 type GameplayActivityType =
   | 'yunmeng-trial'
@@ -101,8 +102,12 @@ onMounted(async () => {
 
       <section class="ranking-section">
         <h3>资源榜</h3>
+        <PeakraceTotal
+          v-if="schedule.resource_rank.activity_type === 'peakrace'"
+          :snapshot="schedule.resource_rank.snapshot ?? null"
+        />
         <ResourceRankingPage
-          v-if="resourceType"
+          v-else-if="resourceType"
           embedded
           :initial-activity-type="resourceType"
         />

@@ -427,13 +427,6 @@ def default_kernel_scheduler_tasks(
             payload={"max_rounds": 3},
         ),
         job(
-            "wanxiang-baoge-six-yuan",
-            "wanxiang_baoge_six_yuan",
-            "万象宝阁_六元代币宝匣",
-            description="动态",
-            error_retry_delay_seconds=600,
-        ),
-        job(
             "xianyuan-auto-gift",
             "xianyuan_auto_gift",
             "仙缘_自动送礼",

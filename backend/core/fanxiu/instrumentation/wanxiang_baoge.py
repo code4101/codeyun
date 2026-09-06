@@ -38,8 +38,6 @@ from backend.core.fanxiu.instrumentation.wallet import (
 
 
 WANXIANG_ACTIVITY_BASE_ID = 2030001
-WANXIANG_REFUND_GOODS_ID = 99001
-WANXIANG_REFUND_POOL_ID = 99
 WANXIANG_REFUND_PAY_ID = 310001
 WANXIANG_REFUND_BOX_ITEM_ID = 1201
 WANXIANG_REFUND_VOUCHER_ITEM_ID = 1012
@@ -119,6 +117,37 @@ def read_wanxiang_shop_page() -> dict[str, Any]:
 
 class WanxiangRefundContractError(ValueError):
     """The exported client configuration no longer proves the offer contract."""
+
+
+class WanxiangRefreshBlocked(WanxiangRefundContractError):
+    """The current goods/accounting state does not allow another refresh."""
+
+
+def require_wanxiang_refresh_allowed(
+    page: Mapping[str, Any], snapshot: Mapping[str, Any]
+) -> None:
+    """Guard every refresh click, including direct module calls and confirms."""
+    if select_wanxiang_refund_offer(page) is not None:
+        raise WanxiangRefreshBlocked("代币宝匣已在当前商品中，禁止刷新")
+    ledger = ledger_from_snapshot(snapshot, goods_id=0)
+    if (page.get("activity_id") != ledger.activity_id
+            or page.get("evidence", {}).get("process_start_ticks") != ledger.process_start_ticks
+            or page.get("evidence", {}).get("pid") != snapshot["evidence"].get("pid")
+            or ledger.activity_id <= 0 or ledger.process_start_ticks <= 0
+            or [row["goods_id"] for row in page["goods"]] != snapshot["goods_ids"]):
+        raise WanxiangRefreshBlocked("刷新前页面与活动账本不一致")
+    counts = snapshot["purchase_counts"]
+    # A bought box can disappear permanently after an external refresh. With
+    # no visible target, any existing purchase makes this state ambiguous;
+    # stop instead of treating an absent box as proof it was never bought.
+    if (any(int(count) > 0 for count in counts.values())
+            or int(snapshot.get("buy_times") or 0) > 0
+            or snapshot.get("bought_goods_ids")):
+        raise WanxiangRefreshBlocked("本期已有购买记录且宝匣不在当前商品中，停止刷新")
+    if page.get("refresh_currency_type") != 1 or page.get("refresh_cost") != 100:
+        raise WanxiangRefreshBlocked("试试手气的消耗不再是 100 灵石")
+    if ledger.spirit_stone < 100:
+        raise WanxiangRefreshBlocked("灵石不足，停止刷新")
 
 
 def select_wanxiang_refund_offer(page: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -460,7 +489,7 @@ class WanxiangRefundLedger:
 
 
 def ledger_from_snapshot(
-    snapshot: Mapping[str, Any], *, goods_id: int = WANXIANG_REFUND_GOODS_ID
+    snapshot: Mapping[str, Any], *, goods_id: int
 ) -> WanxiangRefundLedger:
     if snapshot.get("complete") is not True:
         raise WanxiangRefundContractError("万象宝阁 Runtime 快照不完整")
@@ -492,47 +521,6 @@ def ledger_from_snapshot(
     )
 
 
-def decide_wanxiang_refund_action(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-    """Authorize at most one next action; unknown payment state is a stop."""
-
-    ledger = ledger_from_snapshot(snapshot)
-    if ledger.activity_id <= 0 or ledger.process_start_ticks <= 0:
-        raise WanxiangRefundContractError("万象宝阁活动或进程身份不完整")
-    if ledger.target_purchase_count >= 1:
-        if ledger.refund_box_count > 0:
-            return {
-                "action": "open_refund_box",
-                "item_id": WANXIANG_REFUND_BOX_ITEM_ID,
-                "max_count": 1,
-                "reason": "6元商品已购买但代币宝匣尚未打开",
-            }
-        return {
-            "action": "stop",
-            "outcome": "already_completed",
-            "reason": "6元商品已在购买账本且没有待开启宝匣",
-        }
-    if not ledger.target_visible:
-        return {
-            "action": "stop",
-            "outcome": "target_not_visible",
-            "reason": "当前五个商品不含 goodsId=99001；付费刷新未获本接口授权",
-        }
-    if ledger.voucher_total < 6:
-        return {
-            "action": "stop",
-            "outcome": "real_money_risk",
-            "reason": "充值代币余额不足6；点击会越过代币确认并落入真实支付",
-        }
-    return {
-        "action": "purchase_with_voucher",
-        "goods_id": WANXIANG_REFUND_GOODS_ID,
-        "pay_id": WANXIANG_REFUND_PAY_ID,
-        "voucher_cost": 6,
-        "expected_confirmation": "VoucherUseTipsView",
-        "reason": "Runtime证明目标可见、未购买且代币总额不少于6",
-    }
-
-
 def verify_wanxiang_purchase_transition(
     before: WanxiangRefundLedger, after: WanxiangRefundLedger
 ) -> dict[str, Any]:
@@ -546,23 +534,6 @@ def verify_wanxiang_purchase_transition(
     if after.refund_box_count != before.refund_box_count + 1:
         raise WanxiangRefundContractError("6元商品购买后代币宝匣未精确增加1")
     return {"complete": True, "outcome": "purchased_box_pending"}
-
-
-def verify_wanxiang_refund_box_transition(
-    before: WanxiangRefundLedger, after: WanxiangRefundLedger
-) -> dict[str, Any]:
-    """Verify one box use: refund 6 voucher and award exactly 1140 stones."""
-
-    _require_same_occurrence(before, after)
-    if before.refund_box_count <= 0:
-        raise WanxiangRefundContractError("打开前没有代币宝匣")
-    if after.refund_box_count != before.refund_box_count - 1:
-        raise WanxiangRefundContractError("代币宝匣数量未精确减少1")
-    if after.voucher_total != before.voucher_total + 6:
-        raise WanxiangRefundContractError("代币宝匣未精确返还6元代币")
-    if after.spirit_stone != before.spirit_stone + 1140:
-        raise WanxiangRefundContractError("代币宝匣未精确增加1140灵石")
-    return {"complete": True, "outcome": "refund_complete", "net_value": 1140}
 
 
 def _require_same_occurrence(
@@ -580,14 +551,15 @@ def _require_same_occurrence(
 __all__ = [
     "WANXIANG_ACTIVITY_BASE_ID",
     "WANXIANG_REFUND_BOX_ITEM_ID",
-    "WANXIANG_REFUND_GOODS_ID",
     "WANXIANG_REFUND_PAY_ID",
     "WanxiangRefundContractError",
+    "WanxiangRefreshBlocked",
+    "require_wanxiang_refresh_allowed",
+    "read_wanxiang_shop_page",
+    "select_wanxiang_refund_offer",
     "WanxiangRefundLedger",
-    "decide_wanxiang_refund_action",
     "ledger_from_snapshot",
     "load_wanxiang_refund_offer_contract",
     "read_wanxiang_baoge_runtime",
     "verify_wanxiang_purchase_transition",
-    "verify_wanxiang_refund_box_transition",
 ]

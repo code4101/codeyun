@@ -40,7 +40,6 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "beast_spirit_update",
     "storage_bag_operation",
     "resource_auto_use",
-    "wanxiang_baoge_six_yuan",
     "xianyuan_auto_gift",
     "holy_wood_prayer",
     "xianyan_host_baihua",
@@ -699,33 +698,6 @@ def register_fanxiu_default_jobs() -> None:
                     payload,
                     stop_event,
                 ),
-            )
-        )
-
-    @register_fanxiu_data_annotation_task_cell(
-        "wanxiang_baoge_six_yuan",
-        "万象宝阁_六元代币宝匣",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="wanxiang-baoge-six-yuan",
-        standard_job_description="动态",
-    )
-    def _run_data_annotation_wanxiang_baoge_six_yuan_task_cell(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        from backend.core.fanxiu.data_annotation.tasks.wanxiang_baoge import (
-            execute_wanxiang_baoge_task,
-        )
-
-        return (
-            yield from execute_wanxiang_baoge_task(
-                runner,
-                ctx,
-                payload,
-                stop_event,
             )
         )
 
