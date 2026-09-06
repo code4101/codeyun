@@ -219,17 +219,40 @@ def resolve_activity_rank_root(
     )
 
 
-def prepare_activity_rank_runtime(activity_ids: Iterable[int]) -> dict[str, Any]:
-    """Explicit slow recovery path; ordinary reads must not call this implicitly."""
+def prepare_activity_rank_runtime(
+    activity_ids: Iterable[int], *, allow_discovery: bool = True,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Explicit process rebinding and rank-root validation.
 
-    memory = MumuProcessMemory.discover_cached()
+    Use ``allow_discovery=False`` after a process-cache miss: refresh PID/maps,
+    validate the saved root, and return a typed cache miss if it cannot be
+    reused. This bounded mode never scans memory for a manager. The default
+    retains cold discovery for existing explicit preparation callers, but
+    first reuses a valid root. ``force_refresh=True`` is a deliberate cold
+    rediscovery. Ordinary snapshot reads never call preparation implicitly.
+    """
+    if force_refresh and not allow_discovery:
+        raise ValueError("Forced rank rediscovery requires allow_discovery=True")
+    started_at = time.perf_counter()
     requested_ids = tuple(dict.fromkeys(int(value) for value in activity_ids))
-    root, cache_hit = resolve_activity_rank_root(
-        memory,
-        allow_discovery=True,
-        force_refresh=True,
-    )
-    loaded_ids = loaded_activity_rank_ids(LuaJitReader(memory), root)
+    memory = None
+    try:
+        memory = MumuProcessMemory.discover_cached()
+        root, cache_hit = resolve_activity_rank_root(
+            memory,
+            allow_discovery=allow_discovery,
+            force_refresh=force_refresh,
+        )
+        loaded_ids = loaded_activity_rank_ids(LuaJitReader(memory), root)
+    except FanxiuRuntimeMemoryError as exc:
+        return {"ok": False, "complete": False, "error_code": exc.code,
+                "reason": str(exc), "recovery_required": True,
+                "pid": memory.pid if memory is not None else None,
+                "process_start_ticks": memory.process_start_ticks if memory is not None else None,
+                "discovery_allowed": allow_discovery,
+                "loaded_activity_ids": [], "missing_activity_ids": list(requested_ids),
+                "elapsed_seconds": time.perf_counter() - started_at}
     missing_ids = [value for value in requested_ids if value not in loaded_ids]
     return {
         "ok": not missing_ids,
@@ -247,6 +270,8 @@ def prepare_activity_rank_runtime(activity_ids: Iterable[int]) -> dict[str, Any]
         "root_cache_hit": cache_hit,
         "loaded_activity_ids": list(loaded_ids),
         "missing_activity_ids": missing_ids,
+        "discovery_allowed": allow_discovery,
+        "elapsed_seconds": time.perf_counter() - started_at,
     }
 
 

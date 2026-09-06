@@ -169,12 +169,14 @@ def test_resource_snapshot_preserves_aptitude_gift_effects(
             {
                 "id": 8022001,
                 "name_plain": "珍品饲灵丸",
+                "type": 28,
                 "quality": 4,
                 "effectValue": "1:4,2:4,3:2",
             },
             {
                 "id": 8022002,
                 "name_plain": "绝品饲灵丸",
+                "type": 28,
                 "quality": 5,
                 "effectValue": "1:20,2:20,3:10",
             },

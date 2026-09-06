@@ -47,7 +47,13 @@ def enter_current_peakrace_lingchong_stage(context: Any):
     lines = context.ocr_fragments_in_shapes(701, ["首行活动名称"],
                                            frame_data_url=context.cur_frame(update=True))
     if not any("灵兽巅峰" in r.get("text", "") or "灵宠巅峰" in r.get("text", "") for r in lines):
-        raise RuntimeError("首行未显示当前灵兽阶段，保留现场")
+        # Floating gain notices can cover the title while the occurrence date
+        # remains visible. Navigation is verified again by the opened page ID.
+        expected_date = datetime.fromtimestamp(stage["start_time_ms"] / 1000).strftime("%Y.%m.%d")
+        times = context.ocr_fragments_in_shapes(701, ["首行活动时间"],
+                                                frame_data_url=context.cur_frame(update=True))
+        if not any(expected_date in r.get("text", "") for r in times):
+            raise RuntimeError("首行活动身份尚未确认，保留现场")
     yield from context.wait_click(701, "首行前往", timeout=10)
     yield from context.wait_scene([702], wait=10)
     require_peakrace_stage_page(stage["activity_id"], tab_index=0)

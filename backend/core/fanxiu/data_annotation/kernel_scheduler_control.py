@@ -1801,12 +1801,21 @@ def scheduler_task_retry_ends_at_daily_close(
 def schedule_failed_task_retry(
     task: dict[str, Any],
     finished: datetime,
+    *,
+    job_group_enabled: bool = True,
 ) -> None:
     """Recover a technical Cell failure through the single trigger fact.
 
     Do not call this for a business outcome.  Business code owns ``next_time``
     and returns normally even when the desired in-game result was not reached.
     """
+
+    # AI owns diagnosis: roll back even a partial business write before failure.
+    # Engineering retry, daily-close and manual sleep policies do not apply.
+    if not job_group_enabled:
+        if "attempt_original_trigger" in task:
+            task["next_time"] = task["attempt_original_trigger"]
+        return
 
     if scheduler_task_retry_ends_at_daily_close(task, finished):
         task["next_time"] = None
@@ -2045,6 +2054,7 @@ def reconcile_stale_scheduler_attempts(
     tasks: list[dict[str, Any]],
     *,
     scheduler_state_path: Path | None = None,
+    scheduler_settings_path: Path | None = None,
     world_facts_path: Path | None = None,
 ) -> bool:
     """Invalidate orphaned attempts; recovery is a later whole-job Scheduler retry."""
@@ -2085,6 +2095,9 @@ def reconcile_stale_scheduler_attempts(
         else ""
     )
     now = datetime.now()
+    job_group_enabled = bool(read_scheduler_settings(
+        scheduler_settings_path=scheduler_settings_path,
+    ).get("job_group_enabled", True))
     changed = False
     dirty = False
     dirty_ids: set[str] = set()
@@ -2093,6 +2106,7 @@ def reconcile_stale_scheduler_attempts(
         task_id = str(task.get("id") or "")
         if (
             str(task.get("last_result") or "") == "error"
+            and job_group_enabled
             and str(task.get("last_message") or "").startswith(
                 "先前 Cell/Kernel 执行尝试已作废；保留原触发时间"
             )
@@ -2138,7 +2152,7 @@ def reconcile_stale_scheduler_attempts(
             else:
                 task["last_result"] = "error"
                 task["last_message"] = terminal_message or "Cell 权威终态为失败"
-                schedule_failed_task_retry(task, now)
+                schedule_failed_task_retry(task, now, job_group_enabled=job_group_enabled)
             task["finished_at"] = datetime.fromtimestamp(
                 float(context.get("scheduler_terminal_at") or time.time())
             ).strftime("%Y-%m-%d %H:%M:%S")
@@ -2174,8 +2188,11 @@ def reconcile_stale_scheduler_attempts(
                 continue
         stale_attempt_id = str(task.get("attempt_id") or "") or None
         task["last_result"] = "error"
-        task["last_message"] = "先前 Cell/Kernel 执行尝试已作废；按失败策略等待 Scheduler 整单重试"
-        schedule_failed_task_retry(task, now)
+        task["last_message"] = (
+            "先前 Cell/Kernel 执行尝试已作废；按失败策略等待 Scheduler 整单重试"
+            if job_group_enabled else "先前 Cell/Kernel 执行尝试已作废；AI 接管保留原触发时间，等待诊断"
+        )
+        schedule_failed_task_retry(task, now, job_group_enabled=job_group_enabled)
         task["finished_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
         task["attempt_id"] = None
         task["attempt_original_trigger"] = None
@@ -2395,7 +2412,13 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
         state_task["last_result"] = "error"
         state_task["last_run_at"] = started_text
         state_task["last_message"] = task_message or "Cell 执行失败"
-        schedule_failed_task_retry(state_task, finished)
+        schedule_failed_task_retry(
+            state_task,
+            finished,
+            job_group_enabled=bool(read_scheduler_settings(
+                scheduler_settings_path=scheduler_settings_path,
+            ).get("job_group_enabled", True)),
+        )
     state_task["finished_at"] = finished.strftime("%Y-%m-%d %H:%M:%S")
     state_task["attempt_id"] = None
     state_task["attempt_original_trigger"] = None
@@ -2795,6 +2818,7 @@ def run_now_scheduler_task(
     reconcile_stale_scheduler_attempts(
         tasks,
         scheduler_state_path=scheduler_state_path,
+        scheduler_settings_path=scheduler_settings_path,
         world_facts_path=world_facts_path,
     )
     state_task = next((item for item in tasks if item.get("id") == task_id), None)
@@ -2896,6 +2920,7 @@ def run_due_scheduler_tasks(
     reconcile_stale_scheduler_attempts(
         tasks,
         scheduler_state_path=scheduler_state_path,
+        scheduler_settings_path=scheduler_settings_path,
         world_facts_path=world_facts_path,
     )
     due_tasks = select_due_kernel_scheduler_tasks(

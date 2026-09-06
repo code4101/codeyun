@@ -893,3 +893,12 @@ def test_scheduled_success_preserves_unchanged_business_time(monkeypatch):
     assert state[0]["last_message"] == "done"
     assert state[0]["next_time"] == "2026-07-23 21:30:00"
     assert incidents == []
+
+
+@pytest.fixture(autouse=True)
+def isolate_scheduler_defaults(monkeypatch, tmp_path):
+    # Never consume the live owner's settings or contend with its dispatch lease.
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_state_path",
+                        lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_settings_path",
+                        lambda: tmp_path / "scheduler_settings.json")

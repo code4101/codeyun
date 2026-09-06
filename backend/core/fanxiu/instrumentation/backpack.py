@@ -14,7 +14,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     resolve_manager_root,
     resolve_lua_global_manager_root,
 )
-from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
+from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses, FanxiuRedbagRuntimeLoadError
 
 
 _BACKPACK_MARKER = b"LuaBackpackMgr"
@@ -50,19 +50,9 @@ def read_backpack_item_counts(
     memory = MumuProcessMemory.discover_cached()
     reader = LuaJitReader(memory)
     try:
-        root, cache_hit = resolve_manager_root(
-            memory,
-            manager_key=manager_key,
-            marker=_BACKPACK_MARKER,
-            required_methods=_BACKPACK_METHODS,
-            validate=_backpack_data_fields,
-        )
-        discovery = "marker"
-    except FanxiuRuntimeMemoryError:
-        # Recent clients no longer retain the historical ``LuaBackpackMgr``
-        # marker even though the already-loaded global manager is healthy.
-        # Resolving that global is still strict read-only: it only walks the
-        # existing Lua state and never calls Inst_get or initializes a model.
+        # Validate the cached/loaded global first. Recent clients omit the old
+        # LuaBackpackMgr marker; scanning for it before every inventory read
+        # defeats the healthy global cache and can take minutes per batch.
         root, cache_hit, _environment = resolve_lua_global_manager_root(
             memory,
             manager_key=f"{manager_key}-global",
@@ -72,6 +62,15 @@ def read_backpack_item_counts(
             validate=_backpack_data_fields,
         )
         discovery = "loaded_global"
+    except (FanxiuRuntimeMemoryError, FanxiuRedbagRuntimeLoadError):
+        root, cache_hit = resolve_manager_root(
+            memory,
+            manager_key=manager_key,
+            marker=_BACKPACK_MARKER,
+            required_methods=_BACKPACK_METHODS,
+            validate=_backpack_data_fields,
+        )
+        discovery = "marker"
     item_index = _fields(reader, _backpack_data_fields(reader, root).get("ItemVoDic"))
     for raw_base_id, raw_dictionary in item_index.items():
         base_id = as_int(raw_base_id)

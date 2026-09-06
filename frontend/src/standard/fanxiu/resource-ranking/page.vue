@@ -5,6 +5,8 @@ import { getLatestFanxiuExchangeActivitySnapshot } from '@/api/fanxiu'
 import { LINGCHONG_JINGWU_OFFICIAL_NAME } from '../lingchong-jingwu/model'
 import { LIANTI_FAXIANG_OFFICIAL_NAME } from '../lianti-faxiang/model'
 import { DANDAO_WENDING_OFFICIAL_NAME } from '../dandao-wending/model'
+import PeakraceTotal from '../schedule/PeakraceTotal.vue'
+import type { FanxiuExchangeActivitySnapshot } from '@/api/fanxiu'
 
 const LingzhuangHuadaoPage = defineAsyncComponent(() => import('../lingzhuang-huadao/page.vue'))
 const YaochiFlowerFestivalPage = defineAsyncComponent(() => import('../yaochi-flower-festival/page.vue'))
@@ -20,13 +22,16 @@ type ResourceActivityType =
   | 'lingchong-jingwu'
   | 'lianti-faxiang'
   | 'dandao-wending'
+  | 'peakrace'
 
 const props = withDefaults(defineProps<{
   embedded?: boolean
   initialActivityType?: ResourceActivityType | null
+  initialSnapshot?: FanxiuExchangeActivitySnapshot | null
 }>(), {
   embedded: false,
   initialActivityType: null,
+  initialSnapshot: null,
 })
 
 const activityOptions: { label: string; value: ResourceActivityType }[] = [
@@ -36,6 +41,7 @@ const activityOptions: { label: string; value: ResourceActivityType }[] = [
   { label: LINGCHONG_JINGWU_OFFICIAL_NAME, value: 'lingchong-jingwu' },
   { label: LIANTI_FAXIANG_OFFICIAL_NAME, value: 'lianti-faxiang' },
   { label: DANDAO_WENDING_OFFICIAL_NAME, value: 'dandao-wending' },
+  { label: '天道巅峰', value: 'peakrace' },
 ]
 const route = useRoute()
 const router = useRouter()
@@ -81,6 +87,7 @@ const selectedPage = computed(() => ({
   'lingchong-jingwu': LingchongJingwuPage,
   'lianti-faxiang': LiantiFaxiangPage,
   'dandao-wending': DandaoWendingPage,
+  'peakrace': PeakraceTotal,
 })[selectedType.value] ?? null)
 
 watch(
@@ -110,6 +117,7 @@ watch(
       :is="selectedPage"
       v-if="selectedPage && (embedded || isResourceActivityType(route.query.activity) || resolvedDefaultType)"
       embedded
+      v-bind="selectedType === 'peakrace' ? { snapshot: initialActivityType === 'peakrace' ? initialSnapshot : null } : {}"
     >
       <template #activity-type-control>
         <el-select v-model="selectedType" class="activity-type-select" aria-label="选择活动类型">

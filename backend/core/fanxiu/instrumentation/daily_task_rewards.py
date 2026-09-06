@@ -333,7 +333,7 @@ def _selected_string_fields(
     return {name: full.get(name) for name in names}
 
 
-def _serialize_selected_entry(reader: LuaJitReader, value: Any) -> dict[str, Any]:
+def _serialize_selected_entry(reader: LuaJitReader, value: Any, *, include_progress: bool = False) -> dict[str, Any]:
     names = frozenset({"taskId", "status", "turn", "rewardTime", "progressList"})
     fields = _selected_string_fields(reader, value, names)
     progress: list[dict[str, Any]] = []
@@ -341,7 +341,7 @@ def _serialize_selected_entry(reader: LuaJitReader, value: Any) -> dict[str, Any
     reward_time = _integer(fields.get("rewardTime"))
     # Progress is only relevant to the equality edge case. Avoid expanding it
     # for the overwhelmingly common pending/claimable/claimed rows.
-    if turn is not None and reward_time is not None and turn == reward_time:
+    if include_progress or (turn is not None and reward_time is not None and turn == reward_time):
         for item in _list_values(reader, fields.get("progressList")):
             progress_fields = _selected_string_fields(
                 reader,
@@ -662,6 +662,7 @@ def read_task_reward_spec_fast_snapshot(
     spec: TaskRewardDomainSpec,
     *,
     expected_claimed_task_id: int | None = None,
+    include_task_entries: bool = False,
 ) -> dict[str, Any]:
     """Re-read one exact task-reward spec by validated task-list slots.
 
@@ -671,6 +672,8 @@ def read_task_reward_spec_fast_snapshot(
     decoded. A cached slot is trusted only after its current ``taskId`` matches;
     otherwise the task-id index is rebuilt from the current list before any
     snapshot is returned.
+    ``include_task_entries`` also returns the selected rows with full progress
+    values for consumers that need numeric targets and increments.
     """
 
     if expected_claimed_task_id is not None:
@@ -779,7 +782,7 @@ def read_task_reward_spec_fast_snapshot(
             if index < 0 or index >= len(entry_values):
                 slot_mismatch = True
                 break
-            entry = _serialize_selected_entry(reader, entry_values[index])
+            entry = _serialize_selected_entry(reader, entry_values[index], include_progress=include_task_entries)
             if _positive_int(entry.get("taskId")) != task_id:
                 slot_mismatch = True
                 break
@@ -804,7 +807,7 @@ def read_task_reward_spec_fast_snapshot(
             for task_id in spec.task_ids:
                 if task_id in finished_in_domain:
                     continue
-                entry = _serialize_selected_entry(reader, entry_values[mapping[task_id]])
+                entry = _serialize_selected_entry(reader, entry_values[mapping[task_id]], include_progress=include_task_entries)
                 if _positive_int(entry.get("taskId")) != task_id:
                     raise FanxiuRuntimeMemoryError(
                         "QuestMgr 奖励任务槽位重建后身份仍不一致",
@@ -837,6 +840,7 @@ def read_task_reward_spec_fast_snapshot(
             "protocol": "QuestMgr.Model.QuestData.taskInfoMap[3]",
             "captured_at": captured_at,
             **snapshot,
+            **({"task_entries": entries, "finished_task_ids": finished} if include_task_entries else {}),
             "expected_claimed_task_id": expected_claimed_task_id,
             "expected_task_claimed": (
                 bool(expected_state and expected_state["claimed"])

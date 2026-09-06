@@ -133,6 +133,7 @@ def _read_snapshot(context: Any, *, expected_item_id: int | None) -> dict[str, A
         "owned_count": owned_count,
         "slider_maximum": slider_maximum,
         "use_parameter_max": use_parameter_max,
+        "pet_id": as_int(read_ui_object_field(context, panel.address, "_CurPetId")),
         "evidence": {
             "pid": context.binding.pid,
             "process_start_ticks": context.binding.process_start_ticks,
@@ -153,7 +154,7 @@ def read_item_batch_use_dialog_snapshot(
     if expected is not None and expected <= 0:
         raise ValueError("批量使用弹窗期望道具 ID 必须为正整数")
     return read_ui_runtime_snapshot(
-        _ITEM_BATCH_USE_FIELDS | {"id", "baseId", "code", "num", "V_UseParamMax"},
+        _ITEM_BATCH_USE_FIELDS | {"id", "baseId", "code", "num", "V_UseParamMax", "_CurPetId"},
         lambda context: _read_snapshot(context, expected_item_id=expected),
         fast=True,
     )

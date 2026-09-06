@@ -2,6 +2,7 @@ import json
 import hashlib
 import threading
 import time
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime as real_datetime
@@ -2398,3 +2399,12 @@ def test_execution_reload_reports_resident_kernel_ready_instead_of_recovery_pend
     assert status["phase"] == "idle"
     assert status["current_scene"] == 0
     assert status["message"] == "Kernel 已就绪，等待作业触发"
+
+
+@pytest.fixture(autouse=True)
+def isolate_scheduler_defaults(monkeypatch, tmp_path):
+    # Never consume the live owner's settings or contend with its dispatch lease.
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_state_path",
+                        lambda: tmp_path / "scheduler_tasks.json")
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_settings_path",
+                        lambda: tmp_path / "scheduler_settings.json")

@@ -61,12 +61,6 @@ def _current_family_snapshot(
         activity_type=selected.activity_type,
         activity_id=selected.id,
     )
-    if selected.activity_type == "peakrace" and snapshot.selected_activity is not None:
-        from backend.core.fanxiu.activity.peakrace_page import peakrace_ranking_key_points
-
-        total = snapshot.selected_activity.instance_data.get("peakrace_total")
-        if total:
-            total["key_points"] = peakrace_ranking_key_points(total)
     return LatestExchangeActivitySnapshot(
         activity_type=selected.activity_type,
         snapshot=snapshot,

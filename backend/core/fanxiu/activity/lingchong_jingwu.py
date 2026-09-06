@@ -61,6 +61,7 @@ class LingchongJingwuResourceItem(BaseModel):
     name: str
     quality: int
     count: int
+    sort_order: int = 0
     # Historical storage/API key: keys are PetGift giftId, never pet types.
     aptitude_gain_by_pet_type: dict[int, int] = Field(default_factory=dict)
     minimum_aptitude_gain: int = Field(description="静态各资质分项效果的最小值，不是实际使用增量下界")
@@ -221,26 +222,27 @@ def read_lingchong_task_milestones(activity_id: int) -> dict[str, Any]:
     """
     from backend.core.fanxiu.instrumentation.daily_task_rewards import (
         TaskRewardDomainSpec, build_activity_task_reward_snapshot,
-        read_activity_task_reward_snapshots,
+        read_task_reward_spec_fast_snapshot,
     )
 
-    shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
-    if not shared.get("ok"):
-        return {"ok": False, "complete": False, "reason": shared.get("reason"), "milestones": []}
     configs = [r for r in _load_config_rows(resolve_fanxiu_export_root(), "ActiveTask")
                if int(r.get("activityId") or 0) == activity_id
                and any(_PET_TALENT_CONDITION.fullmatch(str(c)) for c in r.get("finishCondition", []))]
     ids = {int(r["id"]) for r in configs}
+    ordered_ids = tuple(int(r["id"]) for r in sorted(configs, key=lambda r: (r.get("sort", 0), r["id"])))
+    spec = TaskRewardDomainSpec(key=f"lingchong_{activity_id}", label="灵兽资质任务",
+                               activity_id=activity_id, task_ids=ordered_ids,
+                               condition_key="PetTalent", thresholds=tuple(range(1, len(ids) + 1)))
+    shared = read_task_reward_spec_fast_snapshot(spec, include_task_entries=True)
+    if not shared.get("ok"):
+        return {"ok": False, "complete": False, "reason": shared.get("reason"), "milestones": []}
     entries = [r for r in shared.get("task_entries", []) if int(r.get("taskId") or r.get("task_id") or 0) in ids]
     loaded = {int(r.get("taskId") or r.get("task_id")) for r in entries}
     finished = ids.intersection(shared.get("finished_task_ids", []))
     missing = sorted(ids - loaded - finished)
     milestones = load_lingchong_jingwu_task_milestones(entries, parent_activity_id=activity_id) if entries else []
-    ordered_ids = tuple(int(r["id"]) for r in sorted(configs, key=lambda r: (r.get("sort", 0), r["id"])))
     rewards = build_activity_task_reward_snapshot(
-        spec=TaskRewardDomainSpec(key=f"lingchong_{activity_id}", label="灵兽资质任务",
-                                 activity_id=activity_id, task_ids=ordered_ids,
-                                 condition_key="PetTalent", thresholds=tuple(range(1, len(ids) + 1))),
+        spec=spec,
         task_entries=entries, finished_task_ids=sorted(finished),
     )
     # Retained alternate ladders may yield a conservative incomplete result;
@@ -333,9 +335,11 @@ def load_lingchong_jingwu_resource_definitions(
 
     root = resolve_fanxiu_export_root(export_root)
     definitions: list[dict[str, Any]] = []
-    for row in _load_config_rows(root, "Item"):
+    config_rows = _load_config_rows(root, "Item")
+    pet_item_type = 28  # ItemType.PetUpItem, used by PetModel.GetPetUpItemList.
+    for row in config_rows:
         name = str(row.get("name_plain") or row.get("name") or "")
-        if not name.endswith("饲灵丸"):
+        if int(row.get("type") or 0) != pet_item_type:
             continue
         gains: dict[int, int] = {}
         raw_effect = str(row.get("effectValue") or "")
@@ -350,10 +354,12 @@ def load_lingchong_jingwu_resource_definitions(
                 "item_id": int(row.get("id") or 0),
                 "name": name,
                 "quality": int(row.get("quality") or 0),
+                "sort_order": int(row.get("num") or 0),
                 "aptitude_gain_by_pet_type": gains,
             }
         )
-    definitions.sort(key=lambda row: (row["quality"], row["item_id"]))
+    # Reverse of PetModel.GetPetUpItemList: quality descending, num ascending.
+    definitions.sort(key=lambda row: (row["quality"], -row["sort_order"]))
     if not definitions:
         raise ValueError("没有找到可计算资质增量的饲灵丸配置")
     return definitions

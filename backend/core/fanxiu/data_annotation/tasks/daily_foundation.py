@@ -8364,6 +8364,7 @@ class DailyFoundationTaskMixin:
                         yield from self._leave_shared_scene_186_to_world(
                             context,
                             label="论道_座位",
+                            confirm_lundao_exit=True,
                         )
                         self._log(
                             "success",
@@ -8387,7 +8388,9 @@ class DailyFoundationTaskMixin:
             self._log("success", "论道_座位：已完成听道并退出回世界")
             return "success"
         if scene_id == 186:
-            yield from self._leave_shared_scene_186_to_world(context, label="论道_座位")
+            yield from self._leave_shared_scene_186_to_world(
+                context, label="论道_座位", confirm_lundao_exit=True,
+            )
             self._log("success", "论道_座位：已从 #186 点击「离开」并退出回世界")
             return "success"
         raise RuntimeError(f"论道_座位：抢座或收尾落点尚未实现，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
@@ -8549,14 +8552,23 @@ class DailyFoundationTaskMixin:
         )
         return "success"
 
-    def _leave_shared_scene_186_to_world(self, context: Any, *, label: str) -> str:
+    def _leave_shared_scene_186_to_world(
+        self, context: Any, *, label: str,
+        confirm_lundao_exit: bool = False, source_scene_id: int = 186,
+    ) -> str:
         """Leave a shared scene; Layer 0 owns every intermediate popup."""
 
-        scene_id: int | None = 186
+        scene_id: int | None = source_scene_id
         score = 100.0
         terminal_ids = {34, 69}
         overlay_ids = {386, 375, 295}
         source_ids = {186, 85}
+        if confirm_lundao_exit:
+            # #53 is the dojo; #54 confirms leaving a spirit behind to listen.
+            # Claim #54 throughout the click transaction so the generic popup
+            # guard cannot dismiss it via its background and cancel the exit.
+            source_ids.update({53, 54})
+        candidate_ids = sorted(terminal_ids | overlay_ids | source_ids)
         for attempt in range(1, 5):
             if scene_id in terminal_ids:
                 return "success"
@@ -8576,15 +8588,16 @@ class DailyFoundationTaskMixin:
                     f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
                 )
 
+            exit_shape = "确认" if confirm_lundao_exit and scene_id == 54 else "离开"
             self._log(
                 "action",
-                f"{label}：收尾识别 #{scene_id}，点击正式标注「离开」（第 {attempt}/4 次）",
+                f"{label}：收尾识别 #{scene_id}，点击正式标注「{exit_shape}」（第 {attempt}/4 次）",
             )
             try:
                 waited_scene = yield from context.wait_click_then_scene(
                     scene_id,
-                    "离开",
-                    [34, 69, 186, 85, 386, 375, 295],
+                    exit_shape,
+                    candidate_ids,
                     settle_seconds=1.5,
                     timeout=15.0,
                     max_clicks=1,
@@ -8592,11 +8605,13 @@ class DailyFoundationTaskMixin:
                 scene_id = int(getattr(waited_scene, "id", waited_scene))
                 score = float(getattr(waited_scene, "score", 100.0) or 0.0)
             except TimeoutError:
-                scene_id, score, _frame = yield from context.current_scene(
-                    [34, 69, 186, 85, 386, 375, 295],
-                    update=True,
+                waited_scene = yield from context.wait_scene(
+                    candidate_ids,
+                    wait=15.0,
                     label=f"{label}：离开后重新识别",
                 )
+                scene_id = _lundao_waited_scene_id(waited_scene)
+                score = float(getattr(waited_scene, "score", 100.0) or 0.0)
 
         if scene_id in terminal_ids:
             return "success"
@@ -8611,23 +8626,10 @@ class DailyFoundationTaskMixin:
                 f"论道闻道中只接受正式场景 #53，当前 #{scene_id if scene_id is not None else 'unknown'}，"
                 "禁止借用其它场景的「离开」坐标"
             )
-        context.click_shape_center(53, "离开")
-        yield from context.wait_action_settle(1.5)
-        next_scene_id = yield from context.wait_scene(
-            [34,
-            69,
-            186],
-            wait=30.0,
-            label="论道_座位：点击 #53「离开」后等待退出确认/世界",
-        )
-        next_scene_id = _lundao_waited_scene_id(next_scene_id)
-        if next_scene_id in {34, 69}:
-            return "success"
-        if next_scene_id == 186:
-            return (yield from self._leave_shared_scene_186_to_world(context, label="论道_座位"))
-        raise RuntimeError(
-            f"论道闻道中点击「离开」后未到退出确认/世界/日常，当前 #{next_scene_id if next_scene_id is not None else 'unknown'}"
-        )
+        return (yield from self._leave_shared_scene_186_to_world(
+            context, label="论道_座位", confirm_lundao_exit=True,
+            source_scene_id=53,
+        ))
 
     def _advance_daily_lundao_seat_confirmation(
         self,
@@ -12004,18 +12006,26 @@ class DailyFoundationTaskMixin:
             )
         battle_scene_id = yield from self._advance_daily_lingmai_kick_dialogue(
             context,
-            # #588 is the occupied-seat page underneath the battle transition.
-            # A fresh sample can project it after the last pre-battle dialogue,
-            # before #374 or a victory layer materializes.  Treating that
-            # background as a terminal makes the cleanup click ``离开`` while
-            # the battle is still pending, which starts the fight during the
-            # leave transaction.  Only battle/victory scenes can close this
-            # phase; a genuine post-battle #588 remains accepted by the
-            # dedicated battle-finish wait below.
-            terminal_scene_ids=(374, 382, 375),
+            # #318 also lands directly on the occupied-room page #588. It
+            # may be a completed seat or a battle-transition background;
+            # validate the actual seat below before authorizing any exit.
+            terminal_scene_ids=(374, 382, 375, 588),
             timeout=float(payload.get("lingmai_kick_battle_start_timeout") or 60.0),
             label=f"{task_label}：推进战前对白直到战斗或胜利",
         )
+        if battle_scene_id == 588:
+            status = refresh_lingmai_daily_status()
+            seat = status.get("self_seat_facts") or {}
+            expected_room = int(payload.get("__lingmai_expected_room_id") or 0)
+            actual_room = int(seat.get("room_id") or status.get("own_room_id") or 0)
+            completed = status.get("completed") is True or status.get("remaining_milliseconds") == 0
+            confirmed_seat = expected_room > 0 and actual_room == expected_room and seat.get("seated") is True
+            if not (status.get("available") and status.get("complete") and (completed or confirmed_seat)):
+                raise RuntimeError(
+                    f"{task_label}：#588 尚未证明目标占位终态，保留现场且未点击离开；"
+                    f"expected_room={expected_room}, actual_room={actual_room}, seated={seat.get('seated')}"
+                )
+            self._log("detail", f"{task_label}：#588 Runtime 已确认目标占位或今日完成，进入既有离场收口")
         victory_scene_id = battle_scene_id
         if battle_scene_id == 374:
             victory_scene = yield from context.wait_scene(

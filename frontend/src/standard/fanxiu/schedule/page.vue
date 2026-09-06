@@ -9,7 +9,6 @@ import {
 } from '@/api/fanxiu'
 import ResourceRankingPage from '../resource-ranking/page.vue'
 import TopActivityPage from '../top-activity/page.vue'
-import PeakraceTotal from './PeakraceTotal.vue'
 
 type GameplayActivityType =
   | 'yunmeng-trial'
@@ -26,6 +25,7 @@ type ResourceActivityType =
   | 'lingchong-jingwu'
   | 'lianti-faxiang'
   | 'dandao-wending'
+  | 'peakrace'
 
 const gameplayTypes = new Set<GameplayActivityType>([
   'yunmeng-trial',
@@ -42,6 +42,7 @@ const resourceTypes = new Set<ResourceActivityType>([
   'lingchong-jingwu',
   'lianti-faxiang',
   'dandao-wending',
+  'peakrace',
 ])
 
 const loading = ref(true)
@@ -102,14 +103,11 @@ onMounted(async () => {
 
       <section class="ranking-section">
         <h3>资源榜</h3>
-        <PeakraceTotal
-          v-if="schedule.resource_rank.activity_type === 'peakrace'"
-          :snapshot="schedule.resource_rank.snapshot ?? null"
-        />
         <ResourceRankingPage
-          v-else-if="resourceType"
+          v-if="resourceType"
           embedded
           :initial-activity-type="resourceType"
+          :initial-snapshot="schedule.resource_rank.snapshot ?? null"
         />
         <div v-else class="empty-state">今日暂无已接入的资源榜</div>
       </section>

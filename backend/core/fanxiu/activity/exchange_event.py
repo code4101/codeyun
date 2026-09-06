@@ -474,9 +474,16 @@ def list_exchange_activity_snapshot(
     selected = next((row for row in activities if row.id == activity_id), None) if activity_id else (activities[0] if activities else None)
     if selected is not None:
         _ensure_exchange_shop_plan_current(session, selected)
+    detail = _detail(session, selected) if selected else None
+    if activity_type == "peakrace" and detail is not None:
+        from backend.core.fanxiu.activity.peakrace_page import peakrace_ranking_key_points
+
+        total = detail.instance_data.get("peakrace_total")
+        if total:
+            total["key_points"] = peakrace_ranking_key_points(total)
     return ExchangeActivitySnapshot(
         activities=[_summary(row) for row in activities],
-        selected_activity=_detail(session, selected) if selected else None,
+        selected_activity=detail,
     )
 
 

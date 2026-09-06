@@ -113,12 +113,15 @@ def read_positive_integer_count(
     *,
     count_label: str,
     runtime_reader: Callable[[], int | Mapping[str, Any]] | None = None,
+    read_counts: dict[str, int] | None = None,
 ) -> int:
     """Prefer an explicit read-only Runtime fact, then fall back to OCR."""
 
     runtime_error: Exception | None = None
     if runtime_reader is not None:
         try:
+            if read_counts is not None:
+                read_counts["runtime"] += 1
             raw = runtime_reader()
             raw = raw.get("current") if isinstance(raw, Mapping) else raw
             value = int(raw)
@@ -128,6 +131,8 @@ def read_positive_integer_count(
         except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as exc:
             runtime_error = exc
     try:
+        if read_counts is not None:
+            read_counts["ocr"] += 1
         return _ocr_count(context, assets)
     except (AttributeError, KeyError, RuntimeError, ValueError) as ocr_error:
         detail = f"；Runtime={runtime_error}" if runtime_error is not None else ""
@@ -138,7 +143,7 @@ def read_integer_slider_count(context: Any, assets: IntegerCountAssets) -> int:
     return read_positive_integer_count(context, assets, count_label="整数滑轨次数")
 
 
-def _stable_read(context, assets, *, count_label, runtime_reader) -> Iterator[Any]:
+def _stable_read(context, assets, *, count_label, runtime_reader, read_counts=None) -> Iterator[Any]:
     """Return only after two adjacent bounded samples agree.
 
     Slider animation and queued input can expose an early transitional value,
@@ -156,7 +161,7 @@ def _stable_read(context, assets, *, count_label, runtime_reader) -> Iterator[An
                 context,
                 assets,
                 count_label=count_label,
-                runtime_reader=runtime_reader,
+                runtime_reader=runtime_reader, read_counts=read_counts,
             )
         except RuntimeError as exc:
             raise RuntimeError(
@@ -230,12 +235,14 @@ def _drag_pixels(context, assets, start_x: float, target_x: float, y: float) -> 
 
 
 def _proportional_position(
-    context, assets, desired, *, before, maximum, geometry, count_label, runtime_reader
+    context, assets, desired, *, before, maximum, geometry, count_label, runtime_reader, read_counts=None
 ) -> Iterator[Any]:
     range_probe = False
     if maximum is None:
         if runtime_reader is None:
             raise RuntimeError(f"{count_label}缺少可证明的滑轨最大值")
+        if read_counts is not None:
+            read_counts["runtime"] += 1
         raw = runtime_reader()
         maximum = int(raw.get("maximum") or 0) if isinstance(raw, Mapping) else 0
     if maximum <= 1 or desired > maximum:
@@ -280,7 +287,7 @@ def _proportional_position(
         context,
         assets,
         count_label=count_label,
-        runtime_reader=runtime_reader,
+        runtime_reader=runtime_reader, read_counts=read_counts,
     )
     landed = _live_thumb_center(context, assets, geometry)
     return current, maximum, range_probe, fraction, {
@@ -299,7 +306,7 @@ def _proportional_position(
 
 def _coarse_pixel_converge(
     context, assets, desired, *, current, maximum, threshold, geometry,
-    count_label, runtime_reader,
+    count_label, runtime_reader, read_counts=None,
 ) -> Iterator[Any]:
     probes: list[dict[str, Any]] = []
     interpolation_rows: list[dict[str, Any]] = []
@@ -337,7 +344,7 @@ def _coarse_pixel_converge(
                 context,
                 assets,
                 count_label=count_label,
-                runtime_reader=runtime_reader,
+                runtime_reader=runtime_reader, read_counts=read_counts,
             )
             landed = _live_thumb_center(context, assets, geometry)
             delta = current - before
@@ -376,7 +383,7 @@ def _coarse_pixel_converge(
             context,
             assets,
             count_label=count_label,
-            runtime_reader=runtime_reader,
+            runtime_reader=runtime_reader, read_counts=read_counts,
         )
         landed = _live_thumb_center(context, assets, geometry)
         interpolation_rows.append({
@@ -395,7 +402,7 @@ def _coarse_pixel_converge(
 
 
 def _fine_tune_batches(
-    context, assets, desired, *, current, count_label, runtime_reader
+    context, assets, desired, *, current, count_label, runtime_reader, read_counts=None
 ) -> Iterator[Any]:
     batches: list[dict[str, int]] = []
     click = getattr(context, "click_shape_center_fast", None)
@@ -431,7 +438,7 @@ def _fine_tune_batches(
             context,
             assets,
             count_label=count_label,
-            runtime_reader=runtime_reader,
+            runtime_reader=runtime_reader, read_counts=read_counts,
         )
         batches.append({
             "before": before,
@@ -485,10 +492,13 @@ def _set_track_only_count(
     count_label: str,
     runtime_reader: Callable[[], int | Mapping[str, Any]] | None,
     threshold: int,
+    read_counts: dict[str, int] | None = None,
 ) -> Iterator[Any]:
     """Control a CommonShop-style track whose thumb has no separate asset."""
 
     if maximum is None and runtime_reader is not None:
+        if read_counts is not None:
+            read_counts["runtime"] += 1
         raw = runtime_reader()
         maximum = int(raw.get("maximum") or 0) if isinstance(raw, Mapping) else 0
     if maximum is None or maximum <= 1 or desired > maximum:
@@ -521,7 +531,7 @@ def _set_track_only_count(
         context,
         assets,
         count_label=count_label,
-        runtime_reader=runtime_reader,
+        runtime_reader=runtime_reader, read_counts=read_counts,
     )
     probes: list[dict[str, Any]] = []
     interpolation_rows: list[dict[str, Any]] = []
@@ -537,6 +547,8 @@ def _set_track_only_count(
         effective: tuple[float, int] | None = None
         distance = 1.0
         while distance <= max(1.0, available):
+            count_x = left + width * ((current - 1) / (maximum - 1))
+            available = left + width - count_x if sign > 0 else count_x - left
             commanded = min(distance, available)
             if commanded < 0.5:
                 break
@@ -555,7 +567,7 @@ def _set_track_only_count(
                 context,
                 assets,
                 count_label=count_label,
-                runtime_reader=runtime_reader,
+                runtime_reader=runtime_reader, read_counts=read_counts,
             )
             delta = current - before_probe
             probes.append({
@@ -590,7 +602,7 @@ def _set_track_only_count(
             context,
             assets,
             count_label=count_label,
-            runtime_reader=runtime_reader,
+            runtime_reader=runtime_reader, read_counts=read_counts,
         )
         interpolation_rows.append({
             "before": before_interpolation,
@@ -609,7 +621,7 @@ def _set_track_only_count(
         desired,
         current=current,
         count_label=count_label,
-        runtime_reader=runtime_reader,
+        runtime_reader=runtime_reader, read_counts=read_counts,
     )
     return {
         "before": before,
@@ -638,17 +650,30 @@ def set_verified_integer_slider_count(
     count_label: str = "整数滑轨次数",
     maximum: int | None = None,
     runtime_count_reader: Callable[[], int | Mapping[str, Any]] | None = None,
+    initial_count: int | None = None,
 ) -> Iterator[Any]:
-    """Proportional positioning, pixel feedback, then at most five +/- batches."""
+    """Proportional positioning, pixel feedback, then at most five +/- batches.
+
+    ``initial_count`` reuses the caller's freshly verified positive integer;
+    no GUI action may intervene before this call. Pass no Runtime reader to
+    use local OCR for feedback, retaining business identity checks at the caller.
+    ``count_reads`` counts attempted OCR/Runtime reads inside this invocation.
+    """
 
     if isinstance(desired, bool) or not isinstance(desired, int) or desired <= 0:
         raise ValueError(f"{count_label}必须为正整数")
     threshold = max(1, int(max_adjustments))
-    before = read_positive_integer_count(
-        context, assets, count_label=count_label, runtime_reader=runtime_count_reader
-    )
+    read_counts = {"ocr": 0, "runtime": 0}
+    if initial_count is not None:
+        if isinstance(initial_count, bool) or not isinstance(initial_count, int) or initial_count <= 0:
+            raise ValueError(f"{count_label}初始值必须为正整数")
+        before = initial_count
+    else:
+        before = read_positive_integer_count(
+            context, assets, count_label=count_label, runtime_reader=runtime_count_reader, read_counts=read_counts,
+        )
     if before == desired:
-        return {"before": before, "after": before, "phase": "already_exact"}
+        return {"before": before, "after": before, "phase": "already_exact", "count_reads": read_counts}
     direct_actions = _estimated_button_actions(
         assets,
         current=before,
@@ -664,44 +689,47 @@ def set_verified_integer_slider_count(
             desired,
             current=before,
             count_label=count_label,
-            runtime_reader=runtime_count_reader,
+            runtime_reader=runtime_count_reader, read_counts=read_counts,
         )
         return {
             "before": before,
             "after": current,
             "maximum": maximum,
             "phase": "button_fast_path",
+            "count_reads": read_counts,
             "estimated_button_actions": direct_actions,
             "fine_batches": batches,
             "fine_adjustment_actions": sum(row["clicks"] for row in batches),
         }
     if not assets.count_slider_thumb and getattr(assets, "count_slider_track", None):
-        return (yield from _set_track_only_count(
+        result = yield from _set_track_only_count(
             context,
             assets,
             desired,
             before=before,
             maximum=maximum,
             count_label=count_label,
-            runtime_reader=runtime_count_reader,
+            runtime_reader=runtime_count_reader, read_counts=read_counts,
             threshold=threshold,
-        ))
+        )
+        return {**result, "count_reads": read_counts}
     geometry = _slider_geometry(context, assets)
     current, observed_maximum, range_probe, fraction, proportional = yield from _proportional_position(
         context, assets, desired, before=before, maximum=maximum, geometry=geometry,
-        count_label=count_label, runtime_reader=runtime_count_reader,
+        count_label=count_label, runtime_reader=runtime_count_reader, read_counts=read_counts,
     )
     current, probes, interpolation_rows, coarse_exit = yield from _coarse_pixel_converge(
         context, assets, desired, current=current, maximum=observed_maximum,
         threshold=threshold,
-        geometry=geometry, count_label=count_label, runtime_reader=runtime_count_reader,
+        geometry=geometry, count_label=count_label, runtime_reader=runtime_count_reader, read_counts=read_counts,
     )
     current, batches = yield from _fine_tune_batches(
         context, assets, desired, current=current,
-        count_label=count_label, runtime_reader=runtime_count_reader,
+        count_label=count_label, runtime_reader=runtime_count_reader, read_counts=read_counts,
     )
     return {
         "before": before, "after": current, "maximum": observed_maximum,
+        "count_reads": read_counts,
         "initial_fraction": fraction, "range_probe": range_probe,
         "proportional_drag": proportional,
         "pixel_probes": probes, "interpolation_drags": interpolation_rows,
