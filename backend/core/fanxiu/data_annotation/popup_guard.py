@@ -319,29 +319,27 @@ class SceneInterruptionMixin:
                 "确认",
             )
             return True
-        action_shape = candidate.get("action_shape") if isinstance(candidate, dict) else None
-        action_title = str((action_shape or {}).get("title") or "").strip()
-        if (
-            self._auto_close_guard_action_allowed(action_shape)
-            and action_title not in {"确定", "确认"}
-        ):
-            raw_action_view = candidate.get("action_view") if isinstance(candidate, dict) else None
-            action_view = View(raw_action_view) if isinstance(raw_action_view, dict) else view
-            shape = Shape(action_shape, parent_view=action_view)
-            context.click_shape(action_view, shape, frame_data_url=context.cur_frame())
-            self._record_popup_guard_click(
+        # An unsolicited leave confirmation must be dismissed inside its own
+        # modal.  The old inherited parent-background point (828, 328) sits on
+        # top of the underlying HUD's hide-interface control.  Some clients
+        # dismiss the modal and propagate that same tap, hiding every HUD
+        # control and leaving navigation in a persistent unknown scene.
+        cancel_shape = view.get_shape("取消")
+        if cancel_shape is None:
+            self._record_popup_guard_missing(
                 view_id or None,
-                f"场景识别处理：{view_label} 点击父级「{action_title}」 {score:.0f}%",
+                f"场景识别命中未授权的离开确认：{view_label} {score:.0f}%，缺少自身「取消」标注",
                 event,
-                action_title,
+                "missing_cancel",
             )
             return True
-        confirm_shape = view.get_shape("确认")
-        if not confirm_shape:
-            self._record_popup_guard_missing(view_id or None, f"场景识别命中：{view_label} {score:.0f}%，缺少「确认」标注", event, "missing_confirm")
-            return True
-        context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
-        self._record_popup_guard_click(view_id or None, f"场景识别处理：{view_label} 点击「确认」 {score:.0f}%", event, "确认")
+        context.click_shape(view, cancel_shape, frame_data_url=context.cur_frame())
+        self._record_popup_guard_click(
+            view_id or None,
+            f"场景识别处理：{view_label} 未绑定当前离开动作，点击自身「取消」 {score:.0f}%",
+            event,
+            "取消",
+        )
         return True
 
     def _handle_auto_close_popup_287(

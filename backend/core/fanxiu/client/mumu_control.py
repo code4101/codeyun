@@ -1474,6 +1474,36 @@ def _schedule_login_job_after_mumu_restart(*, now: datetime | None = None) -> di
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def restart_fanxiu_game_after_ui_failure(*, reason: str) -> dict[str, Any]:
+    """Explicit app-only recovery after evidenced, unrecoverable game UI failure.
+
+    This is never an automatic response to scene mismatch. The maintenance
+    caller must first preserve evidence and exhaust semantic GUI recovery.
+    Require paused dispatch and an idle Kernel; never restart the Android VM.
+    The caller must refresh the Kernel and run the formal login Job afterwards.
+    """
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control
+
+    if not str(reason).strip():
+        raise ValueError("Game recovery requires an evidence-backed reason")
+    with _MUMU_ADB_RECOVERY_LOCK:
+        settings = kernel_scheduler_control.read_scheduler_settings()
+        status = kernel_scheduler_control.kernel_scheduler_status()
+        if settings.get("job_group_enabled") or status.get("running"):
+            raise RuntimeError("Pause engineering dispatch and finish the active Cell first")
+        if (status.get("kernel") or {}).get("execution_state") != "idle":
+            raise RuntimeError("Game recovery requires an idle Kernel")
+        intent = _schedule_login_job_after_mumu_restart()
+        _append_mumu_device_health_event("game_ui_recovery_start", {"reason": reason})
+        _run_mumu_adb_shell_text(f"am force-stop {FANXIU_ANDROID_PACKAGE}", timeout_s=10)
+        launch = _mumu_manager_launch_app("1", FANXIU_ANDROID_PACKAGE)
+        if launch.get("errcode", 0) != 0:
+            raise RuntimeError(f"Game relaunch failed: {launch}")
+        frame = wait_mumu_recovery_frame_ready(timeout_s=45.0)
+        _append_mumu_device_health_event("game_ui_recovery_launched", {"reason": reason})
+        return {"launched": True, "login_scheduler": intent, "frame_ready": frame}
+
+
 def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", force_restart: bool = False) -> dict[str, Any]:
     if not _mumu_device_auto_recovery_enabled():
         state = mumu_device_health_check(vmindex=vmindex, force=True)

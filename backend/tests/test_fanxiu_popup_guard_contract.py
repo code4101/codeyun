@@ -6,7 +6,7 @@ from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_exec
 from pyxllib.autogui import Shape, View
 
 
-def test_nested_leave_popup_inherits_parent_background_dismiss_action() -> None:
+def test_unsolicited_nested_leave_popup_uses_own_cancel_not_parent_background() -> None:
     runner = create_behavior_tree_executor()
     parent = {
         "type": "image",
@@ -34,6 +34,7 @@ def test_nested_leave_popup_inherits_parent_background_dismiss_action() -> None:
                 "height": 1600,
                 "shapes": [
                     {"title": "离开场景标识", "isSceneIdentity": True},
+                    {"title": "取消", "x": 0.20, "y": 0.64, "w": 0.28, "h": 0.05},
                     {"title": "确认", "x": 0.62, "y": 0.64, "w": 0.12, "h": 0.04},
                 ],
             }
@@ -58,8 +59,45 @@ def test_nested_leave_popup_inherits_parent_background_dismiss_action() -> None:
             clicks.append((int(view.id), str(shape.title)))
 
     assert runner._handle_recognized_popup_candidate(Context(), candidate, score=99.0)
-    assert clicks == [(47, "空白")]
-    assert runner.status()["last_guard_event"]["action"] == "click:空白"
+    assert clicks == [(86, "取消")]
+    assert runner.status()["last_guard_event"]["action"] == "click:取消"
+
+
+def test_unsolicited_leave_popup_without_own_cancel_fails_closed() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "id": 86,
+        "title": "离开场景",
+        "width": 900,
+        "height": 1600,
+        "shapes": [
+            {"title": "离开场景标识", "isSceneIdentity": True},
+            {"title": "确认", "x": 0.62, "y": 0.64, "w": 0.12, "h": 0.04},
+        ],
+    }
+    clicks: list[tuple[int, str]] = []
+
+    class Context:
+        ctx = {"asset_tree": [popup]}
+        last_clicked_shape = None
+        last_clicked_at = 0.0
+
+        def cur_frame(self) -> str:
+            return "frame"
+
+        def click_shape(self, view: Any, shape: Any, **_options: Any) -> None:
+            clicks.append((int(view.id), str(shape.title)))
+
+    candidate = {
+        "image": popup,
+        "action_shape": {"title": "空白"},
+        "action_view": {"type": "image", "id": 47, "title": "所有提示窗口"},
+    }
+
+    assert runner._handle_recognized_popup_candidate(Context(), candidate, score=99.0)
+    assert clicks == []
+    assert runner.status()["last_guard_event"]["action"] == "missing_cancel"
 
 
 def test_popup_group_node_can_bind_explicit_recovery_action() -> None:
