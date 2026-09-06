@@ -909,17 +909,20 @@ class DailySigninTaskMixin:
         # icon.  The shared helper first reconstructs the exact ``特惠`` span
         # from real Paddle word boxes so an adjacent label cannot move the
         # horizontal centre away from this item.
-        yield from open_loaded_activity_menu_item(
-            context,
-            _DAILY_SIGNIN_WORLD_TARGET,
-            kind="world_left",
-            source_scene_id=34,
-            ocr_shape_names=("左侧菜单",),
-            expected_scene_ids=(403,),
-            target_gui_name="特惠",
-            grid=ActivityMenuGrid(columns=1, click_offset_heights=0.5),
-            timeout_seconds=view_timeout,
-        )
+        # 世界仍可透过分组弹窗被识别；当前真实弹窗已打开时不能再点入口将它关闭。
+        if not context.match_view(403)[0]:
+            yield from open_loaded_activity_menu_item(
+                context,
+                _DAILY_SIGNIN_WORLD_TARGET,
+                kind="world_left",
+                source_scene_id=34,
+                ocr_shape_names=("左侧菜单",),
+                expected_scene_ids=(403,),
+                target_gui_name="特惠",
+                fallback_ocr_shape_names=("特惠文字观察",),
+                grid=ActivityMenuGrid(columns=1, click_offset_heights=0.5),
+                timeout_seconds=view_timeout,
+            )
 
         yield from self._daily_signin_click_menu_target(
             context,
@@ -1110,17 +1113,15 @@ class DailySigninTaskMixin:
             yield from context.go_scene(404)
             yield from context.wait_scene([404], wait=view_timeout, label="日常_签到：领奖后回到签到页 #404")
         elif post_click_scene == 578:
-            # Some ordinary day rewards skip #250 and go straight to the
-            # shared reward transition.  Close that proven overlay before any
-            # #404 OCR verification; otherwise the fraction ROI is necessarily
-            # invisible even though Runtime has already recorded the claim.
-            self._log("action", "日常_签到：#578 奖励过场点击「点击屏幕继续」")
-            yield from context.wait_click(578, "点击屏幕继续")
-            yield from context.wait_scene(
+            # 奖励过场交给通用 guard 清理；过场可能已自动消失，不能沿用
+            # 上一帧 #578 点击，更不能把过场提示文字当作 Shape 名称。
+            landed = yield from context.wait_scene(
                 [404],
                 wait=view_timeout,
                 label="日常_签到：奖励过场后回到签到页 #404",
             )
+            if int(getattr(landed, "id", landed)) != 404:
+                raise RuntimeError("日常_签到：奖励过场尚未返回签到页，不能验证领取")
 
         snapshot_after = self._daily_signin_read_milestone_snapshot()
         signed_days_after = self._daily_signin_validate_snapshot(

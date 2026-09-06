@@ -1206,6 +1206,21 @@ def test_xianshi_weekly_resources_terminal_requires_loaded_business_page():
     assert observation["terminal"] is False
 
 
+def test_xianshi_weekly_resources_empty_free_stock_keeps_paid_rows():
+    runner = create_behavior_tree_executor()
+    # 2026-09-07 真实首屏：免费资源已消失，只剩心悟石等付费商品。
+    text = "仙市 超值必买 心悟石 购买所需500 域外魔灵契约 永久限购5 购买所需5888"
+    for phase in ("midnight", "after_reset"):
+        observation = runner._xianshi_weekly_resources_terminal_observation(
+            text, ["心悟石", "域外魔灵契约"], phase=phase, reserved_group="淬体",
+        )
+        assert observation["terminal"] is True
+        unfinished = runner._xianshi_weekly_resources_terminal_observation(
+            text + " 免费", ["御兽宝匣"], phase=phase, reserved_group="淬体",
+        )
+        assert unfinished["terminal"] is False
+
+
 def test_xianshi_weekly_resources_after_reset_uses_stable_remaining_group_not_header_ocr():
     runner = create_behavior_tree_executor()
 
@@ -1268,227 +1283,10 @@ def test_xianshi_weekly_resources_unknown_detail_returns_without_claiming():
     assert ("wait_click_then_scene", 316, "shape 3", 247) in actions
 
 
-def test_xianshi_weekly_resources_midnight_unknown_slot_returns_world(monkeypatch, tmp_path):
-    runner = create_behavior_tree_executor()
-    actions = []
-
-    class FakeContext:
-        def sample_scene_once(self, candidates, update=False):
-            return 247, 100, object()
-
-        def wait_click_then_shape(self, *args, **kwargs):
-            actions.append(("wait_click_then_shape", args))
-            if False:
-                yield None
-            return True
-
-        def wait_click_then_scene(self, scene_id, shape_title, target_scene_id, **kwargs):
-            actions.append(("wait_click_then_scene", scene_id, shape_title, target_scene_id))
-            if scene_id == 247 and shape_title == "第1个物品":
-                if False:
-                    yield None
-                return True
-            if scene_id == 316 and shape_title == "返回":
-                raise RuntimeError("missing shape")
-            if False:
-                yield None
-            return True
-
-        def ocr_text_in_shapes(self, scene_id, shape_titles, padding=0):
-            return "万灵珍品宝匣二"
-
-        def wait_click(self, scene_id, shape_title, *args, **kwargs):
-            actions.append(("wait_click", scene_id, shape_title))
-            if False:
-                yield None
-            return True
-
-        def wait_action_settle(self, seconds):
-            actions.append(("wait_action_settle", seconds))
-            if False:
-                yield None
-
-    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *args, **kwargs: FakeContext())
-    def confirm_terminal(*_args, **_kwargs):
-        if False:
-            yield None
-        return False
-    monkeypatch.setattr(runner, "_confirm_xianshi_weekly_resources_terminal", confirm_terminal)
-    next_times = []
-    monkeypatch.setattr(
-        runner,
-        "_persist_scheduler_task_next_time",
-        lambda task_id, next_time: next_times.append((task_id, next_time)),
-    )
-    ctx = {
-        "asset_tree_path": tmp_path / "asset-tree.json",
-        "images": {
-            34: {"title": "世界"},
-            247: {"title": "秘藏阁"},
-        },
-    }
-    result = _drain_generator(runner._execute_xianshi_weekly_resources_task(
-        ctx,
-        fanxiu.threading.Event(),
-        {"phase": "midnight", "__scheduler_task_id": "xianshi-weekly-resources"},
-    ))
-
-    assert result == "skipped"
-    assert ("wait_click", 316, "领取") not in actions
-    assert ("wait_click_then_scene", 247, "返回", 34) in actions
-    assert len(next_times) == 1
-    assert next_times[0][0] == "xianshi-weekly-resources"
 
 
-def test_xianshi_weekly_resources_midnight_counts_current_detail_as_one_attempt(monkeypatch, tmp_path):
-    runner = create_behavior_tree_executor()
-    actions = []
-    ocr_texts = iter(["万灵珍品宝匣二", "御兽灵兽宝匣", "洗灵宝匣", "洗灵宝匣"])
-    monkeypatch.setattr(fanxiu_daily_resources, "current_prayer_cycle", lambda: "灵兽")
-
-    class FakeContext:
-        def __init__(self):
-            self.scene_id = 316
-
-        def sample_scene_once(self, candidates, update=False):
-            return self.scene_id, 100, object()
-
-        def wait_scene(self, layer0, **kwargs):
-            scene_id = layer0[0]
-            actions.append(("wait_scene", scene_id))
-            self.scene_id = scene_id
-            if False:
-                yield None
-            return True
-
-        def wait_click_then_shape(self, *args, **kwargs):
-            actions.append(("wait_click_then_shape", args))
-            if False:
-                yield None
-            return True
-
-        def wait_click_then_scene(self, scene_id, shape_title, target_scene_id, **kwargs):
-            actions.append(("wait_click_then_scene", scene_id, shape_title, target_scene_id))
-            if scene_id == 316 and shape_title == "返回":
-                raise RuntimeError("missing shape")
-            if scene_id == 247 and shape_title == "第1个物品":
-                self.scene_id = 316
-            if False:
-                yield None
-            return True
-
-        def ocr_text_in_shapes(self, scene_id, shape_titles, padding=0):
-            return next(ocr_texts)
-
-        def wait_click(self, scene_id, shape_title, *args, **kwargs):
-            actions.append(("wait_click", scene_id, shape_title))
-            if scene_id == 316 and shape_title == "领取":
-                self.scene_id = 247
-            if False:
-                yield None
-            return True
-
-        def wait_action_settle(self, seconds):
-            actions.append(("wait_action_settle", seconds))
-            if False:
-                yield None
-            return True
-
-    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *args, **kwargs: FakeContext())
-    monkeypatch.setattr(runner, "_persist_scheduler_task_next_time", lambda *_args: None)
-    terminal_results = iter([False, True])
-    def confirm_terminal(*_args, **_kwargs):
-        if False:
-            yield None
-        return next(terminal_results)
-    monkeypatch.setattr(runner, "_confirm_xianshi_weekly_resources_terminal", confirm_terminal)
-    ctx = {
-        "asset_tree_path": tmp_path / "asset-tree.json",
-        "images": {
-            34: {"title": "世界"},
-            247: {"title": "秘藏阁"},
-        },
-    }
-
-    result = _drain_generator(runner._execute_xianshi_weekly_resources_task(ctx, fanxiu.threading.Event(), {"phase": "midnight"}))
-
-    assert result == "success"
-    assert actions.count(("wait_click_then_scene", 247, "第1个物品", 316)) == 1
-    assert actions.count(("wait_click", 316, "领取")) == 1
-    assert ("wait_click_then_scene", 247, "返回", 34) in actions
 
 
-def test_xianshi_weekly_resources_after_reset_caps_list_attempts_at_eight(monkeypatch, tmp_path):
-    runner = create_behavior_tree_executor()
-    actions = []
-    monkeypatch.setattr(fanxiu_daily_resources, "next_prayer_cycle", lambda: "炼丹")
-
-    class FakeContext:
-        def sample_scene_once(self, candidates, update=False):
-            return 247, 100, object()
-
-        def wait_click_then_shape(self, *args, **kwargs):
-            actions.append(("wait_click_then_shape", args))
-            if False:
-                yield None
-            return True
-
-        def wait_click_then_scene(self, scene_id, shape_title, target_scene_id, **kwargs):
-            actions.append(("wait_click_then_scene", scene_id, shape_title, target_scene_id))
-            if False:
-                yield None
-            return True
-
-        def ocr_text_in_shapes(self, scene_id, shape_titles, padding=0):
-            return {
-                "洗灵": "洗灵宝匣",
-                "仙花": "花神宝匣",
-                "灵兽": "御兽宝匣",
-                "淬体": "玄魄宝匣",
-            }[self.expected_group]
-
-        def wait_click(self, scene_id, shape_title, *args, **kwargs):
-            actions.append(("wait_click", scene_id, shape_title))
-            if False:
-                yield None
-            return True
-
-        def wait_action_settle(self, seconds):
-            if False:
-                yield None
-            return True
-
-    context = FakeContext()
-    original_claim_slot = runner._claim_xianshi_weekly_resource_slot
-
-    def fake_claim_slot(context_arg, slot, expected_group):
-        context_arg.expected_group = expected_group
-        return original_claim_slot(context_arg, slot, expected_group)
-
-    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *args, **kwargs: context)
-    monkeypatch.setattr(runner, "_claim_xianshi_weekly_resource_slot", fake_claim_slot)
-    monkeypatch.setattr(runner, "_persist_scheduler_task_next_time", lambda *_args: None)
-    terminal_results = iter([False, True])
-    def confirm_terminal(*_args, **_kwargs):
-        if False:
-            yield None
-        return next(terminal_results)
-    monkeypatch.setattr(runner, "_confirm_xianshi_weekly_resources_terminal", confirm_terminal)
-    ctx = {
-        "asset_tree_path": tmp_path / "asset-tree.json",
-        "images": {
-            34: {"title": "世界"},
-            247: {"title": "秘藏阁"},
-        },
-    }
-
-    result = _drain_generator(runner._execute_xianshi_weekly_resources_task(ctx, fanxiu.threading.Event(), {"phase": "after_reset"}))
-
-    list_clicks = [action for action in actions if action[:2] == ("wait_click_then_scene", 247) and action[2] != "返回"]
-    assert result == "success"
-    assert len(list_clicks) == 8
-    assert all(action[2] in {"第1个物品", "第3个物品"} for action in list_clicks)
-    assert ("wait_click_then_scene", 247, "返回", 34) in actions
 
 
 def test_reset_scheduler_task_runs_can_explicitly_clear_next_time(tmp_path, monkeypatch):

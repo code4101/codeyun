@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+import psutil
+
 from backend.core.services.launcher import popen_service
 from backend.core.settings import ROOT_DIR
 from backend.core.temp_paths import codeyun_temp_root
@@ -305,6 +307,10 @@ def inspect_codex_dispatch(dispatch_id: str) -> CodexDispatchStatus:
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace").strip() if stderr_path.is_file() else ""
     if not error and stderr.lower().startswith("error:"):
         error = stderr
+    # CLI interruption/crash can leave only turn.started in stdout. Logs alone
+    # cannot prove that an Agent still owns recovery after its process exits.
+    if not completed and not error and not psutil.pid_exists(int(payload["pid"])):
+        error = "Codex 维修进程已退出，未记录完成终态；需要接续维修"
     if completed:
         status: Literal["starting", "running", "completed", "failed"] = "completed"
     elif error:

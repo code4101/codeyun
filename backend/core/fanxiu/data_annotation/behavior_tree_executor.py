@@ -1484,14 +1484,15 @@ class BehaviorTreeContext(AutomationContext):
         the popup.
         """
         attempt_timeout = max(2.0, min(8.0, float(timeout)))
-        try:
-            reward_overlay = self.shape_matches(421, "奖励浮层")
-        except RuntimeError:
-            reward_overlay = None
-        if reward_overlay is not None:
-            self.runner._log("detail", "气泡入口：检测到世界页奖励浮层，先关闭遮挡")
-            yield from self.wait_click(421, "关闭", timeout=attempt_timeout)
-            yield from self.wait_action_settle(settle_seconds)
+        # The mandatory scene guard owns reward-overlay dismissal. Calling
+        # wait_click(421, "关闭") after observing the overlay runs that guard
+        # again: it may already return to #34, making the explicit click stale.
+        # Establish the post-dismissal world state once, then locate the SDK.
+        world = yield from self.wait_scene(
+            [34], wait=attempt_timeout, label="气泡入口：清理干扰并确认世界页"
+        )
+        if int(getattr(world, "id", world)) != 34:
+            raise RuntimeError("气泡入口：清理干扰后未确认世界页，拒绝操作悬浮球")
 
         match = self.shape_matches(421, "气泡")
         resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")

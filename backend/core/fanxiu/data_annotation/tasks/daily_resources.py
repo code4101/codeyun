@@ -1363,7 +1363,16 @@ class DailyResourceTaskMixin:
             if (group := self._classify_xianshi_weekly_resource_name(name)) is not None
         ]
         obstructed = any(marker in compact for marker in ("幸运地获得了", "获得了"))
-        page_loaded = "每周限购" in compact and ("超值必买" in compact or "仙市" in compact)
+        # 免费周资源领完后会从列表消失，首屏只剩永久限购的付费商品。
+        # 不能再用已消失资源的“每周限购”证明页面加载，否则幂等重跑
+        # 会继续打开付费商品，并把正常的零免费库存误判为领取失败。
+        page_loaded = (
+            "每周限购" in compact and ("超值必买" in compact or "仙市" in compact)
+        ) or (
+            "超值必买" in compact
+            and "永久限购" in compact
+            and "购买所需" in compact
+        )
         if phase == "midnight":
             terminal = not obstructed and page_loaded and free_count == 0
         else:
@@ -1402,6 +1411,8 @@ class DailyResourceTaskMixin:
                 phase=phase,
                 reserved_group=reserved_group,
             )
+            if not observation["page_loaded"]:
+                self._log("detail", f"仙市_每周资源：未确认列表加载，页面OCR={text!r}")
             key = (
                 int(observation["free_count"]),
                 tuple(str(group) for group in observation["groups"]),
@@ -1441,7 +1452,11 @@ class DailyResourceTaskMixin:
         return None
 
     def _claim_xianshi_weekly_resource_slot(self, context: Any, slot: str, expected_group: str):
-        yield from context.wait_click_then_scene(247, slot, 316)
+        landed = yield from context.wait_click_then_scene(247, slot, 316)
+        if int(getattr(landed, "id", landed)) != 316:
+            raise RuntimeError(
+                f"仙市_每周资源：{slot} 未进入资源详情 #316，实际为 #{landed}，停止领取"
+            )
         return (yield from self._claim_current_xianshi_weekly_resource_detail(context, expected_group, slot=slot))
 
     def _claim_current_xianshi_weekly_resource_detail(self, context: Any, expected_group: str, *, slot: str = "当前物品"):

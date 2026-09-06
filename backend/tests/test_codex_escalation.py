@@ -143,3 +143,27 @@ def test_escalate_to_codex_rejects_missing_workspace(tmp_path):
 def test_escalate_to_codex_rejects_invalid_reasoning_effort(tmp_path):
     with pytest.raises(ValueError, match="reasoning_effort"):
         escalation.escalate_to_codex("hello", workspace_dir=tmp_path, reasoning_effort='high"')
+
+
+def test_inspect_codex_dispatch_detects_exit_without_terminal(monkeypatch, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(escalation, "codeyun_temp_root", _fake_temp_root(tmp_path))
+    dispatch_id = "dead123"
+    dispatch_dir = escalation._dispatch_root(dispatch_id, create=True)
+    stdout_path = dispatch_dir / "stdout.jsonl"
+    stdout_path.write_text(json.dumps({"type": "turn.started"}), encoding="utf-8")
+    payload = {"dispatch_id": dispatch_id, "pid": os.getpid(),
+               "stdout_path": str(stdout_path), "stderr_path": str(dispatch_dir / "stderr.log")}
+    path = dispatch_dir / "dispatch.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert escalation.inspect_codex_dispatch(dispatch_id).status == "running"
+    process = subprocess.Popen([sys.executable, "-c", "pass"])
+    process.wait(timeout=10)
+    payload["pid"] = process.pid
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    status = escalation.inspect_codex_dispatch(dispatch_id)
+    assert status.status == "failed"
+    assert "未记录完成终态" in status.error

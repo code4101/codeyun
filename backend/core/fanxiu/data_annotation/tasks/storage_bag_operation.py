@@ -35,11 +35,11 @@ QUICK_OPERATION_PANEL_SHAPES = (
 
 
 def next_storage_bag_operation_at(now: datetime | None = None) -> datetime:
-    """Schedule the next completed run for 01:00 on the following day."""
+    """Schedule the next completed run for 00:00 on the following day."""
 
     current = now or datetime.now()
     return (current + timedelta(days=1)).replace(
-        hour=1,
+        hour=0,
         minute=0,
         second=0,
         microsecond=0,

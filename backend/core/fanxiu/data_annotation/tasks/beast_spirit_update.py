@@ -21,13 +21,13 @@ STANDARD_JOB_ID = "beast-spirit-update"
 
 
 def next_beast_spirit_update_at(now: datetime | None = None) -> datetime:
-    """Return the next Tuesday 00:30 strictly after ``now``."""
+    """Return the next Tuesday 00:00 strictly after ``now``."""
 
     current = now or datetime.now()
     days_until_tuesday = (1 - current.weekday()) % 7
     candidate = datetime.combine(
         current.date() + timedelta(days=days_until_tuesday),
-        time(hour=0, minute=30),
+        time(hour=0, minute=0),
     )
     if candidate <= current:
         candidate += timedelta(days=7)

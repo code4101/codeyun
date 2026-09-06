@@ -31,7 +31,7 @@ from backend.core.fanxiu.activity.daily_activity_sync import (
 )
 
 
-DAILY_ACTIVITY_LIST_SYNC_TRIGGER = (0, 20)
+DAILY_ACTIVITY_LIST_SYNC_TRIGGER = (0, 0)
 DAILY_ACTIVITY_LIST_SYNC_TASK_TYPE = "activity_daily_list_sync"
 DAILY_ACTIVITY_LIST_SYNC_LABEL = "活动_每日清单同步"
 
@@ -44,7 +44,7 @@ class DailyActivityListSyncPendingResearchError(RuntimeError):
 
 
 def next_daily_activity_list_sync_time(now: datetime | None = None) -> datetime:
-    """Return tomorrow 00:20; recurrence belongs only to this business Job."""
+    """Return tomorrow 00:00; recurrence belongs only to this business Job."""
 
     current = now or datetime.now(ZoneInfo(DEFAULT_TIMEZONE))
     tomorrow = current + timedelta(days=1)

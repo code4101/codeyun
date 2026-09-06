@@ -75,6 +75,28 @@ class SceneInterruptionMixin:
         )
         return not any(marker in text for marker in blocked_markers)
 
+    def _explicit_interruption_action_shape(self, image: dict[str, Any]) -> dict[str, Any] | None:
+        """Resolve a popup's explicitly authorized recovery action.
+
+        Most popup nodes are dismissed through a generic close/background action.
+        A small set of global interruptions instead need a semantic recovery action,
+        such as reconnecting after a network disconnect.  Keeping that choice on the
+        asset node avoids teaching the guard button names or coordinates.
+        """
+
+        action_title = str(image.get("behaviorTreeInterruptionAction") or "").strip()
+        if not action_title:
+            return None
+        return next(
+            (
+                shape
+                for shape in image.get("shapes") or []
+                if isinstance(shape, dict)
+                and str(shape.get("title") or "").strip() == action_title
+            ),
+            None,
+        )
+
     def _index_guard_candidates(self, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Flatten identity-bearing global interruption scenes.
 
@@ -149,9 +171,20 @@ class SceneInterruptionMixin:
                 current_path = [*path, title] if title else path
                 descendant_close = inherited_close
                 if node_type == "image" and self._scene_identity_shapes(item):
-                    own_action = self._auto_close_guard_action_shape(item)
+                    explicit_action_title = str(item.get("behaviorTreeInterruptionAction") or "").strip()
+                    explicit_action = self._explicit_interruption_action_shape(item)
+                    own_action = (
+                        explicit_action
+                        if explicit_action_title
+                        else self._auto_close_guard_action_shape(item)
+                    )
                     own_title = str((own_action or {}).get("title") or "").strip()
-                    if inherited_close is not None and own_title in {"确定", "确认"}:
+                    if explicit_action_title:
+                        # A declared semantic recovery action is exclusive.  A
+                        # typo or missing Shape must reach the repair boundary,
+                        # never fall back to an inherited close/confirm click.
+                        action_view, action_shape = item, explicit_action
+                    elif inherited_close is not None and own_title in {"确定", "确认"}:
                         action_view, action_shape = inherited_close
                     elif own_action is not None:
                         action_view, action_shape = item, own_action
@@ -194,16 +227,7 @@ class SceneInterruptionMixin:
                     and item.get("behaviorTreeInterruption") is True
                     and self._scene_identity_shapes(item)
                 ):
-                    action_title = str(item.get("behaviorTreeInterruptionAction") or "").strip()
-                    action_shape = next(
-                        (
-                            shape
-                            for shape in item.get("shapes") or []
-                            if isinstance(shape, dict)
-                            and str(shape.get("title") or "").strip() == action_title
-                        ),
-                        None,
-                    ) if action_title else None
+                    action_shape = self._explicit_interruption_action_shape(item)
                     add_candidate(
                         item,
                         "/".join(path),

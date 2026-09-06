@@ -961,11 +961,22 @@ class MailTaskMixin:
                 )
                 continue
 
-            remaining_indices = [
-                int(item.get("runtime_index") or 0)
-                for mail_id, item in target_by_id.items()
-                if mail_id not in claimed_ids
-            ]
+            # Batch membership is stable by mail ID, but Runtime positions
+            # can change after each refreshed snapshot (for example new mail).
+            # Compare the visible window against that same snapshot, never
+            # against indices captured when the batch was first selected.
+            current_indices = {
+                str(item.get("id") or item.get("mail_id") or ""):
+                    int(item.get("runtime_index") or index)
+                for index, item in enumerate(snapshot.get("items") or [])
+            }
+            remaining_ids = set(target_by_id) - claimed_ids
+            missing_ids = remaining_ids - current_indices.keys()
+            if missing_ids:
+                raise RuntimeError(
+                    f"邮件_选择性领取：待领邮件已不在当前 Runtime 快照，需重新建批次：{sorted(missing_ids)}"
+                )
+            remaining_indices = [current_indices[mail_id] for mail_id in remaining_ids]
             last_visible_index = max(int(item.get("runtime_index") or 0) for item in mappings)
             if min(remaining_indices) <= last_visible_index:
                 raise RuntimeError(

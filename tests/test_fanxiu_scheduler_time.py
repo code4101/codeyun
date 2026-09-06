@@ -6,6 +6,7 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_time import (
     effective_scheduler_time,
     scheduler_task_time_view,
     scheduler_time_bias_minutes,
+    scheduler_time_sequence_groups,
 )
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
@@ -37,6 +38,21 @@ def test_time_sequence_compacts_missing_configured_jobs():
     sequence = {"21:30": ["a", "b", "c"]}
 
     assert scheduler_time_bias_minutes(tasks[1], tasks, sequence) == 1
+
+
+def test_time_sequence_discovers_all_actual_members_and_keeps_saved_order():
+    tasks = [
+        {"id": "new", "next_time": "2026-09-07 00:00:00"},
+        {"id": "a", "next_time": "2026-09-07 00:00:00"},
+        {"id": "b", "next_time": "2026-09-07 00:00:00"},
+        {"id": "moved", "next_time": "2026-09-07 05:00:00"},
+    ]
+    sequence = {"00:00": ["b", "moved", "a"]}
+    groups = scheduler_time_sequence_groups(tasks, sequence)
+    assert groups[0]["task_ids"] == ["b", "a", "new"]
+    assert [item["bias_minutes"] for item in groups[0]["items"]] == [0, 1, 2]
+    assert scheduler_time_bias_minutes(tasks[0], tasks, sequence) == 2
+    assert tasks[0]["next_time"] == "2026-09-07 00:00:00"
 
 
 def test_effective_time_is_derived_without_mutating_original_next_time():

@@ -62,6 +62,69 @@ def test_nested_leave_popup_inherits_parent_background_dismiss_action() -> None:
     assert runner.status()["last_guard_event"]["action"] == "click:空白"
 
 
+def test_popup_group_node_can_bind_explicit_recovery_action() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "id": 696,
+        "title": "断线重连",
+        "width": 900,
+        "height": 1600,
+        "behaviorTreeInterruptionAction": "重连",
+        "shapes": [
+            {"title": "当前网络已断开", "isSceneIdentity": True},
+            {"title": "重连", "x": 0.62, "y": 0.64, "w": 0.13, "h": 0.06},
+        ],
+    }
+
+    candidates = runner._index_guard_candidates(
+        [{"type": "folder", "title": "弹窗", "children": [popup]}]
+    )
+    candidate = next(item for item in candidates if item["image"]["id"] == 696)
+
+    assert candidate["action_shape"]["title"] == "重连"
+    assert candidate["action_view"]["id"] == 696
+
+    clicks: list[tuple[int, str]] = []
+
+    class Context:
+        last_clicked_shape = None
+        last_clicked_at = 0.0
+        ctx = {"asset_tree": [popup]}
+
+        def cur_frame(self) -> str:
+            return "frame"
+
+        def click_shape(self, view: Any, shape: Any, **_options: Any) -> None:
+            clicks.append((int(view.id), str(shape.title)))
+
+    assert runner._handle_recognized_popup_candidate(Context(), candidate, score=99.0)
+    assert clicks == [(696, "重连")]
+    assert runner.status()["last_guard_event"]["action"] == "click:重连"
+
+
+def test_popup_group_missing_explicit_recovery_action_fails_closed() -> None:
+    runner = create_behavior_tree_executor()
+    popup = {
+        "type": "image",
+        "id": 696,
+        "title": "断线重连",
+        "behaviorTreeInterruptionAction": "重连",
+        "shapes": [
+            {"title": "当前网络已断开", "isSceneIdentity": True},
+            {"title": "关闭", "x": 0.8, "y": 0.2, "w": 0.1, "h": 0.1},
+        ],
+    }
+
+    candidates = runner._index_guard_candidates(
+        [{"type": "folder", "title": "弹窗", "children": [popup]}]
+    )
+    candidate = next(item for item in candidates if item["image"]["id"] == 696)
+
+    assert candidate["action_shape"] is None
+    assert candidate["action_view"]["id"] == 696
+
+
 def test_declared_leave_action_is_confirmed_inside_layer0_guard() -> None:
     runner = create_behavior_tree_executor()
     popup = {

@@ -68,6 +68,27 @@ def normalize_time_sequence(raw: Any) -> dict[str, list[str]]:
     return normalized
 
 
+def _current_time_sequence(
+    tasks: list[dict[str, Any]],
+    time_sequence: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Discover membership from original triggers; saved lists specify order only."""
+    members: dict[str, list[str]] = {}
+    for task in tasks:
+        original = parse_scheduler_time(task.get("next_time"))
+        task_id = str(task.get("id") or "")
+        if original is not None and task_id:
+            ids = members.setdefault(original.strftime("%H:%M"), [])
+            if task_id not in ids:
+                ids.append(task_id)
+    for clock, ids in members.items():
+        saved = time_sequence.get(clock, [])
+        members[clock] = [task_id for task_id in saved if task_id in ids] + [
+            task_id for task_id in ids if task_id not in saved
+        ]
+    return members
+
+
 def scheduler_time_bias_minutes(
     task: dict[str, Any],
     tasks: list[dict[str, Any]],
@@ -82,7 +103,7 @@ def scheduler_time_bias_minutes(
     next_time = parse_scheduler_time(task.get("next_time"))
     if next_time is None:
         return 0
-    configured_order = time_sequence.get(next_time.strftime("%H:%M"), [])
+    configured_order = _current_time_sequence(tasks, time_sequence).get(next_time.strftime("%H:%M"), [])
     task_id = str(task.get("id") or "")
     if task_id not in configured_order:
         return 0
@@ -143,7 +164,7 @@ def scheduler_time_sequence_groups(
     tasks: list[dict[str, Any]],
     time_sequence: dict[str, list[str]],
 ) -> list[dict[str, Any]]:
-    """Build currently relevant configured groups from original next times."""
+    """Expose actual clock-group members, including jobs absent from saved order."""
 
     task_by_id = {
         str(task.get("id") or ""): task
@@ -151,7 +172,7 @@ def scheduler_time_sequence_groups(
         if str(task.get("id") or "")
     }
     groups: list[dict[str, Any]] = []
-    for clock, configured_order in sorted(time_sequence.items()):
+    for clock, configured_order in sorted(_current_time_sequence(tasks, time_sequence).items()):
         items = [
             task_by_id[task_id]
             for task_id in configured_order

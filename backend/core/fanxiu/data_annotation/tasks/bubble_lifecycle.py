@@ -69,7 +69,7 @@ def bubble_week_key(now: datetime) -> str:
 
 
 def next_bubble_weekly_time(now: datetime) -> str:
-    return next_business_time(("00:10",), now=now, weekdays=(0,))
+    return next_business_time(("00:00",), now=now, weekdays=(0,))
 
 
 def _facts_lock_path(path: Path) -> Path:

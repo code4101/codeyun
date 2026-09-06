@@ -242,7 +242,7 @@ class XianshiExchangeTaskMixin:
         default_task_id: str,
         now: datetime | None = None,
     ) -> str:
-        next_time = next_business_time(("00:10",), now=now, weekdays=(TUESDAY,))
+        next_time = next_business_time(("00:00",), now=now, weekdays=(TUESDAY,))
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or default_task_id),
             next_time,

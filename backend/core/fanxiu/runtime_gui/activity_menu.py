@@ -42,15 +42,15 @@ WORLD_LEFT_ACTIVITY_GRID = ActivityMenuGrid(columns=1)
 # The current ActivityBtnGroup popup renders four columns.  Measurements are
 # from live 900x1600 #403 frames: neighbouring icon-label centres are
 # about 145 px apart horizontally and 170 px vertically.  The popup is now
-# anchored in the lower half of the screen, with label rows around
-# y=895/1065/1235.  Keep the envelope on the popup itself: accepting the
+# anchored beside the world entry: verified label rows are either around
+# y=740/910/1080 or 895/1065/1235. Keep the envelope on the popup: accepting the
 # visible world-menu labels behind the translucent popup can otherwise project
 # a perfectly plausible but completely wrong activity coordinate.
 GROUP_POPUP_ACTIVITY_GRID = ActivityMenuGrid(
     columns=4,
     column_pitch=145.0,
     row_pitch=170.0,
-    candidate_bounds=(270.0, 840.0, 875.0, 1310.0),
+    candidate_bounds=(270.0, 680.0, 875.0, 1310.0),
 )
 
 

@@ -81,6 +81,7 @@ def open_loaded_activity_menu_item(
     ocr_shape_names: Iterable[str],
     expected_scene_ids: Iterable[int],
     target_gui_name: str | None = None,
+    fallback_ocr_shape_names: Iterable[str] = (),
     grid: ActivityMenuGrid | None = None,
     timeout_seconds: float = 20.0,
     max_scrolls: int = 0,
@@ -141,6 +142,20 @@ def open_loaded_activity_menu_item(
                     for item in snapshot.items
                 ),
             )
+        # Stylized labels can disappear from full-menu detection. A caller may
+        # supply a narrower annotated ROI; retain exact alias recognition as
+        # the gate, and derive the point from its fresh OCR boxes, never the ROI.
+        fallback_shapes = tuple(fallback_ocr_shape_names)
+        if gui_name and fallback_shapes and not find_text_matches(tokens, gui_name):
+            cropped_tokens = tuple(
+                _normalize_ocr_token(token)
+                for token in context.ocr_tokens_in_shapes(
+                    source_scene, fallback_shapes, frame_data_url=frame,
+                    padding=0, crop=True,
+                )
+            )
+            if find_text_matches(cropped_tokens, gui_name):
+                tokens = cropped_tokens
         spatial_fragments = tuple(group_ocr_tokens(tokens))
         # A rendered row may contain two adjacent activity labels.  Prefer the
         # exact alias span reconstructed from real boxes; a declared alias is

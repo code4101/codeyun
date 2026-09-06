@@ -239,7 +239,21 @@ class BubbleClaimPillsTaskMixin:
             return
 
         # #590 没有独立关闭按钮；浮动气泡本身是同一个开关。
-        yield from context.wait_click(421, "气泡", timeout=transition_timeout)
+        # #421 owns the floating image template, not the SDK menu's scene.
+        # Validate the actual menu and bubble on one fresh frame, just as the
+        # SDK entry transaction does, rather than requiring game scene #421.
+        scene_id, _score, frame = yield from self._bubble_overlay_scene(context, (590,))
+        if scene_id != 590:
+            raise RuntimeError("气泡_领丹药：关闭前未确认 SDK 菜单 #590，拒绝点击")
+        match = context.shape_matches(421, "气泡", frame_data_url=frame)
+        box = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
+        if not isinstance(box, dict) or not bool((match or {}).get("unique_match", True)):
+            raise RuntimeError("气泡_领丹药：关闭前未唯一定位悬浮球，拒绝点击")
+        context.click_frame_point(
+            421,
+            float(box["x"]) + float(box["w"]) / 2,
+            float(box["y"]) + float(box["h"]) / 2,
+        )
         deadline = time.monotonic() + transition_timeout
         while time.monotonic() < deadline:
             matched, _score, _frame = context.match_view(590, update=True)
