@@ -110,6 +110,10 @@ def _ranking_row(reader: LuaJitReader, value: Any) -> dict[str, Any] | None:
     return {
         "rank": rank,
         "score": score,
+        # Peak Race uses these same rank rows for its support list. Missing
+        # support data must remain unknown rather than becoming zero.
+        "role_id": reader.long(fields["id"]) if fields.get("id") is not None else None,
+        "support_value": reader.long(fields["supportValue"]) if fields.get("supportValue") is not None else None,
         "role_key": str(
             fields.get("key") or f"{server_id or 0}:{fields.get('name') or ''}"
         ),

@@ -41,18 +41,18 @@ const personalCapturedAt = ref('')
 const planeCapturedAt = ref('')
 
 const currentTaskProgress = computed(() => Math.max(0, ...tasks.value.map(row => row.progress)))
-const petTypeLabels: Record<number, string> = {
-  1: '神兽',
-  2: '仙兽',
-  3: '灵兽',
-  4: '妖兽',
-  5: '珍兽',
+const aptitudeLabels: Record<number, string> = {
+  1: '攻击',
+  2: '气血',
+  3: '灵力',
+  4: '御兽',
+  5: '魔兽',
 }
 
 function aptitudeDescription(row: FanxiuLingchongJingwuResourceSnapshot['items'][number]) {
-  const values = Object.entries(row.aptitude_gain_by_pet_type)
+  const values = Object.entries(row.aptitude_gain_by_gift_id ?? row.aptitude_gain_by_pet_type)
     .filter(([, value]) => value > 0)
-    .map(([type, value]) => `${petTypeLabels[Number(type)] || `类型${type}`} +${value}`)
+    .map(([giftId, value]) => `${aptitudeLabels[Number(giftId)] || `资质${giftId}`} +${value}`)
   return values.join('、') || '无资质增量'
 }
 
@@ -165,7 +165,7 @@ onMounted(async () => {
         />
         <div class="table-shell">
           <table>
-            <thead><tr><th>资源</th><th>持有</th><th>适用灵兽及单个资质</th></tr></thead>
+            <thead><tr><th>资源</th><th>持有</th><th>单个道具的资质分项效果</th></tr></thead>
             <tbody>
               <tr v-for="row in resources?.items || []" :key="row.item_id">
                 <td>{{ row.name }}</td>
@@ -175,6 +175,7 @@ onMounted(async () => {
             </tbody>
           </table>
         </div>
+        <p>实际增加值取决于目标灵兽各项资质的剩余容量。</p>
       </section>
 
       <section v-if="activity" class="section-block">

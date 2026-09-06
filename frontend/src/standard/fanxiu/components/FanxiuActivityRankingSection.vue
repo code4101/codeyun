@@ -11,6 +11,7 @@ withDefaults(defineProps<{
   showPlane?: boolean
   scoreLabel: string
   scorePerRewardLabel: string
+  extraRewardColumns?: { itemId: string; label: string }[]
   personalTotal?: number
   page?: number
   pageSize?: number
@@ -23,6 +24,7 @@ withDefaults(defineProps<{
   planeSubjectLabel?: string
 }>(), {
   planeRows: () => [],
+  extraRewardColumns: () => [],
   showPlane: true,
   personalTotal: 0,
   page: 1,
@@ -52,6 +54,7 @@ defineEmits<{
     <div class="table-shell" v-loading="loading">
       <FanxiuRankingKeyPointTable
         :rows="personalRows"
+        :extra-reward-columns="extraRewardColumns"
         :score-label="scoreLabel"
         :score-per-reward-label="scorePerRewardLabel"
         :empty-text="personalEmptyText"

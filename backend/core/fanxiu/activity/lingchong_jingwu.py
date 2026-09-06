@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from sqlmodel import Session, col, select
 
 from backend.core.fanxiu.activity.exchange_event import (
@@ -61,9 +61,19 @@ class LingchongJingwuResourceItem(BaseModel):
     name: str
     quality: int
     count: int
+    # Historical storage/API key: keys are PetGift giftId, never pet types.
     aptitude_gain_by_pet_type: dict[int, int] = Field(default_factory=dict)
-    minimum_aptitude_gain: int
-    maximum_aptitude_gain: int
+    minimum_aptitude_gain: int = Field(description="静态各资质分项效果的最小值，不是实际使用增量下界")
+    maximum_aptitude_gain: int = Field(description="静态各资质分项效果的最大值，不是实际使用增量上界")
+
+    @computed_field
+    @property
+    def aptitude_gain_by_gift_id(self) -> dict[int, int]:
+        """Item.effectValue 分项效果；实际增量仍需校验目标灵兽资质容量。
+
+        由旧字段派生，已有持久快照无需迁移，同时保留旧 API 字段。
+        """
+        return dict(self.aptitude_gain_by_pet_type)
 
 
 class LingchongJingwuResourceSnapshot(BaseModel):
@@ -173,7 +183,7 @@ def build_lingchong_jingwu_activity_payload(
         "captured_at": str(captured_at),
         "source_kind": "standard_runtime_facts",
         "resource_strategy": {
-            "resource_metric": "饲灵丸库存与各灵兽类型资质增量",
+            "resource_metric": "饲灵丸库存与各资质分项效果",
             "task_metric": "本期已下发 PetTalent 任务进度",
         },
         "evidence": {
@@ -202,6 +212,45 @@ def _reward_item_count(rewards: list[str], item_id: int) -> int:
         if match is not None and int(match.group(1)) == int(item_id):
             total += int(match.group(2))
     return total
+
+
+def read_lingchong_task_milestones(activity_id: int) -> dict[str, Any]:
+    """读取普通或巅峰灵宠活动已加载的任务档次，不触发领取。
+
+    保留缺失任务 ID，避免将部分缓存误报为完整梯度。
+    """
+    from backend.core.fanxiu.instrumentation.daily_task_rewards import (
+        TaskRewardDomainSpec, build_activity_task_reward_snapshot,
+        read_activity_task_reward_snapshots,
+    )
+
+    shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+    if not shared.get("ok"):
+        return {"ok": False, "complete": False, "reason": shared.get("reason"), "milestones": []}
+    configs = [r for r in _load_config_rows(resolve_fanxiu_export_root(), "ActiveTask")
+               if int(r.get("activityId") or 0) == activity_id
+               and any(_PET_TALENT_CONDITION.fullmatch(str(c)) for c in r.get("finishCondition", []))]
+    ids = {int(r["id"]) for r in configs}
+    entries = [r for r in shared.get("task_entries", []) if int(r.get("taskId") or r.get("task_id") or 0) in ids]
+    loaded = {int(r.get("taskId") or r.get("task_id")) for r in entries}
+    finished = ids.intersection(shared.get("finished_task_ids", []))
+    missing = sorted(ids - loaded - finished)
+    milestones = load_lingchong_jingwu_task_milestones(entries, parent_activity_id=activity_id) if entries else []
+    ordered_ids = tuple(int(r["id"]) for r in sorted(configs, key=lambda r: (r.get("sort", 0), r["id"])))
+    rewards = build_activity_task_reward_snapshot(
+        spec=TaskRewardDomainSpec(key=f"lingchong_{activity_id}", label="灵兽资质任务",
+                                 activity_id=activity_id, task_ids=ordered_ids,
+                                 condition_key="PetTalent", thresholds=tuple(range(1, len(ids) + 1))),
+        task_entries=entries, finished_task_ids=sorted(finished),
+    )
+    # Retained alternate ladders may yield a conservative incomplete result;
+    # do not authorize claims by dropping unseen static IDs.
+    if not ids:
+        rewards.update(complete=False, authorized_claim_task_ids=[])
+    return {"ok": True, "complete": bool(ids) and not missing and rewards["complete"],
+            "activity_id": activity_id, "milestones": [r.model_dump() for r in milestones],
+            "finished_task_ids": sorted(finished), "missing_task_ids": missing,
+            "reward_state": rewards, "captured_at": shared.get("captured_at")}
 
 
 def load_lingchong_jingwu_task_milestones(
@@ -275,7 +324,12 @@ def load_lingchong_jingwu_resource_definitions(
     *,
     export_root: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Load usable feeding pills and preserve their pet-type-specific gains."""
+    """读取饲灵丸的静态资质分项效果，不推算实际使用增量。
+
+    Item.effectValue 的键是资质 giftId（攻击、气血、灵力、御兽、魔兽）。
+    GetPetUpItemList 通过 GetGiftLimitByPetIdAndGiftId 过滤适用道具；
+    使用前仍需确认目标灵兽对应资质的剩余容量。
+    """
 
     root = resolve_fanxiu_export_root(export_root)
     definitions: list[dict[str, Any]] = []
@@ -339,7 +393,8 @@ def collect_lingchong_jingwu_resource_snapshot(
             "official_name": LINGCHONG_JINGWU_OFFICIAL_NAME,
             "user_alias": LINGCHONG_JINGWU_USER_ALIAS,
             "item_count": len(items),
-            "score_requires_pet_type": True,
+            "effect_key_kind": "pet_gift_id",
+            "score_requires_pet_gift_capacity": True,
         },
     )
 

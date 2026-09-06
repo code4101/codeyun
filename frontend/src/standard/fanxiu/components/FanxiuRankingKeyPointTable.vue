@@ -8,9 +8,11 @@ withDefaults(defineProps<{
   scorePerRewardLabel: string
   emptyText?: string
   showRewardColumns?: boolean
+  extraRewardColumns?: { itemId: string; label: string }[]
 }>(), {
   emptyText: '暂无榜单数据',
   showRewardColumns: true,
+  extraRewardColumns: () => [],
 })
 </script>
 
@@ -19,6 +21,9 @@ withDefaults(defineProps<{
     <thead>
       <tr>
         <th v-if="showRewardColumns">奖励档位</th>
+        <template v-if="showRewardColumns">
+          <th v-for="column in extraRewardColumns" :key="column.itemId" class="number-cell">{{ column.label }}</th>
+        </template>
         <th v-if="showRewardColumns" class="number-cell">天资丹</th>
         <th>排名</th>
         <th>角色</th>
@@ -30,7 +35,7 @@ withDefaults(defineProps<{
     </thead>
     <tbody>
       <tr v-if="!rows.length">
-        <td :colspan="showRewardColumns ? 8 : 5" class="empty-cell">{{ emptyText }}</td>
+        <td :colspan="showRewardColumns ? 8 + extraRewardColumns.length : 5" class="empty-cell">{{ emptyText }}</td>
       </tr>
       <tr
         v-for="row in rows"
@@ -43,6 +48,9 @@ withDefaults(defineProps<{
           </template>
           <template v-else-if="row.is_last_player">末位</template>
         </td>
+        <template v-if="showRewardColumns">
+          <td v-for="column in extraRewardColumns" :key="column.itemId" class="number-cell">{{ row.reward_counts?.[column.itemId] ?? '—' }}</td>
+        </template>
         <td v-if="showRewardColumns" class="number-cell">{{ row.talent_pill_count ?? '—' }}</td>
         <td>{{ row.is_self && row.rank <= 0 ? '未上榜' : row.rank }}</td>
         <td>{{ row.has_player ? row.name : '—' }}</td>

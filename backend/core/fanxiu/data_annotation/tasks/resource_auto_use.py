@@ -67,6 +67,21 @@ def complete_pet_quick_swallow(
         expected_scene_ids=(PET_HOME_SCENE_ID,),
         timeout_seconds=30,
     )
+    result = yield from complete_pet_quick_swallow_on_current_page(context)
+    yield from context.wait_click(PET_HOME_SCENE_ID, "返回")
+    yield from context.wait_scene([34], wait=20, label="资源_自动使用/灵兽：返回世界")
+    return result
+
+
+def complete_pet_quick_swallow_on_current_page(context: Any):
+    """复用原生快速吞噬流程；完成后留在灵兽主页供后续步骤使用。"""
+    yield from context.wait_scene([PET_HOME_SCENE_ID], wait=15)
+    before = read_pet_quick_swallow_runtime()
+    decision = plan_pet_quick_swallow(before)
+    if decision.action == "complete":
+        return {"ok": True, "verified": True, "status": "nothing_to_upgrade"}
+    if decision.action != "execute":
+        raise RuntimeError(decision.reason)
     yield from context.wait_click(PET_HOME_SCENE_ID, "快速吞噬")
     yield from context.wait_scene(
         [PET_QUICK_SWALLOW_CONFIRM_SCENE_ID],
@@ -88,8 +103,6 @@ def complete_pet_quick_swallow(
         wait=20,
         label="资源_自动使用/灵兽：结果页返回灵兽主页",
     )
-    yield from context.wait_click(PET_HOME_SCENE_ID, "返回")
-    yield from context.wait_scene([34], wait=20, label="资源_自动使用/灵兽：返回世界")
     return {"ok": True, "verified": True}
 
 

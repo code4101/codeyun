@@ -1831,7 +1831,9 @@ export interface FanxiuLingchongJingwuResourceItem {
   name: string;
   quality: number;
   count: number;
+  /** Legacy key; entries are aptitude gift IDs, not pet types. */
   aptitude_gain_by_pet_type: Record<number, number>;
+  aptitude_gain_by_gift_id?: Record<number, number>;
   minimum_aptitude_gain: number;
   maximum_aptitude_gain: number;
 }
@@ -1980,6 +1982,7 @@ export interface FanxiuExchangeShopItem {
 }
 
 export interface FanxiuExchangeRankingItem {
+  reward_counts?: Record<string, number>;
   id: string;
   ranking_scope: string;
   rank: number;

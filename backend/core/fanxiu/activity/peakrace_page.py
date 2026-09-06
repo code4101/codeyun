@@ -10,6 +10,36 @@ from backend.core.fanxiu.activity.rank_reward import load_activity_rank_reward_t
 from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 from backend.core.fanxiu.instrumentation.activity_rank_runtime import read_activity_rank_runtime_snapshot
+from backend.core.fanxiu.activity.ranking_key_points import project_ranking_key_points
+
+
+def peakrace_ranking_key_points(total: dict) -> list[dict]:
+    """Use the shared guard/self/last projection for the total board."""
+    self_rank = total.get("self_ranking") or {}
+
+    def row(raw: dict, *, has_player: bool = True) -> dict:
+        return {
+            **raw, "id": f"peakrace:{raw['rank']}", "ranking_scope": "personal",
+            "name": raw.get("name", ""), "score": raw.get("score", 0),
+            "server_name": raw.get("server_name", ""), "club_name": raw.get("club_name", ""),
+            "has_player": has_player, "is_self": has_player and raw['rank'] == self_rank.get('rank'),
+            "is_reward_guard": False, "is_last_player": False, "captured_at": "",
+        }
+
+    by_rank = {r['rank']: row(r) for r in total.get('rankings', [])}
+    if self_rank:
+        by_rank[self_rank['rank']] = row(self_rank)
+    tiers = total.get('reward_tiers', [])
+    projected = project_ranking_key_points(
+        by_rank.values(), reward_tiers=tiers,
+        reward_count=lambda tier: tier['amounts'].get('9070095', 0),
+        placeholder_factory=lambda start, end, count: row({'rank': end}, has_player=False),
+        rank_list_size=total.get('rank_list_size'),
+    )
+    for item in projected:
+        tier = next((t for t in tiers if t['rank_start'] <= item['rank'] <= t['rank_end']), None)
+        item['reward_counts'] = dict(tier['amounts']) if tier else {}
+    return projected
 
 
 def collect_peakrace_total_page(session: Session) -> str:

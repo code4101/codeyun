@@ -7,7 +7,9 @@ export interface LingchongJingwuResourceItem {
   name: string
   quality: number
   count: number
+  /** Legacy key; entries are aptitude gift IDs, not pet types. */
   aptitude_gain_by_pet_type: Record<number, number>
+  aptitude_gain_by_gift_id?: Record<number, number>
   minimum_aptitude_gain: number
   maximum_aptitude_gain: number
 }

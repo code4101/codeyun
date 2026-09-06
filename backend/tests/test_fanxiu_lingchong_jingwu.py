@@ -158,7 +158,7 @@ def test_task_milestones_reject_runtime_config_target_mismatch(
         )
 
 
-def test_resource_snapshot_preserves_pet_type_specific_aptitude_gain(
+def test_resource_snapshot_preserves_aptitude_gift_effects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -201,7 +201,19 @@ def test_resource_snapshot_preserves_pet_type_specific_aptitude_gain(
     assert [row.item_id for row in snapshot.items] == [8022001, 8022002]
     assert snapshot.items[0].minimum_aptitude_gain == 2
     assert snapshot.items[0].maximum_aptitude_gain == 4
-    assert snapshot.evidence["score_requires_pet_type"] is True
+    assert snapshot.items[0].aptitude_gain_by_gift_id == {1: 4, 2: 4, 3: 2}
+    assert snapshot.evidence["effect_key_kind"] == "pet_gift_id"
+    assert snapshot.evidence["score_requires_pet_gift_capacity"] is True
+
+
+def test_resource_item_loads_legacy_snapshot_without_reinterpreting_ids() -> None:
+    legacy = {"item_id": 8022001, "name": "珍品饲灵丸", "quality": 4, "count": 11,
+              "aptitude_gain_by_pet_type": {"1": 4, "3": 2},
+              "minimum_aptitude_gain": 2, "maximum_aptitude_gain": 4}
+    item = lingchong_jingwu.LingchongJingwuResourceItem.model_validate(legacy)
+    payload = item.model_dump()
+    assert payload["aptitude_gain_by_pet_type"] == payload["aptitude_gain_by_gift_id"] == {1: 4, 3: 2}
+    assert lingchong_jingwu.LingchongJingwuResourceItem.model_validate(payload) == item
 
 
 def _rank_fact(*, scope: str, declared: int = 2) -> dict:
