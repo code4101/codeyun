@@ -128,7 +128,9 @@ def resolve_interned_lua_string(
                 _INTERNED_STRING_CACHE[cache_key] = current
                 return current
         current = next_ref & _LUA_POINTER_MASK & ~1
-    raise FanxiuRuntimeMemoryError(f"Lua intern 表中没有字符串键 {name}")
+    raise FanxiuRuntimeMemoryError(
+        f"Lua intern 表中没有字符串键 {name}", code="string_key_not_loaded"
+    )
 
 
 def lua_jit_intern_state(
@@ -270,6 +272,13 @@ def _parse_memory_regions(maps_text: str) -> list[MemoryRegion]:
 
 
 class MumuProcessMemory:
+    """One observation's byte cache; never reuse this instance after a GUI action.
+
+    Bytes are acquired over time, not an atomic game snapshot. Live acceptance
+    must check object identity and changing values after closing/reopening a UI;
+    a readable address or a cache hit alone cannot prove current business state.
+    """
+
     _SMALL_READ_PREFETCH_BYTES = 64 * 1024
     _MEMORY_PAGE_BYTES = 4096
 
@@ -286,6 +295,61 @@ class MumuProcessMemory:
         self.adb_serial = str(adb_serial)
         self.regions = tuple(regions)
         self._read_cache: dict[tuple[int, int], bytes] = {}
+        self._diagnostics: dict[str, int | float] = {
+            "read_calls": 0,
+            "read_region_calls": 0,
+            "cache_hits": 0,
+            "prefetch_calls": 0,
+            "transport_calls": 0,
+            "transport_bytes": 0,
+            "transport_seconds": 0.0,
+            "transport_failures": 0,
+            "transport_short_reads": 0,
+            "marker_scan_calls": 0,
+            "marker_scan_requested_bytes": 0,
+            "marker_scan_seconds": 0.0,
+            "marker_scan_failures": 0,
+        }
+
+    def diagnostics(self) -> dict[str, int | float]:
+        """Return detached counters for this instance, without reading the game.
+
+        ``read_calls`` counts read() entries (including rejected/empty reads);
+        ``read_region_calls`` counts region requests, whose unaligned fallback
+        also calls read(). ``cache_hits`` counts requests served by stored bytes.
+        Transport counters count actual binary shell requests, returned bytes
+        (including short reads), and wall time including failures. A batched
+        prefetch is one transport call. Device-side marker scans are separate:
+        their requested bytes are scan budgets, not bytes returned over ADB.
+        Process discovery/identity/map commands occur outside this lifetime and
+        are deliberately excluded; callers must time context acquisition too.
+
+        For live tuning compare cold, repeated, and invalidated observations
+        separately (mean ± standard deviation). High transport time/call count
+        suggests batching; high table materializations suggests narrower field
+        reads. Neither proves a speedup or cache correctness without real UI
+        acceptance. Counters are cumulative and are not reset by this method.
+        """
+        return dict(self._diagnostics)
+
+    def _read_transport(
+        self, command: str, *, timeout_s: int, expected_size: int
+    ) -> bytes:
+        started = time.perf_counter()
+        self._diagnostics["transport_calls"] += 1
+        try:
+            data, _ = mumu_control._mumu_adb_session_shell_bytes(
+                command, timeout_s=timeout_s
+            )
+            self._diagnostics["transport_bytes"] += len(data)
+            if len(data) != expected_size:
+                self._diagnostics["transport_short_reads"] += 1
+            return data
+        except Exception:
+            self._diagnostics["transport_failures"] += 1
+            raise
+        finally:
+            self._diagnostics["transport_seconds"] += time.perf_counter() - started
 
     @classmethod
     def discover(cls) -> "MumuProcessMemory":
@@ -411,6 +475,7 @@ class MumuProcessMemory:
         )
 
     def read(self, address: int, size: int, *, max_size: int = 1 << 20) -> bytes:
+        self._diagnostics["read_calls"] += 1
         address, size = int(address), int(size)
         if size < 0 or size > int(max_size):
             raise FanxiuRuntimeMemoryError(f"Runtime 内存读取长度越界：{size}")
@@ -419,10 +484,12 @@ class MumuProcessMemory:
         region = self.readable_region(address, size)
         if region is None:
             raise FanxiuRuntimeMemoryError(
-                f"Runtime 内存地址越界：0x{address:x}+{size}"
+                f"Runtime 内存地址越界：0x{address:x}+{size}",
+                code="memory_address_unmapped",
             )
         key = (address, size)
         if key in self._read_cache:
+            self._diagnostics["cache_hits"] += 1
             return self._read_cache[key]
         for (cached_address, cached_size), cached_data in self._read_cache.items():
             if (
@@ -430,6 +497,7 @@ class MumuProcessMemory:
                 and address + size <= cached_address + cached_size
             ):
                 offset = address - cached_address
+                self._diagnostics["cache_hits"] += 1
                 return cached_data[offset : offset + size]
         if size <= self._MEMORY_PAGE_BYTES:
             # Lua table traversal performs many adjacent pointer-sized reads.
@@ -452,13 +520,15 @@ class MumuProcessMemory:
                         f"count={block_count} 2>/dev/null"
                     )
                     try:
-                        block, _ = mumu_control._mumu_adb_session_shell_bytes(
+                        block = self._read_transport(
                             command,
                             timeout_s=20,
+                            expected_size=block_size,
                         )
                     except Exception as exc:
                         raise FanxiuRuntimeMemoryError(
-                            f"读取凡修 Runtime 内存失败：{exc}"
+                            f"读取凡修 Runtime 内存失败：{exc}",
+                            code="memory_read_failed",
                         ) from exc
                     if len(block) == block_size:
                         self._read_cache[(block_start, block_size)] = block
@@ -469,17 +539,19 @@ class MumuProcessMemory:
             f"count={size} 2>/dev/null"
         )
         try:
-            data, _ = mumu_control._mumu_adb_session_shell_bytes(
+            data = self._read_transport(
                 command,
                 timeout_s=20,
+                expected_size=size,
             )
         except Exception as exc:
             raise FanxiuRuntimeMemoryError(
-                f"读取凡修 Runtime 内存失败：{exc}"
+                f"读取凡修 Runtime 内存失败：{exc}", code="memory_read_failed"
             ) from exc
         if len(data) != size:
             raise FanxiuRuntimeMemoryError(
-                f"读取凡修 Runtime 内存不完整：期望 {size}，实际 {len(data)}"
+                f"读取凡修 Runtime 内存不完整：期望 {size}，实际 {len(data)}",
+                code="memory_read_failed",
             )
         self._read_cache[key] = data
         return data
@@ -493,6 +565,7 @@ class MumuProcessMemory:
         still decode and validate every requested field from the fresh bytes.
         """
 
+        self._diagnostics["prefetch_calls"] += 1
         page = self._MEMORY_PAGE_BYTES
         span = self._SMALL_READ_PREFETCH_BYTES
         blocks: dict[tuple[int, int], MemoryRegion] = {}
@@ -506,7 +579,8 @@ class MumuProcessMemory:
             region = self.readable_region(address)
             if region is None:
                 raise FanxiuRuntimeMemoryError(
-                    f"Runtime 内存地址越界：0x{address:x}"
+                    f"Runtime 内存地址越界：0x{address:x}",
+                    code="memory_address_unmapped",
                 )
             block_start = region.start + ((address - region.start) // span) * span
             block_end = min(region.end, block_start + span)
@@ -525,19 +599,21 @@ class MumuProcessMemory:
                 for start, size in batch
             )
             try:
-                data, _ = mumu_control._mumu_adb_session_shell_bytes(
+                data = self._read_transport(
                     command,
                     timeout_s=20,
+                    expected_size=sum(size for _start, size in batch),
                 )
             except Exception as exc:
                 raise FanxiuRuntimeMemoryError(
-                    f"批量读取凡修 Runtime 内存失败：{exc}"
+                    f"批量读取凡修 Runtime 内存失败：{exc}", code="memory_read_failed"
                 ) from exc
             expected_size = sum(size for _start, size in batch)
             if len(data) != expected_size:
                 raise FanxiuRuntimeMemoryError(
                     "批量读取凡修 Runtime 内存不完整："
-                    f"期望 {expected_size}，实际 {len(data)}"
+                    f"期望 {expected_size}，实际 {len(data)}",
+                    code="memory_read_failed",
                 )
             offset = 0
             for start, size in batch:
@@ -545,10 +621,12 @@ class MumuProcessMemory:
                 offset += size
 
     def read_region(self, region: MemoryRegion) -> bytes:
+        self._diagnostics["read_region_calls"] += 1
         if region.size > 64 * 1024 * 1024:
             raise FanxiuRuntimeMemoryError(f"Runtime 根发现区域过大：{region.size}")
         key = (region.start, region.size)
         if key in self._read_cache:
+            self._diagnostics["cache_hits"] += 1
             return self._read_cache[key]
         block_size = 4096
         if region.start % block_size or region.size % block_size:
@@ -563,18 +641,20 @@ class MumuProcessMemory:
             f"count={region.size // block_size} 2>/dev/null"
         )
         try:
-            data, _ = mumu_control._mumu_adb_session_shell_bytes(
+            data = self._read_transport(
                 command,
                 timeout_s=30,
+                expected_size=region.size,
             )
         except Exception as exc:
             raise FanxiuRuntimeMemoryError(
-                f"读取凡修 Runtime 连续内存失败：{exc}"
+                f"读取凡修 Runtime 连续内存失败：{exc}", code="memory_read_failed"
             ) from exc
         if len(data) != region.size:
             raise FanxiuRuntimeMemoryError(
                 f"读取凡修 Runtime 连续内存不完整："
-                f"期望 {region.size}，实际 {len(data)}"
+                f"期望 {region.size}，实际 {len(data)}",
+                code="memory_read_failed",
             )
         self._read_cache[key] = data
         return data
@@ -691,6 +771,11 @@ class MumuProcessMemory:
             )
             for region in batch
         )
+        started = time.perf_counter()
+        self._diagnostics["marker_scan_calls"] += 1
+        self._diagnostics["marker_scan_requested_bytes"] += sum(
+            region.size for region in batch
+        )
         try:
             output, _ = mumu_control._run_mumu_adb_shell_text(
                 command,
@@ -698,9 +783,12 @@ class MumuProcessMemory:
                 preferred_serials=[self.adb_serial],
             )
         except Exception as exc:
+            self._diagnostics["marker_scan_failures"] += 1
             raise FanxiuRuntimeMemoryError(
                 f"扫描凡修 Runtime 管理器失败：{exc}"
             ) from exc
+        finally:
+            self._diagnostics["marker_scan_seconds"] += time.perf_counter() - started
         matches: list[tuple[MemoryRegion, int]] = []
         by_start = {region.start: region for region in batch}
         for line in str(output or "").splitlines():
@@ -719,6 +807,21 @@ class LuaJitReader:
     def __init__(self, memory: MumuProcessMemory) -> None:
         self.memory = memory
         self._table_cache: dict[int, dict[str, Any]] = {}
+        self._table_calls = 0
+        self._table_cache_hits = 0
+
+    def diagnostics(self) -> dict[str, int]:
+        """Local decoding cost, separate from memory.diagnostics() transport.
+
+        Materializations count successfully expanded table() results, excluding
+        exact/projected field lookups. Multiple readers may share one memory
+        observation; inspect each reader to avoid hiding repeated decoding.
+        """
+        return {
+            "table_calls": self._table_calls,
+            "table_cache_hits": self._table_cache_hits,
+            "table_materializations": len(self._table_cache),
+        }
 
     @staticmethod
     def tag(raw: int) -> int:
@@ -767,8 +870,10 @@ class LuaJitReader:
         ).decode("utf-8", "replace")
 
     def table(self, address: int) -> dict[str, Any]:
+        self._table_calls += 1
         address = int(address)
         if address in self._table_cache:
+            self._table_cache_hits += 1
             return self._table_cache[address]
         header = self.memory.read(address, 64)
         array_address = struct.unpack_from("<Q", header, 16)[0]

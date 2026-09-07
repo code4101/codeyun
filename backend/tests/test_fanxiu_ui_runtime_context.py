@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import struct
+from dataclasses import replace
+
 import pytest
 
 from backend.core.fanxiu.instrumentation import ui_runtime_context
@@ -193,9 +196,9 @@ def test_fast_validation_rejects_same_pid_with_changed_loaded_ui_module(monkeypa
         _validate_binding_fast(binding, required_keys=frozenset(), timings={})
 
 
-def test_snapshot_reader_cold_rebinds_once_after_child_memory_fault(monkeypatch):
-    first = object()
-    second = object()
+def test_snapshot_reader_refreshes_bytes_without_clearing_roots(monkeypatch):
+    first = UiRuntimeContext(_fresh_memory(_binding()), object(), _binding(), {}, "hot")
+    second = UiRuntimeContext(_fresh_memory(_binding()), object(), _binding(), {}, "hot")
     contexts = iter((first, second))
     cleared: list[bool] = []
 
@@ -216,7 +219,79 @@ def test_snapshot_reader_cold_rebinds_once_after_child_memory_fault(monkeypatch)
         return "fresh"
 
     assert ui_runtime_context.read_ui_runtime_snapshot((), snapshot) == "fresh"
-    assert cleared == [True]
+    assert cleared == []
+
+
+@pytest.mark.parametrize("code", ["data_not_loaded", "string_key_not_loaded", "version_unsupported"])
+def test_terminal_observation_does_not_retry_or_invalidate_root(monkeypatch, code):
+    binding = _binding()
+    context = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")
+    monkeypatch.setattr(ui_runtime_context, "_binding_cache", binding)
+    monkeypatch.setattr(ui_runtime_context, "acquire_ui_runtime_context", lambda _: context)
+    calls = []
+    def read(_context):
+        calls.append(1)
+        raise FanxiuRuntimeMemoryError("terminal", code=code)
+    with pytest.raises(FanxiuRuntimeMemoryError, match="terminal"):
+        ui_runtime_context.read_ui_runtime_snapshot((), read)
+    assert calls == [1]
+    assert ui_runtime_context._binding_cache is binding
+
+
+def test_projection_retry_is_bounded_and_does_not_swallow_programming_error(monkeypatch):
+    binding = _binding()
+    context = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")
+    monkeypatch.setattr(ui_runtime_context, "acquire_ui_runtime_context", lambda _: context)
+    calls = []
+    def read(_context):
+        calls.append(1)
+        raise FanxiuRuntimeMemoryError("transient")
+    with pytest.raises(FanxiuRuntimeMemoryError):
+        ui_runtime_context.read_ui_runtime_snapshot((), read)
+    assert len(calls) == 2
+    def bug(_context):
+        calls.append(1)
+        raise TypeError("parser bug")
+    with pytest.raises(TypeError):
+        ui_runtime_context.read_ui_runtime_snapshot((), bug)
+    assert len(calls) == 3
+
+
+def test_required_keys_extend_without_mutating_shared_binding(monkeypatch):
+    binding = _binding()
+    context = UiRuntimeContext(_fresh_memory(binding), object(), binding, {}, "hot")
+    resolved = []
+    def resolve(_memory, *, name, **_kwargs):
+        resolved.append(name)
+        return 0x1110
+    monkeypatch.setattr(ui_runtime_context, "resolve_interned_lua_string", resolve)
+    result = ui_runtime_context._extend_context_keys(context, frozenset({"m_panel", "new_key"}))
+    assert resolved == ["new_key"]
+    assert result.binding.manager_instance_address == binding.manager_instance_address
+    assert result.binding.key_addresses["new_key"] == 0x1110
+    assert "new_key" not in binding.key_addresses
+    ui_runtime_context._extend_context_keys(result, frozenset({"new_key"}))
+    assert resolved == ["new_key"]
+
+
+@pytest.mark.parametrize("tag,present", [(0xFFFFFFFE, True), (0xFFFFFFF2, True), (0xFFFFFFFF, False)])
+def test_exact_schema_presence_preserves_false_zero_and_nil(tag, present):
+    # Deterministic Lua byte fixture: verifies projection semantics, not a UI.
+    binding = replace(_binding(), regions=(MemoryRegion(0x1000, 0x5000, "r--p", "fixture"),),
+                      key_addresses={"x": 0x2000})
+    memory = _fresh_memory(binding)
+    raw = bytearray(0x4000)
+    struct.pack_into("<I", raw, 0x1000 + 16, 1)
+    raw[0x1000 + 24] = ord("x")
+    struct.pack_into("<Q", raw, 0x2000 + 40, 0x4000)
+    struct.pack_into("<QQQ", raw, 0x3000,
+                     LuaJitReader.tagged_pointer(tag, 0),
+                     LuaJitReader.tagged_pointer(0xFFFFFFFB, 0x2000), 0)
+    memory._read_cache[(0x1000, len(raw))] = bytes(raw)
+    reader = LuaJitReader(memory)
+    context = UiRuntimeContext(memory, reader, binding, {}, "fixture")
+    assert ui_runtime_context.has_ui_object_fields(context, 0x3000, {"x"}) is present
+    assert reader.diagnostics()["table_materializations"] == 0
 
 
 class _ActiveComponentReader:

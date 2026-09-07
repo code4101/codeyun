@@ -2,10 +2,11 @@ from __future__ import annotations
 
 """Process-bound, read-only roots shared by loaded UI projections."""
 
+import logging
 import struct
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, TypeVar
 
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
@@ -64,6 +65,7 @@ _KNOWN_UI_KEYS = frozenset(
     }
 )
 _CACHE_LOCK = threading.RLock()
+_LOGGER = logging.getLogger(__name__)
 
 # UIShowMgr's registry is the only trusted root set for a currently active
 # window.  The object graph below it is deliberately *not* a general Lua-table
@@ -99,6 +101,10 @@ class UiRuntimeContext:
     binding: UiRuntimeBinding
     timings: dict[str, float]
     cache_mode: str
+    # Only this observation owns decoded values. Never promote this cache to
+    # module/process scope: a pooled panel can keep its address but change ID.
+    _active_components: tuple[LuaRef, ...] | None = field(default=None, repr=False)
+    _direct_keys: dict[str, int | None] = field(default_factory=dict, repr=False)
 
     def field(self, address: int, name: str) -> Any:
         key_address = self.binding.key_addresses.get(str(name))
@@ -165,6 +171,41 @@ def read_ui_object_field(ctx: UiRuntimeContext, address: int, name: str) -> Any:
         return None
 
 
+def has_ui_object_fields(
+    ctx: UiRuntimeContext, address: int, names: Iterable[str]
+) -> bool:
+    """Test direct schema keys without materializing every candidate's table.
+
+    Equivalent to testing key presence in ``reader.fields(table)`` for string
+    keys: False/0 are present, nil is absent, and prototypes are not consulted.
+    This only narrows candidates; callers must still prove uniqueness/current
+    membership and validate business values. It is NOT a cross-observation
+    target cache. Live acceptance must exercise ambiguous/pooled panels before
+    adding such a cache, rather than trusting a formerly matched address.
+    """
+    for name in sorted(set(names)):
+        if name not in ctx._direct_keys:
+            key_address = ctx.binding.key_addresses.get(name)
+            if key_address is None:
+                try:
+                    key_address = resolve_interned_lua_string(
+                        ctx.memory,
+                        string_table_address=ctx.binding.string_table_address,
+                        string_mask=ctx.binding.string_mask,
+                        string_seed=ctx.binding.string_seed, name=name,
+                    )
+                except FanxiuRuntimeMemoryError as exc:
+                    if exc.code != "string_key_not_loaded":
+                        raise
+            ctx._direct_keys[name] = key_address
+        key_address = ctx._direct_keys[name]
+        if key_address is None or ctx.reader.hashed_string_field(
+            address, key_address=key_address, expected_name=name
+        ) is None:
+            return False
+    return True
+
+
 def _required_active_component_link(
     ctx: UiRuntimeContext,
     address: int,
@@ -223,6 +264,9 @@ def active_ui_component_objects(ctx: UiRuntimeContext) -> tuple[LuaRef, ...]:
     identity checks before treating any returned object as their panel.
     """
 
+    if ctx._active_components is not None:
+        return ctx._active_components
+    started = time.perf_counter()
     try:
         root_values = ctx.reader.dictionary_fields(
             LuaRef("table", int(ctx.binding.components_address))
@@ -324,7 +368,9 @@ def active_ui_component_objects(ctx: UiRuntimeContext) -> tuple[LuaRef, ...]:
         for _index, child in children:
             add(child)
 
-    return tuple(objects.values())
+    ctx._active_components = tuple(objects.values())
+    ctx.timings["active_components"] = _elapsed(started)
+    return ctx._active_components
 
 
 _binding_cache: UiRuntimeBinding | None = None
@@ -471,8 +517,6 @@ def _validate_binding(
     required_keys: frozenset[str],
     timings: dict[str, float],
 ) -> UiRuntimeContext:
-    if not required_keys.issubset(binding.key_addresses):
-        raise FanxiuRuntimeMemoryError("UI Runtime 字符串键集合已扩展")
     memory = _fresh_memory(binding)
     reader = LuaJitReader(memory)
 
@@ -495,12 +539,10 @@ def _validate_binding(
     _global, string_table, string_mask, string_seed = lua_jit_intern_state(
         memory, state_address
     )
-    if (
-        string_table != binding.string_table_address
-        or string_mask != binding.string_mask
-        or string_seed != binding.string_seed
-    ):
-        raise FanxiuRuntimeMemoryError("Lua intern state 已变化")
+    # Intern-table growth is not a process/root change. Refresh its metadata;
+    # GCstr identities are independently checked by exact field reads.
+    binding = replace(binding, string_table_address=string_table,
+                      string_mask=string_mask, string_seed=string_seed)
     timings["intern_state"] = _elapsed(started)
 
     started = time.perf_counter()
@@ -555,7 +597,9 @@ def _validate_binding(
     ):
         raise FanxiuRuntimeMemoryError("UIShowMgr/window dictionary identity 已变化")
     timings["ui_show_mgr"] = _elapsed(started)
-    return UiRuntimeContext(memory, reader, binding, timings, "hot")
+    return _extend_context_keys(
+        UiRuntimeContext(memory, reader, binding, timings, "hot"), required_keys
+    )
 
 
 def _validate_binding_fast(
@@ -564,10 +608,14 @@ def _validate_binding_fast(
     required_keys: frozenset[str],
     timings: dict[str, float],
 ) -> UiRuntimeContext:
-    """Validate immutable UI roots without rediscovering package.loaded."""
+    """Validate current root membership, then lazily refresh intern metadata.
 
-    if not required_keys.issubset(binding.key_addresses):
-        raise FanxiuRuntimeMemoryError("UI Runtime 字符串键集合已扩展")
+    ``fast`` does not permit skipping membership checks or reusing mutable
+    bytes. Live acceptance must cover close/reopen, tab changes, pooled object
+    reuse and Lua-state replacement; an address still readable proves none of
+    those identities. Do not remove these guards to improve a benchmark.
+    """
+
     memory = _fresh_memory(binding)
     reader = LuaJitReader(memory)
     started = time.perf_counter()
@@ -635,7 +683,36 @@ def _validate_binding_fast(
     ):
         raise FanxiuRuntimeMemoryError("UIShowMgr/window dictionary identity 已变化")
     timings["ui_roots"] = _elapsed(started)
-    return UiRuntimeContext(memory, reader, binding, timings, "hot-fast")
+    # Lazy object-field readers also consume intern metadata, even when their
+    # explicit required_keys is empty. It must belong to this observation.
+    _global, string_table, string_mask, string_seed = lua_jit_intern_state(
+        memory, state_address
+    )
+    binding = replace(binding, string_table_address=string_table,
+                      string_mask=string_mask, string_seed=string_seed)
+    return _extend_context_keys(
+        UiRuntimeContext(memory, reader, binding, timings, "hot-fast"), required_keys
+    )
+
+
+def _extend_context_keys(
+    ctx: UiRuntimeContext, required_keys: frozenset[str]
+) -> UiRuntimeContext:
+    """Extend only the requesting projection; never discard valid UI roots."""
+    missing = required_keys.difference(ctx.binding.key_addresses)
+    if not missing:
+        return ctx
+    started = time.perf_counter()
+    addresses = dict(ctx.binding.key_addresses)
+    for name in sorted(missing):
+        addresses[name] = resolve_interned_lua_string(
+            ctx.memory, string_table_address=ctx.binding.string_table_address,
+            string_mask=ctx.binding.string_mask,
+            string_seed=ctx.binding.string_seed, name=name,
+        )
+    ctx.binding = replace(ctx.binding, key_addresses=addresses)
+    ctx.timings["extend_keys"] = _elapsed(started)
+    return ctx
 
 
 def acquire_ui_runtime_context(required_keys: Iterable[str]) -> UiRuntimeContext:
@@ -648,11 +725,18 @@ def acquire_ui_runtime_context(required_keys: Iterable[str]) -> UiRuntimeContext
         cached = _binding_cache
     if cached is not None:
         try:
-            return _validate_binding(cached, required_keys=keys, timings=timings)
-        except Exception:
+            context = _validate_binding(cached, required_keys=keys, timings=timings)
+        except FanxiuRuntimeMemoryError as exc:
+            if exc.code == "string_key_not_loaded":
+                raise
             with _CACHE_LOCK:
                 if _binding_cache is cached:
                     _binding_cache = None
+        else:
+            with _CACHE_LOCK:
+                if _binding_cache is cached:
+                    _binding_cache = context.binding
+            return context
 
     started = time.perf_counter()
     memory = MumuProcessMemory.discover()
@@ -673,15 +757,22 @@ def acquire_ui_runtime_context_fast(required_keys: Iterable[str]) -> UiRuntimeCo
         cached = _binding_cache
     if cached is not None:
         try:
-            return _validate_binding_fast(
+            context = _validate_binding_fast(
                 cached,
                 required_keys=keys,
                 timings=timings,
             )
-        except Exception:
+        except FanxiuRuntimeMemoryError as exc:
+            if exc.code == "string_key_not_loaded":
+                raise
             with _CACHE_LOCK:
                 if _binding_cache is cached:
                     _binding_cache = None
+        else:
+            with _CACHE_LOCK:
+                if _binding_cache is cached:
+                    _binding_cache = context.binding
+            return context
     return acquire_ui_runtime_context(keys)
 
 
@@ -691,24 +782,72 @@ def read_ui_runtime_snapshot(
     *,
     fast: bool = False,
 ) -> _SnapshotResult:
-    """Read one coherent UI snapshot with one cold rebind after a memory fault.
+    """Read current UI bytes, retrying a transient projection fault once.
 
     UIShowMgr keeps a stable registry while panels below it can be pooled and
     replaced during a page transition.  A reader must therefore never retain
-    a child address across attempts.  This helper lets it rebuild the entire
-    context once after an *in-memory* failure; a second failure is surfaced to
-    the caller unchanged, preserving failure-closed semantics.
+    a child address across attempts without freshly proving parent membership
+    and business identity. A retry drops observation bytes, not process roots;
+    acquisition owns root validation/rebinding. Missing data is a terminal
+    observation, not a reason to rediscover a process. Programming exceptions
+    also propagate rather than being hidden by a cold retry.
+
+    Runtime reads are not an atomic game snapshot. If a business operation
+    needs a before/after guard, acquire a NEW context for the guard; rereading
+    through the original reader only returns that observation's cached bytes.
+    Live acceptance must measure hot and recovery paths separately and verify
+    identity/value changes after real UI actions. Offline tests establish only
+    retry/cache contracts, not panel correctness or game latency.
     """
 
     keys = frozenset(str(key) for key in required_keys)
     acquire = acquire_ui_runtime_context_fast if fast else acquire_ui_runtime_context
-    try:
-        return reader_fn(acquire(keys))
-    except FanxiuRuntimeMemoryError:
-        clear_ui_runtime_context_cache()
-        # ``acquire_ui_runtime_context`` is deliberately used here even when
-        # the first pass was fast: it refreshes maps and rebuilds all roots.
-        return reader_fn(acquire_ui_runtime_context(keys))
+    for attempt in range(2):
+        # Acquisition already owns one root recovery. Do not wrap that failure
+        # in another retry and multiply expensive process discovery attempts.
+        context = acquire(keys)
+        started = time.perf_counter()
+        failure = None
+        try:
+            return reader_fn(context)
+        except FanxiuRuntimeMemoryError as exc:
+            failure = exc
+            if attempt or exc.code not in {
+                "runtime_unavailable", "runtime_incomplete",
+                "memory_address_unmapped", "memory_read_failed",
+            }:
+                raise
+            if exc.code == "memory_address_unmapped":
+                _refresh_context_maps(context)
+        finally:
+            _LOGGER.debug(
+                "UI Runtime projection=%s attempt=%d mode=%s phases=%s "
+                "projection_seconds=%.6f error=%s",
+                getattr(reader_fn, "__qualname__", type(reader_fn).__name__),
+                attempt + 1, context.cache_mode, context.timings,
+                _elapsed(started), failure.code if failure else None,
+            )
+    raise AssertionError("unreachable")
+
+
+def _refresh_context_maps(context: UiRuntimeContext) -> None:
+    """Refresh newly allocated mappings without discarding valid roots.
+
+    If this repeats in live use, investigate the first failing address/ABI;
+    increasing retry counts or scanning the heap cannot establish freshness.
+    """
+    global _binding_cache
+    memory = MumuProcessMemory.discover_cached(max_age_seconds=0.0)
+    binding = context.binding
+    with _CACHE_LOCK:
+        if _binding_cache is not binding:
+            return
+        if (memory.pid, memory.process_start_ticks, memory.adb_serial) == (
+            binding.pid, binding.process_start_ticks, binding.adb_serial
+        ):
+            _binding_cache = replace(binding, regions=tuple(memory.regions))
+        else:
+            _binding_cache = None
 
 
 def clear_ui_runtime_context_cache() -> None:
@@ -725,5 +864,6 @@ __all__ = [
     "acquire_ui_runtime_context_fast",
     "clear_ui_runtime_context_cache",
     "read_ui_object_field",
+    "has_ui_object_fields",
     "read_ui_runtime_snapshot",
 ]

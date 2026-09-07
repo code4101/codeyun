@@ -12,6 +12,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     active_ui_component_objects,
+    has_ui_object_fields,
     read_ui_object_field,
     read_ui_runtime_snapshot,
 )
@@ -75,9 +76,9 @@ def _item_id(context: Any, itemlo: Any, itemvo: Any) -> int | None:
 def _read_snapshot(context: Any, *, expected_item_id: int | None) -> dict[str, Any]:
     candidates: list[tuple[Any, Any, Any, int | None]] = []
     for component in active_ui_component_objects(context):
-        fields = context.reader.fields(component)
-        if not _ITEM_BATCH_USE_FIELDS.issubset(fields):
+        if not has_ui_object_fields(context, component.address, _ITEM_BATCH_USE_FIELDS):
             continue
+        fields = context.reader.fields(component)
         itemlo = table_ref(fields.get("itemlo"))
         itemvo = table_ref(fields.get("itemvo"))
         if itemlo is None or itemvo is None:

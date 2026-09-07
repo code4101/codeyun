@@ -9,7 +9,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemo
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     active_ui_component_objects,
-    clear_ui_runtime_context_cache,
+    has_ui_object_fields,
     read_ui_object_field,
     read_ui_runtime_snapshot,
 )
@@ -60,11 +60,15 @@ def _required_int(context: UiRuntimeContext, address: int, field: str) -> int:
 def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
     candidates = []
     for component in active_ui_component_objects(context):
-        fields = context.reader.fields(component)
-        if {"ShopCfg", "BuyBtn", "Slider", "showNum", "maxNum"}.issubset(fields):
+        if has_ui_object_fields(
+            context, component.address, {"ShopCfg", "BuyBtn", "Slider", "showNum", "maxNum"}
+        ):
             candidates.append(component)
     if len(candidates) != 1:
-        raise FanxiuRuntimeMemoryError(f"active CommonShop 购买框数量为 {len(candidates)}")
+        raise FanxiuRuntimeMemoryError(
+            f"active CommonShop 购买框数量为 {len(candidates)}",
+            code="data_not_loaded" if not candidates else "runtime_incomplete",
+        )
     panel = candidates[0]
     values = {
         field: _required_int(context, panel.address, field)
@@ -91,43 +95,48 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
 
 
 def read_common_shop_buy_dialog_snapshot() -> dict[str, Any]:
-    """Read the currently active panel, cold-rebinding once if it was replaced.
+    """Read the active panel through the shared bounded snapshot recovery.
 
     CommonShopBuyTips rebuilds its field table while the slider animates.  A
     child address is therefore scoped to one coherent read only.  The generic
-    UI snapshot layer already retries an in-read fault once; this adapter adds
-    one bounded panel rediscovery when that coherent read still loses the
-    active panel.  It never returns a value from the failed address.
+    UI snapshot layer owns the one fresh-context retry for memory faults.
+    An outer retry used to multiply that budget to four reads and discard
+    unrelated UI roots.  This adapter only records actual projection attempts.
+
+    Live acceptance still needs slider animation, closing/reopening the dialog
+    and changing goods: confirm current quantity/goods identity after each
+    action.  Repeated faults require investigating the first failing field and
+    panel lifetime, not increasing retries or clearing the global root cache.
     """
 
     rebind_reasons: list[str] = []
-    for attempt in range(2):
+    read_attempts = 0
+
+    def read_panel(context: UiRuntimeContext) -> dict[str, Any]:
+        nonlocal read_attempts
+        read_attempts += 1
         try:
-            snapshot = dict(
-                read_ui_runtime_snapshot(_REQUIRED_KEYS, _read_snapshot, fast=True)
-            )
-            snapshot["panel_rebinds"] = attempt
-            snapshot["read_attempts"] = attempt + 1
-            if rebind_reasons:
-                snapshot["panel_rebind_reasons"] = tuple(rebind_reasons)
-            return snapshot
+            return _read_snapshot(context)
         except FanxiuRuntimeMemoryError as exc:
             rebind_reasons.append(str(exc))
-            if attempt == 0:
-                clear_ui_runtime_context_cache()
-                continue
-            error: Exception = exc
-            break
-        except (KeyError, AttributeError, TypeError, ValueError) as exc:
-            error = exc
-            break
+            raise
+
+    try:
+        snapshot = dict(read_ui_runtime_snapshot(_REQUIRED_KEYS, read_panel, fast=True))
+        snapshot["panel_rebinds"] = max(0, read_attempts - 1)
+        snapshot["read_attempts"] = read_attempts
+        if rebind_reasons:
+            snapshot["panel_rebind_reasons"] = tuple(rebind_reasons)
+        return snapshot
+    except (FanxiuRuntimeMemoryError, KeyError, AttributeError, TypeError, ValueError) as exc:
+        error = exc
     return {
         "ok": False,
         "complete": False,
         "source": "active_common_shop_buy_tips",
         "reason": str(error),
-        "panel_rebinds": min(1, len(rebind_reasons)),
-        "read_attempts": max(1, len(rebind_reasons)),
+        "panel_rebinds": max(0, read_attempts - 1),
+        "read_attempts": max(1, read_attempts),
         "panel_rebind_reasons": tuple(rebind_reasons),
         "read_only": True,
     }

@@ -9,6 +9,7 @@ GUI 通过正式资产导航，当前页 Runtime 校验目标和锁状态。
 """
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 import hashlib
@@ -16,6 +17,10 @@ import json
 import secrets
 import time
 from typing import Any, Protocol
+
+from .spirit_artifact_lock_state import (
+    SpiritArtifactLockChange, SpiritArtifactLockRow, SpiritArtifactLockState,
+)
 
 
 SPIRIT_ARTIFACT_CLEANSE_MATERIAL_ID = 14_000_002
@@ -600,6 +605,56 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
                 evidence={"current": current},
             )
         return result
+
+    @contextmanager
+    def lock_session(
+        self,
+        attempt: SpiritArtifactAttemptContext,
+        target: SpiritArtifactTarget,
+        *,
+        confirm_change: Callable[[SpiritArtifactLockChange, tuple[SpiritArtifactLockRow, ...]], bool | None],
+    ):
+        """研发接口：一个连续切锁块只读一次 Runtime，yield set_locked(id, bool)。
+
+        confirm_change 必须用动作后的新鲜 GUI 证据确认同一部件、词条身份、
+        其他锁未变，并返回实际 locked；证据不全返回 None 或抛错，不能返回
+        点击回执或直接回显期望值。暂无已验收的 GUI 确认器，故参数无默认值。
+        本块仅可切锁；不能跨 Cell/attempt、换部件、洗炼或采用候选复用。
+        外部操作发生时退出本块，下次进入重新读 Runtime。锁变化后的材料成本
+        不在本账本内，后续消耗动作仍须独立核对成本。
+        """
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+
+        self.execute(self.context.wait_scene(list(self.assets.wash_scene_ids), wait=10))
+        snapshot = read_spirit_artifact_ui_snapshot()
+        if ((snapshot['pid'], snapshot['process_start_ticks']) != attempt.process_identity
+                or snapshot.get('item_id') != target.item_id or snapshot['ware_id'] != target.ware_id
+                or snapshot.get('part') != target.part
+                or (target.base_id and snapshot.get('base_id') != target.base_id)):
+            raise SpiritArtifactCleanseBlocked('切锁会话与当前 Runtime 目标不一致', phase='lock')
+        state = SpiritArtifactLockState(snapshot, attempt_id=attempt.attempt_id,
+                                        kernel_generation=attempt.kernel_generation)
+        if len(state.rows) != 6:
+            raise SpiritArtifactCleanseBlocked('锁操作仅支持已标注的六词条布局', phase='lock')
+
+        def set_locked(cleanse_id: int, locked: bool) -> tuple[SpiritArtifactLockRow, ...]:
+            before = state.rows
+            change = state.begin_change(cleanse_id, locked)
+            if change is None:
+                return before
+            try:
+                scene = self.execute(self.context.wait_scene(list(self.assets.wash_scene_ids), wait=10)).scene_id
+                self.execute(self.context.click_shape_center(scene, f'属性锁{change.effect.row + 1}'))
+                state.confirm_change(change, observed_locked=confirm_change(change, before))
+                return state.rows
+            except BaseException:
+                state.invalidate()
+                raise
+
+        try:
+            yield set_locked
+        finally:
+            state.invalidate()
 
     def set_lock(self, cleanse_id: int, locked: bool) -> Any:
         """按当前 UI 行绑定词条，并验证唯一锁 delta；重复设置零动作。

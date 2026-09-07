@@ -161,21 +161,33 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     @computed_field
     @property
     def stage(self) -> str:
-        """升阶不等于突破：未突破的原始本体即使吃回高阶仍属普通。"""
+        """先排除错升，再判定阶段；突破阶段要求实际已突破。"""
         if self.rank <= 0:
             return "待识别"
-        if self.rank < 6 or self.runtime_is_break is False:
-            return "普通"
-        if self.runtime_is_break is None:
-            return "待识别"
         effects = self.runtime_effects
+        complete_effects = bool(effects) and all("affix" in effect for effect in effects)
+        full_count = sum(effect.get("affix") in ("满", "巅", "颠") for effect in effects)
+        if self.runtime_is_break is True and complete_effects and full_count < 4:
+            return "错升"
+        if self.runtime_is_break is True and not complete_effects:
+            return "待识别"
+        # 灵器 baseId 末两位为品质（1至6，6为红色），不使用词条品质代替本体品质。
+        quality = self.runtime_base_id % 100
+        if not self.runtime_base_id or quality not in range(1, 7):
+            return "待识别"
+        if quality < 6:
+            return "初始"
+        if self.rank < 6:
+            return "初始"
         if not effects or any("affix" not in effect for effect in effects):
             return "待识别"
-        if sum(effect["affix"] in ("满", "巅", "颠") for effect in effects) < 4:
-            return "错升"
+        if full_count < 4:
+            return "预备" if self.runtime_is_break is False else "待识别"
+        if self.runtime_is_break is not True:
+            return "预备" if self.runtime_is_break is False else "待识别"
         names = {effect.get("name") or effect.get("official_name") for effect in effects}
         if "灵器无双" not in names:
-            return "升阶"
+            return "突破"
         if "混沌道威" not in names:
             return "无双"
         return "巅峰" if any(effect["affix"] in ("巅", "颠") for effect in effects) else "道威"

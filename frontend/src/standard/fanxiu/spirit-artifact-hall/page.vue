@@ -129,10 +129,11 @@ const commonStatLabelKeyMap: Record<string, StatColumnKey> = {
   防御: 'defense',
 };
 const stageStyles: Record<string, { color: string; background: string; borderColor: string; description: string }> = {
-  错升: { color: '#64748b', background: '#f1f5f9', borderColor: '#cbd5e1', description: '已达6阶，但满／巅不足4条，需要重置培养' },
-  普通: { color: '#000000', background: '#ffffff', borderColor: '#a3a3a3', description: '阶数低于6阶' },
-  升阶: { color: '#166534', background: '#f0fdf4', borderColor: '#86efac', description: '至少6阶，且满／巅至少4条' },
-  无双: { color: '#1d4ed8', background: '#eff6ff', borderColor: '#93c5fd', description: '满足升阶条件，并有灵器无双' },
+  错升: { color: '#b91c1c', background: '#fef2f2', borderColor: '#fca5a5', description: '已突破，但满／巅不足4条，需要重置培养，与阶数无关' },
+  初始: { color: '#475569', background: '#f1f5f9', borderColor: '#cbd5e1', description: '尚无红色本体，或红色本体不足6阶；无红色按培养进度0阶理解' },
+  预备: { color: '#0e7490', background: '#ecfeff', borderColor: '#67e8f9', description: '已有红色本体且至少6阶；升阶不等于突破' },
+  突破: { color: '#166534', background: '#f0fdf4', borderColor: '#86efac', description: '满足预备条件，满／巅至少4条，且已实际突破' },
+  无双: { color: '#1d4ed8', background: '#eff6ff', borderColor: '#93c5fd', description: '满足突破条件，并有灵器无双' },
   道威: { color: '#7e22ce', background: '#faf5ff', borderColor: '#d8b4fe', description: '满足无双条件，并有混沌道威' },
   巅峰: { color: '#92400e', background: '#fffbeb', borderColor: '#fbbf24', description: '满足道威条件，并有巅词缀' },
   待识别: { color: '#64748b', background: 'transparent', borderColor: '#cbd5e1', description: '尚无完整阶数或词缀数据，需同步灵器' },

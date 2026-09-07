@@ -17,6 +17,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     active_ui_component_objects,
+    has_ui_object_fields,
     read_ui_object_field,
     read_ui_runtime_snapshot,
 )
@@ -85,7 +86,7 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
     panels = [
         component
         for component in active_ui_component_objects(context)
-        if "CommonShopTab" in context.reader.fields(component)
+        if has_ui_object_fields(context, component.address, {"CommonShopTab"})
         and as_int(read_ui_object_field(context, component.address, "type")) == 3
     ]
     if len(panels) != 1:

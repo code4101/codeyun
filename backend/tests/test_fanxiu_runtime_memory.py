@@ -187,6 +187,66 @@ def test_small_runtime_reads_prefetch_and_reuse_one_memory_block(monkeypatch):
     assert len(calls) == 1
     assert "bs=4096" in calls[0][0]
     assert "count=16" in calls[0][0]
+    metrics = memory.diagnostics()
+    assert metrics["read_calls"] == 2
+    assert metrics["cache_hits"] == 1
+    assert metrics["transport_calls"] == 1
+    assert metrics["transport_bytes"] == 65536
+    assert metrics["transport_seconds"] >= 0
+    metrics["transport_calls"] = 99
+    assert memory.diagnostics()["transport_calls"] == 1
+
+
+def test_runtime_read_diagnostics_include_short_reads_and_failed_transport(monkeypatch):
+    region = MemoryRegion(start=0x10000, end=0x20000, permissions="rw-p")
+    memory = MumuProcessMemory(
+        pid=123, process_start_ticks=456, adb_serial="serial", regions=(region,)
+    )
+    attempts = iter((b"short", OSError("transport unavailable")))
+    ticks = iter((10.0, 10.25, 11.0, 11.5))
+    monkeypatch.setattr(runtime_memory.time, "perf_counter", lambda: next(ticks))
+
+    def transport(_command, *, timeout_s):
+        result = next(attempts)
+        if isinstance(result, Exception):
+            raise result
+        return result, {}
+
+    monkeypatch.setattr(
+        runtime_memory.mumu_control, "_mumu_adb_session_shell_bytes", transport
+    )
+    # A short prefetch falls back to the exact read; both costs must survive
+    # the final error, and neither incomplete response may populate the cache.
+    with pytest.raises(FanxiuRuntimeMemoryError, match="transport unavailable"):
+        memory.read(0x10008, 8)
+    metrics = memory.diagnostics()
+    assert metrics["transport_calls"] == 2
+    assert metrics["transport_bytes"] == 5
+    assert metrics["transport_short_reads"] == 1
+    assert metrics["transport_failures"] == 1
+    assert metrics["transport_seconds"] == 0.75
+    assert metrics["cache_hits"] == 0
+
+
+def test_lua_table_diagnostics_count_successful_materializations(monkeypatch):
+    region = MemoryRegion(start=0x10000, end=0x20000, permissions="rw-p")
+    memory = MumuProcessMemory(
+        pid=123, process_start_ticks=456, adb_serial="serial", regions=(region,)
+    )
+    data = bytearray(region.size)
+    struct.pack_into("<Q", data, 40, 0x10100)
+    struct.pack_into("<Q", data, 0x100, LuaJitReader.tagged_pointer(runtime_memory._LUA_NIL_TAG, 0))
+    monkeypatch.setattr(
+        runtime_memory.mumu_control,
+        "_mumu_adb_session_shell_bytes",
+        lambda _command, **_kwargs: (bytes(data), {}),
+    )
+    reader = LuaJitReader(memory)
+    assert reader.table(0x10000)["fields"] == {}
+    reader.table(0x10000)
+    assert reader.diagnostics() == {
+        "table_calls": 2, "table_cache_hits": 1, "table_materializations": 1,
+    }
 
 
 def test_large_lua_table_can_read_only_selected_string_fields(monkeypatch):
@@ -717,6 +777,11 @@ def test_small_read_page_prefetch_batches_fresh_pages(monkeypatch):
     assert memory.read(0x10010, 1) == b"A"
     assert memory.read(0x20010, 1) == b"B"
     assert len(calls) == 1
+    metrics = memory.diagnostics()
+    assert metrics["prefetch_calls"] == 1
+    assert metrics["transport_calls"] == 1
+    assert metrics["transport_bytes"] == 0x20000
+    assert metrics["cache_hits"] == 2
 
 
 def test_small_read_page_prefetch_cache_is_snapshot_local(monkeypatch):

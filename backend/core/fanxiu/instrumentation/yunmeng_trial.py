@@ -120,6 +120,7 @@ def read_yunmeng_auto_count_snapshot() -> dict[str, Any]:
 
     from backend.core.fanxiu.instrumentation.ui_runtime_context import (
         active_ui_component_objects,
+        has_ui_object_fields,
         read_ui_object_field,
         read_ui_runtime_snapshot,
     )
@@ -140,8 +141,7 @@ def read_yunmeng_auto_count_snapshot() -> dict[str, Any]:
     def read_panel(context):
         candidates = []
         for component in active_ui_component_objects(context):
-            fields = context.reader.fields(component)
-            if required.issubset(fields):
+            if has_ui_object_fields(context, component.address, required):
                 candidates.append(component)
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError(

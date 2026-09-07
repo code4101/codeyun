@@ -14,6 +14,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     active_ui_component_objects,
+    has_ui_object_fields,
     read_ui_object_field,
     read_ui_runtime_snapshot,
 )
@@ -42,8 +43,7 @@ def _nonnegative_int(value: Any, *, label: str) -> int:
 def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
     candidates = []
     for component in active_ui_component_objects(context):
-        fields = context.reader.fields(component)
-        if "SacredGardenExchangeItem" in fields:
+        if has_ui_object_fields(context, component.address, {"SacredGardenExchangeItem"}):
             candidates.append(component)
     if len(candidates) != 1:
         raise FanxiuRuntimeMemoryError(

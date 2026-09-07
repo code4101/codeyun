@@ -81,6 +81,7 @@ _cached_at = 0.0
 _cached_snapshot: dict[str, Any] | None = None
 _bridge_failed_process: tuple[int, int] | None = None
 _bridge_failure_text = ""
+_item_location_cache: dict[tuple[int, int, str], LuaRef] = {}
 
 
 def _artifact_position(base_id: int) -> tuple[int, int] | None:
@@ -164,11 +165,12 @@ def _read_effect_map(
     return effects
 
 
-def read_spirit_artifact_item_runtime(item_id: str) -> dict[str, Any]:
+def read_spirit_artifact_item_runtime(item_id: str, *, force_relocate: bool = False) -> dict[str, Any]:
     """只读指定实例的最新属性与锁，供 UI 动作精确验收；不选最高阶替代品。
 
     UI ItemInfoList 在锁回包后不重建，不能作为锁真值。这里直接读取当前
     BackpackData 中该实例的 attrMap/refineMap，避免全馆词缀配置投影开销。
+    force_relocate=True 跳过实例位置缓存，重新查找同一实例，不切换目标。
     """
     from .ui_runtime_context import acquire_ui_runtime_context
     from .runtime_memory import resolve_lua_global_manager_root
@@ -181,14 +183,30 @@ def read_spirit_artifact_item_runtime(item_id: str) -> dict[str, Any]:
     )
     data = _backpack_data_fields(reader, root)
     values = _fields(reader, _fields(reader, data.get("_SpiritWareItemDic")).get("_valueTable_"))
+    # Cache only the location, never attributes. A fresh reader verifies live
+    # dictionary membership and item identity on every read; replaced/consumed
+    # objects fall back to discovery. Process generations cannot share pointers.
+    location_key = (memory.pid, memory.process_start_ticks, str(item_id))
+    cached_location = None if force_relocate else _item_location_cache.get(location_key)
+    candidates = list(values.values())
+    if cached_location is not None and cached_location in candidates:
+        cached_item = _fields(reader, cached_location)
+        if str(reader.long(cached_item.get("id"))) == str(item_id):
+            candidates = [cached_location]
+    else:
+        _item_location_cache.pop(location_key, None)
     found = []
-    for raw in values.values():
+    for raw in candidates:
         item = _fields(reader, raw)
         if str(reader.long(item.get("id"))) != str(item_id):
             continue
         position = _artifact_position(as_int(item.get("baseId")) or 0)
         if position is None:
             continue
+        if isinstance(raw, LuaRef):
+            if len(_item_location_cache) >= 48:
+                _item_location_cache.clear()
+            _item_location_cache[location_key] = raw
         ext = _fields(reader, item.get("ext"))
         found.append({"item_id": str(item_id), "base_id": as_int(item.get("baseId")),
                       "ware_id": position[0] + 1, "part": position[1] + 1,
