@@ -65,8 +65,12 @@ def _load(signatures: tuple[tuple[str, int, int], ...]) -> Mapping[str, Any]:
     previews = {}
     for row in tables['SpiritWarePreview']:
         previews.setdefault(row['group'], []).append(row)
-    wares = {}
+    wares, items = {}, {}
     for row in tables['SpiritWareItem']:
+        if row['itemId'] in items:
+            raise FanxiuResourceError(f"灵器本体配置 ID 重复：{row['itemId']}")
+        # 原始条件按本体保留；不能从灵器级 A 类并集反推客户端准入。
+        items[row['itemId']] = row
         ware, part = row['type'], row['parts']
         if part not in range(1, 7):
             raise FanxiuResourceError(f'未支持的部位：{ware}-{part}')
@@ -93,7 +97,8 @@ def _load(signatures: tuple[tuple[str, int, int], ...]) -> Mapping[str, Any]:
             piece['core_codes'] = sorted(piece['core_codes'])
             piece['preview_groups'] = sorted(piece['preview_groups'])
     fingerprint = hashlib.sha256(''.join(sources[n]['sha256'] for n in _NAMES).encode()).hexdigest()
-    return _freeze({'cleanse_by_id': cleanse, 'wares': wares, 'preview_by_group': previews,
+    return _freeze({'cleanse_by_id': cleanse, 'items_by_base_id': items,
+                    'wares': wares, 'preview_by_group': previews,
                     'attribute_codes': attributes, 'sources': sources, 'fingerprint': fingerprint,
                     'runtime_verified': False, 'version_status': 'export_only_not_current_runtime_verified',
                     'base_score_source': 'business_convention_parts_1_4_100_parts_5_6_150',
@@ -115,6 +120,8 @@ def load_spirit_artifact_wash_rules(
     cleanse.max 是该词条配置基准，preview max/maxUpgrade 保留原样；
     部位 100/150 为业务归一化满分，不等于直接把所有属性 max 乘 1.5。
     core_codes 来自突破条件；a_codes 按业务约定加攻击；均待当前 Runtime 比对。
+    items_by_base_id 保留原始本体配置及 cleanseUpgradeCondition，不将策略目标
+    改写为客户端准入，也不将不同本体的条件合并成一个通用门槛。
     """
     root = resolve_fanxiu_export_root(export_root)
     cfg = root / 'by_source/lscripts/generate/cfg'

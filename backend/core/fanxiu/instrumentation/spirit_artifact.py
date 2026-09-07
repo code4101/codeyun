@@ -327,7 +327,7 @@ def _memory_runtime_snapshot() -> dict[str, Any]:
             "grade": as_int(ext.get("grade")) or 0,
             "realm": as_int(ext.get("pinLevel")) or 0,
             "refine_num": as_int(ext.get("refineNum")) or 0,
-            "is_break": bool(ext.get("isBreak")),
+            "is_break": ext.get("isBreak") if type(ext.get("isBreak")) is bool else None,
             "effects": effects,
             "pending_effects": pending_effects,
         }
@@ -417,6 +417,62 @@ def _effect_projection(
     )
 
 
+def project_spirit_artifact_part_row(
+    part: dict[str, Any], *, artifact_name: str, part_name: str,
+    exclusive_bases: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """纯投影单个已观察部件；与全馆展示共用，不读取 Runtime 或存储。"""
+    ware_id, part_number = int(part["ware_id"]), int(part["part"])
+    if ware_id <= 0 or part_number not in range(1, 7):
+        raise ValueError("灵器或部位编号无效")
+    if exclusive_bases is None:
+        exclusive_bases = dict(_EXCLUSIVE_BASES.get(artifact_name) or {})
+        if not exclusive_bases:
+            for effect in part.get("effects") or []:
+                name = str(effect.get("name") or effect.get("attribute_name") or "")
+                if name and name not in _COMMON_LABELS and name != "灵器无双":
+                    exclusive_bases.setdefault(name, 0)
+    common, exclusive, peerless, effects = _effect_projection(
+        artifact_name, list(part.get("effects") or []), exclusive_bases
+    )
+    _, _, _, pending_effects = _effect_projection(
+        artifact_name,
+        list(part.get("pending_effects") or []),
+        exclusive_bases,
+    )
+    return {
+        "order": part_number,
+        "part_name": part_name,
+        "rank": int(part.get("grade") or 0),
+        "realm": int(part.get("realm") or 0),
+        "artifact_peerless_1": peerless[0],
+        "artifact_peerless_2": peerless[1],
+        "chaos_power": _format_percent(common["chaos_power"], 5_000),
+        "attack": _format_percent(common["attack"], 10_000),
+        "spirit_power": _format_percent(common["spirit_power"], 1_200_000),
+        "health": _format_percent(common["health"], 1_200_000),
+        "defense": _format_percent(common["defense"], 10_000),
+        "stat_raw_values": {
+            key: str(value) if value else "" for key, value in common.items()
+        },
+        "exclusive_stats": {
+            key: _format_effect_value(value, exclusive_bases[key])
+            for key, value in exclusive.items()
+        },
+        "exclusive_stat_raw_values": {
+            key: str(value) if value else "" for key, value in exclusive.items()
+        },
+        "runtime_base_id": int(part.get("base_id") or 0),
+        "runtime_item_id": str(part.get("item_id") or ""),
+        "runtime_ware_id": int(part.get("ware_id") or ware_id),
+        "runtime_part": int(part.get("part") or part_number),
+        "runtime_refine_num": int(part.get("refine_num") or 0),
+        "runtime_is_break": part.get("is_break") if type(part.get("is_break")) is bool else None,
+        "runtime_effects": effects,
+        "runtime_pending_effects": pending_effects,
+    }
+
+
 def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     """Build a runtime-driven hall projection without discarding exact game fields."""
 
@@ -465,47 +521,11 @@ def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str
         for part_index in range(6):
             part = positioned[(artifact_index, part_index)]
             part_name = str(part.get("part_name") or fallback[1][part_index]).strip()
-            common, exclusive, peerless, effects = _effect_projection(
-                artifact_name, list(part.get("effects") or []), exclusive_bases
-            )
-            _, _, _, pending_effects = _effect_projection(
-                artifact_name,
-                list(part.get("pending_effects") or []),
-                exclusive_bases,
-            )
-            rows.append(
-                {
-                    "order": part_index + 1,
-                    "part_name": part_name,
-                    "rank": int(part.get("grade") or 0),
-                    "realm": int(part.get("realm") or 0),
-                    "artifact_peerless_1": peerless[0],
-                    "artifact_peerless_2": peerless[1],
-                    "chaos_power": _format_percent(common["chaos_power"], 5_000),
-                    "attack": _format_percent(common["attack"], 10_000),
-                    "spirit_power": _format_percent(common["spirit_power"], 1_200_000),
-                    "health": _format_percent(common["health"], 1_200_000),
-                    "defense": _format_percent(common["defense"], 10_000),
-                    "stat_raw_values": {
-                        key: str(value) if value else "" for key, value in common.items()
-                    },
-                    "exclusive_stats": {
-                        key: _format_effect_value(value, exclusive_bases[key])
-                        for key, value in exclusive.items()
-                    },
-                    "exclusive_stat_raw_values": {
-                        key: str(value) if value else "" for key, value in exclusive.items()
-                    },
-                    "runtime_base_id": int(part.get("base_id") or 0),
-                    "runtime_item_id": str(part.get("item_id") or ""),
-                    "runtime_ware_id": int(part.get("ware_id") or artifact_index + 1),
-                    "runtime_part": int(part.get("part") or part_index + 1),
-                    "runtime_refine_num": int(part.get("refine_num") or 0),
-                    "runtime_is_break": bool(part.get("is_break")),
-                    "runtime_effects": effects,
-                    "runtime_pending_effects": pending_effects,
-                }
-            )
+            rows.append(project_spirit_artifact_part_row(
+                {**part, "ware_id": artifact_index + 1, "part": part_index + 1},
+                artifact_name=artifact_name, part_name=part_name,
+                exclusive_bases=exclusive_bases,
+            ))
         artifacts.append({"order": artifact_index + 1, "name": artifact_name, "rows": rows})
     return {
         "artifacts": artifacts,

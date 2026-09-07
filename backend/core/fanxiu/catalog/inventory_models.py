@@ -135,6 +135,34 @@ class FanxiuMagicTreasureHallSnapshot(BaseModel):
     runtime_debug: dict[str, Any] = Field(default_factory=dict)
 
 
+def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | None,
+                                    effects: list[dict[str, Any]], a_codes: list[str]) -> str:
+    """纯分类：未知事实不等于失败；已突破优先检查 A 集合，与阶数无关。"""
+    if is_break is True:
+        # 六个槽位必须齐全，缺 code 无法确认缺的是 A 还是普通属性。
+        if not a_codes or len(effects) != 6 or any(
+            (not effect.get("code") and effect.get("type") != 3) or "affix" not in effect for effect in effects
+        ):
+            return "待识别"
+        full_codes = {effect.get("code") for effect in effects if effect["affix"] in ("满", "巅", "颠")}
+        if not set(a_codes).issubset(full_codes):
+            return "错升"
+        names = {effect.get("name") or effect.get("official_name") for effect in effects}
+        if "灵器无双" not in names:
+            return "突破"
+        if "混沌道威" not in names:
+            return "无双"
+        return "巅峰" if any(effect["affix"] in ("巅", "颠") for effect in effects) else "道威"
+    quality = base_id % 100
+    if not base_id or quality not in range(1, 7) or rank < 0:
+        return "待识别"
+    if quality < 6:
+        return "初始"
+    if is_break is None:
+        return "待识别"
+    return "初始" if rank < 6 else "预备"
+
+
 class FanxiuSpiritArtifactPartRow(BaseModel):
     order: int = 0
     part_name: str = ""
@@ -158,39 +186,34 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     runtime_is_break: bool | None = None
     runtime_effects: List[dict[str, Any]] = Field(default_factory=list)
 
+    runtime_observation: dict[str, Any] = Field(default_factory=dict)
+
+    @computed_field
+    @property
+    def a_codes(self) -> list[str]:
+        """只读静态配置投影；缺配置保持未知，不接受前端传来的策略集合。"""
+        from .spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
+        try:
+            rules = load_spirit_artifact_wash_rules()
+            item = rules["items_by_base_id"].get(self.runtime_base_id)
+            if not item:
+                return []
+            ware = item["type"]
+            if self.runtime_ware_id and self.runtime_ware_id != ware:
+                return []
+            return list(rules["wares"][ware]["a_codes"])
+        except (OSError, ValueError):
+            return []
+
     @computed_field
     @property
     def stage(self) -> str:
-        """先排除错升，再判定阶段；突破阶段要求实际已突破。"""
-        if self.rank <= 0:
-            return "待识别"
-        effects = self.runtime_effects
-        complete_effects = bool(effects) and all("affix" in effect for effect in effects)
-        full_count = sum(effect.get("affix") in ("满", "巅", "颠") for effect in effects)
-        if self.runtime_is_break is True and complete_effects and full_count < 4:
-            return "错升"
-        if self.runtime_is_break is True and not complete_effects:
-            return "待识别"
-        # 灵器 baseId 末两位为品质（1至6，6为红色），不使用词条品质代替本体品质。
-        quality = self.runtime_base_id % 100
-        if not self.runtime_base_id or quality not in range(1, 7):
-            return "待识别"
-        if quality < 6:
-            return "初始"
-        if self.rank < 6:
-            return "初始"
-        if not effects or any("affix" not in effect for effect in effects):
-            return "待识别"
-        if full_count < 4:
-            return "预备" if self.runtime_is_break is False else "待识别"
-        if self.runtime_is_break is not True:
-            return "预备" if self.runtime_is_break is False else "待识别"
-        names = {effect.get("name") or effect.get("official_name") for effect in effects}
-        if "灵器无双" not in names:
-            return "突破"
-        if "混沌道威" not in names:
-            return "无双"
-        return "巅峰" if any(effect["affix"] in ("巅", "颠") for effect in effects) else "道威"
+        """培养完成按本灵器全部 A 满值；客户端四仙品准入不用于倒推错升。"""
+        return classify_spirit_artifact_stage(
+            rank=self.rank, base_id=self.runtime_base_id,
+            is_break=self.runtime_is_break, effects=self.runtime_effects,
+            a_codes=self.a_codes if self.runtime_is_break is True else [],
+        )
 
     @model_validator(mode="before")
     @classmethod
@@ -234,6 +257,8 @@ class FanxiuSpiritArtifactHallSnapshot(BaseModel):
     market_currency_count: int = 0
     market_items: List[FanxiuSpiritArtifactMarketItem] = Field(default_factory=list)
     storage_bag_items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
+    runtime_observation_scope: str = "full"
+    runtime_partial_updated_at: float = 0
     runtime_source: str = ""
     runtime_complete: bool = False
     runtime_error: str = ""

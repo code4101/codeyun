@@ -105,6 +105,26 @@ class ACollectionPlan:
     reason: str = ''
 
 
+def plan_b_supplement(current: Sequence[YinxianAttribute], *, a_codes: set[str],
+                      target_code: str) -> ACollectionPlan:
+    """A 全满后，将已存在的指定 B 洗至红色；不要求比例或精炼。"""
+    if (len(current) != 6 or len({e.cleanse_id for e in current}) != 6
+            or len({e.code for e in current}) != 6 or not a_codes
+            or target_code not in {'MAXMP', 'MAXHP', 'DEFENSE'} or target_code in a_codes):
+        raise ValueError('补 B 需要完整唯一属性和明确 B 目标')
+    if not a_codes <= {e.code for e in current if e.is_full and e.quality >= 6}:
+        return ACollectionPlan('blocked', (), reason='补 B 前全部 A 必须已满')
+    matches = [e for e in current if e.code == target_code]
+    if len(matches) != 1:
+        return ACollectionPlan('blocked', (), reason='补 B 仅支持已存在的目标槽位')
+    target = matches[0]
+    actual = {e.cleanse_id for e in current if e.locked}
+    if target.quality >= 6:
+        return ACollectionPlan('complete', tuple(sorted(actual)))
+    desired = tuple(sorted(e.cleanse_id for e in current if e.cleanse_id != target.cleanse_id))
+    return ACollectionPlan('locks' if actual != set(desired) else 'yinxian', desired)
+
+
 def plan_a_collection(
     current: Sequence[YinxianAttribute], *, a_codes: set[str], c_codes: set[str],
     b_codes: set[str], target_ratio: float | Decimal = Decimal('0.90'),
@@ -126,6 +146,10 @@ def plan_a_collection(
         return ACollectionPlan('blocked', (), reason='存在本阶段未定义的属性类别')
     full = {e.code for e in current if e.quality >= 6 and e.is_full}
     actual_locks = {e.cleanse_id for e in current if e.locked}
+    if a_codes <= full:
+        # 客户端至少留一条未锁。培养完成不强求六条全锁；下一阶段先
+        # 解锁其目标，再锁住本轮刚精炼项，避免无效的第六把锁。
+        return ACollectionPlan('complete', tuple(sorted(actual_locks)))
     # 稳定身份排序不依赖 Runtime map 遍历顺序，也不能用此排序作为 UI 行号。
     refinable = sorted((e for e in current if e.code in a_codes - full
                         and meets_yinxian_target(

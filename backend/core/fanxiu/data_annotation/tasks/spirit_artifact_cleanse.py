@@ -43,6 +43,8 @@ class SpiritArtifactCleanseGuiAssets:
     pending_wash_scene_id: int = 714
     part_detail_scene_id: int = 715
     effect_activation_scene_id: int = 721
+    breakthrough_confirm_scene_id: int = 722
+    breakthrough_result_scene_id: int = 723
     open_menu_shape: str = "打开下方菜单"
     open_spiritware_shape: str = "灵器"
     first_artifact_shape: str = "首个灵器"
@@ -66,6 +68,8 @@ class SpiritArtifactCleanseGuiAssets:
     @property
     def layer0_candidate_ids(self) -> tuple[int, ...]:
         return (
+            self.breakthrough_result_scene_id,
+            self.breakthrough_confirm_scene_id,
             self.effect_activation_scene_id,
             self.auto_unlocked_warning_scene_id,
             self.attribute_preview_scene_id,
@@ -690,6 +694,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             raise SpiritArtifactCleanseBlocked("锁操作要求已标注的六词条页面与唯一词条", phase="lock")
         if matches[0]["locked"] is locked:
             return before
+        if locked and sum(e['locked'] for e in effects) >= len(effects) - 1:
+            raise SpiritArtifactCleanseBlocked('客户端至少保留一条未锁，请先解除下一目标的锁', phase='lock')
         self.execute(self.context.click_shape_center(
             scene, f"属性锁{matches[0]['row'] + 1}"))
         expected = {e["cleanse_id"]: {k: v for k, v in e.items() if k != "row"} for e in effects}

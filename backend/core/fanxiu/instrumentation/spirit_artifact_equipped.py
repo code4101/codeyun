@@ -77,7 +77,8 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, 
             state_address=ctx.binding.state_address, global_name='SpiritwareMgr',
             required_methods=frozenset({'Inst_get'}), validate=data_fields)
         data = data_fields(reader, root)
-        dictionary = reader.fields(reader.fields(data['v_wareDic']).get('_valueTable_'))
+        # 当前客户端 Dictionary 使用 _dt_；数字键可处于 array/hash 两区。
+        dictionary = reader.dictionary_fields(data['v_wareDic'])
         references = {}
         for ware_id in requested:
             ware = reader.fields(dictionary.get(ware_id))

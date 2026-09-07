@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
-from .spirit_artifact_yinxian import YinxianAttribute, analyze_yinxian_sample, plan_a_collection
+from .spirit_artifact_yinxian import YinxianAttribute, analyze_yinxian_sample, plan_a_collection, plan_b_supplement
 from ...instrumentation.spirit_artifact_wash_observation import (
     SpiritArtifactWashTarget, read_spirit_artifact_wash_observation,
 )
@@ -22,26 +22,38 @@ def run_a_collection(
     evidence_path: Path, stop_at: float, target_ratio: float = .90,
     max_consumptions: int = 100,
     fast_observation: bool = False,
+    supplement_b_code: str | None = None,
 ) -> dict:
     """调用即授权在指定目标上切锁、消耗引仙/精炼石、采用达标候选。
 
     stop_at 是生产窗口前的绝对截止秒；每次消耗前预留 90 秒收尾。
     max_consumptions 只限制本次运行，不修改概率样本或业务完成条件。
     不负责导航、突破、调度或恢复中断的候选；入口已有候选时停止。
+    supplement_b_code 指定 A 全满后的独立补 B 阶段：仅筛红色，不精炼。
     """
     from ...instrumentation.backpack import read_backpack_item_counts
 
     if max_consumptions <= 0 or stop_at <= time.time():
         raise ValueError('连续洗灵需要有效期限及消耗上限')
     gui = SpiritArtifactCleanseRuntimeGuiAdapter(context, execute)
+    rules = dict(rules)
     evidence_path = Path(evidence_path)
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     current = read_spirit_artifact_wash_observation(target, verify_ui=True)
+    if current.get('is_break') is not False:
+        raise RuntimeError('A 类培养入口须确认本体尚未突破；已突破或状态未知时停止')
     if current['pending_effects']:
         raise RuntimeError('入口存在未处理候选，需从真实现场明确处理')
 
     def attributes(effects):
+        missing = sorted({e['cleanse_id'] for e in effects} - rules.keys())
+        if missing:
+            from ...instrumentation.spirit_artifact_affixes import read_spirit_artifact_affix_rules
+            fetched = read_spirit_artifact_affix_rules(missing)
+            if (fetched['pid'], fetched['process_start_ticks']) != target.process_identity:
+                raise RuntimeError('补齐词条配置时游戏进程变化')
+            rules.update(fetched['rules'])
         return tuple(YinxianAttribute(
             e['cleanse_id'], rules[e['cleanse_id']]['code'], e['value'],
             e['quality'], e['locked'], int(rules[e['cleanse_id']]['max']),
@@ -75,8 +87,12 @@ def run_a_collection(
             landed = execute(context.wait_scene([721, 668, 714, 712], wait=12))
             if landed.scene_id == 721:
                 gui.finish_effect_activation()
-            plan = plan_a_collection(attributes(current['effects']), a_codes=a_codes,
-                                     b_codes=b_codes, c_codes=c_codes, target_ratio=target_ratio)
+            if supplement_b_code is not None:
+                plan = plan_b_supplement(attributes(current['effects']), a_codes=a_codes,
+                                         target_code=supplement_b_code)
+            else:
+                plan = plan_a_collection(attributes(current['effects']), a_codes=a_codes,
+                                         b_codes=b_codes, c_codes=c_codes, target_ratio=target_ratio)
             if plan.action == 'complete':
                 return {'status': 'complete', 'consumed': consumed, 'snapshot': current,
                         'elapsed_seconds': time.monotonic() - started}
@@ -88,7 +104,7 @@ def run_a_collection(
             if plan.action == 'locks':
                 if current['pending_effects']:
                     raise RuntimeError('切锁前仍有候选，不丢弃未知待采用结果')
-                for effect in current['effects']:
+                for effect in sorted(current['effects'], key=lambda e: e['cleanse_id'] in plan.desired_lock_ids):
                     desired = effect['cleanse_id'] in plan.desired_lock_ids
                     if effect['locked'] != desired:
                         gui.set_lock(effect['cleanse_id'], desired)
@@ -106,16 +122,43 @@ def run_a_collection(
                 gui.cancel()
                 return {'status': 'paused', 'consumed': consumed, 'snapshot': current,
                         'elapsed_seconds': time.monotonic() - started}
-            context.click_shape_center(713, '确认使用道具')
-            execute(context.wait_scene([714], wait=12))
-            after = read_spirit_artifact_wash_observation(target)
-            counts, inventory = read_backpack_item_counts([material], manager_key='spirit-artifact-advanced')
+            after = None
+            try:
+                context.click_shape_center(713, '确认使用道具')
+                execute(context.wait_scene([714], wait=12))
+                after = read_spirit_artifact_wash_observation(target)
+                counts, inventory = read_backpack_item_counts([material], manager_key='spirit-artifact-advanced')
+            except Exception as error:
+                # 确认已尝试，动作/读取失败不表示没有消耗，也不能算已确认抽样。
+                record({'record_type': 'unverified_consumption', 'material_id': material,
+                        'before': current, 'after': after,
+                        'inventory_before': preview['count'], 'inventory_after': None,
+                        'consumption_verified': False, 'verification_error': repr(error),
+                        'preview_seconds': preview_seconds,
+                        'elapsed_seconds': time.monotonic() - iteration_started})
+                raise RuntimeError('道具确认后观察失败；已记录未核实消耗，禁止自动重试') from error
             consumed += 1
+            consumption_verified = (
+                (inventory['pid'], inventory['process_start_ticks']) == target.process_identity
+                and preview['count'] - counts[material] == 1
+                and effect_map(after['effects']) == effect_map(current['effects'])
+                and len(after['pending_effects']) == 6)
             # 即使后置验证失败，也保留原始观察；不靠候选内容变化断言独立消耗。
-            raw_sample = attributes(after['pending_effects'])
+            try:
+                raw_sample = attributes(after['pending_effects'])
+            except Exception as error:
+                # 未知词条不能使已消耗的一次样本从统计证据中消失。
+                record({'material_id': material, 'before': current, 'after': after,
+                        'consumption_verified': consumption_verified,
+                        'inventory_before': preview['count'], 'inventory_after': counts[material],
+                        'normalization_error': str(error),
+                        'preview_seconds': preview_seconds,
+                        'elapsed_seconds': time.monotonic() - iteration_started})
+                raise RuntimeError('已保留原始候选，归一化配置不完整；停止且不重放消耗') from error
             highest_red_ratio = max((e.ratio for e in raw_sample if not e.locked and e.quality >= 6),
                                     default=None)
             record({'material_id': material, 'before': current, 'after': after,
+                    'consumption_verified': consumption_verified,
                     'inventory_before': preview['count'], 'inventory_after': counts[material],
                     'highest_red_ratio': highest_red_ratio,
                     'unlocked_candidates': [dict(cleanse_id=e.cleanse_id, code=e.code,
@@ -125,16 +168,15 @@ def run_a_collection(
                     'preview_timings': preview.get('timings', {}),
                     'inventory_diagnostics': preview.get('inventory_diagnostics', {}),
                     'elapsed_seconds': time.monotonic() - iteration_started})
-            if ((inventory['pid'], inventory['process_start_ticks']) != target.process_identity
-                    or preview['count'] - counts[material] != 1
-                    or effect_map(after['effects']) != effect_map(current['effects'])
-                    or len(after['pending_effects']) != 6):
+            if not consumption_verified:
                 raise RuntimeError('道具消耗或候选后置验证失败，禁止重试确认')
             if plan.action == 'yinxian':
                 done = {e.code for e in attributes(current['effects']) if e.is_full and e.quality >= 6}
                 sample = analyze_yinxian_sample(raw_sample,
                     roll_index=consumed, needed_a_codes=a_codes - done, target_ratio=target_ratio)
-                current = save_pending(after) if sample.stop_yinxian else after
+                accepted = (any(not e.locked and e.code == supplement_b_code and e.quality >= 6
+                                for e in raw_sample) if supplement_b_code is not None else sample.stop_yinxian)
+                current = save_pending(after) if accepted else after
             else:
                 old = next(e for e in attributes(current['effects']) if e.cleanse_id == plan.target_cleanse_id)
                 new = [e for e in attributes(after['pending_effects']) if not e.locked]

@@ -184,3 +184,17 @@ def test_spirit_artifact_hall_migrates_legacy_aura_peerless(tmp_path, monkeypatc
     assert first_row["artifact_peerless_1"] == 25
     assert first_row["artifact_peerless_2"] == 0
     assert "aura_peerless" not in first_row
+
+
+def test_runtime_facts_survive_public_save_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(fanxiu_inventory, "get_inventory_storage_path", lambda: tmp_path / "inventory.json")
+    hall = fanxiu_inventory.load_spirit_artifact_hall()
+    row = hall["artifacts"][0]["rows"][3]
+    row.update(runtime_base_id=14000406, runtime_ware_id=1, runtime_item_id="example",
+               runtime_part=4, runtime_is_break=None,
+               runtime_effects=[{"code": "ATTACK", "affix": "满"}])
+    fanxiu_inventory.save_spirit_artifact_hall(hall)
+    saved = fanxiu_inventory.load_spirit_artifact_hall()["artifacts"][0]["rows"][3]
+    assert saved["runtime_is_break"] is None
+    assert saved["runtime_effects"] == row["runtime_effects"]
+    assert saved["runtime_item_id"] == "example"

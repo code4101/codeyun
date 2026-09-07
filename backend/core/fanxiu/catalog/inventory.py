@@ -482,6 +482,14 @@ def _normalize_spirit_artifact_row(
         key: str(raw_exclusive_stat_raw_values.get(key, "") or "").strip()
         for key in exclusive_stat_keys
     }
+    # 这些是观察事实，往返保存不能丢失或将未知突破状态转成 False。
+    for key in ("runtime_base_id", "runtime_ware_id", "runtime_part", "runtime_refine_num"):
+        normalized[key] = _normalize_nonnegative_int(raw_row.get(key))
+    normalized["runtime_item_id"] = str(raw_row.get("runtime_item_id") or "")
+    is_break = raw_row.get("runtime_is_break")
+    normalized["runtime_is_break"] = is_break if isinstance(is_break, bool) else None
+    effects = raw_row.get("runtime_effects")
+    normalized["runtime_effects"] = [dict(effect) for effect in effects if isinstance(effect, dict)] if isinstance(effects, list) else []
     return normalized
 
 

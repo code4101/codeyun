@@ -163,6 +163,7 @@ def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
                 result['refine_num'] = committed['refine_num']
                 result['base_id'] = committed['base_id']
                 result['part'] = committed['part']
+                result['is_break'] = committed.get('is_break')
             candidates[outer.address] = result
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError(f'当前灵器窗口数量必须为 1，实际 {len(candidates)}')

@@ -1597,7 +1597,8 @@ export interface FanxiuSpiritArtifactPartRow {
   runtime_ware_id: number;
   runtime_part: number;
   runtime_refine_num: number;
-  runtime_is_break: boolean;
+  runtime_is_break: boolean | null;
+  a_codes?: string[];
   runtime_effects: FanxiuSpiritArtifactRuntimeEffect[];
 }
 

@@ -1,59 +1,56 @@
 import pytest
 
-from backend.core.fanxiu.catalog.inventory_models import FanxiuSpiritArtifactPartRow
+from backend.core.fanxiu.catalog.inventory_models import classify_spirit_artifact_stage
 
 
-@pytest.mark.parametrize(
-    "rank,affixes,names,expected",
-    [
-        (0, [], [], "待识别"),
-        (1, [], [], "待识别"),
-        (5, [], [], "待识别"),
-        (6, [], [], "待识别"),
-        (6, [None] * 4, [], "待识别"),
-        (6, ["满"] * 3, ["灵器无双", "混沌道威"], "错升"),
-        (6, ["满"] * 4, [], "突破"),
-        (6, ["满"] * 4, ["灵器无双"], "无双"),
-        (6, ["满"] * 4, ["灵器无双", "混沌道威"], "道威"),
-        (6, ["满"] * 3 + ["巅"], ["灵器无双", "混沌道威"], "巅峰"),
-        (6, ["巅"] * 4, [], "突破"),
-    ],
-)
-def test_stage_requires_complete_facts_and_nested_conditions(rank, affixes, names, expected):
-    effects = [{} if affix is None else {"affix": affix} for affix in affixes]
-    effects += [{"name": name, "affix": ""} for name in names]
-    row = FanxiuSpiritArtifactPartRow(rank=rank, runtime_base_id=14000106, runtime_is_break=True, runtime_effects=effects)
-    assert row.model_dump()["stage"] == expected
+SWORD = ["ATTACK", "CRI_VALUE", "CRI_DAMAGE_FIX"]
+FOUR_A = ["ATTACK", "CORE_1", "CORE_2", "CORE_3"]
 
 
-@pytest.mark.parametrize("is_break,expected", [(False, "预备"), (True, "错升"), (None, "待识别")])
-def test_rebuilt_high_rank_part_requires_breakthrough_fact(is_break, expected):
-    row = FanxiuSpiritArtifactPartRow(
-        rank=10, runtime_base_id=14000406, runtime_is_break=is_break,
-        runtime_effects=[{"affix": ""}] * 6,
-    )
-    assert row.stage == expected
+def stage(codes=SWORD, *, missing=None, extra_names=(), is_break=True, rank=10, partial=False):
+    effects = [{"code": code, "affix": "" if code == missing else "满"} for code in codes]
+    effects += [{"code": "B" + str(i), "affix": "", "name": name} for i, name in enumerate(extra_names)]
+    effects += [{"code": "B" + str(i), "affix": ""} for i in range(6-len(effects))]
+    return classify_spirit_artifact_stage(rank=rank, base_id=14000406, is_break=is_break,
+                                         effects=effects[:-1] if partial else effects, a_codes=codes)
 
 
-def test_non_red_part_is_initial():
-    assert FanxiuSpiritArtifactPartRow(rank=1, runtime_base_id=14000405).stage == "初始"
+def test_three_full_a_with_nonfull_b_is_breakthrough():
+    assert stage() == "突破"
+    assert stage(FOUR_A) == "突破"
+    assert stage(FOUR_A, missing="CORE_3") == "错升"
 
 
 @pytest.mark.parametrize("rank", [1, 5, 6, 10])
-def test_wrong_breakthrough_is_independent_of_rank(rank):
-    row = FanxiuSpiritArtifactPartRow(rank=rank, runtime_base_id=14000406,
-        runtime_is_break=True, runtime_effects=[{"affix": ""}] * 6)
-    assert row.stage == "错升"
+def test_wrong_upgrade_checks_a_identity_independent_of_rank(rank):
+    assert stage(missing="ATTACK", rank=rank) == "错升"
 
 
-@pytest.mark.parametrize("rank", [1, 5])
-def test_unbroken_red_part_below_six_is_initial(rank):
-    row = FanxiuSpiritArtifactPartRow(rank=rank, runtime_base_id=14000406,
-        runtime_is_break=False, runtime_effects=[{"affix": ""}] * 6)
-    assert row.stage == "初始"
+def test_unknown_stays_unknown_and_unbroken_stays_prepared():
+    assert stage(codes=[]) == "待识别"
+    assert stage(partial=True) == "待识别"
+    assert stage(is_break=None) == "待识别"
+    assert stage(is_break=False) == "预备"
+    assert stage(is_break=False, rank=5) == "初始"
 
 
-def test_affixes_ready_without_breakthrough_remains_prepared():
-    row = FanxiuSpiritArtifactPartRow(rank=6, runtime_base_id=14000406,
-        runtime_is_break=False, runtime_effects=[{"affix": "满"}] * 4)
-    assert row.stage == "预备"
+def test_s_tiers_still_require_all_a():
+    assert stage(extra_names=["灵器无双"]) == "无双"
+    assert stage(extra_names=["灵器无双", "混沌道威"]) == "道威"
+    assert stage(missing="ATTACK", extra_names=["灵器无双", "混沌道威"]) == "错升"
+
+
+def test_four_full_non_a_cannot_substitute_missing_a():
+    effects = [{"code": c, "affix": "满"} for c in ["CRI_VALUE", "CRI_DAMAGE_FIX", "MAXMP", "MAXHP"]]
+    effects += [{"code": "DEFENSE", "affix": ""}, {"code": "ATTACK", "affix": ""}]
+    assert classify_spirit_artifact_stage(rank=10, base_id=14000406, is_break=True,
+                                         effects=effects, a_codes=SWORD) == "错升"
+
+
+def test_missing_identity_is_unknown_but_explicit_special_type_is_known():
+    effects = [{"code": c, "affix": "满"} for c in SWORD]
+    effects += [{"code": "MAXMP", "affix": ""}, {"code": "MAXHP", "affix": ""}, {"affix": "", "name": "灵器无双"}]
+    args = dict(rank=10, base_id=14000406, is_break=True, effects=effects, a_codes=SWORD)
+    assert classify_spirit_artifact_stage(**args) == "待识别"
+    effects[-1]["type"] = 3
+    assert classify_spirit_artifact_stage(**args) == "无双"

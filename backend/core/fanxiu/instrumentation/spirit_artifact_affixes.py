@@ -13,7 +13,7 @@ from .runtime_memory import (
     FanxiuRuntimeMemoryError, LuaRef, as_int, manager_index_fields,
     resolve_lua_global_manager_root,
 )
-from .ui_runtime_context import acquire_ui_runtime_context
+from .ui_runtime_context import read_ui_runtime_snapshot
 
 _DB_METHODS = frozenset({"DBMgr", "GetConfigTable", "GetConfigTableByIdWithLog", "Inst_get"})
 
@@ -30,7 +30,10 @@ def classify_spirit_artifact_affix(value: int, maximum: int, ratio_percent: floa
 
 def read_spirit_artifact_affix_rules(cleanse_ids: list[int]) -> dict[str, Any]:
     """只读已加载的 DBMgr 配置与真实字段索引，不执行游戏 Lua、不用旧导出推测阈值。"""
-    ctx = acquire_ui_runtime_context([])
+    return read_ui_runtime_snapshot([], lambda ctx: _read_spirit_artifact_affix_rules(ctx, cleanse_ids))
+
+
+def _read_spirit_artifact_affix_rules(ctx, cleanse_ids: list[int]) -> dict[str, Any]:
     reader = ctx.reader
 
     def config_tables(current_reader, address):

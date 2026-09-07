@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +150,14 @@ def _parse_index_value_map(body: str) -> dict[int, str]:
 
 
 def load_fanxiu_lang_map(path: str | Path) -> dict[int, str]:
+    """缓存未改变的导出文本；返回独立字典，调用方修改不污染后续读取。"""
+    lang_path = Path(path).resolve()
+    stat = lang_path.stat()
+    return dict(_load_lang_map(str(lang_path), stat.st_mtime_ns, stat.st_size))
+
+
+@lru_cache(maxsize=2)
+def _load_lang_map(path: str, mtime_ns: int, size: int) -> dict[int, str]:
     lang_path = Path(path)
     values: dict[int, str] = {}
     with lang_path.open("r", encoding="utf-8-sig", errors="replace") as f:
@@ -157,6 +166,9 @@ def load_fanxiu_lang_map(path: str | Path) -> dict[int, str]:
             if not match:
                 continue
             values[int(match.group("key"))] = _unescape_lua_string(match.group("text"))
+    stat = lang_path.stat()
+    if (stat.st_mtime_ns, stat.st_size) != (mtime_ns, size):
+        raise FanxiuResourceError(f"解析期间语言表发生变化：{lang_path}")
     return values
 
 

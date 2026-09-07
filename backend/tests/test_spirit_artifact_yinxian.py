@@ -92,3 +92,19 @@ def test_collection_preserves_other_hit_then_releases_c_after_refining():
     rows = tuple(replace(e, code='CRI_DAMAGE_FIX', value=100, locked=True)
                  if e.cleanse_id == 3 else e for e in rows)
     assert plan_a_collection(rows, **policy).action == 'complete'
+    # 最后一条精炼完仍未锁时也已完成；客户端禁止第六把锁。
+    rows = tuple(replace(e, locked=False) if e.cleanse_id == 3 else e for e in rows)
+    assert plan_a_collection(rows, **policy).action == 'complete'
+
+
+def test_b_supplement_requires_full_a_but_only_red_b():
+    from dataclasses import replace
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_b_supplement
+    rows = tuple(replace(e, value=100) if e.code == 'ATTACK' else e for e in candidates())
+    policy = dict(a_codes={'ATTACK', 'CRI_VALUE'}, target_code='MAXMP')
+    plan = plan_b_supplement(rows, **policy)
+    assert plan.action == 'locks' and plan.desired_lock_ids == (1, 2, 3, 5, 6)
+    rows = tuple(replace(e, locked=e.cleanse_id in plan.desired_lock_ids) for e in rows)
+    assert plan_b_supplement(rows, **policy).action == 'yinxian'
+    rows = tuple(replace(e, quality=6) if e.code == 'MAXMP' else e for e in rows)
+    assert plan_b_supplement(rows, **policy).action == 'complete'
