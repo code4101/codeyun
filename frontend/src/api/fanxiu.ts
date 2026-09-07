@@ -1576,6 +1576,7 @@ export interface FanxiuGongfaAtlasBookDetail {
 }
 
 export interface FanxiuSpiritArtifactPartRow {
+  stage?: string;
   order: number;
   part_name: string;
   rank: number;
@@ -1657,81 +1658,6 @@ export interface FanxiuSpiritArtifactHallSnapshot {
   runtime_item_count: number;
   runtime_equipped_count: number;
   runtime_debug: Record<string, unknown>;
-}
-
-export interface FanxiuMagicTreasureOcrImportResponse {
-  section_key: string;
-  lines: string[];
-  item: FanxiuInventoryItem;
-}
-
-export interface FanxiuSpiritArtifactRankPart {
-  part_name: string;
-  rank: number;
-  realm: number;
-  quality: string;
-  background_color: string;
-}
-
-export interface FanxiuSpiritArtifactRankRecognitionResponse {
-  matched: boolean;
-  reason: string;
-  artifact_name: string;
-  title_text: string;
-  lines: string[];
-  parts: FanxiuSpiritArtifactRankPart[];
-}
-
-export interface FanxiuSpiritArtifactAttributeRecognitionItem {
-  label: string;
-  percent: string;
-  raw_value: string;
-  source_text: string;
-}
-
-export interface FanxiuSpiritArtifactAttributeRecognitionResponse {
-  matched: boolean;
-  reason: string;
-  artifact_name: string;
-  part_name: string;
-  title_text: string;
-  lines: string[];
-  artifact_peerless_1: number;
-  artifact_peerless_2: number;
-  common_stats: Record<string, string>;
-  exclusive_stats: Record<string, string>;
-  attributes: FanxiuSpiritArtifactAttributeRecognitionItem[];
-}
-
-export interface FanxiuSpiritArtifactMarketRecognitionResponse {
-  matched: boolean;
-  reason: string;
-  market_currency_count: number;
-  lines: string[];
-  items: FanxiuSpiritArtifactMarketItem[];
-}
-
-export interface FanxiuSpiritArtifactStorageBagRecognitionResponse {
-  matched: boolean;
-  reason: string;
-  lines: string[];
-  items: FanxiuSpiritArtifactStorageBagItem[];
-}
-
-export interface FanxiuFormationRequirementImportItem {
-  text: string;
-  effect_text: string;
-}
-
-export interface FanxiuFormationEffectDetailImportItem {
-  effect_name: string;
-  effect_detail: string;
-}
-
-export interface FanxiuFormationRequirementOcrImportResponse {
-  lines: string[];
-  requirements: FanxiuFormationRequirementImportItem[];
-  effect_details: FanxiuFormationEffectDetailImportItem[];
 }
 
 export interface FanxiuActivityItem {
@@ -6534,6 +6460,10 @@ export const getFanxiuSpiritArtifactHall = () => {
   return api.get<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-hall').then(res => res.data);
 };
 
+export const syncFanxiuSpiritArtifactStorageBag = () => api
+  .post<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-storage-bag/sync', null, { timeout: 120000 })
+  .then(res => res.data);
+
 export const collectFanxiuWardrobeHall = () => {
   return api
     .post<FanxiuWardrobeHallSnapshot>('/fanxiu/inventory/wardrobe-hall/collect', null, {
@@ -6593,26 +6523,6 @@ export const saveFanxiuSpiritArtifactHall = (payload: FanxiuSpiritArtifactHallSn
   return api.put<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-hall', payload).then(res => res.data);
 };
 
-export const recognizeFanxiuSpiritArtifactMarket = () => {
-  return api
-    .post<FanxiuSpiritArtifactMarketRecognitionResponse>('/fanxiu/inventory/spirit-artifact-market/recognize', null, {
-      timeout: 120000,
-    })
-    .then(res => res.data);
-};
-
-export const recognizeFanxiuSpiritArtifactStorageBag = () => {
-  return api
-    .post<FanxiuSpiritArtifactStorageBagRecognitionResponse>(
-      '/fanxiu/inventory/spirit-artifact-storage-bag/recognize',
-      null,
-      {
-        timeout: 120000,
-      },
-    )
-    .then(res => res.data);
-};
-
 export const getFanxiuMagicTreasureNote = (itemId: string) => {
   return loadFanxiuNoteHelpers().then(({ normalizeFanxiuNote }) => (
     api
@@ -6627,49 +6537,6 @@ export const saveFanxiuMagicTreasureNote = (itemId: string, data: Partial<NoteNo
       .put<NoteNode>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
       .then(res => normalizeFanxiuNote(res.data))
   ));
-};
-
-export const importFanxiuMagicTreasureFromOcr = (sectionKey: string, image: File) => {
-  const formData = new FormData();
-  formData.append('section_key', sectionKey);
-  formData.append('image', image);
-  return api
-    .post<FanxiuMagicTreasureOcrImportResponse>('/fanxiu/inventory/magic-treasure-import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
-};
-
-export const recognizeFanxiuSpiritArtifactRanks = () => {
-  return api
-    .post<FanxiuSpiritArtifactRankRecognitionResponse>('/fanxiu/inventory/spirit-artifact-ranks/recognize', null, {
-      timeout: 120000,
-    })
-    .then(res => res.data);
-};
-
-export const recognizeFanxiuSpiritArtifactAttributes = () => {
-  return api
-    .post<FanxiuSpiritArtifactAttributeRecognitionResponse>('/fanxiu/inventory/spirit-artifact-attributes/recognize', null, {
-      timeout: 120000,
-    })
-    .then(res => res.data);
-};
-
-export const importFanxiuFormationRequirementsFromOcr = (image: File) => {
-  const formData = new FormData();
-  formData.append('image', image);
-  return api
-    .post<FanxiuFormationRequirementOcrImportResponse>('/fanxiu/formations/requirements-import/ocr', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 120000,
-    })
-    .then(res => res.data);
 };
 
 export const getFanxiuActivityList = () => {

@@ -42,7 +42,6 @@ interface InventoryHallPageProps {
   saveSnapshot: (payload: FanxiuInventorySectionSnapshot) => Promise<any>;
   getNote: (itemId: string) => Promise<NoteNode | null>;
   saveNote: (itemId: string, data: Partial<NoteNode>) => Promise<NoteNode>;
-  importImage?: (sectionKey: string, image: File) => Promise<Partial<FanxiuInventoryItem>>;
 }
 
 interface InventoryRowLocation {
@@ -93,8 +92,6 @@ const textFieldDrafts = ref<Record<string, string>>({});
 const nameInputRefs = new Map<string, FocusableInputRef>();
 const qualityInputRefs = new Map<string, FocusableInputRef>();
 const textFieldTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const pendingImportSectionKey = ref('');
-const importingSectionKey = ref('');
 
 const canEdit = computed(() => {
   const username = userStore.user?.username;
@@ -110,7 +107,6 @@ const editorEmptyDescription = computed(() => {
   return '当前条目暂无文档';
 });
 const editorVisible = computed(() => Boolean(currentEditingItemId.value));
-const canImportImage = computed(() => canEdit.value && typeof props.importImage === 'function');
 const showCategoryColumn = computed(() => Boolean(props.categoryOptions?.length));
 const showViewFilters = computed(() => Boolean(props.showViewFilters));
 const resolvedCategoryColumnWidth = computed(() => props.categoryColumnWidth ?? 96);
@@ -547,65 +543,6 @@ function createNewRow(): FanxiuInventoryItem {
   };
 }
 
-function getSectionTitle(sectionKey: string): string {
-  return props.sections.find(section => section.key === sectionKey)?.title || sectionKey;
-}
-
-function extractClipboardImage(event: ClipboardEvent): File | null {
-  const items = Array.from(event.clipboardData?.items || []);
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      return item.getAsFile();
-    }
-  }
-  return null;
-}
-
-async function importImageToSection(sectionKey: string, image: File) {
-  if (!props.importImage) return;
-  importingSectionKey.value = sectionKey;
-  try {
-    const imported = await props.importImage(sectionKey, image);
-    const row = normalizeItem(imported);
-    snapshot.value[sectionKey] = sortItems([row, ...(snapshot.value[sectionKey] || [])]);
-    markSnapshotDirty();
-    ElMessage.success(`已导入到 ${getSectionTitle(sectionKey)}，可继续粘贴`);
-    if (!row.name.trim()) {
-      void beginRenameRow(row.id);
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '截图导入失败');
-  } finally {
-    if (importingSectionKey.value === sectionKey) {
-      importingSectionKey.value = '';
-    }
-  }
-}
-
-function toggleImportSection(sectionKey: string) {
-  if (!canImportImage.value) return;
-  if (pendingImportSectionKey.value === sectionKey) {
-    pendingImportSectionKey.value = '';
-    return;
-  }
-  pendingImportSectionKey.value = sectionKey;
-  ElMessage.info(`已准备导入到 ${getSectionTitle(sectionKey)}，请直接粘贴截图`);
-}
-
-async function handleWindowPaste(event: ClipboardEvent) {
-  const sectionKey = pendingImportSectionKey.value;
-  if (!sectionKey || !props.importImage || importingSectionKey.value) {
-    return;
-  }
-  const image = extractClipboardImage(event);
-  if (!image) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  await importImageToSection(sectionKey, image);
-}
-
 function bindNameInputRef(itemId: string, instance: FocusableInputRef) {
   if (instance) {
     nameInputRefs.set(itemId, instance);
@@ -1019,12 +956,10 @@ watch(
 );
 
 onMounted(() => {
-  window.addEventListener('paste', handleWindowPaste);
   void loadSnapshot();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('paste', handleWindowPaste);
   clearBufferedTextFieldState();
 });
 </script>
@@ -1095,21 +1030,6 @@ onBeforeUnmount(() => {
                         />
                       </el-select>
                     </div>
-                    <el-button
-                      v-if="canImportImage"
-                      type="primary"
-                      link
-                      :loading="importingSectionKey === section.key"
-                      @click="toggleImportSection(section.key)"
-                    >
-                      {{
-                        importingSectionKey === section.key
-                          ? '识别中...'
-                          : pendingImportSectionKey === section.key
-                            ? '关闭粘贴导入'
-                            : '粘贴截图导入'
-                      }}
-                    </el-button>
                     <el-button v-if="canEdit" type="primary" link :icon="Plus" @click="addRow(section.key)">
                       新增条目
                     </el-button>

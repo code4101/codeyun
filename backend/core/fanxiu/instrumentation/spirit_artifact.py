@@ -215,6 +215,12 @@ def _memory_runtime_snapshot() -> dict[str, Any]:
         if position not in selected or score > selected[position][0]:
             selected[position] = score, part
     observed_artifacts = {position[0] for position in selected}
+    from .spirit_artifact_affixes import enrich_spirit_artifact_effects
+    enrich_spirit_artifact_effects(
+        [effect for _, part in selected.values() for key in ("effects", "pending_effects")
+         for effect in part[key]],
+        pid=memory.pid, process_start_ticks=memory.process_start_ticks,
+    )
     complete = bool(observed_artifacts) and all(
         (artifact_index, part_index) in selected
         for artifact_index in observed_artifacts

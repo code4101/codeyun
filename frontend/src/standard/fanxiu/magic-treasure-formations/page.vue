@@ -2,13 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import type {
-  FanxiuFormationEffectDetailImportItem,
-  FanxiuFormationRequirementImportItem,
   FanxiuInventoryItem,
   FanxiuInventoryType,
   FanxiuMagicTreasureHallSnapshot,
 } from '@/api/fanxiu';
-import { getFanxiuMagicTreasureHall, importFanxiuFormationRequirementsFromOcr } from '@/api/fanxiu';
+import { getFanxiuMagicTreasureHall } from '@/api/fanxiu';
 import { useUserStore } from '@/store/userStore';
 import FormationSlotList from './FormationSlotList.vue';
 import FormationRequirementList from './FormationRequirementList.vue';
@@ -280,8 +278,6 @@ const snapshot = ref<FanxiuMagicTreasureHallSnapshot>({
   houtiangubao: [],
 });
 const cards = ref<FormationCard[]>([]);
-const pendingRequirementImportCardId = ref('');
-const importingRequirementCardId = ref('');
 const smartRecipeStates = reactive<Record<string, SmartRecipeState>>({});
 const smartRecipeRunIds = new Map<string, number>();
 const smartRecipeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -355,7 +351,6 @@ watch([cards, inventoryItems], () => {
 }, { deep: true, flush: 'post' });
 
 onMounted(async () => {
-  window.addEventListener('paste', handleWindowPaste);
   const hasStoredCards = loadCardsFromStorage();
   await loadInventory();
   if (!hasStoredCards) {
@@ -367,7 +362,6 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('paste', handleWindowPaste);
   for (const timer of smartRecipeTimers.values()) clearTimeout(timer);
   smartRecipeTimers.clear();
   for (const cardId of smartRecipeRunIds.keys()) cancelSmartRecipeRun(cardId);
@@ -891,12 +885,6 @@ function addBlankCard() {
 
 function removeCard(cardId: string) {
   cards.value = cards.value.filter(card => card.id !== cardId);
-  if (pendingRequirementImportCardId.value === cardId) {
-    pendingRequirementImportCardId.value = '';
-  }
-  if (importingRequirementCardId.value === cardId) {
-    importingRequirementCardId.value = '';
-  }
 }
 
 function addRequirement(cardId: string) {
@@ -1009,209 +997,6 @@ function normalizeRequirementEffectDetail(text: string | null | undefined) {
     .map(line => line.trim())
     .filter(Boolean);
   return [...new Set(lines)].join('\n');
-}
-
-function mergeRequirementEffectDetail(left: string, right: string) {
-  const lines = [
-    ...normalizeRequirementEffectDetail(left).split('\n'),
-    ...normalizeRequirementEffectDetail(right).split('\n'),
-  ].map(line => line.trim()).filter(Boolean);
-  return [...new Set(lines)].join('\n');
-}
-
-function normalizeEffectNameToken(text: string | null | undefined) {
-  return normalizeRequirementEffectText(text)
-    .replace(/^(?:名字|效果)\s*/, '')
-    .replace(/^(?:【[^】]+】)+/, '')
-    .trim();
-}
-
-function normalizeEffectLookupKey(text: string | null | undefined) {
-  return normalizeEffectNameToken(text)
-    .replace(/[【】［］\[\]（）()·•・:：\s]/g, '')
-    .trim();
-}
-
-function effectNameMatches(left: string, right: string) {
-  const leftKey = normalizeEffectLookupKey(left);
-  const rightKey = normalizeEffectLookupKey(right);
-  if (!leftKey || !rightKey) return false;
-  return leftKey === rightKey || leftKey.includes(rightKey) || rightKey.includes(leftKey);
-}
-
-function extractEffectNameTokens(effectText: string) {
-  const tokens: string[] = [];
-  for (const part of String(effectText || '').split(/[；;]/)) {
-    const normalized = normalizeEffectNameToken(part);
-    if (normalized && !tokens.includes(normalized)) {
-      tokens.push(normalized);
-    }
-  }
-  return tokens;
-}
-
-function mergeRequirementEffectText(left: string, right: string) {
-  const parts: string[] = [];
-  for (const chunk of [left, right]) {
-    for (const item of String(chunk || '').split(/[；;]+/)) {
-      const normalized = normalizeRequirementEffectText(item);
-      if (normalized && !parts.includes(normalized)) {
-        parts.push(normalized);
-      }
-    }
-  }
-  return parts.join('；');
-}
-
-function applyImportedRequirements(cardId: string, importedRequirements: FanxiuFormationRequirementImportItem[]) {
-  const card = cards.value.find(entry => entry.id === cardId);
-  if (!card) return { insertedCount: 0, mergedCount: 0 };
-
-  const existingByKey = new Map<string, FormationRequirement>();
-  for (const requirement of card.requirements) {
-    const key = normalizeRequirementMergeKey(requirement.text);
-    if (key) {
-      existingByKey.set(key, requirement);
-    }
-  }
-
-  let insertedCount = 0;
-  let mergedCount = 0;
-  for (const imported of importedRequirements) {
-    const text = String(imported.text || '').trim();
-    if (!text) continue;
-    const effectText = String(imported.effect_text || '').trim();
-    const key = normalizeRequirementMergeKey(text);
-    if (!key) continue;
-
-    const existing = existingByKey.get(key);
-    if (existing) {
-      existing.effectText = mergeRequirementEffectText(existing.effectText, effectText);
-      if (!existing.text.trim()) {
-        existing.text = text;
-        syncRequirementText(existing);
-      }
-      mergedCount += 1;
-      continue;
-    }
-
-    const requirement = normalizeRequirement({
-      text,
-      effectText,
-    });
-    card.requirements.push(requirement);
-    existingByKey.set(key, requirement);
-    insertedCount += 1;
-  }
-
-  return { insertedCount, mergedCount };
-}
-
-function formatImportedEffectDetailLine(effectName: string, detailText: string, effectNameCount: number) {
-  const normalizedName = normalizeEffectNameToken(effectName);
-  const normalizedDetail = normalizeRequirementEffectDetail(detailText);
-  if (!normalizedDetail) return '';
-  if (effectNameCount > 1 && normalizedName) {
-    return `${normalizedName} ${normalizedDetail}`;
-  }
-  return normalizedDetail;
-}
-
-function applyImportedEffectDetails(cardId: string, importedEffectDetails: FanxiuFormationEffectDetailImportItem[]) {
-  const card = cards.value.find(entry => entry.id === cardId);
-  if (!card) return { updatedCount: 0, unmatchedCount: 0 };
-
-  let updatedCount = 0;
-  let unmatchedCount = 0;
-
-  for (const imported of importedEffectDetails) {
-    const effectName = normalizeEffectNameToken(imported.effect_name);
-    const effectDetail = normalizeRequirementEffectDetail(imported.effect_detail);
-    if (!effectName || !effectDetail) continue;
-
-    const matchedRequirements = card.requirements.filter(requirement =>
-      extractEffectNameTokens(requirement.effectText).some(token => effectNameMatches(token, effectName)),
-    );
-    if (!matchedRequirements.length) {
-      unmatchedCount += 1;
-      continue;
-    }
-
-    for (const requirement of matchedRequirements) {
-      const mergedDetail = mergeRequirementEffectDetail(
-        requirement.effectDetail,
-        formatImportedEffectDetailLine(effectName, effectDetail, extractEffectNameTokens(requirement.effectText).length),
-      );
-      if (mergedDetail !== requirement.effectDetail) {
-        requirement.effectDetail = mergedDetail;
-        updatedCount += 1;
-      }
-    }
-  }
-
-  return { updatedCount, unmatchedCount };
-}
-
-function extractClipboardImage(event: ClipboardEvent): File | null {
-  const items = Array.from(event.clipboardData?.items || []);
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      return item.getAsFile();
-    }
-  }
-  return null;
-}
-
-async function importRequirementImage(cardId: string, image: File) {
-  importingRequirementCardId.value = cardId;
-  try {
-    const imported = await importFanxiuFormationRequirementsFromOcr(image);
-    const { insertedCount, mergedCount } = applyImportedRequirements(cardId, imported.requirements);
-    const { updatedCount, unmatchedCount } = applyImportedEffectDetails(cardId, imported.effect_details);
-    if (!insertedCount && !mergedCount && !updatedCount) {
-      if (unmatchedCount) {
-        ElMessage.warning(`识别到 ${unmatchedCount} 条词缀说明，但当前卡片没有同名词条`);
-        return;
-      }
-      ElMessage.warning('截图里没有可导入的新触发条件或词缀说明');
-      return;
-    }
-    const summaryParts: string[] = [];
-    if (insertedCount) summaryParts.push(`新增 ${insertedCount} 条`);
-    if (mergedCount) summaryParts.push(`合并 ${mergedCount} 条`);
-    if (updatedCount) summaryParts.push(`补全 ${updatedCount} 条说明`);
-    const suffix = unmatchedCount ? `，另有 ${unmatchedCount} 条说明未匹配` : '';
-    ElMessage.success(`${summaryParts.join('，')}${suffix}，可继续粘贴`);
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '触发条件截图导入失败');
-  } finally {
-    if (importingRequirementCardId.value === cardId) {
-      importingRequirementCardId.value = '';
-    }
-  }
-}
-
-function toggleRequirementImport(cardId: string) {
-  if (pendingRequirementImportCardId.value === cardId) {
-    pendingRequirementImportCardId.value = '';
-    return;
-  }
-  pendingRequirementImportCardId.value = cardId;
-  ElMessage.info('已准备导入触发条件或词缀说明，请直接粘贴截图');
-}
-
-async function handleWindowPaste(event: ClipboardEvent) {
-  const cardId = pendingRequirementImportCardId.value;
-  if (!cardId || importingRequirementCardId.value) {
-    return;
-  }
-  const image = extractClipboardImage(event);
-  if (!image) {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  await importRequirementImage(cardId, image);
 }
 
 function updateSlotItem(cardId: string, slotIndex: number, itemId: string | null) {
@@ -2368,21 +2153,6 @@ function parseFlexibleNumber(input: string) {
             <div class="rule-panel-header">
               <div class="rule-panel-title">触发条件</div>
               <div class="rule-panel-actions">
-                <el-button
-                  type="primary"
-                  plain
-                  size="small"
-                  :loading="importingRequirementCardId === card.id"
-                  @click="toggleRequirementImport(card.id)"
-                >
-                  {{
-                    importingRequirementCardId === card.id
-                      ? '识别中...'
-                      : pendingRequirementImportCardId === card.id
-                        ? '关闭粘贴导入'
-                        : '粘贴截图导入'
-                  }}
-                </el-button>
                 <el-button type="primary" plain size="small" @click="addRequirement(card.id)">添加条件</el-button>
               </div>
             </div>

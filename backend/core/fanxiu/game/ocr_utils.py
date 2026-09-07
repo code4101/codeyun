@@ -109,14 +109,7 @@ def _extract_ocr_line_entries(preview_document: dict[str, Any]) -> list[list[dic
     return [[item for item in group if str(item["text"]).strip()] for group in grouped]
 
 
-def _extract_magic_treasure_ocr_line_entries(preview_document: dict[str, Any]) -> list[list[dict[str, Any]]]:
-    return _extract_ocr_line_entries(preview_document)
 
 
 def _join_ocr_line_entries(entries: list[dict[str, Any]]) -> str:
     return "".join(_sanitize_ocr_text(item.get("text")) for item in entries if _sanitize_ocr_text(item.get("text")))
-
-
-def _extract_magic_treasure_ocr_lines(preview_document: dict[str, Any]) -> list[list[str]]:
-    grouped_entries = _extract_magic_treasure_ocr_line_entries(preview_document)
-    return [[str(item["text"]) for item in group if str(item["text"]).strip()] for group in grouped_entries]

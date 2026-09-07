@@ -8643,10 +8643,6 @@ class BehaviorTreeExecutor(
             and any(fragment in normalized for fragment in ("天衍灵石", "兑换所需", "限购"))
         )
 
-    def _daily_xianshi_text_is_box_detail(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        return "宝匣" in normalized and any(fragment in normalized for fragment in ("领取", "打开可获得", "兑换"))
-
     def _record_daily_xianshi_done(self, payload: dict[str, Any], *, message: str) -> str:
         next_time = self._next_daily_boss_reset_time_text()
         self._persist_scheduler_task_next_time(
@@ -8770,85 +8766,57 @@ class BehaviorTreeExecutor(
         yield from context.wait_action_settle(2.0)
 
     def _click_daily_xianshi_free_coin_box(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        payload: dict[str, Any],
-        image249: dict[str, Any],
-        image250: dict[str, Any],
-        *,
-        task_label: str,
+        self, ctx: dict[str, Any], stop_event: threading.Event,
+        payload: dict[str, Any], image249: dict[str, Any], image250: dict[str, Any],
+        *, task_label: str,
     ):
-        del image249
-        asset_tree_path = ctx.get("asset_tree_path")
-        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        click_attempts = max(1, int(payload.get("coin_box_click_attempts") or 3))
-        for attempt in range(1, click_attempts + 1):
-            self._raise_if_stopped(stop_event)
-            with self._lock:
-                self._status.update({
-                    "phase": "daily_xianshi_open_coin_box",
-                    "message": f"{task_label}：点击首个宝匣进入详情 {attempt}/{click_attempts}",
-                    "updated_at": time.time(),
-                })
-                self._log_locked(
-                    "action",
-                    f"{task_label}：点击 #249「首个宝匣」 {attempt}/{click_attempts}",
-                )
-            context.click_shape_center(249, "首个宝匣")
-            yield from context.wait_action_settle(float(payload.get("coin_box_settle_seconds") or 2.5))
-            detail_frame = context.cur_frame(update=True)
-            claim_match = context.shape_matches(250, "领取", frame_data_url=detail_frame)
-            if isinstance(claim_match, dict):
-                context.click_shape_center(250, "领取")
-                yield from context.wait_action_settle(float(payload.get("claim_settle_seconds") or 1.5))
-                self._log("success", f"{task_label}：已通过 #250「领取」局部锚点领取免费宝匣")
-                return True
-            text = context.ocr_text(detail_frame)
-            if (
-                self._daily_xianshi_text_is_box_detail(text)
-                and self._daily_xianshi_text_indicates_no_free_coin_box(text)
-            ):
-                self._log(
-                    "success",
-                    f"{task_label}：详情 OCR 已证明当前宝匣需要付费，视为今日已无可领免费项",
-                )
+        """仙币免费项排首位；详情正向证据与领取后首项变化共同证明完成。"""
+        context = self._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        claimed = False
+        for _inspection in range(2):
+            state = None
+            for attempt in range(1, 4):
+                landed = yield from context.wait_scene([249], label=f"{task_label}：确认仙币列表")
+                if int(landed) != 249:
+                    raise RuntimeError(f"{task_label}：未进入仙币列表，当前 #{int(landed)}")
+                context.click_shape_center(249, "首个宝匣")
+                try:
+                    state = yield from context.wait_any(
+                        {
+                            "claim": context.shape_visible(250, "领取"),
+                            "exchange": context.shape_visible(250, "兑换"),
+                        },
+                        timeout=8.0,
+                        label=f"{task_label}：等待首项详情打开",
+                    )
+                    # 详情已打开后，只以固定价格栏区分是否付费。
+                    priced = context.shape_matches(250, "价格") is not None
+                    if not priced and state == "exchange":
+                        raise RuntimeError(f"{task_label}：详情显示兑换但价格栏未识别，未确认免费")
+                    state = "paid" if priced else "free"
+                    break
+                except TimeoutError:
+                    # 未进入详情时，列表的“兑换所需”不能证明已领取。
+                    if attempt == 3:
+                        raise
+                    landed = yield from context.wait_scene([249], wait=3.0)
+                    if int(landed) != 249:
+                        raise RuntimeError(f"{task_label}：首项详情未确认，当前 #{int(landed)}")
+                    self._log("warning", f"{task_label}：第 {attempt} 次点击仍在列表，重新打开首项")
+            if state == "paid":
                 yield from self._return_daily_xianshi_box_detail_to_coin_list(
-                    ctx,
-                    stop_event,
-                    payload,
-                    image250,
-                    task_label=task_label,
+                    ctx, stop_event, payload, image250, task_label=task_label,
                 )
-                return "not_free"
-            if attempt < click_attempts:
-                self._log(
-                    "warning",
-                    f"{task_label}：点击宝匣后「领取」局部框仍为空，重试 {attempt + 1}/{click_attempts}",
-                )
-                continue
-            raise RuntimeError(
-                f"{task_label}：连续 {attempt} 次点击后仍未确认宝匣详情，"
-                f"且 OCR 未证明非免费状态；OCR={text[:120]}"
+                self._log("success", f"{task_label}：首项详情同时确认价格与兑换，免费项已无可领")
+                return True if claimed else "not_free"
+            if state != "free" or claimed:
+                raise RuntimeError(f"{task_label}：领取后免费项仍可领取，未确认完成")
+            yield from context.wait_click_then_scene(
+                250, "领取", [249], timeout=30.0, max_clicks=1,
+                label=f"{task_label}：领取后等待仙币列表并复查首项",
             )
-        raise RuntimeError(f"{task_label}：连续 {click_attempts} 次点击仍未进入宝匣详情")
-
-    def _daily_xianshi_claim_shape_missing_error(self, exc: Exception) -> bool:
-        message = str(exc)
-        compact = re.sub(r"\s+", "", message)
-        if "250" not in compact or "领取" not in compact:
-            return False
-        if "点击前场景" in compact and "#249" in compact:
-            return True
-        return any(token in compact for token in ("未匹配", "超时", "timeout", "Timeout", "0%"))
-
-    def _daily_xianshi_text_indicates_no_free_coin_box(self, text: str) -> bool:
-        normalized = _sanitize_ocr_text(text)
-        if not normalized:
-            return False
-        if "免费" in normalized or "领取" in normalized:
-            return False
-        return "宝匣" in normalized and any(fragment in normalized for fragment in ("兑换", "价格", "所需"))
+            claimed = True
+        raise RuntimeError(f"{task_label}：未完成领取后验证")
 
     def _return_daily_xianshi_box_detail_to_coin_list(
         self,
@@ -8862,33 +8830,9 @@ class BehaviorTreeExecutor(
         del image250
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        # Paid box details use scene #316 while the free detail was originally
-        # annotated as #250.  Both share the global bottom-left return control;
-        # using #424 avoids ever touching the paid "兑换" action.
-        context.click_shape_center(424, "返回")
-        yield from context.wait_action_settle(float(payload.get("coin_box_return_settle_seconds") or 1.0))
+        # 同一商品详情结构共用 #250 的正式关闭位置，不点击付费兑换。
+        yield from context.click_shape_center_then_scene(250, "返回", [249], timeout=20.0)
         return "success"
-
-    def _claim_daily_xianshi_coin_box(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        payload: dict[str, Any],
-        image250: dict[str, Any],
-        *,
-        task_label: str,
-    ):
-        asset_tree_path = ctx.get("asset_tree_path")
-        context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None, stop_event=stop_event)
-        frame = context.cur_frame(update=True)
-        claim_match = context.shape_matches(250, "领取", frame_data_url=frame)
-        if not isinstance(claim_match, dict):
-            raise RuntimeError(f"{task_label}：#250 [领取] 未匹配")
-        context.click_shape_center(250, "领取")
-        yield from context.wait_action_settle(float(payload.get("claim_settle_seconds") or 1.5))
-        text = context.ocr_text(update=True)
-        self._log("success", f"{task_label}：领取后 OCR={text[:120]}")
-        return True
 
     def _return_daily_xianshi_to_world(
         self,
@@ -10298,7 +10242,7 @@ class BehaviorTreeExecutor(
                 )
                 for item in candidates
             ]
-        result = choose_scene_from_graph(candidates, edges)
+        result = choose_scene_from_graph(candidates, edges, resolve_ties=layer_label == "layer2")
         ambiguity_entry_id = str(ctx.get("entry_id") or getattr(ctx.get("entry"), "entry_id", "") or "")
         if (
             ambiguity_entry_id

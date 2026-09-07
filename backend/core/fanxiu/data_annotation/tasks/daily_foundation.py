@@ -6493,7 +6493,7 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少论道_座位资产树路径，无法执行作业")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
 
-        scene_id, _score, frame = (yield from context.current_scene([69, 34, 296, 297, 298, 371, 372, 373, 375, 329, 301, 303, 304, 391, 52, 53], update=True))
+        scene_id, _score, frame = (yield from context.current_scene([69, 34, 296, 297, 298, 371, 372, 375, 329, 301, 303, 304, 391, 52, 53], update=True))
         # Candidate-set scoring can project a real world frame onto #69 when
         # current-scene closure candidates are included.  Before treating that broad result as
         # authorization to scroll the daily list, arbitrate #69 vs #34 again
@@ -6516,7 +6516,7 @@ class DailyFoundationTaskMixin:
                 return runtime_guard
         if self._daily_lundao_text_is_reward(text):
             scene_id = 52
-        if scene_id in {297, 298, 371, 372, 373, 375}:
+        if scene_id in {297, 298, 371, 372, 303, 375}:
             result = yield from self._run_daily_lundao_seat_and_leave(context, stop_event, payload=payload)
             return self._finish_daily_lundao_current_scene_action(
                 payload,
@@ -7756,7 +7756,7 @@ class DailyFoundationTaskMixin:
         # belong to the previously running job.  #295 is accepted only inside
         # _advance_daily_lundao_kick_dialogue after this job has initiated its
         # own kick/battle transaction.
-        scene_id, score, _frame = (yield from context.current_scene([297, 298, 371, 372, 373, 375], update=True))
+        scene_id, score, _frame = (yield from context.current_scene([297, 298, 371, 372, 303, 375], update=True))
         if scene_id == 297:
             selection = self._select_daily_lundao_kick_target()
             if not selection.get("ok"):
@@ -7809,8 +7809,8 @@ class DailyFoundationTaskMixin:
             dialogue_result = yield from self._confirm_daily_lundao_kick_request(context, start_scene=372)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
-        elif scene_id == 373:
-            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=373)
+        elif scene_id == 303:
+            dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=303)
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
         elif scene_id == 375:
@@ -7819,7 +7819,7 @@ class DailyFoundationTaskMixin:
             score = float(dialogue_result.get("score") or 0.0)
         else:
             raise RuntimeError(
-                f"论道_座位：抢座节点入口只接受 #297/#298/#371/#372/#373/#375，当前 "
+                f"论道_座位：抢座节点入口只接受 #297/#298/#371/#372/#303/#375，当前 "
                 f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
             )
         return (yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id, score))
@@ -8043,7 +8043,7 @@ class DailyFoundationTaskMixin:
                 observed = yield from context.wait_scene(
                     [371,
                     372,
-                    373,
+                    303,
                     375,
                     295,
                     52],
@@ -8056,12 +8056,12 @@ class DailyFoundationTaskMixin:
                 self._log("warning", f"论道_座位：第 {attempt}/3 次点击「请他让座」未离开 #371，重新定位后重试")
             if start_scene == 371:
                 raise RuntimeError("论道_座位：连续 3 次点击「请他让座」仍停留 #371，已停止避免无限重试")
-            if start_scene in {373, 375, 295, 52}:
+            if start_scene in {303, 375, 295, 52}:
                 return (yield from self._advance_daily_lundao_kick_dialogue(context, start_scene=start_scene))
         if start_scene != 372:
             raise RuntimeError(f"论道_座位：请离确认节点只接受 #371/#372，当前 #{start_scene}")
         context.click_shape_center(372, "确定")
-        # #372 后会进入若干段同坐标对话。无需把每一段都识别成 #373；
+        # #372 后会进入若干段同坐标对话。无需把每一段都识别成 #303；
         # 先给首段画面稳定时间，随后只以正式终点 #375 是否出现作为循环条件。
         yield from context.wait_action_settle(1.5)
         return (yield from self._advance_daily_lundao_kick_dialogue(context))
@@ -8088,127 +8088,30 @@ class DailyFoundationTaskMixin:
         *,
         start_scene: int | None = None,
     ) -> dict[str, Any]:
-        """推进战前与战后两段对话，并兼容胜利浮层后直接进入入座链路。"""
-        pre_battle_clicks = 0
-        battle_scene = start_scene
-        if battle_scene not in {373, 375, 295, 52}:
-            battle_scene = yield from context.wait_scene(
-                [373,
-                375,
-                295,
-                52],
-                wait=20.0,
-                label="论道_座位：等待战前对话/战斗/结束",
-            )
-            battle_scene = _lundao_waited_scene_id(battle_scene)
-        if battle_scene == 52:
-            return {
-                "status": "dialogue_finished",
-                "clicks": 0,
-                "pre_battle_clicks": 0,
-                "post_battle_clicks": 0,
-                "scene_id": 52,
-                "score": 100.0,
-            }
-        if battle_scene == 373:
-            pre_battle_clicks = yield from context.advance_dialogue(
-                373,
-                "聊天按钮",
-                label="论道_座位：推进战前对话",
-            )
-            battle_scene = yield from context.wait_scene(
-                [375,
-                295,
-                52,
-                186,
-                303],
-                wait=30.0,
-                label="论道_座位：战前对话结束后等待战斗/胜利/入座对话",
-            )
-            battle_scene = _lundao_waited_scene_id(battle_scene)
-            if battle_scene in {52, 186, 303}:
-                return {
-                    "status": "dialogue_finished",
-                    "clicks": pre_battle_clicks,
-                    "pre_battle_clicks": pre_battle_clicks,
-                    "post_battle_clicks": 0,
-                    "scene_id": int(battle_scene),
-                    "score": 100.0,
-                }
-
-        # #375 是论道自己的胜利浮层，#295 是兼容的通用胜利浮层；两者都
-        # 必须点击各自正式标注的「关闭」，随后只等待论道战后对话或入座节点。
-        # 看见胜利只能表示战斗结束，不能提前报作业成功。
-        after_battle_scene = battle_scene
-        if after_battle_scene not in {375, 295}:
-            after_battle_scene = yield from context.wait_scene(
-                [373,
-                52,
-                375,
-                295],
-                wait=180.0,
-                label="论道_座位：等待战斗结束后的对话/#52/#375/#295",
-            )
-            after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
-        if after_battle_scene in {375, 295}:
-            victory_scene_id = int(after_battle_scene)
-            context.click_shape_center(victory_scene_id, "关闭")
-            yield from context.wait_action_settle(1.5)
-            after_battle_scene = yield from context.wait_scene(
-                [373,
-                52,
-                329,
-                301,
-                303],
-                wait=30.0,
-                label="论道_座位：关闭胜利浮层后等待战后对话/入座",
-            )
-            after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
-        if after_battle_scene == 52:
-            return {
-                "status": "dialogue_finished",
-                "clicks": pre_battle_clicks,
-                "pre_battle_clicks": pre_battle_clicks,
-                "post_battle_clicks": 0,
-                "scene_id": 52,
-                "score": 100.0,
-            }
-        post_battle_clicks = 0
-        if after_battle_scene == 373:
-            post_battle_clicks = yield from context.advance_dialogue(
-                373,
-                "聊天按钮",
-                label="论道_座位：推进战后对话",
-            )
-            after_battle_scene = yield from context.wait_scene(
-                [52,
-                329,
-                301,
-                303],
-                wait=30.0,
-                label="论道_座位：战后对话结束后等待入座",
-            )
-            after_battle_scene = _lundao_waited_scene_id(after_battle_scene)
-        if after_battle_scene == 52:
-            return {
-                "status": "dialogue_finished",
-                "clicks": pre_battle_clicks + post_battle_clicks,
-                "pre_battle_clicks": pre_battle_clicks,
-                "post_battle_clicks": post_battle_clicks,
-                "scene_id": 52,
-                "score": 100.0,
-            }
-        scene_id, score, _frame = (yield from context.current_scene([329, 301, 303], update=True))
-        if scene_id is None:
-            raise RuntimeError("论道_座位：关闭胜利浮层后未确认战后对话或入座落点")
-        return {
-            "status": "battle_won",
-            "clicks": pre_battle_clicks + post_battle_clicks,
-            "pre_battle_clicks": pre_battle_clicks,
-            "post_battle_clicks": post_battle_clicks,
-            "scene_id": scene_id,
-            "score": score,
-        }
+        """共用 #303 推进人物对话；实际胜利页和入座页决定流程，不猜对话阶段。"""
+        terminal_scenes = (52, 53, 186, 329, 301)
+        candidates = [303, 375, 295, *terminal_scenes]
+        scene_id = start_scene
+        clicks = 0
+        for _cycle in range(8):
+            if scene_id is None:
+                scene_id = _lundao_waited_scene_id((yield from context.wait_scene(
+                    candidates, wait=180.0, label="论道_座位：等待对话/胜利/入座",
+                )))
+            if scene_id in terminal_scenes:
+                return {"status": "dialogue_finished", "clicks": clicks,
+                        "scene_id": int(scene_id), "score": 100.0}
+            if scene_id == 303:
+                clicks += (yield from context.advance_dialogue(
+                    303, "对话", label="论道_座位：推进人物对话",
+                ))
+            elif scene_id in {375, 295}:
+                context.click_shape_center(scene_id, "关闭")
+                yield from context.wait_action_settle(1.5)
+            else:
+                raise RuntimeError(f"论道_座位：对话/战斗链出现未声明落点 #{scene_id}")
+            scene_id = None
+        raise RuntimeError("论道_座位：对话/战斗超过 8 段，未确认入座落点")
 
     def _run_daily_lundao_empty_seat_strategy(
         self,
@@ -8357,7 +8260,7 @@ class DailyFoundationTaskMixin:
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
-        elif scene_id in {373, 375, 295}:
+        elif scene_id in {303, 375, 295}:
             dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
                 context,
                 start_scene=scene_id,
@@ -8381,7 +8284,7 @@ class DailyFoundationTaskMixin:
             )
         if scene_id == 301:
             scene_id, score = yield from self._advance_daily_lundao_seat_confirmation(context, stop_event, scene_id)
-        if scene_id in {303, 373}:
+        if scene_id in {303}:
             scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
                 context,
                 scene_id,
@@ -8444,67 +8347,11 @@ class DailyFoundationTaskMixin:
         self,
         context: Any,
         start_scene: int,
-        *,
-        max_cycles: int = 8,
     ) -> tuple[int, float]:
-        """Advance the bounded #303/#373 post-seat dialogue transaction."""
-
-        terminal_scenes = (52, 53, 186, 329, 301)
-        candidates = [303, 373, *terminal_scenes]
-        scene_id = int(start_scene)
-        score = 100.0
-        for cycle in range(1, max_cycles + 1):
-            observed_scene, observed_score, _frame = (yield from context.current_scene(
-                candidates,
-                update=True,
-            ))
-            if observed_scene in terminal_scenes:
-                return int(observed_scene), float(observed_score or 0.0)
-            if observed_scene not in {303, 373}:
-                raise RuntimeError(
-                    "论道_座位：战后对话出现未声明落点，"
-                    f"当前 #{observed_scene if observed_scene is not None else 'unknown'} "
-                    f"{float(observed_score or 0.0):.0f}%"
-                )
-            scene_id = int(observed_scene)
-            score = float(observed_score or 0.0)
-            dialogue_shape = "对话" if scene_id == 303 else "聊天按钮"
-            yield from context.advance_dialogue(
-                scene_id,
-                dialogue_shape,
-                label=(
-                    f"论道_座位：推进 #{scene_id} 连续人物对话"
-                    f"（第 {cycle}/{max_cycles} 段）"
-                ),
-            )
-
-            waited_scene = yield from context.wait_scene(
-                candidates,
-                wait=30.0,
-                label="论道_座位：人物对话后等待入座/下一段对话",
-            )
-            if isinstance(waited_scene, View):
-                if waited_scene.id is None:
-                    raise RuntimeError("论道_座位：人物对话后 View 缺少场景编号")
-                scene_id = int(waited_scene.id)
-            else:
-                scene_id = int(waited_scene)
-            if scene_id in terminal_scenes:
-                # wait_scene 已经在真实稳定帧上证明了终点。这里若立即再截一帧，
-                # 可能正好采到 UI 切换过渡而得到 unknown，反而推翻刚取得的
-                # 强证据。终点直接消费 wait_scene 的结论；只有下一轮人物对话
-                # 才重新取帧确认。
-                return int(scene_id), 100.0
-            if scene_id not in {303, 373}:
-                raise RuntimeError(
-                    "论道_座位：人物对话后无法证明进入已知后继，"
-                    f"当前 #{scene_id if scene_id is not None else 'unknown'}"
-                )
-
-        raise RuntimeError(
-            "论道_座位：#303/#373 人物对话超过有界推进次数，"
-            f"最后 #{scene_id} {score:.0f}%"
+        result = yield from self._advance_daily_lundao_kick_dialogue(
+            context, start_scene=start_scene,
         )
+        return int(result["scene_id"]), float(result["score"])
 
     def _finish_daily_lundao_in_progress(self, context: Any, *, continue_to_selection: bool = False) -> str | int:
         """Leave #304; dynamic strategy may continue on the dojo selection page."""
@@ -8609,10 +8456,8 @@ class DailyFoundationTaskMixin:
         overlay_ids = {386, 375, 295}
         source_ids = {186, 85}
         if confirm_lundao_exit:
-            # #53 is the dojo; #54 confirms leaving a spirit behind to listen.
-            # Claim #54 throughout the click transaction so the generic popup
-            # guard cannot dismiss it via its background and cancel the exit.
-            source_ids.update({53, 54})
+            # #54 确认由弹窗层处理，业务只等待离场后的真实落点。
+            source_ids.add(53)
         candidate_ids = sorted(terminal_ids | overlay_ids | source_ids)
         for attempt in range(1, 5):
             if scene_id in terminal_ids:
@@ -8633,7 +8478,7 @@ class DailyFoundationTaskMixin:
                     f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
                 )
 
-            exit_shape = "确认" if confirm_lundao_exit and scene_id == 54 else "离开"
+            exit_shape = "离开"
             self._log(
                 "action",
                 f"{label}：收尾识别 #{scene_id}，点击正式标注「{exit_shape}」（第 {attempt}/4 次）",
@@ -8642,7 +8487,7 @@ class DailyFoundationTaskMixin:
                 waited_scene = yield from context.wait_click_then_scene(
                     scene_id,
                     exit_shape,
-                    candidate_ids,
+                    sorted(terminal_ids | overlay_ids),
                     settle_seconds=1.5,
                     timeout=15.0,
                     max_clicks=1,

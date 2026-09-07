@@ -127,6 +127,8 @@ def graph_nearest_scene_ids(candidate_ids: Iterable[int], match_edges: Iterable[
 def choose_scene_from_graph(
     candidates: Iterable[SceneGraphCandidate],
     match_edges: Iterable[Mapping[str, Any] | tuple[int, int]],
+    *,
+    resolve_ties: bool = False,
 ) -> SceneGraphRecognitionResult:
     """Choose a scene from valid matches and graph relations.
 
@@ -155,7 +157,7 @@ def choose_scene_from_graph(
         # 427 -> 429 时，三者对当前帧都可能是 100%，但唯一终点 429
         # 才是最具体的事实。这里先压缩双向可达的强连通分量，再只保留
         # 没有指向其它分量的终端节点。若终端不唯一，必须继续消歧或返回
-        # ambiguous，绝不能让遍历顺序制造一个看似确定的结果。
+        # ambiguous；只有低置信度 Layer 2 显式允许并列兜底。
         nearest_ids = graph_nearest_scene_ids((item.scene_id for item in matched), match_edges)
         if len(nearest_ids) == 1:
             winner = next(item for item in matched if item.scene_id == nearest_ids[0])
@@ -191,7 +193,8 @@ def choose_scene_from_graph(
             item for item in comparable
             if abs(float(item.frame_similarity or 0.0) - float(best.frame_similarity or 0.0)) < 1e-9
         ]
-        if len(same_best) == 1:
+        if len(same_best) == 1 or resolve_ties:
+            best = min(same_best, key=lambda item: item.scene_id)
             return SceneGraphRecognitionResult(
                 scene_id=best.scene_id,
                 score=best.score,

@@ -75,3 +75,17 @@ def test_choose_scene_from_graph_never_promotes_below_threshold_similarity():
     assert result.scene_id is None
     assert result.status == "unknown"
     assert result.best_similarity_scene_id == 34
+
+
+def test_equal_similarity_is_resolved_only_for_low_confidence_fallback():
+    candidates = [
+        SceneGraphCandidate(373, 100.0, True, 86.8),
+        SceneGraphCandidate(303, 100.0, True, 86.8),
+    ]
+    edges = [(303, 373), (373, 303)]
+    assert choose_scene_from_graph(candidates, edges).status == "ambiguous"
+    for ordered in (candidates, list(reversed(candidates))):
+        result = choose_scene_from_graph(ordered, edges, resolve_ties=True)
+        assert result.scene_id == 303
+        assert result.status == "similarity_tiebreak"
+        assert set(result.unresolved_candidates) == {303, 373}

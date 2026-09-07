@@ -1160,7 +1160,7 @@ def register_fanxiu_default_jobs() -> None:
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         current_fact_scene_ids = (
-            69, 296, 297, 298, 371, 372, 373, 375, 295,
+            69, 296, 297, 298, 371, 372, 375, 295,
             329, 301, 302, 303, 304, 391, 52, 53, 54,
         )
         current_scene_id, _score, _frame = yield from context.current_scene(

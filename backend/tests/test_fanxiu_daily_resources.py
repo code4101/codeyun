@@ -171,55 +171,6 @@ def test_daily_xianshi_uses_reference_tab_shape_without_treating_248_as_scene():
     assert any(event[0] == "wait_scene" and event[1] == ([249],) for event in events)
 
 
-def test_daily_xianshi_retries_box_click_when_first_click_stays_on_list():
-    task = object.__new__(BehaviorTreeExecutor)
-    task._lock = threading.RLock()
-    task._status = {}
-    task._log_locked = lambda *_args, **_kwargs: None
-    task._log = lambda *_args, **_kwargs: None
-    task._raise_if_stopped = lambda *_args, **_kwargs: None
-    clicks: list[tuple[int, str]] = []
-    matches = iter([None, {"matched": True, "similarity": 100.0}])
-
-    class FakeRuntime:
-        def click_shape_center(self, view_id, title):
-            clicks.append((view_id, title))
-
-        def wait_action_settle(self, _seconds):
-            if False:
-                yield
-
-        def cur_frame(self, **_options):
-            return "frame"
-
-        def shape_matches(self, *_args, **_options):
-            return next(matches)
-
-        def ocr_text(self, *_args, **_options):
-            return "coin list"
-
-    task._behavior_tree_context = lambda *_args, **_kwargs: FakeRuntime()
-    task._daily_xianshi_text_is_box_detail = lambda _text: False
-
-    result = _drain(
-        task._click_daily_xianshi_free_coin_box(
-            {"asset_tree_path": None},
-            object(),
-            {},
-            {},
-            {},
-            task_label="仙市_秘藏阁",
-        )
-    )
-
-    assert result is True
-    assert clicks == [
-        (249, "首个宝匣"),
-        (249, "首个宝匣"),
-        (250, "领取"),
-    ]
-
-
 def test_xianshi_weekly_resource_success_advances_to_same_monday_five():
     task = DailyResourceTaskMixin()
     writes: list[tuple[str, str]] = []

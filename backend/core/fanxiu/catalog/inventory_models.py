@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 class FanxiuWardrobeItem(BaseModel):
@@ -158,6 +158,26 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     runtime_is_break: bool = False
     runtime_effects: List[dict[str, Any]] = Field(default_factory=list)
 
+    @computed_field
+    @property
+    def stage(self) -> str:
+        """按洗灵规则由高到低判定阶段；缺少词缀事实时不推断错升。"""
+        if self.rank <= 0:
+            return "待识别"
+        if self.rank < 6:
+            return "普通"
+        effects = self.runtime_effects
+        if not effects or any("affix" not in effect for effect in effects):
+            return "待识别"
+        if sum(effect["affix"] in ("满", "巅", "颠") for effect in effects) < 4:
+            return "错升"
+        names = {effect.get("name") or effect.get("official_name") for effect in effects}
+        if "灵器无双" not in names:
+            return "升阶"
+        if "混沌道威" not in names:
+            return "无双"
+        return "巅峰" if any(effect["affix"] in ("巅", "颠") for effect in effects) else "道威"
+
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_peerless(cls, data: Any) -> Any:
@@ -220,78 +240,3 @@ class FanxiuActivityItem(BaseModel):
 
 class FanxiuActivityListSnapshot(BaseModel):
     items: List[FanxiuActivityItem] = Field(default_factory=list)
-
-
-class FanxiuMagicTreasureOcrImportResponse(BaseModel):
-    section_key: str
-    lines: List[str] = Field(default_factory=list)
-    item: FanxiuWardrobeItem
-
-
-class FanxiuSpiritArtifactRankPart(BaseModel):
-    part_name: str
-    rank: int = 0
-    realm: int = 0
-    quality: str = ""
-    background_color: str = ""
-
-
-class FanxiuSpiritArtifactRankRecognitionResponse(BaseModel):
-    matched: bool = False
-    reason: str = ""
-    artifact_name: str = ""
-    title_text: str = ""
-    lines: List[str] = Field(default_factory=list)
-    parts: List[FanxiuSpiritArtifactRankPart] = Field(default_factory=list)
-
-
-class FanxiuSpiritArtifactAttributeValue(BaseModel):
-    label: str = ""
-    percent: str = ""
-    raw_value: str = ""
-    source_text: str = ""
-
-
-class FanxiuSpiritArtifactAttributeRecognitionResponse(BaseModel):
-    matched: bool = False
-    reason: str = ""
-    artifact_name: str = ""
-    part_name: str = ""
-    title_text: str = ""
-    lines: List[str] = Field(default_factory=list)
-    artifact_peerless_1: int = 0
-    artifact_peerless_2: int = 0
-    common_stats: dict[str, str] = Field(default_factory=dict)
-    exclusive_stats: dict[str, str] = Field(default_factory=dict)
-    attributes: List[FanxiuSpiritArtifactAttributeValue] = Field(default_factory=list)
-
-
-class FanxiuSpiritArtifactMarketRecognitionResponse(BaseModel):
-    matched: bool = False
-    reason: str = ""
-    market_currency_count: int = 0
-    lines: List[str] = Field(default_factory=list)
-    items: List[FanxiuSpiritArtifactMarketItem] = Field(default_factory=list)
-
-
-class FanxiuSpiritArtifactStorageBagRecognitionResponse(BaseModel):
-    matched: bool = False
-    reason: str = ""
-    lines: List[str] = Field(default_factory=list)
-    items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
-
-
-class FanxiuFormationRequirementImportItem(BaseModel):
-    text: str
-    effect_text: str = ""
-
-
-class FanxiuFormationEffectDetailImportItem(BaseModel):
-    effect_name: str
-    effect_detail: str = ""
-
-
-class FanxiuFormationRequirementOcrImportResponse(BaseModel):
-    lines: List[str] = Field(default_factory=list)
-    requirements: List[FanxiuFormationRequirementImportItem] = Field(default_factory=list)
-    effect_details: List[FanxiuFormationEffectDetailImportItem] = Field(default_factory=list)

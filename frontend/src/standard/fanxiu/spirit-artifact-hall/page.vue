@@ -1,19 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
-import { Aim, ArrowDown, ArrowUp, Refresh } from '@element-plus/icons-vue';
+import { ArrowDown, ArrowUp, Refresh } from '@element-plus/icons-vue';
 import {
   getFanxiuSpiritArtifactHall,
-  recognizeFanxiuSpiritArtifactAttributes,
-  recognizeFanxiuSpiritArtifactMarket,
-  recognizeFanxiuSpiritArtifactRanks,
-  recognizeFanxiuSpiritArtifactStorageBag,
+  syncFanxiuSpiritArtifactStorageBag,
   saveFanxiuSpiritArtifactHall,
-  type FanxiuSpiritArtifactAttributeRecognitionResponse,
   type FanxiuSpiritArtifactHallSnapshot,
-  type FanxiuSpiritArtifactMarketRecognitionResponse,
-  type FanxiuSpiritArtifactRankRecognitionResponse,
-  type FanxiuSpiritArtifactStorageBagRecognitionResponse,
 } from '@/api/fanxiu';
 
 type StatColumnKey =
@@ -55,6 +48,8 @@ type SpiritArtifactPartRow = Record<StatColumnKey, string> & {
   runtimePart: number;
   runtimeRefineNum: number;
   runtimeIsBreak: boolean;
+  stage: string;
+  runtimeEffects: FanxiuSpiritArtifactHallSnapshot["artifacts"][number]["rows"][number]["runtime_effects"];
 };
 
 type SpiritArtifact = {
@@ -133,16 +128,20 @@ const commonStatLabelKeyMap: Record<string, StatColumnKey> = {
   守御: 'defense',
   防御: 'defense',
 };
+const stageStyles: Record<string, { color: string; background: string; borderColor: string; description: string }> = {
+  错升: { color: '#b91c1c', background: '#fef2f2', borderColor: '#fca5a5', description: '已达6阶，但满／巅不足4条，需要重置培养' },
+  普通: { color: '#475569', background: '#f1f5f9', borderColor: '#cbd5e1', description: '阶数低于6阶' },
+  升阶: { color: '#166534', background: '#f0fdf4', borderColor: '#86efac', description: '至少6阶，且满／巅至少4条' },
+  无双: { color: '#1d4ed8', background: '#eff6ff', borderColor: '#93c5fd', description: '满足升阶条件，并有灵器无双' },
+  道威: { color: '#7e22ce', background: '#faf5ff', borderColor: '#d8b4fe', description: '满足无双条件，并有混沌道威' },
+  巅峰: { color: '#92400e', background: '#fffbeb', borderColor: '#fbbf24', description: '满足道威条件，并有巅词缀' },
+  待识别: { color: '#64748b', background: 'transparent', borderColor: '#cbd5e1', description: '尚无完整阶数或词缀数据，需同步灵器' },
+};
+function stageStyle(stage: string) {
+  return stageStyles[stage] || stageStyles.待识别!;
+}
 const artifactPeerlessSteps = [0, 25, 30];
 const SAVE_DEBOUNCE_MS = 800;
-const recognizedRankQualities = new Set(['red', 'blue_purple']);
-const recognizedCommonStatKeyMap: Record<string, StatColumnKey> = {
-  chaos_power: 'chaosPower',
-  attack: 'attack',
-  spirit_power: 'spiritPower',
-  health: 'health',
-  defense: 'defense',
-};
 type ArtifactPeerlessKey = 'artifactPeerless1' | 'artifactPeerless2';
 const artifactNameAliases: Record<string, string> = {
   青冥岁月灯: '青暝岁月灯',
@@ -269,15 +268,27 @@ function createPartRow(
     runtimePart: 0,
     runtimeRefineNum: 0,
     runtimeIsBreak: false,
+    stage: "待识别",
+    runtimeEffects: [],
     ...emptyStats,
   };
 }
 
-const recognizingRanks = ref(false);
-const recognizingAttributes = ref(false);
-const recognizingMarket = ref(false);
-const recognizingStorageBag = ref(false);
 const loading = ref(false);
+const syncingStorageBag = ref(false);
+
+async function syncStorageBag() {
+  syncingStorageBag.value = true;
+  try {
+    const snapshot = await syncFanxiuSpiritArtifactStorageBag();
+    storageBagItems.value = normalizeStorageBagItems(snapshot.storage_bag_items);
+    ElMessage.success('储物袋数量与自选奖励已同步');
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '同步储物袋失败');
+  } finally {
+    syncingStorageBag.value = false;
+  }
+}
 const runtimeComplete = ref(false);
 const runtimeSource = ref('');
 const runtimeError = ref('');
@@ -481,10 +492,6 @@ function normalizeStorageBagQuantity(value: unknown) {
   return Number.isFinite(numeric) && numeric >= 0 ? Math.trunc(numeric) : 0;
 }
 
-function getStorageBagItemKey(item: Pick<SpiritArtifactStorageBagItem, 'title'>) {
-  return normalizeStatText(item.title);
-}
-
 function getStorageBagChoiceKey(choice: Pick<SpiritArtifactStorageBagChoice, 'artifactName' | 'partName'>) {
   return `${choice.artifactName}::${choice.partName}`;
 }
@@ -525,6 +532,28 @@ function normalizeStorageBagChoices(choices: unknown): SpiritArtifactStorageBagC
   return normalizedChoices;
 }
 
+function sortStorageBagItems(items: SpiritArtifactStorageBagItem[]): SpiritArtifactStorageBagItem[] {
+  const digits: Record<string, number> = {
+    一: 1, 壹: 1, 二: 2, 贰: 2, 三: 3, 叁: 3, 四: 4, 肆: 4,
+    五: 5, 伍: 5, 六: 6, 陆: 6, 七: 7, 柒: 7, 八: 8, 捌: 8, 九: 9, 玖: 9,
+  };
+  const groups = new Map<string, number>();
+  // 保留不同宝匣类型的出现顺序，同类后缀按数值排列，避免录入顺序影响壹、贰。
+  return items.map(item => {
+    const match = item.title.match(/^(.*?)[·・.．\s]*([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]+|\d+)$/);
+    const group = match?.[1] ?? item.title;
+    const suffix = match?.[2] ?? '';
+    const tens = suffix.split(/[十拾]/);
+    const number = /^\d+$/.test(suffix) ? Number(suffix)
+      : tens.length === 2 ? (digits[tens[0]] ?? 1) * 10 + (digits[tens[1]] ?? 0)
+      : digits[suffix] ?? 0;
+    if (!groups.has(group)) groups.set(group, groups.size);
+    // 珍藏匣跨多个灵器，固定置顶，便于优先查看通用自选。
+    return { item, groupOrder: item.title === '珍藏灵器自选匣' ? -1 : groups.get(group)!, number };
+  }).sort((left, right) => left.groupOrder - right.groupOrder || left.number - right.number)
+    .map(({ item }, index) => ({ ...item, order: index + 1 }));
+}
+
 function normalizeStorageBagItems(items: unknown): SpiritArtifactStorageBagItem[] {
   if (!Array.isArray(items)) {
     return [];
@@ -553,7 +582,7 @@ function normalizeStorageBagItems(items: unknown): SpiritArtifactStorageBagItem[
       choices,
     });
   }
-  return normalizedItems;
+  return sortStorageBagItems(normalizedItems);
 }
 
 function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): SpiritArtifact[] {
@@ -631,6 +660,8 @@ function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): Spirit
           runtimePart: normalizeNonNegativeInteger(rawSavedRow.runtime_part),
           runtimeRefineNum: normalizeNonNegativeInteger(rawSavedRow.runtime_refine_num),
           runtimeIsBreak: Boolean(rawSavedRow.runtime_is_break),
+          stage: savedRow?.stage || "待识别",
+          runtimeEffects: savedRow?.runtime_effects || [],
         };
       }),
     };
@@ -661,6 +692,13 @@ function artifactsToSnapshot(): FanxiuSpiritArtifactHallSnapshot {
         spirit_power: normalizeStatText(row.spiritPower),
         health: normalizeStatText(row.health),
         defense: normalizeStatText(row.defense),
+        runtime_base_id: row.runtimeBaseId,
+        runtime_item_id: row.runtimeItemId,
+        runtime_ware_id: row.runtimeWareId,
+        runtime_part: row.runtimePart,
+        runtime_refine_num: row.runtimeRefineNum,
+        runtime_is_break: row.runtimeIsBreak,
+        runtime_effects: row.runtimeEffects,
       })),
     })),
     market_currency_count: normalizeMarketCurrencyCount(marketCurrencyCount.value),
@@ -706,7 +744,13 @@ async function saveArtifacts() {
   clearSaveTimer();
   saving.value = true;
   try {
-    await saveFanxiuSpiritArtifactHall(artifactsToSnapshot());
+    const saved = await saveFanxiuSpiritArtifactHall(artifactsToSnapshot());
+    for (const artifact of artifacts.value) {
+      const savedArtifact = saved.artifacts.find(item => item.name === artifact.name);
+      for (const row of artifact.rows) {
+        row.stage = savedArtifact?.rows.find(item => item.part_name === row.partName)?.stage || '待识别';
+      }
+    }
   } catch (error) {
     const anyError = error as any;
     ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '保存灵器数据失败');
@@ -762,337 +806,6 @@ async function loadArtifacts() {
     ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '读取灵器数据失败');
   } finally {
     loading.value = false;
-  }
-}
-
-function applyRecognizedRanks(result: FanxiuSpiritArtifactRankRecognitionResponse) {
-  const artifact = artifacts.value.find(item => item.name === result.artifact_name);
-  if (!artifact) {
-    ElMessage.warning(result.artifact_name ? `识别到 ${result.artifact_name}，但当前页面没有对应灵器` : '未识别到灵器名称');
-    return false;
-  }
-
-  let updatedCount = 0;
-  let skippedCount = 0;
-  let unchangedCount = 0;
-  for (const part of result.parts) {
-    if (!recognizedRankQualities.has(part.quality)) {
-      skippedCount += 1;
-      continue;
-    }
-    const row = artifact.rows.find(item => item.partName === part.part_name);
-    if (!row) {
-      continue;
-    }
-    let rowUpdated = false;
-    const recognizedRank = normalizeNonNegativeInteger(part.rank);
-    const recognizedRealm = normalizeNonNegativeInteger(part.realm);
-    if (recognizedRank > normalizeNonNegativeInteger(row.rank)) {
-      row.rank = recognizedRank;
-      rowUpdated = true;
-    }
-    if (recognizedRealm > normalizeNonNegativeInteger(row.realm)) {
-      row.realm = recognizedRealm;
-      rowUpdated = true;
-    }
-    if (rowUpdated) {
-      updatedCount += 1;
-    } else {
-      unchangedCount += 1;
-    }
-  }
-
-  if (updatedCount <= 0) {
-    ElMessage.warning(`识别到 ${artifact.name}，但没有比当前更高的有效结果`);
-    return false;
-  }
-  const skippedText = skippedCount > 0 ? `，跳过 ${skippedCount} 个无效颜色部位` : '';
-  const unchangedText = unchangedCount > 0 ? `，忽略 ${unchangedCount} 个未升值部位` : '';
-  ElMessage.success(`已回填 ${artifact.name} ${updatedCount} 个升值部位${skippedText}${unchangedText}`);
-  return true;
-}
-
-function resetRecognizedAttributeFields(artifact: SpiritArtifact, row: SpiritArtifactPartRow) {
-  row.artifactPeerless1 = 0;
-  row.artifactPeerless2 = 0;
-  row.chaosPower = '';
-  row.attack = '';
-  row.spiritPower = '';
-  row.health = '';
-  row.defense = '';
-  row.statRawValues = createStatRawValues();
-  row.exclusiveStats = createExclusiveStats(artifact.exclusiveStats);
-  row.exclusiveStatRawValues = createExclusiveStatRawValues(artifact.exclusiveStats);
-}
-
-function normalizeRecognizedRawValue(rawValue: unknown) {
-  const parsedRaw = parseRawAttributeValue(rawValue);
-  return parsedRaw === null ? normalizeStatText(rawValue) : String(parsedRaw);
-}
-
-function applyRecognizedAttributeRawValues(
-  artifact: SpiritArtifact,
-  row: SpiritArtifactPartRow,
-  result: FanxiuSpiritArtifactAttributeRecognitionResponse,
-) {
-  for (const attribute of result.attributes || []) {
-    const rawValue = normalizeRecognizedRawValue(attribute.raw_value);
-    if (!rawValue) {
-      continue;
-    }
-
-    const commonKey = commonStatLabelKeyMap[attribute.label];
-    if (commonKey) {
-      row.statRawValues[commonKey] = rawValue;
-      continue;
-    }
-
-    if (artifact.exclusiveStats.some(column => column.key === attribute.label)) {
-      row.exclusiveStatRawValues[attribute.label] = rawValue;
-    }
-  }
-}
-
-function applyRecognizedAttributes(result: FanxiuSpiritArtifactAttributeRecognitionResponse) {
-  const artifact = artifacts.value.find(item => item.name === result.artifact_name);
-  if (!artifact) {
-    ElMessage.warning(result.artifact_name ? `识别到 ${result.artifact_name}，但当前页面没有对应灵器` : '未识别到灵器名称');
-    return false;
-  }
-  const row = artifact.rows.find(item => item.partName === result.part_name);
-  if (!row) {
-    ElMessage.warning(result.part_name ? `识别到 ${artifact.name}·${result.part_name}，但没有匹配到对应部位` : '未识别到灵器部位');
-    return false;
-  }
-
-  resetRecognizedAttributeFields(artifact, row);
-
-  let recognizedCount = 0;
-  const peerless1 = normalizeArtifactPeerless(normalizeNonNegativeInteger(result.artifact_peerless_1));
-  const peerless2 = normalizeArtifactPeerless(normalizeNonNegativeInteger(result.artifact_peerless_2));
-  if (peerless1 > 0) {
-    row.artifactPeerless1 = peerless1;
-    recognizedCount += 1;
-  }
-  if (peerless2 > 0) {
-    row.artifactPeerless2 = peerless2;
-    recognizedCount += 1;
-  }
-
-  Object.entries(result.common_stats || {}).forEach(([backendKey, value]) => {
-    const rowKey = recognizedCommonStatKeyMap[backendKey];
-    if (!rowKey) {
-      return;
-    }
-    row[rowKey] = normalizeStatText(value);
-    recognizedCount += 1;
-  });
-
-  Object.entries(result.exclusive_stats || {}).forEach(([key, value]) => {
-    if (!(key in row.exclusiveStats)) {
-      return;
-    }
-    row.exclusiveStats[key] = normalizeStatText(value);
-    recognizedCount += 1;
-  });
-  applyRecognizedAttributeRawValues(artifact, row, result);
-
-  const suffix = recognizedCount > 0 ? `，回填 ${recognizedCount} 个有效属性` : '，未识别到有效属性';
-  ElMessage.success(`已重置 ${artifact.name}·${row.partName}${suffix}`);
-  return true;
-}
-
-async function recognizeRanks() {
-  if (recognizingRanks.value) {
-    return;
-  }
-  recognizingRanks.value = true;
-  try {
-    const result = await recognizeFanxiuSpiritArtifactRanks();
-    if (!result.matched) {
-      ElMessage.info(result.reason || '未识别到灵器画面');
-      return;
-    }
-    if (applyRecognizedRanks(result)) {
-      scheduleSave(true);
-    }
-  } catch (error) {
-    const anyError = error as any;
-    ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '识别阶数失败');
-  } finally {
-    recognizingRanks.value = false;
-  }
-}
-
-async function recognizeAttributes() {
-  if (recognizingAttributes.value) {
-    return;
-  }
-  recognizingAttributes.value = true;
-  try {
-    const result = await recognizeFanxiuSpiritArtifactAttributes();
-    if (!result.matched) {
-      ElMessage.info(result.reason || '未识别到灵器洗炼属性画面');
-      return;
-    }
-    if (applyRecognizedAttributes(result)) {
-      scheduleSave(true);
-    }
-  } catch (error) {
-    const anyError = error as any;
-    ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '识别属性失败');
-  } finally {
-    recognizingAttributes.value = false;
-  }
-}
-
-function applyRecognizedMarket(result: FanxiuSpiritArtifactMarketRecognitionResponse) {
-  const recognizedItems = normalizeMarketItems(result.items);
-  if (recognizedItems.length <= 0) {
-    ElMessage.warning('未识别到可兑换灵器部件');
-    return false;
-  }
-
-  const recognizedCurrencyCount = normalizeMarketCurrencyCount(result.market_currency_count);
-  const currencyUpdated = marketCurrencyCount.value !== recognizedCurrencyCount;
-  marketCurrencyCount.value = recognizedCurrencyCount;
-
-  const existingByKey = new Map(marketItems.value.map(item => [getMarketItemKey(item), item]));
-  let addedCount = 0;
-  let updatedCount = 0;
-  for (const item of recognizedItems) {
-    const itemKey = getMarketItemKey(item);
-    const existingItem = existingByKey.get(itemKey);
-    if (existingItem) {
-      if (existingItem.cost !== item.cost) {
-        existingItem.cost = item.cost;
-        updatedCount += 1;
-      }
-      continue;
-    }
-    marketItems.value.push({
-      ...item,
-      order: marketItems.value.length + 1,
-    });
-    existingByKey.set(itemKey, marketItems.value[marketItems.value.length - 1]);
-    addedCount += 1;
-  }
-  marketItems.value = marketItems.value.map((item, index) => ({ ...item, order: index + 1 }));
-
-  const unchangedCount = recognizedItems.length - addedCount - updatedCount;
-  const updatedText = updatedCount > 0 ? `，更新 ${updatedCount} 项` : '';
-  const unchangedText = unchangedCount > 0 ? `，已有 ${unchangedCount} 项` : '';
-  const currencyText = `，元魄 ${marketCurrencyCount.value}`;
-  ElMessage.success(`珍宝阁清单新增 ${addedCount} 项${updatedText}${unchangedText}${currencyText}`);
-  return addedCount > 0 || updatedCount > 0 || currencyUpdated;
-}
-
-async function recognizeMarket() {
-  if (recognizingMarket.value) {
-    return;
-  }
-  recognizingMarket.value = true;
-  try {
-    const result = await recognizeFanxiuSpiritArtifactMarket();
-    if (!result.matched) {
-      ElMessage.info(result.reason || '未识别到珍宝阁灵器清单');
-      return;
-    }
-    if (applyRecognizedMarket(result)) {
-      scheduleSave(true);
-    }
-  } catch (error) {
-    const anyError = error as any;
-    ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '识别珍宝阁失败');
-  } finally {
-    recognizingMarket.value = false;
-  }
-}
-
-function applyRecognizedStorageBag(result: FanxiuSpiritArtifactStorageBagRecognitionResponse) {
-  const recognizedItems = normalizeStorageBagItems(result.items);
-  if (recognizedItems.length <= 0) {
-    ElMessage.warning('未识别到储物袋自选类型');
-    return false;
-  }
-
-  const existingByKey = new Map(storageBagItems.value.map(item => [getStorageBagItemKey(item), item]));
-  let addedItemCount = 0;
-  let updatedItemCount = 0;
-  let addedChoiceCount = 0;
-
-  for (const item of recognizedItems) {
-    const itemKey = getStorageBagItemKey(item);
-    const existingItem = existingByKey.get(itemKey);
-    if (!existingItem) {
-      storageBagItems.value.push({
-        ...item,
-        order: storageBagItems.value.length + 1,
-        choices: item.choices.map((choice, index) => ({ ...choice, order: index + 1 })),
-      });
-      existingByKey.set(itemKey, storageBagItems.value[storageBagItems.value.length - 1]);
-      addedItemCount += 1;
-      addedChoiceCount += item.choices.length;
-      continue;
-    }
-
-    let itemUpdated = false;
-    const nextQuantity = normalizeStorageBagQuantity(item.quantity);
-    if (nextQuantity > 0 && existingItem.quantity !== nextQuantity) {
-      existingItem.quantity = nextQuantity;
-      itemUpdated = true;
-    }
-
-    const existingChoiceKeys = new Set(existingItem.choices.map(choice => getStorageBagChoiceKey(choice)));
-    for (const choice of item.choices) {
-      const choiceKey = getStorageBagChoiceKey(choice);
-      if (existingChoiceKeys.has(choiceKey)) {
-        continue;
-      }
-      existingItem.choices.push({
-        ...choice,
-        order: existingItem.choices.length + 1,
-      });
-      existingChoiceKeys.add(choiceKey);
-      addedChoiceCount += 1;
-      itemUpdated = true;
-    }
-    existingItem.choices = existingItem.choices.map((choice, index) => ({ ...choice, order: index + 1 }));
-    if (itemUpdated) {
-      updatedItemCount += 1;
-    }
-  }
-
-  storageBagItems.value = storageBagItems.value.map((item, index) => ({
-    ...item,
-    order: index + 1,
-    choices: item.choices.map((choice, choiceIndex) => ({ ...choice, order: choiceIndex + 1 })),
-  }));
-
-  const updatedText = updatedItemCount > 0 ? `，更新 ${updatedItemCount} 个箱子` : '';
-  ElMessage.success(`储物袋新增 ${addedItemCount} 个箱子，新增 ${addedChoiceCount} 个类型${updatedText}`);
-  return addedItemCount > 0 || updatedItemCount > 0 || addedChoiceCount > 0;
-}
-
-async function recognizeStorageBag() {
-  if (recognizingStorageBag.value) {
-    return;
-  }
-  recognizingStorageBag.value = true;
-  try {
-    const result = await recognizeFanxiuSpiritArtifactStorageBag();
-    if (!result.matched) {
-      ElMessage.info(result.reason || '未识别到储物袋自选箱');
-      return;
-    }
-    if (applyRecognizedStorageBag(result)) {
-      scheduleSave(true);
-    }
-  } catch (error) {
-    const anyError = error as any;
-    ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '识别储物袋失败');
-  } finally {
-    recognizingStorageBag.value = false;
   }
 }
 
@@ -1244,7 +957,7 @@ function commitStatCellEdit(
 }
 
 watch(
-  [marketItems, marketCurrencyCount, storageBagItems],
+  [marketItems, marketCurrencyCount],
   () => {
     scheduleSave();
   },
@@ -1291,27 +1004,6 @@ onBeforeUnmount(() => {
       <span v-if="runtimeComplete && runtimeUpdatedAt" class="runtime-time">
         {{ formatRuntimeTime(runtimeUpdatedAt) }}
       </span>
-      <el-button
-        v-if="!runtimeComplete"
-        type="primary"
-        :icon="Aim"
-        :loading="recognizingRanks"
-        class="recognition-button"
-        @click="recognizeRanks"
-      >
-        识别阶数
-      </el-button>
-      <el-button
-        v-if="!runtimeComplete"
-        type="primary"
-        plain
-        :icon="Aim"
-        :loading="recognizingAttributes"
-        class="recognition-button"
-        @click="recognizeAttributes"
-      >
-        识别属性
-      </el-button>
       <el-tag v-if="!runtimeComplete" type="warning" effect="plain">
         {{ runtimeError ? '运行态不可用，显示已保存数据' : '等待游戏运行态' }}
       </el-tag>
@@ -1324,17 +1016,6 @@ onBeforeUnmount(() => {
           <h3 class="market-title">仙市 / 珍宝阁</h3>
           <span class="market-currency">灵器铸形元魄：{{ marketCurrencyCount }}</span>
         </div>
-        <el-button
-          type="primary"
-          plain
-          :icon="Aim"
-          :loading="recognizingMarket"
-          size="small"
-          class="market-restock-button"
-          @click="recognizeMarket"
-        >
-          进货
-        </el-button>
       </div>
       <el-table
         v-if="marketItems.length"
@@ -1377,16 +1058,8 @@ onBeforeUnmount(() => {
     <section class="storage-bag-panel">
       <div class="storage-bag-heading">
         <h3 class="storage-bag-title">储物袋</h3>
-        <el-button
-          type="primary"
-          plain
-          :icon="Aim"
-          :loading="recognizingStorageBag"
-          size="small"
-          class="storage-bag-recognize-button"
-          @click="recognizeStorageBag"
-        >
-          识别自选
+        <el-button size="small" :icon="Refresh" :loading="syncingStorageBag" @click="syncStorageBag">
+          同步储物袋
         </el-button>
       </div>
       <div v-if="storageBagItems.length" class="storage-bag-list">
@@ -1467,6 +1140,13 @@ onBeforeUnmount(() => {
           <el-table-column label="部位" min-width="84">
             <template #default="{ row }">
               <span class="part-cell">{{ row.order }} {{ row.partName }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="阶段" width="88" align="center">
+            <template #default="{ row }">
+              <el-tooltip :content="stageStyle(row.stage).description" placement="top">
+                <span class="stage-badge" :style="stageStyle(row.stage)">{{ row.stage }}</span>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column label="阶数" width="90" align="center">
@@ -1656,6 +1336,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.stage-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 2px 8px;
+  border: 1px solid;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .spirit-artifact-page {
   display: flex;
   flex-direction: column;
@@ -1694,11 +1387,6 @@ onBeforeUnmount(() => {
   background: rgba(245, 247, 250, 0.96);
   backdrop-filter: blur(6px);
   box-shadow: 0 4px 10px rgba(15, 23, 42, 0.04);
-}
-
-.recognition-button {
-  min-width: 112px;
-  font-weight: 600;
 }
 
 .save-status {
@@ -1749,10 +1437,6 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 13px;
   font-weight: 600;
-}
-
-.market-restock-button {
-  flex: 0 0 auto;
 }
 
 .market-table {
@@ -1806,10 +1490,6 @@ onBeforeUnmount(() => {
   font-size: 17px;
   font-weight: 650;
   line-height: 1.3;
-}
-
-.storage-bag-recognize-button {
-  flex: 0 0 auto;
 }
 
 .storage-bag-list {

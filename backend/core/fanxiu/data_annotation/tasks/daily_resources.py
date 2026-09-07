@@ -1095,25 +1095,18 @@ class DailyResourceTaskMixin:
             task_label=task_label,
         )
 
-        if completed:
-            if completed == "not_free":
-                self._record_daily_xianshi_done(payload, message="未发现免费宝匣，视为今日已无可领免费项")
-            else:
-                self._record_daily_xianshi_done(payload, message="免费宝匣已领取")
+        if completed == "not_free":
+            self._record_daily_xianshi_done(payload, message="首项详情已确认价格与兑换，今日免费项已无可领")
+        elif completed is True:
+            self._record_daily_xianshi_done(payload, message="免费宝匣已领取，并已复查首项变为付费")
         else:
-            self._record_daily_xianshi_retry(
-                payload,
-                message="未等到免费宝匣，本轮未确认领取",
-                seconds=int(payload.get("coin_box_retry_seconds") or 600),
-            )
+            raise RuntimeError(f"{task_label}：未取得免费项完成证据")
 
         yield from self._safe_daily_done_cleanup(
             lambda: self._return_daily_xianshi_to_world(ctx, stop_event, payload, image249, task_label=task_label),
             label=task_label,
             repeat_risk="重复领取",
         )
-        if not completed:
-            return "skipped"
         return "success"
 
     def _execute_xianshi_weekly_resources_task(
