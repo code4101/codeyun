@@ -1576,6 +1576,7 @@ export interface FanxiuGongfaAtlasBookDetail {
 }
 
 export interface FanxiuSpiritArtifactPartRow {
+  runtime_observation?: Record<string, unknown>;
   stage?: string;
   order: number;
   part_name: string;
@@ -1648,6 +1649,8 @@ export interface FanxiuSpiritArtifactStorageBagItem {
 }
 
 export interface FanxiuSpiritArtifactHallSnapshot {
+  runtime_observation_scope?: 'full' | 'mixed' | string;
+  runtime_partial_updated_at?: number;
   artifacts: FanxiuSpiritArtifactItem[];
   market_currency_count: number;
   market_items: FanxiuSpiritArtifactMarketItem[];

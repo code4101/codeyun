@@ -26,7 +26,7 @@ def _row(goods_id: int, *, bought: int, limit: int, position: int = 3):
 
 
 def test_decode_exchange_shop_config_uses_proven_generated_row_layout():
-    values = [None, 12027, 3012109, None, 3, 1, -1, 3012109, 1, object(), 4, 47, "CL|1", None, "CL|171", "CL|999", 3, 1]
+    values = [None, 12027, 3012109, 4, 3, 1, -1, 3012109, 1, object(), 3, 47, "CL|1", None, "CL|171", "CL|999", 3, 1]
     result = decode_exchange_shop_config(values, cost_values=[None, "Item|3020143_80", None])
     assert result == {
         "goods_id": 12027,
@@ -42,6 +42,17 @@ def test_decode_exchange_shop_config_uses_proven_generated_row_layout():
         "cost_item_id": 3020143,
         "cost_num": 80,
     }
+
+
+def test_decode_spiritware_distinguishes_group_from_item_and_config_defaults():
+    # Exported commonshop_6ec2... ExchangeShop goods 40010. Its group is
+    # deliberately not an Item ID, unlike the older GongFa-only fixture.
+    values = [None, 40010, 3100110, 6, 3, 10, -1, 14000306, 1,
+              object(), None, -1, "CL|1", None, "", "CL|999", 4, 1]
+    result = decode_exchange_shop_config(values, cost_values=[None, "Item|15100001_80"])
+    assert (result["group"], result["item_id"], result["scope_type"], result["limit_buy"]) == (
+        3100110, 14000306, 6, 0,
+    )
 
 
 def test_project_exchange_shop_items_merges_permanent_limit_tiers():

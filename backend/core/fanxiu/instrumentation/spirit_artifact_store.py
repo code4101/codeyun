@@ -71,13 +71,17 @@ def upsert_spirit_artifact_runtime_snapshot(
 
 def project_spirit_artifact_part_update(
     snapshot: dict[str, Any], part: dict[str, Any], *, observed_at: float,
+    expected_previous_item_id: str | None = None,
+    equipped_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """纯投影局部更新：只覆盖同一装配实例，保留全馆原观测时间和其他行。
 
     part 为调用方已取得的新鲜 enriched Runtime 部件，必须包含六条完整词条、
     pid/start、无候选以及明确 is_break；不在此读取游戏或猜测当前装配。
     observed_at 是这次部件观察时间，不能用写入时间冒充。原快照须已绑定该
-    ware/part/item_id；换本体须先由完整装配同步更新引用，不接受局部偷换。
+    ware/part/item_id。换本体须显式给出预期旧 UID，以及部件观察后取得的
+    read_spirit_artifact_equipped_runtime 完整投影；核对进程、槽位及新实例。
+    本函数只验证输入证据，不读取游戏，调用方不得复用动作前的装备观察。
     """
     import copy
     import math
@@ -106,9 +110,39 @@ def project_spirit_artifact_part_update(
     payload = copy.deepcopy(snapshot)
     matches = [(artifact, row) for artifact in payload.get('artifacts', []) for row in artifact.get('rows', [])
                if row.get('runtime_ware_id') == target.ware_id and row.get('runtime_part') == target.part]
-    if len(matches) != 1 or matches[0][1].get('runtime_item_id') != target.item_id:
-        raise ValueError('局部同步必须匹配现有唯一装配部件；不可创建或替换装配引用')
+    if len(matches) != 1:
+        raise ValueError('局部同步必须匹配现有唯一装配部件')
     artifact, row = matches[0]
+    previous_id = row.get('runtime_item_id')
+    replacing = previous_id != target.item_id
+    if expected_previous_item_id is not None and (
+        not expected_previous_item_id or previous_id != expected_previous_item_id
+    ):
+        raise ValueError('装配旧实例与 expected_previous_item_id 不符')
+    if replacing and (expected_previous_item_id is None or equipped_snapshot is None):
+        raise ValueError('替换装配引用需要明确旧实例及精确装配 Runtime 证据')
+    if equipped_snapshot is not None:
+        equipped = equipped_snapshot
+        captured_at = equipped.get('captured_at')
+        if (equipped.get('complete') is not True
+                or equipped.get('source') != 'spiritware_server_put_up_set'
+                or (equipped.get('pid'), equipped.get('process_start_ticks')) != target.process_identity
+                or not isinstance(captured_at, (int, float))
+                or not math.isfinite(captured_at) or captured_at < observed_at):
+            raise ValueError('精确装配证据必须完整、同进程且不早于部件观察')
+        slots = [s for s in equipped.get('slots', [])
+                 if s.get('ware_id') == target.ware_id and s.get('part') == target.part]
+        items = [s for s in equipped.get('items', [])
+                 if (s.get('ware_id') == target.ware_id and s.get('part') == target.part)
+                 or s.get('item_id') == target.item_id]
+        if (len(slots) != 1 or slots[0].get('item_id') != target.item_id
+                or len(items) != 1 or items[0].get('item_id') != target.item_id
+                or items[0].get('ware_id') != target.ware_id
+                or items[0].get('part') != target.part
+                or items[0].get('base_id') != target.base_id
+                or items[0].get('equipped') is not True
+                or sum(s.get('item_id') == target.item_id for s in equipped.get('slots', [])) != 1):
+            raise ValueError('精确装配证据未唯一确认目标槽位的新实例')
     if row.get('runtime_base_id') != target.base_id:
         raise ValueError('同一装配实例的 base_id 与已有快照不符')
     prior_time = row.get('runtime_observation', {}).get('observed_at', payload.get('runtime_updated_at', 0))
@@ -118,6 +152,11 @@ def project_spirit_artifact_part_update(
     row.update(projected)
     row['runtime_observation'] = dict(observed_at=observed_at, pid=part['pid'],
         process_start_ticks=part['process_start_ticks'], scope='part', source='runtime_item_enriched')
+    if replacing:
+        row['runtime_observation']['replacement'] = dict(
+            previous_item_id=previous_id, item_id=target.item_id,
+            equipped_observed_at=equipped_snapshot['captured_at'],
+            source=equipped_snapshot['source'])
     # 顶层全馆时刻、process/debug、完整覆盖标记均保留；仅显式声明现在混合观察。
     payload['runtime_observation_scope'] = 'mixed'
     payload['runtime_partial_updated_at'] = max(observed_at, payload.get('runtime_partial_updated_at', 0))
@@ -126,6 +165,8 @@ def project_spirit_artifact_part_update(
 
 def update_spirit_artifact_runtime_part(
     session: Session, part: dict[str, Any], *, observed_at: float,
+    expected_previous_item_id: str | None = None,
+    equipped_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """原子更新已存在馆快照的一行并提交；不读游戏，不标记全馆新鲜。
 
@@ -140,7 +181,8 @@ def update_spirit_artifact_runtime_part(
     if row is None or not isinstance(row.payload, dict):
         raise ValueError('不存在可局部更新的装配快照')
     original = row.payload
-    payload = project_spirit_artifact_part_update(original, part, observed_at=observed_at)
+    payload = project_spirit_artifact_part_update(original, part, observed_at=observed_at,
+        expected_previous_item_id=expected_previous_item_id, equipped_snapshot=equipped_snapshot)
     result = session.execute(update(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.id == row.id,
         FanxiuPacketBusinessRecord.updated_at == row.updated_at,

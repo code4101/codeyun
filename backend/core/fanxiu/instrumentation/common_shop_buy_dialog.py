@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError, as_int
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
+from backend.core.fanxiu.instrumentation.exchange_shop import project_exchange_shop_numeric_row
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
     active_ui_component_objects,
@@ -18,6 +19,7 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
 _REQUIRED_KEYS = frozenset({
     "ShopCfg", "BuyBtn", "Slider", "maxNum", "minNum", "needNum", "showNum",
     "Price", "HadPrice", "goodsNum", "CanBuy", "isEnough", "ShopModelType",
+    "itemCfg", "costItemCfg", "id", "goodsId",
 })
 
 
@@ -80,6 +82,21 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         raise FanxiuRuntimeMemoryError("CommonShop 购买框资格字段不是布尔值")
     if not values["minNum"] <= values["showNum"] <= values["maxNum"]:
         raise FanxiuRuntimeMemoryError("CommonShop 购买框数量超出 min/max")
+    identities = {}
+    for output, field, config_key in (
+        ("item_id", "itemCfg", "id"),
+        ("cost_item_id", "costItemCfg", "id"),
+        ("goods_id", "ShopCfg", "goodsId"),
+    ):
+        config = table_ref(read_ui_object_field(context, panel.address, field))
+        identifier = None
+        if config is not None:
+            identifier = as_int(read_ui_object_field(context, config.address, config_key))
+            if identifier is None:
+                # Item.id and CommonShop goodsId are generated column 1.
+                row = project_exchange_shop_numeric_row(context.reader.table(config.address))
+                identifier = as_int(row[1]) if len(row) > 1 else None
+        identities[output] = identifier if identifier is not None and identifier > 0 else None
     return {
         "ok": True,
         "complete": True,
@@ -87,6 +104,8 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
         "pid": context.binding.pid,
         "process_start_ticks": context.binding.process_start_ticks,
         **values,
+        **identities,
+        "identity_complete": all(value is not None for value in identities.values()),
         "CanBuy": can_buy,
         "isEnough": enough,
         "panel_address": f"0x{panel.address:x}",
@@ -96,6 +115,13 @@ def _read_snapshot(context: UiRuntimeContext) -> dict[str, Any]:
 
 def read_common_shop_buy_dialog_snapshot() -> dict[str, Any]:
     """Read the active panel through the shared bounded snapshot recovery.
+
+    item_id/cost_item_id/goods_id describe this observation's selected product;
+    identity_complete is false if any identity is unavailable (including free
+    goods without a currency). Callers requiring a paid exchange must require
+    all three and compare them before clicking. Live acceptance covered the
+    treasure-shop SpiritWare purchase dialog (item/currency/goods identity);
+    other shop variants and changing goods while open remain unverified.
 
     CommonShopBuyTips rebuilds its field table while the slider animates.  A
     child address is therefore scoped to one coherent read only.  The generic

@@ -385,12 +385,12 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
     def select(self, fresh: FreshSpiritArtifactSnapshot) -> Any:
         """导航到任意灵器的指定实例；每层都用 Runtime 校验身份。"""
-        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
 
         observation, assets = fresh.observation, self.assets
         current = self.current_scene_id()
         if current in (*assets.wash_scene_ids, assets.detail_scene_id):
-            selected = read_spirit_artifact_ui_snapshot()
+            selected = read_spirit_artifact_ui_identity(window_kind='view')
             if selected['ware_id'] != observation.target.ware_id:
                 self.return_to_world()
                 current = assets.world_scene_id
@@ -410,8 +410,9 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
     def select_artifact(self, ware_id: int, artifact_name: str) -> Any:
         """有界横向搜索竖排名称，进入后核对实际灵器 ID。"""
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import (
-            locate_spirit_artifact_name, read_spirit_artifact_ui_snapshot,
+            locate_spirit_artifact_name,
         )
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
 
         self._require_scene(self.assets.overview_scene_id, phase='select_artifact')
         if ware_id not in range(1, 9) or not artifact_name:
@@ -430,7 +431,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
                 if point is not None:
                     self.context.click_frame_point(scene, *point)
                     self.execute(self.context.wait_scene([self.assets.detail_scene_id], wait=12))
-                    selected = read_spirit_artifact_ui_snapshot()
+                    selected = read_spirit_artifact_ui_identity(window_kind='view')
                     if selected['ware_id'] != ware_id:
                         raise SpiritArtifactCleanseBlocked('灵器名称点击后 Runtime ID 不一致', phase='select_artifact')
                     return selected

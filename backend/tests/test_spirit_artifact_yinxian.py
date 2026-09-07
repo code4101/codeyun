@@ -108,3 +108,42 @@ def test_b_supplement_requires_full_a_but_only_red_b():
     assert plan_b_supplement(rows, **policy).action == 'yinxian'
     rows = tuple(replace(e, quality=6) if e.code == 'MAXMP' else e for e in rows)
     assert plan_b_supplement(rows, **policy).action == 'complete'
+
+
+def test_four_a_missing_one_releases_only_lowest_priority_b_and_keeps_full_a():
+    from dataclasses import replace
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    rows = tuple(YinxianAttribute(i, code, 100, 6, True, 100) for i, code in enumerate(
+        ['ATTACK', 'A2', 'A3', 'MAXMP', 'MAXHP', 'DEFENSE'], 1))
+    policy = dict(a_codes={'ATTACK', 'A2', 'A3', 'A4'},
+                  b_codes={'MAXMP', 'MAXHP', 'DEFENSE'}, c_codes=set())
+    plan = plan_a_collection(rows, **policy)
+    assert plan.action == 'locks' and plan.desired_lock_ids == (1, 2, 3, 4, 5)
+    rows = tuple(replace(e, locked=e.cleanse_id != 6) for e in rows)
+    assert plan_a_collection(rows, **policy).action == 'yinxian'
+    rows = tuple(replace(e, code='A4') if e.cleanse_id == 6 else e for e in rows)
+    plan = plan_a_collection(rows, **policy)
+    assert plan.action == 'complete' and plan.desired_lock_ids == (1, 2, 3, 4, 5)
+
+
+def test_full_slots_do_not_guess_unknown_b_priority():
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    rows = tuple(YinxianAttribute(i, code, 100, 6, True, 100) for i, code in enumerate(
+        ['ATTACK', 'A2', 'A3', 'MAXMP', 'MAXHP', 'UNKNOWN_B'], 1))
+    plan = plan_a_collection(rows, a_codes={'ATTACK', 'A2', 'A3', 'A4'},
+                            b_codes={'MAXMP', 'MAXHP', 'UNKNOWN_B'}, c_codes=set())
+    assert plan.action == 'blocked'
+
+
+def test_multiple_eligible_a_refine_one_by_one_before_releasing_b():
+    from dataclasses import replace
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    rows = tuple(YinxianAttribute(i, code, 95 if i < 3 else 100, 6, True, 100)
+        for i, code in enumerate(['ATTACK', 'A2', 'A3', 'MAXMP', 'MAXHP', 'DEFENSE'], 1))
+    policy = dict(a_codes={'ATTACK', 'A2', 'A3', 'A4'},
+                  b_codes={'MAXMP', 'MAXHP', 'DEFENSE'}, c_codes=set())
+    first = plan_a_collection(rows, **policy)
+    assert first.target_cleanse_id == 1 and first.desired_lock_ids == (2, 3, 4, 5, 6)
+    rows = tuple(replace(e, value=100) if e.cleanse_id == 1 else e for e in rows)
+    second = plan_a_collection(rows, **policy)
+    assert second.target_cleanse_id == 2 and second.desired_lock_ids == (1, 3, 4, 5, 6)

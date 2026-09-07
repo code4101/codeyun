@@ -51,7 +51,7 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, 
     全部指定器必须已自然加载服务器信息；未知不是空装备。先读引用，
     再取完整库存，最后用新context复读引用，避免同reader缓存伪复验。
     """
-    from .ui_runtime_context import acquire_ui_runtime_context
+    from .ui_runtime_context import read_ui_runtime_snapshot
     from .runtime_memory import resolve_lua_global_manager_root
     from .spirit_artifact import read_spirit_artifact_inventory_runtime
 
@@ -61,8 +61,7 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, 
     ):
         raise ValueError('需要不重复的正灵器编号')
 
-    def observe():
-        ctx = acquire_ui_runtime_context([])
+    def observe_context(ctx):
         reader = ctx.reader
 
         def data_fields(r, root):
@@ -96,6 +95,11 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, 
                 raise FanxiuRuntimeMemoryError('灵器装配引用无效')
             references[ware_id] = tuple(ids)
         return references, (ctx.memory.pid, ctx.memory.process_start_ticks)
+
+    def observe():
+        # Equip actions replace putUpSet allocations. Let the shared observer
+        # refresh stale memory mappings; never repeat the equip action here.
+        return read_ui_runtime_snapshot([], observe_context)
 
     before, identity = observe()
     inventory = read_spirit_artifact_inventory_runtime()

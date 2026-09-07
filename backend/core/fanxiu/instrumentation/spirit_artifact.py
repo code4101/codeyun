@@ -232,11 +232,18 @@ def read_spirit_artifact_inventory_runtime() -> dict[str, Any]:
     配置。调用方可按 ware_id、part、quality、grade 筛选重置本体；本接口
     不把升阶红点当作重置许可，也不声明实例是否已装配或可消耗。
     """
-    from .ui_runtime_context import acquire_ui_runtime_context
+    from .ui_runtime_context import read_ui_runtime_snapshot
+
+    # Purchasing adds new ItemVO allocations outside the cached memory map.
+    # Recovery belongs to the shared provider; callers must not repeat a
+    # purchase simply because its post-action inventory observation failed.
+    return read_ui_runtime_snapshot([], _read_spirit_artifact_inventory_runtime)
+
+
+def _read_spirit_artifact_inventory_runtime(ctx) -> dict[str, Any]:
     from .runtime_memory import resolve_lua_global_manager_root
     from .item_config import read_loaded_item_metadata
 
-    ctx = acquire_ui_runtime_context([])
     reader = ctx.reader
     root, _, _ = resolve_lua_global_manager_root(
         ctx.memory, manager_key="spirit-artifact-item-global",

@@ -2,7 +2,12 @@
 
 from dataclasses import dataclass
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Sequence
+
+
+# 用户明确的 B 类保留顺序：灵力 > 气血 > 守御。未知身份不推断优先级。
+B_RETENTION_PRIORITY = MappingProxyType({'MAXMP': 3, 'MAXHP': 2, 'DEFENSE': 1})
 
 
 def meets_yinxian_target(
@@ -133,7 +138,8 @@ def plan_a_collection(
 
     调用前必须处理待保存候选；每次采用候选后重新调用。多个达标 A 逐个
     精炼，其余五条全锁；完成后仅释放 C 和未达门槛的 A，保留 B。
-    无可用槽位时阻塞，不自行决定牺牲 B。执行方先验证锁计划，再消耗，
+    仍缺 A 且无 C/低 A 槽位时，释放保留优先级最低的 B；未知 B 则阻塞。
+    执行方先验证锁计划，再消耗，
     每次真实消耗独立记录样本；本函数既不读写游戏，也不宣称动作已成功。
     """
     if (len(current) != 6 or len({e.cleanse_id for e in current}) != 6
@@ -166,6 +172,10 @@ def plan_a_collection(
                                if e.code in b_codes or e.code in a_codes & full))
         action = 'complete' if a_codes <= full else 'yinxian'
         if action == 'yinxian' and len(desired) == 6:
-            return ACollectionPlan('blocked', desired, reason='没有可用槽位，需明确 B 类取舍')
+            retained_b = [e for e in current if e.code in b_codes]
+            if not retained_b or any(e.code not in B_RETENTION_PRIORITY for e in retained_b):
+                return ACollectionPlan('blocked', desired, reason='没有可用槽位，B 类保留优先级未知')
+            released = min(retained_b, key=lambda e: B_RETENTION_PRIORITY[e.code])
+            desired = tuple(i for i in desired if i != released.cleanse_id)
     return ACollectionPlan('locks' if actual_locks != set(desired) else action,
                            desired, target.cleanse_id if target else None)

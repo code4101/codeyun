@@ -9,10 +9,15 @@ from .ui_runtime_context import read_ui_object_field, read_ui_runtime_snapshot
 
 
 def read_spirit_artifact_ui_identity(
-    *, window_kind: Literal['wash', 'advanced'] = 'wash', fast: bool = True,
+    *, window_kind: Literal['view', 'wash', 'advanced'] = 'wash', fast: bool = True,
     include_readiness: bool = False,
 ) -> dict[str, Any]:
-    """读取当前洗炼页或高级道具窗口的进程、灵器和选中实例身份。
+    """读取灵器外层窗口、洗炼页或高级道具窗口的实时身份。
+
+    view 仅返回外层 ware_id/tab_index，不读取子页 m_panel 或 item_id。
+    用于已由 scene 证明到达装配页后的灵器身份校验：SpiritWareView
+    在 OpenByParam 设置 v_wareId，子页通过独立加载回调接收它；
+    确认进入哪件灵器不应依赖洗炼属性页是否加载。此新投影待真实验收。
 
     使用 spirit_artifact_ui / spirit_artifact_advanced 已验证的注册表和
     成员链，要求对应窗口唯一。高级窗口打开时底层洗炼页可能仍注册，
@@ -31,8 +36,8 @@ def read_spirit_artifact_ui_identity(
     fast 只复用经过进程校验的根绑定，失效恢复由公共 UI Runtime 管理。
     此投影尚需真实窗口、切换目标及热路径耗时验收。
     """
-    if window_kind not in ('wash', 'advanced'):
-        raise ValueError('window_kind 必须是 wash 或 advanced')
+    if window_kind not in ('view', 'wash', 'advanced'):
+        raise ValueError('window_kind 必须是 view、wash 或 advanced')
     if include_readiness and window_kind != 'wash':
         raise ValueError('include_readiness 仅支持 wash 窗口')
 
@@ -66,6 +71,11 @@ def read_spirit_artifact_ui_identity(
                 if ware_id not in range(1, 9) or group is None:
                     continue
                 index = as_int(field(group, 'curTabIndex'))
+                if window_kind == 'view':
+                    if index is None or index < 0:
+                        raise FanxiuRuntimeMemoryError('灵器当前页签身份不完整')
+                    candidates[outer.address] = {'ware_id': ware_id, 'tab_index': index}
+                    continue
                 panels = table_ref(field(group, 'panelShowComps'))
                 items, panel_count = reader.list_items(panels) if panels else ([], None)
                 if (index is None or not panel_count or len(items) != panel_count

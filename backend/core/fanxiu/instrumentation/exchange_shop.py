@@ -8,12 +8,11 @@ import time
 from typing import Any, Iterable, Sequence
 
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_catalog
-from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
+from backend.core.fanxiu.instrumentation.ui_runtime_context import UiRuntimeContext, read_ui_runtime_snapshot
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
     LuaJitReader,
     LuaRef,
-    MumuProcessMemory,
     manager_index_fields,
     resolve_lua_global_manager_root,
     table_ref,
@@ -22,6 +21,11 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 
 _EXCHANGE_MANAGER_METHODS = frozenset({"ShowShopBuyTipsView"})
 _ITEM_COST_RE = re.compile(r"^Item\|(\d+)_(\d+)$")
+_CONFIG_INDEXES = {
+    "goodsId": 1, "group": 2, "scopeType": 3, "type": 4,
+    "secondTag": 5, "thirdTag": 6, "itemId": 7, "goodsNum": 8,
+    "cost": 9, "limitBuy": 10, "limitTimes": 11, "position": 16,
+}
 
 
 class FanxiuExchangeShopCollectionError(RuntimeError):
@@ -54,7 +58,12 @@ def decode_exchange_shop_config(
     *,
     cost_values: Sequence[Any],
 ) -> dict[str, Any]:
-    """Decode the proven CommonShop_ExchangeShop generated-row layout."""
+    """Decode CommonShop.ExchangeShop columns, checked against live indexes.
+
+    Group and itemId happen to match for many GongFa rows; SpiritWare uses
+    distinct group IDs. Treating column 2 as itemId silently lost those goods.
+    Missing scopeType/limitBuy use the generated config's explicit zero defaults.
+    """
 
     if len(values) <= 17:
         raise FanxiuExchangeShopCollectionError("兑换商店配置行长度不足")
@@ -62,13 +71,13 @@ def decode_exchange_shop_config(
     cost_item_id, cost_num = _parse_cost(cost_text)
     decoded = {
         "goods_id": _int(values[1], field="goodsId"),
-        "item_id": _int(values[2], field="itemId"),
+        "item_id": _int(values[7], field="itemId"),
         "goods_num": _int(values[8], field="goodsNum"),
-        "limit_buy": _int(values[4], field="limitBuy"),
+        "limit_buy": _int(values[10] if values[10] is not None else 0, field="limitBuy"),
         "second_tag": _int(values[5], field="secondTag"),
         "third_tag": _int(values[6], field="thirdTag"),
-        "group": _int(values[7], field="group"),
-        "scope_type": _optional_int(values[10], field="scopeType"),
+        "group": _int(values[2], field="group"),
+        "scope_type": _int(values[3] if values[3] is not None else 0, field="scopeType"),
         "limit_times": _int(values[11], field="limitTimes"),
         "position": _int(values[16], field="position"),
         "cost_item_id": cost_item_id,
@@ -113,7 +122,30 @@ def _catalog_by_id() -> dict[int, dict[str, Any]]:
     }
 
 
-def _read_rows(reader: LuaJitReader, data_fields: dict[str, Any]) -> list[dict[str, Any]]:
+def project_exchange_shop_numeric_row(table: dict[str, Any]) -> list[Any]:
+    """Preserve Lua numeric keys across array and sparse hash storage.
+
+    Generated config rows are not guaranteed to keep cost or item identity in
+    the array segment. Array-only decoding silently treated these paid goods
+    as free and omitted them. Indices here match LuaJitReader.table(), including
+    its index-zero slot. This projection does not resolve config defaults.
+    """
+    values = list(table.get("array") or [])
+    for key, value in (table.get("fields") or {}).items():
+        if isinstance(key, bool) or not isinstance(key, (int, float)):
+            continue
+        if int(key) != key or not 0 <= int(key) <= 128:
+            continue
+        index = int(key)
+        if len(values) <= index:
+            values.extend([None] * (index + 1 - len(values)))
+        if values[index] is not None and values[index] != value:
+            raise FanxiuExchangeShopCollectionError("兑换配置数字键存储冲突")
+        values[index] = value
+    return values
+
+
+def _read_rows(reader: LuaJitReader, data_fields: dict[str, Any], *, diagnostics: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     item_list = table_ref(data_fields.get("AllExchangeShopItemVoList"))
     if item_list is None:
         raise FanxiuExchangeShopCollectionError("兑换商店商品列表尚未加载")
@@ -125,6 +157,8 @@ def _read_rows(reader: LuaJitReader, data_fields: dict[str, Any]) -> list[dict[s
     array = reader.table(storage.address)["array"]
     if count <= 0 or len(array) <= count:
         raise FanxiuExchangeShopCollectionError("兑换商店商品列表不完整")
+    if diagnostics is not None:
+        diagnostics.update(declared_vo_count=count, omitted_cost_goods_ids=[])
 
     rows: list[dict[str, Any]] = []
     for raw_vo in array[1 : count + 1]:
@@ -135,12 +169,14 @@ def _read_rows(reader: LuaJitReader, data_fields: dict[str, Any]) -> list[dict[s
         config_ref = table_ref(vo_fields.get("configData"))
         if config_ref is None:
             raise FanxiuExchangeShopCollectionError("兑换商店 configData 缺失")
-        config = reader.table(config_ref.address)["array"]
+        config = project_exchange_shop_numeric_row(reader.table(config_ref.address))
         if len(config) <= 9 or not isinstance(config[9], LuaRef):
             # Free claims use the same shop container but are not currency
             # exchange candidates for either GongFa job.
+            if diagnostics is not None:
+                diagnostics["omitted_cost_goods_ids"].append(vo_fields.get("goodsId"))
             continue
-        cost = reader.table(config[9].address)["array"]
+        cost = project_exchange_shop_numeric_row(reader.table(config[9].address))
         try:
             row = decode_exchange_shop_config(config, cost_values=cost)
         except FanxiuExchangeShopCollectionError as exc:
@@ -223,22 +259,48 @@ def project_exchange_shop_items(
 
 
 def read_exchange_shop_runtime() -> dict[str, Any]:
-    """Return a coherent read-only snapshot; never initializes or mutates Lua."""
+    """Read loaded shop rows with shared bounded mapping recovery.
+
+    Only the manager locator is cached; rows are fresh per observation. The
+    UI context provider retries an unmapped/read fault once with fresh maps.
+    No caller retry or game initialization is needed. Recovery and sparse
+    config support still require live acceptance on the current client.
+    """
+    return read_ui_runtime_snapshot([], _read_exchange_shop_runtime)
+
+
+def _read_exchange_shop_runtime(context: UiRuntimeContext) -> dict[str, Any]:
 
     started = time.perf_counter()
-    memory = MumuProcessMemory.discover_cached(max_age_seconds=None)
-    reader = LuaJitReader(memory)
+    memory = context.memory
+    reader = context.reader
     root, cache_hit, environment = resolve_lua_global_manager_root(
         memory,
         manager_key="exchange-shop-global",
-        state_address=int(_lua_addresses(memory)["state"], 16),
+        state_address=context.binding.state_address,
         global_name="ExchangeshopMgr",
         required_methods=_EXCHANGE_MANAGER_METHODS,
         validate=_validate_manager,
     )
     data_fields, data_address = _manager_data(reader, root)
-    rows = _read_rows(reader, data_fields)
-    items = project_exchange_shop_items(rows, catalog_by_id=_catalog_by_id())
+    env = reader.string_fields(environment, frozenset({"s_globalCfgIdx"}))
+    config_groups = reader.fields(env.get("s_globalCfgIdx"))
+    common_shop = reader.fields(config_groups.get("CommonShop"))
+    live_indexes = reader.fields(common_shop.get("ExchangeShop"))
+    if any(live_indexes.get(key) != index for key, index in _CONFIG_INDEXES.items()):
+        raise FanxiuExchangeShopCollectionError(
+            f"CommonShop.ExchangeShop 运行态列索引未加载或版本不支持：{live_indexes}"
+        )
+    projection_diagnostics: dict[str, Any] = {}
+    rows = _read_rows(reader, data_fields, diagnostics=projection_diagnostics)
+    catalog = _catalog_by_id()
+    items = project_exchange_shop_items(rows, catalog_by_id=catalog)
+    projection_diagnostics.update(
+        catalog_item_count=len(catalog),
+        omitted_catalog_items=sorted({row["item_id"] for row in rows if row["item_id"] not in catalog}),
+        decoded_goods_ids=[row["goods_id"] for row in rows],
+        config_indexes={key: live_indexes[key] for key in _CONFIG_INDEXES},
+    )
     if not items:
         raise FanxiuExchangeShopCollectionError("兑换商店运行态没有商品")
     return {
@@ -255,6 +317,7 @@ def read_exchange_shop_runtime() -> dict[str, Any]:
             "environment": f"0x{environment:x}",
             "data": f"0x{data_address:x}",
             "config_row_count": len(rows),
+            "projection": projection_diagnostics,
             "elapsed_seconds": time.perf_counter() - started,
             "protocol": "ExchangeshopMgr.Model.ExchangeshopData.AllExchangeShopItemVoList",
             "read_only": True,
