@@ -21,7 +21,7 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     UiRuntimeContext,
-    acquire_ui_runtime_context_fast,
+    read_ui_runtime_snapshot,
 )
 
 
@@ -716,11 +716,20 @@ def _fingerprint(kind: ActivityMenuKind, items: tuple[ActivityMenuItem, ...]) ->
 def read_activity_menu_snapshot(kind: ActivityMenuKind) -> ActivityMenuSnapshot:
     """Read one currently loaded menu, returning explicit NotLoaded state."""
 
-    global _world_left_binding
     if kind not in {"world_left", "group_popup"}:
         raise ValueError(f"unsupported activity menu kind: {kind}")
-    total_started = time.perf_counter()
-    ctx = acquire_ui_runtime_context_fast(_MENU_KEYS)
+    # A stable UI root can acquire newly allocated table nodes. The shared
+    # reader refreshes mappings once and rebuilds the complete observation.
+    started = time.perf_counter()
+    return read_ui_runtime_snapshot(
+        _MENU_KEYS, lambda ctx: _read_activity_menu_from_context(ctx, kind, started), fast=True,
+    )
+
+
+def _read_activity_menu_from_context(
+    ctx: UiRuntimeContext, kind: ActivityMenuKind, total_started: float,
+) -> ActivityMenuSnapshot:
+    global _world_left_binding
     binding_done = time.perf_counter()
     locate_started = binding_done
     cache_mode = f"{ctx.cache_mode}/relocated"

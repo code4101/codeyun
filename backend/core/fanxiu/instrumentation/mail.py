@@ -212,61 +212,67 @@ def _snapshot(
 
 
 def read_mail_snapshot() -> dict[str, Any]:
-    """Return the current local mail list without GUI or network actions."""
+    """Read current mail facts; refresh a stale manager binding once, without GUI actions."""
 
     started_at = time.perf_counter()
-    stage_started_at = started_at
     timings: dict[str, float] = {}
     memory: MumuProcessMemory | None = None
-    try:
-        memory = MumuProcessMemory.discover_cached()
-        timings["process_discovery"] = time.perf_counter() - stage_started_at
+    attempt_count = 0
+
+    def read_once(
+        current_memory: MumuProcessMemory,
+        force_rebind: bool,
+    ) -> dict[str, Any]:
+        nonlocal memory, timings, attempt_count
+        memory = current_memory
+        attempt_count += 1
+        attempt_timings: dict[str, float] = {}
         stage_started_at = time.perf_counter()
-        state_address = int(_lua_addresses(memory)["state"], 16)
-        timings["lua_state"] = time.perf_counter() - stage_started_at
+        state_address = int(_lua_addresses(current_memory)["state"], 16)
+        attempt_timings["lua_state"] = time.perf_counter() - stage_started_at
         stage_started_at = time.perf_counter()
-        root, root_cache_hit, environment_address = (
-            resolve_lua_global_manager_root(
-                memory,
-                manager_key="mail",
-                state_address=state_address,
-                global_name="MailMgr",
-                required_methods=_MAIL_METHODS,
-                validate=_mail_data_fields,
-            )
+        root, root_cache_hit, environment_address = resolve_lua_global_manager_root(
+            current_memory,
+            manager_key="mail",
+            state_address=state_address,
+            global_name="MailMgr",
+            required_methods=_MAIL_METHODS,
+            validate=_mail_data_fields,
+            force_refresh=force_rebind,
         )
-        timings["manager_resolve"] = time.perf_counter() - stage_started_at
+        attempt_timings["manager_resolve"] = time.perf_counter() - stage_started_at
         stage_started_at = time.perf_counter()
         result = _snapshot(
-            memory,
+            current_memory,
             root,
             root_cache_hit=root_cache_hit,
             state_address=state_address,
             environment_address=environment_address,
         )
-        timings["snapshot_decode"] = time.perf_counter() - stage_started_at
+        attempt_timings["snapshot_decode"] = time.perf_counter() - stage_started_at
+        timings = attempt_timings
+        result["evidence"]["snapshot_attempts"] = attempt_count
+        return result
+
+    try:
+        result = read_runtime_snapshot_with_rebind(read_once)
         result["elapsed_seconds"] = time.perf_counter() - started_at
         result["timings"] = timings
         return result
     except Exception as exc:
-        reason = (
-            str(exc)
-            if isinstance(exc, FanxiuRuntimeMemoryError)
-            else f"{type(exc).__name__}: {exc}"
-        )
+        reason = str(exc) if isinstance(exc, FanxiuRuntimeMemoryError) else f"{type(exc).__name__}: {exc}"
         return {
             "ok": False,
             "available": False,
             "complete": False,
             "source": "runtime_memory",
             "reason": reason,
+            "snapshot_attempts": attempt_count,
             "elapsed_seconds": time.perf_counter() - started_at,
             "timings": timings,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,
-                "process_start_ticks": (
-                    memory.process_start_ticks if memory is not None else None
-                ),
+                "process_start_ticks": memory.process_start_ticks if memory is not None else None,
             },
         }
 

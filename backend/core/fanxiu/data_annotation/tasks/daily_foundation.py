@@ -531,10 +531,6 @@ class DailyFoundationTaskMixin:
             label="日常_活跃度",
             flow=self.daily_activity_flow,
         )
-        self._trigger_daily_experience_after_prerequisites(
-            completed_task_type="daily_activity",
-            completed_at=_behavior_tree_executor._now(),
-        )
         return result
 
     def _next_weekly_activity_time_text(
@@ -792,8 +788,7 @@ class DailyFoundationTaskMixin:
             task_payload,
         )
         if result == "success":
-            self._trigger_daily_experience_after_prerequisites(
-                completed_task_type="daily_boss",
+            self._trigger_daily_boss_followups(
                 completed_at=_behavior_tree_executor._now(),
             )
         return result
@@ -808,107 +803,34 @@ class DailyFoundationTaskMixin:
         except ValueError:
             return None
 
-    @classmethod
-    def _daily_prerequisite_completion_at(
-        cls,
-        task: Mapping[str, Any] | None,
-        *,
-        task_type: str,
-        cycle_now: datetime,
-    ) -> datetime | None:
-        """Return a same-cycle business completion, proven by Job-owned next_time."""
+    def _trigger_daily_boss_followups(self, *, completed_at: datetime) -> None:
+        """Boss completion wakes rewards now and experience one minute later.
 
-        if not isinstance(task, Mapping):
-            return None
-        finished_at = cls._parse_scheduler_datetime(task.get("finished_at"))
-        next_time = cls._parse_scheduler_datetime(task.get("next_time"))
-        if finished_at is None or next_time is None:
-            return None
-
-        cycle_start = cycle_now.replace(hour=5, minute=0, second=0, microsecond=0)
-        if cycle_now < cycle_start:
+        Completed successors are not repeated within the same 05:00 game day.
+        The scheduler owns execution; this callback only installs triggers.
+        """
+        cycle_start = completed_at.replace(hour=5, minute=0, second=0, microsecond=0)
+        if completed_at < cycle_start:
             cycle_start -= timedelta(days=1)
-        cycle_end = cycle_start + timedelta(days=1)
-        if not cycle_start <= finished_at < cycle_end:
-            return None
-
-        if task_type == "daily_boss":
-            expected_next_time = cycle_end
-        elif task_type == "daily_activity":
-            expected_next_time = cycle_end.replace(hour=7)
-        else:
-            return None
-        return finished_at if next_time == expected_next_time else None
-
-    def _trigger_daily_experience_after_prerequisites(
-        self,
-        *,
-        completed_task_type: str,
-        completed_at: datetime,
-    ) -> str | None:
-        """Trigger experience only after boss and activity both completed this game day."""
-
-        tasks = _read_kernel_scheduler_tasks()
-        tasks_by_type = {
-            str(task.get("task_type") or ""): task
-            for task in tasks
-            if isinstance(task, dict)
-        }
-        completion_times: dict[str, datetime | None] = {}
-        for task_type in ("daily_boss", "daily_activity"):
-            task = tasks_by_type.get(task_type)
-            if task_type == completed_task_type and isinstance(task, Mapping):
-                # This callback runs inside the successful Job Cell, after the
-                # business flow has atomically persisted its next_time but
-                # before the Scheduler records this attempt's finished_at.
-                # Re-reading finished_at here therefore observes the previous
-                # attempt and can suppress the first valid cross-day trigger.
-                # Consume the caller's proven completion time for only the
-                # current prerequisite while retaining the persisted
-                # next_time as the completion-vs-retry discriminator.
-                task = {
-                    **task,
-                    "finished_at": completed_at.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            completion_times[task_type] = self._daily_prerequisite_completion_at(
-                task,
-                task_type=task_type,
-                cycle_now=completed_at,
-            )
-
-        missing = [
-            "日常_首领" if task_type == "daily_boss" else "日常_活跃度"
-            for task_type, completion_at in completion_times.items()
-            if completion_at is None
-        ]
-        source_label = "日常_首领" if completed_task_type == "daily_boss" else "日常_活跃度"
-        if missing:
-            self._log("detail", f"{source_label}：日常_经验等待{'、'.join(missing)}完成")
-            return None
-
-        latest_prerequisite = max(value for value in completion_times.values() if value is not None)
-        experience_task = tasks_by_type.get("daily_experience")
-        experience_finished_at = self._parse_scheduler_datetime(
-            experience_task.get("finished_at") if isinstance(experience_task, Mapping) else None
-        )
-        if (
-            isinstance(experience_task, Mapping)
-            and str(experience_task.get("last_result") or "") == "success"
-            and experience_finished_at is not None
-            and experience_finished_at >= latest_prerequisite
+        tasks = {str(t.get("task_type") or ""): t for t in _read_kernel_scheduler_tasks()}
+        # A successful observation may only schedule another boss check.
+        # Only its persisted next-day trigger proves the whole daily quota done.
+        boss = tasks.get("daily_boss", {})
+        if self._parse_scheduler_datetime(boss.get("next_time")) != cycle_start + timedelta(days=1):
+            return
+        for task_type, label, delay in (
+            ("daily_task_rewards", "日常_任务奖励", 0),
+            ("daily_experience", "日常_经验", 1),
         ):
-            self._log("detail", f"{source_label}：日常_经验已在两项前置完成后执行，本轮不重复触发")
-            return None
-
-        trigger_time = _behavior_tree_executor.set_kernel_scheduler_task_trigger_time(
-            "日常_经验",
-            completed_at,
-        )
-        self._log(
-            "success",
-            f"{source_label}：日常_首领与日常_活跃度均已完成，已设置日常_经验触发时间 {trigger_time}",
-        )
-        return trigger_time
+            task = tasks.get(task_type, {})
+            finished_at = self._parse_scheduler_datetime(task.get("finished_at"))
+            if (task.get("last_result") == "success" and finished_at is not None
+                    and cycle_start <= finished_at <= completed_at):
+                continue
+            trigger_time = _behavior_tree_executor.set_kernel_scheduler_task_trigger_time(
+                label, completed_at + timedelta(minutes=delay),
+            )
+            self._log("success", f"日常_首领：已设置{label}触发时间 {trigger_time}")
 
     def _execute_daily_boss_task_flow(
         self,
@@ -9247,10 +9169,10 @@ class DailyFoundationTaskMixin:
         payload = dict(payload or {})
         decision = self._daily_window_admission(
             now=_behavior_tree_executor._now(),
-            trigger=time_cls(21, 30),
+            trigger=time_cls(21, 0),
             cutoff=time_cls(22, 0),
             label="灵脉_清体力",
-            window_text="21:30-22:00",
+            window_text="21:00-22:00",
         )
         return self._persist_admission_decision(payload, decision)
 
@@ -9266,10 +9188,10 @@ class DailyFoundationTaskMixin:
         now = _behavior_tree_executor._now()
         next_date = (
             now.date()
-            if now.time() < time_cls(21, 30)
+            if now.time() < time_cls(21, 0)
             else now.date() + timedelta(days=1)
         )
-        next_time = datetime.combine(next_date, time_cls(21, 30)).strftime(
+        next_time = datetime.combine(next_date, time_cls(21, 0)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
         self._persist_scheduler_task_next_time(
@@ -9733,10 +9655,10 @@ class DailyFoundationTaskMixin:
             return None
         decision = self._daily_window_admission(
             now=_behavior_tree_executor._now(),
-            trigger=time_cls(21, 30),
+            trigger=time_cls(21, 0),
             cutoff=time_cls(22, 0),
             label="洞天_行动力",
-            window_text="21:30-22:00",
+            window_text="21:00-22:00",
         )
         return self._persist_admission_decision(payload, decision)
 
@@ -9807,7 +9729,7 @@ class DailyFoundationTaskMixin:
                 task_type="daily_dongtian_clear",
                 label=task_label,
                 entry_label="收取两万九曜玄墨",
-                daily_start_time=time_cls(21, 30),
+                daily_start_time=time_cls(21, 0),
                 daily_end_time=time_cls(22, 0),
             )
             return "skipped"

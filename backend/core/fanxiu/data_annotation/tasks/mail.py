@@ -4,7 +4,7 @@ import difflib
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from typing import Any, Callable
 from pathlib import Path
@@ -569,9 +569,39 @@ class MailTaskMixin:
         visible_slots = [slot for slot in geometry.visible_slot_indices() if int(slot) <= 3]
         observations = []
         if known_top:
-            MailTaskMixin._first_screen_runtime_mapping(snapshot, image121, fragments)
+            try:
+                MailTaskMixin._first_screen_runtime_mapping(snapshot, image121, fragments)
+                anchor_count = 3
+            except RuntimeError:
+                # Some client mail types render completely blank rows. Require
+                # two independent visible anchors instead of inventing their
+                # missing titles/times. Row 0 is usable only when its exact,
+                # globally unique title and time both match current MailMgr.
+                if not snapshot.get("complete") or snapshot.get("decoded_count") != len(items):
+                    raise
+                observations = build_mail_visual_observations(
+                    fragments, geometry, visible_slots=visible_slots,
+                )
+                if items:
+                    title = str(items[0].get("title") or "")
+                    stamp = re.sub(r"\D+", "", str(items[0].get("create_time_text") or ""))
+                    unique_title = bool(title) and sum(str(x.get("title") or "") == title for x in items) == 1
+                    observations = [
+                        replace(o, trusted=True, reliability=1.0)
+                        if o.slot_index == 0 and unique_title
+                        and any(ocr_name_similarity(title, candidate) >= 0.99 for candidate in o.title_candidates)
+                        and len(stamp) >= 4
+                        and any(re.sub(r"\D+", "", candidate)[-4:] == stamp[-4:] for candidate in o.time_candidates)
+                        else o for o in observations
+                    ]
+                alignment = align_mail_window(
+                    items, observations, visible_slots=visible_slots,
+                    min_anchor_count=2, expected_runtime_offset=0,
+                )
+                if not alignment.aligned or alignment.runtime_offset != 0:
+                    raise
+                anchor_count = alignment.anchor_count
             offset = 0
-            anchor_count = 3
         else:
             observations = build_mail_visual_observations(
                 fragments,

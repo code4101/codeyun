@@ -3,7 +3,7 @@ from __future__ import annotations
 """Idempotent aggregate workflow for daily activity task rewards."""
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta
+from datetime import datetime
 import threading
 from typing import Any, Protocol
 
@@ -17,7 +17,6 @@ from backend.core.fanxiu.data_annotation.tasks.daily_task_reward_navigation impo
 )
 
 
-DAILY_TASK_REWARD_TRIGGER = (6, 30)
 DAILY_TASK_REWARD_DOMAIN_ORDER = ("lundao", "qixi_mojie", "lingmai")
 
 
@@ -112,19 +111,6 @@ def claim_first_row_until_clear(
         "claimed_task_ids": claimed_now,
         "reason": f"达到单域领取上限 {max_claims} 后仍有可领取任务",
     }
-
-
-def next_daily_task_reward_time(now: datetime | None = None) -> datetime:
-    """Return the next day's 06:30; this job never installs another trigger."""
-
-    current = now or datetime.now()
-    tomorrow = current + timedelta(days=1)
-    return tomorrow.replace(
-        hour=DAILY_TASK_REWARD_TRIGGER[0],
-        minute=DAILY_TASK_REWARD_TRIGGER[1],
-        second=0,
-        microsecond=0,
-    )
 
 
 def _domain_decision(snapshot: dict[str, Any], *, adapter_available: bool) -> tuple[str, str]:
@@ -255,14 +241,13 @@ def run_daily_task_rewards_job(
             "reason": "05:00 未取之宝由邮件自动发放，当前不接 UI",
         }
     )
-    next_time = next_daily_task_reward_time(now)
     return {
         "job": "日常_任务奖励",
         "status": "completed_with_pending"
         if any(item["status"] in {"pending_research", "fail_closed", "failed", "unverified"} for item in domains)
         else "completed",
         "domains": domains,
-        "next_time": next_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "next_time": None,
     }
 
 
@@ -387,8 +372,7 @@ class DailyTaskRewardsTaskMixin:
             )
             raise RuntimeError(f"日常_任务奖励部分域未完成：{summary}")
 
-        next_time = next_daily_task_reward_time().strftime("%Y-%m-%d %H:%M:%S")
-        context.set_next_time(next_time)
+        context.set_next_time(None)
         claimed_count = sum(len(row.get("claimed_task_ids") or []) for row in domain_results)
         context.set_completion_message(
             f"日常_任务奖励：三域幂等完成，本次领取 {claimed_count} 项；"

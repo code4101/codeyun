@@ -21,6 +21,7 @@ def run_a_collection(
     a_codes: set[str], b_codes: set[str], c_codes: set[str],
     evidence_path: Path, stop_at: float, target_ratio: float = .90,
     max_consumptions: int = 100,
+    fast_observation: bool = False,
 ) -> dict:
     """调用即授权在指定目标上切锁、消耗引仙/精炼石、采用达标候选。
 
@@ -96,7 +97,7 @@ def run_a_collection(
             material = 14000006 if plan.action == 'yinxian' else 14000007
             iteration_started = time.monotonic()
             # preview 校验当前实例、库存、未锁项、道具确认文案；窗口路线在本程序内复用。
-            preview = gui.preview_advanced_item(material)
+            preview = gui.preview_advanced_item(material, fast_observation=fast_observation)
             if preview['target_item_id'] != target.item_id:
                 raise RuntimeError('使用道具确认目标与培养目标不一致')
             preview_seconds = time.monotonic() - iteration_started
@@ -121,6 +122,8 @@ def run_a_collection(
                         value=e.value, quality=e.quality, normal_max=e.normal_max)
                         for e in raw_sample if not e.locked],
                     'preview_seconds': preview_seconds,
+                    'preview_timings': preview.get('timings', {}),
+                    'inventory_diagnostics': preview.get('inventory_diagnostics', {}),
                     'elapsed_seconds': time.monotonic() - iteration_started})
             if ((inventory['pid'], inventory['process_start_ticks']) != target.process_identity
                     or preview['count'] - counts[material] != 1

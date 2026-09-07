@@ -18,7 +18,7 @@ class WeeklyHanliTaskMixin:
         now: datetime | None = None,
     ) -> str:
         next_time = next_business_time(
-            ("05:00",),
+            ("00:05",),
             now=now,
             weekdays=(0,),
         )

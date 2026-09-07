@@ -21,13 +21,13 @@ STANDARD_JOB_ID = "beast-spirit-update"
 
 
 def next_beast_spirit_update_at(now: datetime | None = None) -> datetime:
-    """Return the next Tuesday 00:00 strictly after ``now``."""
+    """Return the next Monday 00:05 strictly after ``now``."""
 
     current = now or datetime.now()
-    days_until_tuesday = (1 - current.weekday()) % 7
+    days_until_monday = (0 - current.weekday()) % 7
     candidate = datetime.combine(
-        current.date() + timedelta(days=days_until_tuesday),
-        time(hour=0, minute=0),
+        current.date() + timedelta(days=days_until_monday),
+        time(hour=0, minute=5),
     )
     if candidate <= current:
         candidate += timedelta(days=7)
@@ -743,19 +743,27 @@ def _execute_current_batch(
             f"兽魂更新：100%策略意外出现确认弹窗，evidence={evidence}"
         )
 
-    result_scene, result_score, result_frame = (yield from context.current_scene(update=True))
-    if result_scene in (
-        BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
-        BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
-    ):
-        for _ in range(10):
-            yield from _settle(context, 0.5)
-            result_scene, result_score, result_frame = (yield from context.current_scene(update=True))
-            if result_scene not in (
-                BEAST_SOUL_LOW_SUCCESS_CONFIRMATION_SCENE,
-                BEAST_SOUL_PRECIOUS_MATERIAL_CONFIRMATION_SCENE,
-            ):
-                break
+    # A completed request may open a result overlay directly.  It is a legal
+    # business result, not an unknown popup or a reason to replay consumption.
+    result_match = yield from context.wait_scene(
+        [BEAST_SOUL_QUICK_SYNTHESIS_SCENE,
+         BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE],
+        wait=10,
+        label="兽魂更新：等待快捷合成结果",
+    )
+    if result_match.scene_id == BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE:
+        yield from context.wait_click(
+            BEAST_SOUL_POST_SYNTHESIS_CONTINUE_SCENE,
+            "继续",
+        )
+        result_match = yield from context.wait_scene(
+            [BEAST_SOUL_QUICK_SYNTHESIS_SCENE],
+            wait=10,
+            label="兽魂更新：关闭结果并等待快捷合成页",
+        )
+    result_scene = result_match.scene_id
+    result_score = result_match.score
+    result_frame = result_match.frame_data_url
     if result_scene != BEAST_SOUL_QUICK_SYNTHESIS_SCENE:
         evidence = _capture_synthesis_evidence(
             context,

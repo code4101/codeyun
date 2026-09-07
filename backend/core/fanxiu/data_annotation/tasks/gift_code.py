@@ -10,8 +10,8 @@ from backend.core.fanxiu.gift_code_crawler import crawl_weekly_gift_codes
 
 
 WEEKLY_GIFT_CODE_TASK_ID = "gift-code-weekly"
-WEEKLY_GIFT_CODE_WEEKDAY = 0  # Python weekday: Monday
-WEEKLY_GIFT_CODE_TRIGGER_TIME = dt_time(23, 30)
+WEEKLY_GIFT_CODE_WEEKDAY = 1  # Python weekday: Tuesday; allow time for codes to be published.
+WEEKLY_GIFT_CODE_TRIGGER_TIME = dt_time(0, 5)
 
 
 def _now() -> datetime:
@@ -19,20 +19,20 @@ def _now() -> datetime:
 
 
 def next_weekly_gift_code_trigger_at(now: datetime) -> datetime:
-    """计算本次正常完成后的下周一 23:30。
+    """计算本次正常完成后的下周二 00:05。
 
-    同一周周一无论几点完成，都推进到七天后的周一；其它日期推进到紧接着的
-    下一个周一。
+    同一周周二无论几点完成，都推进到七天后的周二；其它日期推进到紧接着的
+    下一个周二。
 
     :param datetime now: 本次 Job 正常完成时间。
     :return datetime: 下一周期的绝对触发时间。
     """
 
-    days_until_monday = (WEEKLY_GIFT_CODE_WEEKDAY - now.weekday()) % 7
-    if days_until_monday == 0:
-        days_until_monday = 7
+    days_until_trigger = (WEEKLY_GIFT_CODE_WEEKDAY - now.weekday()) % 7
+    if days_until_trigger == 0:
+        days_until_trigger = 7
     return datetime.combine(
-        now.date() + timedelta(days=days_until_monday),
+        now.date() + timedelta(days=days_until_trigger),
         WEEKLY_GIFT_CODE_TRIGGER_TIME,
     )
 
@@ -107,7 +107,7 @@ class GiftCodeTaskMixin:
         stop_event: threading.Event,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """从论坛获取本周礼包码，依次兑换并推进到下周一 23:30。"""
+        """从论坛获取本周礼包码，依次兑换并推进到下周二 00:05。"""
 
         payload = dict(payload or {})
         raw_codes = payload.get("codes")

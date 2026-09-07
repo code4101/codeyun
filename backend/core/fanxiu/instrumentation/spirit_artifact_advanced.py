@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 import re
+import time
 
 from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import read_ui_object_field, read_ui_runtime_snapshot
@@ -23,15 +24,18 @@ def advanced_item_confirmation_names(item: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name.replace('·', '').replace(' ', '') for name in names if name))
 
 
-def read_spirit_artifact_advanced_items() -> dict[str, Any]:
+def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]:
     """读取已打开高级洗炼窗口的目标、全部可见配置及真实库存；歧义报错。"""
     from backend.core.fanxiu.catalog.lua_config import load_default_fanxiu_lang_map
     from .backpack import read_backpack_item_counts
     from .item_config import read_loaded_item_metadata
 
+    started = time.monotonic()
     lang = load_default_fanxiu_lang_map()
+    timings = {'lang': time.monotonic() - started}
 
     def read(ctx):
+        projection_started = time.monotonic()
         reader = ctx.reader
         field = lambda obj, key: read_ui_object_field(ctx, obj.address, key)
         env = reader.string_fields(ctx.binding.environment_address, frozenset({'s_globalCfgIdx'}))
@@ -96,12 +100,17 @@ def read_spirit_artifact_advanced_items() -> dict[str, Any]:
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError(f'当前高级洗炼窗口数量必须为 1，实际 {len(candidates)}')
         result = next(iter(candidates.values()))
+        timings['window_config'] = time.monotonic() - projection_started
         ids = [row['item'] for row in result['items']]
+        metadata_started = time.monotonic()
         metadata, status = read_loaded_item_metadata(ids, memory=ctx.memory, reader=reader,
                                                     state_address=ctx.binding.state_address)
         if not status['complete']:
             raise FanxiuRuntimeMemoryError('高级洗炼道具元数据未完整加载')
+        timings['metadata'] = time.monotonic() - metadata_started
+        inventory_started = time.monotonic()
         counts, inventory = read_backpack_item_counts(ids, manager_key='spirit-artifact-advanced')
+        timings['inventory'] = time.monotonic() - inventory_started
         if (inventory['pid'], inventory['process_start_ticks']) != (ctx.memory.pid, ctx.memory.process_start_ticks):
             raise FanxiuRuntimeMemoryError('高级洗炼列表与库存进程不一致')
         for row in result['items']:
@@ -112,6 +121,9 @@ def read_spirit_artifact_advanced_items() -> dict[str, Any]:
         if str(reader.long(read_ui_object_field(ctx, panel_address, '_CurSelectSlot'))) != result['item_id']:
             raise FanxiuRuntimeMemoryError('读取高级洗炼库存期间选中部件发生变化')
         return {**result, 'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
-                'source': 'active_spiritware_advanced_real_list', 'read_only': True}
+                'source': 'active_spiritware_advanced_real_list', 'read_only': True,
+                'inventory_diagnostics': {key: inventory.get(key) for key in
+                    ('discovery', 'backpack_root_cache_hit')}}
 
-    return read_ui_runtime_snapshot([], read)
+    result = read_ui_runtime_snapshot([], read, fast=fast)
+    return {**result, 'timings': {**timings, 'total': time.monotonic() - started}}

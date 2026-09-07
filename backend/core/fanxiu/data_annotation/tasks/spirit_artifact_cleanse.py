@@ -712,13 +712,13 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         return self._transition(self._require_wash_scene(phase="open_advanced_items"), "高级洗炼",
                                 self.assets.advanced_items_scene_id, phase="open_advanced_items")
 
-    def inspect_advanced_items(self) -> Any:
+    def inspect_advanced_items(self, *, fast: bool = False) -> Any:
         """从洗炼页打开高级列表并读取全部道具；已打开时只读，不使用道具。"""
         from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import read_spirit_artifact_advanced_items
 
         if self.current_scene_id() != self.assets.advanced_items_scene_id:
             self.open_advanced_items()
-        return read_spirit_artifact_advanced_items()
+        return read_spirit_artifact_advanced_items(fast=fast)
 
     def preview_peak_stone(self) -> Any:
         """显示巅峰石使用确认；仍需取消或独立的消耗授权。"""
@@ -742,7 +742,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             memory.close()
             self._advanced_scroll_memory = None
 
-    def preview_advanced_item(self, item_id: int) -> Any:
+    def preview_advanced_item(self, item_id: int, *, fast_observation: bool = False) -> Any:
         """按 Runtime 道具 ID 定位并显示使用确认，不点击确认。
 
         OnClickItem 在库存为零时会打开获取途径并发出洗炼请求，因此必须
@@ -752,7 +752,22 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
         from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import advanced_item_confirmation_names
 
-        catalog = self.inspect_advanced_items()
+        def observe():
+            if not fast_observation:
+                return read_spirit_artifact_ui_snapshot()
+            from backend.core.fanxiu.instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
+            from backend.core.fanxiu.instrumentation.spirit_artifact import read_spirit_artifact_item_runtime
+            identity = read_spirit_artifact_ui_identity()
+            snapshot = read_spirit_artifact_item_runtime(identity['item_id'])
+            if any(identity[key] != snapshot[key] for key in ('pid', 'process_start_ticks', 'ware_id', 'item_id')):
+                raise SpiritArtifactCleanseBlocked('轻量窗口身份与本体读取不一致', phase='preview_advanced')
+            return snapshot
+
+        started = time.monotonic()
+        timings = {}
+        catalog = self.inspect_advanced_items(fast=fast_observation)
+        timings['catalog'] = time.monotonic() - started
+        timings['catalog_detail'] = catalog.get('timings', {})
         matches = [row for row in catalog['items'] if row['item'] == item_id]
         if len(matches) != 1 or matches[0]['count'] <= 0:
             raise SpiritArtifactCleanseBlocked('当前灵器没有该道具或库存为零', phase='preview_advanced')
@@ -760,7 +775,9 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         name = str(item['name']).replace('·', '').replace(' ', '')
         if not name.startswith('洗灵') or len(name) <= 2:
             raise SpiritArtifactCleanseBlocked('高级洗炼道具名称未解析', phase='preview_advanced')
-        before = read_spirit_artifact_ui_snapshot()
+        ui_started = time.monotonic()
+        before = observe()
+        timings['ui_before'] = time.monotonic() - ui_started
         if before.get('item_id') != catalog['item_id'] or any(
             before[key] != catalog[key] for key in ('pid', 'process_start_ticks', 'ware_id')
         ):
@@ -769,6 +786,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             raise SpiritArtifactCleanseBlocked('没有未锁词条', phase='preview_advanced')
         scroll_key, scroll_route = None, ()
         memory = self._advanced_scroll_memory
+        locate_started = time.monotonic()
         if memory is None:
             self.execute(self.context.wait_click_ocr_text(
                 self.assets.advanced_items_scene_id, name[2:], in_shapes=['道具列表'],
@@ -789,7 +807,10 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         text = ''.join(token['text'] for token in tokens).replace('·', '').replace(' ', '')
         if not any(candidate in text for candidate in advanced_item_confirmation_names(item)):
             raise SpiritArtifactCleanseBlocked('使用确认未包含所选道具名称', phase='preview_advanced')
-        after = read_spirit_artifact_ui_snapshot()
+        timings['locate_confirm'] = time.monotonic() - locate_started
+        ui_started = time.monotonic()
+        after = observe()
+        timings['ui_after'] = time.monotonic() - ui_started
         if any(before[key] != after[key] for key in (
             'pid', 'process_start_ticks', 'item_id', 'effects', 'pending_effects', 'refine_num'
         )):
@@ -798,6 +819,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             memory.remember(scroll_key, scroll_route)
         return {'scene': self.assets.advanced_confirm_scene_id, 'target_item_id': catalog['item_id'],
                 'item_id': item_id, 'name': item['name'], 'count': item['count'],
+                'timings': {**timings, 'total': time.monotonic() - started},
+                'inventory_diagnostics': catalog.get('inventory_diagnostics', {}),
                 'unlocked_effects': [effect for effect in after['effects'] if not effect['locked']]}
 
     def open_attribute_preview(self, prepared: PreparedSpiritArtifactCleanse) -> Any:

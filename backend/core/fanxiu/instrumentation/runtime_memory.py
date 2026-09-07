@@ -900,7 +900,8 @@ class LuaJitReader:
         if node_count:
             if self.memory.readable_region(node_address, node_count * 24) is None:
                 raise FanxiuRuntimeMemoryError(
-                    f"Lua table node 地址无效：0x{node_address:x}"
+                    f"Lua table node 地址无效：0x{node_address:x}",
+                    code="memory_address_unmapped",
                 )
             raw_nodes = self.memory.read(node_address, node_count * 24)
             for index in range(node_count):
@@ -950,7 +951,8 @@ class LuaJitReader:
         node_count = hash_mask + 1
         if self.memory.readable_region(node_address, node_count * 24) is None:
             raise FanxiuRuntimeMemoryError(
-                f"Lua table node 地址无效：0x{node_address:x}"
+                f"Lua table node 地址无效：0x{node_address:x}",
+                code="memory_address_unmapped",
             )
         raw_nodes = self.memory.read(node_address, node_count * 24)
         wanted_lengths = {len(name.encode("utf-8")) for name in wanted}
@@ -1018,7 +1020,8 @@ class LuaJitReader:
         node_count = hash_mask + 1
         if self.memory.readable_region(node_address, node_count * 24) is None:
             raise FanxiuRuntimeMemoryError(
-                f"Lua table node 地址无效：0x{node_address:x}"
+                f"Lua table node 地址无效：0x{node_address:x}",
+                code="memory_address_unmapped",
             )
         raw_nodes = self.memory.read(node_address, node_count * 24)
         for index in range(node_count):
@@ -1120,7 +1123,8 @@ class LuaJitReader:
             node_size = (hash_mask + 1) * 24
             if self.memory.readable_region(node_address, node_size) is None:
                 raise FanxiuRuntimeMemoryError(
-                    f"Lua table node 地址无效：0x{node_address:x}"
+                    f"Lua table node 地址无效：0x{node_address:x}",
+                    code="memory_address_unmapped",
                 )
             node_pages.extend(
                 node_address + (stored_hash & hash_mask) * 24

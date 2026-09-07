@@ -22,7 +22,7 @@ from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
 )
 
 
-TUESDAY = 1
+MONDAY = 0
 ZHENWUGE_SCENE = 467
 ZHENWUGE_DETAIL_SCENE = 468
 LANGYAGE_SCENE = 469
@@ -242,7 +242,7 @@ class XianshiExchangeTaskMixin:
         default_task_id: str,
         now: datetime | None = None,
     ) -> str:
-        next_time = next_business_time(("00:00",), now=now, weekdays=(TUESDAY,))
+        next_time = next_business_time(("00:05",), now=now, weekdays=(MONDAY,))
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or default_task_id),
             next_time,

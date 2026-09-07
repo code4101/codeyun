@@ -23,9 +23,6 @@ from backend.core.fanxiu.data_annotation.tasks.tianjige_forum_quiz import (
 from backend.core.fanxiu.data_annotation.tasks.daozu_challenge import (
     next_daozu_challenge_time,
 )
-from backend.core.fanxiu.data_annotation.tasks.daily_task_rewards import (
-    next_daily_task_reward_time,
-)
 _CONSOLIDATED_ARENA_SCHEDULER_IDS = {
     "sunday-daofa": "daily-daofa",
     "sunday-xianyuan-duel": "daily-xianyuan-duel",
@@ -70,7 +67,7 @@ def consolidate_arena_scheduler_instances(
         return raw, False
     items = [dict(item) if isinstance(item, dict) else item for item in raw]
     migration_changed = False
-    bootstrap_time = _next_initial_time(now or datetime.now(), ("00:30",))
+    bootstrap_time = _next_initial_time(now or datetime.now(), ("00:10",))
 
     def migrate_family(
         *,
@@ -322,7 +319,7 @@ def default_kernel_scheduler_tasks(
             "ranking_lifecycle",
             "玩法榜",
             description="动态",
-            initial_times=("00:30",),
+            initial_times=("00:10",),
             dispatch_level=1,
             error_retry_delay_seconds=600,
             payload={"max_execution_seconds": 10800},
@@ -332,7 +329,7 @@ def default_kernel_scheduler_tasks(
             "resource_ranking",
             "资源榜",
             description="动态",
-            initial_times=("00:30",),
+            initial_times=("00:10",),
             error_retry_delay_seconds=600,
             payload={"max_execution_seconds": 10800},
         ),
@@ -348,8 +345,8 @@ def default_kernel_scheduler_tasks(
             "daily-task-rewards",
             "daily_task_rewards",
             "日常_任务奖励",
-            description="每日",
-            initial_next_time=next_daily_task_reward_time(current),
+            description="首领完成后",
+            initial_next_time=None,
         ),
         job(
             "system-maintenance-recovery",
@@ -381,8 +378,8 @@ def default_kernel_scheduler_tasks(
             "weekly_gift_code",
             "每周_礼包码",
             description="每周",
-            initial_times=("23:30",),
-            initial_weekdays=(0,),
+            initial_times=("00:05",),
+            initial_weekdays=(1,),
         ),
         job(
             "tianjige-forum-quiz",
@@ -407,8 +404,8 @@ def default_kernel_scheduler_tasks(
             "beast_spirit_update",
             "兽魂更新",
             description="每周",
-            initial_times=("00:00",),
-            initial_weekdays=(1,),
+            initial_times=("00:05",),
+            initial_weekdays=(0,),
             payload={"max_source_level": 8},
         ),
         job(
@@ -441,7 +438,7 @@ def default_kernel_scheduler_tasks(
             description="手动",
             payload={"max_rounds": 100, "settle_seconds": 1.0, "wait_timeout": 15.0},
         ),
-        job("weekly-hanli", "weekly_hanli", "周常_韩立", description="每周", initial_times=("05:00",), initial_weekdays=(0,)),
+        job("weekly-hanli", "weekly_hanli", "周常_韩立", description="每周", initial_times=("00:05",), initial_weekdays=(0,)),
         job(
             "bubble-weekly-pills",
             "bubble_weekly_pills",
@@ -525,7 +522,7 @@ def default_kernel_scheduler_tasks(
             },
         ),
         job("daily-boss", "daily_boss", "日常_首领", description="每日", initial_times=("05:00",), payload={"max_execution_seconds": 1800}),
-        job("daily-experience", "daily_experience", "日常_经验", description="手动", payload={"max_execution_seconds": 1800}),
+        job("daily-experience", "daily_experience", "日常_经验", description="首领完成后1分钟", payload={"max_execution_seconds": 1800}),
         job("legacy-daily-youli", "daily_youli", "日常_游历", description="手动"),
         job("legacy-daily-shuangxiu", "daily_shuangxiu", "日常_双修", description="手动"),
         job(
@@ -584,12 +581,12 @@ def default_kernel_scheduler_tasks(
             "daily_dongtian_clear",
             "洞天_行动力",
             description="每日",
-            initial_times=("21:30",),
+            initial_times=("21:00",),
             dispatch_order=20,
             error_retry_delay_seconds=60,
-            payload={"daily_start_time": "21:30", "daily_end_time": "22:00"},
+            payload={"daily_start_time": "21:00", "daily_end_time": "22:00"},
         ),
-        job("legacy-daily-lingmai-clear", "daily_lingmai_clear", "灵脉_清体力", description="每日", initial_times=("21:30",), dispatch_order=10),
+        job("legacy-daily-lingmai-clear", "daily_lingmai_clear", "灵脉_清体力", description="每日", initial_times=("21:00",), dispatch_order=10),
         job(
             "legacy-daily-mojie-raid",
             "daily_mojie_raid",
@@ -608,8 +605,8 @@ def default_kernel_scheduler_tasks(
             "xianshi_zhenwuge",
             "仙市_真悟阁",
             description="每周",
-            initial_times=("00:00",),
-            initial_weekdays=(1,),
+            initial_times=("00:05",),
+            initial_weekdays=(0,),
             dispatch_order=10,
             error_retry_delay_seconds=600,
         ),
@@ -618,8 +615,8 @@ def default_kernel_scheduler_tasks(
             "xianshi_langya_rankings",
             "仙市_琅琊榜",
             description="每周",
-            initial_times=("00:00",),
-            initial_weekdays=(1,),
+            initial_times=("00:05",),
+            initial_weekdays=(0,),
             dispatch_order=20,
             error_retry_delay_seconds=600,
         ),
@@ -633,7 +630,7 @@ def default_kernel_scheduler_tasks(
             "活动_每日清单同步",
             description="每日",
             initial_times=("00:00",),
-            dispatch_level=2,
+            dispatch_level=0,
             error_retry_delay_seconds=3600,
         ),
         job(

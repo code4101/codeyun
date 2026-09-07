@@ -210,6 +210,10 @@ def read_spirit_artifact_item_runtime(item_id: str, *, force_relocate: bool = Fa
         ext = _fields(reader, item.get("ext"))
         found.append({"item_id": str(item_id), "base_id": as_int(item.get("baseId")),
                       "ware_id": position[0] + 1, "part": position[1] + 1,
+                      "is_break": ext.get("isBreak") if type(ext.get("isBreak")) is bool else None,
+                      "grade": as_int(ext.get("grade")),
+                      "realm": as_int(ext.get("pinLevel")),
+                      "quantity": as_int(item.get("num")),
                       "refine_num": as_int(ext.get("refineNum")) or 0,
                       "effects": _read_effect_map(reader, ext.get("attrMap"), artifact_index=position[0]),
                       "pending_effects": _read_effect_map(reader, ext.get("refineMap"), artifact_index=position[0])})
@@ -261,6 +265,7 @@ def read_spirit_artifact_inventory_runtime() -> dict[str, Any]:
             result.append({"item_id": item_id, "base_id": base_id,
                            "ware_id": position[0] + 1, "part": position[1] + 1,
                            "grade": grade, "realm": as_int(ext.get("pinLevel")) or 0,
+                           "is_break": ext.get("isBreak") if type(ext.get("isBreak")) is bool else None,
                            "quantity": quantity})
         return sorted(result, key=lambda row: (row["ware_id"], row["part"], row["item_id"]))
 
