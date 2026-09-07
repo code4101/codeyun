@@ -12,6 +12,37 @@ from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import read_ui_object_field, read_ui_runtime_snapshot
 
 
+def read_spirit_artifact_auto_open_rule() -> dict[str, Any]:
+    """只读客户端自动洗炼开放表达式；不执行 CheckCondition 或改变活动状态。"""
+    from .runtime_memory import manager_index_fields, resolve_lua_global_manager_root
+
+    def read(ctx):
+        reader = ctx.reader
+        methods = frozenset({'DBMgr', 'GetConfigTable', 'GetConfigTableByIdWithLog', 'Inst_get'})
+        def tables(current, address):
+            manager = manager_index_fields(current, address, methods)
+            return current.dictionary_fields(current.fields(manager.get('inst')).get('ConfigDic'))
+        root, _, environment = resolve_lua_global_manager_root(
+            ctx.memory, manager_key='spirit-artifact-auto-rule', state_address=ctx.binding.state_address,
+            global_name='DBMgr', required_methods=methods, validate=tables)
+        row = table_ref(reader.fields(tables(reader, root).get('SpiritWare.ConfigValue')).get('OpenAutoRefresh'))
+        indexes = reader.fields(reader.fields(reader.fields(reader.string_fields(environment,
+            frozenset({'s_globalCfgIdx'})).get('s_globalCfgIdx')).get('SpiritWare')).get('ConfigValue'))
+        value_index = as_int(indexes.get('value'))
+        if row is None or value_index is None:
+            raise FanxiuRuntimeMemoryError('自动洗炼开放配置尚未加载')
+        data = reader.table(row.address)
+        condition = data['fields'].get('value', data['fields'].get(value_index,
+            data['array'][value_index] if 0 <= value_index < len(data['array']) else None))
+        if not isinstance(condition, str) or not condition:
+            raise FanxiuRuntimeMemoryError('自动洗炼开放表达式无效')
+        return {'condition': condition, 'minimum_quality': 5,
+                'source': 'runtime_dbmgr_spiritware_auto_open_rule',
+                'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks}
+
+    return read_ui_runtime_snapshot([], read)
+
+
 def locate_spirit_artifact_name(tokens: list[dict], names: tuple[str, ...]) -> tuple[float, float] | None:
     """按 OCR 原始行序连接竖排字，返回唯一名称包络中心；不借用图标或序号。"""
     lines: dict[str, list[dict]] = {}
@@ -64,8 +95,8 @@ def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
             window = table_ref(raw)
             if window is None:
                 continue
-            members, count = reader.list_items(window)
-            if not count or len(members) != count:
+            members, window_count = reader.list_items(window)
+            if not window_count or len(members) != window_count:
                 continue
             component = table_ref(members[-1])
             outer = table_ref(field(component, 'm_panel')) if component else None
@@ -116,9 +147,22 @@ def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
                 committed = read_spirit_artifact_item_runtime(str(item_id))
                 if (committed['pid'], committed['process_start_ticks']) != (ctx.memory.pid, ctx.memory.process_start_ticks):
                     raise FanxiuRuntimeMemoryError('洗炼 UI 与部件数据进程不一致')
+                # 背包读取期间用户可能手动切部件/页签/关闭窗口。重读现场链，
+                # 不能把上一部件的数据附到新页面上，也不自动导航恢复旧位置。
+                live_members, live_count = reader.list_items(window)
+                live_storage = reader.table(ctx.binding.component_storage_address)
+                registered = any(table_ref(value) == window for value in [
+                    *live_storage['array'], *live_storage['fields'].values()])
+                if (not registered or live_count != window_count or not live_members or table_ref(live_members[-1]) != component
+                        or as_int(field(outer, 'v_wareId')) != ware_id
+                        or as_int(field(group, 'curTabIndex')) != index
+                        or str(reader.long(field(panel, '_CurSelectSlot'))) != str(item_id)):
+                    raise FanxiuRuntimeMemoryError('读取洗炼属性期间页面或选中部件发生变化，请重新观察当前现场')
                 for output in ('effects', 'pending_effects'):
                     result[output] = bind_spirit_artifact_ui_effects(result[output], committed[output])
                 result['refine_num'] = committed['refine_num']
+                result['base_id'] = committed['base_id']
+                result['part'] = committed['part']
             candidates[outer.address] = result
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError(f'当前灵器窗口数量必须为 1，实际 {len(candidates)}')

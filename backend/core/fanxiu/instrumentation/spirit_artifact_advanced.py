@@ -8,9 +8,19 @@ limitType、品质、稀有词条数量和满值条件仍由具体使用计划�
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import read_ui_object_field, read_ui_runtime_snapshot
+
+
+def advanced_item_confirmation_names(item: dict[str, Any]) -> tuple[str, ...]:
+    """同一配置的展示名与确认文案名可能不同（无瑕石/无暇石），不做近音猜测。"""
+    names = [str(item.get('name') or '')]
+    match = re.match(r'使用1个<color=[^>]+>(洗灵[^<]+)</color>', str(item.get('useDes') or ''))
+    if match:
+        names.append(match[1])
+    return tuple(dict.fromkeys(name.replace('·', '').replace(' ', '') for name in names if name))
 
 
 def read_spirit_artifact_advanced_items() -> dict[str, Any]:

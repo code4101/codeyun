@@ -21,5 +21,14 @@ from backend.core.fanxiu.catalog.inventory_models import FanxiuSpiritArtifactPar
 def test_stage_requires_complete_facts_and_nested_conditions(rank, affixes, names, expected):
     effects = [{} if affix is None else {"affix": affix} for affix in affixes]
     effects += [{"name": name, "affix": ""} for name in names]
-    row = FanxiuSpiritArtifactPartRow(rank=rank, runtime_effects=effects)
+    row = FanxiuSpiritArtifactPartRow(rank=rank, runtime_is_break=True, runtime_effects=effects)
     assert row.model_dump()["stage"] == expected
+
+
+@pytest.mark.parametrize("is_break,expected", [(False, "普通"), (True, "错升"), (None, "待识别")])
+def test_rebuilt_high_rank_part_requires_breakthrough_fact(is_break, expected):
+    row = FanxiuSpiritArtifactPartRow(
+        rank=10, runtime_is_break=is_break,
+        runtime_effects=[{"affix": ""}] * 6,
+    )
+    assert row.stage == expected

@@ -11971,10 +11971,14 @@ class DailyFoundationTaskMixin:
                     if victory_scene_id in {382, 375}:
                         break
                     if victory_scene_id not in {None, 374, 588}:
-                        evidence = context.ocr_text(getattr(landed, "frame_data_url", None))
-                        raise RuntimeError(
-                            f"{task_label}：战斗结果等待出现未声明场景 #{victory_scene_id}，"
-                            f"保留现场；OCR={evidence[:500]}"
+                        # A transition frame can match an unrelated global
+                        # scene before the victory sheet materializes. This
+                        # phase only observes: keep its original deadline and
+                        # never click or depart on that incidental match.
+                        self._log(
+                            "warning",
+                            f"{task_label}：结果过渡识别为 #{victory_scene_id}，"
+                            "继续限时等待真实胜负页，未点击或离场",
                         )
                     yield from context.wait_action_settle(1.0)
                 else:

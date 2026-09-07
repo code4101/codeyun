@@ -167,7 +167,6 @@ def test_prepare_is_pure_and_plan_token_is_not_authorization():
     prepared = prepare_spirit_artifact_cleanse(observed, _request(observed))
 
     assert prepared.ready is True
-    assert "dry-run" in prepared.reason
     with pytest.raises(SpiritArtifactCleanseBlocked, match="缺少"):
         require_irreversible_authorization(prepared, None, material=True)
     with pytest.raises(SpiritArtifactCleanseBlocked, match="未授权消耗"):
@@ -320,3 +319,14 @@ def test_runtime_gui_assets_include_owned_overlays():
     assets = SpiritArtifactCleanseGuiAssets()
     assert {669, 670, 671, 712, 713}.issubset(assets.observation_scene_ids)
     assert len(set(assets.observation_scene_ids)) == len(assets.observation_scene_ids)
+
+
+def test_material_identity_is_bound_to_plan_authorization():
+    observed = observe_spirit_artifact(_snapshot(), TARGET)
+    request = replace(_request(observed), budget=SpiritArtifactCleanseBudget(1, 1, 14000007))
+    first = prepare_spirit_artifact_cleanse(observed, request)
+    second = prepare_spirit_artifact_cleanse(observed, replace(
+        request, budget=SpiritArtifactCleanseBudget(1, 1, 14000009)))
+    authorization = SpiritArtifactIrreversibleAuthorization(first.plan_token, allow_material_consumption=True)
+    with pytest.raises(SpiritArtifactCleanseBlocked, match='token'):
+        require_irreversible_authorization(second, authorization, material=True)

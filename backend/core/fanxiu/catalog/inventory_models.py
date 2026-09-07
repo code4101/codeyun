@@ -155,17 +155,19 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     runtime_ware_id: int = 0
     runtime_part: int = 0
     runtime_refine_num: int = 0
-    runtime_is_break: bool = False
+    runtime_is_break: bool | None = None
     runtime_effects: List[dict[str, Any]] = Field(default_factory=list)
 
     @computed_field
     @property
     def stage(self) -> str:
-        """按洗灵规则由高到低判定阶段；缺少词缀事实时不推断错升。"""
+        """升阶不等于突破：未突破的原始本体即使吃回高阶仍属普通。"""
         if self.rank <= 0:
             return "待识别"
-        if self.rank < 6:
+        if self.rank < 6 or self.runtime_is_break is False:
             return "普通"
+        if self.runtime_is_break is None:
+            return "待识别"
         effects = self.runtime_effects
         if not effects or any("affix" not in effect for effect in effects):
             return "待识别"

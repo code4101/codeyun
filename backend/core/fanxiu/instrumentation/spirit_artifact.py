@@ -203,6 +203,64 @@ def read_spirit_artifact_item_runtime(item_id: str) -> dict[str, Any]:
     return {**found[0], "pid": memory.pid, "process_start_ticks": memory.process_start_ticks}
 
 
+def read_spirit_artifact_inventory_runtime() -> dict[str, Any]:
+    """只读全部灵器本体实例，保留同部位的低阶备件，不做最高阶去重。
+
+    grade/realm/quantity 来自当前 ItemVO/ext，quality 来自已加载 Item.Item
+    配置。调用方可按 ware_id、part、quality、grade 筛选重置本体；本接口
+    不把升阶红点当作重置许可，也不声明实例是否已装配或可消耗。
+    """
+    from .ui_runtime_context import acquire_ui_runtime_context
+    from .runtime_memory import resolve_lua_global_manager_root
+    from .item_config import read_loaded_item_metadata
+
+    ctx = acquire_ui_runtime_context([])
+    reader = ctx.reader
+    root, _, _ = resolve_lua_global_manager_root(
+        ctx.memory, manager_key="spirit-artifact-item-global",
+        state_address=ctx.binding.state_address, global_name="BackpackMgr",
+        required_methods=frozenset({"Inst_get"}), validate=_backpack_data_fields,
+    )
+
+    def read_items():
+        data = _backpack_data_fields(reader, root)
+        values = _fields(reader, _fields(reader, data.get("_SpiritWareItemDic")).get("_valueTable_"))
+        result = []
+        seen = set()
+        for raw in values.values():
+            item = _fields(reader, raw)
+            base_id = as_int(item.get("baseId"))
+            position = _artifact_position(base_id or 0)
+            item_id = str(reader.long(item.get("id")) or "")
+            ext = _fields(reader, item.get("ext"))
+            grade = as_int(ext.get("grade"))
+            quantity = as_int(item.get("num"))
+            if position is None or not item_id or item_id in seen or grade is None or quantity is None:
+                raise FanxiuRuntimeMemoryError("灵器本体实例身份、阶数或数量不完整")
+            if grade < 1 or quantity < 1:
+                raise FanxiuRuntimeMemoryError("灵器本体阶数或数量无效")
+            seen.add(item_id)
+            result.append({"item_id": item_id, "base_id": base_id,
+                           "ware_id": position[0] + 1, "part": position[1] + 1,
+                           "grade": grade, "realm": as_int(ext.get("pinLevel")) or 0,
+                           "quantity": quantity})
+        return sorted(result, key=lambda row: (row["ware_id"], row["part"], row["item_id"]))
+
+    items = read_items()
+    metadata, status = read_loaded_item_metadata(
+        [row["base_id"] for row in items], memory=ctx.memory, reader=reader,
+        state_address=ctx.binding.state_address,
+    )
+    if not status["complete"] or any(metadata[row["base_id"]]["quality"] is None for row in items):
+        raise FanxiuRuntimeMemoryError("灵器本体品质配置未完整加载")
+    if read_items() != items:
+        raise FanxiuRuntimeMemoryError("读取期间灵器本体库存发生变化，请重读")
+    return {"items": [{**row, "quality": metadata[row["base_id"]]["quality"]} for row in items],
+            "complete": True, "read_only": True, "captured_at": time.time(),
+            "pid": ctx.memory.pid, "process_start_ticks": ctx.memory.process_start_ticks,
+            "source": "runtime_spiritware_all_instances"}
+
+
 def _memory_runtime_snapshot() -> dict[str, Any]:
     """Read exact live ItemVO/ext fields when the fixed main-state bridge is unavailable."""
 

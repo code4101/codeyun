@@ -91,6 +91,7 @@ class SpiritArtifactCleanseErrorCode(str, Enum):
     AUTH_REUSED = "AUTH_REUSED"
     PHASE_TOKEN_MISMATCH = "PHASE_TOKEN_MISMATCH"
     ASSET_MISSING = "ASSET_MISSING"
+    CONTROL_UNAVAILABLE = "CONTROL_UNAVAILABLE"
     SCENE_MISMATCH = "SCENE_MISMATCH"
     POSTCONDITION_MISMATCH = "POSTCONDITION_MISMATCH"
 
@@ -167,9 +168,10 @@ class SpiritArtifactObservation:
 class SpiritArtifactCleanseBudget:
     max_rolls: int
     max_material_cost: int
+    material_id: int = SPIRIT_ARTIFACT_CLEANSE_MATERIAL_ID
 
     def __post_init__(self) -> None:
-        if self.max_rolls <= 0 or self.max_material_cost <= 0:
+        if self.max_rolls <= 0 or self.max_material_cost <= 0 or self.material_id <= 0:
             raise ValueError("洗灵预算必须是正数")
 
 
@@ -263,6 +265,8 @@ class SpiritArtifactCleanseGui(Protocol):
     def open_attribute_preview(self, prepared: PreparedSpiritArtifactCleanse) -> Any: ...
 
     def start_auto_cleanse(self, prepared: PreparedSpiritArtifactCleanse) -> Any: ...
+
+    def start_advanced_cleanse(self, prepared: PreparedSpiritArtifactCleanse) -> Any: ...
 
     def accept_pending(self, candidate: SpiritArtifactPendingCandidate) -> Any: ...
 
@@ -460,26 +464,41 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
     def probe_auto_settings_warning(self) -> Any:
         """Open the verified #669 guard only; never confirm it."""
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+        self._require_wash_scene(phase='probe_auto_settings_warning')
+        if not read_spirit_artifact_ui_snapshot()['needs_auto_warning']:
+            raise SpiritArtifactCleanseBlocked('当前部件无需自动洗炼警告', phase='probe_auto_settings_warning')
+        return self._open_auto_entry()
 
-        assets = self.assets
-        return self._transition(
-            assets.wash_scene_id,
-            assets.auto_settings_shape,
-            assets.auto_unlocked_warning_scene_id,
-            phase="probe_auto_settings_warning",
-        )
+    def _open_auto_entry(self) -> Any:
+        """按钮当前可见才点击；允许警告或直达设置，不能用高级洗炼代替。"""
+        scene = self._require_wash_scene(phase='open_auto_settings')
+        frame = self.context.cur_frame(update=True)
+        match = self.context.find_ocr_text(scene, '自动洗炼',
+            in_shapes=[self.assets.auto_settings_shape], frame_data_url=frame, crop=True)
+        if match is None:
+            from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_auto_open_rule
+            rule = read_spirit_artifact_auto_open_rule()
+            raise SpiritArtifactCleanseBlocked('自动洗炼入口当前不可见；受活动开放条件及部件品质限制',
+                code=SpiritArtifactCleanseErrorCode.CONTROL_UNAVAILABLE, phase='open_auto_settings', evidence=rule)
+        self.context.click_frame_point(scene, *match.point())
+        result = self.execute(self.context.wait_scene(
+            [self.assets.auto_unlocked_warning_scene_id, self.assets.auto_settings_scene_id], wait=10))
+        return result
 
     def open_auto_settings(self) -> Any:
         """Open #671 without changing controls or activating KeepBtn."""
 
         assets = self.assets
         current = self.current_scene_id()
-        if current == assets.wash_scene_id:
-            self.probe_auto_settings_warning()
-            current = assets.auto_unlocked_warning_scene_id
+        if current in assets.wash_scene_ids:
+            self._open_auto_entry()
+            current = self.current_scene_id()
+        if current == assets.auto_settings_scene_id:
+            return current
         if current != assets.auto_unlocked_warning_scene_id:
             raise SpiritArtifactCleanseBlocked(
-                "自动洗炼设置只允许从 #668/#669 的已证明路径进入",
+                "自动洗炼设置要求当前洗炼页或自动洗炼警告页",
                 code=SpiritArtifactCleanseErrorCode.SCENE_MISMATCH,
                 phase="open_auto_settings",
                 evidence={"current": current},
@@ -640,6 +659,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         条件不足提示则等待确认失败，保留现场，不继续任何消耗动作。
         """
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+        from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import advanced_item_confirmation_names
 
         catalog = self.inspect_advanced_items()
         matches = [row for row in catalog['items'] if row['item'] == item_id]
@@ -665,7 +685,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         tokens = self.context.ocr_tokens_in_shapes(self.assets.advanced_confirm_scene_id,
                                                   ['使用道具说明'], frame_data_url=frame)
         text = ''.join(token['text'] for token in tokens).replace('·', '').replace(' ', '')
-        if name not in text:
+        if not any(candidate in text for candidate in advanced_item_confirmation_names(item)):
             raise SpiritArtifactCleanseBlocked('使用确认未包含所选道具名称', phase='preview_advanced')
         after = read_spirit_artifact_ui_snapshot()
         if any(before[key] != after[key] for key in (
@@ -695,12 +715,64 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             phase="consume",
         )
 
+    def _observe_selected(self, target: SpiritArtifactTarget) -> SpiritArtifactObservation:
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+        ui = read_spirit_artifact_ui_snapshot()
+        if (not ui.get('is_wash') or ui.get('item_id') != target.item_id or ui['ware_id'] != target.ware_id
+                or ui['part'] != target.part or (target.base_id and ui['base_id'] != target.base_id)):
+            raise SpiritArtifactCleanseBlocked('当前洗炼实例与指定目标不一致', phase='observe_selected')
+        def effects(key):
+            return tuple(sorted((SpiritArtifactEffect(**{k: row[k] for k in (
+                'cleanse_id', 'value', 'quality', 'locked')}) for row in ui[key]), key=lambda e: e.cleanse_id))
+        current, pending = effects('effects'), effects('pending_effects')
+        return SpiritArtifactObservation(target, '', '', ui['refine_num'], current, pending,
+            (ui['pid'], ui['process_start_ticks']), time.time(),
+            _fingerprint(_effect_fingerprint_payload(target, ui['refine_num'], current, pending)))
+
+    def start_advanced_cleanse(self, prepared: PreparedSpiritArtifactCleanse) -> Any:
+        """执行一次指定高级道具洗炼；不自动采用，不重试有副作用的确认。"""
+        from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
+        budget = prepared.request.budget
+        if not prepared.ready or budget.max_rolls != 1 or budget.max_material_cost != 1:
+            raise SpiritArtifactCleanseBlocked('高级洗炼单次接口要求一次、一个道具的预算', phase='consume')
+        before = self._observe_selected(prepared.observation.target)
+        if before.fingerprint != prepared.observation.fingerprint or before.process_identity != prepared.observation.process_identity:
+            raise SpiritArtifactCleanseBlocked('高级洗炼计划已过期', phase='consume')
+        if before.pending_effects or {e.cleanse_id for e in before.effects if e.locked} != set(prepared.request.desired_locked_ids):
+            raise SpiritArtifactCleanseBlocked('高级洗炼存在旧候选或锁状态与计划不一致', phase='consume')
+        preview = self.preview_advanced_item(budget.material_id)
+        fresh = self._observe_selected(before.target)
+        if fresh.fingerprint != before.fingerprint or fresh.process_identity != before.process_identity:
+            raise SpiritArtifactCleanseBlocked('确认前部件状态改变', phase='consume')
+        self._transition(self.assets.advanced_confirm_scene_id, '确认使用道具',
+                         *self.assets.wash_scene_ids, phase='consume_advanced')
+        after = self._observe_selected(before.target)
+        counts, inventory = read_backpack_item_counts([budget.material_id], manager_key='spirit-artifact-advanced')
+        if (inventory['pid'], inventory['process_start_ticks']) != before.process_identity or after.process_identity != before.process_identity:
+            raise SpiritArtifactCleanseBlocked('高级洗炼前后进程改变', phase='consume')
+        if preview['count'] - counts[budget.material_id] != 1:
+            raise SpiritArtifactCleanseBlocked('高级洗炼没有形成精确一个道具的消耗', phase='consume')
+        if after.effects != before.effects or not after.pending_effects:
+            raise SpiritArtifactCleanseBlocked('高级洗炼未生成独立候选，保留现场检查', phase='consume')
+        return {'before': before, 'after': after, 'material_id': budget.material_id,
+                'material_before': preview['count'], 'material_after': counts[budget.material_id]}
+
     def accept_pending(self, candidate: SpiritArtifactPendingCandidate) -> Any:
-        raise SpiritArtifactCleanseBlocked(
-            "Save 会覆盖已采用属性，正式 adapter 默认禁用",
-            code=SpiritArtifactCleanseErrorCode.AUTH_MISSING,
-            phase="replace",
-        )
+        """采用已授权的精确候选；可能丢失锁定词条的二次确认另行处理。"""
+        self._require_scene(self.assets.pending_wash_scene_id, phase='replace')
+        before = self._observe_selected(candidate.target)
+        if before.fingerprint != candidate.observed_fingerprint or before.pending_effects != candidate.effects:
+            raise SpiritArtifactCleanseBlocked('候选已变化，拒绝采用', phase='replace')
+        pending = {e.cleanse_id: e for e in candidate.effects}
+        if any(e.locked and pending.get(e.cleanse_id) != e for e in before.effects):
+            raise SpiritArtifactCleanseBlocked('候选会改变锁定词条，需要单独的替换决策', phase='replace')
+        self._transition(self.assets.pending_wash_scene_id, '保留新属性',
+                         self.assets.wash_scene_id, phase='replace')
+        after = self._observe_selected(candidate.target)
+        verify_spirit_artifact_candidate_saved(candidate, before, after)
+        frame = self.context.cur_frame(update=True)
+        return SpiritArtifactPageEvidence(str(self.assets.wash_scene_id), candidate.target.item_id,
+            spirit_artifact_effect_fingerprint(after.effects), hashlib.sha256(frame.encode()).hexdigest())
 
 
 def _int(value: Any, label: str) -> int:
@@ -960,7 +1032,7 @@ def prepare_spirit_artifact_cleanse(
     reason = (
         "目标词条已满足，零动作"
         if status == "noop"
-        else "纯计划就绪；当前仅允许 dry-run，原生自动洗灵入口尚未资产化"
+        else "计划就绪；执行须通过对应动作入口、一次性授权及预算校验"
     )
     token_payload = {
         "observation": observation.fingerprint,
@@ -971,6 +1043,7 @@ def prepare_spirit_artifact_cleanse(
         "budget": {
             "max_rolls": request.budget.max_rolls,
             "max_material_cost": request.budget.max_material_cost,
+            "material_id": request.budget.material_id,
         },
         "allow_replace": request.allow_replace,
     }
@@ -1065,6 +1138,32 @@ def verify_spirit_artifact_commit_delta(
         page_scene=page_evidence.scene,
         page_frame_sha256=page_evidence.frame_sha256,
     )
+
+
+def verify_spirit_artifact_candidate_saved(
+    candidate: SpiritArtifactPendingCandidate,
+    before: SpiritArtifactObservation,
+    after: SpiritArtifactObservation,
+) -> None:
+    """采用只搬运指定候选：不洗新词条、不丢失锁定词条、清空候选。
+
+    before 必须紧邻采用动作；材料总账由 commit_delta 独立验证，不能把
+    整轮洗炼前的观测当作保存前观测，也不能仅凭指纹变化判断采用成功。
+    """
+    if before.process_identity != after.process_identity or before.target != after.target or before.target != candidate.target:
+        raise SpiritArtifactCleanseBlocked('采用前后进程或目标不一致', phase='verify_replace')
+    if candidate.observed_fingerprint != before.fingerprint or not candidate.effects or (
+        spirit_artifact_effect_fingerprint(candidate.effects)
+        != spirit_artifact_effect_fingerprint(before.pending_effects)
+    ):
+        raise SpiritArtifactCleanseBlocked('采用前不是指定的新鲜候选', phase='verify_replace')
+    if after.pending_effects:
+        raise SpiritArtifactCleanseBlocked('采用后仍存在未保存候选', phase='verify_replace')
+    if spirit_artifact_effect_fingerprint(after.effects) != spirit_artifact_effect_fingerprint(candidate.effects):
+        raise SpiritArtifactCleanseBlocked('已采用属性不等于指定候选', phase='verify_replace')
+    saved = {effect.cleanse_id: effect for effect in after.effects}
+    if any(effect.locked and saved.get(effect.cleanse_id) != effect for effect in before.effects):
+        raise SpiritArtifactCleanseBlocked('采用损失或修改了原有锁定词条', phase='verify_replace')
 
 
 class SpiritArtifactCleanseInterface:
@@ -1281,6 +1380,8 @@ class SpiritArtifactCleanseInterface:
         prepared: PreparedSpiritArtifactCleanse,
         authorization: SpiritArtifactIrreversibleAuthorization | None = None,
     ) -> Any:
+        if prepared.request.budget.material_id != SPIRIT_ARTIFACT_CLEANSE_MATERIAL_ID:
+            raise SpiritArtifactCleanseBlocked('原生自动洗炼不能使用高级道具预算', phase='consume')
         if self._attempt is None or prepared.attempt_id != self._attempt.attempt_id:
             raise SpiritArtifactCleanseBlocked(
                 "自动洗灵计划来自其他 attempt",
@@ -1299,6 +1400,24 @@ class SpiritArtifactCleanseInterface:
             prepared.plan_token, authorization, phase="consume", material=True
         )
         return self._gui().start_auto_cleanse(prepared)
+
+    def start_advanced_cleanse(
+        self, prepared: PreparedSpiritArtifactCleanse,
+        authorization: SpiritArtifactIrreversibleAuthorization | None = None,
+    ) -> Any:
+        if self._attempt is None or prepared.attempt_id != self._attempt.attempt_id:
+            raise SpiritArtifactCleanseBlocked('高级洗炼计划来自其他 attempt', phase='consume')
+        if prepared.kernel_generation != self._attempt.kernel_generation:
+            raise SpiritArtifactCleanseBlocked('高级洗炼计划的内核代次已失效',
+                code=SpiritArtifactCleanseErrorCode.GENERATION_CHANGED, phase='consume')
+        current = self.read(prepared.observation.target)
+        if current.process_identity != self._attempt.process_identity:
+            raise SpiritArtifactCleanseBlocked('高级洗炼计划的游戏进程已改变',
+                code=SpiritArtifactCleanseErrorCode.PROCESS_CHANGED, phase='consume')
+        if current.fingerprint != prepared.observation.fingerprint:
+            raise SpiritArtifactCleanseBlocked('高级洗炼前 Runtime 已变化', phase='consume')
+        self._consume_authorization(prepared.plan_token, authorization, phase='consume', material=True)
+        return self._gui().start_advanced_cleanse(prepared)
 
     def observe_pending(self) -> SpiritArtifactPendingCandidate:
         fresh = self.observe_current()
@@ -1342,7 +1461,13 @@ class SpiritArtifactCleanseInterface:
                 code=SpiritArtifactCleanseErrorCode.PENDING_FROM_PRIOR_ATTEMPT,
                 phase="replace",
             )
+        if candidate.kernel_generation != self._attempt.kernel_generation:
+            raise SpiritArtifactCleanseBlocked('候选的内核代次已失效',
+                code=SpiritArtifactCleanseErrorCode.GENERATION_CHANGED, phase='replace')
         current = self.read(candidate.target)
+        if current.process_identity != self._attempt.process_identity:
+            raise SpiritArtifactCleanseBlocked('采用前游戏进程已改变',
+                code=SpiritArtifactCleanseErrorCode.PROCESS_CHANGED, phase='replace')
         if (
             current.fingerprint != candidate.observed_fingerprint
             or tuple(current.pending_effects) != candidate.effects
@@ -1358,7 +1483,9 @@ class SpiritArtifactCleanseInterface:
             phase="replace",
             replace_result=True,
         )
-        return self._gui().accept_pending(candidate)
+        result = self._gui().accept_pending(candidate)
+        verify_spirit_artifact_candidate_saved(candidate, current, self.read(candidate.target))
+        return result
 
     def verify(
         self,
@@ -1419,6 +1546,7 @@ __all__ = [
     "require_irreversible_authorization",
     "spirit_artifact_effect_fingerprint",
     "verify_spirit_artifact_commit_delta",
+    "verify_spirit_artifact_candidate_saved",
     "verify_spirit_artifact_lock_delta",
     "validate_spirit_artifact_target_universe",
 ]
