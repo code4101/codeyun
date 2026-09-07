@@ -1577,6 +1577,7 @@ export interface FanxiuGongfaAtlasBookDetail {
 
 export interface FanxiuSpiritArtifactPartRow {
   runtime_observation?: Record<string, unknown>;
+  basic_scores?: Record<string, number>;
   stage?: string;
   order: number;
   part_name: string;

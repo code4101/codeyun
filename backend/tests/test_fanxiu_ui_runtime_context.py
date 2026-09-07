@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,24 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     acquire_ui_runtime_context,
     _validate_binding_fast,
 )
+
+
+@pytest.mark.parametrize('code', ['memory_address_unmapped', 'memory_read_failed'])
+@pytest.mark.parametrize('layer', ['bound_key', 'interned_key'])
+def test_object_field_preserves_transport_errors_for_snapshot_recovery(code, layer):
+    failure = FanxiuRuntimeMemoryError('new UI allocation', code=code)
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    context = SimpleNamespace(
+        binding=SimpleNamespace(string_table_address=1, string_mask=1, string_seed=0),
+        field=fail if layer == 'bound_key' else lambda *args: None,
+        reader=SimpleNamespace(interned_string_field=fail),
+    )
+    with pytest.raises(FanxiuRuntimeMemoryError) as caught:
+        ui_runtime_context.read_ui_object_field(context, 123, 'm_panel')
+    assert caught.value is failure
 
 
 def _binding(*, pid: int = 7, start_ticks: int = 11) -> UiRuntimeBinding:

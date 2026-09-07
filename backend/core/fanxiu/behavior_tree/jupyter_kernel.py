@@ -248,12 +248,22 @@ class FanxiuJupyterBinding:
                 if not isinstance(active_stop_event, threading.Event):
                     self.runner._stop_event = self.stop_event
                 if not self._managed_task_cell:
+                    # Ordinary Cells own execution, but never inherit a Job's
+                    # identity or terminal fields. Publish before user code so
+                    # readers and throttled action logs see the live lifecycle.
+                    self.runner._clear_current_task_locked()
                     self.runner._set_status_locked(
                         "running",
                         "Jupyter cell 执行中",
                         phase="jupyter_cell",
+                        running=True,
+                        started_at=time.time(),
+                        finished_at=None,
+                        error="",
                     )
             shell.user_ns.update(self.namespace())
+            if not self._managed_task_cell:
+                self.runner._persist_status()
         except Exception:
             self._cell_active = False
             self._cell_lock_acquired = False

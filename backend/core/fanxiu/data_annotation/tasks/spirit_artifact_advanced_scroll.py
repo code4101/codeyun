@@ -8,9 +8,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
 from typing import Any
 
 
@@ -31,6 +32,24 @@ def find_advanced_item_title(tokens, name: str):
 
 
 @dataclass(frozen=True)
+class AdvancedScrollProfile:
+    """冷发现与经验重放共用的手势参数；缩短参数仅在显式选择后启用。
+
+    默认保留已实测的0.5/1.5/1.5。0.8/0.4/0.4为待实测配置，
+    不能单凭预计拖动时间宣称定位成功或提速。
+    """
+    ratio: float = .5
+    duration: float = 1.5
+    settle_seconds: float = 1.5
+
+    def __post_init__(self):
+        if (any(type(v) not in (float, int) or not math.isfinite(v)
+                for v in (self.ratio, self.duration, self.settle_seconds))
+                or not 0 < self.ratio <= 1 or self.duration <= 0 or self.settle_seconds <= 0):
+            raise ValueError('滚动 profile 需要有效比例及正数时长')
+
+
+@dataclass(frozen=True)
 class AdvancedScrollKey:
     layout: str
     start: tuple[tuple[int, int, int], ...]
@@ -40,9 +59,16 @@ class AdvancedScrollKey:
 class AdvancedScrollMemory:
     """无全局缓存；相同列表但起点不同，不能借用同一路线。"""
 
-    def __init__(self):
+    def __init__(self, *, profile: AdvancedScrollProfile | None = None):
+        self._profile = profile if profile is not None else AdvancedScrollProfile()
+        if not isinstance(self._profile, AdvancedScrollProfile):
+            raise TypeError('profile 必须是 AdvancedScrollProfile')
         self._routes: dict[AdvancedScrollKey, tuple[str, ...]] = {}
         self._active = True
+
+    @property
+    def profile(self) -> AdvancedScrollProfile:
+        return self._profile
 
     def route(self, key: AdvancedScrollKey) -> tuple[str, ...] | None:
         if not self._active:
@@ -74,9 +100,11 @@ class AdvancedScrollMemory:
         self._active = False
 
 
-def advanced_scroll_layout(catalog: Mapping[str, Any], shape: Mapping[str, Any]) -> str:
+def advanced_scroll_layout(catalog: Mapping[str, Any], shape: Mapping[str, Any], *,
+                           profile: AdvancedScrollProfile | None = None) -> str:
     """库存数量不会改路线；进程、道具顺序、描述和标注布局改变则隔离。"""
     payload = {'process': [catalog['pid'], catalog['process_start_ticks']],
+               'scroll_profile': asdict(profile if profile is not None else AdvancedScrollProfile()),
                'ware_id': catalog['ware_id'], 'shape': dict(shape),
                'items': [{key: row.get(key) for key in ('item', 'sort', 'name', 'shortDes')}
                          for row in catalog['items']]}
@@ -98,7 +126,8 @@ def locate_advanced_item_with_experience(
              for row in catalog['items']}
     if not names.get(item_id) or len(set(names.values())) != len(names):
         raise ValueError('高级洗炼道具名称缺失或不唯一')
-    layout = advanced_scroll_layout(catalog, shape.raw)
+    profile = memory.profile
+    layout = advanced_scroll_layout(catalog, shape.raw, profile=profile)
 
     def observe_start():
         frame = context.cur_frame(update=True)
@@ -128,8 +157,9 @@ def locate_advanced_item_with_experience(
     if route is not None:
         # 缓存的是实际尝试过的拖动序列（含到边界的最后一次），不是部件下标。
         for direction in route:
-            context.drag_shape_content(shape, direction=direction)
-            execute(context.wait_action_settle(1.5))
+            context.drag_shape_content(shape, direction=direction,
+                                       ratio=profile.ratio, duration=profile.duration)
+            execute(context.wait_action_settle(profile.settle_seconds))
             traversed.append(direction)
         execute(context.wait_scene([scene_id], wait=10))
         match = find_target()
@@ -139,7 +169,8 @@ def locate_advanced_item_with_experience(
 
     for direction in ('down', 'up'):
         for _ in range(max(0, min(10, max_scrolls_per_direction))):
-            changed = execute(context.scroll_shape_content(shape, direction=direction))
+            changed = execute(context.scroll_shape_content(shape, direction=direction,
+                ratio=profile.ratio, duration=profile.duration, settle_seconds=profile.settle_seconds))
             traversed.append(direction)
             match = find_target()
             if match is not None:

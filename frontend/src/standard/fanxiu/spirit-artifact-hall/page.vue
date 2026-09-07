@@ -49,6 +49,7 @@ type SpiritArtifactPartRow = Record<StatColumnKey, string> & {
   runtimeRefineNum: number;
   runtimeIsBreak: boolean | null;
   stage: string;
+  basicScores: Record<string, number>;
   runtimeEffects: FanxiuSpiritArtifactHallSnapshot["artifacts"][number]["rows"][number]["runtime_effects"];
 };
 
@@ -241,7 +242,12 @@ function createExclusiveStatRawValues(columns: ExclusiveStatColumn[], savedStats
 }
 
 function formatStatColumnLabel(column: { label: string; baseValue?: string }) {
-  return column.baseValue ? `${column.label}${column.baseValue}` : column.label;
+  return column.label === '混沌道威' && column.baseValue ? `${column.label}${column.baseValue}` : column.label;
+}
+
+function statDisplay(row: SpiritArtifactPartRow, label: string, legacyValue: string) {
+  const score = row.basicScores[label];
+  return typeof score === 'number' && Number.isFinite(score) ? String(score) : (legacyValue || '-');
 }
 
 function formatRuntimeTime(timestamp: number) {
@@ -270,6 +276,7 @@ function createPartRow(
     runtimeRefineNum: 0,
     runtimeIsBreak: null,
     stage: "待识别",
+    basicScores: {},
     runtimeEffects: [],
     ...emptyStats,
   };
@@ -662,6 +669,7 @@ function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): Spirit
           runtimeRefineNum: normalizeNonNegativeInteger(rawSavedRow.runtime_refine_num),
           runtimeIsBreak: typeof rawSavedRow.runtime_is_break === 'boolean' ? rawSavedRow.runtime_is_break : null,
           stage: savedRow?.stage || "待识别",
+          basicScores: savedRow?.basic_scores || {},
           runtimeEffects: savedRow?.runtime_effects || [],
         };
       }),
@@ -1011,6 +1019,8 @@ onBeforeUnmount(() => {
       <span v-if="saving" class="save-status">保存中...</span>
     </div>
 
+    <p class="save-status">普通属性显示基础分：部位 1–4 满分 100，5–6 满分 150；缺少上限数据的旧记录保留原显示。灵器无双、混沌道威沿用各自数值体系。</p>
+
     <section class="market-panel">
       <div class="market-heading">
         <div class="market-title-group">
@@ -1271,7 +1281,7 @@ onBeforeUnmount(() => {
                   @keydown.enter.prevent="commitStatCellEdit(artifact, row, 'common', column.key, column.baseRawValue)"
                   @keydown.esc.prevent="cancelStatCellEdit"
                 />
-                <span v-else class="empty-cell stat-edit-cell__display">{{ row[column.key] || '-' }}</span>
+                <span v-else class="empty-cell stat-edit-cell__display">{{ statDisplay(row, column.label, row[column.key]) }}</span>
               </div>
             </template>
           </el-table-column>
@@ -1298,7 +1308,7 @@ onBeforeUnmount(() => {
                   @keydown.enter.prevent="commitStatCellEdit(artifact, row, 'exclusive', column.key, column.baseRawValue)"
                   @keydown.esc.prevent="cancelStatCellEdit"
                 />
-                <span v-else class="empty-cell stat-edit-cell__display">{{ row.exclusiveStats[column.key] || '-' }}</span>
+                <span v-else class="empty-cell stat-edit-cell__display">{{ statDisplay(row, column.label, row.exclusiveStats[column.key]) }}</span>
               </div>
             </template>
           </el-table-column>
@@ -1326,7 +1336,7 @@ onBeforeUnmount(() => {
                   @keydown.enter.prevent="commitStatCellEdit(artifact, row, 'common', column.key, column.baseRawValue)"
                   @keydown.esc.prevent="cancelStatCellEdit"
                 />
-                <span v-else class="empty-cell stat-edit-cell__display">{{ row[column.key] || '-' }}</span>
+                <span v-else class="empty-cell stat-edit-cell__display">{{ statDisplay(row, column.label, row[column.key]) }}</span>
               </div>
             </template>
           </el-table-column>

@@ -2,7 +2,8 @@
 
 字段依据 SpiritWareClientVO.GetCurPutList / GetServerInfo，以及现有
 spirit_artifact_runtime_loader 的装备导出。此模块不调用 Lua 方法、发同步
-请求或打开 UI。字段契约仍需真实 Runtime 验收，不以离线测试代替。
+请求或打开 UI。显式 1～4 器装配关联已真实验收；省略编号的全馆集合
+读取仍需真实验收，不以离线测试代替。
 """
 
 from collections.abc import Mapping, Sequence
@@ -45,9 +46,10 @@ def project_spirit_artifact_equipped(
             'slots': slots, 'equipped_count': len(equipped), 'complete': True}
 
 
-def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, Any]:
+def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int] | None = None) -> dict[str, Any]:
     """读取指定灵器的真实装备；例如1～8器调用range(1,9)，不写死48件。
 
+    省略编号时读取服务器当前全部已加载灵器，并前后核验集合未变化。
     全部指定器必须已自然加载服务器信息；未知不是空装备。先读引用，
     再取完整库存，最后用新context复读引用，避免同reader缓存伪复验。
     """
@@ -55,10 +57,10 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, 
     from .runtime_memory import resolve_lua_global_manager_root
     from .spirit_artifact import read_spirit_artifact_inventory_runtime
 
-    requested = tuple(ware_ids)
-    if not requested or len(set(requested)) != len(requested) or any(
+    requested = None if ware_ids is None else tuple(ware_ids)
+    if requested is not None and (not requested or len(set(requested)) != len(requested) or any(
         type(i) is not int or i <= 0 for i in requested
-    ):
+    )):
         raise ValueError('需要不重复的正灵器编号')
 
     def observe_context(ctx):
@@ -78,8 +80,15 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int]) -> dict[str, 
         data = data_fields(reader, root)
         # 当前客户端 Dictionary 使用 _dt_；数字键可处于 array/hash 两区。
         dictionary = reader.dictionary_fields(data['v_wareDic'])
+        current_ids = requested if requested is not None else tuple(sorted(
+            int(key) for key in dictionary if as_int(key) is not None and as_int(key) > 0
+        ))
+        if not current_ids:
+            raise FanxiuRuntimeMemoryError('服务器灵器集合未加载')
+        if requested is None and (len(current_ids) != len(dictionary) or len(set(current_ids)) != len(current_ids)):
+            raise FanxiuRuntimeMemoryError('服务器灵器集合键不完整或重复')
         references = {}
-        for ware_id in requested:
+        for ware_id in current_ids:
             ware = reader.fields(dictionary.get(ware_id))
             server = table_ref(ware.get('v_serverInfo'))
             if as_int(ware.get('v_wareId')) != ware_id or server is None:

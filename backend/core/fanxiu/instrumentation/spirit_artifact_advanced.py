@@ -25,7 +25,13 @@ def advanced_item_confirmation_names(item: dict[str, Any]) -> tuple[str, ...]:
 
 
 def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]:
-    """读取已打开高级洗炼窗口的目标、全部可见配置及真实库存；歧义报错。"""
+    """读取已打开高级洗炼窗口的目标、全部可见配置及真实库存；歧义报错。
+
+    字段索引沿 s_globalCfgIdx/SpiritWare/SpiritWareCleanseItem 精确读取，
+    不展开整个配置索引集合。state_string_field 只复用底层字符串定位，
+    当前成员引用每次新读，配置根/索引变化不沿用旧值。不另缓存运行中
+    realList、选中实例或库存。此缩小投影尚待热路径重复计时真实验收。
+    """
     from backend.core.fanxiu.catalog.lua_config import load_default_fanxiu_lang_map
     from .backpack import read_backpack_item_counts
     from .item_config import read_loaded_item_metadata
@@ -38,12 +44,22 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
         projection_started = time.monotonic()
         reader = ctx.reader
         field = lambda obj, key: read_ui_object_field(ctx, obj.address, key)
-        env = reader.string_fields(ctx.binding.environment_address, frozenset({'s_globalCfgIdx'}))
-        indexes = reader.fields(reader.fields(reader.fields(env.get('s_globalCfgIdx')).get(
-            'SpiritWare')).get('SpiritWareCleanseItem'))
+        index_started = time.monotonic()
+        current = table_ref(reader.state_string_field(ctx.binding.environment_address,
+            's_globalCfgIdx', state_address=ctx.binding.state_address))
+        for key in ('SpiritWare', 'SpiritWareCleanseItem'):
+            if current is None:
+                raise FanxiuRuntimeMemoryError('高级洗炼配置字段索引成员链未加载')
+            current = table_ref(reader.state_string_field(current.address, key,
+                state_address=ctx.binding.state_address))
+        if current is None:
+            raise FanxiuRuntimeMemoryError('高级洗炼配置字段索引未加载')
         wanted = ('id', 'sort', 'item', 'shortDes', 'useDes', 'type', 'limitType', 'limitSpiritType')
+        indexes = reader.string_fields(current.address, frozenset(wanted))
         if any(as_int(indexes.get(key)) is None for key in wanted):
             raise FanxiuRuntimeMemoryError('高级洗炼配置字段索引未完整加载')
+        timings['config_indexes'] = time.monotonic() - index_started
+        timings['config_rows'] = 0.0
         storage = reader.table(ctx.binding.component_storage_address)
         candidates = {}
         for raw in [*storage['array'], *storage['fields'].values()]:
@@ -65,6 +81,7 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
             rows, count = reader.list_items(real)
             if not item_id or count is None or count > 64 or len(rows) != count:
                 raise FanxiuRuntimeMemoryError('高级洗炼目标或完整列表无效')
+            rows_started = time.monotonic()
             decoded = []
             for raw_row in rows:
                 ref = table_ref(raw_row)
@@ -95,12 +112,15 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
                 decoded.append(data)
             if len({row['item'] for row in decoded}) != len(decoded):
                 raise FanxiuRuntimeMemoryError('高级洗炼道具身份重复')
+            timings['config_rows'] += time.monotonic() - rows_started
             candidates[panel.address] = {'item_id': str(item_id), 'ware_id': ware,
                 'part_quality': as_int(field(panel, 'partCfgQuality')), 'items': decoded}
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError(f'当前高级洗炼窗口数量必须为 1，实际 {len(candidates)}')
         result = next(iter(candidates.values()))
         timings['window_config'] = time.monotonic() - projection_started
+        timings['window_identity_and_membership'] = (
+            timings['window_config'] - timings['config_indexes'] - timings['config_rows'])
         ids = [row['item'] for row in result['items']]
         metadata_started = time.monotonic()
         metadata, status = read_loaded_item_metadata(ids, memory=ctx.memory, reader=reader,
@@ -126,4 +146,8 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
                     ('discovery', 'backpack_root_cache_hit')}}
 
     result = read_ui_runtime_snapshot([], read, fast=fast)
-    return {**result, 'timings': {**timings, 'total': time.monotonic() - started}}
+    total = time.monotonic() - started
+    # 包括公共观察器建 context/恢复及末尾身份复核，不误算成配置表解析。
+    timings['observer_and_postcheck'] = max(0.0, total - sum(
+        timings.get(key, 0.0) for key in ('lang', 'window_config', 'metadata', 'inventory')))
+    return {**result, 'timings': {**timings, 'total': total}}

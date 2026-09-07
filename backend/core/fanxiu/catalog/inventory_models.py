@@ -135,6 +135,39 @@ class FanxiuMagicTreasureHallSnapshot(BaseModel):
     runtime_debug: dict[str, Any] = Field(default_factory=dict)
 
 
+def spirit_artifact_basic_scores(effects: list[dict[str, Any]], part: int) -> dict[str, float]:
+    """普通属性基础分：当前词条 max 对应本部位的 100/150 分，不借用突破后常量。
+
+    type=3 特殊属性不套倍率；配置缺失和重复同名不猜分母，省略该项以保留未知。
+    不截断巅峰加成后的实际分数，也不把颜色品质当作分数。
+    """
+    from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+    if part not in range(1, 7):
+        return {}
+    result: dict[str, float] = {}
+    seen = set()
+    for effect in effects:
+        name = effect.get("name") or effect.get("official_name")
+        if not name:
+            continue
+        if name in seen:
+            result.pop(name, None)
+            continue
+        seen.add(name)
+        if effect.get("type") not in (1, 2):
+            continue
+        try:
+            maximum = Decimal(str(effect.get("normal_max")))
+            value = Decimal(str(effect.get("value")))
+        except InvalidOperation:
+            continue
+        if not maximum.is_finite() or maximum <= 0 or not value.is_finite() or value < 0:
+            continue
+        score = value / maximum * (150 if part >= 5 else 100)
+        result[name] = float(score.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    return result
+
+
 def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | None,
                                     effects: list[dict[str, Any]], a_codes: list[str]) -> str:
     """纯分类：未知事实不等于失败；已突破优先检查 A 集合，与阶数无关。"""
@@ -187,6 +220,12 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     runtime_effects: List[dict[str, Any]] = Field(default_factory=list)
 
     runtime_observation: dict[str, Any] = Field(default_factory=dict)
+
+    @computed_field
+    @property
+    def basic_scores(self) -> dict[str, float]:
+        """按官方属性名称投影，旧百分比字段仅用于缺 Runtime 配置的兼容显示。"""
+        return spirit_artifact_basic_scores(self.runtime_effects, self.runtime_part)
 
     @computed_field
     @property

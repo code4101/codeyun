@@ -5,7 +5,7 @@ from copy import deepcopy
 import pytest
 
 from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_advanced_scroll import (
-    AdvancedScrollKey, AdvancedScrollMemory, advanced_scroll_layout,
+    AdvancedScrollKey, AdvancedScrollMemory, AdvancedScrollProfile, advanced_scroll_layout,
 )
 
 
@@ -74,3 +74,24 @@ def test_real_title_sample_handles_character_tokens_and_missing_middle_dot():
     match = find_advanced_item_title(tokens, '洗灵·巅峰石')
     assert match is not None and match.point() == (317, 657)
     assert find_advanced_item_title(tokens[:5], '洗灵·巅峰石') is None
+
+
+def test_scroll_profile_defaults_and_route_isolation():
+    profile = AdvancedScrollProfile(.8, .4, .4)
+    assert AdvancedScrollMemory().profile == AdvancedScrollProfile(.5, 1.5, 1.5)
+    memory = AdvancedScrollMemory(profile=profile)
+    assert memory.profile == profile
+    original = advanced_scroll_layout(catalog(), {'id': 'list'})
+    for changed in (profile, AdvancedScrollProfile(.8, 1.5, 1.5),
+                    AdvancedScrollProfile(.5, .4, 1.5), AdvancedScrollProfile(.5, 1.5, .4)):
+        layout = advanced_scroll_layout(catalog(), {'id': 'list'}, profile=changed)
+        assert layout != original
+        key = AdvancedScrollKey(original, ((100, 20, 30),), 200)
+        memory.remember(key, ('down',))
+        assert memory.route(AdvancedScrollKey(layout, key.start, key.item_id)) is None
+
+
+@pytest.mark.parametrize('values', [(0, 1, 1), (1.1, 1, 1), (.8, 0, .4), (.8, .4, -1), (.8, float('nan'), .4)])
+def test_scroll_profile_rejects_invalid_parameters(values):
+    with pytest.raises(ValueError):
+        AdvancedScrollProfile(*values)

@@ -146,7 +146,13 @@ def read_ui_object_field(ctx: UiRuntimeContext, address: int, name: str) -> Any:
 
     try:
         value = ctx.field(int(address), str(name))
-    except (FanxiuRuntimeMemoryError, KeyError, AttributeError):
+    except FanxiuRuntimeMemoryError as exc:
+        # 读取失败不等于字段不存在。尤其窗口池新分配的表必须把映射错误
+        # 交回 shared snapshot 的有界刷新，不能伪装成“窗口数量为零”。
+        if exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
+        value = None
+    except (KeyError, AttributeError):
         value = None
     if value is not None:
         return value
@@ -167,7 +173,11 @@ def read_ui_object_field(ctx: UiRuntimeContext, address: int, name: str) -> Any:
             string_mask=ctx.binding.string_mask,
             string_seed=ctx.binding.string_seed,
         )
-    except (FanxiuRuntimeMemoryError, AttributeError):
+    except FanxiuRuntimeMemoryError as exc:
+        if exc.code in {'memory_address_unmapped', 'memory_read_failed'}:
+            raise
+        return None
+    except AttributeError:
         return None
 
 

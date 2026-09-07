@@ -26,12 +26,15 @@ _MATERIAL_ID = 14000002
 def run_basic_attribute_collection(
     context, execute, *, target: SpiritArtifactWashTarget, rules: dict,
     c_codes: set[str], evidence_path: Path, stop_at: float, max_rolls: int = 100,
+    evaluate_existing_candidate: bool = False,
 ) -> dict:
     """已选定未突破本体上收集基础属性，颜色与数值不作采用门槛。
 
     c_codes 必须由正式属性配置确定。只解已锁 C，其他非基础已锁项不猜。
     每次消耗前核对 UI 目标/普通材料/实际费用并预留90秒；库存不足暂停。
     动作后观察失败记录不确定消耗并抛错，不自动重试、不伪造统计样本。
+    evaluate_existing_candidate 显式授权按同一基础属性策略处理入口候选；
+    不将该历史候选计入本次消耗样本，不复用前一 Cell 的步骤。
     """
     if max_rolls <= 0 or stop_at <= time.time() or c_codes & _BASIC_NAMES.keys():
         raise ValueError('基础培养需要有效期限、次数及互斥 C 类定义')
@@ -87,10 +90,13 @@ def run_basic_attribute_collection(
         return result
 
     try:
-        execute(context.wait_scene([668], wait=12))
+        entry = execute(context.wait_scene([668, 714], wait=12))
+        if entry.scene_id not in (668, 714):
+            raise RuntimeError('基础洗炼入口不在洗炼页')
         current = read_spirit_artifact_wash_observation(target, verify_ui=True)
-        if current.get('is_break') is not False or current['pending_effects']:
+        if current.get('is_break') is not False or (current['pending_effects'] and not evaluate_existing_candidate):
             raise RuntimeError('入口要求未突破且没有未处理候选')
+        record('entry_observed', existing_candidate_authorized=evaluate_existing_candidate, snapshot=current)
         while True:
             phase = 'plan'
             landed = execute(context.wait_scene([721, 714, 668], wait=12))
@@ -148,19 +154,40 @@ def run_basic_attribute_collection(
             if owned < cost or time.time() >= stop_at - 90:
                 return finish('paused_pending' if current['pending_effects'] else 'paused', current)
             scene = 714 if current['pending_effects'] else 668
-            execute(context.wait_scene([scene], wait=12))
+            if execute(context.wait_scene([scene], wait=12)).scene_id != scene:
+                raise RuntimeError('洗炼前页面与候选状态不一致')
             identity()
             after = None
             remaining = None
             record('wash_attempt', roll_index=rolls+1, before=before, cost=cost, inventory_before=owned)
             try:
                 context.click_shape_center(scene, '执行洗炼' if scene == 714 else '执行洗炼（研发禁止）')
-                execute(context.wait_scene([714], wait=12))
-                after = read_spirit_artifact_wash_observation(target)
+                # 非活动积分提示是本次已授权洗炼的业务确认，不让全局守护关闭。
+                # 原页、确认页可能短暂滞留；确认仅点击一次，随后只观察。
+                confirmed = set()
+                candidate_deadline = time.monotonic() + 35
+                while True:
+                    landed = execute(context.wait_scene([727, 726, 714, 668], wait=12))
+                    if landed.scene_id in (726, 727):
+                        if landed.scene_id not in confirmed:
+                            record('wash_business_confirm', scene=landed.scene_id, roll_index=rolls+1)
+                            context.click_shape_center(landed.scene_id, '确认' if landed.scene_id == 726 else '继续洗炼')
+                            confirmed.add(landed.scene_id)
+                    elif landed.scene_id == 714:
+                        observed = read_spirit_artifact_wash_observation(target)
+                        if observed['refine_num'] == before['refine_num'] + 1:
+                            after = observed
+                            break
+                    elif landed.scene_id != 668:
+                        raise RuntimeError('普通洗炼出现未知业务页面')
+                    if time.monotonic() >= candidate_deadline:
+                        raise RuntimeError('等待本轮新候选超时；不重放洗炼消耗')
+                    time.sleep(.5)
                 remaining = counts()
                 locked = {k: v for k, v in effects_map(before['effects']).items() if v[2]}
                 pending = effects_map(after['pending_effects'])
                 verified = (owned - remaining == cost and len(pending) == 6
+                    and after['refine_num'] == before['refine_num'] + 1
                     and effects_map(after['effects']) == effects_map(before['effects'])
                     and all(pending.get(k) == v for k, v in locked.items()))
                 record('wash_result', roll_index=rolls+1, before=before, after=after,

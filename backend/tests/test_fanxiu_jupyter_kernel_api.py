@@ -1560,6 +1560,37 @@ def test_run_task_cell_strips_business_terminal_fields() -> None:
     }
 
 
+def test_ordinary_cell_publishes_live_status_without_job_identity() -> None:
+    from types import SimpleNamespace
+    from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
+    from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
+
+    runner = object.__new__(BehaviorTreeExecutor)
+    runner._lock = threading.RLock()
+    runner._status = {"running": False, "phase": "done", "error": "old",
+                      "finished_at": 1, "current_task_id": "old-job"}
+    published = []
+    runner._persist_status = lambda: published.append(dict(runner._status))
+    binding = object.__new__(FanxiuJupyterBinding)
+    binding.runner = runner
+    binding.execution_lock = threading.RLock()
+    binding.stop_event = threading.Event()
+    binding._refresh_binding = lambda **kwargs: None
+    binding.namespace = lambda: {}
+    binding.begin_cell(SimpleNamespace(raw_cell="x = 1"), SimpleNamespace(user_ns={}))
+    try:
+        assert len(published) == 1
+        assert published[0]["running"] is True
+        assert published[0]["phase"] == "jupyter_cell"
+        assert published[0]["current_task_id"] == ""
+        assert published[0]["error"] == ""
+        assert published[0]["finished_at"] is None
+    finally:
+        binding.end_cell(SimpleNamespace(error_in_exec=None, error_before_exec=None))
+    assert published[-1]["running"] is False
+    assert published[-1]["phase"] == "done"
+
+
 def test_jupyter_binding_end_cell_tolerates_missing_pre_run_cell() -> None:
     from backend.core.fanxiu.behavior_tree.jupyter_kernel import FanxiuJupyterBinding
 

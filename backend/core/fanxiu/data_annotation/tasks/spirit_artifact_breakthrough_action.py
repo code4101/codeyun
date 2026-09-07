@@ -40,6 +40,17 @@ def breakthrough_spirit_artifact(
     phase = 'entry'
     confirmed = False
 
+    def wait_for(expected, allowed, seconds):
+        """确认页/结果动画可能滞留；只观察，不重放已发送的动作。"""
+        deadline = time.monotonic() + seconds
+        while True:
+            landed = execute(context.wait_scene(list(allowed), wait=12))
+            if landed.scene_id == expected:
+                return landed
+            if landed.scene_id not in allowed or time.monotonic() >= deadline:
+                raise RuntimeError(f'突破过渡未到达 #{expected}，实际 #{landed.scene_id}')
+            time.sleep(.5)
+
     def record(event, **fields):
         with path.open('a', encoding='utf-8') as output:
             output.write(json.dumps(dict(recorded_at=time.time(), event=event,
@@ -88,7 +99,8 @@ def breakthrough_spirit_artifact(
                 raise RuntimeError('突破上限按钮未明确识别')
             phase = 'open_confirmation'
             context.click_frame_point(assets.wash_scene_id, *match.point())
-            execute(context.wait_scene([assets.breakthrough_confirm_scene_id], wait=12))
+            wait_for(assets.breakthrough_confirm_scene_id,
+                     (assets.breakthrough_confirm_scene_id, assets.wash_scene_id), 20)
             identity()
             checked = item(False)
             if checked['effects'] != before['effects']:
@@ -99,7 +111,9 @@ def breakthrough_spirit_artifact(
             confirmed = True
             context.click_shape_center(assets.breakthrough_confirm_scene_id, '确认突破')
             phase = 'verify_result'
-            execute(context.wait_scene([assets.breakthrough_result_scene_id], wait=15))
+            wait_for(assets.breakthrough_result_scene_id,
+                     (assets.breakthrough_result_scene_id, assets.breakthrough_confirm_scene_id,
+                      assets.wash_scene_id), 25)
             item(True)  # 先核实成功，再关闭结果；读取失败保留 #723。
         phase = 'finish_result'
         context.click_shape_center(assets.breakthrough_result_scene_id, '点击屏幕继续')

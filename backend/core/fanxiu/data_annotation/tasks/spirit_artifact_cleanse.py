@@ -45,6 +45,8 @@ class SpiritArtifactCleanseGuiAssets:
     effect_activation_scene_id: int = 721
     breakthrough_confirm_scene_id: int = 722
     breakthrough_result_scene_id: int = 723
+    off_event_confirm_scene_id: int = 726
+    discard_score_confirm_scene_id: int = 727
     open_menu_shape: str = "打开下方菜单"
     open_spiritware_shape: str = "灵器"
     first_artifact_shape: str = "首个灵器"
@@ -68,6 +70,8 @@ class SpiritArtifactCleanseGuiAssets:
     @property
     def layer0_candidate_ids(self) -> tuple[int, ...]:
         return (
+            self.off_event_confirm_scene_id,
+            self.discard_score_confirm_scene_id,
             self.breakthrough_result_scene_id,
             self.breakthrough_confirm_scene_id,
             self.effect_activation_scene_id,
@@ -446,30 +450,39 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
                                           phase='select_artifact')
 
     def select_wash_part(self, item_id: str, part_name: str) -> Any:
-        """在当前灵器内按文字选择部位；有界滚动，实例 ID 必须精确匹配。"""
+        """当前灵器顶栏归左后按固定格选部位，再核验精确实例。
+
+        part_name 保留调用兼容，不参与美术字 OCR。部位来自 Runtime
+        V_PartList.partId，不能用数组下标代替。六卡/首屏四卡的布局下，
+        一次0.9窗口宽度归左覆盖最大偏移；不缓存上次滚动位置。
+        1～4格依正式资产，5/6末屏定位尚未验证时停止，不退世界或猜格。
+        此固定格封装仍待主线真实验收；当前归左假设失效应修定位提供方。
+        """
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
 
         scene = self._require_wash_scene(phase="select_part")
         before = read_spirit_artifact_ui_snapshot()
         matches = [p for p in before.get("parts", []) if p["itemUid"] == str(item_id)]
-        if len(matches) != 1 or not part_name:
+        if len(matches) != 1:
             raise SpiritArtifactCleanseBlocked("目标实例不属于当前灵器的部件列表", phase="select_part")
         if before["item_id"] == str(item_id):
             return before
-        target_index = before["parts"].index(matches[0])
-        if target_index == 0 and len(before["parts"]) == 6:
-            # 六部位横栏仅多出两格；默认半屏手势可归位。锋等美术字经
-            # 全帧与局部 OCR 均漏检，使用已实测首卡资产，再由实例读回兜底。
-            self.execute(self.context.scroll_shape_content(
-                self.context.shape(scene, "部件列表"), direction="left"))
-            self.execute(self.context.click_shape_center(scene, "首屏第一部件"))
-        else:
-            self.execute(self.context.wait_click_ocr_text(
-                scene, part_name, in_shapes=["部件列表"],
-                max_scrolls_per_direction=3, timeout_seconds=25, crop_fallback=True,
-                search_direction="left" if target_index < before["selected_index"] else "right"))
+        part_ids = [p.get('partId') for p in before['parts']]
+        if len(part_ids) != 6 or any(type(p) is not int for p in part_ids) or set(part_ids) != set(range(1, 7)):
+            raise SpiritArtifactCleanseBlocked('部件列表缺少完整唯一的 partId，不能按数组位置猜测', phase='select_part')
+        part_id = matches[0]['partId']
+        if part_id > 4:
+            raise SpiritArtifactCleanseBlocked('第5/6部位末屏固定格尚未验证',
+                code=SpiritArtifactCleanseErrorCode.ASSET_MISSING, phase='select_part')
+        shape_name = '首屏第一部件' if part_id == 1 else f'首屏第{part_id}格'
+        # 动作前解析资产，缺格时留在原页，不先滚动再发现配置缺失。
+        self.context.shape(scene, shape_name)
+        self.context.drag_shape_content(self.context.shape(scene, '部件列表'), direction='left', ratio=.9)
+        self.execute(self.context.wait_action_settle(.7))
+        self.execute(self.context.click_shape_center(scene, shape_name))
+        self.execute(self.context.wait_action_settle(.7))
         after = read_spirit_artifact_ui_snapshot()
-        if after.get("item_id") != str(item_id) or any(
+        if after.get("item_id") != str(item_id) or after.get('part') != part_id or any(
             before[key] != after[key] for key in ("pid", "process_start_ticks", "ware_id")
         ):
             raise SpiritArtifactCleanseBlocked("部位选择后 Runtime 实例不匹配", phase="select_part")
@@ -732,17 +745,19 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         return self.preview_advanced_item(14000052)
 
     @contextmanager
-    def advanced_scroll_session(self, program_id: str):
+    def advanced_scroll_session(self, program_id: str, *, scroll_profile=None):
         """一次程序内复用高级列表滚动经验，离开上下文即清空。
 
         每次定位仍识别实际起始视口，不假定重开窗口回顶部。中断后须退出
         本块，下一 Cell/attempt 重新开始；不能把这个上下文存成续跑状态。
+        scroll_profile 可显式传 AdvancedScrollProfile；整个程序的冷发现与
+        重放使用同一参数，参数参与经验键。省略时保留原已验证手势。
         """
         from .spirit_artifact_advanced_scroll import AdvancedScrollMemory
 
         if not program_id or self._advanced_scroll_memory is not None:
             raise ValueError('高级列表需要独立、非嵌套的程序作用域')
-        memory = self._advanced_scroll_memory = AdvancedScrollMemory()
+        memory = self._advanced_scroll_memory = AdvancedScrollMemory(profile=scroll_profile)
         try:
             yield self
         finally:

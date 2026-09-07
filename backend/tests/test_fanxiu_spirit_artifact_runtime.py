@@ -58,7 +58,7 @@ def _runtime_parts(group_count: int = 48) -> list[dict[str, object]]:
 
 def test_runtime_snapshot_projects_current_slots_without_discarding_exact_fields():
     snapshot = build_spirit_artifact_hall_from_runtime(
-        {"source": "test_runtime", "parts": _runtime_parts(), "pid": 123}
+        {"complete": True, "source": "test_runtime", "parts": _runtime_parts(), "pid": 123}
     )
 
     assert snapshot["runtime_complete"] is True
@@ -100,7 +100,7 @@ def test_runtime_snapshot_projects_pending_refine_map_separately():
         }
     ]
 
-    snapshot = build_spirit_artifact_hall_from_runtime({"parts": parts})
+    snapshot = build_spirit_artifact_hall_from_runtime({"complete": True, "parts": parts})
     row = snapshot["artifacts"][0]["rows"][0]
 
     assert row["runtime_effects"][0]["cleanse_id"] == 112002
@@ -126,7 +126,7 @@ def test_runtime_snapshot_rejects_incomplete_equipped_slots():
     parts.pop()
 
     try:
-        build_spirit_artifact_hall_from_runtime({"parts": parts})
+        build_spirit_artifact_hall_from_runtime({"complete": True, "parts": parts})
     except RuntimeError as exc:
         assert "服务器装配引用不完整" in str(exc)
     else:
@@ -143,10 +143,35 @@ def test_runtime_snapshot_naturally_includes_future_artifact_and_effects():
         {"cleanse_id": 500_001, "value": 98_765, "name": "未来增伤"}
     ]
 
-    snapshot = build_spirit_artifact_hall_from_runtime({"parts": parts})
+    snapshot = build_spirit_artifact_hall_from_runtime({"complete": True, "parts": parts})
 
     assert len(snapshot["artifacts"]) == 9
     future = snapshot["artifacts"][-1]
     assert future["name"] == "未来灵器"
     assert [row["part_name"] for row in future["rows"]] == list(future_names)
     assert future["rows"][0]["exclusive_stats"]["未来增伤"] == "98765"
+
+
+def test_runtime_snapshot_rejects_duplicate_missing_or_unproven_collection():
+    import pytest
+    good = _runtime_parts(6)
+    cases = [
+        {"complete": False, "parts": good},
+        {"parts": good},
+        {"complete": True, "parts": good + [good[0]]},
+        {"complete": True, "parts": good, "ware_ids": [1, 2]},
+        {"complete": True, "parts": [{**good[0], "item_id": ""}] + good[1:]},
+    ]
+    for runtime in cases:
+        with pytest.raises(RuntimeError):
+            build_spirit_artifact_hall_from_runtime(runtime)
+
+
+def test_runtime_snapshot_preserves_proven_empty_equipment_slots():
+    parts = _runtime_parts(6)
+    parts[0] = {"ware_id": 1, "part": 1, "item_id": None, "base_id": 0,
+                "grade": 0, "empty_slot": True, "is_break": False}
+    result = build_spirit_artifact_hall_from_runtime({"complete": True, "parts": parts, "ware_ids": [1]})
+    assert result["runtime_equipped_count"] == 5
+    assert result["artifacts"][0]["rows"][0]["runtime_item_id"] == ""
+    assert result["artifacts"][0]["rows"][0]["rank"] == 0

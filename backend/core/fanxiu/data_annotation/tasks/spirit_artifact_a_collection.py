@@ -23,12 +23,17 @@ def run_a_collection(
     max_consumptions: int = 100,
     fast_observation: bool = False,
     supplement_b_code: str | None = None,
+    evaluate_existing_candidate: bool = False,
+    scroll_profile=None,
 ) -> dict:
     """调用即授权在指定目标上切锁、消耗引仙/精炼石、采用达标候选。
 
     stop_at 是生产窗口前的绝对截止秒；每次消耗前预留 90 秒收尾。
     max_consumptions 只限制本次运行，不修改概率样本或业务完成条件。
-    不负责导航、突破、调度或恢复中断的候选；入口已有候选时停止。
+    不负责导航、突破或调度。默认拒绝入口候选；evaluate_existing_candidate=True
+    仅授权用当前完整事实重新评价 A／补 B 筛选候选，不恢复历史步骤。
+    当前策略不是引仙筛选（例如需要精炼或重新切锁）时仍阻塞，不猜候选来源。
+    既存候选评价只记观察事件，不重复统计历史消耗或概率样本。
     supplement_b_code 指定 A 全满后的独立补 B 阶段：仅筛红色，不精炼。
     """
     from ...instrumentation.backpack import read_backpack_item_counts
@@ -43,8 +48,8 @@ def run_a_collection(
     current = read_spirit_artifact_wash_observation(target, verify_ui=True)
     if current.get('is_break') is not False:
         raise RuntimeError('A 类培养入口须确认本体尚未突破；已突破或状态未知时停止')
-    if current['pending_effects']:
-        raise RuntimeError('入口存在未处理候选，需从真实现场明确处理')
+    if current['pending_effects'] and not evaluate_existing_candidate:
+        raise RuntimeError('入口存在未处理候选；需显式 evaluate_existing_candidate=True 才可重新评价')
 
     def attributes(effects):
         missing = sorted({e['cleanse_id'] for e in effects} - rules.keys())
@@ -72,15 +77,42 @@ def run_a_collection(
         saved = read_spirit_artifact_wash_observation(target)
         if saved['pending_effects'] or effect_map(saved['effects']) != pending:
             raise RuntimeError('采用候选后实际属性未一致，停止')
+        record({'record_type': 'attributes_saved', 'probability_sample': False,
+                'new_consumption': False, 'before': snapshot, 'after': saved})
         return saved
 
     def record(data):
         with evidence_path.open('a', encoding='utf-8') as output:
             output.write(json.dumps({'recorded_at': time.time(), 'item_id': target.item_id,
+                                      'target_ratio': target_ratio,
+                                      'unlocked_count': sum(not e['locked'] for e in current['effects']),
+                                      'probability_sample': False,
                                       **data}, ensure_ascii=False, default=str) + '\n')
 
+    if current['pending_effects']:
+        execute(context.wait_scene([714], wait=12))
+        original = attributes(current['effects'])
+        pending = attributes(current['pending_effects'])
+        entry_plan = (plan_b_supplement(original, a_codes=a_codes, target_code=supplement_b_code)
+                      if supplement_b_code is not None else
+                      plan_a_collection(original, a_codes=a_codes, b_codes=b_codes,
+                                        c_codes=c_codes, target_ratio=target_ratio))
+        try:
+            accept_existing = evaluate_existing_yinxian_candidate(
+                original, pending, plan_action=entry_plan.action,
+                a_codes=a_codes, target_ratio=target_ratio, supplement_b_code=supplement_b_code)
+        except ValueError as error:
+            record({'record_type': 'existing_candidate_evaluation', 'sample_origin': 'entry_observation',
+                    'probability_sample': False, 'new_consumption': False,
+                    'decision': 'blocked', 'reason': str(error), 'snapshot': current})
+            raise RuntimeError('既存候选无法按当前引仙策略安全评价；保留现场') from error
+        record({'record_type': 'existing_candidate_evaluation', 'sample_origin': 'entry_observation',
+                'probability_sample': False, 'new_consumption': False,
+                'decision': 'accept' if accept_existing else 'continue_yinxian', 'snapshot': current})
+        current = save_pending(current) if accept_existing else current
+
     consumed = 0
-    with gui.advanced_scroll_session(f'a-collection-{time.time_ns()}'):
+    with gui.advanced_scroll_session(f'a-collection-{time.time_ns()}', scroll_profile=scroll_profile):
         while True:
             # 完整业务候选优先于全局相似结果页，活动干扰走既有守护。
             # #713 仍由显式业务确认处理，不交给通用弹窗守护。
@@ -104,11 +136,17 @@ def run_a_collection(
             if plan.action == 'locks':
                 if current['pending_effects']:
                     raise RuntimeError('切锁前仍有候选，不丢弃未知待采用结果')
+                before_locks = current
                 for effect in sorted(current['effects'], key=lambda e: e['cleanse_id'] in plan.desired_lock_ids):
                     desired = effect['cleanse_id'] in plan.desired_lock_ids
                     if effect['locked'] != desired:
                         gui.set_lock(effect['cleanse_id'], desired)
                 current = read_spirit_artifact_wash_observation(target)
+                if {e['cleanse_id'] for e in current['effects'] if e['locked']} != set(plan.desired_lock_ids):
+                    raise RuntimeError('切锁后最终锁状态与计划不一致，停止')
+                record({'record_type': 'locks_updated', 'probability_sample': False,
+                        'new_consumption': False, 'before': before_locks, 'after': current,
+                        'desired_lock_ids': sorted(plan.desired_lock_ids)})
                 continue
             material = 14000006 if plan.action == 'yinxian' else 14000007
             iteration_started = time.monotonic()
@@ -158,6 +196,8 @@ def run_a_collection(
             highest_red_ratio = max((e.ratio for e in raw_sample if not e.locked and e.quality >= 6),
                                     default=None)
             record({'material_id': material, 'before': current, 'after': after,
+                    'record_type': 'consumption', 'sample_origin': 'current_invocation_consumption',
+                    'probability_sample': consumption_verified and material == 14000006,
                     'consumption_verified': consumption_verified,
                     'inventory_before': preview['count'], 'inventory_after': counts[material],
                     'highest_red_ratio': highest_red_ratio,
@@ -183,3 +223,33 @@ def run_a_collection(
                 if len(new) != 1 or new[0].code != old.code or new[0].value <= old.value:
                     raise RuntimeError('精炼未形成目标数值提升，停止检查')
                 current = save_pending(after)
+
+
+def evaluate_existing_yinxian_candidate(
+    current, pending, *, plan_action: str, a_codes: set[str], target_ratio: float,
+    supplement_b_code: str | None = None,
+) -> bool:
+    """纯评价既存候选，不为其创建抽样编号；仅接受当前已处于引仙筛选的状态。
+
+    精炼、切锁、完成等状态没有足够来源证据，不借一个单属性改善猜测前一步。
+    比较所有锁定项的身份和值、品质、锁标记，候选不得增锁或漏锁。
+    """
+    from decimal import Decimal
+    if plan_action != 'yinxian':
+        raise ValueError('当前策略不是引仙筛选，不能推断既存候选来自精炼或其他动作')
+    if len(current) != 6 or len(pending) != 6:
+        raise ValueError('既存候选及当前属性都须为完整六槽')
+    if len({e.cleanse_id for e in current}) != 6 or len({e.cleanse_id for e in pending}) != 6:
+        raise ValueError('既存候选或当前槽位身份重复')
+    old_locks = {e.cleanse_id: e for e in current if e.locked}
+    new_locks = {e.cleanse_id: e for e in pending if e.locked}
+    if old_locks != new_locks:
+        raise ValueError('既存候选改变了锁定项')
+    if supplement_b_code is not None:
+        return any(not e.locked and e.code == supplement_b_code and e.quality >= 6 for e in pending)
+    ratio = Decimal(str(target_ratio))
+    if not ratio.is_finite() or not 0 < ratio <= 1:
+        raise ValueError('引仙目标比例无效')
+    completed = {e.code for e in current if e.quality >= 6 and e.is_full}
+    return any(not e.locked and e.code in a_codes - completed and e.quality >= 6 and e.ratio >= ratio
+               for e in pending)

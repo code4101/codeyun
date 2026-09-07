@@ -17,12 +17,10 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
 )
 
 
 _RUNTIME_CACHE_SECONDS = 60.0
-_BACKPACK_MARKER = b"LuaBackpackMgr"
 _BACKPACK_METHODS = frozenset({"LuaBackpackMgr", "Inst_get"})
 _ARTIFACTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("血晶摩诃剑", ("柄", "刃", "穗", "鞘", "珠", "纹")),
@@ -172,9 +170,16 @@ def read_spirit_artifact_item_runtime(item_id: str, *, force_relocate: bool = Fa
     BackpackData 中该实例的 attrMap/refineMap，避免全馆词缀配置投影开销。
     force_relocate=True 跳过实例位置缓存，重新查找同一实例，不切换目标。
     """
-    from .ui_runtime_context import acquire_ui_runtime_context
+    from .ui_runtime_context import read_ui_runtime_snapshot
+
+    # 锁回包/保存属性会分配新的 Lua 表。让实际消费该映射的观察器统一恢复，
+    # 外层 UI 观察器刷新自己的映射不能修复另一次 acquire 的旧映射。
+    return read_ui_runtime_snapshot([], lambda context: _read_spirit_artifact_item_runtime(
+        context, item_id, force_relocate=force_relocate))
+
+
+def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate: bool) -> dict[str, Any]:
     from .runtime_memory import resolve_lua_global_manager_root
-    context = acquire_ui_runtime_context([])
     memory, reader = context.memory, context.reader
     root, _, _ = resolve_lua_global_manager_root(
         memory, manager_key="spirit-artifact-item-global",
@@ -292,76 +297,80 @@ def _read_spirit_artifact_inventory_runtime(ctx) -> dict[str, Any]:
 
 
 def _memory_runtime_snapshot() -> dict[str, Any]:
-    """Read exact live ItemVO/ext fields when the fixed main-state bridge is unavailable."""
+    """Read exact server equipment and batch its current attributes.
 
-    memory = MumuProcessMemory.discover_cached()
-    root_address, cache_hit = resolve_manager_root(
-        memory,
-        manager_key="spirit-artifact-backpack",
-        marker=_BACKPACK_MARKER,
-        required_methods=_BACKPACK_METHODS,
-        validate=_backpack_data_fields,
-    )
-    reader = LuaJitReader(memory)
-    data = _backpack_data_fields(reader, root_address)
-    values = _fields(
-        reader,
-        _fields(reader, data.get("_SpiritWareItemDic")).get("_valueTable_"),
-    )
-    selected: dict[tuple[int, int], tuple[tuple[int, int, int], dict[str, Any]]] = {}
-    for raw_item in values.values():
-        if not isinstance(raw_item, LuaRef) or raw_item.kind != "table":
-            continue
-        item = _fields(reader, raw_item)
-        base_id = as_int(item.get("baseId")) or 0
-        position = _artifact_position(base_id)
-        if position is None:
-            continue
-        ext = _fields(reader, item.get("ext"))
-        effects = _read_effect_map(
-            reader, ext.get("attrMap"), artifact_index=position[0]
-        )
-        pending_effects = _read_effect_map(
-            reader, ext.get("refineMap"), artifact_index=position[0]
-        )
-        part = {
-            "ware_id": position[0] + 1,
-            "part": position[1] + 1,
-            "artifact_name": _ARTIFACTS[position[0]][0] if position[0] < len(_ARTIFACTS) else "",
-            "part_name": _ARTIFACTS[position[0]][1][position[1]] if position[0] < len(_ARTIFACTS) else "",
-            "item_id": str(reader.long(item.get("id")) or ""),
-            "base_id": base_id,
-            "grade": as_int(ext.get("grade")) or 0,
-            "realm": as_int(ext.get("pinLevel")) or 0,
-            "refine_num": as_int(ext.get("refineNum")) or 0,
-            "is_break": ext.get("isBreak") if type(ext.get("isBreak")) is bool else None,
-            "effects": effects,
-            "pending_effects": pending_effects,
-        }
-        score = (part["grade"], base_id % 100, part["refine_num"])
-        if position not in selected or score > selected[position][0]:
-            selected[position] = score, part
-    observed_artifacts = {position[0] for position in selected}
+    The equipped provider owns putUpSet and inventory association. A second
+    fresh equipped observation brackets attribute enrichment; a changed set,
+    process, or selected item metadata rejects the whole snapshot. Known empty
+    slots are explicit, never inferred from missing inventory. This full-hall
+    composition still needs live acceptance after replacing a high-grade item
+    with a lower-grade spare and on changing the loaded ware universe.
+    """
+    from .spirit_artifact_equipped import read_spirit_artifact_equipped_runtime
     from .spirit_artifact_affixes import enrich_spirit_artifact_effects
-    enrich_spirit_artifact_effects(
-        [effect for _, part in selected.values() for key in ("effects", "pending_effects")
-         for effect in part[key]],
-        pid=memory.pid, process_start_ticks=memory.process_start_ticks,
-    )
-    complete = bool(observed_artifacts) and all(
-        (artifact_index, part_index) in selected
-        for artifact_index in observed_artifacts
-        for part_index in range(6)
-    )
-    return {
-        "complete": complete,
-        "parts": [entry[1] for entry in selected.values()],
-        "source": "runtime_memory_current_parts",
-        "pid": memory.pid,
-        "process_start_ticks": memory.process_start_ticks,
-        "root_address": f"0x{root_address:x}",
-        "root_cache_hit": cache_hit,
-    }
+    from .ui_runtime_context import read_ui_runtime_snapshot
+    from .runtime_memory import resolve_lua_global_manager_root
+
+    before = read_spirit_artifact_equipped_runtime()
+
+    def read_selected(ctx):
+        identity = (ctx.memory.pid, ctx.memory.process_start_ticks)
+        if identity != (before['pid'], before['process_start_ticks']):
+            raise FanxiuRuntimeMemoryError('读取灵器属性前游戏进程变化')
+        reader = ctx.reader
+        root, _, _ = resolve_lua_global_manager_root(
+            ctx.memory, manager_key="spirit-artifact-item-global",
+            state_address=ctx.binding.state_address, global_name="BackpackMgr",
+            required_methods=frozenset({"Inst_get"}), validate=_backpack_data_fields,
+        )
+        data = _backpack_data_fields(reader, root)
+        values = _fields(reader, _fields(reader, data.get("_SpiritWareItemDic")).get("_valueTable_"))
+        wanted = {row['item_id']: row for row in before['items']}
+        parts = []
+        found = set()
+        for raw_item in values.values():
+            item = _fields(reader, raw_item)
+            uid = str(reader.long(item.get('id')) or '')
+            if uid not in wanted:
+                continue
+            if uid in found:
+                raise FanxiuRuntimeMemoryError('已装配灵器本体库存实例重复')
+            found.add(uid)
+            expected = wanted[uid]
+            ext = _fields(reader, item.get('ext'))
+            base_id = as_int(item.get('baseId'))
+            grade = as_int(ext.get('grade'))
+            realm = as_int(ext.get('pinLevel')) or 0
+            is_break = ext.get('isBreak') if type(ext.get('isBreak')) is bool else None
+            if (base_id, grade, realm, is_break) != (
+                expected['base_id'], expected['grade'], expected['realm'], expected['is_break']
+            ):
+                raise FanxiuRuntimeMemoryError('读取期间已装配灵器本体状态变化')
+            index = expected['ware_id'] - 1
+            parts.append({**expected,
+                'refine_num': as_int(ext.get('refineNum')) or 0,
+                'effects': _read_effect_map(reader, ext.get('attrMap'), artifact_index=index),
+                'pending_effects': _read_effect_map(reader, ext.get('refineMap'), artifact_index=index),
+            })
+        if found != set(wanted):
+            raise FanxiuRuntimeMemoryError('已装配灵器本体属性读取缺失')
+        return parts
+
+    parts = read_ui_runtime_snapshot([], read_selected)
+    effects = [effect for part in parts for key in ('effects', 'pending_effects') for effect in part[key]]
+    if effects:
+        enrich_spirit_artifact_effects(effects, pid=before['pid'], process_start_ticks=before['process_start_ticks'])
+    after = read_spirit_artifact_equipped_runtime()
+    if any(before[key] != after[key] for key in ('pid', 'process_start_ticks', 'slots', 'items')):
+        raise FanxiuRuntimeMemoryError('读取期间服务器装配集合或本体状态变化')
+    for slot in before['slots']:
+        if slot['item_id'] is None:
+            parts.append({**slot, 'base_id': 0, 'grade': 0, 'realm': 0,
+                          'is_break': False, 'effects': [], 'pending_effects': [], 'empty_slot': True})
+    return {'complete': True, 'parts': parts,
+            'ware_ids': sorted({slot['ware_id'] for slot in before['slots']}),
+            'source': 'runtime_server_put_up_set_current_parts',
+            'pid': before['pid'], 'process_start_ticks': before['process_start_ticks']}
 
 
 def _format_percent(raw_value: int, base_value: int) -> str:
@@ -483,7 +492,10 @@ def project_spirit_artifact_part_row(
 def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     """Build a runtime-driven hall projection without discarding exact game fields."""
 
+    if runtime.get("complete") is not True:
+        raise RuntimeError("服务器装配快照未证明完整")
     positioned: dict[tuple[int, int], dict[str, Any]] = {}
+    used_ids: set[str] = set()
     for raw_part in runtime.get("parts") or []:
         part = dict(raw_part)
         ware_id = int(part.get("ware_id") or 0)
@@ -492,9 +504,20 @@ def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str
         if position is None:
             position = _artifact_position(int(part.get("base_id") or 0))
         if position is None:
-            continue
+            raise RuntimeError("服务器装配部位身份无效")
+        uid = str(part.get("item_id") or "")
+        if position in positioned or (uid and uid in used_ids):
+            raise RuntimeError("服务器装配部位或本体引用重复")
+        if not uid and part.get("empty_slot") is not True:
+            raise RuntimeError("服务器装配本体引用缺失，不能推断空槽")
+        if uid:
+            used_ids.add(uid)
         positioned[position] = part
     artifact_indexes = sorted({artifact_index for artifact_index, _ in positioned})
+    if not artifact_indexes:
+        raise RuntimeError("服务器装配灵器集合为空")
+    if "ware_ids" in runtime and {index + 1 for index in artifact_indexes} != set(runtime["ware_ids"]):
+        raise RuntimeError("服务器装配灵器集合不完整")
     missing = []
     for artifact_index in artifact_indexes:
         fallback_name = _ARTIFACTS[artifact_index][0] if artifact_index < len(_ARTIFACTS) else f"灵器 {artifact_index + 1}"
@@ -541,7 +564,7 @@ def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str
         "runtime_error": "",
         "runtime_updated_at": time.time(),
         "runtime_item_count": len(runtime.get("parts") or []),
-        "runtime_equipped_count": len(positioned),
+        "runtime_equipped_count": len(used_ids),
         "runtime_debug": {
             "pid": runtime.get("pid"),
             "process_start_ticks": runtime.get("process_start_ticks"),
