@@ -114,6 +114,31 @@ def test_crawler_fails_closed_and_still_reclaims_tab() -> None:
     assert browser.closed == [browser.tab]
 
 
+def test_crawler_waits_for_blank_sso_redirect(monkeypatch) -> None:
+    browser = _Browser(CURRENT_WEEKLY_POST)
+    browser.tab.url = "https://odchqpto.com/vip/login/?pageFrom=forum"
+    monkeypatch.setattr(
+        "backend.core.fanxiu.gift_code_crawler.time.sleep",
+        lambda _: setattr(browser.tab, "url", gift_code_thread_url()),
+    )
+
+    result = crawl_weekly_gift_codes(browser_factory=lambda: browser)
+
+    assert result.codes == tuple(extract_gift_codes(CURRENT_WEEKLY_POST))
+    assert browser.closed == [browser.tab]
+
+
+def test_crawler_rejects_actual_login_form() -> None:
+    browser = _Browser("")
+    browser.tab.url = "https://odchqpto.com/vip/login/?pageFrom=forum"
+    browser.tab.html = "<form>短信登录<button>获取验证码</button></form>"
+
+    with pytest.raises(GiftCodeCrawlerError, match="需要人工重新登录"):
+        crawl_weekly_gift_codes(browser_factory=lambda: browser)
+
+    assert browser.closed == [browser.tab]
+
+
 def test_codeyun_crawler_has_no_xlsln_dependency() -> None:
     source = Path(__file__).parents[1] / "core" / "fanxiu" / "gift_code_crawler.py"
     assert "xlsln" not in source.read_text(encoding="utf-8")

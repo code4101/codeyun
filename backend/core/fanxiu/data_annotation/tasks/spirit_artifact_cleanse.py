@@ -42,6 +42,7 @@ class SpiritArtifactCleanseGuiAssets:
     advanced_confirm_scene_id: int = 713
     pending_wash_scene_id: int = 714
     part_detail_scene_id: int = 715
+    effect_activation_scene_id: int = 721
     open_menu_shape: str = "打开下方菜单"
     open_spiritware_shape: str = "灵器"
     first_artifact_shape: str = "首个灵器"
@@ -65,6 +66,7 @@ class SpiritArtifactCleanseGuiAssets:
     @property
     def layer0_candidate_ids(self) -> tuple[int, ...]:
         return (
+            self.effect_activation_scene_id,
             self.auto_unlocked_warning_scene_id,
             self.attribute_preview_scene_id,
             self.auto_settings_scene_id,
@@ -295,6 +297,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         self.context = context
         self.execute = execute
         self.assets = assets or SpiritArtifactCleanseGuiAssets()
+        self._advanced_scroll_memory = None
 
     def current_scene_id(self) -> int | None:
         scene_id, _score, _frame = self.execute(
@@ -541,6 +544,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
     def cancel(self) -> Any:
         assets = self.assets
         current = self.current_scene_id()
+        if current == assets.effect_activation_scene_id:
+            return self.finish_effect_activation()
         if current == assets.advanced_confirm_scene_id:
             return self._transition(current, "取消", assets.advanced_items_scene_id,
                                     phase="cancel_advanced_confirmation")
@@ -556,6 +561,19 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             *assets.wash_scene_ids,
             phase="cancel_auto_warning",
         )
+
+    def finish_effect_activation(self) -> Any:
+        """保存属性触发的灵器效果激活结果，属于业务 Layer0；可连续出现。"""
+        candidates = [self.assets.effect_activation_scene_id, *self.assets.wash_scene_ids]
+        for _ in range(6):
+            result = self.execute(self.context.wait_scene(candidates, wait=12))
+            if result.scene_id in self.assets.wash_scene_ids:
+                return result
+            if result.scene_id != self.assets.effect_activation_scene_id:
+                raise SpiritArtifactCleanseBlocked('灵器效果激活收尾落点不明', phase='effect_activation')
+            self.context.click_shape_center(self.assets.effect_activation_scene_id, '点击屏幕继续')
+            self.execute(self.context.wait_action_settle(0.8))
+        raise SpiritArtifactCleanseBlocked('灵器效果激活连续结果超出已知边界', phase='effect_activation')
 
     def return_to_world(self) -> Any:
         assets = self.assets
@@ -706,6 +724,24 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         """显示巅峰石使用确认；仍需取消或独立的消耗授权。"""
         return self.preview_advanced_item(14000052)
 
+    @contextmanager
+    def advanced_scroll_session(self, program_id: str):
+        """一次程序内复用高级列表滚动经验，离开上下文即清空。
+
+        每次定位仍识别实际起始视口，不假定重开窗口回顶部。中断后须退出
+        本块，下一 Cell/attempt 重新开始；不能把这个上下文存成续跑状态。
+        """
+        from .spirit_artifact_advanced_scroll import AdvancedScrollMemory
+
+        if not program_id or self._advanced_scroll_memory is not None:
+            raise ValueError('高级列表需要独立、非嵌套的程序作用域')
+        memory = self._advanced_scroll_memory = AdvancedScrollMemory()
+        try:
+            yield self
+        finally:
+            memory.close()
+            self._advanced_scroll_memory = None
+
     def preview_advanced_item(self, item_id: int) -> Any:
         """按 Runtime 道具 ID 定位并显示使用确认，不点击确认。
 
@@ -731,9 +767,20 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             raise SpiritArtifactCleanseBlocked('高级洗炼窗口与当前洗炼部件不一致', phase='preview_advanced')
         if not any(not effect['locked'] for effect in before['effects']):
             raise SpiritArtifactCleanseBlocked('没有未锁词条', phase='preview_advanced')
-        self.execute(self.context.wait_click_ocr_text(
-            self.assets.advanced_items_scene_id, name[2:], in_shapes=['道具列表'],
-            max_scrolls_per_direction=10, timeout_seconds=60, crop_fallback=True))
+        scroll_key, scroll_route = None, ()
+        memory = self._advanced_scroll_memory
+        if memory is None:
+            self.execute(self.context.wait_click_ocr_text(
+                self.assets.advanced_items_scene_id, name[2:], in_shapes=['道具列表'],
+                max_scrolls_per_direction=10, timeout_seconds=60, crop_fallback=True))
+        else:
+            from .spirit_artifact_advanced_scroll import locate_advanced_item_with_experience
+            match, scroll_key, scroll_route = locate_advanced_item_with_experience(
+                self.context, self.execute, scene_id=self.assets.advanced_items_scene_id,
+                catalog=catalog, item_id=item_id, memory=memory)
+            if scroll_key is not None:
+                memory.forget(scroll_key)  # 确认失败或中断时，不留成功经验。
+            self.context.click_frame_point(self.assets.advanced_items_scene_id, *match.point())
         self.execute(self.context.wait_scene([self.assets.advanced_confirm_scene_id], wait=10))
         self._require_scene(self.assets.advanced_confirm_scene_id, phase='preview_advanced')
         frame = self.context.cur_frame(update=True)
@@ -747,6 +794,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             'pid', 'process_start_ticks', 'item_id', 'effects', 'pending_effects', 'refine_num'
         )):
             raise SpiritArtifactCleanseBlocked('查看确认期间部件状态改变', phase='preview_advanced')
+        if memory is not None and scroll_key is not None and len(scroll_route) <= 30:
+            memory.remember(scroll_key, scroll_route)
         return {'scene': self.assets.advanced_confirm_scene_id, 'target_item_id': catalog['item_id'],
                 'item_id': item_id, 'name': item['name'], 'count': item['count'],
                 'unlocked_effects': [effect for effect in after['effects'] if not effect['locked']]}
@@ -822,7 +871,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         if any(e.locked and pending.get(e.cleanse_id) != e for e in before.effects):
             raise SpiritArtifactCleanseBlocked('候选会改变锁定词条，需要单独的替换决策', phase='replace')
         self._transition(self.assets.pending_wash_scene_id, '保留新属性',
-                         self.assets.wash_scene_id, phase='replace')
+                         self.assets.wash_scene_id, self.assets.effect_activation_scene_id, phase='replace')
+        self.finish_effect_activation()
         after = self._observe_selected(candidate.target)
         verify_spirit_artifact_candidate_saved(candidate, before, after)
         frame = self.context.cur_frame(update=True)

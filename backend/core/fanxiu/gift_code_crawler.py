@@ -132,6 +132,7 @@ def crawl_weekly_gift_codes(
     tab = browser.new_tab(url, background=True)
     text = ""
     title = ""
+    current_url = url
     try:
         deadline = time.monotonic() + max(1.0, float(timeout_seconds))
         while time.monotonic() < deadline:
@@ -140,14 +141,24 @@ def crawl_weekly_gift_codes(
             title = str(getattr(tab, "title", "") or "")
             current_url = str(getattr(tab, "url", "") or "")
             html = str(getattr(tab, "html", "") or "")
-            if "/vip/login/" in current_url or ("短信登录" in html and "获取验证码" in html):
+            # 论坛 SSO 会短暂经过空白的 /vip/login/ 再自动返回帖子；
+            # URL 本身不能证明登录失效，只有实际登录表单才需人工介入。
+            if "短信登录" in html and "获取验证码" in html:
                 raise GiftCodeCrawlerError("统一 DP Chrome 的凡修论坛登录态已失效，需要人工重新登录")
+            if "/vip/login/" in current_url:
+                time.sleep(0.25)
+                continue
             content = tab.ele(GIFT_CODE_CONTENT_LOCATOR, timeout=1)
             text = str(getattr(content, "text", "") or "") if content else ""
             codes = extract_gift_codes(text)
             if codes:
                 return GiftCodeCrawlResult(tuple(codes), current_url or url, title, len(text))
             time.sleep(0.25)
+        if "/vip/login/" in current_url:
+            raise GiftCodeCrawlerError(
+                f"凡修论坛 SSO 登录跳转未完成：title={title!r}, url={current_url}; "
+                "尚未出现登录表单，不能判定账号登录态失效",
+            )
         raise GiftCodeCrawlerError(
             f"凡修礼包码正文等待超时或未解析到兑换码：title={title!r}, url={getattr(tab, 'url', '')!s}, text_length={len(text)}",
         )
