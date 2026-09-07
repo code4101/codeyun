@@ -957,7 +957,9 @@ def register_fanxiu_default_jobs() -> None:
     ) -> Any:
         result = yield from runner._execute_daily_xianyuan_task(ctx, stop_event, payload)
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-        yield from context.go_scene(34)
+        # Battle exit can briefly hide the entire HUD while loading the world.
+        # Keep the declared landing alive; a ready world still returns at once.
+        yield from context.go_scene(34, wait=float(payload.get("battle_leave_timeout") or 90.0))
         return result
 
     @register_fanxiu_data_annotation_task_cell(

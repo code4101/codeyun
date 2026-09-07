@@ -172,7 +172,15 @@ def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | 
                                     effects: list[dict[str, Any]], a_codes: list[str]) -> str:
     """纯分类：未知事实不等于失败；已突破优先检查 A 集合，与阶数无关。"""
     if is_break is True:
-        # 六个槽位必须齐全，缺 code 无法确认缺的是 A 还是普通属性。
+        full_codes = {effect.get("code") for effect in effects
+                      if effect.get("affix") in ("满", "巅", "颠")}
+        known_nonfull_a = {effect.get("code") for effect in effects
+                           if effect.get("affix") == ""} & set(a_codes)
+        # 低阶可能仅解锁四/五槽。已看到非满 A 就足以否定培养完成；
+        # 同 code 又有满值时不凭低值重复项下结论。缺项仍不等于非满。
+        if known_nonfull_a - full_codes:
+            return "错升"
+        # 完成/缺 A 的判断仍要求完整六槽；不猜测低阶的解锁数量。
         if not a_codes or len(effects) != 6 or any(
             (not effect.get("code") and effect.get("type") != 3) or "affix" not in effect for effect in effects
         ):

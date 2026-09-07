@@ -1077,10 +1077,12 @@ class BehaviorTreeContext(AutomationContext):
         if not isinstance(parent, Shape):
             return raw
         parent_raw = parent.raw
+        # OCR floating controls must obey the same parent search envelope as
+        # image controls; otherwise a right-menu action searches the full page.
+        scan_box = {key: parent_raw.get(key) for key in ("x", "y", "w", "h") if key in parent_raw}
+        if {"x", "y", "w", "h"}.issubset(scan_box):
+            raw["_match_scan_box"] = scan_box
         if self.runner._shape_image_role(raw) != "off":
-            scan_box = {key: parent_raw.get(key) for key in ("x", "y", "w", "h") if key in parent_raw}
-            if {"x", "y", "w", "h"}.issubset(scan_box):
-                raw["_match_scan_box"] = scan_box
             raw["_wait_click_action_title"] = shape.title or shape.raw.get("id")
             return raw
         for key in ("x", "y", "w", "h"):
@@ -12140,12 +12142,44 @@ class BehaviorTreeExecutor(
                 search_box = {"x": 0.0, "y": 0.0, "w": float(width), "h": float(height)}
         spatial = query_spatial_ocr(tokens, search_box)
         text = _sanitize_ocr_text(spatial.get("text"))
+        if (
+            not self._ocr_text_matches(text, target, mode)
+            and shape.get("_wait_click_action_title")
+            and isinstance(shape.get("_match_scan_box"), dict)
+        ):
+            # Full-frame detection can omit a clearly visible small menu word.
+            # Recheck only the declared action envelope, using the same OCR
+            # model and frame. Scene identity scans do not incur this fallback.
+            crop = self._crop_frame_data_url_for_shapes(
+                frame_data_url,
+                {**image, "shapes": [{**shape, **shape["_match_scan_box"], "title": "action-envelope"}], "children": []},
+                ["action-envelope"], padding=0,
+            )
+            if crop is not None:
+                crop_url, offset_x, offset_y = crop
+                local = self._ocr_frame(crop_url, options={"return_word_box": True})
+                local_tokens = [
+                    {**item, "x": float(item.get("x") or 0) + offset_x,
+                     "y": float(item.get("y") or 0) + offset_y}
+                    for item in local.get("tokens") or []
+                ]
+                spatial = query_spatial_ocr(local_tokens, search_box)
+                text = _sanitize_ocr_text(spatial.get("text"))
+                result["reason"] = "action_envelope_ocr"
+                self._log("detail", f"局部 OCR 复核 {shape.get('_wait_click_action_title')}：{text[:120]}")
         fragments = spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
         result["ocr_text"] = text
         result["matches"] = fragments
         token_box = None
-        if floating_ocr and mode in {"contains", "exact"}:
-            exact_matches = find_text_matches(spatial.get("tokens") or [], target)
+        literal_target = target
+        if floating_ocr and mode == "regex":
+            try:
+                regex_match = re.search(target, text)
+            except re.error:
+                regex_match = None
+            literal_target = regex_match.group(0) if regex_match else ""
+        if floating_ocr and mode in {"contains", "exact", "regex"}:
+            exact_matches = find_text_matches(spatial.get("tokens") or [], literal_target) if literal_target else []
             if len(exact_matches) > 1:
                 result["reason"] = "floating_ocr_ambiguous"
                 result["candidate_boxes"] = [match.box for match in exact_matches]
@@ -12159,7 +12193,7 @@ class BehaviorTreeExecutor(
             else bool(text and self._ocr_text_matches(text, target, mode))
         )
         if text_matched:
-            if floating_ocr and mode in {"contains", "exact"} and token_box is None:
+            if floating_ocr and mode in {"contains", "exact", "regex"} and token_box is None:
                 return result
             result["matched"] = True
             result["similarity"] = 100

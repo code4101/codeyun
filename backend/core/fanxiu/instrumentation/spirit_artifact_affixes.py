@@ -9,13 +9,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .runtime_memory import (
-    FanxiuRuntimeMemoryError, LuaRef, as_int, manager_index_fields,
-    resolve_lua_global_manager_root,
-)
-from .ui_runtime_context import read_ui_runtime_snapshot
-
-_DB_METHODS = frozenset({"DBMgr", "GetConfigTable", "GetConfigTableByIdWithLog", "Inst_get"})
+from .runtime_memory import FanxiuRuntimeMemoryError
 
 
 def classify_spirit_artifact_affix(value: int, maximum: int, ratio_percent: float, full: int = 0) -> dict[str, Any]:
@@ -29,87 +23,26 @@ def classify_spirit_artifact_affix(value: int, maximum: int, ratio_percent: floa
 
 
 def read_spirit_artifact_affix_rules(cleanse_ids: list[int]) -> dict[str, Any]:
-    """只读已加载的 DBMgr 配置与真实字段索引，不执行游戏 Lua、不用旧导出推测阈值。"""
-    return read_ui_runtime_snapshot([], lambda ctx: _read_spirit_artifact_affix_rules(ctx, cleanse_ids))
+    """读取指定已加载词条；共享全量目录 decoder，但不为小请求枚举全部行。
+
+    缺省字段由当前生成配置 closure 的默认表证明，不再将未知 full 猜为0。
+    不宣称全目录覆盖或末尾代际核验；返回字段兼容原 rules/ratio/pid/start。
+    """
+    from .spirit_artifact_affix_catalog import read_affix_configuration
+    return read_affix_configuration(cleanse_ids=cleanse_ids)
 
 
-def _read_spirit_artifact_affix_rules(ctx, cleanse_ids: list[int]) -> dict[str, Any]:
-    reader = ctx.reader
+def read_spirit_artifact_affix_catalog(*, expected_cleanse_ids: list[int] | None = None) -> dict[str, Any]:
+    """一次性读取客户端全部已加载词条，返回覆盖、内容指纹与新观察代际复核。
 
-    def config_tables(current_reader, address):
-        manager = manager_index_fields(current_reader, address, _DB_METHODS)
-        inst = current_reader.fields(manager.get("inst"))
-        tables = current_reader.dictionary_fields(inst.get("ConfigDic"))
-        if "SpiritWare.SpiritWareCleanse" not in tables:
-            raise FanxiuRuntimeMemoryError("灵器洗炼配置尚未自然加载")
-        return tables
-
-    root, _, environment = resolve_lua_global_manager_root(
-        ctx.memory, manager_key="spirit-artifact-affix-db", state_address=ctx.binding.state_address,
-        global_name="DBMgr", required_methods=_DB_METHODS, validate=config_tables,
-    )
-    tables = config_tables(reader, root)
-    env = reader.string_fields(environment, frozenset({"s_globalCfgIdx"}))
-    indexes_root = reader.fields(env.get("s_globalCfgIdx"))
-    row_cache = {}
-
-    def row(group, name, key, wanted):
-        table_key = f"{group}.{name}"
-        if table_key not in row_cache:
-            row_cache[table_key] = reader.fields(tables.get(table_key))
-        table = row_cache[table_key]
-        raw = table.get(key)
-        indexes = reader.fields(reader.fields(indexes_root.get(group)).get(name))
-        # Attribute 以行号存储；客户端 GetConfigTableByKeyAndId 按 id 列查询。
-        if not isinstance(raw, LuaRef) and name == "Attribute":
-            id_index = as_int(indexes.get("id"))
-            for candidate in list(table.values()):
-                if not isinstance(candidate, LuaRef) or candidate.kind != "table":
-                    continue
-                candidate_table = reader.table(candidate.address)
-                candidate_fields = candidate_table["fields"]
-                candidate_array = candidate_table["array"]
-                candidate_id = candidate_fields.get("id", candidate_fields.get(id_index))
-                if candidate_id is None and id_index is not None and id_index < len(candidate_array):
-                    candidate_id = candidate_array[id_index]
-                if isinstance(candidate_id, str):
-                    table[candidate_id] = candidate
-            raw = table.get(key)
-        if not isinstance(raw, LuaRef):
-            raise FanxiuRuntimeMemoryError(f"配置未加载：{group}.{name}[{key}]")
-        fields = reader.fields(raw)
-        array = reader.table(raw.address)["array"]
-        result = {}
-        for field in wanted:
-            index = as_int(indexes.get(field))
-            value = fields.get(field)
-            if value is None and index is not None:
-                value = fields.get(index)
-                if value is None and index < len(array):
-                    value = array[index]
-            result[field] = value
-        return result
-
-    config = row("SpiritWare", "ConfigValue", "Item5_MaxRatio", ("value",))
-    ratio = float(config["value"])
-    from backend.core.fanxiu.catalog.lua_config import _find_default_lang_path, load_fanxiu_lang_map
-    lang_path = _find_default_lang_path()
-    lang = load_fanxiu_lang_map(lang_path) if lang_path else {}
-    rules = {}
-    for cleanse_id in sorted(set(cleanse_ids)):
-        data = row("SpiritWare", "SpiritWareCleanse", cleanse_id, ("max", "full", "code", "selfName", "type"))
-        maximum = as_int(data["max"])
-        if maximum is None:
-            raise FanxiuRuntimeMemoryError(f"词条 {cleanse_id} 缺少 max，不能判断词缀")
-        name_value = data["selfName"] if data["type"] == 3 else row(
-            "Attribute", "Attribute", data["code"], ("name",),
-        )["name"]
-        name = name_value if isinstance(name_value, str) else lang.get(as_int(name_value), "")
-        if not name:
-            raise FanxiuRuntimeMemoryError(f"词条 {cleanse_id} 的官方名称未解析")
-        rules[cleanse_id] = {**data, "name": name, "max": maximum, "full": as_int(data["full"]) or 0}
-    return {"ratio_percent": ratio, "rules": rules, "source": "runtime_dbmgr_spiritware_config",
-            "pid": ctx.memory.pid, "process_start_ticks": ctx.memory.process_start_ticks}
+    expected_cleanse_ids 仅供比对导出范围，不能限定实际枚举范围；出现新增
+    ID也必须读取。缺配置直接失败，既有底层有界映射恢复之外不加重试。
+    不执行Lua、请求、写文件或消费。仅affix已验证，不能外推本体/A集合。
+    根和成员稳定不等于逐字节原子快照；尚待实际全目录与热更新场景验收。
+    """
+    from .spirit_artifact_affix_catalog import read_affix_configuration
+    return read_affix_configuration(cleanse_ids=None,
+        expected_cleanse_ids=expected_cleanse_ids, verify_generation=True)
 
 
 def enrich_spirit_artifact_effects(effects: list[dict[str, Any]], *, pid: int, process_start_ticks: int) -> None:

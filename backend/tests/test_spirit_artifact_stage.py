@@ -61,3 +61,28 @@ def test_only_explicit_empty_slot_is_initial_zero():
     assert FanxiuSpiritArtifactPartRow(runtime_empty_slot=True).stage == "初始"
     assert FanxiuSpiritArtifactPartRow().stage == "待识别"
     assert FanxiuSpiritArtifactPartRow(runtime_empty_slot=True, runtime_item_id="conflict").stage == "待识别"
+
+
+@pytest.mark.parametrize("rank,base_id,values", [
+    (1, 14000906, [("ATTACK", 7556, 10000), ("SKILL_ATTACK_RECOVER_FIX", 6572, 10000),
+                  ("BLOCK_VALUE", 22347, 30000), ("GONGFA_PLUS_FIX", 42639, 60000)]),
+    (1, 14001006, [("ATTACK", 7029, 10000), ("SKILL_ATTACK_RECOVER_FIX", 6409, 10000),
+                  ("BLOCK_VALUE", 22529, 30000), ("GONGFA_PLUS_FIX", 38439, 60000)]),
+    (4, 14001906, [("MAXHP", 983280, 1200000), ("ATTACK", 7538, 10000),
+                  ("XIANYU_PLUS_FIX", 48708, 60000), ("ALL_SKILL_REDUCE_FIX", 7260, 10000),
+                  ("PET_PLUS_FIX", 51474, 60000)]),
+])
+def test_observed_low_a_proves_wrong_upgrade_before_six_slots(rank, base_id, values):
+    # 2026-09-08 的 2-3、2-4、4-1 真实快照精简；非六槽不是未知培养状态。
+    effects = [dict(code=c, value=v, normal_max=m, affix="") for c,v,m in values]
+    required = [c for c,_,_ in values if c != "MAXHP"]
+    assert classify_spirit_artifact_stage(rank=rank, base_id=base_id, is_break=True,
+                                         effects=effects, a_codes=required) == "错升"
+
+
+def test_partial_unknown_or_duplicate_a_does_not_prove_wrong_upgrade():
+    args = dict(rank=1, base_id=14000906, is_break=True, a_codes=["ATTACK", "CORE"])
+    assert classify_spirit_artifact_stage(**args, effects=[{"code":"ATTACK"}]) == "待识别"
+    assert classify_spirit_artifact_stage(**args, effects=[{"code":"ATTACK", "affix":"满"}]) == "待识别"
+    assert classify_spirit_artifact_stage(**args, effects=[{"code":"ATTACK", "affix":"满"},
+                                                           {"code":"ATTACK", "affix":""}]) == "待识别"

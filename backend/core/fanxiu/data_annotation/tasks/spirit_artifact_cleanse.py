@@ -581,7 +581,11 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         )
 
     def finish_effect_activation(self) -> Any:
-        """保存属性触发的灵器效果激活结果，属于业务 Layer0；可连续出现。"""
+        """新增灵器组合效果触发的业务 Layer0；可连续出现。
+
+        客户端 UpdateSuitInfo 仅为新增激活组合弹出结果，并非每次保存
+        都出现。普通洗炼页可直接返回，但不能据此宣称结果页分支已验收。
+        """
         candidates = [self.assets.effect_activation_scene_id, *self.assets.wash_scene_ids]
         for _ in range(6):
             result = self.execute(self.context.wait_scene(candidates, wait=12))

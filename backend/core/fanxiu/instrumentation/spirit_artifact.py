@@ -226,6 +226,7 @@ def read_spirit_artifact_inventory_runtime() -> dict[str, Any]:
     grade/realm/quantity 来自当前 ItemVO/ext，quality 来自已加载 Item.Item
     配置。调用方可按 ware_id、part、quality、grade 筛选重置本体；本接口
     不把升阶红点当作重置许可，也不声明实例是否已装配或可消耗。
+    realm 未读到时保留 None，不能把缺失境数当作明确的0境材料。
     """
     from .ui_runtime_context import read_ui_runtime_snapshot
 
@@ -266,7 +267,7 @@ def _read_spirit_artifact_inventory_runtime(ctx) -> dict[str, Any]:
             seen.add(item_id)
             result.append({"item_id": item_id, "base_id": base_id,
                            "ware_id": position[0] + 1, "part": position[1] + 1,
-                           "grade": grade, "realm": as_int(ext.get("pinLevel")) or 0,
+                           "grade": grade, "realm": as_int(ext.get("pinLevel")),
                            "is_break": ext.get("isBreak") if type(ext.get("isBreak")) is bool else None,
                            "quantity": quantity})
         return sorted(result, key=lambda row: (row["ware_id"], row["part"], row["item_id"]))

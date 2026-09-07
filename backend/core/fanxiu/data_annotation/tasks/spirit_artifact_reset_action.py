@@ -26,6 +26,8 @@ def reset_spirit_artifact_from_owned_raw(
 
     target 绑定新本体、进程、灵器、部位、base；previous_item_id 是明确授权
     消耗的旧本体。只接受同 base 两件各 quantity=1、旧已突破、新未突破1阶。
+    当前仅验收过双方0境：客户端只计算阶数相加，境数由服务端返回，尚不能
+    证明吞入有境数材料会继承境数；该分支留待专门调查，不能套用本封装。
     selected_part_text 必须是下方“当前部件名称”的完整可识别名称；该资产
     若不能读出目标则停止，不能依上方固定格子猜测升阶对象。
     stop_at 为绝对秒，消耗前预留120秒。已进入确认链不因截止丢下弹窗。
@@ -94,6 +96,8 @@ def reset_spirit_artifact_from_owned_raw(
                 or by_id[target.item_id]['is_break'] is not False):
             raise RuntimeError('只接受已授权旧本体与唯一红色1阶原始本体的库存组合')
         equipped(previous_item_id)
+        if any(r.get('realm') != 0 for r in rows):
+            raise RuntimeError('当前重置仅支持双方0境；有境数材料的继承规则尚未验证，尚未操作')
         if time.time() >= stop_at - 120:
             raise RuntimeError('运行权窗口不足以完成重置，尚未操作')
         if entry.scene_id == 666:
@@ -148,6 +152,7 @@ def reset_spirit_artifact_from_owned_raw(
                     if (len(final_rows) == 1 and final_rows[0]['item_id'] == target.item_id
                             and final_rows[0]['grade'] == expected_previous_grade + 1
                             and final_rows[0]['quantity'] == 1
+                            and final_rows[0].get('realm') == 0
                             and final_rows[0]['is_break'] is False):
                         terminal_since = time.monotonic()
                 elif time.monotonic() - terminal_since >= 8:

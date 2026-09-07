@@ -2883,6 +2883,12 @@ class DailyChallengeTaskMixin:
                 with self._lock:
                     self._log_locked("success", f"日常_挑战仙缘：已回到世界 #34 {score:.0f}%")
                 return "success"
+            if scene_id == 85:
+                # The result can leave us in the shared battle scene. Its
+                # declared exit/confirmation graph owns the action; guessing
+                # the result-page button here repeatedly misses that exit.
+                yield from observer.go_scene(34, wait=float(payload.get("battle_leave_timeout") or 90.0))
+                return "success"
             lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
             last_text = text or last_text
