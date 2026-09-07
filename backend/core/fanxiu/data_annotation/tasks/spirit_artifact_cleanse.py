@@ -266,7 +266,7 @@ class SpiritArtifactPageEvidence:
 
 SnapshotReader = Callable[[], Mapping[str, Any]]
 
-_EXPECTED_WARE_IDS = frozenset(range(1, 9))
+from ...catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
 _EXPECTED_PARTS = frozenset(range(1, 7))
 
 
@@ -419,7 +419,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
 
         self._require_scene(self.assets.overview_scene_id, phase='select_artifact')
-        if ware_id not in range(1, 9) or not artifact_name:
+        if ware_id not in spirit_artifact_ware_ids() or not artifact_name:
             raise SpiritArtifactCleanseBlocked('无效灵器身份', phase='select_artifact')
         names = tuple(dict.fromkeys((artifact_name, artifact_name.replace('摩诃', '摩河'),
                                      artifact_name.replace('干天', '千天'))))
@@ -728,16 +728,36 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             time.sleep(0.2)
 
     def open_advanced_items(self) -> Any:
-        """打开高级洗炼道具列表，不消耗。"""
-        return self._transition(self._require_wash_scene(phase="open_advanced_items"), "高级洗炼",
-                                self.assets.advanced_items_scene_id, phase="open_advanced_items")
+        """一次新鲜场景判断后打开高级列表；已在列表时不点击、不消耗。
+
+        不经过 _require_wash_scene/_transition 的重复无动作观察。仍使用
+        正式点击保护及落点等待，场景只在本次动作前消费，不跨动作缓存。
+        业务确认/结果显式保留在 Layer 0；意外落到这些页面时停止。
+        此入口缩减尚待真实连续调用与已打开列表两条路径验收。
+        """
+        assets = self.assets
+        candidates = list(dict.fromkeys((assets.advanced_items_scene_id,
+            *assets.wash_scene_ids, *assets.layer0_candidate_ids)))
+        observed = self.execute(self.context.wait_scene(candidates, wait=12,
+            label='洗灵：高级列表入口'))
+        if observed.scene_id == assets.advanced_items_scene_id:
+            return observed
+        if observed.scene_id not in assets.wash_scene_ids:
+            raise SpiritArtifactCleanseBlocked('当前不是洗炼页或高级列表',
+                code=SpiritArtifactCleanseErrorCode.SCENE_MISMATCH, phase='open_advanced_items',
+                evidence={'current': observed.scene_id})
+        result = self.execute(self.context.click_shape_center_then_scene(
+            observed.scene_id, '高级洗炼', assets.advanced_items_scene_id,
+            timeout=25, label='洗灵：打开高级列表'))
+        if result.scene_id != assets.advanced_items_scene_id:
+            raise SpiritArtifactCleanseBlocked('打开高级列表后落点不符', phase='open_advanced_items')
+        return result
 
     def inspect_advanced_items(self, *, fast: bool = False) -> Any:
         """从洗炼页打开高级列表并读取全部道具；已打开时只读，不使用道具。"""
         from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import read_spirit_artifact_advanced_items
 
-        if self.current_scene_id() != self.assets.advanced_items_scene_id:
-            self.open_advanced_items()
+        self.open_advanced_items()
         return read_spirit_artifact_advanced_items(fast=fast)
 
     def preview_peak_stone(self) -> Any:
@@ -993,49 +1013,34 @@ def spirit_artifact_effect_fingerprint(
 
 
 def validate_spirit_artifact_target_universe(snapshot: Mapping[str, Any]) -> None:
-    """Require the current 8 artifacts x 6 equipped parts without ambiguity."""
-
-    positions: dict[tuple[int, int], str] = {}
+    """核验服务器声明完整的已加载器集合；正式配置仅界定合法编号，不要求全已解锁。"""
+    supported = spirit_artifact_ware_ids()
+    artifacts = snapshot.get("artifacts") or []
+    ware_ids = [artifact.get("order") for artifact in artifacts if isinstance(artifact, Mapping)]
+    if (snapshot.get("runtime_complete") is not True or not ware_ids
+            or len(ware_ids) != len(artifacts) or len(set(ware_ids)) != len(ware_ids)
+            or not set(ware_ids) <= supported):
+        raise SpiritArtifactCleanseBlocked("灵器已加载集合不完整或编号未知", code=SpiritArtifactCleanseErrorCode.TARGET_UNIVERSE_INCOMPLETE, phase="observe")
+    positions: set[tuple[int, int]] = set()
     item_ids: set[str] = set()
-    for artifact in snapshot.get("artifacts") or []:
-        if not isinstance(artifact, Mapping):
-            continue
+    for artifact in artifacts:
         for row in artifact.get("rows") or []:
-            if not isinstance(row, Mapping):
-                continue
             ware_id = _int(row.get("runtime_ware_id"), "ware_id")
             part = _int(row.get("runtime_part"), "part")
             item_id = str(row.get("runtime_item_id") or "").strip()
+            empty = row.get("runtime_empty_slot") is True
             position = (ware_id, part)
-            if (
-                ware_id not in _EXPECTED_WARE_IDS
-                or part not in _EXPECTED_PARTS
-                or not item_id
-            ):
-                raise SpiritArtifactCleanseBlocked(
-                    "灵器目标全集包含未知或无效部件",
-                    code=SpiritArtifactCleanseErrorCode.TARGET_AMBIGUOUS,
-                    phase="observe",
-                    evidence={"ware_id": ware_id, "part": part, "item_id": item_id},
-                )
-            if position in positions or item_id in item_ids:
-                raise SpiritArtifactCleanseBlocked(
-                    "灵器目标全集存在重复部位或重复实例",
-                    code=SpiritArtifactCleanseErrorCode.TARGET_AMBIGUOUS,
-                    phase="observe",
-                    evidence={"position": position, "item_id": item_id},
-                )
-            positions[position] = item_id
-            item_ids.add(item_id)
-    expected = {(ware_id, part) for ware_id in _EXPECTED_WARE_IDS for part in _EXPECTED_PARTS}
-    if positions.keys() != expected:
-        raise SpiritArtifactCleanseBlocked(
-            "灵器目标全集不是严格 8×6",
-            code=SpiritArtifactCleanseErrorCode.TARGET_UNIVERSE_INCOMPLETE,
-            phase="observe",
-            retryable=True,
-            evidence={"observed": len(positions), "missing": sorted(expected - positions.keys())},
-        )
+            if (ware_id != artifact['order'] or part not in _EXPECTED_PARTS
+                    or (not item_id and not empty)
+                    or (empty and (item_id or row.get('runtime_base_id') or row.get('runtime_effects')))
+                    or position in positions or (item_id and item_id in item_ids)):
+                raise SpiritArtifactCleanseBlocked("灵器部位身份、空槽或装配引用不一致", code=SpiritArtifactCleanseErrorCode.TARGET_AMBIGUOUS, phase="observe")
+            positions.add(position)
+            if item_id:
+                item_ids.add(item_id)
+    expected = {(ware_id, part) for ware_id in ware_ids for part in _EXPECTED_PARTS}
+    if positions != expected or len(item_ids) != snapshot.get('runtime_equipped_count'):
+        raise SpiritArtifactCleanseBlocked("灵器已加载集合的六部位或装配数量不完整", code=SpiritArtifactCleanseErrorCode.TARGET_UNIVERSE_INCOMPLETE, phase="observe")
 
 
 def observe_spirit_artifact(

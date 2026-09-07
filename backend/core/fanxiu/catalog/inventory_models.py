@@ -219,6 +219,7 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     runtime_is_break: bool | None = None
     runtime_effects: List[dict[str, Any]] = Field(default_factory=list)
 
+    runtime_empty_slot: bool | None = None
     runtime_observation: dict[str, Any] = Field(default_factory=dict)
 
     @computed_field
@@ -248,6 +249,10 @@ class FanxiuSpiritArtifactPartRow(BaseModel):
     @property
     def stage(self) -> str:
         """培养完成按本灵器全部 A 满值；客户端四仙品准入不用于倒推错升。"""
+        if self.runtime_empty_slot is True:
+            # 只有服务器明确空槽才归 0 阶；旧数据字段缺失仍是待识别。
+            return "初始" if (not self.runtime_item_id and not self.runtime_base_id
+                             and self.rank == 0 and not self.runtime_effects) else "待识别"
         return classify_spirit_artifact_stage(
             rank=self.rank, base_id=self.runtime_base_id,
             is_break=self.runtime_is_break, effects=self.runtime_effects,

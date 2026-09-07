@@ -24,26 +24,88 @@ def advanced_item_confirmation_names(item: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name.replace('·', '').replace(' ', '') for name in names if name))
 
 
+def _read_advanced_panel_identity(ctx, supported_wares: frozenset[int]) -> dict[str, Any]:
+    """Fresh narrow membership projection; no config rows or inventory reads."""
+    reader = ctx.reader
+    field = lambda obj, key: read_ui_object_field(ctx, obj.address, key)
+    storage = reader.table(ctx.binding.component_storage_address)
+    candidates = {}
+    for raw in [*storage['array'], *storage['fields'].values()]:
+        window = table_ref(raw)
+        if window is None:
+            continue
+        members, count = reader.list_items(window)
+        if not count or len(members) != count:
+            continue
+        component = table_ref(members[-1])
+        panel = table_ref(field(component, 'm_panel')) if component else None
+        if panel is None:
+            continue
+        real = table_ref(field(panel, 'realList'))
+        ware = as_int(field(panel, 'V_SpiritWare'))
+        if real is None or ware not in supported_wares or table_ref(field(panel, 'ScrollView')) is None:
+            continue
+        uid = reader.long(field(panel, '_CurSelectSlot'))
+        if not uid:
+            raise FanxiuRuntimeMemoryError('高级洗炼后置观察选中实例缺失')
+        candidates[panel.address] = {
+            'window': window.address, 'component': component.address, 'panel': panel.address,
+            'real_list': real.address, 'item_id': str(uid), 'ware_id': ware,
+            'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
+        }
+    if len(candidates) != 1:
+        raise FanxiuRuntimeMemoryError(f'高级洗炼后置观察窗口必须唯一，实际{len(candidates)}')
+    return next(iter(candidates.values()))
+
+
 def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]:
     """读取已打开高级洗炼窗口的目标、全部可见配置及真实库存；歧义报错。
 
     字段索引沿 s_globalCfgIdx/SpiritWare/SpiritWareCleanseItem 精确读取，
     不展开整个配置索引集合。state_string_field 只复用底层字符串定位，
     当前成员引用每次新读，配置根/索引变化不沿用旧值。不另缓存运行中
-    realList、选中实例或库存。此缩小投影尚待热路径重复计时真实验收。
+    realList、选中实例或库存。结束时另建context窄读当前注册成员/UID，
+    不用同reader缓存冒充后置复验，不重复配置或库存。支持器号取正式
+    SpiritWareItem配置；其版本是否与运行态完全一致仍需独立核验。
+    后置身份复核已随第4器连续消费真实验收；第9器高级窗口仍待真实验收。
     """
     from backend.core.fanxiu.catalog.lua_config import load_default_fanxiu_lang_map
     from .backpack import read_backpack_item_counts
     from .item_config import read_loaded_item_metadata
+    from backend.core.fanxiu.catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
 
     started = time.monotonic()
     lang = load_default_fanxiu_lang_map()
     timings = {'lang': time.monotonic() - started}
+    support_started = time.monotonic()
+    supported_wares = frozenset(load_spirit_artifact_wash_rules()['coverage']['ware_ids'])
+    timings['supported_wares'] = time.monotonic() - support_started
+    read_failures: list[dict[str, Any]] = []
+    projection_attempt = 0
 
     def read(ctx):
+        nonlocal projection_attempt
+        projection_attempt += 1
         projection_started = time.monotonic()
         reader = ctx.reader
-        field = lambda obj, key: read_ui_object_field(ctx, obj.address, key)
+        candidate_context: dict[str, Any] = {}
+
+        def field(obj, key):
+            try:
+                return read_ui_object_field(ctx, obj.address, key)
+            except FanxiuRuntimeMemoryError as exc:
+                # Do not inspect the failing object again for diagnostics: that
+                # would overwrite the first fault or change recovery behavior.
+                # The shared observer still owns exactly its existing retry.
+                failure = {**candidate_context, 'attempt': projection_attempt,
+                    'field': key, 'object': f'0x{obj.address:x}',
+                    'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
+                    'cache_mode': ctx.cache_mode, 'code': exc.code, 'error': str(exc)}
+                read_failures.append(failure)
+                raise FanxiuRuntimeMemoryError(
+                    f'高级洗炼候选字段读取失败：{failure}; first_failure={read_failures[0]}',
+                    code=exc.code,
+                ) from exc
         index_started = time.monotonic()
         current = table_ref(reader.state_string_field(ctx.binding.environment_address,
             's_globalCfgIdx', state_address=ctx.binding.state_address))
@@ -62,20 +124,27 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
         timings['config_rows'] = 0.0
         storage = reader.table(ctx.binding.component_storage_address)
         candidates = {}
-        for raw in [*storage['array'], *storage['fields'].values()]:
+        for candidate_index, raw in enumerate([*storage['array'], *storage['fields'].values()]):
             window = table_ref(raw)
             if window is None:
                 continue
+            candidate_context.clear()
+            candidate_context.update(candidate_index=candidate_index, window=f'0x{window.address:x}',
+                                     component=None, panel=None)
             members, count = reader.list_items(window)
             if not count or len(members) != count:
                 continue
             component = table_ref(members[-1])
+            if component is not None:
+                candidate_context['component'] = f'0x{component.address:x}'
             panel = table_ref(field(component, 'm_panel')) if component else None
             if panel is None:
                 continue
+            candidate_context['panel'] = f'0x{panel.address:x}'
             real = table_ref(field(panel, 'realList'))
             ware = as_int(field(panel, 'V_SpiritWare'))
-            if real is None or ware not in range(1, 9) or table_ref(field(panel, 'ScrollView')) is None:
+            candidate_context['ware_id'] = ware
+            if real is None or ware not in supported_wares or table_ref(field(panel, 'ScrollView')) is None:
                 continue
             item_id = reader.long(field(panel, '_CurSelectSlot'))
             rows, count = reader.list_items(real)
@@ -101,7 +170,7 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
                 # Lua array capacity includes unused nil slots after ipairs ends.
                 limit_values = reader.table(limits.address)['array'][1:] if limits else []
                 data['limitSpiritType'] = [as_int(v) for v in limit_values if v is not None]
-                if any(v not in range(1, 9) for v in data['limitSpiritType']):
+                if any(v not in supported_wares for v in data['limitSpiritType']):
                     raise FanxiuRuntimeMemoryError('高级洗炼灵器限制包含无效编号')
                 if data['limitSpiritType'] and ware not in data['limitSpiritType']:
                     raise FanxiuRuntimeMemoryError('高级洗炼列表与当前灵器限制不一致')
@@ -114,7 +183,11 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
                 raise FanxiuRuntimeMemoryError('高级洗炼道具身份重复')
             timings['config_rows'] += time.monotonic() - rows_started
             candidates[panel.address] = {'item_id': str(item_id), 'ware_id': ware,
-                'part_quality': as_int(field(panel, 'partCfgQuality')), 'items': decoded}
+                'part_quality': as_int(field(panel, 'partCfgQuality')), 'items': decoded,
+                '_panel_identity': {'window': window.address, 'component': component.address,
+                    'panel': panel.address, 'real_list': real.address, 'item_id': str(item_id),
+                    'ware_id': ware, 'pid': ctx.memory.pid,
+                    'process_start_ticks': ctx.memory.process_start_ticks}}
         if len(candidates) != 1:
             raise FanxiuRuntimeMemoryError(f'当前高级洗炼窗口数量必须为 1，实际 {len(candidates)}')
         result = next(iter(candidates.values()))
@@ -137,17 +210,23 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
             item = metadata[row['item']]
             row['name'] = item['item_name'] or lang.get(item['runtime_name_id'], '')
             row['count'] = counts[row['item']]
-        panel_address = next(iter(candidates))
-        if str(reader.long(read_ui_object_field(ctx, panel_address, '_CurSelectSlot'))) != result['item_id']:
-            raise FanxiuRuntimeMemoryError('读取高级洗炼库存期间选中部件发生变化')
         return {**result, 'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks,
                 'source': 'active_spiritware_advanced_real_list', 'read_only': True,
                 'inventory_diagnostics': {key: inventory.get(key) for key in
                     ('discovery', 'backpack_root_cache_hit')}}
 
     result = read_ui_runtime_snapshot([], read, fast=fast)
+    expected_identity = result.pop('_panel_identity')
+    guard_started = time.monotonic()
+    current_identity = read_ui_runtime_snapshot(
+        [], lambda ctx: _read_advanced_panel_identity(ctx, supported_wares), fast=fast,
+    )
+    timings['identity_guard'] = time.monotonic() - guard_started
+    if expected_identity != current_identity:
+        raise FanxiuRuntimeMemoryError('读取高级洗炼期间注册窗口、列表、目标或游戏进程发生变化')
     total = time.monotonic() - started
     # 包括公共观察器建 context/恢复及末尾身份复核，不误算成配置表解析。
     timings['observer_and_postcheck'] = max(0.0, total - sum(
-        timings.get(key, 0.0) for key in ('lang', 'window_config', 'metadata', 'inventory')))
-    return {**result, 'timings': {**timings, 'total': total}}
+        timings.get(key, 0.0) for key in ('lang', 'supported_wares', 'window_config', 'metadata', 'inventory')))
+    return {**result, 'timings': {**timings, 'total': total},
+            'observation_failures': read_failures}

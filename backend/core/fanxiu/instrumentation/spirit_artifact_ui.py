@@ -86,6 +86,9 @@ def bind_spirit_artifact_ui_effects(rows: list[dict], committed: list[dict]) -> 
 def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
     """返回当前灵器、页签、洗炼选中实例与成本；缺失或歧义直接报错。"""
 
+    from ..catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
+    supported_ware_ids = spirit_artifact_ware_ids()
+
     def read(ctx):
         reader = ctx.reader
         field = lambda obj, key: read_ui_object_field(ctx, obj.address, key)
@@ -104,7 +107,7 @@ def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
                 continue
             ware_id = as_int(field(outer, 'v_wareId'))
             group = table_ref(field(outer, 'tabPanelGroup'))
-            if ware_id not in range(1, 9) or group is None:
+            if ware_id not in supported_ware_ids or group is None:
                 continue
             index = as_int(field(group, 'curTabIndex'))
             panels = table_ref(field(group, 'panelShowComps'))

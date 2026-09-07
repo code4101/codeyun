@@ -31,8 +31,8 @@ def run_a_collection(
     stop_at 是生产窗口前的绝对截止秒；每次消耗前预留 90 秒收尾。
     max_consumptions 只限制本次运行，不修改概率样本或业务完成条件。
     不负责导航、突破或调度。默认拒绝入口候选；evaluate_existing_candidate=True
-    仅授权用当前完整事实重新评价 A／补 B 筛选候选，不恢复历史步骤。
-    当前策略不是引仙筛选（例如需要精炼或重新切锁）时仍阻塞，不猜候选来源。
+    仅授权用当前完整事实重新评价 A／补 B 筛选或严格改善的精炼目标候选，
+    不恢复历史步骤、不猜材料来源。需要重新切锁等未定义状态仍阻塞。
     既存候选评价只记观察事件，不重复统计历史消耗或概率样本。
     supplement_b_code 指定 A 全满后的独立补 B 阶段：仅筛红色，不精炼。
     """
@@ -45,6 +45,11 @@ def run_a_collection(
     evidence_path = Path(evidence_path)
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    entry = execute(context.wait_scene([713, 721, 668, 714, 712], wait=12))
+    if entry.scene_id == 713:
+        raise RuntimeError('入口存在未决道具确认，保留现场且禁止重发确认')
+    if entry.scene_id == 721:
+        gui.finish_effect_activation()
     current = read_spirit_artifact_wash_observation(target, verify_ui=True)
     if current.get('is_break') is not False:
         raise RuntimeError('A 类培养入口须确认本体尚未突破；已突破或状态未知时停止')
@@ -98,17 +103,24 @@ def run_a_collection(
                       plan_a_collection(original, a_codes=a_codes, b_codes=b_codes,
                                         c_codes=c_codes, target_ratio=target_ratio))
         try:
-            accept_existing = evaluate_existing_yinxian_candidate(
-                original, pending, plan_action=entry_plan.action,
-                a_codes=a_codes, target_ratio=target_ratio, supplement_b_code=supplement_b_code)
+            if entry_plan.action == 'refine' and supplement_b_code is None:
+                accept_existing = evaluate_existing_refinement_candidate(
+                    original, pending, plan_action=entry_plan.action,
+                    target_cleanse_id=entry_plan.target_cleanse_id, a_codes=a_codes)
+            else:
+                accept_existing = evaluate_existing_yinxian_candidate(
+                    original, pending, plan_action=entry_plan.action,
+                    a_codes=a_codes, target_ratio=target_ratio, supplement_b_code=supplement_b_code)
         except ValueError as error:
             record({'record_type': 'existing_candidate_evaluation', 'sample_origin': 'entry_observation',
                     'probability_sample': False, 'new_consumption': False,
                     'decision': 'blocked', 'reason': str(error), 'snapshot': current})
-            raise RuntimeError('既存候选无法按当前引仙策略安全评价；保留现场') from error
+            raise RuntimeError('既存候选无法按当前培养策略安全评价；保留现场') from error
         record({'record_type': 'existing_candidate_evaluation', 'sample_origin': 'entry_observation',
                 'probability_sample': False, 'new_consumption': False,
-                'decision': 'accept' if accept_existing else 'continue_yinxian', 'snapshot': current})
+                'decision': ('accept_improvement' if entry_plan.action == 'refine' else 'accept')
+                            if accept_existing else 'continue_yinxian',
+                'plan_action': entry_plan.action, 'snapshot': current})
         current = save_pending(current) if accept_existing else current
 
     consumed = 0
@@ -116,9 +128,14 @@ def run_a_collection(
         while True:
             # 完整业务候选优先于全局相似结果页，活动干扰走既有守护。
             # #713 仍由显式业务确认处理，不交给通用弹窗守护。
-            landed = execute(context.wait_scene([721, 668, 714, 712], wait=12))
+            landed = execute(context.wait_scene([713, 721, 668, 714, 712], wait=12))
+            if landed.scene_id == 713:
+                raise RuntimeError('出现未决道具确认，保留现场且禁止重发确认')
             if landed.scene_id == 721:
                 gui.finish_effect_activation()
+                current = read_spirit_artifact_wash_observation(target, verify_ui=True)
+                if current.get('is_break') is not False:
+                    raise RuntimeError('效果激活收尾后本体已突破或状态未知，停止当前培养')
             if supplement_b_code is not None:
                 plan = plan_b_supplement(attributes(current['effects']), a_codes=a_codes,
                                          target_code=supplement_b_code)
@@ -223,6 +240,36 @@ def run_a_collection(
                 if len(new) != 1 or new[0].code != old.code or new[0].value <= old.value:
                     raise RuntimeError('精炼未形成目标数值提升，停止检查')
                 current = save_pending(after)
+
+
+def evaluate_existing_refinement_candidate(
+    current, pending, *, plan_action: str, target_cleanse_id: int | None,
+    a_codes: set[str],
+) -> bool:
+    """只采用当前精炼目标的严格改善，不推断候选来源或补记消耗。
+
+    需要当前纯策略明确 refine 和目标：六槽中恰好五锁完全保持，唯一
+    未锁项是未满红色 A，候选同属性/同上限、品质不降且值严格提高。
+    不满足时阻塞，不将其当失败抽样后继续消耗。GUI 重入尚待真实验收。
+    """
+    if plan_action != 'refine' or not target_cleanse_id:
+        raise ValueError('现有改善候选需要明确的当前精炼目标')
+    for rows in (current, pending):
+        if (len(rows) != 6 or len({e.cleanse_id for e in rows}) != 6
+                or len({e.code for e in rows}) != 6):
+            raise ValueError('现有改善候选及当前属性需要完整唯一六槽')
+    old_locks = {e.cleanse_id: e for e in current if e.locked}
+    new_locks = {e.cleanse_id: e for e in pending if e.locked}
+    if len(old_locks) != 5 or old_locks != new_locks:
+        raise ValueError('现有改善候选必须完整保持五条锁定项')
+    old = next(e for e in current if not e.locked)
+    new = next(e for e in pending if not e.locked)
+    if (old.cleanse_id != target_cleanse_id or old.code not in a_codes
+            or old.quality < 6 or old.is_full or new.code != old.code
+            or new.normal_max != old.normal_max or new.basic_full_score != old.basic_full_score
+            or new.quality < old.quality or new.value <= old.value):
+        raise ValueError('现有候选不是当前所需 A 目标的同属性严格改善')
+    return True
 
 
 def evaluate_existing_yinxian_candidate(

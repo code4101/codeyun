@@ -147,3 +147,24 @@ def test_multiple_eligible_a_refine_one_by_one_before_releasing_b():
     rows = tuple(replace(e, value=100) if e.cleanse_id == 1 else e for e in rows)
     second = plan_a_collection(rows, **policy)
     assert second.target_cleanse_id == 2 and second.desired_lock_ids == (1, 3, 4, 5, 6)
+
+
+@pytest.mark.parametrize("full_a_count,expected_unlocked", [(1, 2), (2, 1), (3, 1)])
+def test_four_a_collection_keeps_capacity_without_early_b_release(full_a_count, expected_unlocked):
+    from dataclasses import replace
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    a_codes = {"ATTACK", "A2", "A3", "A4"}
+    codes = ["ATTACK", "A2", "A3"][:full_a_count] + ["MAXHP", "DEFENSE", "MAXMP"]
+    codes += ["C" + str(i) for i in range(6-len(codes))]
+    rows = tuple(YinxianAttribute(i+1, code, 100 if code in a_codes else 40,
+                 6, False, 100) for i, code in enumerate(codes))
+    policy = dict(a_codes=a_codes, b_codes={"MAXMP", "MAXHP", "DEFENSE"},
+                  c_codes={code for code in codes if code.startswith("C")})
+    plan = plan_a_collection(rows, **policy)
+    locked_codes = {e.code for e in rows if e.cleanse_id in plan.desired_lock_ids}
+    assert set(codes) & a_codes <= locked_codes
+    assert {"MAXMP", "MAXHP"} <= locked_codes
+    assert ("DEFENSE" in locked_codes) is (full_a_count < 3)
+    assert 6-len(plan.desired_lock_ids) == expected_unlocked
+    settled = tuple(replace(e, locked=e.cleanse_id in plan.desired_lock_ids) for e in rows)
+    assert plan_a_collection(settled, **policy).action == "yinxian"

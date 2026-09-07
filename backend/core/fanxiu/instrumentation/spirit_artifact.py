@@ -22,16 +22,6 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 
 _RUNTIME_CACHE_SECONDS = 60.0
 _BACKPACK_METHODS = frozenset({"LuaBackpackMgr", "Inst_get"})
-_ARTIFACTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("血晶摩诃剑", ("柄", "刃", "穗", "鞘", "珠", "纹")),
-    ("天月落星幡", ("镜", "幅", "带", "杆", "印", "纹")),
-    ("弥罗宝光幢", ("焰", "柱", "环", "座", "珠", "纹")),
-    ("鸿古干天戈", ("锋", "芒", "珠", "坠", "柄", "气")),
-    ("青暝岁月灯", ("盏", "芯", "穗", "杆", "纹", "荧")),
-    ("苍烟神火炉", ("饰", "盖", "身", "柄", "光", "座")),
-    ("御海镇神图", ("卷", "瑚", "海", "轴", "灵", "山")),
-    ("六界轮回盘", ("珠", "盘", "焰", "环", "荧", "晶")),
-)
 _COMMON_LABELS = {
     "混沌道威": ("chaos_power", 5_000),
     "混沌灵威": ("chaos_power", 5_000),
@@ -441,6 +431,10 @@ def project_spirit_artifact_part_row(
     ware_id, part_number = int(part["ware_id"]), int(part["part"])
     if ware_id <= 0 or part_number not in range(1, 7):
         raise ValueError("灵器或部位编号无效")
+    if part.get("empty_slot") is True and any(part.get(key) for key in (
+        "item_id", "base_id", "grade", "effects", "pending_effects",
+    )):
+        raise ValueError("明确空槽却含本体或属性，不能投影为初始零阶")
     if exclusive_bases is None:
         exclusive_bases = dict(_EXCLUSIVE_BASES.get(artifact_name) or {})
         if not exclusive_bases:
@@ -486,6 +480,7 @@ def project_spirit_artifact_part_row(
         "runtime_is_break": part.get("is_break") if type(part.get("is_break")) is bool else None,
         "runtime_effects": effects,
         "runtime_pending_effects": pending_effects,
+        "runtime_empty_slot": part.get("empty_slot") is True,
     }
 
 
@@ -494,6 +489,8 @@ def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str
 
     if runtime.get("complete") is not True:
         raise RuntimeError("服务器装配快照未证明完整")
+    from ..catalog.spirit_artifact_identity import load_spirit_artifact_templates
+    templates = load_spirit_artifact_templates()
     positioned: dict[tuple[int, int], dict[str, Any]] = {}
     used_ids: set[str] = set()
     for raw_part in runtime.get("parts") or []:
@@ -520,7 +517,7 @@ def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str
         raise RuntimeError("服务器装配灵器集合不完整")
     missing = []
     for artifact_index in artifact_indexes:
-        fallback_name = _ARTIFACTS[artifact_index][0] if artifact_index < len(_ARTIFACTS) else f"灵器 {artifact_index + 1}"
+        fallback_name = templates.get(artifact_index + 1, (f"灵器 {artifact_index + 1}", ()))[0]
         artifact_name = next(
             (
                 str(part.get("artifact_name") or "").strip()
@@ -537,7 +534,7 @@ def build_spirit_artifact_hall_from_runtime(runtime: dict[str, Any]) -> dict[str
 
     artifacts: list[dict[str, Any]] = []
     for artifact_index in artifact_indexes:
-        fallback = _ARTIFACTS[artifact_index] if artifact_index < len(_ARTIFACTS) else (f"灵器 {artifact_index + 1}", tuple(f"部位 {index}" for index in range(1, 7)))
+        fallback = templates.get(artifact_index + 1, (f"灵器 {artifact_index + 1}", tuple(f"部位 {index}" for index in range(1, 7))))
         first_part = positioned[(artifact_index, 0)]
         artifact_name = str(first_part.get("artifact_name") or fallback[0]).strip()
         exclusive_bases = dict(_EXCLUSIVE_BASES.get(artifact_name) or {})

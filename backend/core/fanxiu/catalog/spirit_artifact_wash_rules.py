@@ -132,3 +132,8 @@ def load_spirit_artifact_wash_rules(
         stat = path.stat()
         signatures.append((str(path), stat.st_mtime_ns, stat.st_size))
     return _load(tuple(signatures))
+
+
+def spirit_artifact_ware_ids() -> frozenset[int]:
+    """正式配置支持的编号集合；不是已解锁、已装配或已自然加载集合。"""
+    return frozenset(load_spirit_artifact_wash_rules()['wares'])

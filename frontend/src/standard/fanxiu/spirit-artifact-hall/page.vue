@@ -48,6 +48,7 @@ type SpiritArtifactPartRow = Record<StatColumnKey, string> & {
   runtimePart: number;
   runtimeRefineNum: number;
   runtimeIsBreak: boolean | null;
+  runtimeEmptySlot: boolean | null;
   stage: string;
   basicScores: Record<string, number>;
   runtimeEffects: FanxiuSpiritArtifactHallSnapshot["artifacts"][number]["rows"][number]["runtime_effects"];
@@ -275,6 +276,7 @@ function createPartRow(
     runtimePart: 0,
     runtimeRefineNum: 0,
     runtimeIsBreak: null,
+    runtimeEmptySlot: null,
     stage: "待识别",
     basicScores: {},
     runtimeEffects: [],
@@ -668,6 +670,7 @@ function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): Spirit
           runtimePart: normalizeNonNegativeInteger(rawSavedRow.runtime_part),
           runtimeRefineNum: normalizeNonNegativeInteger(rawSavedRow.runtime_refine_num),
           runtimeIsBreak: typeof rawSavedRow.runtime_is_break === 'boolean' ? rawSavedRow.runtime_is_break : null,
+          runtimeEmptySlot: typeof rawSavedRow.runtime_empty_slot === 'boolean' ? rawSavedRow.runtime_empty_slot : null,
           stage: savedRow?.stage || "待识别",
           basicScores: savedRow?.basic_scores || {},
           runtimeEffects: savedRow?.runtime_effects || [],
@@ -707,6 +710,7 @@ function artifactsToSnapshot(): FanxiuSpiritArtifactHallSnapshot {
         runtime_part: row.runtimePart,
         runtime_refine_num: row.runtimeRefineNum,
         runtime_is_break: row.runtimeIsBreak,
+        runtime_empty_slot: row.runtimeEmptySlot,
         runtime_effects: row.runtimeEffects,
       })),
     })),

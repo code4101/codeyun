@@ -41,6 +41,9 @@ def read_spirit_artifact_ui_identity(
     if include_readiness and window_kind != 'wash':
         raise ValueError('include_readiness 仅支持 wash 窗口')
 
+    from ..catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
+    supported_ware_ids = spirit_artifact_ware_ids()
+
     def read(ctx):
         reader = ctx.reader
         field = lambda obj, key: read_ui_object_field(ctx, obj.address, key)
@@ -60,7 +63,7 @@ def read_spirit_artifact_ui_identity(
                 continue
             if window_kind == 'advanced':
                 ware_id = as_int(field(outer, 'V_SpiritWare'))
-                if (ware_id not in range(1, 9)
+                if (ware_id not in supported_ware_ids
                         or table_ref(field(outer, 'realList')) is None
                         or table_ref(field(outer, 'ScrollView')) is None):
                     continue
@@ -68,7 +71,7 @@ def read_spirit_artifact_ui_identity(
             else:
                 ware_id = as_int(field(outer, 'v_wareId'))
                 group = table_ref(field(outer, 'tabPanelGroup'))
-                if ware_id not in range(1, 9) or group is None:
+                if ware_id not in supported_ware_ids or group is None:
                     continue
                 index = as_int(field(group, 'curTabIndex'))
                 if window_kind == 'view':

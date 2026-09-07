@@ -2,8 +2,8 @@
 
 字段依据 SpiritWareClientVO.GetCurPutList / GetServerInfo，以及现有
 spirit_artifact_runtime_loader 的装备导出。此模块不调用 Lua 方法、发同步
-请求或打开 UI。显式 1～4 器装配关联已真实验收；省略编号的全馆集合
-读取仍需真实验收，不以离线测试代替。
+请求或打开 UI。指定器及省略编号的全馆集合均已真实读取验收；全馆包含
+已换本体的当前引用与服务器明确的空槽，不按旧库存阶数回退。
 """
 
 from collections.abc import Mapping, Sequence

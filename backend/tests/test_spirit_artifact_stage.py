@@ -54,3 +54,10 @@ def test_missing_identity_is_unknown_but_explicit_special_type_is_known():
     assert classify_spirit_artifact_stage(**args) == "待识别"
     effects[-1]["type"] = 3
     assert classify_spirit_artifact_stage(**args) == "无双"
+
+
+def test_only_explicit_empty_slot_is_initial_zero():
+    from backend.core.fanxiu.catalog.inventory_models import FanxiuSpiritArtifactPartRow
+    assert FanxiuSpiritArtifactPartRow(runtime_empty_slot=True).stage == "初始"
+    assert FanxiuSpiritArtifactPartRow().stage == "待识别"
+    assert FanxiuSpiritArtifactPartRow(runtime_empty_slot=True, runtime_item_id="conflict").stage == "待识别"

@@ -40,6 +40,15 @@ _SPIRIT_ARTIFACT_SEEDS = (
     ("御海镇神图", ("卷", "瑚", "海", "轴", "灵", "山")),
     ("六界轮回盘", ("珠", "盘", "焰", "环", "荧", "晶")),
 )
+def _spirit_artifact_seeds():
+    from .spirit_artifact_identity import load_spirit_artifact_templates
+    try:
+        return tuple(value for _, value in sorted(load_spirit_artifact_templates().items()))
+    except (OSError, ValueError):
+        # 缺少正式导出的旧部署维持原模板，不猜新增灵器的名称。
+        return _SPIRIT_ARTIFACT_SEEDS
+
+
 _SPIRIT_ARTIFACT_NAME_ALIASES = {
     "青冥岁月灯": "青暝岁月灯",
 }
@@ -268,7 +277,7 @@ def _default_spirit_artifact_hall() -> dict[str, Any]:
                     for part_index, part_name in enumerate(part_names)
                 ],
             }
-            for artifact_index, (artifact_name, part_names) in enumerate(_SPIRIT_ARTIFACT_SEEDS)
+            for artifact_index, (artifact_name, part_names) in enumerate(_spirit_artifact_seeds())
         ],
         "market_currency_count": 0,
         "market_items": [],
@@ -298,7 +307,7 @@ def _normalize_spirit_artifact_hall(raw_payload: Any) -> dict[str, Any]:
             raw_by_name.setdefault(canonical_name, item)
 
     normalized_artifacts: list[dict[str, Any]] = []
-    for artifact_index, (artifact_name, part_names) in enumerate(_SPIRIT_ARTIFACT_SEEDS):
+    for artifact_index, (artifact_name, part_names) in enumerate(_spirit_artifact_seeds()):
         raw_artifact = raw_by_name.get(artifact_name, {})
         raw_rows = raw_artifact.get("rows", []) if isinstance(raw_artifact, dict) else []
         if not isinstance(raw_rows, list):
@@ -340,6 +349,7 @@ def _normalize_spirit_artifact_market_items(raw_items: Any) -> list[dict[str, An
     if not isinstance(raw_items, list):
         return []
 
+    part_names_by_artifact = dict(_spirit_artifact_seeds())
     seen: set[tuple[str, str]] = set()
     normalized_items: list[dict[str, Any]] = []
     for raw_item in raw_items:
@@ -347,10 +357,10 @@ def _normalize_spirit_artifact_market_items(raw_items: Any) -> list[dict[str, An
             continue
         raw_artifact_name = str(raw_item.get("artifact_name") or raw_item.get("artifactName") or "").strip()
         artifact_name = _SPIRIT_ARTIFACT_NAME_ALIASES.get(raw_artifact_name, raw_artifact_name)
-        if artifact_name not in dict(_SPIRIT_ARTIFACT_SEEDS):
+        if artifact_name not in part_names_by_artifact:
             continue
         part_name = str(raw_item.get("part_name") or raw_item.get("partName") or "").strip()
-        if part_name not in dict(_SPIRIT_ARTIFACT_SEEDS)[artifact_name]:
+        if part_name not in part_names_by_artifact[artifact_name]:
             continue
         item_key = (artifact_name, part_name)
         if item_key in seen:
@@ -399,7 +409,7 @@ def _normalize_spirit_artifact_storage_bag_choices(raw_choices: Any) -> list[dic
     if not isinstance(raw_choices, list):
         return []
 
-    part_names_by_artifact = dict(_SPIRIT_ARTIFACT_SEEDS)
+    part_names_by_artifact = dict(_spirit_artifact_seeds())
     seen: set[tuple[str, str]] = set()
     normalized_choices: list[dict[str, Any]] = []
     for raw_choice in raw_choices:
@@ -485,6 +495,8 @@ def _normalize_spirit_artifact_row(
     # 这些是观察事实，往返保存不能丢失或将未知突破状态转成 False。
     for key in ("runtime_base_id", "runtime_ware_id", "runtime_part", "runtime_refine_num"):
         normalized[key] = _normalize_nonnegative_int(raw_row.get(key))
+    empty = raw_row.get("runtime_empty_slot")
+    normalized["runtime_empty_slot"] = empty if isinstance(empty, bool) else None
     normalized["runtime_item_id"] = str(raw_row.get("runtime_item_id") or "")
     is_break = raw_row.get("runtime_is_break")
     normalized["runtime_is_break"] = is_break if isinstance(is_break, bool) else None

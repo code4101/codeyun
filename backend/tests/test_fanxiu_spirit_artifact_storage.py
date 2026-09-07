@@ -7,7 +7,7 @@ def test_spirit_artifact_hall_defaults_to_fixed_artifacts(tmp_path, monkeypatch)
 
     hall = fanxiu_inventory.load_spirit_artifact_hall()
 
-    assert [artifact["name"] for artifact in hall["artifacts"]] == [
+    assert [artifact["name"] for artifact in hall["artifacts"]][:8] == [
         "血晶摩诃剑",
         "天月落星幡",
         "弥罗宝光幢",

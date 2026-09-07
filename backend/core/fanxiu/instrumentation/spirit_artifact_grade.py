@@ -24,6 +24,9 @@ def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
     """
     from .spirit_artifact import read_spirit_artifact_inventory_runtime
 
+    from ..catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
+    supported_ware_ids = spirit_artifact_ware_ids()
+
     def read(ctx):
         reader = ctx.reader
 
@@ -44,7 +47,7 @@ def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
                 outer = table_ref(field(component, 'm_panel'))
                 ware_id = as_int(field(outer, 'v_wareId'))
                 group = table_ref(field(outer, 'tabPanelGroup'))
-                if ware_id not in range(1, 9) or group is None:
+                if ware_id not in supported_ware_ids or group is None:
                     continue
                 tab_index = as_int(field(group, 'curTabIndex'))
                 panels, panel_count = reader.list_items(field(group, 'panelShowComps'))
