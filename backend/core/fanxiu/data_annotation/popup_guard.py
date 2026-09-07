@@ -291,13 +291,22 @@ class SceneInterruptionMixin:
         pending_title = str(
             (pending_shape.title if isinstance(pending_shape, Shape) else "") or ""
         ).strip()
+        tree = getattr(context, "ctx", {}).get("asset_tree", [])
+        declared_ids = (
+            self._scene_jump_target_ids(tree, pending_shape.raw)
+            if isinstance(pending_shape, Shape) else []
+        )
         # A leave confirmation may be accepted only as the immediate declared
         # response to an exit-like action just executed. Merely listing
         # #86/#289 as a business candidate grants no ownership; unexpected
         # instances still use the inherited parent-background dismissal below.
         if (
             (
-                pending_age <= 15.0
+                # OCR and source-scene disambiguation can consume over 40s
+                # before the modal is recognized. Preserve the most recent
+                # explicitly annotated exit intent across that bounded wait;
+                # any intervening click replaces last_clicked_shape.
+                (pending_age <= 15.0 or (pending_age <= 90.0 and view_id in declared_ids))
                 and pending_title in {"离开", "返回", "退出", "关闭", "回到世界"}
             )
             or view_id in (expected_scene_ids or set())

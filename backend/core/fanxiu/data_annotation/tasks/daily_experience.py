@@ -235,6 +235,19 @@ class DailyExperienceTaskMixin:
         """Open #406 through a bounded, same-attempt local transition loop."""
 
         for recovery_index in range(_EXPERIENCE_OPEN_RECOVERY_LIMIT):
+            frame = context.cur_frame(update=True)
+            scene_id = self._daily_experience_observe_scene(
+                context, frame, frozenset(_EXPERIENCE_OBSERVATION_PRIORITY),
+            )
+            # Consuming a book may leave its panel open over the training
+            # background. Opening an already open panel is an idempotent pass.
+            if scene_id == _EXPERIENCE_BOOKS_SCENE:
+                return
+            if scene_id == _EXPERIENCE_RESULT_SCENE:
+                yield from self._daily_experience_close_result_to_training(
+                    context, timeout=timeout,
+                )
+                continue
             try:
                 landed = yield from context.wait_click_then_scene(
                     _EXPERIENCE_TRAINING_SCENE,
@@ -255,8 +268,10 @@ class DailyExperienceTaskMixin:
                 scene_id = self._daily_experience_observe_scene(
                     context,
                     frame,
-                    frozenset({_EXPERIENCE_RESULT_SCENE}),
+                    frozenset(_EXPERIENCE_OBSERVATION_PRIORITY),
                 )
+                if scene_id == _EXPERIENCE_BOOKS_SCENE:
+                    return
                 if scene_id != _EXPERIENCE_RESULT_SCENE:
                     raise
                 yield from self._daily_experience_close_result_to_training(

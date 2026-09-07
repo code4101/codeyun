@@ -13920,7 +13920,13 @@ class BehaviorTreeExecutor(
                     f"preferred-fallback expected={expected_ids} left={left_source}"
                 )
                 matched_expected = None
-            if matched_expected is not None:
+            # ``sceneJumpTarget`` is learned from historical landings.  The
+            # source scene may therefore be a declared candidate even while a
+            # delayed transition or confirmation popup is still forming.  Do
+            # not terminally accept that first source frame here: keep the
+            # action's expected-scene scope alive and let the bounded
+            # ``declared_self_loop`` branch below confirm a real self-loop.
+            if matched_expected is not None and matched_expected != source_scene_id:
                 if not left_source and matched_expected != source_scene_id:
                     default_scene_id, default_score, _ = context.recognize_scene_in_frame(
                         frame_data_url=frame
@@ -14236,7 +14242,6 @@ class BehaviorTreeExecutor(
         *,
         wait_seconds: float = DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS,
         max_wait_seconds: float = DEFAULT_GO_SCENE_OBSERVATION_TIMEOUT_SECONDS,
-        immediate_unknown_fallback: bool = False,
     ):
         """Keep observing until a scene is known or unknown is continuous.
 
@@ -14327,11 +14332,7 @@ class BehaviorTreeExecutor(
                 if continuous_unknown_started_at is not None
                 else 0.0
             )
-            immediate_unknown_qualified = (
-                bool(immediate_unknown_fallback)
-                and recognition_status not in {"ambiguous"}
-            )
-            if immediate_unknown_qualified or continuous_unknown_seconds >= wait_seconds:
+            if continuous_unknown_seconds >= wait_seconds:
                 ctx["_last_go_scene_recognition_wait_elapsed"] = elapsed
                 ctx["_last_go_scene_recognition_evidence"] = {
                     "attempts": attempts,
@@ -14524,7 +14525,6 @@ class BehaviorTreeExecutor(
                     frame,
                     wait_seconds=guarded_wait_seconds,
                     max_wait_seconds=guarded_wait_seconds,
-                    immediate_unknown_fallback=int(target_scene_id) == 34 and not guarded_transition,
                 )
             recognition_wait_elapsed = float(
                 ctx.pop("_last_go_scene_recognition_wait_elapsed", 0.0) or 0.0

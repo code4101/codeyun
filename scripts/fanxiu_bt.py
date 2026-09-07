@@ -873,6 +873,13 @@ def _watch_should_run_game_state_inspection(report: dict[str, Any]) -> bool:
 
 def _watch_run_game_state_inspection(report: dict[str, Any]) -> dict[str, Any]:
     del report
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
+        reconcile_stale_scheduler_attempts,
+    )
+    # A detached submitter may leave a completed Job marked running, even with
+    # next_time already advanced. Reconcile before passive facts hit deduplication,
+    # independently of whether any Job is due.
+    reconcile_stale_scheduler_attempts(read_scheduler_tasks())
     from backend.core.fanxiu.data_annotation.game_state_inspection import (
         inspect_game_state_once,
     )

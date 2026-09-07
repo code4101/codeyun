@@ -76,6 +76,19 @@ def _snapshot(
     environment_address: int,
 ) -> dict[str, Any]:
     reader = LuaJitReader(memory)
+    from backend.core.fanxiu.catalog.xianqiao import build_fanxiu_xianqiao_mechanics
+
+    # Element IDs belong to a progression system: e.g. 中期 uses 6..10.
+    # Resolve their five-element meaning from the game's configuration, rather
+    # than treating every later system as corrupt or folding IDs arithmetically.
+    canonical_ids = {name: key for key, name in XIANQIAO_ELEMENT_NAMES.items()}
+    element_maps = {
+        int(system["id"]): {
+            int(element["id"]): canonical_ids.get(element["name"])
+            for element in system["elements"]
+        }
+        for system in build_fanxiu_xianqiao_mechanics()["systems"]
+    }
     core_main = _table_entries(reader, _xianqiao_data_fields(reader, root_address)["CoreMainDic"])
     systems: list[dict[str, Any]] = []
     malformed_count = 0
@@ -87,6 +100,7 @@ def _snapshot(
         counts = {element_id: 0 for element_id in XIANQIAO_ELEMENT_NAMES}
         worn_parts = 0
         equipped: list[dict[str, Any]] = []
+        element_map = element_maps.get(system_type, {})
         parts = _table_entries(reader, raw_parts)
         for raw_part_id, raw_part in parts.items():
             part_id = as_int(raw_part_id)
@@ -115,7 +129,7 @@ def _snapshot(
                         }
                     )
             for raw_element in elements:
-                element_id = as_int(raw_element)
+                element_id = element_map.get(as_int(raw_element))
                 if element_id in counts:
                     counts[element_id] += 1
                 else:

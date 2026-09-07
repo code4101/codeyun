@@ -389,7 +389,10 @@ def _finish_lilian_event_reward(
                 timeout=float(payload.get("lilian_reward_close_timeout") or 20.0),
             )
             scene_id = _view_id(landed)
-            if scene_id not in (425, 437):
+            # Layered recognition may report the still-visible reward page
+            # instead of timing out. Closing it is idempotent; let the bounded
+            # transaction retry from a freshly guarded #438, never claim done.
+            if scene_id not in (425, 437, 438):
                 raise LilianEventFlowError(
                     "历练_事件：关闭奖励后未进入 #425/#437，而是 "
                     f"#{scene_id or 'unknown'}"

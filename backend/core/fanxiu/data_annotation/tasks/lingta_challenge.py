@@ -800,6 +800,13 @@ class LingtaChallengeTaskMixin:
                 else "unique_ui_progress"
             ),
         }
+        yield from context.wait_any(
+            {"challenge": context.shape_visible(
+                LINGTA_CURRENT_FLOOR_SCENE_ID, "挑战文字"
+            )},
+            timeout=15,
+            label="灵塔_挑战：写入启动意图前确认挑战按钮",
+        )
         if not self._set_scheduler_task_payload_flag(
             task_id,
             LINGTA_CHAIN_START_MARK,
@@ -807,12 +814,12 @@ class LingtaChallengeTaskMixin:
         ):
             raise RuntimeError("灵塔_挑战：启动防重复标记未确认持久化，拒绝点击挑战")
         payload[LINGTA_CHAIN_START_MARK] = start_mark_value
-        context.click_ocr_text(
+        # The button deliberately spaces 挑/战 apart. Its required OCR Shape
+        # already verifies the complete label and bounds; token-gap matching
+        # must not reject a button which that formal action has identified.
+        yield from context.wait_click(
             LINGTA_CURRENT_FLOOR_SCENE_ID,
-            "挑战",
-            in_shapes=("挑战文字",),
-            match_mode="exact",
-            crop=True,
+            "挑战文字",
         )
 
         clicked_at = time.monotonic()

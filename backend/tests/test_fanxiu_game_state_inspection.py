@@ -214,11 +214,16 @@ def test_fact_patrol_preserves_active_attempt_or_retry_backoff(tmp_path, last_re
     assert task["next_time"] == "2026-07-28 12:10:00"
 
 
-def test_fact_patrol_advances_normal_business_schedule(tmp_path):
+@pytest.mark.parametrize("scheduled,expected", [
+    ("2026-07-28 18:00:00", "2026-07-28 12:01:00"),
+    ("2026-07-28 12:00:00", "2026-07-28 12:00:00"),
+    ("2026-07-28 12:01:00", "2026-07-28 12:01:00"),
+])
+def test_fact_patrol_advances_normal_business_schedule(tmp_path, scheduled, expected):
     path = tmp_path / "scheduler_tasks.json"
     path.write_text(json.dumps([{
         "id": "daily-redpacket",
-        "next_time": "2026-07-28 18:00:00",
+        "next_time": scheduled,
         "last_result": "success",
         "finished_at": "2026-07-28 06:00:00",
     }]), encoding="utf-8")
@@ -229,7 +234,7 @@ def test_fact_patrol_advances_normal_business_schedule(tmp_path):
         scheduler_state_path=path,
     )
 
-    assert result == "2026-07-28 12:01:00"
+    assert result == expected
 
 
 def test_scheduler_payload_never_transports_inspection_business_context():
@@ -743,11 +748,7 @@ def test_redpacket_probe_schedules_live_main_ui_queue(monkeypatch):
     assert result["due_task_ids"] == ["daily-redpacket"]
 
 
-def test_redpacket_probe_suppresses_exact_visually_verified_uid_set(monkeypatch):
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.redpacket_state._read_redpacket_visual_verification",
-        lambda: {"verified_uids": ["old-uid"]},
-    )
+def test_redpacket_probe_unchanged_uid_without_terminal_evidence_still_due(monkeypatch):
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
         lambda: {
@@ -773,14 +774,11 @@ def test_redpacket_probe_suppresses_exact_visually_verified_uid_set(monkeypatch)
 
     result = inspect_redpacket_game_state()
 
-    assert result["due_task_ids"] == []
+    assert result["due_task_ids"] == ["daily-redpacket"]
+    assert inspect_redpacket_game_state()["due_task_ids"] == ["daily-redpacket"]
 
 
-def test_redpacket_probe_new_uid_bypasses_visual_verification_cursor(monkeypatch):
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.redpacket_state._read_redpacket_visual_verification",
-        lambda: {"verified_uids": ["old-uid"]},
-    )
+def test_redpacket_probe_multiple_unresolved_uids_schedule_job(monkeypatch):
     monkeypatch.setattr(
         "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
         lambda: {
@@ -798,83 +796,6 @@ def test_redpacket_probe_new_uid_bypasses_visual_verification_cursor(monkeypatch
                         {"uid": "new-uid", "id": 1223, "channel": 4, "sub_channel_id": 0},
                     ],
                 },
-            },
-        },
-    )
-
-    result = inspect_redpacket_game_state()
-
-    assert result["due_task_ids"] == ["daily-redpacket"]
-
-
-def test_redpacket_probe_does_not_reschedule_rewarded_qmch_terminal(monkeypatch):
-    terminal = {
-        "uid": 24082878061488473,
-        "id": 5022,
-        "event_type": 9033,
-        "event_key": "qmch_reward",
-        "channel": 101,
-        "sub_channel_id": 20050134,
-        "detail_loaded": True,
-        "trigger_candidate": True,
-        "exclusion_reasons": ["server_rewarded", "detail_rewarded"],
-    }
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
-        lambda: {
-            "ok": True,
-            "pending": True,
-            "trigger_ready": True,
-            "sources": {"chat": {"pending_count": 1, "items": [terminal]}},
-        },
-    )
-
-    result = inspect_redpacket_game_state()
-
-    assert result["due_task_ids"] == []
-
-
-@pytest.mark.parametrize(
-    "extra_item",
-    [
-        {"uid": 9001, "id": 1001, "channel": 6, "sub_channel_id": 0},
-        {
-            "uid": 9002,
-            "id": 5022,
-            "event_type": 9033,
-            "event_key": "qmch_reward",
-            "channel": 101,
-            "sub_channel_id": 20050134,
-            "detail_loaded": False,
-            "exclusion_reasons": [],
-        },
-    ],
-)
-def test_redpacket_probe_rewarded_qmch_does_not_hide_new_candidates(
-    monkeypatch,
-    extra_item,
-):
-    terminal = {
-        "uid": 24082878061488473,
-        "id": 5022,
-        "event_type": 9033,
-        "event_key": "qmch_reward",
-        "channel": 101,
-        "sub_channel_id": 20050134,
-        "detail_loaded": True,
-        "exclusion_reasons": ["server_rewarded"],
-    }
-    monkeypatch.setattr(
-        "backend.core.fanxiu.data_annotation.redpacket_state.read_current_redpacket_state",
-        lambda: {
-            "ok": True,
-            "pending": True,
-            "trigger_ready": True,
-            "sources": {
-                "chat": {
-                    "pending_count": 2,
-                    "items": [terminal, extra_item],
-                }
             },
         },
     )

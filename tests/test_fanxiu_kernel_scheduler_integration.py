@@ -8000,6 +8000,56 @@ def test_data_annotation_scene_jump_wait_does_not_accept_expected_match_when_def
     assert "write" not in calls
 
 
+def test_scene_jump_wait_keeps_declared_source_self_loop_open_for_delayed_landing(monkeypatch, tmp_path):
+    runner = create_behavior_tree_executor()
+    ctx = {"entry": object(), "images": {}}
+    shape = {"title": "离开", "sceneJumpTarget": "34(39),86(25),85(13)"}
+    edge = {"shape": shape, "target_ids": [34, 86, 85]}
+    preferred_observations = iter([(85, 100.0), (34, 100.0)])
+
+    class FakeContext:
+        last_scene_id = 85
+
+        def current_scene(self, *_args, **_kwargs):
+            scene_id, score = next(preferred_observations)
+            self.last_scene_id = scene_id
+            if False:
+                yield None
+            return scene_id, score, "frame"
+
+        def recognize_scene_in_frame(self, *, frame_data_url):
+            return self.last_scene_id, 100.0, frame_data_url
+
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: FakeContext())
+    monkeypatch.setattr(runner, "_commit_scene_observation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_record_scene_jump_landing", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_log", lambda *_args, **_kwargs: None)
+
+    def no_action_settle(*_args, **_kwargs):
+        if False:
+            yield None
+
+    monkeypatch.setattr(runner, "_wait_action_settle", no_action_settle)
+
+    iterator = runner._wait_scene_jump_result(
+        ctx,
+        tmp_path / "entry.json",
+        [],
+        source_scene_id=85,
+        target_scene_id=34,
+        edge=edge,
+        stop_event=fanxiu.threading.Event(),
+        layer0_wait_seconds=0.0,
+    )
+
+    # The first recognized frame is the declared historical self-loop #85.
+    # It must remain in the same action scope until the delayed #34 landing.
+    with pytest.raises(StopIteration) as exc_info:
+        next(iterator)
+
+    assert exc_info.value.value == 34
+
+
 def test_xianfu_scene_jump_wait_allows_185_cutscene_before_home(monkeypatch, tmp_path):
     runner = create_behavior_tree_executor()
     ctx = {

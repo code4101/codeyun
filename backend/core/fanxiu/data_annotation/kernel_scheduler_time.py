@@ -32,6 +32,7 @@ DEFAULT_TIME_SEQUENCE: dict[str, list[str]] = {
         "weekly-hanli",
         "xianshi-weekly-resources",
     ],
+    "10:00": ["dongtian-seating"],
     "21:30": [
         "legacy-daily-lingmai-clear",
         "legacy-daily-dongtian-clear",

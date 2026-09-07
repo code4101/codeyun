@@ -1412,7 +1412,7 @@ def register_fanxiu_default_jobs() -> None:
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="dongtian-seating",
-        standard_job_description="动态",
+        standard_job_description="每日",
         standard_job_payload={"max_execution_seconds": 900},
     )
     def _run_data_annotation_dongtian_seating_task_cell(
@@ -1424,13 +1424,27 @@ def register_fanxiu_default_jobs() -> None:
         from backend.core.fanxiu.data_annotation.tasks.dongtian_seating_job import (
             execute_dongtian_seating_runtime_job,
         )
+        from backend.core.fanxiu.data_annotation.tasks.dongtian_research import (
+            enter_dongtian_home_for_research,
+        )
 
-        return (yield from execute_dongtian_seating_runtime_job(
+        # Entering the native panel synchronizes the server model. A cached
+        # all-seated model observed from the world is not this check's result.
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        yield from context.go_scene(34)
+        yield from enter_dongtian_home_for_research(runner, ctx, stop_event, payload)
+        result = yield from execute_dongtian_seating_runtime_job(
             runner,
             ctx,
             stop_event,
             payload,
-        ))
+        )
+        # Both the no-op and placement paths finish at the world anchor.
+        yield from context.go_scene(34)
+        landing = yield from context.wait_scene([34], wait=15, label="洞天_上座：收尾确认世界")
+        if landing.scene_id != 34:
+            raise RuntimeError(f"洞天_上座：收尾未回到 #34，实际 #{landing.scene_id}")
+        return result
 
     @register_fanxiu_data_annotation_task_cell(
         "daily_lingmai",

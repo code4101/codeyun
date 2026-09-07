@@ -120,6 +120,51 @@ def test_questionnaire_top_insert_keeps_status_bound_to_sequence():
     assert attendance._get_attendance_wjx_sheet_cell(normalized["rows"][1], columns, "处理状态") == existing_status
 
 
+def test_consecutive_insertions_preserve_courses_and_all_row_projections():
+    columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
+    document = attendance._normalize_attendance_wjx_sheet_document({
+        "columns": columns, "rows": [], "grid_rows": [columns],
+        "data_start_row": 1,
+    })
+    courses = {750: "修道班8期5阶", 751: "修道班11期3阶", 752: "第50届觉观"}
+    owners = {courses[750]: "敏兮", courses[751]: "王仁", courses[752]: "一步一步"}
+    links = {course: f"/workbook/{seq}" for seq, course in courses.items()}
+    for seq, course in courses.items():
+        document, inserted, changed = attendance._upsert_attendance_wjx_sheet_values(
+            document,
+            {"序号": seq, "课程": course, "补充说明": f"备注{seq}", "处理状态": f"状态{seq}"},
+            course_link_map=links, course_owner_map=owners,
+        )
+        assert inserted and changed
+        # Inspect the returned document directly; normalizing it again would
+        # hide the stale entity/grid state that production readers receive.
+        for index, row in enumerate(document["rows"]):
+            row_seq = int(row[0])
+            assert document["grid_rows"][index + 1] == row
+            assert document["row_ids"][index] == f"row_wjx_{row_seq}"
+            for header, expected in {
+                "课程": courses[row_seq], "考勤负责人": owners[courses[row_seq]],
+                "补充说明": f"备注{row_seq}", "处理状态": f"状态{row_seq}",
+            }.items():
+                assert attendance._get_attendance_wjx_sheet_cell(row, columns, header) == expected
+                column_id = document["column_ids"][columns.index(header)]
+                assert document["entity_cells"][f"row_wjx_{row_seq}"][column_id]["value"] == expected
+            assert attendance._extract_inline_cell_link_url(row[3]) == links[courses[row_seq]]
+
+
+def test_removal_rebinds_grid_and_entities_before_returning():
+    columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
+    document = attendance._normalize_attendance_wjx_sheet_document({
+        "columns": columns, "rows": [["752"], ["751"], ["750"]],
+        "grid_rows": [columns], "data_start_row": 1,
+    })
+    result, changed = attendance._remove_attendance_wjx_sheet_row(document, seq=751)
+    assert changed
+    assert result["row_ids"] == ["row_wjx_752", "row_wjx_750"]
+    assert result["grid_rows"][1:] == result["rows"]
+    assert "row_wjx_751" not in result["entity_cells"]
+
+
 def test_questionnaire_course_field_reconciliation_updates_current_courses_only(monkeypatch):
     course_document = {
         "columns": ["课程类型", "课程名称", "在线考勤表", "考勤负责人"],

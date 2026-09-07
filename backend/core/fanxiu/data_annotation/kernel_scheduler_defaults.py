@@ -259,6 +259,7 @@ def default_kernel_scheduler_tasks(
     """
 
     current = now or datetime.now()
+    from backend.core.fanxiu.data_annotation.dongtian_seating_schedule import next_dongtian_seating_at
 
     def job(
         task_id: str,
@@ -576,6 +577,7 @@ def default_kernel_scheduler_tasks(
         job("daily-signin", "daily_signin", "日常_签到", description="每日", initial_times=("00:00",)),
         job("daily-xuanhuang", "daily_xuanhuang", "日常_玄荒", description="每日", initial_times=("05:00",), payload={"recommend_timeout_seconds": 60, "battle_timeout_seconds": 120, "max_execution_seconds": 10800}),
         job("daily-redpacket", "daily_redpacket", "日常_红包", description="动态", initial_times=("05:00",), payload={"interval_seconds": 43200}),
+        job("dongtian-seating", "dongtian_seating", "洞天_上座", description="每日", initial_next_time=next_dongtian_seating_at(current, include_current=True).strftime("%Y-%m-%d %H:%M:%S"), payload={"max_execution_seconds": 900}),
         job("legacy-daily-dongtian", "daily_dongtian", "洞天_领取", description="每日", initial_times=("14:00",)),
         job(
             "legacy-daily-dongtian-clear",

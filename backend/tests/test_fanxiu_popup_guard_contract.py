@@ -397,3 +397,26 @@ def test_popup_asset_description_can_bind_missing_jump_annotation() -> None:
 
     assert runner._handle_recognized_popup_candidate(Context(), candidate, score=97.0)
     assert clicks == [(278, "确认")]
+
+
+def test_delayed_leave_confirmation_retains_only_declared_recent_exit_intent():
+    import time
+    runner = create_behavior_tree_executor()
+    popup = View({"type": "image", "id": 86, "shapes": [{"title": "确认"}, {"title": "取消"}]})
+    clicks = []
+    class Context:
+        ctx = {"asset_tree": []}
+        last_clicked_shape = Shape({"title": "离开", "sceneJumpTarget": "34,86,85"})
+        last_clicked_at = time.monotonic() - 45
+        def cur_frame(self): return "frame"
+        def click_shape(self, view, shape, **kwargs): clicks.append(shape.title)
+    context = Context()
+    runner._handle_auto_close_leave_confirm_popup(context, popup, {}, score=100)
+    assert clicks.pop() == "确认"
+    context.last_clicked_at = time.monotonic() - 100
+    runner._handle_auto_close_leave_confirm_popup(context, popup, {}, score=100)
+    assert clicks.pop() == "取消"
+    context.last_clicked_at = time.monotonic() - 45
+    context.last_clicked_shape = Shape({"title": "离开", "sceneJumpTarget": "34"})
+    runner._handle_auto_close_leave_confirm_popup(context, popup, {}, score=100)
+    assert clicks.pop() == "取消"

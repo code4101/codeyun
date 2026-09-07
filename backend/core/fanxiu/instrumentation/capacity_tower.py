@@ -10,8 +10,9 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     as_int,
     manager_index_fields,
-    resolve_manager_root,
+    resolve_lua_global_manager_root,
 )
+from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
 
 
 _CAPACITY_TOWER_MARKER = b"LuaCapacityTowerDungeonMgr"
@@ -138,10 +139,11 @@ def read_capacity_tower_snapshot() -> dict[str, Any]:
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
-        root_address, root_cache_hit = resolve_manager_root(
+        root_address, root_cache_hit, _environment = resolve_lua_global_manager_root(
             memory,
             manager_key="capacity_tower",
-            marker=_CAPACITY_TOWER_MARKER,
+            state_address=int(_lua_addresses(memory)["state"], 16),
+            global_name="CapacityTowerDungeonMgr",
             required_methods=_CAPACITY_TOWER_METHODS,
             validate=lambda reader, root: _capacity_tower_model_fields(
                 reader,

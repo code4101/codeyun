@@ -13,6 +13,8 @@ from backend.core.fanxiu.instrumentation.godsoul_boss import (
 
 MORNING_TRIGGER = (11, 59)
 EVENING_TRIGGER = (17, 59)
+MORNING_CHALLENGE_OPEN = (12, 0)
+EVENING_CHALLENGE_OPEN = (18, 0)
 MORNING_CHALLENGE_DEADLINE = (12, 20)
 EVENING_CHALLENGE_DEADLINE = (18, 20)
 REWARD_DEADLINE = (22, 0)
@@ -478,7 +480,23 @@ class MoyuChallengeTaskMixin:
         }
         if should_challenge:
             yield from self._moyu_open_activity(context, payload)
-            challenge = yield from self._moyu_try_challenge(context, payload)
+            # The minute before opening belongs to navigation, not challenge.
+            # Wait on wall time (not the scheduled business time) after entering
+            # #401, before reading the new round's settlement or clicking its
+            # shared 报名/挑战 button. Cooperative waits retain cancellation.
+            opens_at = _at(
+                now, MORNING_CHALLENGE_OPEN if is_morning else EVENING_CHALLENGE_OPEN,
+            )
+            if datetime.now() < opens_at:
+                self._log("info", f"魔狱_挑战：已进场准备，等待 {opens_at:%H:%M} 正式开放")
+            while (remaining := (opens_at - datetime.now()).total_seconds()) > 0:
+                yield from context.wait_action_settle(min(1.0, remaining))
+            # Navigation may itself exhaust the window; never use the stale
+            # admission-time check to click after the challenge deadline.
+            closes_at = morning_end if is_morning else evening_challenge_end
+            should_challenge = datetime.now() < closes_at
+            if should_challenge:
+                challenge = yield from self._moyu_try_challenge(context, payload)
 
         if (
             should_challenge

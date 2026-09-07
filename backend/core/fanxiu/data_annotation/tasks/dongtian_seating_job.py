@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-"""Event-driven Dongtian seating Job.
+"""Keep all three Dongtian teams seated, retaining every existing seat.
 
 Mail is only a wake-up signal.  This Job decides completion exclusively from
 one fresh, complete Dongtian Runtime snapshot and never consumes mail content
-as action authorization.
+as action authorization. Fixed daily checks and Monday competition rechecks
+share this idempotent goal: fill idle teams, never optimize occupied seats.
 """
 
 import threading
@@ -17,6 +18,7 @@ from backend.core.fanxiu.data_annotation.dongtian_seat_geometry import (
 from backend.core.fanxiu.data_annotation.dongtian_seating_click import (
     build_dongtian_seating_place_authorization,
 )
+from backend.core.fanxiu.data_annotation.dongtian_seating_schedule import next_dongtian_seating_at
 from backend.core.fanxiu.instrumentation.dongtian import (
     read_dongtian_seating_probe,
     read_dongtian_snapshot,
@@ -101,6 +103,36 @@ def choose_dongtian_empty_follower_target(
                     "mode": "occupy_empty",
                 }
     return None
+
+
+def validate_dongtian_empty_follower_target(
+    snapshot: Mapping[str, Any], target: Mapping[str, Any],
+) -> bool:
+    """Revalidate the exact empty seat and natively selected idle team.
+
+    Navigation can outlive an empty seat during the Monday reset.  An older
+    place authorization proves neither current vacancy nor which team #343
+    will select.  Re-evaluate both from one complete current model before
+    opening the seat and again before committing its confirmation.
+    """
+    if not classify_dongtian_team_seating(snapshot)["ok"]:
+        return False
+    exact = dict(snapshot)
+    exact["mines"] = [
+        mine for mine in snapshot.get("mines") or []
+        if isinstance(mine, Mapping) and mine.get("id") == target.get("mine_id")
+    ]
+    if len(exact["mines"]) != 1:
+        return False
+    mine = dict(exact["mines"][0])
+    mine["seats"] = [
+        seat for seat in mine.get("seats") or []
+        if isinstance(seat, Mapping) and seat.get("id") == target.get("seat_id")
+    ]
+    if len(mine["seats"]) != 1:
+        return False
+    exact["mines"] = [mine]
+    return choose_dongtian_empty_follower_target(exact) == dict(target)
 
 
 def classify_dongtian_team_seating(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,10 +227,10 @@ def execute_dongtian_seating_job(
             "按3队80%安全规则拒绝从部分候选中换位"
         )
 
-    runner._persist_scheduler_task_next_time(task_id, None)
+    runner._persist_scheduler_task_next_time(task_id, next_dongtian_seating_at().strftime("%Y-%m-%d %H:%M:%S"))
     runner._log(
         "success",
-        "洞天_上座：Runtime 已确认1/2/3队全部在座；邮件只作触发，本轮零点击并清空 next_time",
+        "洞天_上座：Runtime 已确认1/2/3队全部在座；保留现有座位，已安排下次固定检查",
     )
     return "success"
 
@@ -240,22 +272,18 @@ def execute_dongtian_seating_runtime_job(
         asset_tree_path,
         stop_event=stop_event,
     )
-    mines = [row for row in snapshot.get("mines") or [] if isinstance(row, Mapping)]
-    all_mine_ids = {
-        int(row["id"])
-        for row in mines
-        if isinstance(row.get("id"), int) and not isinstance(row.get("id"), bool)
-    }
     placements = 0
     while True:
+        # The initial read or the previous placement's full postcondition
+        # supplies fresh places and teams; do not repeat that expensive read.
         state = classify_dongtian_team_seating(snapshot)
         if not state["ok"]:
             raise RuntimeError(f"洞天_上座：{state['reason']}")
         if state["status"] == "all_seated":
-            runner._persist_scheduler_task_next_time(task_id, None)
+            runner._persist_scheduler_task_next_time(task_id, next_dongtian_seating_at().strftime("%Y-%m-%d %H:%M:%S"))
             runner._log(
                 "success",
-                f"洞天_上座：Runtime 已确认1/2/3队全部在座；本轮空席入驻 {placements} 队并清空 next_time",
+                f"洞天_上座：Runtime 已确认1/2/3队全部在座；本轮空席入驻 {placements} 队，已安排下次固定检查",
             )
             return "success"
 
@@ -266,6 +294,11 @@ def execute_dongtian_seating_runtime_job(
                 "需要 AI 检查守军详情后决定是否安全替换"
             )
         mine_id = int(target["mine_id"])
+        all_mine_ids = {
+            int(row["id"]) for row in snapshot.get("mines") or []
+            if isinstance(row, Mapping)
+            and isinstance(row.get("id"), int) and not isinstance(row.get("id"), bool)
+        }
         excluded = all_mine_ids - {mine_id}
         probe = dict(probe_reader(excluded_mine_ids=excluded))
         authorization = build_dongtian_seating_place_authorization(probe)
@@ -278,6 +311,8 @@ def execute_dongtian_seating_runtime_job(
             max_scrolls=int((payload or {}).get("max_scrolls") or 24),
             probe_reader=probe_reader,
         )
+        if not validate_dongtian_empty_follower_target(dict(snapshot_reader()), target):
+            raise RuntimeError("洞天_上座：导航期间目标空席或空闲队伍已变化，未点击席位")
         geometry = resolve_dongtian_fixed_seat(
             2,
             int(target["seat_id"]),
@@ -289,6 +324,8 @@ def execute_dongtian_seating_runtime_job(
             wait=15,
             label="洞天_上座：打开空侍从席队伍确认",
         )
+        if not validate_dongtian_empty_follower_target(dict(snapshot_reader()), target):
+            raise RuntimeError("洞天_上座：确认前目标空席或空闲队伍已变化，未提交占领")
         yield from context.wait_click_then_scene(
             343,
             "占领",
@@ -299,7 +336,9 @@ def execute_dongtian_seating_runtime_job(
             label="洞天_上座：空席直接入驻并返回地点详情",
         )
 
-        after_probe = dict(probe_reader(excluded_mine_ids=excluded))
+        after_probe = dict(snapshot_reader())
+        if not classify_dongtian_team_seating(after_probe)["ok"]:
+            raise RuntimeError("洞天_上座：占领后完整队伍状态不可用，拒绝继续下一队")
         expected_team_id = int(target["team_id"])
         expected_seat_id = int(target["seat_id"])
         teams = [row for row in after_probe.get("teams") or [] if isinstance(row, Mapping)]
@@ -313,8 +352,7 @@ def execute_dongtian_seating_runtime_job(
             raise RuntimeError(
                 "洞天_上座：点击后 Runtime 未证明预期队伍入驻目标空席，拒绝继续下一队"
             )
-        snapshot["teams"] = teams
-        snapshot["seating_summary_complete"] = after_probe.get("complete") is True
+        snapshot = after_probe
         placements += 1
 
 
@@ -322,6 +360,7 @@ __all__ = [
     "DONGTIAN_SEATING_TASK_ID",
     "classify_dongtian_team_seating",
     "choose_dongtian_empty_follower_target",
+    "validate_dongtian_empty_follower_target",
     "execute_dongtian_seating_job",
     "execute_dongtian_seating_runtime_job",
 ]

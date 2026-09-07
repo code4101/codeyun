@@ -1542,6 +1542,10 @@ def _upsert_attendance_wjx_sheet_values(
 
     rows[row_index] = row
     document["rows"] = rows
+    # Insertion changes every following row position. Rebind the grid before
+    # writing links: its old rows otherwise alias the preceding submissions.
+    document = _normalize_attendance_wjx_sheet_document(document)
+    row = document["rows"][row_index]
     course_info_changed = _sync_attendance_wjx_sheet_course_info_for_row(
         document,
         row_index=row_index,
@@ -1550,7 +1554,9 @@ def _upsert_attendance_wjx_sheet_values(
         course_link_map=course_link_map,
         course_owner_map=course_owner_map,
     )
-    return document, inserted, inserted or row != original_row or course_info_changed
+    changed = inserted or row != original_row or course_info_changed
+    # The storage/UI also consumes entity cells and stable row IDs directly.
+    return _normalize_attendance_wjx_sheet_document(document), inserted, changed
 
 
 def _remove_attendance_wjx_sheet_row(
@@ -1565,7 +1571,7 @@ def _remove_attendance_wjx_sheet_row(
     rows = list(document["rows"])
     rows.pop(row_index)
     document["rows"] = rows
-    return document, True
+    return _normalize_attendance_wjx_sheet_document(document), True
 
 
 def _get_attendance_wjx_data_workbook(session: Session) -> WorkbookDocument | None:

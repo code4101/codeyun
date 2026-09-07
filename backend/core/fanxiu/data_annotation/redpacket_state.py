@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import json
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from backend.core.fanxiu.instrumentation.red_packet import (
     read_cached_chat_red_packet_pending,
     read_red_packet_pending,
 )
-from backend.core.temp_paths import codeyun_temp_root
 REDPACKET_STATE_PROBE_ID = "red-packet"
 REDPACKET_SCHEDULER_TASK_ID = "daily-redpacket"
 QMCH_REWARD_EVENT_TYPE = 9033
@@ -22,59 +18,6 @@ QMCH_REWARD_CHANNEL = 101
 # events.  Patrol therefore projects those passive server facts by stable UID.
 # Process addresses are transient diagnostic evidence only, never business
 # identity.  Do not turn this read-only probe into a Lua call/bridge.
-
-
-def _redpacket_visual_verification_path() -> Path:
-    return codeyun_temp_root("fanxiu-runtime-memory") / "redpacket-visual-verification.json"
-
-
-def record_redpacket_visual_verification(
-    snapshot: dict[str, Any],
-    *,
-    valid_until: str,
-) -> None:
-    """Remember the exact UID set a successful GUI Job just inspected."""
-
-    chat = (snapshot.get("sources") or {}).get("chat") or {}
-    uids = sorted({
-        str(item.get("uid"))
-        for item in chat.get("items") or snapshot.get("items") or []
-        if isinstance(item, dict) and item.get("uid") is not None
-    })
-    path = _redpacket_visual_verification_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "verified_uids": uids,
-                "valid_until": str(valid_until),
-                "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
-def _read_redpacket_visual_verification() -> dict[str, Any]:
-    path = _redpacket_visual_verification_path()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    try:
-        valid_until = datetime.strptime(
-            str(payload.get("valid_until") or ""),
-            "%Y-%m-%d %H:%M:%S",
-        )
-    except ValueError:
-        return {}
-    if valid_until <= datetime.now():
-        return {}
-    return payload
 
 
 def refresh_redpacket_runtime_snapshot() -> dict[str, Any]:
@@ -311,40 +254,9 @@ def classify_redpacket_runtime_routes(snapshot: dict[str, Any]) -> dict[str, Any
 
 def inspect_redpacket_game_state() -> dict[str, Any]:
     facts = read_current_redpacket_state()
-    chat = (facts.get("sources") or {}).get("chat") or {}
-    pending_count = int(chat.get("pending_count") or 0)
-    items = [item for item in chat.get("items") or [] if isinstance(item, dict)]
-    receive_queue_count = int(chat.get("receive_queue_count") or 0)
-    nonterminal_items = [
-        item for item in items if not _is_rewarded_qmch_terminal(item)
-    ]
-    verification = _read_redpacket_visual_verification()
-    verified_uids = {
-        str(uid)
-        for uid in verification.get("verified_uids") or []
-        if str(uid).strip()
-    }
-    unverified_items = [
-        item
-        for item in nonterminal_items
-        if str(item.get("uid") or "") not in verified_uids
-    ]
-    # RedbagData is the authoritative passive chat fact for patrol.  Do not
-    # suppress a newly observed UID merely because MainUI's transient display
-    # queue is empty.  Once the GUI Job has successfully inspected that exact
-    # UID set, however, the level-triggered Runtime list may retain stale rows.
-    # The verification cursor prevents the minute patrol from defeating the
-    # Job's own next_time while any newly observed UID still triggers at once.
-    # A claimed 9033/5022 item remains in RedbagData until the activity expires.
-    # Keeping it in the structural projection is useful for the Job's idempotent
-    # postcondition, but it must not make the one-minute patrol advance the same
-    # Job forever.  Filter only the exact, fresh rewarded terminal.  Ordinary
-    # packets, a new QMCH UID, and a live receive queue still trigger normally.
-    immediate_chat_pending = bool(
-        receive_queue_count > 0
-        or unverified_items
-        or (pending_count > 0 and not items)
-    )
+    # Runtime owns the current pending-candidate semantics. Patrol forwards
+    # that fact; it never remembers inspected UIDs or reclassifies terminals.
+    # The Scheduler owns deduplication against queued/running attempts.
     return {
         "ok": bool(facts.get("ok")),
         "message": str(facts.get("reason") or ""),
@@ -354,24 +266,7 @@ def inspect_redpacket_game_state() -> dict[str, Any]:
             # The existing GUI Job handles chat red packets only. NPC-only marker
             # facts stay visible in patrol but must not trigger that Job.
             if facts.get("trigger_ready")
-            and immediate_chat_pending
             else []
         ),
         "recovery_required": bool(facts.get("recovery_required")),
     }
-
-
-def _is_rewarded_qmch_terminal(item: dict[str, Any]) -> bool:
-    """Return whether one exact QMCH UID is proven already rewarded."""
-
-    uid = str(item.get("uid") or "").strip()
-    reasons = {str(reason) for reason in item.get("exclusion_reasons") or []}
-    return bool(
-        uid
-        and item.get("id") == QMCH_REWARD_CONFIG_ID
-        and item.get("event_type") == QMCH_REWARD_EVENT_TYPE
-        and item.get("event_key") == QMCH_REWARD_EVENT_KEY
-        and item.get("channel") == QMCH_REWARD_CHANNEL
-        and item.get("detail_loaded") is True
-        and reasons.intersection({"server_rewarded", "detail_rewarded"})
-    )

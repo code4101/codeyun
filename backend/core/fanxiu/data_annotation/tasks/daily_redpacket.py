@@ -17,7 +17,6 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
     classify_redpacket_runtime_snapshot,
     classify_redpacket_runtime_routes,
     read_current_redpacket_state,
-    record_redpacket_visual_verification,
     recover_redpacket_runtime_snapshot,
 )
 from backend.core.fanxiu.instrumentation.chat import (
@@ -42,15 +41,9 @@ def _now() -> datetime:
 class DailyRedpacketTaskMixin:
     """执行由巡检调度、由当前画面独立授权的“日常_红包”领取闭环。"""
 
-    # 仅适用于“日常_红包”的业务安全约束（禁止删除或绕过，不得外推到其他作业）：
-    # 1. 巡检与 Runtime 事实只能提前 next_time，绝不能直接授权 GUI 点击。
-    # 2. 每一次进入聊天、选择群行、点击红包卡片，都必须先由对应的当前帧
-    #    视觉检测命中；不得拿旧帧、群名推测、固定坐标或标注框中心代替检测。
-    # 3. 任一视觉门卫未命中时零业务点击，按“当前无红包”成功退出并等待
-    #    下一次巡检；禁止为了探测红包是否存在而先点一下再判断。
-    # 4. 日常业务严禁 Esc、Android Back 或 KEYCODE_BACK。聊天/输入层离场
-    #    只能使用当前真实画面的正式 [返回] 或背景 Shape；缺少可靠 Shape 时
-    #    保留现场并停止。
+    # Runtime decides whether work exists; scenes and Shapes locate controls.
+    # A missing badge/card is an observation failure, never proof of completion.
+    # Completion requires fresh Runtime evidence; leave through annotated exits.
 
     def _prepare_daily_redpacket_world(self, context: Any, *, transition_timeout: float):
         """Unwind an interrupted chat input layer through formal GUI shapes."""
@@ -96,22 +89,6 @@ class DailyRedpacketTaskMixin:
         unclaimable_uids: list[str] | None = None,
     ) -> dict[str, Any]:
         next_time = self._daily_redpacket_record_next_check(payload, message)
-        try:
-            snapshot = classify_redpacket_runtime_snapshot(
-                recover_redpacket_runtime_snapshot()
-            )
-            record_redpacket_visual_verification(
-                snapshot,
-                valid_until=next_time,
-            )
-        except Exception as exc:
-            # A successful, visually guarded Job stays successful.  Failure to
-            # write the optional patrol cursor merely allows another safe deep
-            # check; it must never falsify the business result.
-            self._log(
-                "warning",
-                f"日常_红包：写入视觉核验游标失败，将保留巡检重试：{exc}",
-            )
         return {
             "result": "success",
             "message": f"{message}，下次 {next_time}",
@@ -119,71 +96,6 @@ class DailyRedpacketTaskMixin:
             "opened_count": int(opened_count),
             "unclaimable_uids": list(unclaimable_uids or []),
         }
-
-    def _daily_redpacket_quick_gate(self, ctx: dict[str, Any], frame: str) -> dict[str, Any]:
-        """在任何 GUI 操作前匹配当前世界页的红包标记。
-
-        巡检事实只负责把 Job 的 ``next_time`` 提前，不能授权点击。Job 每次
-        执行都必须重新通过视觉门卫；巡检过期或误报时应正常成功退出。
-        """
-
-        # #395 is a business reference frame, not a globally identifiable
-        # scene.  Match only its [红包] shape against the current live frame so
-        # this gate cannot make #395 participate in scene identification.
-        image = (ctx.get("images") or {}).get(395)
-        shape = self._find_shape(image, "红包")
-        if not isinstance(image, dict) or not isinstance(shape, dict):
-            raise RuntimeError("日常_红包：缺少 #395[红包] 快速门卫标注")
-        return self._match_shape(ctx, image, shape, frame, condition="image")
-
-    def _wait_daily_redpacket_world_reference_shape(
-        self,
-        context: Any,
-        ctx: dict[str, Any],
-        title: str,
-        *,
-        timeout: float,
-        label: str,
-    ):
-        """Match a #395 reference shape while guarding the real world scene.
-
-        #395 deliberately has no scene identity: it is a business reference
-        frame layered over the identifiable #34 world page.  Passing it to the
-        generic ``wait_shape`` would require the live scene id to equal 395 and
-        therefore reject every valid #34 frame before shape matching begins.
-        """
-
-        image = (ctx.get("images") or {}).get(395)
-        shape = self._find_shape(image, title)
-        if not isinstance(image, dict) or not isinstance(shape, dict):
-            raise RuntimeError(f"日常_红包：缺少 #395[{title}] 参考标注")
-        deadline = time.monotonic() + max(0.1, float(timeout or 0.1))
-        last_similarity = 0.0
-        while time.monotonic() < deadline:
-            scene_id, _scene_score, frame = yield from context.current_scene(
-                [34],
-                update=True,
-                label=f"{label}：确认世界页 #34",
-            )
-            if int(scene_id or 0) == 34:
-                match_result = self._match_shape(
-                    ctx,
-                    image,
-                    shape,
-                    frame,
-                    condition="image",
-                )
-                last_similarity = max(
-                    last_similarity,
-                    float(match_result.get("similarity") or 0.0),
-                )
-                if bool(match_result.get("matched")):
-                    self._log("success", f"{label}：#395 [{title}] {last_similarity:.0f}%")
-                    return frame, image, shape, match_result
-            yield from context.wait_action_settle(0.25)
-        raise TimeoutError(
-            f"{label}：#395 [{title}] 超时，最后 {last_similarity:.0f}%"
-        )
 
     @staticmethod
     def _daily_redpacket_runtime_candidates() -> dict[str, Any]:
@@ -216,9 +128,7 @@ class DailyRedpacketTaskMixin:
         snapshot = self._daily_redpacket_runtime_candidates()
         plan = {
             **classify_redpacket_runtime_routes(snapshot),
-            # Keep the trigger bit from this same fresh snapshot.  The world
-            # visual gate runs immediately afterward and does not justify a
-            # second full Runtime traversal merely to recover this one bit.
+            # Route and trigger must come from the same current snapshot.
             "trigger_ready": bool(snapshot.get("trigger_ready")),
         }
         if plan.get("status") != "ready":
@@ -1226,14 +1136,13 @@ class DailyRedpacketTaskMixin:
                 break
             except TimeoutError:
                 if locator_attempt >= max(0, int(max_locator_clicks)):
+                    self._daily_redpacket_verify_uid_postcondition(
+                        before_runtime, phase="红包定位耗尽", require_reduction=True,
+                    )
                     return 0, False
                 try:
-                    # The top-right locator remains as a plain ``福`` icon
-                    # after its numeric pending-count badge disappears.  Its
-                    # formal Shape intentionally requires ``\d+``; absence is
-                    # therefore the normal "no more pending locator entries"
-                    # state, not a failed click.  Detect first so ``wait_click``
-                    # cannot turn that terminal state into RuntimeError.
+                    # Locator visibility only authorizes locating a card. Its
+                    # absence cannot negate the provider's pending UID set.
                     yield from context.wait_shape(
                         30,
                         "红包",
@@ -1241,9 +1150,8 @@ class DailyRedpacketTaskMixin:
                         label="日常_红包：确认右上红包定位入口仍有数字角标",
                     )
                 except TimeoutError:
-                    self._log(
-                        "success",
-                        "日常_红包：#30 右上定位入口无数字角标，当前群没有更多待领红包",
+                    self._daily_redpacket_verify_uid_postcondition(
+                        before_runtime, phase="未识别到红包卡片或定位入口", require_reduction=True,
                     )
                     return 0, False
                 context.click_shape_center(30, "红包")
@@ -1390,50 +1298,22 @@ class DailyRedpacketTaskMixin:
                 payload,
                 route_plan,
             ))
-        # 巡检和 Job 执行各司其职：巡检只推进 next_time；本 Cell 从当前帧
-        # 重新授权每一步。门卫阴性属于正常业务结果（run_status=success），
-        # 之后巡检若再次看到红包，仍可把十二小时后的 next_time 提前。
-        gate_frame = context.cur_frame(update=True)
-        gate = self._daily_redpacket_quick_gate(ctx, gate_frame)
-        if not bool(gate.get("matched")):
-            if route_plan is None:
-                return self._daily_redpacket_result(
-                    payload,
-                    "#395[红包] 阴性且 Chat.ChatGroup 尚未自然加载，本轮零点击退出",
-                    current_scene=34,
-                )
-            if not bool(route_plan.get("trigger_ready")):
-                return self._daily_redpacket_result(
-                    payload,
-                    "#395[红包] 阴性且无新鲜完整 Runtime 候选，本轮无需深入检查",
-                    current_scene=34,
-                )
-            self._log(
-                "diagnostic",
-                "日常_红包：#395 阴性但 Runtime 有新鲜结构化候选；仅进入聊天做逐层视觉检查",
+        # Re-read the provider's current fact; the world badge may be covered
+        # by voice UI and has no authority over whether chat should be opened.
+        if route_plan is None:
+            pending = self._daily_redpacket_require_fresh_uid_snapshot(
+                phase="进入聊天前"
+            )["snapshot"]
+            has_pending = bool(pending.get("trigger_ready"))
+        else:
+            has_pending = bool(route_plan.get("trigger_ready"))
+        if not has_pending:
+            return self._daily_redpacket_result(
+                payload, "当前 Runtime 无待处理红包", current_scene=34,
             )
-
-        chat_frame, chat_image, chat_shape, chat_match = yield from (
-            self._wait_daily_redpacket_world_reference_shape(
-                context,
-                ctx,
-                "聊天",
-                timeout=transition_timeout,
-                label="日常_红包：逐帧确认世界页聊天入口",
-            )
-        )
-        self._click_shape(
-            ctx,
-            chat_image,
-            chat_shape,
-            frame_data_url=chat_frame,
-            match_result=chat_match,
-        )
-        landing = yield from context.wait_scene(
-            [332,
-            333],
-            wait=transition_timeout,
-            label="日常_红包：等待聊天或通讯录页",
+        landing = yield from context.click_shape_center_then_scene(
+            34, "聊天", [332, 333], timeout=transition_timeout,
+            label="日常_红包：Runtime 有待处理红包，进入聊天",
         )
         # The chat popup preserves its last selected tab.  Opening it can
         # therefore legitimately land on #333 (contacts) instead of #332

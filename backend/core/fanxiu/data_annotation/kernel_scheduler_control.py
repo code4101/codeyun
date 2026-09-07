@@ -749,7 +749,8 @@ def advance_scheduler_task_from_fact(
             and scheduled_at is not None
             and scheduled_at > due_timestamp
         )
-        if attempt_active or retry_backoff_active:
+        already_due = scheduled_at is not None and scheduled_at <= due_timestamp
+        if attempt_active or retry_backoff_active or already_due:
             return str(task["next_time"]) if task.get("next_time") else None
 
         task = set_scheduler_task_trigger_time(
