@@ -164,6 +164,45 @@ def _read_effect_map(
     return effects
 
 
+def read_spirit_artifact_item_runtime(item_id: str) -> dict[str, Any]:
+    """只读指定实例的最新属性与锁，供 UI 动作精确验收；不选最高阶替代品。
+
+    UI ItemInfoList 在锁回包后不重建，不能作为锁真值。这里直接读取当前
+    BackpackData 中该实例的 attrMap/refineMap，避免全馆词缀配置投影开销。
+    """
+    from .ui_runtime_context import acquire_ui_runtime_context
+    from .runtime_memory import resolve_lua_global_manager_root
+    context = acquire_ui_runtime_context([])
+    memory, reader = context.memory, context.reader
+    root, _, _ = resolve_lua_global_manager_root(
+        memory, manager_key="spirit-artifact-item-global",
+        state_address=context.binding.state_address, global_name="BackpackMgr",
+        required_methods=frozenset({"Inst_get"}), validate=_backpack_data_fields,
+    )
+    data = _backpack_data_fields(reader, root)
+    values = _fields(reader, _fields(reader, data.get("_SpiritWareItemDic")).get("_valueTable_"))
+    found = []
+    for raw in values.values():
+        item = _fields(reader, raw)
+        if str(reader.long(item.get("id"))) != str(item_id):
+            continue
+        position = _artifact_position(as_int(item.get("baseId")) or 0)
+        if position is None:
+            continue
+        ext = _fields(reader, item.get("ext"))
+        found.append({"item_id": str(item_id), "base_id": as_int(item.get("baseId")),
+                      "ware_id": position[0] + 1, "part": position[1] + 1,
+                      "refine_num": as_int(ext.get("refineNum")) or 0,
+                      "effects": _read_effect_map(reader, ext.get("attrMap"), artifact_index=position[0]),
+                      "pending_effects": _read_effect_map(reader, ext.get("refineMap"), artifact_index=position[0])})
+    if len(found) != 1:
+        raise RuntimeError(f"灵器实例 {item_id} 必须唯一，实际 {len(found)}")
+    for key in ("effects", "pending_effects"):
+        found[0][key] = [{k: effect[k] for k in ("cleanse_id", "value", "quality", "locked")}
+                         for effect in found[0][key]]
+    return {**found[0], "pid": memory.pid, "process_start_ticks": memory.process_start_ticks}
+
+
 def _memory_runtime_snapshot() -> dict[str, Any]:
     """Read exact live ItemVO/ext fields when the fixed main-state bridge is unavailable."""
 

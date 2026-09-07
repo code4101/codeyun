@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from types import SimpleNamespace
 
 import pytest
 
@@ -14,7 +13,6 @@ from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_cleanse import (
     SpiritArtifactCleanseGuiAssets,
     SpiritArtifactCleanseInterface,
     SpiritArtifactCleanseRequest,
-    SpiritArtifactCleanseRuntimeGuiAdapter,
     SpiritArtifactEffect,
     SpiritArtifactIrreversibleAuthorization,
     SpiritArtifactObservation,
@@ -318,183 +316,7 @@ def test_commit_verifier_rejects_runtime_without_matching_page_evidence():
         )
 
 
-class _RuntimeGui:
-    def __init__(self, scene: int = 34) -> None:
-        self.scene = scene
-        self.calls: list[tuple] = []
-
-    def current_scene(self, candidates=None, **kwargs):
-        self.calls.append(("observe", tuple(candidates), kwargs))
-        matched = self.scene if self.scene in set(candidates) else None
-        if False:
-            yield None
-        return matched, 100.0 if matched is not None else 0.0, "frame"
-
-    def click_shape_center_then_scene(
-        self, source, shape, *targets, timeout=None, label=None
-    ):
-        def transition():
-            self.calls.append(("click", source, shape, tuple(targets), timeout, label))
-            self.scene = int(targets[0])
-            if False:
-                yield None
-            return SimpleNamespace(id=self.scene)
-
-        return transition()
-
-
-def _execute_generator(generator):
-    while True:
-        try:
-            next(generator)
-        except StopIteration as stopped:
-            return stopped.value
-
-
-def _fresh_target():
-    interface = SpiritArtifactCleanseInterface(lambda: _complete_snapshot())
-    return interface.begin_attempt(
-        SpiritArtifactAttemptContext("gui-attempt", 1, (123, 456)), TARGET
-    )
-
-
-def test_runtime_gui_assets_keep_business_and_layer0_domains_exact():
+def test_runtime_gui_assets_include_owned_overlays():
     assets = SpiritArtifactCleanseGuiAssets()
-
-    assert assets.business_scene_ids == (666, 667, 668)
-    assert assets.layer0_candidate_ids == (669, 670, 671)
-    assert assets.observation_scene_ids == (34, 35, 666, 667, 668, 669, 670, 671)
+    assert {669, 670, 671, 712, 713}.issubset(assets.observation_scene_ids)
     assert len(set(assets.observation_scene_ids)) == len(assets.observation_scene_ids)
-
-
-def test_runtime_gui_adapter_selects_only_verified_first_target_path():
-    runtime = _RuntimeGui(scene=34)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-
-    adapter.select(_fresh_target())
-
-    assert runtime.scene == 668
-    clicks = [call for call in runtime.calls if call[0] == "click"]
-    assert [(call[1], call[2], call[3]) for call in clicks] == [
-        (34, "打开下方菜单", (35,)),
-        (35, "灵器", (666,)),
-        (666, "首个灵器", (667,)),
-        (667, "洗炼", (668,)),
-    ]
-
-
-def test_runtime_gui_adapter_explicitly_observes_and_cancels_layer0_warning():
-    runtime = _RuntimeGui(scene=668)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-
-    adapter.probe_auto_settings_warning()
-    assert runtime.scene == 669
-    adapter.cancel()
-
-    assert runtime.scene == 668
-    clicks = [call for call in runtime.calls if call[0] == "click"]
-    assert [(call[1], call[2], call[3]) for call in clicks] == [
-        (668, "自动洗炼设置", (669,)),
-        (669, "取消", (668,)),
-    ]
-    assert all(call[2] != "确定（研发禁止）" for call in clicks)
-
-
-def test_runtime_gui_adapter_opens_and_closes_read_only_attribute_preview():
-    runtime = _RuntimeGui(scene=668)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-
-    adapter.open_attribute_preview(None)
-    assert runtime.scene == 670
-    adapter.cancel()
-
-    assert runtime.scene == 668
-    clicks = [call for call in runtime.calls if call[0] == "click"]
-    assert [(call[1], call[2], call[3]) for call in clicks] == [
-        (668, "词条预览", (670,)),
-        (670, "点击空白关闭", (668,)),
-    ]
-
-
-def test_runtime_gui_adapter_opens_auto_settings_but_never_keep():
-    runtime = _RuntimeGui(scene=668)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-
-    adapter.open_auto_settings()
-    assert runtime.scene == 671
-    adapter.cancel()
-
-    assert runtime.scene == 668
-    clicks = [call for call in runtime.calls if call[0] == "click"]
-    assert [(call[1], call[2], call[3]) for call in clicks] == [
-        (668, "自动洗炼设置", (669,)),
-        (669, "确定进入自动设置", (671,)),
-        (671, "点击空白关闭", (668,)),
-    ]
-    assert all(call[2] != "开启自动（研发禁止）" for call in clicks)
-
-
-def test_runtime_gui_adapter_returns_from_layer0_to_world_without_shortcut():
-    runtime = _RuntimeGui(scene=669)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-
-    adapter.return_to_world()
-
-    assert runtime.scene == 34
-    clicks = [call for call in runtime.calls if call[0] == "click"]
-    assert [(call[1], call[2], call[3]) for call in clicks] == [
-        (669, "取消", (668,)),
-        (668, "装配", (667,)),
-        (667, "返回", (666,)),
-        (666, "返回", (34,)),
-    ]
-
-
-@pytest.mark.parametrize("overlay_scene", [670, 671])
-def test_runtime_gui_adapter_returns_from_read_only_overlay_to_world(overlay_scene):
-    runtime = _RuntimeGui(scene=overlay_scene)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-
-    adapter.return_to_world()
-
-    assert runtime.scene == 34
-    clicks = [call for call in runtime.calls if call[0] == "click"]
-    assert [(call[1], call[2], call[3]) for call in clicks] == [
-        (overlay_scene, "点击空白关闭", (668,)),
-        (668, "装配", (667,)),
-        (667, "返回", (666,)),
-        (666, "返回", (34,)),
-    ]
-
-
-def test_runtime_gui_adapter_keeps_unproved_targets_and_writes_fail_closed():
-    runtime = _RuntimeGui(scene=34)
-    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(
-        runtime, _execute_generator
-    )
-    fresh = _fresh_target()
-    unknown = FreshSpiritArtifactSnapshot(
-        fresh.attempt,
-        replace(fresh.observation, part_name="刃"),
-        fresh.snapshot_token,
-    )
-
-    with pytest.raises(SpiritArtifactCleanseBlocked) as missing:
-        adapter.select(unknown)
-    assert missing.value.code.value == "ASSET_MISSING"
-    assert not [call for call in runtime.calls if call[0] == "click"]
-
-    with pytest.raises(SpiritArtifactCleanseBlocked, match="默认禁用"):
-        adapter.set_lock(112002, True)

@@ -69,6 +69,12 @@ def _find_default_lang_path(export_root: str | Path | None = None) -> Path | Non
     return max(candidates, key=lambda item: item.stat().st_size)
 
 
+def load_default_fanxiu_lang_map(export_root: str | Path | None = None) -> dict[int, str]:
+    """读取导出目录的语言表；只用于展示，缺失译文不能替代 Runtime 规则。"""
+    path = _find_default_lang_path(export_root)
+    return load_fanxiu_lang_map(path) if path else {}
+
+
 def _find_default_gongfa_config_dir(export_root: str | Path | None = None) -> Path:
     root = resolve_fanxiu_export_root(export_root)
     candidates = [
