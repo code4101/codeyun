@@ -58,6 +58,7 @@ type SpiritArtifact = {
   order: number;
   name: string;
   exclusiveStats: ExclusiveStatColumn[];
+  coreAttributes?: string[];
   rows: SpiritArtifactPartRow[];
 };
 
@@ -628,6 +629,7 @@ function snapshotToArtifacts(snapshot: FanxiuSpiritArtifactHallSnapshot): Spirit
       order: artifactIndex + 1,
       name: savedArtifact.name,
       exclusiveStats,
+      coreAttributes: savedArtifact.core_attributes || [],
       rows: savedRows.map((savedRow, partIndex) => {
         const partName = savedRow.part_name || seed?.parts[partIndex] || `部位 ${partIndex + 1}`;
         const rawSavedRow = (savedRow || {}) as any;
@@ -875,6 +877,7 @@ const artifactOverview = computed(() => [...artifacts.value]
   .map(artifact => ({
     order: artifact.order,
     name: artifact.name,
+    coreAttributes: artifact.coreAttributes || [],
     cells: Array.from({ length: 6 }, (_, index) =>
       artifact.rows.find(row => row.order === index + 1)),
   })));
@@ -1172,6 +1175,7 @@ onBeforeUnmount(() => {
           <el-table-column label="灵器" min-width="145">
             <template #default="{ row }">
               <span class="market-item-name">{{ row.order }} {{ row.name }}</span>
+              <div class="artifact-core-attributes">{{ row.coreAttributes.join('、') }}</div>
             </template>
           </el-table-column>
           <el-table-column v-for="part in 6" :key="part" :label="String(part)" width="108" align="center">
@@ -1205,6 +1209,14 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.artifact-core-attributes {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
 .stage-explanation {
   margin-top: 20px;
   max-width: 900px;

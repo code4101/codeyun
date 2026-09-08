@@ -3622,6 +3622,7 @@ def _build_attendance_feedback_history(
     student_id_text: str = "",
     student_name: str = "",
     limit: int = 8,
+    include_all: bool = False,
 ) -> AttendanceFeedbackHistoryResponse:
     course_key = _normalize_feedback_history_match_text(course_name)
     student_id_key = _normalize_feedback_history_match_text(student_id_text)
@@ -3654,7 +3655,7 @@ def _build_attendance_feedback_history(
     total = len(matched_items)
     normalized_limit = min(max(1, int(limit or 8)), 30)
     return AttendanceFeedbackHistoryResponse(
-        items=[AttendanceWjxDataItem.model_validate(item) for item in matched_items[:normalized_limit]],
+        items=[AttendanceWjxDataItem.model_validate(item) for item in (matched_items if include_all else matched_items[:normalized_limit])],
         total=total,
     )
 
@@ -4390,6 +4391,7 @@ def list_attendance_feedback_history(
     student_id_text: str = Query(default=""),
     student_name: str = Query(default=""),
     limit: int = Query(default=8, ge=1, le=30),
+    include_all: bool = Query(default=False, description="返回当前课程和学员的全部历史反馈"),
     session: Session = Depends(get_session),
 ):
     return _build_attendance_feedback_history(
@@ -4398,6 +4400,7 @@ def list_attendance_feedback_history(
         student_id_text=student_id_text,
         student_name=student_name,
         limit=limit,
+        include_all=include_all,
     )
 
 

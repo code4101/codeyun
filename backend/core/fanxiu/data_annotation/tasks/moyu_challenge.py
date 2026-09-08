@@ -314,15 +314,13 @@ class MoyuChallengeTaskMixin:
                     else:
                         ctx["_go_scene_unknown_transition_guard"] = previous_guard
 
-    def _moyu_claim_reward(self, context: Any, payload: dict[str, Any]):
-        now = datetime.now()
-        if now >= _at(now, REWARD_DEADLINE):
-            return {
-                "claimed": False,
-                "already_claimed": False,
-                "message": "已到 22:00，今日奖励窗口结束",
-            }
+    def moyu_reward_view(self, context: Any, payload: dict[str, Any] | None = None):
+        """Open and verify the reward page without challenging or claiming.
 
+        Public diagnostic/observation boundary using the activity entry flow;
+        a generic scene graph cannot express the dynamic daily-list entry.
+        """
+        payload = dict(payload or {})
         current, _score, _frame = (yield from context.current_scene([466, 401], update=True))
         if current not in {466, 401}:
             yield from self._moyu_open_activity(context, payload)
@@ -334,12 +332,30 @@ class MoyuChallengeTaskMixin:
                 wait=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
                 label="魔狱_挑战：等待奖励页 #466 场景身份",
             )
+        # Page identity can settle before the reward card/button finishes
+        # loading. Wait for its existing OCR-backed Shape instead of treating
+        # one empty frame as a terminal claim-state error.
+        yield from context.wait_shape(
+            466, "领取", timeout=max(10.0, float(payload.get("reward_view_timeout_seconds") or 30.0)),
+            label="魔狱_挑战：等待奖励领取状态就绪",
+        )
         frame = context.cur_frame(update=True)
         reward_text = context.ocr_text(frame)
         if not self._moyu_reward_text(reward_text):
             raise RuntimeError(
                 f"魔狱_挑战：#466 已识别但奖励标题 OCR 不一致：{reward_text}"
             )
+        return frame
+
+    def _moyu_claim_reward(self, context: Any, payload: dict[str, Any]):
+        now = datetime.now()
+        if now >= _at(now, REWARD_DEADLINE):
+            return {
+                "claimed": False,
+                "already_claimed": False,
+                "message": "已到 22:00，今日奖励窗口结束",
+            }
+        frame = yield from self.moyu_reward_view(context, payload)
 
         claim_action_text = context.ocr_text_in_shapes(
             466,

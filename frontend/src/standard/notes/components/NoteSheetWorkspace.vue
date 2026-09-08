@@ -1490,6 +1490,7 @@ const studentLookupFeedbackSubmittedAt = ref('')
 const studentLookupFeedbackHistoryItems = ref<AttendanceWjxDataItem[]>([])
 const studentLookupFeedbackHistoryTotal = ref(0)
 const studentLookupFeedbackHistoryLoading = ref(false)
+const studentLookupFeedbackHistoryError = ref('')
 let studentLookupFeedbackHistoryRequestId = 0
 function isRegistrationMatchRunActive(run?: NoteSheetRegistrationMatchRunResponse | null) {
   return run?.status === 'pending' || run?.status === 'running'
@@ -15088,6 +15089,8 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
   }
 
   const nextWidth = normalizeColumnWidthValue(width)
+  const previousWidth = columnWidths.value[columnIndex] ?? null
+  const previousConfig = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)[columnHeaders.value[columnIndex]] ?? {}
   const currentWidth = normalizeColumnWidthValue(columnWidths.value[columnIndex] ?? getEffectiveColumnWidth(columnIndex))
   let changed = false
   const undoEntry = options.save ? createLocalUndoEntry('column-width') : null
@@ -15126,12 +15129,16 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
     const operations: NoteSheetPatchOperation[] = [{
       op: 'set-column-width',
       column_index: columnIndex,
+      column_id: columnEntityIds.value[columnIndex],
+      expected_width: previousWidth,
       width: nextWidth,
     }]
     if (header) {
       operations.push({
         op: 'set-column-config',
         column_index: columnIndex,
+        column_id: columnEntityIds.value[columnIndex],
+        expected_config: previousConfig,
         config: normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)[header] ?? {},
       })
     }
@@ -19897,6 +19904,36 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
           pendingDeletedPageRowIndexes.value = localDraft.pageState.deletedRowIndexes ?? []
         }
         shouldSyncLocalDraft = true
+      } else if (!localDraftVersionStillCurrent && localDraftIsMeaningful) {
+        const choice = await ElMessageBox.confirm(
+          '服务器版本已变化，本地仍有未保存的备注或排版。恢复草稿后会暂停自动保存，供你核对；选择服务器版本将丢弃这份草稿。',
+          '发现未保存的草稿',
+          {
+            confirmButtonText: '恢复草稿供核对',
+            cancelButtonText: '丢弃草稿，使用服务器版本',
+            distinguishCancelAndClose: true,
+            closeOnClickModal: false,
+            type: 'warning',
+          },
+        ).then(() => 'draft').catch((action: unknown) => action === 'cancel' ? 'remote' : 'draft')
+        if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+          return
+        }
+        if (choice === 'draft') {
+          activeDocument = localDraft.document
+          activeSourceDocument = localDraft.document
+          sheetTitle.value = localDraft.title || sheetTitle.value
+          sheetRemoteConflictActive = true
+          if (localDraft.pageState) {
+            pageRowOffset.value = localDraft.pageState.rowOffset
+            pageLoadedRowCount.value = localDraft.pageState.loadedRowCount
+            pageRowIndexes.value = localDraft.pageState.rowIndexes ?? null
+            pendingDeletedPageRowIndexes.value = localDraft.pageState.deletedRowIndexes ?? []
+          }
+        } else {
+          clearDraftStorage()
+          pendingDeletedPageRowIndexes.value = []
+        }
       } else {
         clearDraftStorage()
         pendingDeletedPageRowIndexes.value = []
@@ -26394,6 +26431,7 @@ function applyColumnSettings() {
   const nextNormalizedConfigs = { ...currentNormalizedConfigs }
   const nextWidths = [...columnWidths.value]
   const previousHeaderRowCount = sheetHeaderRowCount.value
+  const previousWidths = [...columnWidths.value]
   let configChanged = false
   let widthChanged = false
   let normalizedValuesChanged = false
@@ -26498,6 +26536,8 @@ function applyColumnSettings() {
         operations.push({
           op: 'set-column-config',
           column_index: columnIndex,
+          column_id: columnEntityIds.value[columnIndex],
+          expected_config: currentNormalizedConfigs[header] ?? {},
           config: normalizedConfigs[header] ?? {},
         })
       }
@@ -26505,6 +26545,8 @@ function applyColumnSettings() {
         operations.push({
           op: 'set-column-width',
           column_index: columnIndex,
+          column_id: columnEntityIds.value[columnIndex],
+          expected_width: previousWidths[columnIndex] ?? null,
           width: normalizeColumnWidthValue(columnWidths.value[columnIndex] ?? getEffectiveColumnWidth(columnIndex)),
         })
       }
@@ -27075,6 +27117,7 @@ function openStudentLookupFeedbackDialog() {
 }
 
 function resetStudentLookupFeedbackHistory() {
+  studentLookupFeedbackHistoryError.value = ''
   studentLookupFeedbackHistoryRequestId += 1
   studentLookupFeedbackHistoryItems.value = []
   studentLookupFeedbackHistoryTotal.value = 0
@@ -27091,13 +27134,16 @@ async function loadStudentLookupFeedbackHistory() {
 
   const requestId = studentLookupFeedbackHistoryRequestId + 1
   studentLookupFeedbackHistoryRequestId = requestId
+  studentLookupFeedbackHistoryItems.value = []
+  studentLookupFeedbackHistoryTotal.value = 0
+  studentLookupFeedbackHistoryError.value = ''
   studentLookupFeedbackHistoryLoading.value = true
   try {
     const { fetchAttendanceFeedbackHistory } = await loadAttendanceApi()
     const result = await fetchAttendanceFeedbackHistory({
       course_name: courseName,
       student_name: studentName,
-      limit: 8,
+      include_all: true,
     })
     if (requestId !== studentLookupFeedbackHistoryRequestId) {
       return
@@ -27108,6 +27154,7 @@ async function loadStudentLookupFeedbackHistory() {
     if (requestId !== studentLookupFeedbackHistoryRequestId) {
       return
     }
+    studentLookupFeedbackHistoryError.value = '历史记录读取失败，请重新选择学员重试。'
     studentLookupFeedbackHistoryItems.value = []
     studentLookupFeedbackHistoryTotal.value = 0
   } finally {
@@ -28831,12 +28878,13 @@ watch(
 watch(
   [
     studentLookupFeedbackDialogVisible,
+    isStudentLookupViewActive,
     studentLookupFeedbackCourseName,
     studentLookupFeedbackStudentId,
     studentLookupFeedbackStudentName,
   ],
   () => {
-    if (!studentLookupFeedbackDialogVisible.value) {
+    if (!studentLookupFeedbackDialogVisible.value && !isStudentLookupViewActive.value) {
       resetStudentLookupFeedbackHistory()
       return
     }
@@ -29217,6 +29265,18 @@ defineExpose({
         </article>
       </div>
       <div v-else-if="studentLookupEmptyText" class="sheet-student-lookup-empty">{{ studentLookupEmptyText }}</div>
+      <AttendanceFeedbackHistoryList
+        v-if="studentLookupMode === 'student' && selectedStudentLookupOption"
+        class="sheet-student-feedback-history"
+        title="历史提问与回复"
+        :error-text="studentLookupFeedbackHistoryError"
+        :ready="canLoadStudentLookupFeedbackHistory"
+        :loading="studentLookupFeedbackHistoryLoading"
+        :items="studentLookupFeedbackHistoryItems"
+        :total="studentLookupFeedbackHistoryTotal"
+        :student-id="studentLookupFeedbackStudentId"
+        :student-name="studentLookupFeedbackStudentName"
+      />
     </section>
 
     <el-dialog
@@ -29291,9 +29351,6 @@ defineExpose({
         <AttendanceFeedbackHistoryList
           v-if="studentLookupFeedbackHistoryItems.length"
           class="sheet-student-feedback-history"
-          title="历史问卷"
-          loading-text="正在查询历史问卷..."
-          empty-text="暂未查到这个学员的历史问卷。"
           :ready="canLoadStudentLookupFeedbackHistory"
           :loading="studentLookupFeedbackHistoryLoading"
           :items="studentLookupFeedbackHistoryItems"

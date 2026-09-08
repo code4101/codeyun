@@ -663,6 +663,10 @@ def set_verified_integer_slider_count(
     no GUI action may intervene before this call. Pass no Runtime reader to
     use local OCR for feedback, retaining business identity checks at the caller.
     ``count_reads`` counts attempted OCR/Runtime reads inside this invocation.
+    ``max_adjustments`` is the absolute count-error threshold m (at least 1):
+    an initially exact count returns immediately; an initial error <= m skips
+    positioning and pixel feedback and enters fine tuning directly. Larger
+    errors start with proportional positioning, even with large-step buttons.
     An explicit maximum gates every path, including already-exact and short
     button adjustments. The slider's fine stage permits at most 30 clicks
     across five batches; a large residual must be resolved by dragging.
@@ -694,10 +698,9 @@ def set_verified_integer_slider_count(
         current=before,
         desired=desired,
     )
-    # A short burst of +10/-10 plus the exact unit remainder is both faster
-    # and less fragile than repeatedly locating and calibrating a live thumb.
-    # The stable reread in _fine_tune_batches absorbs dropped queued clicks.
-    if direct_actions <= _MAX_DIRECT_BUTTON_ACTIONS:
+    # m gates entry by count error; the separate click budget bounds execution.
+    # Large-step buttons change fine-tuning cost, not the phase boundary.
+    if abs(desired - before) <= threshold:
         current, batches = yield from _fine_tune_batches(
             context,
             assets,

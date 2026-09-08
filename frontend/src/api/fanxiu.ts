@@ -1624,6 +1624,7 @@ export interface FanxiuSpiritArtifactRuntimeEffect {
 }
 
 export interface FanxiuSpiritArtifactItem {
+  core_attributes?: string[];
   order: number;
   name: string;
   rows: FanxiuSpiritArtifactPartRow[];

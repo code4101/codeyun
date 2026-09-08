@@ -5742,6 +5742,8 @@ def get_fanxiu_spirit_artifact_hall(session: Session = Depends(get_session)):
     bag_payload = load_spirit_artifact_storage_bag_snapshot(session)
     if bag_payload is not None:
         payload["storage_bag_items"] = bag_payload["storage_bag_items"]
+        if 'market_currency_count' in bag_payload:
+            payload['market_currency_count'] = bag_payload['market_currency_count']
     return FanxiuSpiritArtifactHallSnapshot.model_validate(payload)
 
 

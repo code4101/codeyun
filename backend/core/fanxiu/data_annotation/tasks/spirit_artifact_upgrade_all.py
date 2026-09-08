@@ -86,8 +86,11 @@ def upgrade_current_spirit_artifact(context, execute, *, dimension, scene_id, ac
     context.click_shape_center(scene_id, action_shape)
     confirmed, result_pages = set(), set()
     deadline = min(stop_at, time.time() + 100)
+    # Raw-body upgrades have already been observed returning to the wash
+    # page. Verify the same inventory delta before leaving that landing.
+    stable_pages = {scene_id, *([668, 714] if dimension == 'grade' else [])}
     while time.time() < deadline:
-        landed = execute(context.wait_scene([scene_id, 718, 719, 720, 721], wait=3)).scene_id
+        landed = execute(context.wait_scene([*sorted(stable_pages), 718, 719, 720, 721], wait=3)).scene_id
         if landed in (718, 719):
             if landed not in confirmed:
                 confirmed.add(landed)
@@ -96,7 +99,7 @@ def upgrade_current_spirit_artifact(context, execute, *, dimension, scene_id, ac
             if landed not in result_pages:
                 result_pages.add(landed)
                 context.click_shape_center(landed, '点击屏幕继续')
-        elif landed == scene_id:
+        elif landed in stable_pages:
             after = read_spirit_artifact_owned_runtime([candidate.ware_id])
             current = next(r for r in after['inventory']['items'] if r['item_id'] == candidate.item_id)
             if current[dimension] == candidate.current_level:
@@ -108,7 +111,7 @@ def upgrade_current_spirit_artifact(context, execute, *, dimension, scene_id, ac
             removed = verify_spirit_artifact_upgrade_delta(before, after, candidate=candidate,
                 counts_before=counts_before, counts_after=counts_after)
             result = dict(status='complete', candidate=asdict(candidate), removed_item_ids=removed,
-                          after=after, counts_after=counts_after)
+                          after=after, counts_after=counts_after, final_scene_id=landed)
             (root / f'{key}-receipt.json').write_text(json.dumps(result, ensure_ascii=False, default=str),encoding='utf-8')
             return result
         else:
@@ -159,7 +162,7 @@ def run_spirit_artifact_all_upgrades(context, execute, *, artifacts, rules,
             while time.time() < stop_at - 120:
                 if execute(context.wait_scene([667], wait=8)).scene_id != 667:
                     raise RuntimeError('升级页签切换要求装配页')
-                identity = read_spirit_artifact_ui_identity()
+                identity = read_spirit_artifact_ui_identity(window_kind='view')
                 if identity['ware_id'] != ware:
                     raise RuntimeError('当前灵器改变')
                 execute(context.wait_click(667, tab_shape))
@@ -168,7 +171,7 @@ def run_spirit_artifact_all_upgrades(context, execute, *, artifacts, rules,
                 result = upgrade_current_spirit_artifact(context, execute, dimension=dimension,
                     scene_id=page, action_shape=action, rules=rules, evidence_dir=evidence_dir,
                     stop_at=stop_at)
-                execute(context.wait_click(page, return_shape))
+                execute(context.wait_click(result.get('final_scene_id', page), return_shape))
                 if result['status'] == 'complete':
                     results.append({k:v for k,v in result.items() if k != 'after'})
                     collect_spirit_artifact_snapshot_once()

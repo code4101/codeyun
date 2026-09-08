@@ -327,6 +327,21 @@ def plan_current_random_box_click(
         cells=cells,
         observations=observations,
     )
+    if plan.status in {"insufficient_observations", "ambiguous_offset"}:
+        # The default Chinese-font OCRv4 pass misses small white stack counts.
+        # Use OCRv5 at native resolution only for this numeric fallback; its
+        # output still needs quantity geometry and exact Runtime matching.
+        lines = context.ocr_lines_in_shapes(
+            STORAGE_BAG_SCENE, ["窗口"], frame_data_url=current_data_url,
+            options={"text_det_limit_side_len": max(height, width),
+                     "text_det_limit_type": "max", "ocr_version": "PP-OCRv5"},
+        )
+        observations = quantity_observations_from_ocr(cells, lines)
+        plan = plan_storage_bag_item_click(
+            snapshot, target_base_id=request.base_id,
+            target_instance_id=request.instance_id, cells=cells,
+            observations=observations,
+        )
     # A quantity sequence proves the mapping only for ``current_data_url``.
     # Re-sample the annotated window after the expensive OCR pass.  If the
     # list coasted during OCR, the old point must never escape as ``ready``;

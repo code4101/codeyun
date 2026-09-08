@@ -10522,3 +10522,60 @@ def test_excel_append_allows_repeat_registration_with_same_phone_and_new_order()
     )
     assert rows == [["学员", "13000000000", "order-2"]]
     assert skipped == 1
+
+
+def test_note_sheet_layout_patch_rebases_and_persists_without_overwriting_content(client, session):
+    owner = _create_user(session, username="layout-rebase-owner")
+    sheet = SheetDocument(
+        numeric_id=9664, scope="notes", owner_type="note_sheet", owner_key="layout-rebase",
+        sheet_key="main", title="Layout", owner_user_id=owner.id,
+        created_by_user_id=owner.id, updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1, "columns": ["Name", "Status"],
+            "column_ids": ["name", "status"], "row_ids": ["student"],
+            "rows": [["A", "pending"]], "column_widths": [100, 120],
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    _override_user(owner)
+    url = "/api/note-sheets/sheets/9664/patch"
+    try:
+        response = client.post(url, json={"base_version": 1, "ops": [
+            {"op": "set-cell-value", "row_index": 0, "column_index": 1, "value": "processed"},
+            {"op": "set-column-config", "column_index": 1, "config": {"align": "center"}},
+            {"op": "move-column", "column_id": "status", "after_column_id": None},
+        ]})
+        assert response.status_code == 200, response.text
+        layout = [
+            {"op": "set-column-width", "column_index": 1, "column_id": "status",
+             "expected_width": 120, "width": 240},
+            {"op": "set-column-config", "column_index": 1, "column_id": "status",
+             "expected_config": {}, "config": {"display_mode": "wrap"}},
+        ]
+        for _ in range(2):  # retry after a lost response is harmless
+            response = client.post(url, json={"base_version": 1, "ops": layout})
+            assert response.status_code == 200, response.text
+        session.refresh(sheet)
+        assert sheet.document_json["columns"] == ["Status", "Name"]
+        assert sheet.document_json["rows"] == [["processed", "A"]]
+        assert sheet.document_json["column_widths"] == [240, 100]
+        assert sheet.document_json["column_configs"]["Status"] == {"align": "center", "display_mode": "wrap"}
+        # A real conflict must reject the entire batch, including preceding edits.
+        conflict = client.post(url, json={"base_version": 1, "ops": [
+            {"op": "set-column-config", "column_index": 0, "column_id": "status",
+             "expected_config": {}, "config": {"font_size": 18}},
+            {"op": "set-column-width", "column_index": 0, "column_id": "status",
+             "expected_width": 120, "width": 300},
+        ]})
+        assert conflict.status_code == 409
+        conflict = client.post(url, json={"base_version": 1, "ops": [
+            {"op": "set-column-config", "column_index": 0, "column_id": "status",
+             "expected_config": {}, "config": {"display_mode": "single_line"}},
+        ]})
+        assert conflict.status_code == 409
+        session.refresh(sheet)
+        assert "font_size" not in sheet.document_json["column_configs"]["Status"]
+        assert sheet.document_json["column_widths"] == [240, 100]
+    finally:
+        _clear_user_override()

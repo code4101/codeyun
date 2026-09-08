@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 import re
+import time
 from types import GeneratorType
 from typing import Any
 
@@ -31,6 +32,7 @@ from backend.core.fanxiu.runtime_gui import (
 
 CHOICE_BOX_SCENE = 586
 CHOICE_DETAIL_SCENE = 587
+SPIRIT_CHOICE_DETAIL_SCENE = 730
 
 
 class StorageBagChoiceBoxBlocked(RuntimeError):
@@ -239,6 +241,15 @@ def choice_rewards_from_catalog(
         if base_id <= 0 or not name or count <= 0:
             raise StorageBagChoiceBoxBlocked("自选匣 Catalog 候选缺少 id/名称/单箱数量")
         card = (catalog_cards_by_id or {}).get(str(base_id)) or {}
+        spirit_details = [
+            detail for detail in card.get("effect_details") or []
+            if isinstance(detail, Mapping) and detail.get("kind") == "spiritware_part"
+        ]
+        if card.get("type") == 55 and card.get("sub_type") == 34 and not spirit_details:
+            raise StorageBagChoiceBoxBlocked(
+                f"候选 {base_id} 为灵器部件但 Catalog 缺失类型资料；"
+                "请先通过 catalog.item.build_fanxiu_item_catalog 更新静态目录，禁止按普通道具兑换"
+            )
         is_partner, partner_reason, linked_partner_id = _partner_metadata(card, raw)
         rewards.append(
             StorageBagChoiceReward(
@@ -249,10 +260,7 @@ def choice_rewards_from_catalog(
                 is_partner=is_partner,
                 partner_reason=partner_reason,
                 linked_partner_id=linked_partner_id,
-                is_spirit_artifact=any(
-                    isinstance(detail, Mapping) and detail.get("kind") == "spiritware_part"
-                    for detail in card.get("effect_details") or []
-                ),
+                is_spirit_artifact=bool(spirit_details),
             )
         )
     if not rewards:
@@ -347,7 +355,9 @@ def green_pixel_ratio(frame) -> float:
     mask = cv2.inRange(
         hsv,
         np.array((35, 80, 70), dtype=np.uint8),
-        np.array((95, 255, 255), dtype=np.uint8),
+        # Cyan item glows can cross the checkbox ROI; the actual green tick
+        # is below hue 85 (OpenCV's 0..179 scale).
+        np.array((85, 255, 255), dtype=np.uint8),
     )
     return round(float((mask > 0).mean()), 6)
 
@@ -448,6 +458,7 @@ def read_choice_count(context: Any) -> int:
         padding=4,
         frame_data_url=frame,
         crop=True,
+        options={"ocr_version": "PP-OCRv5"},
     )
     values = parse_ocr_values(_ordered_text(tokens))
     if values is None or len(values) != 1 or values[0] <= 0:
@@ -546,7 +557,8 @@ def scan_selected_choice_detail(
     context: Any,
     selected: StorageBagChoiceReward,
 ) -> Generator[Any, Any, str]:
-    """Open only the selected card's read-only #587 detail and return safely."""
+    """Read the selected reward preview; spirit bodies have their own layout."""
+    detail_scene = SPIRIT_CHOICE_DETAIL_SCENE if selected.is_spirit_artifact else CHOICE_DETAIL_SCENE
 
     yield from context.wait_click(
         CHOICE_BOX_SCENE,
@@ -554,13 +566,13 @@ def scan_selected_choice_detail(
         timeout=8.0,
     )
     yield from context.wait_scene(
-        [CHOICE_DETAIL_SCENE],
+        [detail_scene],
         wait=8.0,
-        label=f"储物袋自选匣：等待候选{selected.slot} #587详情",
+        label=f"储物袋自选匣：等待候选{selected.slot} #{detail_scene}详情",
     )
     frame = context.cur_frame(update=True)
     tokens = context.ocr_tokens_in_shapes(
-        CHOICE_DETAIL_SCENE,
+        detail_scene,
         ("详情标题",),
         padding=6,
         frame_data_url=frame,
@@ -568,7 +580,7 @@ def scan_selected_choice_detail(
     )
     observed = _ordered_text(tokens)
     yield from context.wait_click(
-        CHOICE_DETAIL_SCENE,
+        detail_scene,
         "右侧暗幕返回",
         timeout=8.0,
     )
@@ -719,6 +731,22 @@ def _storage_base_totals(snapshot: Mapping[str, Any]) -> dict[int, int]:
     return totals
 
 
+def verify_spirit_artifact_choice_transaction(
+    before, after, spirit_before, spirit_after, *, request, reward,
+):
+    """Confirm box consumption and owned-body delivery, independent of bag display."""
+    quantity = requested_choice_box_open_quantity(request)
+    proof = verify_spirit_artifact_choice_outcome(
+        spirit_before, spirit_after, reward=reward, opened_count=quantity,
+    )
+    consumed = derive_partner_choice_box_consumption_delta(before, after, request=request)
+    delta = StorageBagChoiceBoxDelta(
+        consumed.opened_count, reward.base_id, proof.quantity,
+        consumed.before_fingerprint, consumed.after_fingerprint,
+    )
+    return delta, proof
+
+
 def _verify_exact_storage_changes(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
@@ -731,7 +759,7 @@ def _verify_exact_storage_changes(
         delta = after_totals.get(base_id, 0) - before_totals.get(base_id, 0)
         if delta != int(expected.get(base_id, 0)):
             raise StorageBagChoiceBoxBlocked(
-                f"仙侣结果背包物品 {base_id} 增量 {delta} != 权威期望 {expected.get(base_id, 0)}"
+                f"兑换结果背包物品 {base_id} 增量 {delta} != 权威期望 {expected.get(base_id, 0)}"
             )
 
 
@@ -820,7 +848,7 @@ def verify_spirit_artifact_choice_outcome(
 
     This proves inventory delivery only. It neither equips nor consumes bodies and
     makes no assumption about realm transfer. Failure must never reopen a box.
-    灵器分支只通过纯库存差量检查；真实自选到账流程尚未验收。
+    珍藏灵器自选匣一次开启六个、红色本体到账已真实验收。
     """
     identity, old = _spirit_inventory(before)
     after_identity, new = _spirit_inventory(after)
@@ -890,6 +918,10 @@ def derive_choice_box_delta(
     )
 
 
+class StorageBagChoiceBoxPaused(RuntimeError):
+    """Deadline reached in the bag, before opening a consumption dialog."""
+
+
 class StorageBagChoiceBoxGuiAdapter:
     """Reusable #525→#586 choice executor; never writes yield averages."""
 
@@ -913,6 +945,8 @@ class StorageBagChoiceBoxGuiAdapter:
         max_scrolls: int = 12,
         max_increment_steps: int = 200,
         after_snapshot_retries: int = 4,
+        stop_at: float | None = None,
+        plan_observer: Callable[[StorageBagItemClickPlan], None] | None = None,
     ) -> None:
         self.context = context
         self.snapshot_reader = snapshot_reader
@@ -931,6 +965,8 @@ class StorageBagChoiceBoxGuiAdapter:
         self.max_scrolls = max(0, min(30, int(max_scrolls)))
         self.max_increment_steps = max(0, min(500, int(max_increment_steps)))
         self.after_snapshot_retries = max(1, min(10, int(after_snapshot_retries)))
+        self.stop_at = stop_at
+        self.plan_observer = plan_observer
 
     def execute(
         self, request: StorageBagChoiceBoxRequest
@@ -939,42 +975,50 @@ class StorageBagChoiceBoxGuiAdapter:
         confirmation_state = {'may_have_been_sent': False}
         try:
             return (yield from self._execute(request, confirmation_state=confirmation_state))
-        except Exception as error:
+        except (Exception, KeyboardInterrupt) as error:
             error.purchase_confirmation_may_have_been_sent = confirmation_state['may_have_been_sent']
             raise
 
-    def _execute(self, request: StorageBagChoiceBoxRequest, *, confirmation_state):
-        if request.base_id <= 0 or not request.instance_id or not request.name.strip() or request.quantity <= 0:
-            raise StorageBagChoiceBoxBlocked("自选匣请求缺少 base_id/instance_id/名称/数量")
-        open_quantity = requested_choice_box_open_quantity(request)
-        parse_persisted_choice_note(request.note)
-        box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
-        rewards = choice_rewards_from_catalog(box_card, self.catalog_cards_by_id)
-        annotated_slots = tuple(
-            int(slot) for slot in self.visible_slot_reader(self.context)
-        )
-        visible_slots = annotated_slots[: min(len(annotated_slots), len(rewards))]
-        if not visible_slots:
-            raise StorageBagChoiceBoxBlocked("#586 没有正式标注的可见候选")
-        # This gate intentionally runs before even reading/clicking #525.
-        self.asset_validator(self.context, visible_slots)
-
-        before = dict(self.snapshot_reader())
-        identity = _snapshot_identity(before)
-        target = _runtime_instances(before).get(request.instance_id)
-        if target != (request.base_id, request.quantity):
-            raise StorageBagChoiceBoxBlocked("动作前 Runtime 没有与请求一致的唯一目标实例")
-
+    def open(self, request: StorageBagChoiceBoxRequest, *, snapshot=None):
+        """定位并打开自选匣，核验标题后停在 #586；不选择奖励、不消耗。"""
+        before = dict(snapshot if snapshot is not None else self.snapshot_reader())
+        _snapshot_identity(before)
+        if _runtime_instances(before).get(request.instance_id) != (request.base_id, request.quantity):
+            raise StorageBagChoiceBoxBlocked("开匣前目标实例与请求不一致")
         retries = 0
         scrolls = 0
+        window = self.context.shape(STORAGE_BAG_SCENE, '窗口').raw
+        first_cell = self.context.shape(STORAGE_BAG_SCENE, '第1行第1个').raw
+        # The four-column gutter at the window centre does not reliably receive
+        # drag events. Derive an item-column centre from the formal grid assets.
+        scroll_cross_axis = (first_cell['x'] + first_cell['w'] / 2 - window['x']) / window['w']
         while True:
+            if self.stop_at is not None and time.time() >= self.stop_at - 120:
+                raise StorageBagChoiceBoxPaused('已到开箱收尾预留时间，停留储物袋且未点目标')
             planned = self.click_planner(self.context, before, request)
             plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
+            if self.plan_observer is not None:
+                self.plan_observer(plan)
             if plan.ready:
                 break
             if plan.status in {"insufficient_observations", "ambiguous_offset"}:
-                if retries >= self.alignment_retries:
-                    raise StorageBagChoiceBoxBlocked(f"#525 对齐有限重试后仍不唯一：{plan.status}")
+                if plan.status == "ambiguous_offset" or retries >= self.alignment_retries:
+                    if plan.status == "ambiguous_offset" and scrolls < self.max_scrolls:
+                        # Repeated one-item stacks cannot identify a viewport.
+                        # Move only the list to seek a distinguishing sequence;
+                        # a later unique anchor can navigate back to the target.
+                        # No item coordinate is used until uniqueness is proved.
+                        self.context.drag_shape_content(STORAGE_BAG_SCENE, "窗口", direction="down",
+                                                        cross_axis_ratio=scroll_cross_axis)
+                        scrolls += 1
+                        retries = 0
+                        yield from self.context.wait_action_settle(0.25)
+                        continue
+                    raise StorageBagChoiceBoxBlocked(
+                        f"#525 对齐有限重试后仍不唯一：{plan.status}；{plan.reason}。"
+                        "请 AI 查阅 C:/home/chenkunze/slns/skills/凡修/references/接口层/图形界面定位与标注.md，"
+                        "核对当前网格与数量观测；尚未点击目标箱子。"
+                    )
                 retries += 1
                 yield from self.context.wait_action_settle(0.2)
                 continue
@@ -992,8 +1036,7 @@ class StorageBagChoiceBoxGuiAdapter:
                     STORAGE_BAG_SCENE,
                     "窗口",
                     direction=directive.direction,
-                    ratio=0.72 if directive.mode == "coarse" else 0.38,
-                    duration=0.45,
+                    cross_axis_ratio=scroll_cross_axis,
                 )
                 scrolls += 1
                 retries = 0
@@ -1023,6 +1066,32 @@ class StorageBagChoiceBoxGuiAdapter:
         if not detail.confirmed:
             raise StorageBagChoiceBoxBlocked(f"#586 详情标题复核失败：{detail.reason}")
 
+        return plan, detail, scrolls
+
+    def _execute(self, request: StorageBagChoiceBoxRequest, *, confirmation_state):
+        if request.base_id <= 0 or not request.instance_id or not request.name.strip() or request.quantity <= 0:
+            raise StorageBagChoiceBoxBlocked("自选匣请求缺少 base_id/instance_id/名称/数量")
+        open_quantity = requested_choice_box_open_quantity(request)
+        parse_persisted_choice_note(request.note)
+        box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
+        rewards = choice_rewards_from_catalog(box_card, self.catalog_cards_by_id)
+        annotated_slots = tuple(
+            int(slot) for slot in self.visible_slot_reader(self.context)
+        )
+        visible_slots = annotated_slots[: min(len(annotated_slots), len(rewards))]
+        if not visible_slots:
+            raise StorageBagChoiceBoxBlocked("#586 没有正式标注的可见候选")
+        # This gate intentionally runs before even reading/clicking #525.
+        self.asset_validator(self.context, visible_slots)
+
+        before = dict(self.snapshot_reader())
+        identity = _snapshot_identity(before)
+        target = _runtime_instances(before).get(request.instance_id)
+        if target != (request.base_id, request.quantity):
+            raise StorageBagChoiceBoxBlocked("动作前 Runtime 没有与请求一致的唯一目标实例")
+
+        plan, detail, scrolls = yield from self.open(request, snapshot=before)
+
         availability = dict(self.availability_reader(self.context, visible_slots))
         selected = choose_reward_from_note(
             request.note, rewards, availability, visible_slots
@@ -1034,7 +1103,14 @@ class StorageBagChoiceBoxGuiAdapter:
             f"候选{selected.slot}/右上选择框",
             timeout=8.0,
         )
-        if not self.selection_verifier(self.context, selected.slot, len(visible_slots)):
+        # The click returns before the tick is painted. Observe the same
+        # selection without clicking again (a repeat click can toggle it off).
+        for observation in range(3):
+            if self.selection_verifier(self.context, selected.slot, len(visible_slots)):
+                break
+            if observation < 2:
+                yield from self.context.wait_action_settle(0.2)
+        else:
             raise StorageBagChoiceBoxBlocked("#586 绿色勾选没有独立证明目标被唯一选中")
 
         current = self.count_reader(self.context)
@@ -1148,15 +1224,10 @@ class StorageBagChoiceBoxGuiAdapter:
             )
         elif spirit_before is not None:
             # One action, one independent delivery observation; no automatic reopen.
-            spirit_outcome = verify_spirit_artifact_choice_outcome(
-                spirit_before, dict(self.spirit_artifact_snapshot_reader()),
-                reward=selected, opened_count=open_quantity,
-            )
-            consumed = derive_partner_choice_box_consumption_delta(before, after, request=request)
-            _verify_exact_storage_changes(before, after, expected={request.base_id: -open_quantity})
-            delta = StorageBagChoiceBoxDelta(
-                consumed.opened_count, selected.base_id, spirit_outcome.quantity,
-                consumed.before_fingerprint, consumed.after_fingerprint,
+            # The bag proves box consumption; the spirit inventory proves delivery.
+            delta, spirit_outcome = verify_spirit_artifact_choice_transaction(
+                before, after, spirit_before, dict(self.spirit_artifact_snapshot_reader()),
+                request=request, reward=selected,
             )
         else:
             delta = derive_choice_box_delta(

@@ -118,6 +118,7 @@ def _load(signatures: tuple[tuple[str, int, int], ...]) -> Mapping[str, Any]:
     return _freeze({'cleanse_by_id': cleanse, 'items_by_base_id': items,
                     'wares': wares, 'preview_by_group': previews,
                     'attribute_codes': attributes, 'sources': sources, 'fingerprint': fingerprint,
+                    'attribute_names': {r['id']: r['name'] for r in tables['Attribute']},
                     'runtime_verified': False, 'version_status': 'export_only_not_current_runtime_verified',
                     'base_score_source': 'business_convention_parts_1_4_100_parts_5_6_150',
                     'coverage': {'rows': {n: len(r) for n, r in tables.items()},
@@ -155,3 +156,13 @@ def load_spirit_artifact_wash_rules(
 def spirit_artifact_ware_ids() -> frozenset[int]:
     """正式配置支持的编号集合；不是已解锁、已装配或已自然加载集合。"""
     return frozenset(load_spirit_artifact_wash_rules()['wares'])
+
+
+def spirit_artifact_core_names(ware_id: int) -> list[str]:
+    """展示配置中的专属核心，不含为策略 A 补入的基础属性；不访问游戏。"""
+    from .lua_config import load_default_fanxiu_lang_map
+    rules = load_spirit_artifact_wash_rules()
+    core = set(rules['wares'].get(ware_id, {}).get('core_codes', ()))
+    lang = load_default_fanxiu_lang_map()
+    return [lang[name] if isinstance(name, int) else name
+            for code, name in rules['attribute_names'].items() if code in core]

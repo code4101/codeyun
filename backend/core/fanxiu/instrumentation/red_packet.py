@@ -72,6 +72,82 @@ _unavailable_until: dict[tuple[str, int, int], float] = {}
 _unavailable_lock = threading.Lock()
 
 
+def evaluate_red_packet_daily_quota(
+    config: dict[str, Any],
+    *,
+    id_counts: dict[Any, Any] | None,
+    event_counts: dict[Any, Any] | None,
+) -> dict[str, Any]:
+    """Project HasReward's quota gate; remaining quota grants no claim action.
+
+    Counters are fresh server maps, never persisted per-channel suppression.
+    A missing entry in a decoded map is zero; an unavailable map is unknown.
+    Receive conditions and other reward gates remain independent.
+    """
+    limit = as_int(config.get("dailyNum"))
+    kind = as_int(config.get("dailyNumType"))
+    key = as_int(config.get("id" if kind == 1 else "eventType"))
+    result = {"status": "unknown", "limit": limit, "count": None,
+              "remaining": None, "group_type": kind, "group_id": key}
+    if limit == -1:
+        return {**result, "status": "unlimited"}
+    if limit is None or limit < 0 or kind not in {1, 2} or key is None:
+        return result
+    counts = id_counts if kind == 1 else event_counts
+    if counts is None:
+        return result
+    raw_count = counts.get(key, counts.get(str(key), 0))
+    count = as_int(raw_count)
+    if isinstance(raw_count, bool) or count is None or count < 0:
+        return result
+    return {**result, "count": count, "remaining": max(0, limit - count),
+            "status": "exhausted" if count >= limit else "remaining"}
+
+
+def _loaded_redbag_quota_configs(memory: MumuProcessMemory, reader: LuaJitReader,
+                                 ids: set[int]) -> dict[int, dict[str, Any]]:
+    """Read only naturally loaded RedBag.RedBag rows, including hot updates."""
+    methods = frozenset({"DBMgr", "GetConfigTable", "GetConfigTableByIdWithLog", "Inst_get"})
+
+    def config_ref(current: LuaJitReader, root: int):
+        manager = manager_index_fields(current, root, methods)
+        instance = current.fields(manager.get("inst"))
+        wrapper = current.fields(instance.get("ConfigDic"))
+        storage = table_ref(wrapper.get("_dt_"))
+        config = table_ref(current.string_fields(storage.address, frozenset({"RedBag.RedBag"})).get("RedBag.RedBag")) if storage else None
+        if config is None:
+            raise FanxiuRuntimeMemoryError("RedBag.RedBag 尚未自然加载")
+        return config
+
+    root, _, environment = resolve_lua_global_manager_root(
+        memory, manager_key="redbag-quota-db", state_address=_main_lua_state_address(memory),
+        global_name="DBMgr", required_methods=methods, validate=config_ref,
+    )
+    globals_ = reader.string_fields(environment, frozenset({"s_globalCfgIdx"}))
+    group = reader.fields(reader.fields(globals_.get("s_globalCfgIdx")).get("RedBag"))
+    indexes = reader.fields(group.get("RedBag"))
+    table = reader.table(config_ref(reader, root).address)
+    fields, array = table["fields"], table["array"]
+    result = {}
+    for bag_id in ids:
+        raw = fields.get(bag_id)
+        if raw is None and 0 <= bag_id < len(array):
+            raw = array[bag_id]
+        ref = table_ref(raw)
+        if ref is None:
+            continue
+        row = reader.table(ref.address)
+        decoded = {"id": bag_id}
+        for name in ("dailyNum", "dailyNumType", "eventType"):
+            value = row["fields"].get(name)
+            index = as_int(indexes.get(name))
+            if value is None and index is not None and 0 <= index < len(row["array"]):
+                value = row["array"][index]
+            decoded[name] = value
+        result[bag_id] = decoded
+    return result
+
+
 def _red_packet_snapshot_path() -> Path:
     return codeyun_temp_root("fanxiu-runtime-memory") / "red-packet-snapshot.json"
 
@@ -506,8 +582,8 @@ def _snapshot(
         receive_queue_items, receive_queue_count = reader.list_items(
             data.get("_ReceiveRedBagList")
         )
-    id_independent_map_loaded = "_idIndependentMap" in data
-    event_map_loaded = "_eventMap" in data
+    id_independent_map_loaded = table_ref(reader.fields(data.get("_idIndependentMap")).get("_dt_")) is not None
+    event_map_loaded = table_ref(reader.fields(data.get("_eventMap")).get("_dt_")) is not None
     id_independent_map = (
         reader.dictionary_fields(data.get("_idIndependentMap"))
         if id_independent_map_loaded
@@ -518,6 +594,15 @@ def _snapshot(
         if event_map_loaded
         else {}
     )
+    quota_config_error = ""
+    try:
+        quota_configs = _loaded_redbag_quota_configs(
+            memory, reader,
+            {bag_id for bag in bags if (bag_id := as_int(reader.fields(bag).get("id"))) is not None},
+        ) if bags else {}
+    except (RuntimeError, OSError, ValueError) as exc:
+        quota_configs = {}
+        quota_config_error = str(exc)
 
     pending: list[dict[str, Any]] = []
     structural_items: list[dict[str, Any]] = []
@@ -578,6 +663,14 @@ def _snapshot(
             item["exclusion_reasons"].append("detail_rewarded")
         if total is not None and received is not None and received >= total:
             item["exclusion_reasons"].append("detail_full")
+        quota = evaluate_red_packet_daily_quota(
+            quota_configs.get(bag_id, {}),
+            id_counts=id_independent_map if id_independent_map_loaded else None,
+            event_counts=event_map if event_map_loaded else None,
+        )
+        item["daily_quota"] = quota
+        if quota["status"] == "exhausted":
+            item["exclusion_reasons"].append("daily_quota_exhausted")
 
         special_config = _SPECIAL_EVENT_CONFIGS.get(bag_id or -1)
         if special_config is not None:
@@ -727,6 +820,7 @@ def _snapshot(
             "event_map_loaded": event_map_loaded,
             "event_map_count": len(event_map),
         },
+        "quota_config_error": quota_config_error,
         "main_ui_queue_count": (
             main_ui_count if main_ui_count is not None else len(main_ui_items)
         ),

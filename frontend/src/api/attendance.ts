@@ -717,6 +717,7 @@ export async function fetchAttendanceFeedbackHistory(params: {
   student_id_text?: string
   student_name?: string
   limit?: number
+  include_all?: boolean
 }) {
   const response = await api.get<AttendanceFeedbackHistoryResponse>('/attendance/wjx-feedback/history', { params })
   return response.data

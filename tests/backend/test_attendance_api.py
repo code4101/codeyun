@@ -859,7 +859,16 @@ def test_attendance_wjx_data_listing_reads_inline_link_cells_from_sheet(client: 
     assert item["student_name"] == "吴菲"
 
 
-def test_attendance_feedback_history_matches_course_and_identity(client: TestClient, session):
+def test_attendance_feedback_history_matches_course_and_identity(client: TestClient, session, monkeypatch):
+    # History now reads the independent sheet provider, not the legacy SQL rows.
+    monkeypatch.setattr(
+        attendance_api,
+        "_collect_attendance_feedback_history_source_items",
+        lambda _session: [
+            attendance_api.serialize_attendance_wjx_data_entry(entry)
+            for entry in session.exec(select(AttendanceWjxDataEntry)).all()
+        ],
+    )
     session.add_all(
         [
             AttendanceWjxDataEntry(
@@ -933,6 +942,14 @@ def test_attendance_feedback_history_matches_course_and_identity(client: TestCli
     assert payload["total"] == 3
     assert [item["seq"] for item in payload["items"]] == [810, 808]
     assert payload["items"][0]["correction_request"] == "日志打卡已经3次了"
+
+    all_history = client.get(
+        "/api/attendance/wjx-feedback/history",
+        params={"course_name": "20260509梵呗初阶", "student_name": "范鹏", "limit": 1, "include_all": True},
+    )
+    assert all_history.status_code == 200
+    assert [item["seq"] for item in all_history.json()["items"]] == [810, 808, 807]
+    assert all_history.json()["items"][0]["process_status"] == "已处理"
 
 
 def test_attendance_wjx_data_public_listing_returns_full_rows(client: TestClient, session):

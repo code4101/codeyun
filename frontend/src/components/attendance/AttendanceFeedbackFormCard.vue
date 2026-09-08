@@ -233,7 +233,7 @@ async function loadFeedbackHistory() {
       course_name: course,
       student_id_text: studentId,
       student_name: studentName,
-      limit: 8,
+      include_all: true,
     })
     if (requestId !== feedbackHistoryRequestId) {
       return

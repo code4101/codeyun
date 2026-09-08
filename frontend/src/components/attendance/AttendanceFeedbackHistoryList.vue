@@ -12,6 +12,7 @@ const props = withDefaults(
     title?: string
     loadingText?: string
     emptyText?: string
+    errorText?: string
     studentId?: string
     studentName?: string
   }>(),
@@ -20,9 +21,10 @@ const props = withDefaults(
     total: 0,
     loading: false,
     ready: false,
-    title: '历史反馈',
+    title: '历史提问与回复',
     loadingText: '正在查询历史反馈...',
     emptyText: '暂未查到这个学员的历史反馈。',
+    errorText: '',
     studentId: '',
     studentName: '',
   },
@@ -32,21 +34,6 @@ const visible = computed(() => props.ready || props.loading || props.items.lengt
 
 function hasText(value: unknown) {
   return String(value ?? '').trim().length > 0
-}
-
-function hasSecondaryFields(item: AttendanceWjxDataItem) {
-  return (
-    hasText(item.extra_note)
-    || (hasText(item.process_note) && item.process_note !== item.process_status)
-  )
-}
-
-function isResolved(item: AttendanceWjxDataItem) {
-  return resolveProcessStatus(item).includes('已')
-}
-
-function isPending(item: AttendanceWjxDataItem) {
-  return !item.process_status?.trim()
 }
 
 function resolveProcessStatus(item: AttendanceWjxDataItem) {
@@ -59,11 +46,13 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
     <div class="history-header">
       <h2>{{ title }}</h2>
       <span v-if="items.length" class="history-count">
-        最近 {{ items.length }} 条<span v-if="total > items.length"> / 共 {{ total }} 条</span>
+        <template v-if="total > items.length">最近 {{ items.length }} 条 / 共 {{ total }} 条</template>
+        <template v-else>共 {{ items.length }} 条</template>
       </span>
     </div>
 
-    <div v-if="loading && !items.length" class="history-empty">
+    <div v-if="errorText" class="history-empty" role="alert">{{ errorText }}</div>
+    <div v-else-if="loading && !items.length" class="history-empty">
       {{ loadingText }}
     </div>
     <div v-else-if="ready && !items.length" class="history-empty">
@@ -79,25 +68,9 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
         <div class="record-head">
           <span class="record-seq">序号 {{ item.seq }}</span>
           <span v-if="item.submitted_at_text" class="record-time">{{ item.submitted_at_text }}</span>
-          <span
-            class="record-status"
-            :class="{
-              'is-resolved': isResolved(item),
-              'is-pending': isPending(item),
-            }"
-          >
-            {{ resolveProcessStatus(item) }}
-          </span>
         </div>
 
-        <div
-          v-if="hasText(item.correction_request) && !hasSecondaryFields(item)"
-          class="history-primary-text"
-        >
-          {{ item.correction_request }}
-        </div>
-
-        <dl v-else class="history-fields">
+        <dl class="history-fields">
           <template v-if="hasText(item.correction_request)">
             <dt>修正需求</dt>
             <dd>{{ item.correction_request }}</dd>
@@ -106,6 +79,8 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
             <dt>补充说明</dt>
             <dd>{{ item.extra_note }}</dd>
           </template>
+          <dt>处理回复</dt>
+          <dd>{{ resolveProcessStatus(item) }}</dd>
           <template v-if="hasText(item.process_note) && item.process_note !== item.process_status">
             <dt>处理备注</dt>
             <dd>{{ item.process_note }}</dd>
@@ -133,7 +108,7 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
 .history-header h2 {
   margin: 0;
   color: var(--feedback-text, #334155);
-  font-size: 18px;
+  font-size: 14px;
   line-height: 1.5;
   font-weight: 700;
 }
@@ -179,32 +154,11 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
   font-weight: 700;
 }
 
-.record-status {
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  color: #a15d1e;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 20px;
-}
-
-.record-status.is-resolved {
-  background: #e8f7ee;
-  color: #19784a;
-}
-
-.record-status.is-pending {
-  background: #fff4c7;
-  color: #9a5b00;
-}
-
 .history-fields {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 8px 14px;
+  grid-template-columns: 6em minmax(0, 1fr);
+  gap: 0;
+  border-top: 1px solid #e2e8f0;
   margin: 0;
   color: var(--feedback-text, #334155);
   font-size: 14px;
@@ -212,8 +166,15 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
 }
 
 .history-fields dt {
+  background: #f6f8fa;
   color: var(--feedback-muted, #64748b);
   font-weight: 600;
+}
+
+.history-fields dt,
+.history-fields dd {
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e8f0;
 }
 
 .history-fields dd {
@@ -223,24 +184,9 @@ function resolveProcessStatus(item: AttendanceWjxDataItem) {
   overflow-wrap: anywhere;
 }
 
-.history-primary-text {
-  color: var(--feedback-text, #334155);
-  font-size: 14px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 560px) {
-  .history-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-  }
-
+@media (max-width: 360px) {
   .history-fields {
-    grid-template-columns: 1fr;
-    gap: 2px;
+    grid-template-columns: 5em minmax(0, 1fr);
   }
 }
 </style>

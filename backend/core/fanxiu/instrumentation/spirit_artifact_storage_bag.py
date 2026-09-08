@@ -160,6 +160,51 @@ def build_spirit_artifact_storage_bag_snapshot(
     }
 
 
+def publish_spirit_artifact_box_quantity(
+    session: Session, *, box_base_id: int, runtime_snapshot: Mapping[str, Any],
+) -> dict[str, Any]:
+    """用已完成开箱的观测更新该箱库存；不读游戏、不关联后续升级。"""
+    from ..catalog.inventory import load_spirit_artifact_hall
+    from ..catalog.item import load_fanxiu_item_runtime_index
+    observed_at = float(runtime_snapshot.get('observed_at') or 0)
+    if observed_at <= 0:
+        raise ValueError('开箱库存观测缺少时间')
+    captured_at = datetime.fromtimestamp(observed_at).astimezone().isoformat(timespec='seconds')
+    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
+    bag = build_storage_bag_catalog_snapshot(runtime_snapshot, cards, captured_at=captured_at)
+    quantity = next((item['num'] for item in bag['items'] if item['base_id'] == box_base_id), 0)
+    row = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == 'current',
+    )).first()
+    if row is None:
+        hall = load_spirit_artifact_hall()
+        payload = build_spirit_artifact_storage_bag_snapshot(
+            runtime_snapshot, cards, hall['artifacts'], hall['storage_bag_items'],
+            captured_at=captured_at)
+        row = FanxiuPacketBusinessRecord(domain=DOMAIN, record_key='current', created_at=time.time())
+    else:
+        payload = dict(row.payload)
+    items = [dict(item) for item in payload.get('storage_bag_items', [])]
+    target = next((item for item in items if item.get('base_id') == box_base_id), None)
+    if target is None:
+        raise ValueError(f'灵器库存表未收录自选箱 {box_base_id}')
+    latest = max(float(target.get('quantity_observed_at') or 0),
+                 datetime.fromisoformat(row.captured_at).timestamp() if row.captured_at else 0)
+    if observed_at < latest:
+        return payload
+    target.update(quantity=quantity, quantity_observed_at=observed_at,
+                  quantity_evidence=bag['evidence'])
+    payload['storage_bag_items'] = items
+    row.payload = payload
+    row.source_kind = 'dynamic_instrumentation'
+    row.entity_name = '灵器自选宝匣库存'
+    row.updated_at = time.time()
+    session.add(row)
+    session.commit()
+    return payload
+
+
 def sync_spirit_artifact_storage_bag(session: Session) -> dict[str, Any]:
     """显式只读游戏并更新数据库；不打开、领取或使用宝匣。"""
     from backend.core.fanxiu.catalog.inventory import load_spirit_artifact_hall
@@ -175,6 +220,14 @@ def sync_spirit_artifact_storage_bag(session: Session) -> dict[str, Any]:
         runtime, load_fanxiu_item_runtime_index(rebuild_missing=False)["cards_by_id"],
         hall["artifacts"], (previous or hall)["storage_bag_items"], captured_at=captured_at,
     )
+    from .backpack import read_backpack_item_counts
+    currency, currency_evidence = read_backpack_item_counts([15100001], manager_key='spirit-artifact-market')
+    bag_identity = runtime.get('evidence') or {}
+    if (currency_evidence['pid'], currency_evidence['process_start_ticks']) != (
+            bag_identity.get('pid'), bag_identity.get('process_start_ticks')):
+        raise ValueError('灵器货币与储物袋进程不一致')
+    payload['market_currency_count'] = currency[15100001]
+    payload['market_currency_evidence'] = currency_evidence
     # 页面GET不读游戏；显式同步时一次批查目录未知项，再一次批查礼包效果。
     # 不把名字缺失等同来源未知，也不把type=2笼统当随机。
     unresolved = payload.get('unresolved_item_ids') or []

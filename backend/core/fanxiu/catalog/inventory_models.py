@@ -282,6 +282,12 @@ class FanxiuSpiritArtifactItem(BaseModel):
     name: str = ""
     rows: List[FanxiuSpiritArtifactPartRow] = Field(default_factory=list)
 
+    @computed_field
+    @property
+    def core_attributes(self) -> list[str]:
+        from .spirit_artifact_wash_rules import spirit_artifact_core_names
+        return spirit_artifact_core_names(self.order)
+
 
 class FanxiuSpiritArtifactMarketItem(BaseModel):
     order: int = 0

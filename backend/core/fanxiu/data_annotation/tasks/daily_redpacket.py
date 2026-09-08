@@ -984,7 +984,9 @@ class DailyRedpacketTaskMixin:
                 # back to the chat page. Capture the frame before waiting for
                 # result scenes, otherwise it is indistinguishable from an
                 # unknown transition.
-                yield from context.wait_action_settle(0.15)
+                # Capture in the same tick as the click: yielding a settle
+                # step also incurs the scheduler tick delay and can miss the
+                # short-lived quota toast entirely.
                 quota_frame = context.cur_frame(update=True)
                 quota_text = re.sub(r"\s+", "", context.ocr_text(quota_frame))
                 if "领取次数不足" in quota_text:
@@ -1010,6 +1012,10 @@ class DailyRedpacketTaskMixin:
                     "日常_红包：打开队列期间遇到已抢光红包，已关闭结果并返回当前群聊",
                 )
                 return opened_count
+            if int(result_view.id or 0) not in {398, 399}:
+                raise RuntimeError(
+                    f"日常_红包：开包后落到 #{result_view.id}，未确认领取结果，停止后续点击"
+                )
             opened_count += 1
             if int(result_view.id or 0) == 399:
                 current = result_view

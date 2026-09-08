@@ -211,9 +211,9 @@ export type NoteSheetPatchOperation =
       expected_meta?: Record<string, unknown>
       meta: Record<string, unknown>
     }
-  | { op: 'set-column-width'; column_index: number; width: number }
+  | { op: 'set-column-width'; column_index: number; column_id?: string; width: number; expected_width?: number | null }
   | { op: 'set-column-hidden'; column_index: number; hidden: boolean }
-  | { op: 'set-column-config'; column_index: number; config: Record<string, unknown> }
+  | { op: 'set-column-config'; column_index: number; column_id?: string; config: Record<string, unknown>; expected_config?: Record<string, unknown> }
   | { op: 'merge-cells'; row: number; col: number; rowspan: number; colspan: number }
   | { op: 'unmerge-cells'; row: number; col: number }
   | { op: 'insert-row'; after_row_id?: string | null; row_id?: string; row?: unknown }

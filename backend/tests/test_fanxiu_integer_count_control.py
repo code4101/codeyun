@@ -137,33 +137,46 @@ def test_proportional_drag_can_land_exactly_without_clicks() -> None:
     assert context.clicks == []
 
 
-def test_slider_prefers_bounded_large_step_button_burst() -> None:
+@pytest.mark.parametrize("track_only", [False, True])
+@pytest.mark.parametrize("large_step", [0, 10])
+@pytest.mark.parametrize("error", [0, -11, -10, -9, 9, 10, 11, 167])
+def test_initial_phase_uses_count_error_threshold(
+    monkeypatch, track_only, large_step, error,
+) -> None:
+    # Check only deterministic phase selection; do not simulate game feedback.
+    from backend.core.fanxiu.data_annotation.tasks import integer_count_control as control
+
     assets = SimpleNamespace(
-        **ASSETS.__dict__,
-        count_decrease_large="-10",
-        count_increase_large="+10",
-        count_large_step=10,
+        **{**ASSETS.__dict__, "count_slider_thumb": None if track_only else "滑块"},
+        count_slider_track="滑条" if track_only else None,
+        count_decrease_large="-10" if large_step else None,
+        count_increase_large="+10" if large_step else None,
+        count_large_step=large_step,
     )
-    context = SliderContext(maximum=200)
 
-    result = _finish(set_verified_integer_slider_count(
-        context,
-        assets,
-        168,
-        maximum=200,
-        max_adjustments=10,
-        runtime_count_reader=lambda: {
-            "current": context.count,
-            "maximum": context.maximum,
-        },
-    ))
+    class PhaseSelected(Exception):
+        pass
 
-    assert result["phase"] == "button_fast_path"
-    assert result["after"] == 168
-    assert result["estimated_button_actions"] == 23
-    assert result["fine_adjustment_actions"] == 23
-    assert context.frame_drags == []
-    assert context.fast_clicks == ["+10"] * 16 + ["增加"] * 7
+    def fine(*args, **kwargs):
+        raise PhaseSelected("fine")
+
+    def proportional(*args, **kwargs):
+        raise PhaseSelected("proportional")
+
+    monkeypatch.setattr(control, "_fine_tune_batches", fine)
+    monkeypatch.setattr(control, "_slider_geometry", lambda *args: None)
+    monkeypatch.setattr(control, "_proportional_position", proportional)
+    monkeypatch.setattr(control, "_set_track_only_count", proportional)
+    operation = set_verified_integer_slider_count(
+        None, assets, 200 + error, initial_count=200,
+        maximum=1000, max_adjustments=10,
+    )
+    if error == 0:
+        assert _finish(operation)["phase"] == "already_exact"
+    else:
+        expected = "fine" if abs(error) <= 10 else "proportional"
+        with pytest.raises(PhaseSelected, match=f"^{expected}$"):
+            next(operation)
 
 
 def test_coarse_pixel_probe_still_removes_bulk_error_when_grain_exceeds_threshold() -> None:

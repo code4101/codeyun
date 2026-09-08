@@ -713,8 +713,10 @@ class NoteSheetPatchOperation(BaseModel):
     meta: dict[str, Any] | None = None
     expected_meta: dict[str, Any] | None = None
     width: int | float | None = None
+    expected_width: int | float | None = None
     hidden: bool | None = None
     config: dict[str, Any] | None = None
+    expected_config: dict[str, Any] | None = None
 
 
 class NoteSheetPatchRequest(BaseModel):
@@ -2318,7 +2320,7 @@ def _rebase_stale_cell_patch_ops(
     document_json: dict[str, Any],
     ops: list[NoteSheetPatchOperation],
 ) -> list[NoteSheetPatchOperation]:
-    """Rebase identity-addressed cell edits when their exact targets are unchanged."""
+    """Rebase identified edits only when the properties being changed are unchanged."""
 
     normalized, _identity_changed = _ensure_sheet_document_identity(
         deepcopy(_normalize_document_json(document_json))
@@ -2331,6 +2333,45 @@ def _rebase_stale_cell_patch_ops(
     rebased: list[NoteSheetPatchOperation] = []
 
     for operation in ops:
+        if operation.op in {"set-column-width", "set-column-config"}:
+            if not operation.column_id or operation.column_id not in column_ids:
+                raise HTTPException(status_code=409, detail="当前修改列已变化，请刷新后合并")
+            column_index = column_ids.index(operation.column_id)
+            updates = {"column_index": column_index}
+            if operation.op == "set-column-width":
+                widths = normalized.get("column_widths") or []
+                current = widths[column_index] if column_index < len(widths) else None
+                if current != operation.width and (
+                    "expected_width" not in operation.model_fields_set
+                    or current != operation.expected_width
+                ):
+                    raise HTTPException(status_code=409, detail="当前列宽已更新，请刷新后合并")
+            else:
+                current = dict((normalized.get("column_configs") or {}).get(columns[column_index]) or {})
+                desired = dict(operation.config or {})
+                if "expected_config" not in operation.model_fields_set:
+                    if current != desired:
+                        raise HTTPException(status_code=409, detail="当前列设置已更新，请刷新后合并")
+                else:
+                    expected = dict(operation.expected_config or {})
+                    # Merge only changed properties: a wrap edit must preserve a
+                    # concurrent filter/color edit on the same column.
+                    missing = object()
+                    merged = dict(current)
+                    for key in expected.keys() | desired.keys():
+                        before, after = expected.get(key, missing), desired.get(key, missing)
+                        if before == after:
+                            continue
+                        actual = current.get(key, missing)
+                        if actual != before and actual != after:
+                            raise HTTPException(status_code=409, detail="当前列设置已更新，请刷新后合并")
+                        if after is missing:
+                            merged.pop(key, None)
+                        else:
+                            merged[key] = after
+                    updates["config"] = merged
+            rebased.append(operation.model_copy(update=updates))
+            continue
         if operation.op not in {"set-cell-value", "set-cell-meta"}:
             raise HTTPException(status_code=409, detail="工作表结构或设置已变化，请重新读取后再写入")
         if not operation.row_id or not operation.column_id:
