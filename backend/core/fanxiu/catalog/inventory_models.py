@@ -295,12 +295,18 @@ class FanxiuSpiritArtifactStorageBagChoice(BaseModel):
     raw_name: str = ""
     artifact_name: str = ""
     part_name: str = ""
+    reward_id: int = 0
+    reward_quantity: int = 0
+    stable_body: bool = False
 
 
 class FanxiuSpiritArtifactStorageBagItem(BaseModel):
     order: int = 0
     title: str = ""
     quantity: int = 0
+    base_id: int = 0
+    selection_kind: str = "unknown"
+    stable_body_reward_ids: List[int] = Field(default_factory=list)
     choices: List[FanxiuSpiritArtifactStorageBagChoice] = Field(default_factory=list)
 
 

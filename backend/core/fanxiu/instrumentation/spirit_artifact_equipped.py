@@ -53,6 +53,21 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int] | None = None)
     全部指定器必须已自然加载服务器信息；未知不是空装备。先读引用，
     再取完整库存，最后用新context复读引用，避免同reader缓存伪复验。
     """
+    return read_spirit_artifact_owned_runtime(ware_ids)['equipped']
+
+
+def read_spirit_artifact_owned_runtime(ware_ids: Sequence[int] | None = None) -> dict[str, Any]:
+    """一次只读观察返回完整 inventory 与由它关联的 equipped。
+
+    ware_ids 仅限制装备范围；inventory 始终包含全部本体（包括未装配备件），
+    两者字段与原独立接口一致。需要同时核验库存和装备的调用方使用此入口，
+    不再先单独读取库存。引用前态→完整库存→独立引用后态仍由提供方核验，
+    不接受调用方传入的旧快照，不缓存业务值，不减少进程和引用一致性检查。
+
+    返回 timings_seconds 分解本次观察耗时；它是单次样本，不是性能承诺。
+    组合本身不是游戏原子快照；动作后须重新调用，不能跨动作复用返回结果。
+    新组合入口尚待真实验收；原装备读取路径与失败恢复策略保持不变。
+    """
     from .ui_runtime_context import read_ui_runtime_snapshot
     from .runtime_memory import resolve_lua_global_manager_root
     from .spirit_artifact import read_spirit_artifact_inventory_runtime
@@ -110,13 +125,24 @@ def read_spirit_artifact_equipped_runtime(ware_ids: Sequence[int] | None = None)
         # refresh stale memory mappings; never repeat the equip action here.
         return read_ui_runtime_snapshot([], observe_context)
 
+    started = time.perf_counter()
     before, identity = observe()
+    references_at = time.perf_counter()
     inventory = read_spirit_artifact_inventory_runtime()
+    inventory_at = time.perf_counter()
     after, final_identity = observe()
+    verified_at = time.perf_counter()
     if (before != after or identity != final_identity or
         identity != (inventory['pid'], inventory['process_start_ticks'])):
         raise FanxiuRuntimeMemoryError('读取期间灵器装备或游戏进程变化，请重新读取')
-    return {**project_spirit_artifact_equipped(before, inventory),
+    equipped = {**project_spirit_artifact_equipped(before, inventory),
             'pid': identity[0], 'process_start_ticks': identity[1],
             'captured_at': time.time(), 'read_only': True,
             'source': 'spiritware_server_put_up_set'}
+    return {'inventory': inventory, 'equipped': equipped,
+            'timings_seconds': {
+                'references_before': references_at - started,
+                'inventory': inventory_at - references_at,
+                'references_after': verified_at - inventory_at,
+                'total': time.perf_counter() - started,
+            }}

@@ -14,13 +14,54 @@ from .storage_bag_catalog import build_storage_bag_catalog_snapshot
 DOMAIN = "spirit_artifact_storage_bag_snapshot"
 
 
+def resolve_stable_spirit_artifact_rewards(
+    card: Mapping[str, Any], items_by_base_id: Mapping[int, Any],
+) -> tuple[int, ...]:
+    """仅正式 type/sub_type=21 自选箱中的红色灵器本体是稳定来源。
+
+    optional_gift_rewards 是共用奖励目录，随机箱与升品镜也会引用它。
+    未知类型、条件奖励、数量未知均不能据此计划确定自选。
+    """
+    if card.get("type") != 21 or card.get("sub_type") != 21:
+        return ()
+    result = []
+    for reward in card.get("optional_gift_rewards") or []:
+        base_id = reward.get("id")
+        cfg = items_by_base_id.get(base_id)
+        count = reward.get("count")
+        if (cfg and cfg.get("quality") == 6 and type(count) is int and count > 0
+                and not reward.get("show_condition")):
+            result.append(base_id)
+    return tuple(dict.fromkeys(result))
+
+
 def load_spirit_artifact_storage_bag_snapshot(session: Session) -> dict[str, Any] | None:
     """只读数据库；页面加载不访问游戏。"""
     row = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == DOMAIN,
         FanxiuPacketBusinessRecord.record_key == "current",
     )).first()
-    return dict(row.payload) if row else None
+    if row is None:
+        return None
+    from ..catalog.item import load_fanxiu_item_runtime_index
+    from ..catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
+    cards = load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id']
+    rules = load_spirit_artifact_wash_rules()['items_by_base_id']
+    payload = dict(row.payload)
+    payload['storage_bag_items'] = [classify_spirit_artifact_bag_source(
+        item, cards.get(str(item.get('base_id')), {}), rules,
+    ) for item in payload.get('storage_bag_items', [])]
+    return payload
+
+
+def classify_spirit_artifact_bag_source(item, card, items_by_base_id) -> dict[str, Any]:
+    """保留其他用途的展示；稳定标记由正式目录重算，旧快照标记不可信。"""
+    stable = resolve_stable_spirit_artifact_rewards(card, items_by_base_id)
+    kind = ('select' if card.get('type') == 21 and card.get('sub_type') == 21
+            else 'random' if card.get('type') == 2 and card.get('sub_type') == 1 else 'unknown')
+    return {**item, 'selection_kind': kind, 'stable_body_reward_ids': list(stable),
+            'choices': [{**choice, 'stable_body': choice.get('reward_id') in stable}
+                        for choice in item.get('choices', [])]}
 
 
 def build_spirit_artifact_storage_bag_snapshot(

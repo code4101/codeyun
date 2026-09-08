@@ -1,7 +1,9 @@
-"""已有红色原始本体的单部件错升重置；1～4 部位，尚待封装真实验收。
+"""已有红色原始本体的单部件错升重置；首屏第3部位真实闭环通过。
 
 只支持已验证的旧本体 + 唯一原始本体两件路径，不采购、不运行标准作业。
 任一点击后观察失败即留场退出，不自动重放更换或升阶。结果页是业务 Layer 0。
+2026-09-08：3-3 单红 raw+旧5阶→新6阶未突破、旧UID消失、回666通过。
+境数仅记录；5/6部位、多raw及储物袋实际到账未在此案例验收。
 """
 from __future__ import annotations
 
@@ -121,10 +123,16 @@ def reset_spirit_artifact_from_owned_raw(
         nonlocal phase
         phase = 'finish'
         final_equipped = equipped(target.item_id)
-        scene = wait(720, 717, 667, 666).scene_id
-        if scene == 720:
-            click(720, '点击屏幕继续')
-            scene = wait(717).scene_id
+        scene = wait(721, 720, 717, 667, 666).scene_id
+        # 多个灵器效果可连续激活；它们是业务结果，不交弹窗守护。
+        for _ in range(12):
+            if scene not in (720, 721):
+                break
+            click(scene, '点击屏幕继续')
+            scene = wait(721, 720, 717, 667, 666).scene_id
+        else:
+            if scene in (720, 721):
+                raise RuntimeError('重置结果连续页超过收尾上限，保留现场')
         if scene == 717:
             identity()
             click(717, '装配')
@@ -139,7 +147,7 @@ def reset_spirit_artifact_from_owned_raw(
         return result
 
     try:
-        entry = wait(666, 667, 717, 720, 718, 719)
+        entry = wait(666, 667, 717, 721, 720, 718, 719)
         if entry.scene_id in (718, 719):
             raise RuntimeError('入口存在未决升阶确认，不能重放或推断消费状态')
         rows = stock()
@@ -155,7 +163,7 @@ def reset_spirit_artifact_from_owned_raw(
         record('entry_classified', action=action)
         if action == 'finish':
             return finish(rows)
-        if entry.scene_id == 720:
+        if entry.scene_id in (720, 721):
             raise RuntimeError('结果页与未完成库存冲突，保留现场')
         if time.time() >= stop_at - 120:
             raise RuntimeError('运行权窗口不足以完成重置，尚未操作')
@@ -203,7 +211,7 @@ def reset_spirit_artifact_from_owned_raw(
         final_rows = None
         deadline = time.monotonic() + 100
         while time.monotonic() < deadline:
-            scene = wait(720, 719, 718, 717).scene_id
+            scene = wait(721, 720, 719, 718, 717).scene_id
             if scene in (718, 719):
                 if scene in confirmed:
                     # A submitted confirmation can remain on screen during
@@ -214,9 +222,9 @@ def reset_spirit_artifact_from_owned_raw(
                 confirmed.add(scene)
                 click(scene, '确认')
                 terminal_since = None
-            elif scene == 720:
-                click(720, '点击屏幕继续')
-                wait(717)
+            elif scene in (720, 721):
+                click(scene, '点击屏幕继续')
+                wait(721, 720, 717)
                 terminal_since = None
             else:
                 # #717 可能先于延迟 #720 到达，必须先证明库存终态，继续观察。

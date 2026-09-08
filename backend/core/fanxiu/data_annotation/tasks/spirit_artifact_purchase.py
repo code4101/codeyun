@@ -12,6 +12,7 @@ from ...instrumentation.backpack import read_backpack_item_counts
 from ...instrumentation.common_shop_buy_dialog import read_common_shop_buy_dialog_snapshot
 from ...instrumentation.spirit_artifact import read_spirit_artifact_inventory_runtime
 from ...runtime_gui.exchange_shop import resolve_exchange_shop_item
+from ...runtime_gui.text import normalize_ocr_name
 from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
 from .common_shop_quantity import set_verified_common_shop_quantity
 from .integer_count_control import IntegerSliderAssets
@@ -96,6 +97,11 @@ def purchase_spirit_artifact_body(
         if time.time() >= stop_at:
             raise TimeoutError("本体采购达到截止时间")
 
+    def wait_scene(scene, *, seconds, label):
+        actual = execute(context.wait_scene([scene], wait=seconds, label=label))
+        if actual is None or int(actual) != scene:
+            raise RuntimeError(f"{label}：实际场景 {actual!r} != #{scene}")
+
     def currency():
         counts, metadata = read_backpack_item_counts(
             [request.cost_item_id], manager_key="spirit-artifact-purchase-currency")
@@ -108,26 +114,51 @@ def purchase_spirit_artifact_body(
         cfg = load_spirit_artifact_wash_rules()["items_by_base_id"].get(request.base_id)
         if cfg is None or (cfg["type"], cfg["parts"], cfg["quality"]) != (request.ware_id, request.part, 6):
             raise ValueError("授权 base 与正式红本体灵器/部位配置不一致")
-        execute(context.wait_scene([assets.shop_scene], wait=10, label="本体采购：确认珍宝阁"))
-        match = execute(context.wait_ocr_any_text(
-            assets.shop_scene, (request.name,), in_shapes=(assets.list_shape,),
-            timeout_seconds=25, poll_seconds=0.8, max_scrolls_per_direction=8,
-            direction_cycles=1, search_direction="down", match_mode="exact"))
-        if match is None:
-            raise RuntimeError("珍宝阁有界查找未发现目标商品")
+        wait_scene(assets.shop_scene, seconds=10, label="本体采购：确认珍宝阁")
         view = context.view(assets.shop_scene)
         container = view.get_shape(assets.list_shape)
         rows = [view.get_shape(name) for name in assets.row_shapes]
         if container is None or not rows or any(row is None for row in rows):
             raise RuntimeError("珍宝阁缺少正式商品列表/行资产")
-        aligned = resolve_exchange_shop_item(
-            group_ocr_tokens(context.full_frame_ocr_tokens(update=True)),
-            product_list_box=container.box(), product_row_boxes=[row.box() for row in rows],
-            expected_name=request.name,
-            expected_unit_price=request.unit_price if assets.row_shapes != (assets.list_shape,) else None)
+        # This list's scene mask can make image-signature progress false while
+        # actual products move. Compare local visible text, never the drag's bool.
+        # Keep observations local so another search's cached seen-set cannot
+        # falsely classify our first screen as an exhausted list.
+        previous_keys = None
+        unchanged = 0
+        aligned = None
+        box = container.box()
+        for attempt in range(13):
+            budget()
+            wait_scene(assets.shop_scene, seconds=10, label="本体采购：查找商品场景")
+            lines = group_ocr_tokens(context.full_frame_ocr_tokens(update=True))
+            visible = [line for line in lines
+                       if box['x'] <= line['x'] + line['w'] / 2 <= box['x'] + box['w']
+                       and box['y'] <= line['y'] + line['h'] / 2 <= box['y'] + box['h']]
+            keys = tuple(normalize_ocr_name(line.get('text')) for line in visible)
+            # resolve_exchange_shop_item uses the same public normalization,
+            # including middle-dot removal, and demands one exact product.
+            if normalize_ocr_name(request.name) in keys:
+                aligned = resolve_exchange_shop_item(
+                    lines, product_list_box=box, product_row_boxes=[row.box() for row in rows],
+                    expected_name=request.name,
+                    expected_unit_price=request.unit_price if assets.row_shapes != (assets.list_shape,) else None)
+                break
+            unchanged = unchanged + 1 if keys and keys == previous_keys else 0
+            record("purchase_search_observed", attempt=attempt, visible_keys=keys,
+                   unchanged=unchanged)
+            if unchanged >= 2 or attempt == 12:
+                break
+            previous_keys = keys
+            # Keep the public gesture defaults already verified on this shop;
+            # only replace its image-signature progress decision with text.
+            context.drag_shape_content(container, direction="down")
+            execute(context.wait_action_settle(0.8))
+        if aligned is None:
+            raise RuntimeError("珍宝阁有界文本查找未发现目标商品；未执行采购")
         budget()
         context.click_frame_point(assets.shop_scene, aligned.x, aligned.y)
-        execute(context.wait_scene([assets.dialog_scene], wait=12, label="本体采购：购买详情"))
+        wait_scene(assets.dialog_scene, seconds=12, label="本体采购：购买详情")
         before = read_spirit_artifact_inventory_runtime()
         if before.get("complete") is not True:
             raise RuntimeError("采购前灵器库存不完整")
@@ -156,7 +187,7 @@ def purchase_spirit_artifact_body(
         sent = True
         # Direct single click: a wait/retry click helper cannot replay this purchase.
         context.click_shape_center(assets.dialog_scene, assets.confirm_shape)
-        execute(context.wait_scene([assets.shop_scene], wait=15, label="本体采购：等待返回珍宝阁"))
+        wait_scene(assets.shop_scene, seconds=15, label="本体采购：等待返回珍宝阁")
         after = read_spirit_artifact_inventory_runtime()
         cash_after = currency()
         record("purchase_observed", inventory=after, currency=cash_after)
