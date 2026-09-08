@@ -347,6 +347,8 @@ def default_kernel_scheduler_tasks(
             "日常_任务奖励",
             description="首领完成后",
             initial_next_time=None,
+            # Three activity domains took over ten minutes on the real client.
+            payload={"max_execution_seconds": 1800},
         ),
         job(
             "system-maintenance-recovery",

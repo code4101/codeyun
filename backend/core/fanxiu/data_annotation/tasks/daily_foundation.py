@@ -1935,7 +1935,9 @@ class DailyFoundationTaskMixin:
                 "label": "魔道入侵回城动画",
             }
             try:
-                yield from context.go_scene(34)
+                # Battle exit can hide all HUD controls while loading longer
+                # than the generic 30-second navigation budget.
+                yield from context.go_scene(34, wait=90.0)
             finally:
                 ctx.pop("_go_scene_unknown_transition_guard", None)
             scene_id, _score, _frame, _text = yield from self._behavior_tree_context_scene_text(ctx, context, update=True)

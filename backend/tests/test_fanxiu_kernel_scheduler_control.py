@@ -1848,8 +1848,8 @@ def test_scheduler_keeps_running_when_submit_ready_timeout_matches_live_executio
     monkeypatch.setattr(kernel_scheduler_control, "_higher_level_due_task_for_attempt", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         kernel_scheduler_control,
-        "behavior_tree_executor_status",
-        lambda: {"status": "running", "current_task_id": "daily-lingmai-seat"},
+        "read_kernel_scheduler_status",
+        lambda *_args: {"status": "running", "current_task_id": "daily-lingmai-seat"},
     )
     monkeypatch.setattr(
         "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
@@ -1883,6 +1883,7 @@ def test_scheduler_keeps_attempt_running_when_jupyter_caller_wait_times_out(monk
         "payload": {"max_execution_seconds": 600},
     }]
     submitted_payloads = []
+    monkeypatch.setattr(kernel_scheduler_control, "behavior_tree_executor_status", lambda: {"status": "idle"})
 
     def read_tasks(**_kwargs):
         return deepcopy(state)
@@ -1902,8 +1903,8 @@ def test_scheduler_keeps_attempt_running_when_jupyter_caller_wait_times_out(monk
     monkeypatch.setattr(kernel_scheduler_control, "_higher_level_due_task_for_attempt", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         kernel_scheduler_control,
-        "behavior_tree_executor_status",
-        lambda: {
+        "read_kernel_scheduler_status",
+        lambda *_args: {
             "status": "running",
             "current_task_id": "long-job",
             "scheduler_attempt_id": state[0].get("attempt_id"),

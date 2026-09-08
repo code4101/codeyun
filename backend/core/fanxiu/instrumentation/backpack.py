@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
+import time
 
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
@@ -42,9 +43,19 @@ def read_backpack_item_counts(
     item_ids: Iterable[int],
     *,
     manager_key: str,
+    force_refresh: bool = False,
 ) -> tuple[dict[int, int], dict[str, Any]]:
-    """Aggregate selected base-item counts without invoking game-side methods."""
+    """Aggregate selected base-item counts without invoking game-side methods.
 
+    ``force_refresh=True`` diagnostically resolves the current Lua global rather
+    than a cached manager root and includes the requested items' instance evidence.
+    It does not scan for a legacy marker if that resolution fails: such a fallback
+    would not prove current-global identity. Normal requests retain their existing
+    discovery policy. Compare observations from the same process; a discrepancy
+    alone does not prove a stale root rather than a concurrent inventory change.
+    """
+
+    started = time.time()
     requested_ids = {int(item_id) for item_id in item_ids}
     counts = {item_id: 0 for item_id in requested_ids}
     memory = MumuProcessMemory.discover_cached()
@@ -60,9 +71,12 @@ def read_backpack_item_counts(
             global_name="BackpackMgr",
             required_methods=frozenset({"Inst_get"}),
             validate=_backpack_data_fields,
+            force_refresh=force_refresh,
         )
         discovery = "loaded_global"
     except (FanxiuRuntimeMemoryError, FanxiuRedbagRuntimeLoadError):
+        if force_refresh:
+            raise
         root, cache_hit = resolve_manager_root(
             memory,
             manager_key=manager_key,
@@ -71,16 +85,34 @@ def read_backpack_item_counts(
             validate=_backpack_data_fields,
         )
         discovery = "marker"
-    item_index = _fields(reader, _backpack_data_fields(reader, root).get("ItemVoDic"))
+    index_ref = _backpack_data_fields(reader, root).get("ItemVoDic")
+    item_index = _fields(reader, index_ref)
+    instance_evidence = []
+    dictionary_evidence = []
     for raw_base_id, raw_dictionary in item_index.items():
         base_id = as_int(raw_base_id)
         if base_id not in counts:
             continue
-        values = _fields(reader, _fields(reader, raw_dictionary).get("_valueTable_"))
+        values_ref = _fields(reader, raw_dictionary).get("_valueTable_")
+        values = _fields(reader, values_ref)
+        if force_refresh:
+            dictionary_evidence.append({
+                "base_id": base_id,
+                "dictionary_address": getattr(raw_dictionary, "address", None),
+                "values_address": getattr(values_ref, "address", None),
+                "decoded_entry_count": len(values),
+            })
         for raw_item in values.values():
             item = _fields(reader, raw_item)
             if as_int(item.get("baseId")) == base_id:
                 counts[base_id] += max(0, as_int(item.get("num")) or 0)
+                if force_refresh:
+                    uid = reader.long(item.get("id"))
+                    instance_evidence.append({
+                        "base_id": base_id, "item_id": str(uid) if uid is not None else None,
+                        "num": as_int(item.get("num")),
+                        "item_address": getattr(raw_item, "address", None),
+                    })
     return counts, {
         "pid": memory.pid,
         "process_start_ticks": memory.process_start_ticks,
@@ -88,4 +120,13 @@ def read_backpack_item_counts(
         "backpack_root_cache_hit": cache_hit,
         "discovery": discovery,
         "read_only": True,
+        "source": "BackpackMgr.Model.BackpackData.ItemVoDic",
+        "force_refresh": force_refresh,
+        "observed_at": started,
+        "completed_at": time.time(),
+        **({"lua_environment_address": _environment,
+            "item_index_address": getattr(index_ref, "address", None),
+            "requested_item_ids": sorted(requested_ids),
+            "dictionaries": dictionary_evidence,
+            "instances": instance_evidence} if force_refresh else {}),
     }

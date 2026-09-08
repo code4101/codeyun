@@ -170,7 +170,12 @@ def spirit_artifact_basic_scores(effects: list[dict[str, Any]], part: int) -> di
 
 def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | None,
                                     effects: list[dict[str, Any]], a_codes: list[str]) -> str:
-    """纯分类：未知事实不等于失败；已突破优先检查 A 集合，与阶数无关。"""
+    """无红色属于初始；红色已突破优先检查 A 集合，与阶数无关。"""
+    quality = base_id % 100
+    if not base_id or quality not in range(1, 7) or rank < 0:
+        return "待识别"
+    if quality < 6:
+        return "初始"
     if is_break is True:
         full_codes = {effect.get("code") for effect in effects
                       if effect.get("affix") in ("满", "巅", "颠")}
@@ -194,11 +199,6 @@ def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | 
         if "混沌道威" not in names:
             return "无双"
         return "巅峰" if any(effect["affix"] in ("巅", "颠") for effect in effects) else "道威"
-    quality = base_id % 100
-    if not base_id or quality not in range(1, 7) or rank < 0:
-        return "待识别"
-    if quality < 6:
-        return "初始"
     if is_break is None:
         return "待识别"
     return "初始" if rank < 6 else "预备"

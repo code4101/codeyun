@@ -1989,6 +1989,7 @@ def _scheduler_submission_timeout_is_live_task(
     task: dict[str, Any],
     *,
     kernel_generation: Any,
+    execution_state_path: Path | None = None,
 ) -> bool:
     """Return True when a submit-side timeout raced with an already-running task Cell."""
 
@@ -2003,7 +2004,9 @@ def _scheduler_submission_timeout_is_live_task(
     if kernel_generation is not None and kernel.get("generation") != kernel_generation:
         return False
     try:
-        context = behavior_tree_executor_status()
+        # The submitting process has an idle local executor. The running
+        # Jupyter Cell publishes its identity to the execution-state provider.
+        context = read_kernel_scheduler_status(execution_state_path)
     except Exception:
         return False
     execution_attempt_id = str(context.get("scheduler_attempt_id") or "")
@@ -2317,6 +2320,7 @@ def _run_scheduler_task_cell_and_record_terminal_owned(
                 and _scheduler_submission_timeout_is_live_task(
                     attempt_task_state,
                     kernel_generation=kernel_generation,
+                    execution_state_path=execution_state_path,
                 )
             ):
                 return {

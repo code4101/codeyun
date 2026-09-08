@@ -6,12 +6,52 @@ from typing import Iterable
 from backend.core.codex import CodexDispatch, CodexEscalationRequest, escalate_to_codex
 
 
+def scene_repair_guidance(
+    *, scene_id: int | None, evidence_frame_path: str | None,
+    expected_scene_ids: Iterable[int] = (),
+) -> dict[str, str]:
+    """One diagnostic route for both the current AI and a dispatched repair AI.
+
+    Classify only the observed failure, not its unproven cause: unknown does not
+    establish a new scene or a popup. Rendering consumes the original frame.
+    This function neither renders nor dispatches or interacts with the game.
+    """
+    document = (Path(__file__).resolve().parents[5] / "skills" / "凡修" /
+                "references" / "接口层" / "场景识别.md")
+    evidence = repr(str(evidence_frame_path)) if evidence_frame_path else "exc.evidence_frame_path"
+    scenes = list(dict.fromkeys(int(value) for value in expected_scene_ids))
+    unknown = scene_id is None
+    return {
+        "problem_code": "scene.persistent_unknown" if unknown else "scene.repair_required",
+        "problem": ("场景持续未匹配；尚不能断定是新场景、干扰弹窗或已有标识漏识别"
+                    if unknown else f"已识别场景 #{scene_id} 的资产或动作契约无法继续"),
+        "document": f"{document.as_posix()}#{'未匹配处理' if unknown else 'layer-2-命中的失败诊断'}",
+        "diagnostic_call": (
+            f"context.render_unknown_scene_overview({evidence}, {scenes!r}, top_k=2)"
+            if unknown else f"context.render_scene_comparison({evidence}, {int(scene_id)})"
+        ),
+        "next_step": "读取标准对比图后判断复用、修订或新增资产；不能仅搜资产标题或按相似度认定身份",
+        "recovery": "保留原始帧；故障 Cell 结束后由持有运行权的 AI 修复并在新 Cell 复验，不续跑旧 generator",
+    }
+
+
+def format_scene_repair_guidance(guidance: dict[str, str]) -> str:
+    """Keep the actionable route visible even when callers retain only str(exc)."""
+    labels = {"problem_code": "问题类型", "problem": "已知故障",
+              "document": "请 AI 查阅", "diagnostic_call": "按手册调用",
+              "next_step": "判断步骤", "recovery": "恢复边界"}
+    return "\n" + "\n".join(f"{labels[key]}：{value}" for key, value in guidance.items())
+
+
 class SceneRepairRequired(RuntimeError):
     """A recognized scene cannot safely progress with its current assets."""
 
     def __init__(self, message: str, *, scene_id: int | None, evidence_frame_path: str | None,
                  dispatch: CodexDispatch | None = None, escalation_error: str | None = None):
-        super().__init__(message)
+        self.repair_guidance = scene_repair_guidance(
+            scene_id=scene_id, evidence_frame_path=evidence_frame_path,
+        )
+        super().__init__(message + format_scene_repair_guidance(self.repair_guidance))
         self.scene_id = scene_id
         self.evidence_frame_path = evidence_frame_path
         self.codex_dispatch_id = dispatch.dispatch_id if dispatch else None
@@ -92,6 +132,10 @@ def _escalate_scene_repair(
         raise ValueError("场景异常升级缺少可读取的原始帧；工程队列已熔断")
 
     scene_ids = tuple(dict.fromkeys(int(scene_id) for scene_id in expected_scene_ids))
+    guidance = scene_repair_guidance(
+        scene_id=scene_id, evidence_frame_path=normalized_evidence,
+        expected_scene_ids=scene_ids,
+    )
     metadata_path = Path(normalized_evidence).with_suffix(".json")
     evidence = [
         f"失败原始帧：{normalized_evidence}",
@@ -114,10 +158,10 @@ def _escalate_scene_repair(
             "真实业务复验，恢复凡修稳定工程运行。"
         ),
         suggested_focus=(
-            "先读取 C:/home/chenkunze/slns/skills/凡修/SKILL.md，及 references/接口层/场景识别.md、图形界面定位与标注.md",
-            ("调用 render_unknown_scene_overview 生成标准多候选总览" if scene_id is None
-             else f"调用 render_scene_comparison 对比原始帧与 #{scene_id}，先验证身份再修复出口或动作兼容性"),
-            "可优先区分已有场景标识召回缺口、资产/Shape 缺失与全新场景",
+            guidance["problem"],
+            f"先读取 {guidance['document']}",
+            guidance["diagnostic_call"],
+            guidance["next_step"],
         ),
         evidence=tuple(evidence),
         attempted_actions=(
@@ -151,4 +195,5 @@ def _escalate_scene_repair(
     return escalate_to_codex(request)
 
 
-__all__ = ["SceneRepairRequired", "escalate_persistent_scene_unknown", "escalate_scene_repair_required"]
+__all__ = ["SceneRepairRequired", "scene_repair_guidance", "format_scene_repair_guidance",
+           "escalate_persistent_scene_unknown", "escalate_scene_repair_required"]

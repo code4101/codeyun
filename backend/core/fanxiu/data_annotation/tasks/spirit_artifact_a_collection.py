@@ -30,6 +30,9 @@ def run_a_collection(
 
     stop_at 是生产窗口前的绝对截止秒；每次消耗前预留 90 秒收尾。
     max_consumptions 只限制本次运行，不修改概率样本或业务完成条件。
+    返回 status 保持 complete/paused；stop_reason 区分 all_a_full、
+    b_supplement_complete、budget_paused、deadline_paused。target_hit 仅是
+    候选决策事件，表示停止本轮引仙筛选并采用，不表示整个培养完成。
     不负责导航、突破或调度。默认拒绝入口候选；evaluate_existing_candidate=True
     仅授权用当前完整事实重新评价 A／补 B 筛选或严格改善的精炼目标候选，
     不恢复历史步骤、不猜材料来源。需要重新切锁等未定义状态仍阻塞。
@@ -94,6 +97,19 @@ def run_a_collection(
                                       'probability_sample': False,
                                       **data}, ensure_ascii=False, default=str) + '\n')
 
+    def finish(status, stop_reason, plan):
+        full_a = {e.code for e in attributes(current['effects'])
+                  if e.code in a_codes and e.quality >= 6 and e.is_full}
+        result = {'status': status, 'stop_reason': stop_reason,
+                  'consumed': consumed, 'snapshot': current,
+                  'pending_candidate': bool(current['pending_effects']),
+                  'all_a_full': a_codes <= full_a,
+                  'remaining_a_codes': sorted(a_codes - full_a),
+                  'next_action': plan.action,
+                  'elapsed_seconds': time.monotonic() - started}
+        record({'record_type': 'run_finished', 'new_consumption': False, **result})
+        return result
+
     if current['pending_effects']:
         execute(context.wait_scene([714], wait=12))
         original = attributes(current['effects'])
@@ -143,13 +159,13 @@ def run_a_collection(
                 plan = plan_a_collection(attributes(current['effects']), a_codes=a_codes,
                                          b_codes=b_codes, c_codes=c_codes, target_ratio=target_ratio)
             if plan.action == 'complete':
-                return {'status': 'complete', 'consumed': consumed, 'snapshot': current,
-                        'elapsed_seconds': time.monotonic() - started}
+                return finish('complete', 'b_supplement_complete' if supplement_b_code
+                              is not None else 'all_a_full', plan)
             if plan.action == 'blocked':
                 raise RuntimeError(plan.reason)
             if time.time() >= stop_at - 90 or consumed >= max_consumptions:
-                return {'status': 'paused', 'consumed': consumed, 'snapshot': current,
-                        'elapsed_seconds': time.monotonic() - started}
+                return finish('paused', 'budget_paused' if consumed >= max_consumptions
+                              else 'deadline_paused', plan)
             if plan.action == 'locks':
                 if current['pending_effects']:
                     raise RuntimeError('切锁前仍有候选，不丢弃未知待采用结果')
@@ -175,8 +191,7 @@ def run_a_collection(
             if time.time() >= stop_at - 30:
                 gui.cancel()
                 gui.cancel()
-                return {'status': 'paused', 'consumed': consumed, 'snapshot': current,
-                        'elapsed_seconds': time.monotonic() - started}
+                return finish('paused', 'deadline_paused', plan)
             after = None
             try:
                 context.click_shape_center(713, '确认使用道具')
@@ -233,6 +248,14 @@ def run_a_collection(
                     roll_index=consumed, needed_a_codes=a_codes - done, target_ratio=target_ratio)
                 accepted = (any(not e.locked and e.code == supplement_b_code and e.quality >= 6
                                 for e in raw_sample) if supplement_b_code is not None else sample.stop_yinxian)
+                # 独立于概率样本：满 B 仍可记 highest_red_ratio=1，但不是 A 命中。
+                record({'record_type': 'candidate_evaluation', 'new_consumption': False,
+                        'consumption_index': consumed, 'plan_action': plan.action,
+                        'decision': ('b_supplement_hit' if supplement_b_code is not None
+                                     else 'target_hit') if accepted else 'continue_yinxian',
+                        'accepted': accepted, 'needed_a_codes': sorted(a_codes - done),
+                        'hit_a_codes': sorted({e.code for e in sample.hits}),
+                        'supplement_b_code': supplement_b_code})
                 current = save_pending(after) if accepted else after
             else:
                 old = next(e for e in attributes(current['effects']) if e.cleanse_id == plan.target_cleanse_id)

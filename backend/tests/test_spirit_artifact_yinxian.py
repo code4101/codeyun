@@ -60,6 +60,25 @@ def test_identical_results_remain_independent_roll_samples():
     assert len(first.unlocked_candidates) == 3
 
 
+def test_full_unlocked_b_is_probability_sample_not_missing_a_hit_or_refinement():
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    rows = (
+        YinxianAttribute(1, 'ATTACK', 100, 6, True, 100),
+        YinxianAttribute(2, 'A2', 100, 6, True, 100),
+        YinxianAttribute(3, 'A3', 100, 6, True, 100),
+        YinxianAttribute(4, 'MAXMP', 70, 5, True, 100),
+        YinxianAttribute(5, 'MAXHP', 60, 4, True, 100),
+        YinxianAttribute(6, 'DEFENSE', 100, 6, False, 100),
+    )
+    sample = analyze_yinxian_sample(rows, roll_index=8, needed_a_codes={'A4'})
+    assert sample.highest_red_ratio == Decimal('1')
+    assert not sample.stop_yinxian and not sample.hits
+    plan = plan_a_collection(rows, a_codes={'ATTACK', 'A2', 'A3', 'A4'},
+                             b_codes={'MAXMP', 'MAXHP', 'DEFENSE'}, c_codes=set())
+    assert plan.action == 'yinxian' and plan.target_cleanse_id is None
+    assert plan.desired_lock_ids == (1, 2, 3, 4, 5)
+
+
 def test_failed_sample_keeps_low_quality_rows_and_empty_red_max():
     rows = tuple(YinxianAttribute(e.cleanse_id, e.code, e.value, 3, e.locked, e.normal_max)
                  for e in candidates())

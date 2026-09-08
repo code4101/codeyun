@@ -226,6 +226,9 @@ class DaozuChallengeTaskMixin:
             yield from context.wait_click(34, "主线")
             yield from context.wait_scene([251], wait=30.0, label="道祖_挑战：等待路线 #251")
             scene_id = 251
+            # Eligibility belongs to the destination page, never the world
+            # frame captured before clicking the main quest entry.
+            frame = context.cur_frame(update=True)
 
         started_now = False
         if scene_id == 251:

@@ -83,6 +83,8 @@ from backend.core.fanxiu.data_annotation.scene_diagnostics import (
 )
 from backend.core.fanxiu.data_annotation.scene_escalation import (
     SceneRepairRequired,
+    scene_repair_guidance,
+    format_scene_repair_guidance,
     escalate_persistent_scene_unknown,
     escalate_scene_repair_required,
 )
@@ -491,8 +493,12 @@ class SceneWaitTimeout(TimeoutError):
         codex_request_path: str | None = None,
         codex_escalation_error: str | None = None,
     ) -> None:
-        super().__init__(message)
         self.expected_scene_ids = tuple(int(scene_id) for scene_id in expected_scene_ids)
+        self.repair_guidance = scene_repair_guidance(
+            scene_id=None, evidence_frame_path=evidence_frame_path,
+            expected_scene_ids=self.expected_scene_ids,
+        )
+        super().__init__(message + format_scene_repair_guidance(self.repair_guidance))
         self.last_match = last_match
         self.evidence_frame_path = evidence_frame_path
         self.frame_data_url = frame_data_url

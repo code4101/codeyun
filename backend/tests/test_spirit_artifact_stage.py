@@ -7,6 +7,15 @@ SWORD = ["ATTACK", "CRI_VALUE", "CRI_DAMAGE_FIX"]
 FOUR_A = ["ATTACK", "CORE_1", "CORE_2", "CORE_3"]
 
 
+@pytest.mark.parametrize('is_break', [True, False, None])
+def test_nonred_body_is_initial_even_with_break_flag(is_break):
+    # 无红色的培养进度是0；低品质自身突破不属于红色错升。
+    assert classify_spirit_artifact_stage(
+        rank=1, base_id=14000905, is_break=is_break,
+        effects=[{'code': 'ATTACK', 'affix': ''}], a_codes=FOUR_A,
+    ) == '初始'
+
+
 def stage(codes=SWORD, *, missing=None, extra_names=(), is_break=True, rank=10, partial=False):
     effects = [{"code": code, "affix": "" if code == missing else "满"} for code in codes]
     effects += [{"code": "B" + str(i), "affix": "", "name": name} for i, name in enumerate(extra_names)]

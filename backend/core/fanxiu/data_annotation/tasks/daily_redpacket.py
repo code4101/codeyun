@@ -721,9 +721,13 @@ class DailyRedpacketTaskMixin:
         deadline = time.monotonic() + max(1.0, float(timeout_seconds))
         last_text = ""
         previous_signature: tuple[tuple[str, int, int], ...] | None = None
+        probe_logged = False
         while time.monotonic() < deadline:
             frame = context.cur_frame(update=True)
             matches = self._daily_redpacket_ocr_targets(ctx, image, frame)
+            if not probe_logged:
+                self._log("diagnostic", f"日常_红包：卡片首帧候选={len(matches)}，窗口参考={image.get('width')}x{image.get('height')}")
+                probe_logged = True
             if matches:
                 signature = tuple(
                     (
@@ -1120,7 +1124,10 @@ class DailyRedpacketTaskMixin:
             phase="进入当前群事务前"
         )
         targets: list[dict[str, Any]] = []
-        short_probe_timeout = max(1.0, min(3.0, float(transition_timeout)))
+        # Two fresh OCR frames plus the settle interval must fit before
+        # falling back to the locator. A 3s cold probe can time out after
+        # finding the first valid card, falsely treating it as absent.
+        short_probe_timeout = max(3.0, min(8.0, float(transition_timeout)))
         for locator_attempt in range(max(0, int(max_locator_clicks)) + 1):
             try:
                 _frame, targets = yield from self._wait_daily_redpacket_ocr_targets(

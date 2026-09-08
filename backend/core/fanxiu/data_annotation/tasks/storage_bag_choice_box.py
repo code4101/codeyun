@@ -11,6 +11,7 @@ from typing import Any
 from backend.core.fanxiu.instrumentation.storage_bag_partner import (
     read_storage_bag_partner_snapshot,
 )
+from backend.core.fanxiu.instrumentation.spirit_artifact import read_spirit_artifact_inventory_runtime
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import (
     parse_storage_bag_choice_note,
@@ -55,6 +56,7 @@ class StorageBagChoiceReward:
     is_partner: bool = False
     partner_reason: str = ""
     linked_partner_id: int | None = None
+    is_spirit_artifact: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,16 @@ class StorageBagChoiceBoxExecution:
     detail_similarity: float
     scroll_count: int
     partner_outcome: StorageBagPartnerOutcomeProof | None = None
+    spirit_artifact_outcome: StorageBagSpiritArtifactOutcomeProof | None = None
+
+
+@dataclass(frozen=True)
+class StorageBagSpiritArtifactOutcomeProof:
+    reward_base_id: int
+    quantity: int
+    added_item_ids: tuple[str, ...]
+    pid: int
+    process_start_ticks: int
 
 
 @dataclass(frozen=True)
@@ -237,6 +249,10 @@ def choice_rewards_from_catalog(
                 is_partner=is_partner,
                 partner_reason=partner_reason,
                 linked_partner_id=linked_partner_id,
+                is_spirit_artifact=any(
+                    isinstance(detail, Mapping) and detail.get("kind") == "spiritware_part"
+                    for detail in card.get("effect_details") or []
+                ),
             )
         )
     if not rewards:
@@ -773,6 +789,57 @@ def _validate_partner_outcome_proof(
         raise StorageBagChoiceBoxBlocked("仙侣重复转化 proof 缺少精确碎片增量")
 
 
+def _spirit_inventory(snapshot: Mapping[str, Any]) -> tuple[tuple[int, int], dict[str, tuple]]:
+    identity = (snapshot.get("pid"), snapshot.get("process_start_ticks"))
+    if (snapshot.get("complete") is not True
+            or snapshot.get("source") != "runtime_spiritware_all_instances"
+            or any(type(value) is not int or value <= 0 for value in identity)
+            or not isinstance(snapshot.get("items"), list)):
+        raise StorageBagChoiceBoxBlocked("灵器库存不完整或缺少权威来源/进程身份")
+    rows = {}
+    for row in snapshot["items"]:
+        if not isinstance(row, Mapping):
+            raise StorageBagChoiceBoxBlocked("灵器库存实例无效")
+        uid = row.get("item_id")
+        values = tuple(row.get(key) for key in
+                       ("base_id", "quality", "grade", "realm", "quantity", "is_break", "ware_id", "part"))
+        if (not isinstance(uid, str) or not uid or uid in rows
+                or any(type(values[i]) is not int or values[i] <= 0 for i in (0, 1, 2, 4, 6, 7))
+                or type(values[3]) is not int or values[3] < 0
+                or type(values[5]) is not bool):
+            raise StorageBagChoiceBoxBlocked("灵器库存含重复 UID 或缺失阶/境/品质/数量事实")
+        rows[uid] = values
+    return identity, rows
+
+
+def verify_spirit_artifact_choice_outcome(
+    before: Mapping[str, Any], after: Mapping[str, Any], *,
+    reward: StorageBagChoiceReward, opened_count: int,
+) -> StorageBagSpiritArtifactOutcomeProof:
+    """Prove new raw red bodies; existing UID mutations or unrelated additions reject.
+
+    This proves inventory delivery only. It neither equips nor consumes bodies and
+    makes no assumption about realm transfer. Failure must never reopen a box.
+    灵器分支只通过纯库存差量检查；真实自选到账流程尚未验收。
+    """
+    identity, old = _spirit_inventory(before)
+    after_identity, new = _spirit_inventory(after)
+    if identity != after_identity or opened_count <= 0 or reward.count_per_box <= 0:
+        raise StorageBagChoiceBoxBlocked("灵器奖励进程身份或计划数量不一致")
+    if any(new.get(uid) != value for uid, value in old.items()):
+        raise StorageBagChoiceBoxBlocked("开箱期间既有灵器实例变化，无法唯一归因")
+    added = {uid: value for uid, value in new.items() if uid not in old}
+    if any(value[:4] != (reward.base_id, 6, 1, 0) or value[5] is not False
+           for value in added.values()):
+        raise StorageBagChoiceBoxBlocked("新增实例不是目标未突破红色 1 阶 0 境本体")
+    quantity = sum(value[4] for value in added.values())
+    if quantity != reward.count_per_box * opened_count:
+        raise StorageBagChoiceBoxBlocked("灵器本体到账数量与计划不符；禁止自动重开")
+    return StorageBagSpiritArtifactOutcomeProof(
+        reward.base_id, quantity, tuple(sorted(added)), *identity,
+    )
+
+
 def derive_choice_box_delta(
     before: Mapping[str, Any],
     after: Mapping[str, Any],
@@ -841,6 +908,7 @@ class StorageBagChoiceBoxGuiAdapter:
         count_reader: CountReader = read_choice_count,
         partner_snapshot_reader: PartnerSnapshotReader | None = read_storage_bag_partner_snapshot,
         partner_outcome_verifier: PartnerOutcomeVerifier | None = verify_authoritative_partner_outcome,
+        spirit_artifact_snapshot_reader: SnapshotReader = read_spirit_artifact_inventory_runtime,
         alignment_retries: int = 2,
         max_scrolls: int = 12,
         max_increment_steps: int = 200,
@@ -858,6 +926,7 @@ class StorageBagChoiceBoxGuiAdapter:
         self.count_reader = count_reader
         self.partner_snapshot_reader = partner_snapshot_reader
         self.partner_outcome_verifier = partner_outcome_verifier
+        self.spirit_artifact_snapshot_reader = spirit_artifact_snapshot_reader
         self.alignment_retries = max(0, min(4, int(alignment_retries)))
         self.max_scrolls = max(0, min(30, int(max_scrolls)))
         self.max_increment_steps = max(0, min(500, int(max_increment_steps)))
@@ -979,6 +1048,18 @@ class StorageBagChoiceBoxGuiAdapter:
         if self.count_reader(self.context) != open_quantity:
             raise StorageBagChoiceBoxBlocked("确定前最终 OCR 数量不等于计划开启数量")
 
+        spirit_before = None
+        if selected.is_spirit_artifact:
+            if selected.is_partner:
+                raise StorageBagChoiceBoxBlocked("奖励 Catalog 类型冲突")
+            details = (self.catalog_cards_by_id.get(str(selected.base_id)) or {}).get("effect_details") or []
+            if not any(isinstance(row, Mapping) and row.get("kind") == "spiritware_part"
+                       and row.get("spiritware_item_id") == selected.base_id
+                       and row.get("spiritware_quality") == 6 for row in details):
+                raise StorageBagChoiceBoxBlocked("灵器自选当前仅支持 Catalog 明确的红色本体")
+            spirit_before = dict(self.spirit_artifact_snapshot_reader())
+            if _spirit_inventory(spirit_before)[0] != identity:
+                raise StorageBagChoiceBoxBlocked("灵器与储物袋快照不属于同一进程")
         partner_before: dict[str, Any] | None = None
         if selected.is_partner:
             if selected.linked_partner_id is None:
@@ -1016,6 +1097,7 @@ class StorageBagChoiceBoxGuiAdapter:
                 yield from self.context.wait_action_settle(0.2)
         if after is None:
             raise StorageBagChoiceBoxBlocked("确定后未取得同进程、完整且已变化的 Runtime 快照")
+        spirit_outcome = None
         partner_outcome: StorageBagPartnerOutcomeProof | None = None
         if selected.is_partner:
             assert partner_before is not None
@@ -1054,6 +1136,18 @@ class StorageBagChoiceBoxGuiAdapter:
             delta = derive_partner_choice_box_consumption_delta(
                 before, after, request=request
             )
+        elif spirit_before is not None:
+            # One action, one independent delivery observation; no automatic reopen.
+            spirit_outcome = verify_spirit_artifact_choice_outcome(
+                spirit_before, dict(self.spirit_artifact_snapshot_reader()),
+                reward=selected, opened_count=open_quantity,
+            )
+            consumed = derive_partner_choice_box_consumption_delta(before, after, request=request)
+            _verify_exact_storage_changes(before, after, expected={request.base_id: -open_quantity})
+            delta = StorageBagChoiceBoxDelta(
+                consumed.opened_count, selected.base_id, spirit_outcome.quantity,
+                consumed.before_fingerprint, consumed.after_fingerprint,
+            )
         else:
             delta = derive_choice_box_delta(
                 before, after, request=request, reward=selected
@@ -1066,10 +1160,13 @@ class StorageBagChoiceBoxGuiAdapter:
             detail.similarity,
             scrolls,
             partner_outcome,
+            spirit_outcome,
         )
 
 
 __all__ = [
+    "StorageBagSpiritArtifactOutcomeProof",
+    "verify_spirit_artifact_choice_outcome",
     "CHOICE_BOX_SCENE",
     "CHOICE_DETAIL_SCENE",
     "StorageBagChoiceBoxBlocked",

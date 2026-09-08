@@ -12,7 +12,28 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
+from pathlib import Path
 from typing import Any
+
+
+class AdvancedItemLocationError(RuntimeError):
+    """定位失败证据；不把列表消失误报为道具不存在。"""
+    def __init__(self, context, *, expected, observed, frame, phase, problem_code):
+        from ..scene_diagnostics import save_scene_diagnostic_frame
+        from ..scene_escalation import scene_repair_guidance, format_scene_repair_guidance
+        self.problem_code, self.phase = problem_code, phase
+        self.expected_scene_id, self.scene_id = expected, observed
+        self.evidence_frame_path = save_scene_diagnostic_frame(
+            context.runner, frame, kind='advanced_item_location', label=phase,
+            expected_scene_ids=[expected], matched_scene_id=observed)
+        self.repair_guidance = scene_repair_guidance(scene_id=observed,
+            evidence_frame_path=self.evidence_frame_path, expected_scene_ids=[expected])
+        geometry_doc = (Path(__file__).resolve().parents[6] / 'skills' / '凡修' /
+                        'references' / '接口层' / '图形界面定位与标注.md')
+        super().__init__(f'{problem_code}: 高级洗炼定位停止，阶段={phase}，'
+                         f'预期 #{expected}，实际 #{observed}；原始帧={self.evidence_frame_path}'
+                         + format_scene_repair_guidance(self.repair_guidance)
+                         + f'\n列表定位手册：{geometry_doc.as_posix()}')
 
 
 def find_advanced_item_title(tokens, name: str):
@@ -35,8 +56,9 @@ def find_advanced_item_title(tokens, name: str):
 class AdvancedScrollProfile:
     """冷发现与经验重放共用的手势参数；缩短参数仅在显式选择后启用。
 
-    默认保留已实测的0.5/1.5/1.5。0.8/0.4/0.4为待实测配置，
-    不能单凭预计拖动时间宣称定位成功或提速。
+    默认保留0.5/1.5/1.5；研发实测0.8/0.8/0.4可完成定位及连续使用。
+    0.8/0.4/0.4曾未产生有效位移，不作为已验证方案。经验重放后仍须
+    核验当前道具名称，不能单凭预计拖动时间宣称定位成功。
     """
     ratio: float = .5
     duration: float = 1.5
@@ -119,7 +141,8 @@ def locate_advanced_item_with_experience(
     """只定位、不点击；复用正式 Shape 拖动和区域 OCR，不读 Runtime。
 
     返回 match 仅可立即用于点击；key/route 在确认页身份验证后才可 remember。
-    批量路径只等待拖动稳定，不逐次截图或 OCR；失败后一次有界双向重找。
+    每次拖动后须仍为列表；错误页立即停止，不进入双向搜索。身份使用
+    wait_scene 的真实返回值及同帧 OCR；全局层命中不等于目标列表命中。
     """
     shape = context.shape(scene_id, '道具列表')
     names = {row['item']: str(row['name'])
@@ -128,9 +151,20 @@ def locate_advanced_item_with_experience(
         raise ValueError('高级洗炼道具名称缺失或不唯一')
     profile = memory.profile
     layout = advanced_scroll_layout(catalog, shape.raw, profile=profile)
+    last_frame = None
+
+    def require_list(phase):
+        nonlocal last_frame
+        observed = execute(context.wait_scene([scene_id], wait=10))
+        last_frame = observed.frame_data_url or context.cur_frame(update=True)
+        if observed.scene_id != scene_id:
+            raise AdvancedItemLocationError(context, expected=scene_id,
+                observed=observed.scene_id, frame=last_frame, phase=phase,
+                problem_code='advanced_list.scene_mismatch')
+        return last_frame
 
     def observe_start():
-        frame = context.cur_frame(update=True)
+        frame = require_list('locate_start')
         tokens = context.ocr_tokens_in_shapes(scene_id, ['道具列表'], frame_data_url=frame)
         visible, target = [], None
         for current_id, name in names.items():
@@ -143,11 +177,10 @@ def locate_advanced_item_with_experience(
         return target, tuple(sorted(visible))
 
     def find_target():
-        frame = context.cur_frame(update=True)
+        frame = require_list('locate_after_scroll')
         tokens = context.ocr_tokens_in_shapes(scene_id, ['道具列表'], frame_data_url=frame)
         return find_advanced_item_title(tokens, names[item_id])
 
-    execute(context.wait_scene([scene_id], wait=10))
     match, start = observe_start()
     key = AdvancedScrollKey(layout, start, item_id) if start else None
     traversed: list[str] = []
@@ -161,7 +194,7 @@ def locate_advanced_item_with_experience(
                                        ratio=profile.ratio, duration=profile.duration)
             execute(context.wait_action_settle(profile.settle_seconds))
             traversed.append(direction)
-        execute(context.wait_scene([scene_id], wait=10))
+            require_list('cached_scroll')
         match = find_target()
         if match is not None:
             return match, key, tuple(traversed)
@@ -179,4 +212,6 @@ def locate_advanced_item_with_experience(
                 break
     if key is not None:
         memory.forget(key)
-    raise TimeoutError(f'高级洗炼列表有界定位失败：{names[item_id]}')
+    raise AdvancedItemLocationError(context, expected=scene_id, observed=scene_id,
+        frame=last_frame, phase=f'bounded_search:{names[item_id]}',
+        problem_code='advanced_list.target_not_located')

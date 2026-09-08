@@ -1,7 +1,9 @@
 """一次性词条配置目录；只读已加载配置，不请求游戏、不写文件。
 
 覆盖仅限 affix 规则，不能据此认定本体归属、324件配置或各器 A 集合已验证。
-全量读取及生成配置默认值 closure 路径尚待真实 Runtime 验收。
+指定词条111022已真实读取验证默认 full=0、max=8000；全量目录、
+末尾代际核验及热更新场景仍待真实 Runtime 验收，不能外推为全集已验证。
+Attribute 客户端 ID 索引快路径尚未真实验收；命中/拒绝/回退计数随诊断返回。
 """
 from __future__ import annotations
 
@@ -79,6 +81,10 @@ class _Rows:
             manager_key='spirit-artifact-affix-db', state_address=ctx.binding.state_address,
             global_name='DBMgr', required_methods=_METHODS, validate=configs)
         self.roots = configs(self.reader, root)
+        self.manager_root = root
+        self.client_indexes = None
+        self.lookup_counts = {'client_index_hit': 0, 'client_index_rejected': 0,
+                              'full_index_fallback': 0}
         self.identity = (ctx.memory.pid, ctx.memory.process_start_ticks,
                          ctx.binding.state_address, environment, root)
         idx = table_ref(self.reader.state_string_field(environment, 's_globalCfgIdx',
@@ -161,11 +167,28 @@ class _Rows:
         return self.by_id[key]
 
     def row(self, key, uid, wanted):
-        # 指定少数词条时不为覆盖统计解码整个目录；Attribute 才需要一次 ID 索引。
+        # 优先复用客户端自然加载的 ID 字典；不调用 Lua、不促成配置加载。
+        # 每次观察重新取得索引，旧行须通过当前成员及 id 验证才可使用。
         ref = table_ref(self.direct[key].get(uid))
         if ref is not None and self.decode(key, ref, ('id',))['id'] != uid:
             ref = None
+        if ref is None and key == 'Attribute.Attribute' and key not in self.by_id:
+            if self.client_indexes is None:
+                manager = manager_index_fields(self.reader, self.manager_root, _METHODS)
+                inst = self.reader.fields(manager.get('inst'))
+                dictionaries = self.reader.dictionary_fields(inst.get('ClientTabDictionary'))
+                self.client_indexes = self.reader.dictionary_fields(dictionaries.get(f'{key}_-_id'))
+            candidate = table_ref(self.client_indexes.get(uid))
+            if candidate is not None:
+                if (candidate.address in self.tables[key]
+                        and self.decode(key, candidate, ('id',))['id'] == uid):
+                    ref = candidate
+                    self.lookup_counts['client_index_hit'] += 1
+                else:
+                    self.lookup_counts['client_index_rejected'] += 1
         if ref is None:
+            if key not in self.by_id:
+                self.lookup_counts['full_index_fallback'] += 1
             ref = self.index(key).get(uid)
         if ref is None:
             raise _catalog_error(f'{key}[{uid}] 尚未加载')
@@ -219,7 +242,8 @@ def read_affix_configuration(*, cleanse_ids: list[int] | None,
         result = dict(rules=rules, ratio_percent=ratio, pid=ctx.memory.pid,
             process_start_ticks=ctx.memory.process_start_ticks, runtime_ids=runtime_ids,
             requested_ids=requested, source='runtime_dbmgr_spiritware_config', read_only=True,
-            diagnostics={'reader': ctx.reader.diagnostics(), 'memory': ctx.memory.diagnostics()})
+            diagnostics={'reader': ctx.reader.diagnostics(), 'memory': ctx.memory.diagnostics(),
+                         'row_lookup': dict(rows.lookup_counts)})
         return result, rows.signature(), rows.default_examples
 
     result, signature, examples = read_ui_runtime_snapshot([], observe)
@@ -250,6 +274,7 @@ def read_affix_configuration(*, cleanse_ids: list[int] | None,
             'requested': len(result['requested_ids']), 'returned': len(returned),
             'expected': len(expected) if expected is not None else None},
         content_fingerprint=affix_catalog_fingerprint(result['rules'], result['ratio_percent']),
-        consistency='fresh_process_roots_members_defaults_checked_not_atomic_row_values',
+        consistency=('fresh_process_roots_members_defaults_checked_not_atomic_row_values'
+                     if verify_generation else 'single_observation_no_fresh_generation_check'),
         timings={**timings, 'total': time.monotonic()-started})
     return result

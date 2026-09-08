@@ -37,3 +37,37 @@ def test_reject_raw_material_double_accounting():
     with pytest.raises(ValueError):
         calculate_preparation_gap(equipped_red_grade=0,
             verified_material_grade_units=0, available_raw_bodies=1, reset_required=False)
+
+
+
+def test_global_plan_returns_to_earlier_stage_after_one_part_advances():
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_preparation import (
+        SpiritArtifactStageCandidate as C, plan_spirit_artifact_stage_round as plan,
+    )
+    rows = [C("预备", 1, 4, "ready"), C("错升", 4, 2, "ready"), C("初始", 1, 3, "ready")]
+    assert plan(rows).candidate == rows[1]
+    # 4-2修复完成后回全局：初始1-3先于预备1-4，不能接着洗4-2。
+    rows[1] = C("预备", 4, 2, "ready")
+    assert plan(rows).candidate == rows[2]
+
+
+def test_blocked_parts_skip_with_reason_without_calling_round_complete():
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_preparation import (
+        SpiritArtifactStageCandidate as C, plan_spirit_artifact_stage_round as plan,
+    )
+    blocked = C("错升", 1, 1, "blocked", "无红色本体或可兑换来源")
+    later = C("初始", 1, 3, "ready")
+    assert plan([blocked, later]).candidate == later
+    exhausted = plan([blocked])
+    assert exhausted.action == "round_exhausted" and exhausted.skipped == (blocked,)
+    assert plan([blocked, C("错升", 2, 4)]).action == "analyze"
+    with pytest.raises(ValueError): C("错升", 1, 1, "blocked")
+
+
+def test_global_plan_all_five_six_before_any_one_four_in_same_stage():
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_preparation import (
+        SpiritArtifactStageCandidate as C, plan_spirit_artifact_stage_round as plan,
+    )
+    rows = [C("初始", 1, 1, "ready"), C("初始", 9, 6, "ready"), C("预备", 1, 5, "ready")]
+    assert plan(rows).candidate == rows[1]
+    assert plan([C("待识别", 9, 1), *rows]).action == "analyze"

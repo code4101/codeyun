@@ -30,7 +30,7 @@ from pyxllib.cv.rgbfmt import (
 )
 
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.core.services.launcher import popen_service, run_quiet
+from backend.core.services.launcher import popen_service, run_quiet, run_quiet_captured
 from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_image_asset
 from backend.core.fanxiu.client.adb_device import (
     fanxiu_adb_device_service,
@@ -2049,10 +2049,8 @@ def _run_mumu_adb_input(
         attempt_started = time.perf_counter()
         stage_started = time.perf_counter()
         try:
-            input_process = run_quiet(
+            input_process = run_quiet_captured(
                 [str(adb_path), "-s", prepared_serial, "shell", command],
-                capture_output=True,
-                text=True,
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout_s,
@@ -2113,10 +2111,8 @@ def _run_mumu_adb_input(
                     stage_started = time.perf_counter()
                     try:
                         _clear_mumu_adb_prepared_probes()
-                        run_quiet(
+                        run_quiet_captured(
                             [str(adb_path), "disconnect", serial],
-                            capture_output=True,
-                            text=True,
                             encoding="utf-8",
                             errors="replace",
                             timeout=3,
@@ -2136,10 +2132,8 @@ def _run_mumu_adb_input(
                 current_stage = "connect"
                 stage_started = time.perf_counter()
                 try:
-                    run_quiet(
+                    run_quiet_captured(
                         [str(adb_path), "connect", serial],
-                        capture_output=True,
-                        text=True,
                         encoding="utf-8",
                         errors="replace",
                         timeout=3,
@@ -2151,10 +2145,8 @@ def _run_mumu_adb_input(
                 current_stage = "wm_size"
                 stage_started = time.perf_counter()
                 try:
-                    size_process = run_quiet(
+                    size_process = run_quiet_captured(
                         [str(adb_path), "-s", serial, "shell", "wm size"],
-                        capture_output=True,
-                        text=True,
                         encoding="utf-8",
                         errors="replace",
                         timeout=5,
@@ -2168,10 +2160,8 @@ def _run_mumu_adb_input(
                 current_stage = "input"
                 stage_started = time.perf_counter()
                 try:
-                    input_process = run_quiet(
+                    input_process = run_quiet_captured(
                         [str(adb_path), "-s", serial, "shell", command],
-                        capture_output=True,
-                        text=True,
                         encoding="utf-8",
                         errors="replace",
                         timeout=timeout_s,

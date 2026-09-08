@@ -754,7 +754,11 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             observed.scene_id, '高级洗炼', assets.advanced_items_scene_id,
             timeout=25, label='洗灵：打开高级列表'))
         if result.scene_id != assets.advanced_items_scene_id:
-            raise SpiritArtifactCleanseBlocked('打开高级列表后落点不符', phase='open_advanced_items')
+            from .spirit_artifact_advanced_scroll import AdvancedItemLocationError
+            raise AdvancedItemLocationError(self.context, expected=assets.advanced_items_scene_id,
+                observed=result.scene_id,
+                frame=result.frame_data_url or self.context.cur_frame(update=True),
+                phase='open_advanced_items', problem_code='advanced_list.scene_mismatch')
         return result
 
     def inspect_advanced_items(self, *, fast: bool = False) -> Any:
@@ -834,6 +838,13 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         memory = self._advanced_scroll_memory
         locate_started = time.monotonic()
         if memory is None:
+            observed = self.execute(self.context.wait_scene([self.assets.advanced_items_scene_id], wait=10))
+            if observed.scene_id != self.assets.advanced_items_scene_id:
+                from .spirit_artifact_advanced_scroll import AdvancedItemLocationError
+                raise AdvancedItemLocationError(self.context, expected=self.assets.advanced_items_scene_id,
+                    observed=observed.scene_id,
+                    frame=observed.frame_data_url or self.context.cur_frame(update=True),
+                    phase='preview_before_locate', problem_code='advanced_list.scene_mismatch')
             self.execute(self.context.wait_click_ocr_text(
                 self.assets.advanced_items_scene_id, name[2:], in_shapes=['道具列表'],
                 max_scrolls_per_direction=10, timeout_seconds=60, crop_fallback=True))

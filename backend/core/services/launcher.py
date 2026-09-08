@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,32 @@ def run_quiet(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[
     """Run a short command without opening a Windows console window."""
 
     return run_hidden(command, **kwargs)
+
+
+def run_quiet_captured(
+    command: list[str], *, timeout: float, encoding: str = "utf-8", errors: str = "replace"
+) -> subprocess.CompletedProcess[str]:
+    """Capture bounded CLI text without waiting for inherited pipe handles.
+
+    Native launchers such as ADB can leave a detached server holding their
+    output handles. Temporary files let the direct command finish or time out
+    without Python's pipe-reader threads waiting indefinitely for that server.
+    """
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            result = run_hidden(command, stdout=stdout, stderr=stderr, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            stdout.seek(0)
+            stderr.seek(0)
+            exc.output = stdout.read().decode(encoding, errors)
+            exc.stderr = stderr.read().decode(encoding, errors)
+            raise
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(
+            command, result.returncode,
+            stdout.read().decode(encoding, errors), stderr.read().decode(encoding, errors),
+        )
 
 
 def run_quiet_tree_safe(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
