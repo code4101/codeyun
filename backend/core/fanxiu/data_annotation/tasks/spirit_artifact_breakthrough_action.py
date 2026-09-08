@@ -16,7 +16,54 @@ from ...instrumentation.spirit_artifact import read_spirit_artifact_item_runtime
 from ...instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
 from ...instrumentation.spirit_artifact_wash_observation import (
     SpiritArtifactWashTarget, validate_spirit_artifact_wash_snapshot,
+    read_spirit_artifact_wash_observation,
 )
+
+
+def lock_spirit_artifact_after_breakthrough(
+    context, execute, *, target: SpiritArtifactWashTarget, evidence_path: Path,
+) -> dict[str, Any]:
+    """幂等补齐已突破本体的 A 类锁；重新绑定新词条 ID，不消费或再突破。
+
+    要求无候选洗炼页及完整的本灵器 A 集合。仅锁未锁 A，保留其它锁，
+    动作后核验本体、全部属性值/品质及 A 锁状态。可单独修复中断后的收尾。
+    """
+    from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
+    from ...instrumentation.spirit_artifact_affixes import read_spirit_artifact_affix_rules
+
+    if execute(context.wait_scene([668], wait=12)).scene_id != 668:
+        raise RuntimeError('突破锁定收尾要求无候选洗炼页 #668')
+    before = read_spirit_artifact_wash_observation(target, verify_ui=True)
+    if before.get('is_break') is not True or before['pending_effects']:
+        raise RuntimeError('锁定收尾要求已突破且没有待保存候选')
+    rules = read_spirit_artifact_affix_rules([e['cleanse_id'] for e in before['effects']])
+    if (rules['pid'], rules['process_start_ticks']) != target.process_identity:
+        raise RuntimeError('突破后属性配置与本体进程不一致')
+    a_codes = set(load_spirit_artifact_wash_rules()['wares'][target.ware_id]['a_codes'])
+    a_ids = {e['cleanse_id'] for e in before['effects']
+             if rules['rules'][e['cleanse_id']]['code'] in a_codes}
+    if {rules['rules'][uid]['code'] for uid in a_ids} != a_codes:
+        raise RuntimeError('突破收尾缺少本灵器完整 A 类，不能宣称完成')
+    gui = SpiritArtifactCleanseRuntimeGuiAdapter(context, execute)
+    for effect in before['effects']:
+        if effect['cleanse_id'] in a_ids and not effect['locked']:
+            gui.set_lock(effect['cleanse_id'], True)
+    after = read_spirit_artifact_wash_observation(target, verify_ui=True)
+    values = lambda s: {e['cleanse_id']: (e['value'], e['quality']) for e in s['effects']}
+    locks = {e['cleanse_id']: e['locked'] for e in after['effects']}
+    if (after.get('is_break') is not True or after['pending_effects']
+            or values(before) != values(after)
+            or any(locks.get(uid) is not True for uid in a_ids)
+            or any(locks.get(e['cleanse_id']) != e['locked'] for e in before['effects']
+                   if e['cleanse_id'] not in a_ids)):
+        raise RuntimeError('突破后 A 锁定收尾核验失败')
+    result = dict(status='complete', snapshot=after, a_locked_ids=sorted(a_ids))
+    path = Path(evidence_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a', encoding='utf-8') as output:
+        output.write(json.dumps(dict(event='post_breakthrough_a_locked', recorded_at=time.time(),
+            item_id=target.item_id, before=before, **result), ensure_ascii=False) + '\n')
+    return result
 
 
 def breakthrough_spirit_artifact(
@@ -27,7 +74,7 @@ def breakthrough_spirit_artifact(
 
     调用方先完成该灵器的 A 类策略目标。本函数只检查客户端就绪状态，
     不以固定 A 条数、B 满值或阶数替代客户端准入。target 必须含 base_id。
-    返回突破后重新读取的 effects/locks；调用方须废弃突破前的锁账本。
+    返回突破后重新读取并锁定全部 A 的 effects/locks；废弃突破前的锁账本。
     确认后任一观察失败即记录并抛错，保留当前现场，绝不重新发送确认。
     """
     if not target.base_id:
@@ -123,10 +170,14 @@ def breakthrough_spirit_artifact(
         phase = 'verify_completed'
         after = item(True)
         identity()
-        if any(effect['locked'] for effect in after['effects']):
-            raise RuntimeError('突破后仍存在锁定，不能沿用预期的全部解锁状态')
+        phase = 'lock_a_after_breakthrough'
+        locked = lock_spirit_artifact_after_breakthrough(
+            context, execute, target=target, evidence_path=path,
+        )
+        after = locked['snapshot']
         result = dict(status='finished_existing_result' if finish_result_only else 'complete',
                       before=before, snapshot=after, lock_state_reset=True,
+                      a_locked_ids=locked['a_locked_ids'],
                       elapsed_seconds=time.monotonic() - started)
         record('breakthrough_finished', **result)
         return result

@@ -17,17 +17,50 @@ from ...instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_
 from ...instrumentation.spirit_artifact_wash_observation import SpiritArtifactWashTarget
 
 
+def classify_owned_raw_reset(rows, *, target: SpiritArtifactWashTarget,
+                             previous_item_id: str, expected_previous_grade: int,
+                             equipped_item_id: str) -> str:
+    """纯事实门禁：replace / upgrade / finish；调用方先核验进程及精确装备。
+
+    rows 必须为完整库存中该 base 的全部实例；不能截成两件绕过多材料歧义。
+    境数仅留证据，不作为准入条件；未决确认不由此函数授权重放。
+    """
+    by_id = {r['item_id']: r for r in rows}
+    if (not previous_item_id or previous_item_id == target.item_id
+            or expected_previous_grade < 1 or len(by_id) != len(rows)
+            or any((r['base_id'], r['ware_id'], r['part']) !=
+                   (target.base_id, target.ware_id, target.part)
+                   or r['quantity'] != 1 or r['quality'] != 6 for r in rows)):
+        raise ValueError('重置库存身份、品质或数量不符合明确目标')
+    new = by_id.get(target.item_id)
+    if (len(rows) == 1 and new is not None and equipped_item_id == target.item_id
+            and new['grade'] == expected_previous_grade + 1 and new['is_break'] is False):
+        return 'finish'
+    old = by_id.get(previous_item_id)
+    if (set(by_id) != {previous_item_id, target.item_id} or old is None or new is None
+            or old['grade'] != expected_previous_grade or old['is_break'] is not True
+            or new['grade'] != 1 or new['is_break'] is not False):
+        raise ValueError('只接受已授权旧本体+唯一红raw，或已完成的唯一新本体')
+    if equipped_item_id == previous_item_id:
+        return 'replace'
+    if equipped_item_id == target.item_id:
+        return 'upgrade'
+    raise ValueError('当前装备既不是授权旧本体也不是新本体')
+
+
 def reset_spirit_artifact_from_owned_raw(
     context, execute, *, target: SpiritArtifactWashTarget, previous_item_id: str,
     expected_previous_grade: int, artifact_name: str, selected_part_text: str,
     evidence_path: Path, stop_at: float,
 ) -> dict[str, Any]:
-    """从 #666/#667 更换唯一红 raw、吃旧本体升阶并返回 #666。
+    """从当前装备/库存事实重入，更换或继续吃旧本体升阶，最终返回 #666。
 
     target 绑定新本体、进程、灵器、部位、base；previous_item_id 是明确授权
     消耗的旧本体。只接受同 base 两件各 quantity=1、旧已突破、新未突破1阶。
-    当前仅验收过双方0境：客户端只计算阶数相加，境数由服务端返回，尚不能
-    证明吞入有境数材料会继承境数；该分支留待专门调查，不能套用本封装。
+    新 raw 已装备时只续升；旧 UID 消失且唯一新件阶数准确时只收尾。
+    未决确认、额外同 base 库存或不明消费均阻塞，不重购、不重放旧 generator。
+    境数不是本次重置准入或终态条件；库存日志及结果保留服务端原始境数，
+    本流程不操作境数，也不承诺旧本体境数继承或最终境数取值。
     selected_part_text 必须是下方“当前部件名称”的完整可识别名称；该资产
     若不能读出目标则停止，不能依上方固定格子猜测升阶对象。
     stop_at 为绝对秒，消耗前预留120秒。已进入确认链不因截止丢下弹窗。
@@ -84,34 +117,67 @@ def reset_spirit_artifact_from_owned_raw(
         mutation_may_have_been_sent = True
         context.click_shape_center(scene, shape)
 
+    def finish(rows):
+        nonlocal phase
+        phase = 'finish'
+        final_equipped = equipped(target.item_id)
+        scene = wait(720, 717, 667, 666).scene_id
+        if scene == 720:
+            click(720, '点击屏幕继续')
+            scene = wait(717).scene_id
+        if scene == 717:
+            identity()
+            click(717, '装配')
+            scene = wait(667).scene_id
+        if scene == 667:
+            identity()
+            click(667, '返回')
+            wait(666)
+        result = dict(status='complete', item=rows[0], equipped=final_equipped,
+                      expected_grade=expected_previous_grade + 1, final_scene_id=666)
+        record('reset_complete', **result)
+        return result
+
     try:
-        entry = wait(666, 667)
+        entry = wait(666, 667, 717, 720, 718, 719)
+        if entry.scene_id in (718, 719):
+            raise RuntimeError('入口存在未决升阶确认，不能重放或推断消费状态')
         rows = stock()
-        by_id = {r['item_id']: r for r in rows}
-        if (set(by_id) != {previous_item_id, target.item_id} or len(rows) != 2
-                or any(r['quantity'] != 1 or r['quality'] != 6 for r in rows)
-                or by_id[previous_item_id]['grade'] != expected_previous_grade
-                or by_id[previous_item_id]['is_break'] is not True
-                or by_id[target.item_id]['grade'] != 1
-                or by_id[target.item_id]['is_break'] is not False):
-            raise RuntimeError('只接受已授权旧本体与唯一红色1阶原始本体的库存组合')
-        equipped(previous_item_id)
-        if any(r.get('realm') != 0 for r in rows):
-            raise RuntimeError('当前重置仅支持双方0境；有境数材料的继承规则尚未验证，尚未操作')
+        state = read_spirit_artifact_equipped_runtime([target.ware_id])
+        slot = [r for r in state['items'] if r['part'] == target.part]
+        if ((state['pid'], state['process_start_ticks']) != target.process_identity
+                or len(slot) != 1 or slot[0]['base_id'] != target.base_id):
+            raise RuntimeError('重入时精确装备身份不完整或冲突')
+        record('equipped', snapshot=state)
+        action = classify_owned_raw_reset(rows, target=target,
+            previous_item_id=previous_item_id, expected_previous_grade=expected_previous_grade,
+            equipped_item_id=slot[0]['item_id'])
+        record('entry_classified', action=action)
+        if action == 'finish':
+            return finish(rows)
+        if entry.scene_id == 720:
+            raise RuntimeError('结果页与未完成库存冲突，保留现场')
         if time.time() >= stop_at - 120:
             raise RuntimeError('运行权窗口不足以完成重置，尚未操作')
         if entry.scene_id == 666:
             gui.select_artifact(target.ware_id, artifact_name)
         identity()
-        phase = 'replace'
-        click(667, f'部位{target.part}')
-        wait(715)
-        click(715, '更换')
-        wait(716)
-        click(716, '第2个本体')
-        wait(667)
-        equipped(target.item_id)
-        identity()
+        if action == 'replace':
+            if entry.scene_id == 717:
+                click(717, '装配')
+                wait(667)
+            phase = 'replace'
+            click(667, f'部位{target.part}')
+            wait(715)
+            click(715, '更换')
+            wait(716)
+            click(716, '第2个本体')
+            wait(667)
+            equipped(target.item_id)
+            identity()
+        elif entry.scene_id == 717:
+            click(717, '装配')
+            wait(667)
         phase = 'select_grade_target'
         click(667, '升阶页签')
         wait(717)
@@ -122,6 +188,13 @@ def reset_spirit_artifact_from_owned_raw(
             max_scrolls_per_direction=0, match_mode='exact', crop_fallback=True))
         identity()
         phase = 'consume_old'
+        # 导航耗时不能沿用入口库存；消费前再次证明自动选料只有授权旧件。
+        fresh_rows = stock()
+        equipped(target.item_id)
+        if classify_owned_raw_reset(fresh_rows, target=target,
+                previous_item_id=previous_item_id, expected_previous_grade=expected_previous_grade,
+                equipped_item_id=target.item_id) != 'upgrade':
+            raise RuntimeError('消费前库存已不再处于明确待升阶状态')
         if time.time() >= stop_at - 120:
             raise RuntimeError('剩余窗口不足，已换本体但未消耗旧件；保留现场')
         click(717, '执行升阶')
@@ -152,7 +225,6 @@ def reset_spirit_artifact_from_owned_raw(
                     if (len(final_rows) == 1 and final_rows[0]['item_id'] == target.item_id
                             and final_rows[0]['grade'] == expected_previous_grade + 1
                             and final_rows[0]['quantity'] == 1
-                            and final_rows[0].get('realm') == 0
                             and final_rows[0]['is_break'] is False):
                         terminal_since = time.monotonic()
                 elif time.monotonic() - terminal_since >= 8:
@@ -160,21 +232,7 @@ def reset_spirit_artifact_from_owned_raw(
             time.sleep(.5)
         else:
             raise RuntimeError('升阶后未在有界时间内核实库存与结果页收尾终态')
-        phase = 'finish'
-        final_equipped = equipped(target.item_id)
-        # 耗时 Runtime 读取期间可能出现延迟结果，离场前再按 Layer 0 收尾。
-        scene = wait(720, 717).scene_id
-        if scene == 720:
-            click(720, '点击屏幕继续')
-            wait(717)
-        click(717, '装配')
-        wait(667)
-        click(667, '返回')
-        wait(666)
-        result = dict(status='complete', item=final_rows[0], equipped=final_equipped,
-                      expected_grade=expected_previous_grade + 1, final_scene_id=666)
-        record('reset_complete', **result)
-        return result
+        return finish(final_rows)
     except Exception as exc:
         record('reset_stopped', mutation_may_have_been_sent=mutation_may_have_been_sent,
                error_type=type(exc).__name__, error=str(exc))

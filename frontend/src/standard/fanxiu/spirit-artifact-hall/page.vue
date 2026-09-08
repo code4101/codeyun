@@ -248,7 +248,7 @@ function formatStatColumnLabel(column: { label: string; baseValue?: string }) {
 
 function statDisplay(row: SpiritArtifactPartRow, label: string, legacyValue: string) {
   const score = row.basicScores[label];
-  return typeof score === 'number' && Number.isFinite(score) ? String(score) : (legacyValue || '-');
+  return typeof score === 'number' && Number.isFinite(score) ? String(Math.floor(score)) : (legacyValue || '-');
 }
 
 function formatRuntimeTime(timestamp: number) {

@@ -12,6 +12,24 @@ from typing import Any, Mapping
 from .lua_config import parse_fanxiu_generated_lua_config
 from .resources import FanxiuResourceError, resolve_fanxiu_export_root
 
+BASE_ATTRIBUTE_PRIORITY = ('ATTACK', 'MAXMP', 'MAXHP', 'DEFENSE')
+
+
+def spirit_artifact_strategy_codes(core_codes):
+    """完整原生核心去重后按基础属性优先级补足四 A；剩余基础属性为 B。"""
+    core = set(core_codes)
+    if not core or len(core) > 4 or any(not isinstance(code, str) or not code for code in core):
+        raise ValueError('原生核心缺失或超过四种，不能生成策略 A 集合')
+    a_codes = set(core)
+    for code in BASE_ATTRIBUTE_PRIORITY:
+        if len(a_codes) == 4:
+            break
+        a_codes.add(code)
+    if len(a_codes) != 4:
+        raise ValueError('无法补足四种策略 A 属性')
+    return dict(a_codes=sorted(a_codes), b_codes=[code for code in BASE_ATTRIBUTE_PRIORITY if code not in a_codes])
+
+
 _NAMES = ('SpiritWareCleanse', 'SpiritWareItem', 'SpiritWarePreview', 'Attribute')
 
 
@@ -92,7 +110,7 @@ def _load(signatures: tuple[tuple[str, int, int], ...]) -> Mapping[str, Any]:
             current['core_codes'].add(attributes[int(attribute)])
     for current in wares.values():
         current['core_codes'] = sorted(current['core_codes'])
-        current['a_codes'] = sorted(set(current['core_codes']) | {'ATTACK'})
+        current.update(spirit_artifact_strategy_codes(current['core_codes']))
         for piece in current['parts'].values():
             piece['core_codes'] = sorted(piece['core_codes'])
             piece['preview_groups'] = sorted(piece['preview_groups'])
@@ -119,7 +137,7 @@ def load_spirit_artifact_wash_rules(
 
     cleanse.max 是该词条配置基准，preview max/maxUpgrade 保留原样；
     部位 100/150 为业务归一化满分，不等于直接把所有属性 max 乘 1.5。
-    core_codes 来自突破条件；a_codes 按业务约定加攻击；均待当前 Runtime 比对。
+    core_codes 来自原生突破条件；a_codes 按基础属性优先级补足四种，b_codes 为剩余基础属性。
     items_by_base_id 保留原始本体配置及 cleanseUpgradeCondition，不将策略目标
     改写为客户端准入，也不将不同本体的条件合并成一个通用门槛。
     """

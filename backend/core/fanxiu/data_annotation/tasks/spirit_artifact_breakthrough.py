@@ -16,15 +16,18 @@ def plan_breakthrough_preparation(
     current: Sequence[YinxianAttribute], *, a_codes: set[str],
     client_can_breakthrough: bool, is_break: bool,
     required_red_count: int,
-    b_preference: tuple[str, ...] = ('MAXMP', 'MAXHP', 'DEFENSE'),
+    b_preference: tuple[str, ...] | None = None,
 ) -> BreakthroughPreparation:
     """调用方传入当前客户端控件条件及该配置已核实的仙品数量要求。
 
-    A 集合随灵器变化，必须全部满值；红色 B 只补数量，不默认要求90%或满。
+    策略 A 集合为四种，必须全部满值；不再存在剑三 A 加红 B 的例外。
     本版只处理已存在的 B 槽位，不选择新的来源、不牺牲 A、不执行突破。
     配置与客户端就绪标志矛盾、已有仙品数量足够却不就绪时保留现场。
     """
-    if (len(current) != 6 or len({e.code for e in current}) != 6 or not a_codes
+    from ...catalog.spirit_artifact_wash_rules import BASE_ATTRIBUTE_PRIORITY
+    if b_preference is None:
+        b_preference = tuple(code for code in BASE_ATTRIBUTE_PRIORITY if code not in a_codes)
+    if (len(current) != 6 or len({e.code for e in current}) != 6 or len(a_codes) != 4
             or type(client_can_breakthrough) is not bool or type(is_break) is not bool
             or type(required_red_count) is not int or not 1 <= required_red_count <= 6
             or len(set(b_preference)) != len(b_preference) or a_codes & set(b_preference)):

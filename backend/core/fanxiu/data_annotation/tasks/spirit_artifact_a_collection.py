@@ -18,7 +18,7 @@ from ...instrumentation.spirit_artifact_wash_observation import (
 
 def run_a_collection(
     context, execute, *, target: SpiritArtifactWashTarget, rules: dict,
-    a_codes: set[str], b_codes: set[str], c_codes: set[str],
+    a_codes: set[str] | None = None, b_codes: set[str] | None = None, c_codes: set[str],
     evidence_path: Path, stop_at: float, target_ratio: float = .90,
     max_consumptions: int = 100,
     fast_observation: bool = False,
@@ -43,6 +43,17 @@ def run_a_collection(
 
     if max_consumptions <= 0 or stop_at <= time.time():
         raise ValueError('连续洗灵需要有效期限及消耗上限')
+    from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
+    configured = load_spirit_artifact_wash_rules()['wares'].get(target.ware_id)
+    if configured is None:
+        raise ValueError('灵器策略配置未知')
+    configured_a, configured_b = set(configured['a_codes']), set(configured['b_codes'])
+    if ((a_codes is not None and set(a_codes) != configured_a)
+            or (b_codes is not None and set(b_codes) != configured_b)):
+        raise ValueError('调用方 A/B 集合与当前四 A 策略不一致；须重新读取配置')
+    a_codes, b_codes = configured_a, configured_b
+    if supplement_b_code is not None and supplement_b_code not in b_codes:
+        raise ValueError('补 B 目标不是本灵器当前 B 属性，不能将 A 按仅红色补位')
     gui = SpiritArtifactCleanseRuntimeGuiAdapter(context, execute)
     rules = dict(rules)
     evidence_path = Path(evidence_path)
