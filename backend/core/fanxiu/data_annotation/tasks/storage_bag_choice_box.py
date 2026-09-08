@@ -14,6 +14,7 @@ from backend.core.fanxiu.instrumentation.storage_bag_partner import (
 )
 from backend.core.fanxiu.instrumentation.spirit_artifact import read_spirit_artifact_inventory_runtime
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
+from .integer_count_control import IntegerButtonAssets, set_verified_integer_button_count
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import (
     parse_storage_bag_choice_note,
 )
@@ -314,7 +315,7 @@ def discover_visible_choice_slots(context: Any, *, maximum_slots: int = 12) -> t
 def validate_choice_box_asset_contract(context: Any, visible_slots: Sequence[int]) -> None:
     """Require separate semantics before any choice-box GUI action."""
 
-    for title in ("详情标题", "当前数量", "增加数量", "确定"):
+    for title in ("详情标题", "当前数量", "减少数量", "增加数量", "确定"):
         context.shape(CHOICE_BOX_SCENE, title)
     for title in ("详情标题", "右侧暗幕返回"):
         context.shape(CHOICE_DETAIL_SCENE, title)
@@ -967,14 +968,16 @@ class StorageBagChoiceBoxGuiAdapter:
         self.after_snapshot_retries = max(1, min(10, int(after_snapshot_retries)))
         self.stop_at = stop_at
         self.plan_observer = plan_observer
+        # Fixed candidate order belongs to the catalog version captured by this adapter.
+        self._reward_lists: dict[int, tuple[StorageBagChoiceReward, ...]] = {}
 
     def execute(
-        self, request: StorageBagChoiceBoxRequest
+        self, request: StorageBagChoiceBoxRequest, *, snapshot=None
     ) -> Generator[Any, Any, StorageBagChoiceBoxExecution]:
         """Execute one choice; failure reports whether consumption confirmation may have been sent."""
         confirmation_state = {'may_have_been_sent': False}
         try:
-            return (yield from self._execute(request, confirmation_state=confirmation_state))
+            return (yield from self._execute(request, confirmation_state=confirmation_state, snapshot=snapshot))
         except (Exception, KeyboardInterrupt) as error:
             error.purchase_confirmation_may_have_been_sent = confirmation_state['may_have_been_sent']
             raise
@@ -1068,13 +1071,20 @@ class StorageBagChoiceBoxGuiAdapter:
 
         return plan, detail, scrolls
 
-    def _execute(self, request: StorageBagChoiceBoxRequest, *, confirmation_state):
+    def rewards(self, box_base_id: int) -> tuple[StorageBagChoiceReward, ...]:
+        """Read fixed ordered choices once per adapter/catalog version; no game access."""
+        if box_base_id not in self._reward_lists:
+            self._reward_lists[box_base_id] = choice_rewards_from_catalog(
+                self.catalog_cards_by_id.get(str(box_base_id)) or {}, self.catalog_cards_by_id,
+            )
+        return self._reward_lists[box_base_id]
+
+    def _execute(self, request: StorageBagChoiceBoxRequest, *, confirmation_state, snapshot=None):
         if request.base_id <= 0 or not request.instance_id or not request.name.strip() or request.quantity <= 0:
             raise StorageBagChoiceBoxBlocked("自选匣请求缺少 base_id/instance_id/名称/数量")
         open_quantity = requested_choice_box_open_quantity(request)
         parse_persisted_choice_note(request.note)
-        box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
-        rewards = choice_rewards_from_catalog(box_card, self.catalog_cards_by_id)
+        rewards = self.rewards(request.base_id)
         annotated_slots = tuple(
             int(slot) for slot in self.visible_slot_reader(self.context)
         )
@@ -1084,7 +1094,7 @@ class StorageBagChoiceBoxGuiAdapter:
         # This gate intentionally runs before even reading/clicking #525.
         self.asset_validator(self.context, visible_slots)
 
-        before = dict(self.snapshot_reader())
+        before = dict(snapshot if snapshot is not None else self.snapshot_reader())
         identity = _snapshot_identity(before)
         target = _runtime_instances(before).get(request.instance_id)
         if target != (request.base_id, request.quantity):
@@ -1096,8 +1106,12 @@ class StorageBagChoiceBoxGuiAdapter:
         selected = choose_reward_from_note(
             request.note, rewards, availability, visible_slots
         )
-        observed_target = yield from self.target_detail_scanner(self.context, selected)
-        validate_target_detail_identity(rewards, selected, observed_target)
+        # Fixed catalog order plus the verified box title identifies ordinary
+        # choices (including upgrade mirrors). Partner previews retain their
+        # additional recruitment/fragment identity check.
+        if selected.is_partner:
+            observed_target = yield from self.target_detail_scanner(self.context, selected)
+            validate_target_detail_identity(rewards, selected, observed_target)
         yield from self.context.wait_click(
             CHOICE_BOX_SCENE,
             f"候选{selected.slot}/右上选择框",
@@ -1105,33 +1119,31 @@ class StorageBagChoiceBoxGuiAdapter:
         )
         # The click returns before the tick is painted. Observe the same
         # selection without clicking again (a repeat click can toggle it off).
+        yield from self.context.wait_action_settle(0.5)
         for observation in range(3):
             if self.selection_verifier(self.context, selected.slot, len(visible_slots)):
                 break
             if observation < 2:
-                yield from self.context.wait_action_settle(0.2)
+                yield from self.context.wait_action_settle(1.0)
         else:
-            raise StorageBagChoiceBoxBlocked("#586 绿色勾选没有独立证明目标被唯一选中")
+            raise StorageBagChoiceBoxBlocked("#586 绿色勾选没有独立证明目标被唯一选中；保留现场，勿重复点选")
 
-        current = self.count_reader(self.context)
-        if not 1 <= current <= open_quantity:
-            raise StorageBagChoiceBoxBlocked(
-                f"#586 初始数量 {current} 不在 1..计划开启{open_quantity}"
-            )
-        steps = open_quantity - current
-        if steps < 0 or steps > self.max_increment_steps:
-            raise StorageBagChoiceBoxBlocked("#586 增加数量步数超出有界预算")
-        for _step in range(steps):
-            yield from self.context.wait_click(CHOICE_BOX_SCENE, "增加数量", timeout=8.0)
-            yield from self.context.wait_scene(
-                [CHOICE_BOX_SCENE],
-                wait=8.0,
-                label="储物袋自选匣：增加数量后复验 fresh #586",
-            )
+        # Use the common controller's bounded +/- fine stage. It settles and
+        # rereads once per batch, rather than recognizing the scene per click.
+        # Its generic reader hook also accepts this crop-OCR reader; no Runtime
+        # value or guessed initial count is fabricated if OCR is temporarily empty.
+        adjustment = yield from set_verified_integer_button_count(
+            self.context,
+            IntegerButtonAssets(CHOICE_BOX_SCENE, count_region="当前数量",
+                                count_decrease="减少数量", count_increase="增加数量"),
+            open_quantity,
+            count_label="自选匣开启数量",
+            runtime_count_reader=lambda: self.count_reader(self.context),
+        )
+        if adjustment["after"] != open_quantity:
+            raise StorageBagChoiceBoxBlocked("确定前最终数量不等于计划开启数量")
         if not self.selection_verifier(self.context, selected.slot, len(visible_slots)):
             raise StorageBagChoiceBoxBlocked("确定前绿色勾选唯一证据失效")
-        if self.count_reader(self.context) != open_quantity:
-            raise StorageBagChoiceBoxBlocked("确定前最终 OCR 数量不等于计划开启数量")
 
         spirit_before = None
         if selected.is_spirit_artifact:

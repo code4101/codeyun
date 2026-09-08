@@ -153,7 +153,8 @@ def _stable_read(context, assets, *, count_label, runtime_reader, read_counts=No
     """
 
     max_samples = 6
-    trace: list[int] = []
+    trace: list[int | str] = []
+    previous: int | None = None
     yield from context.wait_action_settle(0.35)
     for index in range(max_samples):
         try:
@@ -164,12 +165,15 @@ def _stable_read(context, assets, *, count_label, runtime_reader, read_counts=No
                 runtime_reader=runtime_reader, read_counts=read_counts,
             )
         except RuntimeError as exc:
-            raise RuntimeError(
-                f"{count_label}稳定读回失败，观测轨迹={trace}：{exc}"
-            ) from exc
-        trace.append(value)
-        if len(trace) >= 2 and trace[-1] == trace[-2]:
-            return value
+            # A transient empty OCR is an observation failure, not a reason
+            # to repeat the previous click batch. Keep the same bounded budget.
+            trace.append(str(exc))
+            previous = None
+        else:
+            trace.append(value)
+            if value == previous:
+                return value
+            previous = value
         if index + 1 < max_samples:
             yield from context.wait_action_settle(0.25)
     raise RuntimeError(

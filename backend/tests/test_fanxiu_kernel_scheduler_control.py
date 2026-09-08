@@ -1544,13 +1544,13 @@ def test_ranking_lifecycle_is_a_standard_scheduler_job():
     assert any(item["id"] == "ranking-lifecycle" for item in defaults)
 
 
-def test_scheduler_repair_promotes_midnight_narrow_window_chain_only_from_legacy_level_zero():
+def test_scheduler_repair_preserves_midnight_jobs_level_zero_and_operator_override():
     from backend.core.fanxiu.data_annotation import kernel_scheduler_plan as scheduler
 
     defaults = kernel_scheduler_control.default_kernel_scheduler_tasks()
     default_by_id = {item["id"]: item for item in defaults}
-    assert default_by_id["activity-daily-list-sync"]["dispatch_level"] == 2
-    assert default_by_id["ranking-lifecycle"]["dispatch_level"] == 1
+    assert default_by_id["activity-daily-list-sync"]["dispatch_level"] == 0
+    assert default_by_id["ranking-lifecycle"]["dispatch_level"] == 0
 
     sync = deepcopy(default_by_id["activity-daily-list-sync"])
     ranking = deepcopy(default_by_id["ranking-lifecycle"])
@@ -1565,8 +1565,8 @@ def test_scheduler_repair_promotes_midnight_narrow_window_chain_only_from_legacy
     )
     by_id = {item["id"]: item for item in repaired}
     assert changed is True
-    assert by_id["activity-daily-list-sync"]["dispatch_level"] == 2
-    assert by_id["ranking-lifecycle"]["dispatch_level"] == 1
+    assert by_id["activity-daily-list-sync"]["dispatch_level"] == 0
+    assert by_id["ranking-lifecycle"]["dispatch_level"] == 0
 
     ranking["dispatch_level"] = 3
     repaired, _changed = scheduler.repair_kernel_scheduler_tasks(

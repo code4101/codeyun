@@ -124,6 +124,16 @@ def purchase_balanced_spirit_artifact_market(context, execute, *, batches,
             evidence_path=root / f'market-{batch.reward_id}-events.jsonl', stop_at=float('inf'))
         receipt.write_text(json.dumps(result, ensure_ascii=False, default=str), encoding='utf-8')
         results.append(result)
+    # Reuse the latest authoritative debit observation, including receipt replay.
+    # Publishing this one field must not demand the bag UI or read Runtime again.
+    currency_rows = [result['currency_after'] for result in results if result.get('currency_after')]
+    if currency_rows:
+        from sqlmodel import Session
+        from backend.db import engine
+        from ...instrumentation.spirit_artifact_storage_bag import publish_spirit_artifact_market_currency
+        currency = max(currency_rows, key=lambda row: float(row['observed_at']))
+        with Session(engine) as session:
+            publish_spirit_artifact_market_currency(session, currency['amount'], currency)
     return dict(status='complete', receipts=results)
 
 
@@ -167,6 +177,14 @@ def open_balanced_spirit_artifact_boxes(context, execute, *, sources,
     plan_path.write_text(canonical, encoding='utf-8')
     results = []
     for source in sources:
+        # One adapter owns this fixed box list for the entire uninterrupted loop.
+        latest_snapshot = None
+        def read_snapshot():
+            nonlocal latest_snapshot
+            latest_snapshot = fanxiu_instrumentation_service.backpack_ui_snapshot()
+            return latest_snapshot
+        adapter = StorageBagChoiceBoxGuiAdapter(context=context,
+            snapshot_reader=read_snapshot, catalog_cards_by_id=cards)
         started = False
         for batch in source['batches']:
             box_id, reward_id, quantity = source['base_id'], batch['reward_id'], batch['quantity']
@@ -198,16 +216,9 @@ def open_balanced_spirit_artifact_boxes(context, execute, *, sources,
                 with (root / f'box-{box_id}-{reward_id}-position.jsonl').open('a', encoding='utf-8') as output:
                     output.write(json.dumps(dict(at=time.time(), attempt_id=attempt,
                         **asdict(plan)), ensure_ascii=False, default=str) + '\n')
-            latest_snapshot = None
-            def read_snapshot():
-                nonlocal latest_snapshot
-                latest_snapshot = fanxiu_instrumentation_service.backpack_ui_snapshot()
-                return latest_snapshot
-            adapter = StorageBagChoiceBoxGuiAdapter(context=context,
-                snapshot_reader=read_snapshot,
-                catalog_cards_by_id=cards, plan_observer=record_plan)
+            adapter.plan_observer = record_plan
             try:
-                outcome = execute(adapter.execute(request))
+                outcome = execute(adapter.execute(request, snapshot=before))
             except (Exception, KeyboardInterrupt) as error:
                 record_reset_source_failure(intent, attempt, error)
                 raise
@@ -219,4 +230,14 @@ def open_balanced_spirit_artifact_boxes(context, execute, *, sources,
             receipt.write_text(json.dumps(result, ensure_ascii=False, default=str), encoding='utf-8')
             _publish_box_snapshot(box_id, latest_snapshot)
             results.append(_box_receipt_result(result, receipt))
+        # Planned batches are not the completion criterion: this box must be empty.
+        # Also covers a resumed invocation whose receipts were all already present.
+        final_snapshot = read_snapshot()
+        if final_snapshot.get('complete') is not True:
+            raise RuntimeError('同箱循环结束未取得完整储物袋快照')
+        remaining = sum(int(row.get('num') or 0) for row in final_snapshot.get('items', [])
+                        if row.get('base_id') == source['base_id'] and not row.get('is_padding'))
+        _publish_box_snapshot(source['base_id'], final_snapshot)
+        if remaining:
+            raise RuntimeError(f"同箱分配已执行但仍剩 {remaining} 个箱子；保留储物袋现场，补全分配后再继续")
     return dict(status='complete', receipts=results)

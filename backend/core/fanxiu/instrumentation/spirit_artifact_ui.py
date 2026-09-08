@@ -44,7 +44,7 @@ def read_spirit_artifact_auto_open_rule() -> dict[str, Any]:
 
 
 def locate_spirit_artifact_name(tokens: list[dict], names: tuple[str, ...]) -> tuple[float, float] | None:
-    """按 OCR 原始行序连接竖排字，返回唯一名称包络中心；不借用图标或序号。"""
+    """连接竖排 OCR，精确优先、编辑距离1回退；并列拒绝，不借用图标。"""
     lines: dict[str, list[dict]] = {}
     for token in tokens:
         lines.setdefault(str(token['parent_line_id']), []).append(token)
@@ -69,7 +69,38 @@ def locate_spirit_artifact_name(tokens: list[dict], names: tuple[str, ...]) -> t
     if len(boxes) > 1:
         raise FanxiuRuntimeMemoryError('灵器名称 OCR 候选不唯一')
     if not boxes:
-        return None
+        def distance(a, b):
+            row = list(range(len(b) + 1))
+            for i, ca in enumerate(a, 1):
+                next_row = [i]
+                for j, cb in enumerate(b, 1):
+                    next_row.append(min(next_row[-1] + 1, row[j] + 1,
+                                        row[j - 1] + (ca != cb)))
+                row = next_row
+            return row[-1]
+        ranked = []
+        for line in lines.values():
+            text = ''.join(str(t['text']) for t in line).strip()
+            spans = [(distance(text[start:start + size], name), abs(size - len(name)), start, size)
+                     for name in names for size in (len(name) - 1, len(name), len(name) + 1)
+                     if size >= 3 for start in range(max(0, len(text) - size + 1))]
+            if not spans:
+                continue
+            score, _, start, size = min(spans)
+            if score <= 1:
+                selected, offset = [], 0
+                for token in line:
+                    next_offset = offset + len(str(token['text']))
+                    if offset < start + size and next_offset > start:
+                        selected.append(token)
+                    offset = next_offset
+                ranked.append((score, selected))
+        ranked.sort(key=lambda item: item[0])
+        if not ranked or (len(ranked) > 1 and ranked[0][0] == ranked[1][0]):
+            return None
+        selected = ranked[0][1]
+        boxes.add((min(t['x'] for t in selected), min(t['y'] for t in selected),
+                   max(t['x'] + t['w'] for t in selected), max(t['y'] + t['h'] for t in selected)))
     x1, y1, x2, y2 = boxes.pop()
     return ((x1 + x2) / 2, (y1 + y2) / 2)
 

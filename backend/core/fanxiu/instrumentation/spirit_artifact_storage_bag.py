@@ -205,6 +205,44 @@ def publish_spirit_artifact_box_quantity(
     return payload
 
 
+def publish_spirit_artifact_market_currency(
+    session: Session, count: int, evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """发布已读取的珍宝阁元魂余额；不读游戏，不要求储物袋页面已打开。"""
+    import math
+    if type(count) is not int or count < 0:
+        raise ValueError('灵器市场余额必须为非负整数')
+    observed_at = float(evidence.get('observed_at') or 0)
+    if (not math.isfinite(observed_at) or observed_at <= 0
+            or not evidence.get('pid') or not evidence.get('process_start_ticks')):
+        raise ValueError('余额证据缺少有效观测时间或进程身份')
+    row = session.exec(select(FanxiuPacketBusinessRecord).where(
+        FanxiuPacketBusinessRecord.domain == DOMAIN,
+        FanxiuPacketBusinessRecord.record_key == 'current',
+    )).first()
+    if row is None:
+        from ..catalog.inventory import load_spirit_artifact_hall
+        payload = {'storage_bag_items': load_spirit_artifact_hall()['storage_bag_items']}
+        row = FanxiuPacketBusinessRecord(domain=DOMAIN, record_key='current', created_at=time.time())
+    else:
+        payload = dict(row.payload)
+    previous = payload.get('market_currency_evidence') or {}
+    latest = float(payload.get('market_currency_observed_at') or previous.get('observed_at') or 0)
+    if observed_at < latest:
+        return payload
+    if observed_at == latest and payload.get('market_currency_count') != count:
+        raise ValueError('同一余额观测时间出现冲突数值')
+    payload.update(market_currency_count=count, market_currency_observed_at=observed_at,
+                   market_currency_evidence=dict(evidence))
+    row.payload = payload
+    row.source_kind = 'dynamic_instrumentation'
+    row.entity_name = '灵器自选宝匣库存'
+    row.updated_at = time.time()
+    session.add(row)
+    session.commit()
+    return payload
+
+
 def sync_spirit_artifact_storage_bag(session: Session) -> dict[str, Any]:
     """显式只读游戏并更新数据库；不打开、领取或使用宝匣。"""
     from backend.core.fanxiu.catalog.inventory import load_spirit_artifact_hall
@@ -228,6 +266,7 @@ def sync_spirit_artifact_storage_bag(session: Session) -> dict[str, Any]:
         raise ValueError('灵器货币与储物袋进程不一致')
     payload['market_currency_count'] = currency[15100001]
     payload['market_currency_evidence'] = currency_evidence
+    payload['market_currency_observed_at'] = currency_evidence['observed_at']
     # 页面GET不读游戏；显式同步时一次批查目录未知项，再一次批查礼包效果。
     # 不把名字缺失等同来源未知，也不把type=2笼统当随机。
     unresolved = payload.get('unresolved_item_ids') or []

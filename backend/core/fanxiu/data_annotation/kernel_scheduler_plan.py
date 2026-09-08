@@ -310,16 +310,6 @@ def repair_kernel_scheduler_tasks(
             # migrate that exact legacy value; preserve any user override.
             migrated_retry_delay = default["error_retry_delay_seconds"]
         migrated_dispatch_level = previous["dispatch_level"]
-        if (
-            task_id in {"activity-daily-list-sync", "ranking-lifecycle"}
-            and raw_previous.get("dispatch_level", 0) == 0
-        ):
-            # These are narrow-window upstream jobs.  The original level zero
-            # lets a healthy but long midnight assistant/mail Cell consume the
-            # 00:20 inventory refresh and 00:30-00:31 ranking tail window.
-            # Migrate only the former standard value; non-zero operator
-            # overrides remain authoritative.
-            migrated_dispatch_level = default["dispatch_level"]
         migrated_execution_state = {
             key: previous.get(key)
             for key in _SCHEDULER_EXECUTION_STATE_FIELDS

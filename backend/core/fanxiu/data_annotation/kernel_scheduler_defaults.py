@@ -320,7 +320,7 @@ def default_kernel_scheduler_tasks(
             "玩法榜",
             description="动态",
             initial_times=("00:10",),
-            dispatch_level=1,
+            dispatch_level=0,
             error_retry_delay_seconds=600,
             payload={"max_execution_seconds": 10800},
         ),

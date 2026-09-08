@@ -19,6 +19,19 @@ def test_vertical_name_rejects_two_matching_cards():
         locate_spirit_artifact_name(tokens, ('弥罗宝光幢',))
 
 
+def test_vertical_name_edit_distance_excludes_following_badge():
+    tokens = [{'parent_line_id': 'name', 'order': i, 'text': char,
+               'x': 100, 'y': 200 + i * 40, 'w': 30, 'h': 40}
+              for i, char in enumerate('青瞑岁月灯减伤')]
+    assert locate_spirit_artifact_name(tokens, ('青暝岁月灯',)) == (115, 300)
+
+
+def test_fuzzy_vertical_name_does_not_choose_tied_cards():
+    tokens = [{'parent_line_id': str(i), 'order': 0, 'text': '青瞑岁月灯',
+               'x': i * 100, 'y': 200, 'w': 30, 'h': 200} for i in range(2)]
+    assert locate_spirit_artifact_name(tokens, ('青暝岁月灯',)) is None
+
+
 def test_lock_reply_updates_state_without_reordering_ui_rows():
     rows = [{'row': 0, 'cleanse_id': 2, 'locked': True}, {'row': 1, 'cleanse_id': 1, 'locked': False}]
     committed = [{'cleanse_id': 1, 'locked': False}, {'cleanse_id': 2, 'locked': False}]
