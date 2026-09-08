@@ -1,5 +1,6 @@
 from backend.core.fanxiu.instrumentation.spirit_artifact_storage_bag import (
     resolve_stable_spirit_artifact_rewards, classify_spirit_artifact_bag_source,
+    resolve_spirit_artifact_bag_source_coverage,
 )
 
 
@@ -20,7 +21,18 @@ def test_old_claimed_stable_random_box_is_reclassified_without_hiding_display():
     card = {'type': 2, 'sub_type': 1,
             'optional_gift_rewards': [{'id': 14001906, 'count': 1}]}
     result = classify_spirit_artifact_bag_source(item, card, {14001906: {'quality': 6}})
-    assert result['selection_kind'] == 'random'
+    assert result['selection_kind'] == 'gift'
     assert result['stable_body_reward_ids'] == []
     assert result['choices'][0]['stable_body'] is False
     assert item['choices'][0]['stable_body'] is True
+
+
+def test_non_choice_type_closes_choice_gap_without_claiming_fixed_gift_rewards():
+    bag = {'evidence': {'pid': 1, 'process_start_ticks': 2}, 'unresolved_item_ids': [10, 20]}
+    meta = {'pid': 1, 'process_start_ticks': 2, 'captured_at': 3,
+            'items_by_id': {'10': {'item_resolved': True, 'item_type_id': 2},
+                            '20': {'item_resolved': True, 'item_type_id': 5}}}
+    result = resolve_spirit_artifact_bag_source_coverage(bag, meta)
+    assert result['choice_sources_complete'] is True
+    assert result['unresolved_gift_reward_ids'] == [10]
+    assert result['unresolved_item_ids'] == [10, 20]  # 名称目录依旧未知

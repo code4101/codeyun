@@ -58,10 +58,54 @@ def classify_spirit_artifact_bag_source(item, card, items_by_base_id) -> dict[st
     """保留其他用途的展示；稳定标记由正式目录重算，旧快照标记不可信。"""
     stable = resolve_stable_spirit_artifact_rewards(card, items_by_base_id)
     kind = ('select' if card.get('type') == 21 and card.get('sub_type') == 21
-            else 'random' if card.get('type') == 2 and card.get('sub_type') == 1 else 'unknown')
+            else 'gift' if card.get('type') == 2 and card.get('sub_type') == 1 else 'unknown')
     return {**item, 'selection_kind': kind, 'stable_body_reward_ids': list(stable),
             'choices': [{**choice, 'stable_body': choice.get('reward_id') in stable}
                         for choice in item.get('choices', [])]}
+
+
+def resolve_spirit_artifact_bag_source_coverage(bag, metadata, *, effect_text_snapshot=None) -> dict[str, Any]:
+    """用同进程批量类型事实收敛目录未知项，不伪造名字或礼包奖励。
+
+    OPTIONAL_GIFT=21；PANDORA=2仅说明礼包，不能单凭类型声称随机。
+    非自选项不再阻塞自选来源枚举，但礼包固定奖励是否含本体是另一项
+    独立未知；调用方不得把choice_sources_complete当全部稳定来源完备。
+    """
+    evidence = bag.get('evidence') or {}
+    if (not evidence.get('pid') or
+            (evidence.get('pid'), evidence.get('process_start_ticks')) !=
+            (metadata.get('pid'), metadata.get('process_start_ticks'))):
+        raise ValueError('储物袋与物品类型事实必须属于同一进程')
+    if metadata.get('captured_at') is None:
+        raise ValueError('类型事实缺少观测时间')
+    rows = metadata.get('items_by_id') or {}
+    texts = {}
+    if effect_text_snapshot is not None:
+        if ((effect_text_snapshot.get('pid'), effect_text_snapshot.get('process_start_ticks')) !=
+                (metadata.get('pid'), metadata.get('process_start_ticks'))):
+            raise ValueError('礼包效果文本与类型事实必须属于同一进程')
+        texts = effect_text_snapshot.get('texts_by_id') or {}
+    unknown, nonselect, gifts, random_gifts = [], [], [], []
+    for item_id in bag.get('unresolved_item_ids') or []:
+        row = rows.get(str(item_id), rows.get(item_id, {}))
+        item_type = row.get('item_type_id')
+        if row.get('item_resolved') is not True or type(item_type) is not int or item_type == 21:
+            unknown.append(item_id)
+        else:
+            nonselect.append(item_id)
+            if item_type == 2:
+                text_id = row.get('runtime_effect_description_id')
+                description = texts.get(str(text_id), texts.get(text_id))
+                if description in ('打开后可随机获得以下道具：', '打开后会随机掉落以下道具'):
+                    random_gifts.append(item_id)
+                else:
+                    gifts.append(item_id)
+    return {**bag, 'unresolved_choice_source_ids': unknown,
+            'verified_non_choice_ids': nonselect,
+            'unresolved_gift_reward_ids': gifts,
+            'verified_random_gift_ids': random_gifts,
+            'choice_sources_complete': not unknown,
+            'source_type_observed_at': metadata['captured_at']}
 
 
 def build_spirit_artifact_storage_bag_snapshot(

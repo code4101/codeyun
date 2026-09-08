@@ -12,12 +12,35 @@ from pathlib import Path
 from typing import Any
 
 from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
+from .spirit_artifact_yinxian import YinxianAttribute
 from ...instrumentation.spirit_artifact import read_spirit_artifact_item_runtime
 from ...instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
 from ...instrumentation.spirit_artifact_wash_observation import (
     SpiritArtifactWashTarget, validate_spirit_artifact_wash_snapshot,
     read_spirit_artifact_wash_observation,
 )
+
+
+def validate_spirit_artifact_breakthrough_attributes(
+    effects, *, rules: dict, a_codes: set[str], part: int,
+) -> None:
+    """纯策略门禁：本灵器动态四 A 均为红色以上且达到当前配置满值。
+
+    沿用培养入口的属性归一化与满值判定；超出满值同样通过。
+    不要求 B 满值，不以客户端按钮出现替代策略完成。
+    """
+    if len(a_codes) != 4 or part not in range(1, 7):
+        raise ValueError('突破需要明确的四 A 策略与部位')
+    if len(effects) != 6 or len({e['cleanse_id'] for e in effects}) != 6:
+        raise ValueError('突破需要完整且唯一的六条已保存属性')
+    attributes = tuple(YinxianAttribute(
+        e['cleanse_id'], rules[e['cleanse_id']]['code'], e['value'],
+        e['quality'], e['locked'], rules[e['cleanse_id']]['max'],
+        150 if part in (5, 6) else 100,
+    ) for e in effects)
+    completed = {e.code for e in attributes if e.quality >= 6 and e.is_full}
+    if not a_codes <= completed:
+        raise RuntimeError(f'突破策略尚未完成，未满红色 A：{sorted(a_codes - completed)}')
 
 
 def lock_spirit_artifact_after_breakthrough(
@@ -72,8 +95,8 @@ def breakthrough_spirit_artifact(
 ) -> dict[str, Any]:
     """在明确目标上执行一次突破，或仅收尾既存结果页；不导航、不培养属性。
 
-    调用方先完成该灵器的 A 类策略目标。本函数只检查客户端就绪状态，
-    不以固定 A 条数、B 满值或阶数替代客户端准入。target 必须含 base_id。
+    发起前同时核验本灵器动态四 A 全满及客户端准入；不要求 B 满值。
+    既存结果仅验证已突破并收尾，不重新执行突破策略门禁。target 必须含 base_id。
     返回突破后重新读取并锁定全部 A 的 effects/locks；废弃突破前的锁账本。
     确认后任一观察失败即记录并抛错，保留当前现场，绝不重新发送确认。
     """
@@ -138,6 +161,16 @@ def breakthrough_spirit_artifact(
                 raise RuntimeError('突破入口要求无候选洗炼页 #668；不自动恢复确认窗口')
             identity(readiness=True)
             before = item(False)
+            from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
+            from ...instrumentation.spirit_artifact_affixes import read_spirit_artifact_affix_rules
+            configured = load_spirit_artifact_wash_rules()['wares'][target.ware_id]
+            affixes = read_spirit_artifact_affix_rules([e['cleanse_id'] for e in before['effects']])
+            if (affixes['pid'], affixes['process_start_ticks']) != target.process_identity:
+                raise RuntimeError('突破策略配置与本体进程不一致')
+            validate_spirit_artifact_breakthrough_attributes(
+                before['effects'], rules=affixes['rules'],
+                a_codes=set(configured['a_codes']), part=target.part,
+            )
             identity(readiness=True)
             frame = context.cur_frame(update=True)
             match = context.find_ocr_text(assets.wash_scene_id, '突破上限',

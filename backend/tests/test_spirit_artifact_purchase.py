@@ -37,3 +37,24 @@ def test_insufficient_authorized_budget():
     request = SpiritArtifactPurchaseRequest(40014, 14001506, 3, 3, "环", currency_limit=79)
     with pytest.raises(ValueError):
         validate_spirit_artifact_purchase_dialog(dialog(), request, (12, 34))
+
+
+def test_six_explicit_bodies_require_full_total_and_count():
+    request = SpiritArtifactPurchaseRequest(40012, 14000906, 2, 3, "带", quantity=6, currency_limit=480)
+    current = {**dialog(), "goods_id": 40012, "item_id": 14000906,
+               "showNum": 6, "maxNum": 10, "HadPrice": 480}
+    validate_spirit_artifact_purchase_dialog(current, request, (12, 34))
+    for change in [{"showNum": 1}, {"HadPrice": 479}, {"maxNum": 5}]:
+        with pytest.raises(RuntimeError):
+            validate_spirit_artifact_purchase_dialog({**current, **change}, request, (12, 34))
+    # Initial count may differ while the formal quantity component adjusts it.
+    validate_spirit_artifact_purchase_dialog({**current, "showNum": 1}, request,
+                                            (12, 34), require_quantity=False)
+
+
+@pytest.mark.parametrize("quantity,limit", [(0, 480), (-1, 480), (1.5, 480), (True, 480), (6, 479)])
+def test_unbounded_or_invalid_quantity_authorization(quantity, limit):
+    request = SpiritArtifactPurchaseRequest(40014, 14001506, 3, 3, "环",
+                                           quantity=quantity, currency_limit=limit)
+    with pytest.raises(ValueError):
+        validate_spirit_artifact_purchase_dialog(dialog(), request, (12, 34))

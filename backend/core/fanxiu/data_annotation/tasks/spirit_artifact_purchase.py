@@ -1,4 +1,8 @@
-"""Single authorized treasure-shop purchase; no navigation, reset, or replay."""
+"""Single authorized treasure-shop purchase; no navigation, reset, or replay.
+
+Quantity-one and quantity-six purchases have passed live acceptance, including
+independent raw instance delivery and exact total currency debit.
+"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -19,6 +23,14 @@ from .integer_count_control import IntegerSliderAssets
 from .storage_bag_choice_box import StorageBagChoiceReward, verify_spirit_artifact_choice_outcome
 
 
+SPIRIT_ARTIFACT_SHOP_QUANTITY_ASSETS = IntegerSliderAssets(
+    settings_scene_id=725, count_region="数量",
+    count_decrease="-", count_increase="+",
+    count_decrease_large="-10", count_increase_large="+10", count_large_step=10,
+    count_slider_thumb=None, count_slider_track="数量滑条",
+)
+
+
 @dataclass(frozen=True)
 class SpiritArtifactPurchaseRequest:
     goods_id: int
@@ -36,7 +48,7 @@ class SpiritArtifactPurchaseRequest:
 class SpiritArtifactPurchaseAssets:
     shop_scene: int = 724
     dialog_scene: int = 725
-    quantity_assets: IntegerSliderAssets | None = None
+    quantity_assets: IntegerSliderAssets | None = SPIRIT_ARTIFACT_SHOP_QUANTITY_ASSETS
     row_shapes: tuple[str, ...] = ("兑换列表",)
     list_shape: str = "兑换列表"
     confirm_shape: str = "兑换"
@@ -46,12 +58,14 @@ def validate_spirit_artifact_purchase_dialog(
     snapshot: Mapping[str, Any], request: SpiritArtifactPurchaseRequest,
     process_identity: tuple[int, int], *, require_quantity: bool = True,
 ) -> None:
-    """Pure identity/authorization gate; one red body is the supported contract."""
-    if (request.quantity != 1 or request.unit_price <= 0
-            or request.currency_limit < request.unit_price
+    """Pure identity gate; explicit quantity is bounded by the authorized total."""
+    if (any(type(value) is not int for value in
+            (request.quantity, request.unit_price, request.currency_limit))
+            or request.quantity <= 0 or request.unit_price <= 0
+            or request.currency_limit < request.unit_price * request.quantity
             or min(request.goods_id, request.base_id, request.cost_item_id, request.ware_id) <= 0
             or request.part not in range(1, 7) or not request.name.strip()):
-        raise ValueError("本体采购授权必须为明确目标、1 个及足够费用上限")
+        raise ValueError("本体采购授权必须为明确目标、正整数数量及足够总费用上限")
     expected = {"goods_id": request.goods_id, "item_id": request.base_id,
                 "cost_item_id": request.cost_item_id, "Price": request.unit_price,
                 "goodsNum": 1, "ShopModelType": 4}
@@ -60,8 +74,9 @@ def validate_spirit_artifact_purchase_dialog(
             or (snapshot.get("pid"), snapshot.get("process_start_ticks")) != process_identity
             or any(snapshot.get(key) != value for key, value in expected.items())
             or snapshot.get("CanBuy") is not True or snapshot.get("isEnough") is not True
-            or int(snapshot.get("HadPrice") or 0) < request.unit_price
-            or (require_quantity and snapshot.get("showNum") != 1)):
+            or int(snapshot.get("HadPrice") or 0) < request.unit_price * request.quantity
+            or (request.quantity > 1 and int(snapshot.get("maxNum") or 0) < request.quantity)
+            or (require_quantity and snapshot.get("showNum") != request.quantity)):
         raise RuntimeError("珍宝阁购买详情身份、数量、费用或进程未通过校验")
 
 
@@ -69,7 +84,7 @@ def purchase_spirit_artifact_body(
     context, execute, *, request: SpiritArtifactPurchaseRequest,
     assets: SpiritArtifactPurchaseAssets, evidence_path: Path, stop_at: float,
 ) -> dict[str, Any]:
-    """From the already-open treasure shop, buy exactly one body and prove delivery.
+    """Buy the explicitly authorized quantity in one transaction and prove delivery.
 
     Formal asset geometry owns coordinates. OCR finds the row; Runtime verifies
     goods/base/currency/model/price before the single confirmation. A failed
@@ -167,8 +182,8 @@ def purchase_spirit_artifact_body(
         validate_spirit_artifact_purchase_dialog(initial, request, identity, require_quantity=False)
         adjusted = None
         if assets.quantity_assets is None:
-            # #725 currently has no annotated +/- controls. Quantity 1 is proven
-            # by Runtime; a different value stops before confirmation.
+            # With no supplied quantity-control asset, the current Runtime count
+            # must already equal authorization; never guess unannotated controls.
             validate_spirit_artifact_purchase_dialog(initial, request, identity)
         else:
             adjusted = execute(set_verified_common_shop_quantity(
@@ -193,20 +208,23 @@ def purchase_spirit_artifact_body(
         record("purchase_observed", inventory=after, currency=cash_after)
         proof = verify_spirit_artifact_choice_outcome(
             before, after, reward=StorageBagChoiceReward(1, request.base_id, request.name, 1,
-                                                       is_spirit_artifact=True), opened_count=1)
+                                                       is_spirit_artifact=True), opened_count=request.quantity)
         new_rows = [row for row in after["items"] if row["item_id"] in proof.added_item_ids]
         if any((row["ware_id"], row["part"]) != (request.ware_id, request.part) for row in new_rows):
             raise RuntimeError("新增本体不属于授权灵器/部位")
+        if len(new_rows) != request.quantity or any(row["quantity"] != 1 for row in new_rows):
+            raise RuntimeError("采购交付未形成授权数量的独立本体 UID，禁止重购")
         if ((cash_after["pid"], cash_after["process_start_ticks"]) != identity
-                or cash_before["amount"] - cash_after["amount"] != request.unit_price):
+                or cash_before["amount"] - cash_after["amount"] != request.unit_price * request.quantity):
             raise RuntimeError("本体已观察但货币扣费未精确闭环，禁止重购")
         result = dict(status="completed", item_ids=list(proof.added_item_ids),
                       new_items=new_rows, inventory=after,
-                      spent=request.unit_price, currency_before=cash_before,
+                      spent=request.unit_price * request.quantity, currency_before=cash_before,
                       currency_after=cash_after, inventory_proof=asdict(proof))
         record("purchase_completed", result=result)
         return result
     except Exception as exc:
+        exc.purchase_confirmation_may_have_been_sent = sent
         record("purchase_stopped", confirmation_may_have_been_sent=sent,
                error_type=type(exc).__name__, error=str(exc))
         raise

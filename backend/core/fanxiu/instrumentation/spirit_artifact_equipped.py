@@ -66,7 +66,8 @@ def read_spirit_artifact_owned_runtime(ware_ids: Sequence[int] | None = None) ->
 
     返回 timings_seconds 分解本次观察耗时；它是单次样本，不是性能承诺。
     组合本身不是游戏原子快照；动作后须重新调用，不能跨动作复用返回结果。
-    新组合入口尚待真实验收；原装备读取路径与失败恢复策略保持不变。
+    已在4-3重置后的稳定边界完成3轮独立/联合只读对照，全部业务字段一致。
+    原装备读取路径与失败恢复策略保持不变；此对照不代替后续动作重入验收。
     """
     from .ui_runtime_context import read_ui_runtime_snapshot
     from .runtime_memory import resolve_lua_global_manager_root

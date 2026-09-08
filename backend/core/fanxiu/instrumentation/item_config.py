@@ -9,6 +9,7 @@ not call game methods or initialize config tables; it only decodes the
 
 from collections.abc import Iterable, Mapping
 import threading
+import time
 from typing import Any
 
 from backend.core.fanxiu.catalog.item import ITEM_TYPE_LABELS
@@ -156,6 +157,9 @@ def read_loaded_item_metadata(
     fields = (
         "id",
         "name",
+        "descript",
+        "effDescript",
+        "effectValue",
         "type",
         "subType",
         "quality",
@@ -177,6 +181,10 @@ def read_loaded_item_metadata(
             "item_id": str(item_id),
             "item_name": raw_name.strip() if isinstance(raw_name, str) else "",
             "runtime_name_id": as_int(raw_name),
+            "runtime_description_id": as_int(values.get("descript")),
+            "runtime_effect_description_id": as_int(values.get("effDescript")),
+            "effect_value": values.get("effectValue") if isinstance(values.get("effectValue"), (str, int, float)) else None,
+            "runtime_field_indexes": {field: indexes.get(field) for field in fields},
             "item_type": ITEM_TYPE_LABELS.get(str(item_type), f"道具类型#{item_type}" if item_type is not None else ""),
             "item_type_id": item_type,
             "item_sub_type_id": sub_type,
@@ -206,4 +214,61 @@ def read_loaded_item_metadata(
     }
 
 
-__all__ = ["read_loaded_item_metadata"]
+def read_item_metadata_runtime(item_ids: Iterable[int], *, force: bool = False) -> dict[str, Any]:
+    """一次批量读取已自然加载的物品类型；无需调用方管理内存或UI地址。
+
+    不打开物品、不调用Lua、不初始化配置。complete=False与missing_ids保留
+    未知事实；类型自选也仅证明箱子类型，具体稳定奖励仍需独立核实。
+    返回进程身份、观测时间和每个base ID的metadata，缓存随进程变更失效。
+    """
+    from .ui_runtime_context import acquire_ui_runtime_context
+
+    wanted = tuple(item_ids)
+    if not wanted or any(type(value) is not int or value <= 0 for value in wanted):
+        raise ValueError('需要至少一个正整数物品base ID')
+    if force:
+        with _ITEM_METADATA_CACHE_LOCK:
+            for item_id in wanted:
+                _ITEM_METADATA_CACHE.pop(item_id, None)
+    started = time.perf_counter()
+    context = acquire_ui_runtime_context(())
+    rows, diagnostics = read_loaded_item_metadata(
+        wanted, memory=context.memory, reader=context.reader,
+        state_address=context.binding.state_address,
+    )
+    return {**diagnostics, 'items_by_id': rows,
+            'pid': context.memory.pid,
+            'process_start_ticks': context.memory.process_start_ticks,
+            'captured_at': time.time(), 'read_only': True,
+            'elapsed_seconds': round(time.perf_counter()-started, 4)}
+
+
+def read_item_text_runtime(text_ids: Iterable[int]) -> dict[str, Any]:
+    """批量读取LuaLocalization.LangTable；不调用Text/GetLan或加载语言表。
+
+    正式Core.UI.LuaLocalization.GetLan(key)直接返回_M.LangTable[key]；
+    LangTable由客户端已加载语言模块提供。表缺失明确失败，单项缺失保留missing。
+    """
+    from .ui_runtime_context import acquire_ui_runtime_context
+    wanted = tuple(text_ids)
+    if not wanted or any(type(value) is not int or value <= 0 for value in wanted):
+        raise ValueError('需要正整数文本ID')
+    started = time.perf_counter()
+    context = acquire_ui_runtime_context(())
+    raw = context.reader.state_string_field(context.binding.environment_address,
+        'LuaLocalization', state_address=context.binding.state_address)
+    module = table_ref(raw)
+    table = table_ref(context.reader.state_string_field(module.address, 'LangTable',
+        state_address=context.binding.state_address)) if module is not None else None
+    if table is None:
+        raise FanxiuRuntimeMemoryError('LuaLocalization.LangTable尚未自然加载')
+    values = context.reader.numeric_fields(table.address, frozenset(wanted))
+    texts = {key: value for key, value in values.items() if isinstance(value, str)}
+    return {'texts_by_id': texts, 'missing_ids': sorted(set(wanted)-texts.keys()),
+            'complete': set(wanted) <= texts.keys(), 'source': 'LuaLocalization.LangTable',
+            'pid': context.memory.pid, 'process_start_ticks': context.memory.process_start_ticks,
+            'captured_at': time.time(), 'read_only': True,
+            'elapsed_seconds': round(time.perf_counter()-started, 4)}
+
+
+__all__ = ["read_loaded_item_metadata", "read_item_metadata_runtime", "read_item_text_runtime"]

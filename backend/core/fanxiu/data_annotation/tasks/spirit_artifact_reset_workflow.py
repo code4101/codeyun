@@ -16,8 +16,7 @@ from filelock import FileLock
 
 from .spirit_artifact_reset_plan import SpiritArtifactResetPlanEntry
 from .spirit_artifact_reset_action import classify_owned_raw_reset, reset_spirit_artifact_from_owned_raw
-from ...instrumentation.spirit_artifact import read_spirit_artifact_inventory_runtime
-from ...instrumentation.spirit_artifact_equipped import read_spirit_artifact_equipped_runtime
+from ...instrumentation.spirit_artifact_equipped import read_spirit_artifact_owned_runtime
 from ...instrumentation.spirit_artifact_wash_observation import SpiritArtifactWashTarget
 from ...catalog.inventory_models import FanxiuSpiritArtifactHallSnapshot
 
@@ -110,17 +109,15 @@ def run_spirit_artifact_reset_workflow(
     hall_identity = (hall_observation.get('pid'), hall_observation.get('process_start_ticks'))
 
     def facts(expected_identity=None):
-        boundary('inventory_observation_start')
-        inventory = read_spirit_artifact_inventory_runtime()
-        boundary('inventory_observation_done')
+        boundary('owned_observation_start')
+        owned = read_spirit_artifact_owned_runtime([entry.assessment.ware_id])
+        inventory, equipped = owned['inventory'], owned['equipped']
+        boundary('owned_observation_done', timings_seconds=owned['timings_seconds'])
         identity = (inventory['pid'], inventory['process_start_ticks'])
         if (inventory.get('complete') is not True or
                 inventory.get('source') != 'runtime_spiritware_all_instances'
                 or expected_identity is not None and identity != expected_identity):
             raise RuntimeError('完整库存来源或进程身份不一致')
-        boundary('equipped_observation_start')
-        equipped = read_spirit_artifact_equipped_runtime([entry.assessment.ware_id])
-        boundary('equipped_observation_done')
         slots = [r for r in equipped['items'] if r['part'] == entry.assessment.part]
         if ((equipped['pid'], equipped['process_start_ticks']) != identity or len(slots) != 1
                 or slots[0]['base_id'] != entry.base_id):

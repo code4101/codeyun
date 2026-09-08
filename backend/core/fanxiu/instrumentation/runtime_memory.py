@@ -4,6 +4,7 @@ import json
 import struct
 import threading
 import time
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
@@ -294,6 +295,10 @@ class MumuProcessMemory:
         self.process_start_ticks = int(process_start_ticks)
         self.adb_serial = str(adb_serial)
         self.regions = tuple(regions)
+        self._region_index_source = None
+        self._region_index: tuple[MemoryRegion, ...] = ()
+        self._region_starts: tuple[int, ...] = ()
+        self._region_index_disjoint = False
         self._read_cache: dict[tuple[int, int], bytes] = {}
         self._diagnostics: dict[str, int | float] = {
             "read_calls": 0,
@@ -465,14 +470,37 @@ class MumuProcessMemory:
         )
 
     def readable_region(self, address: int, size: int = 1) -> MemoryRegion | None:
-        return next(
-            (
-                region
-                for region in self.regions
-                if "r" in region.permissions and region.contains(int(address), int(size))
-            ),
-            None,
-        )
+        """Find a containing readable mapping without scanning maps per byte read.
+
+        Index only mapping metadata, never memory bytes. Replacing ``regions``
+        (including a map refresh) invalidates the derived index by identity;
+        mutable sequences are rebuilt each time. Disjoint positive intervals
+        use binary search. Overlapping/degenerate maps and zero-length queries
+        retain the original first-readable-match semantics and boundary order.
+        Pure lookup equivalence is tested; live Runtime speedup awaits sampling.
+        """
+        regions = self.regions
+        if regions is not self._region_index_source or not isinstance(regions, tuple):
+            ordered = tuple(sorted((r for r in regions if "r" in r.permissions),
+                                   key=lambda r: r.start))
+            disjoint = (all(r.start < r.end for r in ordered)
+                        and all(left.end <= right.start
+                                for left, right in zip(ordered, ordered[1:])))
+            self._region_index = ordered
+            self._region_starts = tuple(r.start for r in ordered)
+            self._region_index_disjoint = disjoint
+            self._region_index_source = regions
+        address, size = int(address), int(size)
+        if size < 0:
+            return None
+        if not self._region_index_disjoint or size == 0:
+            return next((r for r in regions if "r" in r.permissions
+                         and r.contains(address, size)), None)
+        index = bisect_right(self._region_starts, address) - 1
+        if index < 0:
+            return None
+        region = self._region_index[index]
+        return region if region.contains(address, size) else None
 
     def read(self, address: int, size: int, *, max_size: int = 1 << 20) -> bytes:
         self._diagnostics["read_calls"] += 1

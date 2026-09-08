@@ -25,7 +25,8 @@ def prepare_spirit_artifact_market_reset(
     目标歧义报错，不自动切换开箱。返回数据可直接传给reset_from_market；
     它仍负责fresh准入、来源可用性、当前价格、重入和收尾。本函数不把旧计划
     当成执行许可，也不根据供应目录把blocked/choose_source计划改成可执行。
-    静态解析已可离线核验；组合到真实市场重置尚待验收。
+    静态解析及已完成目标的真实市场入口仅收尾重入已验证；
+    新采购仍由来源组件执行当前界面与到账核验。
     """
     if (type(cost_item_id) is not int or cost_item_id <= 0
             or type(currency_limit) is not int or currency_limit < 0):
