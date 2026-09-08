@@ -14,8 +14,10 @@ from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import read_ui_object_field, read_ui_runtime_snapshot
 
 
-def _read_grade_panel() -> dict[str, Any]:
+def _read_grade_panel(*, dimension: str = 'grade') -> dict[str, Any]:
     """Read only the active panel; the public observer owns cross-model checks."""
+    if dimension not in ('grade', 'realm'):
+        raise ValueError('未知灵器升级维度')
     from ..catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
     supported_ware_ids = spirit_artifact_ware_ids()
 
@@ -42,6 +44,9 @@ def _read_grade_panel() -> dict[str, Any]:
                 if ware_id not in supported_ware_ids or group is None:
                     continue
                 tab_index = as_int(field(group, 'curTabIndex'))
+                # Grade/UpColor panels share most member names; tab identity is essential.
+                if tab_index != (2 if dimension == 'grade' else 3):
+                    continue
                 # TabPanelGroup.ShowTab only materializes the selected index;
                 # unlike V_PartList, its CList intentionally has lazy holes.
                 panels = reader.fields(field(group, 'panelShowComps'))
@@ -79,13 +84,13 @@ def _read_grade_panel() -> dict[str, Any]:
                         or parts[selected_index]['item_id'] != str(uid)):
                     raise FanxiuRuntimeMemoryError('升阶选中实例与列表索引不一致')
                 info = reader.fields(field(panel, '_SpiritWareItemInfo'))
-                grade = as_int(info.get('grade'))
-                if grade is None or grade < 1:
+                grade = as_int(info.get('grade' if dimension == 'grade' else 'pinLevel'))
+                if grade is None or grade < (1 if dimension == 'grade' else 0):
                     raise FanxiuRuntimeMemoryError('升阶选中实例阶数尚未加载')
                 candidates[outer.address] = {
-                    'ware_id': ware_id, 'tab_index': tab_index, 'is_grade': True,
+                    'ware_id': ware_id, 'tab_index': tab_index, 'is_grade': dimension == 'grade',
                     'item_id': str(uid), 'part': parts[selected_index]['part'],
-                    'grade': grade, 'selected_index': selected_index, 'parts': parts,
+                    dimension: grade, 'selected_index': selected_index, 'parts': parts,
                     'material_id': as_int(field(panel, 'V_CostItemId')),
                     'can_upgrade': field(panel, '_IsCanGradeUpgrade'),
                     'panel_address': hex(panel.address),
@@ -112,7 +117,8 @@ def project_spirit_artifact_grade_observation(before, after, inventory, *, equip
     if len(matches) != 1:
         raise FanxiuRuntimeMemoryError('升阶选中实例在完整库存中不唯一')
     item = matches[0]
-    if any(item[key] != before[key] for key in ('ware_id', 'part', 'grade')):
+    dimension = 'realm' if before.get('is_grade') is False else 'grade'
+    if any(item[key] != before[key] for key in ('ware_id', 'part', dimension)):
         raise FanxiuRuntimeMemoryError('升阶选中部件身份或阶数与库存不一致')
     if equipped is not None:
         slots = [row for row in equipped['items']
@@ -123,7 +129,19 @@ def project_spirit_artifact_grade_observation(before, after, inventory, *, equip
     result = dict(before)
     result.pop('panel_address')
     return {**result, 'base_id': item['base_id'], 'read_only': True,
-            'captured_at': time.time(), 'source': 'active_spiritware_grade_panel'}
+            'captured_at': time.time(), 'source': f'active_spiritware_{dimension}_panel'}
+
+
+def read_spirit_artifact_realm_snapshot() -> dict[str, Any]:
+    """只读已加载升品页（境数）；独立前后UI和完整库存互证，不点击升境。
+
+    与升阶页共享布局，但校验独立页签及 pinLevel；GUI 实测前不可宣称已验收。
+    """
+    from .spirit_artifact import read_spirit_artifact_inventory_runtime
+    before = _read_grade_panel(dimension='realm')
+    inventory = read_spirit_artifact_inventory_runtime()
+    after = _read_grade_panel(dimension='realm')
+    return project_spirit_artifact_grade_observation(before, after, inventory)
 
 
 def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
@@ -146,16 +164,21 @@ def read_spirit_artifact_grade_owned_snapshot() -> dict[str, Any]:
     UID/部位/阶数及装备引用；变化即拒绝，不跨业务动作复用。
     返回 grade、owned 及分段 timings_seconds；尚待真实对照与性能验收。
     """
+    return read_spirit_artifact_progression_owned_snapshot(dimension='grade')
+
+
+def read_spirit_artifact_progression_owned_snapshot(*, dimension: str) -> dict[str, Any]:
+    """当前升阶/升境页与完整装备、库存联合互证；不导航、不执行升级。"""
     from .spirit_artifact_equipped import read_spirit_artifact_owned_runtime
     started = time.perf_counter()
-    before = _read_grade_panel()
+    before = _read_grade_panel(dimension=dimension)
     panel_at = time.perf_counter()
     owned = read_spirit_artifact_owned_runtime([before['ware_id']])
     owned_at = time.perf_counter()
-    after = _read_grade_panel()
+    after = _read_grade_panel(dimension=dimension)
     grade = project_spirit_artifact_grade_observation(
         before, after, owned['inventory'], equipped=owned['equipped'])
-    return {'grade': grade, 'owned': owned, 'timings_seconds': {
+    return {dimension: grade, 'owned': owned, 'timings_seconds': {
         'panel_before': panel_at - started, 'owned': owned_at - panel_at,
         'panel_after': time.perf_counter() - owned_at,
         'total': time.perf_counter() - started}}

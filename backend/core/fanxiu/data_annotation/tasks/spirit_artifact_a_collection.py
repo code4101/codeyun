@@ -352,5 +352,5 @@ def evaluate_existing_yinxian_candidate(
     if not ratio.is_finite() or not 0 < ratio <= 1:
         raise ValueError('引仙目标比例无效')
     completed = {e.code for e in current if e.quality >= 6 and e.is_full}
-    return any(not e.locked and e.code in a_codes - completed and e.quality >= 6 and e.ratio >= ratio
+    return any(not e.locked and e.code in a_codes - completed and e.ratio >= ratio
                for e in pending)

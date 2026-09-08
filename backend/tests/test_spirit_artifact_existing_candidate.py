@@ -20,6 +20,8 @@ def test_existing_candidate_multiple_hits_and_locked_values_do_not_trigger():
     assert evaluate(current, current) is False
     pending = (*current[:4], replace(current[4], code="ATTACK", value=95), replace(current[5], code="CRI", value=100))
     assert evaluate(current, pending) is True
+    assert evaluate(current, (*pending[:4], replace(pending[4], quality=3),
+                              replace(pending[5], quality=3))) is True
     assert evaluate(current, (*pending[:4], replace(pending[4], value=89), replace(pending[5], value=89))) is False
 
 

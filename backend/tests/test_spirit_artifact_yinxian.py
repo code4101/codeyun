@@ -15,19 +15,18 @@ from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import (
     ('80.8', 100, '.90', False),
 ])
 def test_threshold_uses_part_full_score(score, full, ratio, accepted):
-    assert meets_yinxian_target(is_needed_a=True, quality=6, basic_score=Decimal(str(score)),
+    assert meets_yinxian_target(is_needed_a=True, basic_score=Decimal(str(score)),
                                 basic_full_score=full, target_ratio=Decimal(ratio)) is accepted
 
 
-@pytest.mark.parametrize(('needed', 'quality'), [(False, 6), (True, 5)])
-def test_kind_and_quality_are_independent_gates(needed, quality):
-    assert not meets_yinxian_target(is_needed_a=needed, quality=quality,
+def test_unneeded_attribute_does_not_hit_even_when_full():
+    assert not meets_yinxian_target(is_needed_a=False,
                                     basic_score=150, basic_full_score=150)
 
 
 def test_invalid_ratio_does_not_silently_accept():
     with pytest.raises(ValueError):
-        meets_yinxian_target(is_needed_a=True, quality=6, basic_score=100,
+        meets_yinxian_target(is_needed_a=True, basic_score=100,
                              basic_full_score=100, target_ratio=float('nan'))
 
 
@@ -79,13 +78,15 @@ def test_full_unlocked_b_is_probability_sample_not_missing_a_hit_or_refinement()
     assert plan.desired_lock_ids == (1, 2, 3, 4, 5)
 
 
-def test_failed_sample_keeps_low_quality_rows_and_empty_red_max():
+def test_hit_uses_ratio_while_red_statistics_keep_original_quality():
     rows = tuple(YinxianAttribute(e.cleanse_id, e.code, e.value, 3, e.locked, e.normal_max)
                  for e in candidates())
     sample = analyze_yinxian_sample(rows, roll_index=3, needed_a_codes={'ATTACK'})
     assert len(sample.unlocked_candidates) == 3
     assert sample.highest_red_ratio is None
-    assert not sample.stop_yinxian
+    assert sample.stop_yinxian
+    assert [e.cleanse_id for e in sample.hits] == [1]
+    assert sample.hits[0].quality == 3
 
 
 def test_refine_plan_locks_all_five_other_rows_even_c():

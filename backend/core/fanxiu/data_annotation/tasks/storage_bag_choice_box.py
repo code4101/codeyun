@@ -935,6 +935,15 @@ class StorageBagChoiceBoxGuiAdapter:
     def execute(
         self, request: StorageBagChoiceBoxRequest
     ) -> Generator[Any, Any, StorageBagChoiceBoxExecution]:
+        """Execute one choice; failure reports whether consumption confirmation may have been sent."""
+        confirmation_state = {'may_have_been_sent': False}
+        try:
+            return (yield from self._execute(request, confirmation_state=confirmation_state))
+        except Exception as error:
+            error.purchase_confirmation_may_have_been_sent = confirmation_state['may_have_been_sent']
+            raise
+
+    def _execute(self, request: StorageBagChoiceBoxRequest, *, confirmation_state):
         if request.base_id <= 0 or not request.instance_id or not request.name.strip() or request.quantity <= 0:
             raise StorageBagChoiceBoxBlocked("自选匣请求缺少 base_id/instance_id/名称/数量")
         open_quantity = requested_choice_box_open_quantity(request)
@@ -1077,6 +1086,7 @@ class StorageBagChoiceBoxGuiAdapter:
                     self.catalog_cards_by_id, selected.linked_partner_id
                 )
 
+        confirmation_state['may_have_been_sent'] = True
         yield from self.context.wait_click(CHOICE_BOX_SCENE, "确定", timeout=8.0)
         yield from self.context.wait_scene(
             [STORAGE_BAG_SCENE],

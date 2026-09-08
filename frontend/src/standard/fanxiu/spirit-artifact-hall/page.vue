@@ -146,7 +146,7 @@ function stageStyle(stage: string) {
 const stageExplanations = [
   { stage: '错升', rule: '已突破，但本灵器 A 类未全部满／巅', note: '当前自动处理采用重置策略；高级补救由用户手动处理。' },
   { stage: '初始', rule: '<1 阶', note: '阶数指红色本体阶数，无红色记为 0 阶。' },
-  { stage: '预备', rule: '≥1 阶', note: '1–5 阶五条属性，6 阶起六条；升至6阶不是培养前提。' },
+  { stage: '预备', rule: '≥1 阶', note: '1–5 阶五条属性，6 阶起六条。' },
   { stage: '突破', rule: '本灵器全部 A 类满／巅且已突破', note: '' },
   { stage: '无双', rule: '突破 + 灵器无双', note: '—' },
   { stage: '道威', rule: '无双 + 混沌道威', note: '—' },
@@ -852,7 +852,7 @@ const marketMatrix = computed(() => artifacts.value
       const item = marketItems.value.find(item => item.artifactName === artifact.name
         && item.partName === part?.partName);
       return item && part ? {
-        text: `${normalizeNonNegativeInteger(part.rank)}阶`,
+        text: `${displayRedGrade(part)}阶`,
         title: `${artifact.order}-${part.order} ${artifact.name} · ${part.partName}，兑换 ${item.cost} 元魄`,
       } : null;
     }),
@@ -862,6 +862,13 @@ const marketCostDescription = computed(() => {
   const costs = [...new Set(marketItems.value.map(item => item.cost))];
   return costs.length === 1 ? `每件 ${costs[0]} 元魄 · 格内为当前阶数` : '格内为当前阶数 · 兑换费用见悬停说明';
 });
+
+function displayRedGrade(row: SpiritArtifactPartRow) {
+  const quality = row.runtimeBaseId % 100;
+  // 培养阶数只计算红色本体；保留原始装备阶数，不反写运行态事实。
+  return row.runtimeBaseId > 0 && quality >= 1 && quality < 6
+    ? 0 : normalizeNonNegativeInteger(row.rank);
+}
 
 const artifactOverview = computed(() => [...artifacts.value]
   .sort((left, right) => left.order - right.order)
@@ -886,8 +893,8 @@ const storageBagMatrices = computed(() => {
       const choice = source.choices.find(choice => choice.artifactName === artifact?.name
         && choice.partName === part?.partName);
       return artifact && part && choice ? {
-        text: showRealm ? `${normalizeNonNegativeInteger(part.realm)}境` : `${normalizeNonNegativeInteger(part.rank)}阶`,
-        title: `${artifact.order}-${part.order} ${choice.rawName || part.partName}，${normalizeNonNegativeInteger(part.rank)}阶${normalizeNonNegativeInteger(part.realm)}境`,
+        text: showRealm ? `${normalizeNonNegativeInteger(part.realm)}境` : `${displayRedGrade(part)}阶`,
+        title: `${artifact.order}-${part.order} ${choice.rawName || part.partName}，${displayRedGrade(part)}阶${normalizeNonNegativeInteger(part.realm)}境`,
       } : null;
     });
   }
@@ -1174,7 +1181,7 @@ onBeforeUnmount(() => {
                 <span class="stage-badge" :style="stageStyle(row.cells[part - 1].stage)">
                   {{ row.cells[part - 1].stage }}
                 </span>
-                <span>{{ row.cells[part - 1].rank }}阶{{ row.cells[part - 1].realm }}境</span>
+                <span>{{ displayRedGrade(row.cells[part - 1]) }}阶{{ row.cells[part - 1].realm }}境</span>
               </div>
             </template>
           </el-table-column>

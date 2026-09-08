@@ -11,21 +11,21 @@ B_RETENTION_PRIORITY = MappingProxyType({'MAXMP': 3, 'MAXHP': 2, 'DEFENSE': 1})
 
 
 def meets_yinxian_target(
-    *, is_needed_a: bool, quality: int, basic_score: int | float | Decimal,
+    *, is_needed_a: bool, basic_score: int | float | Decimal,
     basic_full_score: int, target_ratio: float | Decimal = Decimal('0.90'),
 ) -> bool:
-    """需要的 A 类、红色或以上，且达到该部位基础满分的目标比例。
+    """需要的 A 类达到该部位基础满分的目标比例。
 
     类别由上层按官方属性身份映射；不能把所有专属属性都当 A 类。
     basic_score 使用对应灵器/培养状态的100分基准归一化；满分为100或150。
     本规则只覆盖当前突破前的基础满分，不推测巅峰石生效上限是否作分母。
     """
     score, ratio = Decimal(str(basic_score)), Decimal(str(target_ratio))
-    if (type(is_needed_a) is not bool or type(quality) is not int or quality < 0
+    if (type(is_needed_a) is not bool
             or basic_full_score not in (100, 150) or not score.is_finite() or score < 0
             or not ratio.is_finite() or not 0 < ratio <= 1):
-        raise ValueError('引仙石筛选需要有效类别、品质、基础分、满分和目标比例')
-    return is_needed_a and quality >= 6 and score >= Decimal(basic_full_score) * ratio
+        raise ValueError('引仙石筛选需要有效类别、基础分、满分和目标比例')
+    return is_needed_a and score >= Decimal(basic_full_score) * ratio
 
 
 @dataclass(frozen=True)
@@ -80,10 +80,10 @@ def analyze_yinxian_sample(
         raise ValueError('引仙石样本需要独立轮次和完整五／六条候选')
     unlocked = tuple(e for e in candidates if not e.locked)
     # 即使没有目标或没有红条，也验证配置比例，避免错误配置被空集合掩盖。
-    meets_yinxian_target(is_needed_a=False, quality=0, basic_score=0,
+    meets_yinxian_target(is_needed_a=False, basic_score=0,
                          basic_full_score=100, target_ratio=target_ratio)
     hits = tuple(e for e in unlocked if meets_yinxian_target(
-        is_needed_a=e.code in needed_a_codes, quality=e.quality,
+        is_needed_a=e.code in needed_a_codes,
         basic_score=e.ratio * e.basic_full_score, basic_full_score=e.basic_full_score,
         target_ratio=target_ratio))
     return YinxianSample(roll_index, unlocked,
@@ -146,7 +146,7 @@ def plan_a_collection(
             or len({e.code for e in current}) != len(current) or not a_codes
             or a_codes & b_codes or a_codes & c_codes or b_codes & c_codes):
         raise ValueError('A 类培养需要完整唯一词条及互斥类别')
-    meets_yinxian_target(is_needed_a=False, quality=0, basic_score=0,
+    meets_yinxian_target(is_needed_a=False, basic_score=0,
                          basic_full_score=100, target_ratio=target_ratio)
     if any(e.code not in a_codes | b_codes | c_codes for e in current):
         return ACollectionPlan('blocked', (), reason='存在本阶段未定义的属性类别')
@@ -159,7 +159,7 @@ def plan_a_collection(
     # 稳定身份排序不依赖 Runtime map 遍历顺序，也不能用此排序作为 UI 行号。
     refinable = sorted((e for e in current if e.code in a_codes - full
                         and meets_yinxian_target(
-                            is_needed_a=True, quality=e.quality,
+                            is_needed_a=True,
                             basic_score=e.ratio * e.basic_full_score,
                             basic_full_score=e.basic_full_score, target_ratio=target_ratio)),
                        key=lambda e: e.cleanse_id)

@@ -24,6 +24,20 @@ def test_joint_projection_accepts_exact_facts():
     assert 'panel_address' not in result
 
 
+def test_realm_projection_uses_realm_instead_of_grade():
+    before, after, inventory, equipped = facts()
+    for ui in (before, after):
+        ui.pop('grade')
+        ui.update(is_grade=False, realm=2)
+    inventory['items'][0].update(grade=15, realm=2)
+    result = project_spirit_artifact_grade_observation(before, after, inventory, equipped=equipped)
+    assert result['realm'] == 2
+    assert result['source'] == 'active_spiritware_realm_panel'
+    inventory['items'][0]['realm'] = 3
+    with pytest.raises(FanxiuRuntimeMemoryError):
+        project_spirit_artifact_grade_observation(before, after, inventory)
+
+
 @pytest.mark.parametrize('fault', ['ui', 'incomplete', 'process', 'duplicate', 'grade', 'equip'])
 def test_joint_projection_rejects_inconsistent_observation(fault):
     before, after, inventory, equipped = facts()
