@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ArrowDown, ArrowUp, Refresh } from '@element-plus/icons-vue';
 import {
@@ -132,8 +132,8 @@ const commonStatLabelKeyMap: Record<string, StatColumnKey> = {
 };
 const stageStyles: Record<string, { color: string; background: string; borderColor: string; description: string }> = {
   错升: { color: '#b91c1c', background: '#fef2f2', borderColor: '#fca5a5', description: '已突破，但本灵器 A 类尚未全部满／巅，需要重置培养，与阶数无关' },
-  初始: { color: '#475569', background: '#f1f5f9', borderColor: '#cbd5e1', description: '尚无红色本体，或红色本体不足6阶；无红色按培养进度0阶理解' },
-  预备: { color: '#0e7490', background: '#ecfeff', borderColor: '#67e8f9', description: '已有红色本体且至少6阶；升阶不等于突破' },
+  初始: { color: '#475569', background: '#f1f5f9', borderColor: '#cbd5e1', description: '不足1阶；无红色本体记0阶' },
+  预备: { color: '#0e7490', background: '#ecfeff', borderColor: '#67e8f9', description: '已有红色本体且至少1阶；6阶增加第六条属性，不是培养前提' },
   突破: { color: '#166534', background: '#f0fdf4', borderColor: '#86efac', description: '已实际突破，且本灵器全部 A 类达到满／巅' },
   无双: { color: '#1d4ed8', background: '#eff6ff', borderColor: '#93c5fd', description: '满足突破条件，并有灵器无双' },
   道威: { color: '#7e22ce', background: '#faf5ff', borderColor: '#d8b4fe', description: '满足无双条件，并有混沌道威' },
@@ -143,6 +143,15 @@ const stageStyles: Record<string, { color: string; background: string; borderCol
 function stageStyle(stage: string) {
   return stageStyles[stage] || stageStyles.待识别!;
 }
+const stageExplanations = [
+  { stage: '错升', rule: '已突破，但本灵器 A 类未全部满／巅', note: '当前自动处理采用重置策略；高级补救由用户手动处理。' },
+  { stage: '初始', rule: '<1 阶', note: '阶数指红色本体阶数，无红色记为 0 阶。' },
+  { stage: '预备', rule: '≥1 阶', note: '1–5 阶五条属性，6 阶起六条；升至6阶不是培养前提。' },
+  { stage: '突破', rule: '本灵器全部 A 类满／巅且已突破', note: '' },
+  { stage: '无双', rule: '突破 + 灵器无双', note: '—' },
+  { stage: '道威', rule: '无双 + 混沌道威', note: '—' },
+  { stage: '巅峰', rule: '道威 + 巅词条', note: '—' },
+];
 const artifactPeerlessSteps = [0, 25, 30];
 const SAVE_DEBOUNCE_MS = 800;
 type ArtifactPeerlessKey = 'artifactPeerless1' | 'artifactPeerless2';
@@ -319,6 +328,8 @@ const artifacts = ref<SpiritArtifact[]>(artifactSeeds.map((artifact, index) => (
   rows: artifact.parts.map((partName, partIndex) => createPartRow(partName, partIndex, artifact.exclusiveStats)),
 })));
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+let refreshing = false;
 
 function normalizeArtifactPeerless(value: number) {
   return artifactPeerlessSteps.includes(value) ? value : 0;
@@ -786,9 +797,12 @@ function scheduleSave(immediate = false) {
   }, SAVE_DEBOUNCE_MS);
 }
 
-async function loadArtifacts() {
+async function loadArtifacts(background = false) {
+  if (refreshing) return;
+  refreshing = true;
+  const wasHydrated = pageHydrated.value;
   pageHydrated.value = false;
-  loading.value = true;
+  if (!background) loading.value = true;
   try {
     const snapshot = await getFanxiuSpiritArtifactHall();
     artifacts.value = snapshotToArtifacts(snapshot);
@@ -803,6 +817,10 @@ async function loadArtifacts() {
     await nextTick();
     pageHydrated.value = true;
   } catch (error) {
+    if (background) {
+      pageHydrated.value = wasHydrated;
+      return; // 后台读取失败保留当前事实，不清表、不自动保存兜底值。
+    }
     artifacts.value = createDefaultArtifacts();
     marketCurrencyCount.value = 0;
     marketItems.value = [];
@@ -818,51 +836,84 @@ async function loadArtifacts() {
     const anyError = error as any;
     ElMessage.error(anyError?.response?.data?.detail || anyError?.message || '读取灵器数据失败');
   } finally {
+    refreshing = false;
     loading.value = false;
   }
 }
 
-function getArtifactPartRow(artifactName: string, partName: string) {
-  const artifact = artifacts.value.find(candidate => candidate.name === artifactName);
-  const row = artifact?.rows.find(candidate => candidate.partName === partName);
-  return { artifact, row };
-}
+// 来源矩阵按灵器编号和部位 1–6 展示；不套用培养任务的阶段优先级。
+const marketMatrix = computed(() => artifacts.value
+  .filter(artifact => marketItems.value.some(item => item.artifactName === artifact.name))
+  .map(artifact => ({
+    order: artifact.order,
+    name: artifact.name,
+    cells: Array.from({ length: 6 }, (_, index) => {
+      const part = artifact.rows.find(row => row.order === index + 1);
+      const item = marketItems.value.find(item => item.artifactName === artifact.name
+        && item.partName === part?.partName);
+      return item && part ? {
+        text: `${normalizeNonNegativeInteger(part.rank)}阶`,
+        title: `${artifact.order}-${part.order} ${artifact.name} · ${part.partName}，兑换 ${item.cost} 元魄`,
+      } : null;
+    }),
+  })).sort((left, right) => left.order - right.order));
 
-function getMarketItemCurrentRank(item: SpiritArtifactMarketItem) {
-  const { row } = getArtifactPartRow(item.artifactName, item.partName);
-  return normalizeNonNegativeInteger(row?.rank ?? 0);
-}
+const marketCostDescription = computed(() => {
+  const costs = [...new Set(marketItems.value.map(item => item.cost))];
+  return costs.length === 1 ? `每件 ${costs[0]} 元魄 · 格内为当前阶数` : '格内为当前阶数 · 兑换费用见悬停说明';
+});
 
-function formatMarketArtifactName(item: SpiritArtifactMarketItem) {
-  const artifact = artifacts.value.find(candidate => candidate.name === item.artifactName);
-  return artifact ? `${artifact.order} ${artifact.name}` : item.artifactName;
-}
+const artifactOverview = computed(() => [...artifacts.value]
+  .sort((left, right) => left.order - right.order)
+  .map(artifact => ({
+    order: artifact.order,
+    name: artifact.name,
+    cells: Array.from({ length: 6 }, (_, index) =>
+      artifact.rows.find(row => row.order === index + 1)),
+  })));
 
-function formatMarketPartName(item: SpiritArtifactMarketItem) {
-  const artifact = artifacts.value.find(candidate => candidate.name === item.artifactName);
-  const row = artifact?.rows.find(candidate => candidate.partName === item.partName);
-  return row ? `${row.order} ${row.partName}` : item.partName;
-}
-
-function getStorageBagChoiceCurrentRank(choice: SpiritArtifactStorageBagChoice) {
-  const { row } = getArtifactPartRow(choice.artifactName, choice.partName);
-  return normalizeNonNegativeInteger(row?.rank ?? 0);
-}
-
-function getStorageBagChoiceCurrentRealm(choice: SpiritArtifactStorageBagChoice) {
-  const { row } = getArtifactPartRow(choice.artifactName, choice.partName);
-  return normalizeNonNegativeInteger(row?.realm ?? 0);
-}
-
-function formatStorageBagChoiceArtifactName(choice: SpiritArtifactStorageBagChoice) {
-  const { artifact } = getArtifactPartRow(choice.artifactName, choice.partName);
-  return artifact ? `${artifact.order} ${artifact.name}` : choice.artifactName;
-}
-
-function formatStorageBagChoicePartName(choice: SpiritArtifactStorageBagChoice) {
-  const { artifact, row } = getArtifactPartRow(choice.artifactName, choice.partName);
-  return artifact && row ? `${row.order} ${row.partName}` : choice.partName;
-}
+const storageBagMatrices = computed(() => {
+  const groups = new Map<string, SpiritArtifactStorageBagItem[]>();
+  for (const item of storageBagItems.value) {
+    const key = /^弥罗(?:自选|升品)宝匣/.test(item.title) ? '弥罗系列' : item.title;
+    const sources = groups.get(key) ?? [];
+    sources.push(item);
+    groups.set(key, sources);
+  }
+  function cells(source: SpiritArtifactStorageBagItem, artifact: SpiritArtifact | undefined, showRealm: boolean) {
+    return Array.from({ length: 6 }, (_, index) => {
+      const part = artifact?.rows.find(row => row.order === index + 1);
+      const choice = source.choices.find(choice => choice.artifactName === artifact?.name
+        && choice.partName === part?.partName);
+      return artifact && part && choice ? {
+        text: showRealm ? `${normalizeNonNegativeInteger(part.realm)}境` : `${normalizeNonNegativeInteger(part.rank)}阶`,
+        title: `${artifact.order}-${part.order} ${choice.rawName || part.partName}，${normalizeNonNegativeInteger(part.rank)}阶${normalizeNonNegativeInteger(part.realm)}境`,
+      } : null;
+    });
+  }
+  return [...groups].map(([title, sources], index) => {
+    const isRealmGroup = title === '弥罗系列';
+    return {
+      title,
+      order: index + 1,
+      isRealmGroup,
+      quantity: sources[0]!.quantity,
+      // 弥罗每箱一行，库存和可选范围分别保留；珍藏匣仍按灵器展开。
+      matrix: isRealmGroup ? sources.map(source => ({
+        name: source.title,
+        quantity: source.quantity,
+        cells: cells(source, artifacts.value.find(artifact =>
+          source.choices.some(choice => choice.artifactName === artifact.name)), true),
+      })) : [...artifacts.value].sort((left, right) => left.order - right.order)
+        .filter(artifact => sources[0]!.choices.some(choice => choice.artifactName === artifact.name))
+        .map(artifact => ({
+          name: `${artifact.order} ${artifact.name}`,
+          quantity: sources[0]!.quantity,
+          cells: cells(sources[0]!, artifact, false),
+        })),
+    };
+  });
+});
 
 function isEditingStatCell(artifact: SpiritArtifact, row: SpiritArtifactPartRow, scope: StatEditScope, key: string) {
   const editing = editingStatCell.value;
@@ -979,9 +1030,18 @@ watch(
 
 onMounted(() => {
   void loadArtifacts();
+  // 仅拉取后端已持久化事实，不访问游戏；编辑/保存期间不覆盖用户输入。
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible' && runtimeComplete.value
+        && !loading.value && !saving.value && !saveTimer
+        && !editingStatCell.value && !syncingStorageBag.value) {
+      void loadArtifacts(true);
+    }
+  }, 10000);
 });
 
 onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer);
   if (saveTimer) {
     void saveArtifacts();
   }
@@ -1001,7 +1061,7 @@ onBeforeUnmount(() => {
         :icon="Refresh"
         :loading="loading"
         class="recognition-button"
-        @click="loadArtifacts"
+        @click="loadArtifacts()"
       >
         刷新数据库快照
       </el-button>
@@ -1023,47 +1083,31 @@ onBeforeUnmount(() => {
       <span v-if="saving" class="save-status">保存中...</span>
     </div>
 
-    <p class="save-status">普通属性显示基础分：部位 1–4 满分 100，5–6 满分 150；缺少上限数据的旧记录保留原显示。灵器无双、混沌道威沿用各自数值体系。</p>
-
     <section class="market-panel">
       <div class="market-heading">
         <div class="market-title-group">
           <h3 class="market-title">仙市 / 珍宝阁</h3>
           <span class="market-currency">灵器铸形元魄：{{ marketCurrencyCount }}</span>
+          <span v-if="marketItems.length" class="market-currency">{{ marketCostDescription }}</span>
         </div>
       </div>
       <el-table
         v-if="marketItems.length"
-        :data="marketItems"
+        :data="marketMatrix"
         border
         size="small"
         table-layout="auto"
         :fit="false"
         class="market-table"
       >
-        <el-table-column label="#" width="54" align="center">
-          <template #default="{ $index }">
-            <span>{{ $index + 1 }}</span>
+        <el-table-column label="灵器" min-width="145">
+          <template #default="{ row }">
+            <span class="market-item-name">{{ row.order }} {{ row.name }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="灵器" min-width="120">
+        <el-table-column v-for="part in 6" :key="part" :label="String(part)" width="66" align="center">
           <template #default="{ row }">
-            <span class="market-item-name">{{ formatMarketArtifactName(row) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="部位" width="70" align="center">
-          <template #default="{ row }">
-            <span>{{ formatMarketPartName(row) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="兑换所需" width="90" align="right">
-          <template #default="{ row }">
-            <span>{{ row.cost }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="当前阶数" width="90" align="right">
-          <template #default="{ row }">
-            <span>{{ getMarketItemCurrentRank(row) }}阶</span>
+            <span :title="row.cells[part - 1]?.title">{{ row.cells[part - 1]?.text ?? '' }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -1079,50 +1123,31 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="storageBagItems.length" class="storage-bag-list">
         <div
-          v-for="item in storageBagItems"
+          v-for="item in storageBagMatrices"
           :key="item.title"
           class="storage-bag-item"
         >
           <div class="storage-bag-item-heading">
             <span class="storage-bag-item-title">{{ item.order }} {{ item.title }}</span>
-            <span class="storage-bag-quantity">数量：{{ item.quantity }}</span>
+            <span v-if="!item.isRealmGroup" class="storage-bag-quantity">数量：{{ item.quantity }}</span>
           </div>
           <el-table
-            :data="item.choices"
+            :data="item.matrix"
             border
             size="small"
             table-layout="auto"
             :fit="false"
             class="storage-bag-table"
           >
-            <el-table-column label="#" width="54" align="center">
-              <template #default="{ $index }">
-                <span>{{ $index + 1 }}</span>
+            <el-table-column :label="item.isRealmGroup ? '箱子' : '灵器'" min-width="145">
+              <template #default="{ row }">
+                <span class="storage-bag-choice-name">{{ row.name }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="自选名称" min-width="120">
+            <el-table-column v-if="item.isRealmGroup" prop="quantity" label="数量" width="66" align="center" />
+            <el-table-column v-for="part in 6" :key="part" :label="String(part)" width="66" align="center">
               <template #default="{ row }">
-                <span class="storage-bag-choice-raw">{{ row.rawName || '-' }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="灵器" min-width="120">
-              <template #default="{ row }">
-                <span class="storage-bag-choice-name">{{ formatStorageBagChoiceArtifactName(row) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="部位" width="70" align="center">
-              <template #default="{ row }">
-                <span>{{ formatStorageBagChoicePartName(row) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="当前阶数" width="90" align="right">
-              <template #default="{ row }">
-                <span>{{ getStorageBagChoiceCurrentRank(row) }}阶</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="当前境数" width="90" align="right">
-              <template #default="{ row }">
-                <span>{{ getStorageBagChoiceCurrentRealm(row) }}境</span>
+                <span :title="row.cells[part - 1]?.title">{{ row.cells[part - 1]?.text ?? '' }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -1131,219 +1156,41 @@ onBeforeUnmount(() => {
       <div v-else class="storage-bag-empty">暂无储物袋自选箱</div>
     </section>
 
-    <section
-      v-for="artifact in artifacts"
-      :key="artifact.name"
-      class="artifact-panel"
-    >
+    <section class="artifact-panel">
       <div class="artifact-heading">
-        <h3 class="artifact-title">
-          <span class="artifact-order">{{ artifact.order }}</span>
-          <span>{{ artifact.name }}</span>
-        </h3>
+        <h3 class="artifact-title">灵器总览</h3>
       </div>
-
       <div class="table-wrap">
-        <el-table
-          :data="artifact.rows"
-          border
-          size="small"
-          table-layout="auto"
-          :fit="false"
-          class="artifact-table"
-        >
-          <el-table-column label="部位" min-width="84">
+        <el-table :data="artifactOverview" border size="small" :fit="false" class="artifact-table">
+          <el-table-column label="灵器" min-width="145">
             <template #default="{ row }">
-              <span class="part-cell">{{ row.order }} {{ row.partName }}</span>
+              <span class="market-item-name">{{ row.order }} {{ row.name }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="阶段" width="88" align="center">
+          <el-table-column v-for="part in 6" :key="part" :label="String(part)" width="108" align="center">
             <template #default="{ row }">
-              <el-tooltip :content="stageStyle(row.stage).description" placement="top">
-                <span class="stage-badge" :style="stageStyle(row.stage)">{{ row.stage }}</span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="阶数" width="90" align="center">
-            <template #default="{ row }">
-              <el-input-number
-                v-model="row.rank"
-                :min="0"
-                :step="1"
-                step-strictly
-                controls-position="right"
-                size="small"
-                class="integer-input"
-                :disabled="runtimeComplete"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="境数" width="90" align="center">
-            <template #default="{ row }">
-              <el-input-number
-                v-model="row.realm"
-                :min="0"
-                :step="1"
-                step-strictly
-                controls-position="right"
-                size="small"
-                class="integer-input"
-                :disabled="runtimeComplete"
-              />
-            </template>
-          </el-table-column>
-          <el-table-column label="灵器无双" width="112" align="center">
-            <template #default="{ row }">
-              <div class="percent-stepper">
-                <span
-                  class="percent-stepper__value"
-                  :class="{ 'percent-stepper__value--empty': row.artifactPeerless1 === 0 }"
-                >
-                  {{ formatArtifactPeerless(row.artifactPeerless1) }}
+              <div v-if="row.cells[part - 1]" class="artifact-summary-cell"
+                :title="`${row.order}-${part} ${row.cells[part - 1].partName}`">
+                <span class="stage-badge" :style="stageStyle(row.cells[part - 1].stage)">
+                  {{ row.cells[part - 1].stage }}
                 </span>
-                <span class="percent-stepper__controls">
-                  <el-button
-                    :icon="ArrowUp"
-                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless1', 1)"
-                    size="small"
-                    text
-                    class="percent-stepper__button"
-                    :aria-label="`提高 ${row.partName} 灵器无双档位`"
-                    @click.stop="stepArtifactPeerless(row, 'artifactPeerless1', 1)"
-                  />
-                  <el-button
-                    :icon="ArrowDown"
-                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless1', -1)"
-                    size="small"
-                    text
-                    class="percent-stepper__button"
-                    :aria-label="`降低 ${row.partName} 灵器无双档位`"
-                    @click.stop="stepArtifactPeerless(row, 'artifactPeerless1', -1)"
-                  />
-                </span>
+                <span>{{ row.cells[part - 1].rank }}阶{{ row.cells[part - 1].realm }}境</span>
               </div>
             </template>
           </el-table-column>
-          <el-table-column
-            v-if="hasArtifactPeerless2Column(artifact)"
-            label="灵器无双2"
-            width="112"
-            align="center"
-          >
+        </el-table>
+      </div>
+      <div class="stage-explanation">
+        <h4>阶段说明</h4>
+        <el-table :data="stageExplanations" size="small" class="stage-explanation-table">
+          <el-table-column type="index" label="序号" width="54" />
+          <el-table-column prop="stage" label="阶段" width="88" align="center">
             <template #default="{ row }">
-              <div class="percent-stepper">
-                <span
-                  class="percent-stepper__value"
-                  :class="{ 'percent-stepper__value--empty': row.artifactPeerless2 === 0 }"
-                >
-                  {{ formatArtifactPeerless(row.artifactPeerless2) }}
-                </span>
-                <span class="percent-stepper__controls">
-                  <el-button
-                    :icon="ArrowUp"
-                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless2', 1)"
-                    size="small"
-                    text
-                    class="percent-stepper__button"
-                    :aria-label="`提高 ${row.partName} 灵器无双2档位`"
-                    @click.stop="stepArtifactPeerless(row, 'artifactPeerless2', 1)"
-                  />
-                  <el-button
-                    :icon="ArrowDown"
-                    :disabled="runtimeComplete || !canStepArtifactPeerless(row, 'artifactPeerless2', -1)"
-                    size="small"
-                    text
-                    class="percent-stepper__button"
-                    :aria-label="`降低 ${row.partName} 灵器无双2档位`"
-                    @click.stop="stepArtifactPeerless(row, 'artifactPeerless2', -1)"
-                  />
-                </span>
-              </div>
+              <span class="stage-badge" :style="stageStyle(row.stage)">{{ row.stage }}</span>
             </template>
           </el-table-column>
-          <el-table-column
-            v-for="column in leadingStatColumns"
-            :key="column.key"
-            :prop="column.key"
-            :label="formatStatColumnLabel(column)"
-            :min-width="column.minWidth"
-            align="right"
-          >
-            <template #default="{ row }">
-              <div
-                class="stat-edit-cell"
-                :title="row[column.key] ? `双击编辑原始值：${getStatRawValue(row, 'common', column.key, row[column.key], column.baseRawValue)}` : '双击录入原始值'"
-                @dblclick.stop="startStatCellEdit(artifact, row, 'common', column.key, row[column.key], column.baseRawValue)"
-              >
-                <el-input
-                  v-if="isEditingStatCell(artifact, row, 'common', column.key)"
-                  ref="statEditInputRef"
-                  v-model="editingStatRawValue"
-                  size="small"
-                  class="stat-edit-input"
-                  @blur="commitStatCellEdit(artifact, row, 'common', column.key, column.baseRawValue)"
-                  @keydown.enter.prevent="commitStatCellEdit(artifact, row, 'common', column.key, column.baseRawValue)"
-                  @keydown.esc.prevent="cancelStatCellEdit"
-                />
-                <span v-else class="empty-cell stat-edit-cell__display">{{ statDisplay(row, column.label, row[column.key]) }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-for="column in artifact.exclusiveStats"
-            :key="column.key"
-            :label="formatStatColumnLabel(column)"
-            :min-width="column.minWidth"
-            align="right"
-          >
-            <template #default="{ row }">
-              <div
-                class="stat-edit-cell"
-                :title="row.exclusiveStats[column.key] ? `双击编辑原始值：${getStatRawValue(row, 'exclusive', column.key, row.exclusiveStats[column.key], column.baseRawValue)}` : '双击录入原始值'"
-                @dblclick.stop="startStatCellEdit(artifact, row, 'exclusive', column.key, row.exclusiveStats[column.key], column.baseRawValue)"
-              >
-                <el-input
-                  v-if="isEditingStatCell(artifact, row, 'exclusive', column.key)"
-                  ref="statEditInputRef"
-                  v-model="editingStatRawValue"
-                  size="small"
-                  class="stat-edit-input"
-                  @blur="commitStatCellEdit(artifact, row, 'exclusive', column.key, column.baseRawValue)"
-                  @keydown.enter.prevent="commitStatCellEdit(artifact, row, 'exclusive', column.key, column.baseRawValue)"
-                  @keydown.esc.prevent="cancelStatCellEdit"
-                />
-                <span v-else class="empty-cell stat-edit-cell__display">{{ statDisplay(row, column.label, row.exclusiveStats[column.key]) }}</span>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column
-            v-for="column in trailingStatColumns"
-            :key="column.key"
-            :prop="column.key"
-            :label="formatStatColumnLabel(column)"
-            :min-width="column.minWidth"
-            align="right"
-          >
-            <template #default="{ row }">
-              <div
-                class="stat-edit-cell"
-                :title="row[column.key] ? `双击编辑原始值：${getStatRawValue(row, 'common', column.key, row[column.key], column.baseRawValue)}` : '双击录入原始值'"
-                @dblclick.stop="startStatCellEdit(artifact, row, 'common', column.key, row[column.key], column.baseRawValue)"
-              >
-                <el-input
-                  v-if="isEditingStatCell(artifact, row, 'common', column.key)"
-                  ref="statEditInputRef"
-                  v-model="editingStatRawValue"
-                  size="small"
-                  class="stat-edit-input"
-                  @blur="commitStatCellEdit(artifact, row, 'common', column.key, column.baseRawValue)"
-                  @keydown.enter.prevent="commitStatCellEdit(artifact, row, 'common', column.key, column.baseRawValue)"
-                  @keydown.esc.prevent="cancelStatCellEdit"
-                />
-                <span v-else class="empty-cell stat-edit-cell__display">{{ statDisplay(row, column.label, row[column.key]) }}</span>
-              </div>
-            </template>
-          </el-table-column>
+          <el-table-column prop="rule" label="分类规则" min-width="250" />
+          <el-table-column prop="note" label="备注" min-width="340" />
         </el-table>
       </div>
     </section>
@@ -1351,6 +1198,31 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.stage-explanation {
+  margin-top: 20px;
+  max-width: 900px;
+}
+
+.stage-explanation h4 {
+  margin: 0 0 8px;
+}
+
+.stage-explanation p {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.artifact-summary-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  white-space: nowrap;
+}
+
 .stage-badge {
   display: inline-flex;
   align-items: center;

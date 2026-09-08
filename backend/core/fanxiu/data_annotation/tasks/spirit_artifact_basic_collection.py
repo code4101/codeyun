@@ -110,8 +110,8 @@ def run_basic_attribute_collection(
             if locked_c:
                 if current['pending_effects']:
                     raise RuntimeError('候选未处理时不能切换 C 类锁')
-                for uid in locked_c:
-                    gui.set_lock(uid, False)
+                desired = {e.cleanse_id for e in current_rows if e.locked} - set(locked_c)
+                gui.set_locks(tuple(sorted(desired)), target_item_id=target.item_id)
                 current = read_spirit_artifact_wash_observation(target)
                 continue
             plan = plan_basic_attributes(current_rows, rows(current['pending_effects']))
@@ -136,8 +136,8 @@ def run_basic_attribute_collection(
                 return finish('paused_pending' if current['pending_effects'] else 'paused', current)
             if plan.action == 'lock':
                 phase = 'lock'
-                for uid in plan.lock_ids:
-                    gui.set_lock(uid, True)
+                desired = {e.cleanse_id for e in current_rows if e.locked} | set(plan.lock_ids)
+                gui.set_locks(tuple(sorted(desired)), target_item_id=target.item_id)
                 current = read_spirit_artifact_wash_observation(target)
                 record('locks_updated', after=current)
                 continue
@@ -186,7 +186,7 @@ def run_basic_attribute_collection(
                 remaining = counts()
                 locked = {k: v for k, v in effects_map(before['effects']).items() if v[2]}
                 pending = effects_map(after['pending_effects'])
-                verified = (owned - remaining == cost and len(pending) == 6
+                verified = (owned - remaining == cost and len(pending) == len(before['effects'])
                     and after['refine_num'] == before['refine_num'] + 1
                     and effects_map(after['effects']) == effects_map(before['effects'])
                     and all(pending.get(k) == v for k, v in locked.items()))

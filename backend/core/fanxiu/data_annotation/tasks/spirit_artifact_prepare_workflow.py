@@ -1,4 +1,4 @@
-"""初始→预备的市场编排：已有本体优先、按缺口采购、装配、逐颗升6、同步。
+"""显式升至六阶的市场编排：已有本体优先、按缺口采购、装配、逐颗升6、同步。
 
 仅明确稳定市场来源、1–4部位。采购6件/729不继承/逐阶组件已有真实现场，
 此整合入口首跑尚待验收；不扩大到箱子、5/6、洗炼或突破。
@@ -94,8 +94,8 @@ def prepare_spirit_artifact_from_market(
         raise RuntimeError('全馆阶段与当前库存/进程改变，停止旧阶段决策')
     red = current['quality'] == 6 and current['base_id'] == request.base_id
     already_prepared = red and current['grade'] >= 6 and current['is_break'] is False
-    if not already_prepared and (live.stage != '初始' or red and current['is_break'] is not False):
-        raise RuntimeError('目标不在初始阶段，禁止按此流程采购或培养')
+    if not already_prepared and (live.stage not in ('初始', '预备') or red and current['is_break'] is not False):
+        raise RuntimeError('目标不在未突破培养阶段，禁止按此流程采购或培养')
     if current['quality'] == 6 and not red:
         raise RuntimeError('当前红色base与明确市场目标冲突')
     deficit = max(0, 6 - (current['grade'] if red else 0) - len(raws))

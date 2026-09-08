@@ -1,7 +1,8 @@
 """已授权 A 类培养的连续研发入口；遇到未知状态停止，不重放消耗。
 
 从已选定洗炼页开始，在一个 Cell 内复用滚动经验。规则由已核实的静态
-配置注入；日志逐次记录实际消耗，与可调整的停止门槛分离。尚待真实验收。
+配置注入；日志逐次记录实际消耗，与可调整的停止门槛分离。
+1-3 四 A 培养、批量切锁及合并读取路径已真实完成；不代表全部部件已处理。
 """
 from __future__ import annotations
 
@@ -181,10 +182,12 @@ def run_a_collection(
                 if current['pending_effects']:
                     raise RuntimeError('切锁前仍有候选，不丢弃未知待采用结果')
                 before_locks = current
-                for effect in sorted(current['effects'], key=lambda e: e['cleanse_id'] in plan.desired_lock_ids):
-                    desired = effect['cleanse_id'] in plan.desired_lock_ids
-                    if effect['locked'] != desired:
-                        gui.set_lock(effect['cleanse_id'], desired)
+                record({'record_type': 'locks_planned', 'probability_sample': False,
+                        'new_consumption': False, 'before': current,
+                        'target_cleanse_id': plan.target_cleanse_id,
+                        'reason': plan.reason,
+                        'desired_lock_ids': sorted(plan.desired_lock_ids)})
+                gui.set_locks(plan.desired_lock_ids, target_item_id=target.item_id)
                 current = read_spirit_artifact_wash_observation(target)
                 if {e['cleanse_id'] for e in current['effects'] if e['locked']} != set(plan.desired_lock_ids):
                     raise RuntimeError('切锁后最终锁状态与计划不一致，停止')
@@ -198,6 +201,9 @@ def run_a_collection(
             preview = gui.preview_advanced_item(material, fast_observation=fast_observation)
             if preview['target_item_id'] != target.item_id:
                 raise RuntimeError('使用道具确认目标与培养目标不一致')
+            # 复用 preview 已读取的确认页事实，不追加 Runtime；不能等消耗后
+            # 才发现打开列表之前已有外部保存/切锁，导致本轮计划过期。
+            verify_a_collection_preview(current, preview['observation'])
             preview_seconds = time.monotonic() - iteration_started
             if time.time() >= stop_at - 30:
                 gui.cancel()
@@ -223,7 +229,7 @@ def run_a_collection(
                 (inventory['pid'], inventory['process_start_ticks']) == target.process_identity
                 and preview['count'] - counts[material] == 1
                 and effect_map(after['effects']) == effect_map(current['effects'])
-                and len(after['pending_effects']) == 6)
+                and len(after['pending_effects']) == len(current['effects']))
             # 即使后置验证失败，也保留原始观察；不靠候选内容变化断言独立消耗。
             try:
                 raw_sample = attributes(after['pending_effects'])
@@ -276,26 +282,40 @@ def run_a_collection(
                 current = save_pending(after)
 
 
+def verify_a_collection_preview(current: dict, observed: dict) -> None:
+    """确认消耗前核对计划事实；忽略 UI 行号与 Runtime map 的遍历顺序。"""
+    for key in ('pid', 'process_start_ticks', 'item_id', 'refine_num'):
+        if current[key] != observed[key]:
+            raise RuntimeError(f'道具确认前培养计划过期：{key} 改变；禁止消耗')
+    for key in ('effects', 'pending_effects'):
+        def canonical(rows):
+            return sorted((e['cleanse_id'], e['value'], e['quality'], e['locked']) for e in rows)
+        if canonical(current[key]) != canonical(observed[key]):
+            raise RuntimeError(f'道具确认前培养计划过期：{key} 改变；禁止消耗')
+
+
 def evaluate_existing_refinement_candidate(
     current, pending, *, plan_action: str, target_cleanse_id: int | None,
     a_codes: set[str],
 ) -> bool:
     """只采用当前精炼目标的严格改善，不推断候选来源或补记消耗。
 
-    需要当前纯策略明确 refine 和目标：六槽中恰好五锁完全保持，唯一
+    需要当前纯策略明确 refine 和目标：N 槽中恰好 N−1 锁完全保持，唯一
     未锁项是未满红色 A，候选同属性/同上限、品质不降且值严格提高。
     不满足时阻塞，不将其当失败抽样后继续消耗。GUI 重入尚待真实验收。
     """
     if plan_action != 'refine' or not target_cleanse_id:
         raise ValueError('现有改善候选需要明确的当前精炼目标')
+    if len(pending) != len(current):
+        raise ValueError('候选槽位数与当前属性不一致')
     for rows in (current, pending):
-        if (len(rows) != 6 or len({e.cleanse_id for e in rows}) != 6
-                or len({e.code for e in rows}) != 6):
-            raise ValueError('现有改善候选及当前属性需要完整唯一六槽')
+        if (len(rows) not in (5, 6) or len({e.cleanse_id for e in rows}) != len(rows)
+                or len({e.code for e in rows}) != len(rows)):
+            raise ValueError('现有改善候选及当前属性需要完整唯一五／六槽')
     old_locks = {e.cleanse_id: e for e in current if e.locked}
     new_locks = {e.cleanse_id: e for e in pending if e.locked}
-    if len(old_locks) != 5 or old_locks != new_locks:
-        raise ValueError('现有改善候选必须完整保持五条锁定项')
+    if len(old_locks) != len(current) - 1 or old_locks != new_locks:
+        raise ValueError('现有改善候选必须完整保持其余锁定项')
     old = next(e for e in current if not e.locked)
     new = next(e for e in pending if not e.locked)
     if (old.cleanse_id != target_cleanse_id or old.code not in a_codes
@@ -318,9 +338,9 @@ def evaluate_existing_yinxian_candidate(
     from decimal import Decimal
     if plan_action != 'yinxian':
         raise ValueError('当前策略不是引仙筛选，不能推断既存候选来自精炼或其他动作')
-    if len(current) != 6 or len(pending) != 6:
-        raise ValueError('既存候选及当前属性都须为完整六槽')
-    if len({e.cleanse_id for e in current}) != 6 or len({e.cleanse_id for e in pending}) != 6:
+    if len(current) not in (5, 6) or len(pending) != len(current):
+        raise ValueError('既存候选及当前属性都须为完整五／六槽')
+    if len({e.cleanse_id for e in current}) != len(current) or len({e.cleanse_id for e in pending}) != len(pending):
         raise ValueError('既存候选或当前槽位身份重复')
     old_locks = {e.cleanse_id: e for e in current if e.locked}
     new_locks = {e.cleanse_id: e for e in pending if e.locked}

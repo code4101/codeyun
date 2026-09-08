@@ -80,3 +80,28 @@ def test_existing_refinement_requires_exact_five_locks_and_needed_unfinished_tar
         with pytest.raises(ValueError):
             evaluate_existing_refinement_candidate(old, new, **{
                 'plan_action': 'refine', 'target_cleanse_id': 6, 'a_codes': {'ATTACK'}, **changed})
+def test_preview_requires_exact_plan_facts_before_consumption():
+    from copy import deepcopy
+    import pytest
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_a_collection import verify_a_collection_preview
+    current = dict(pid=1, process_start_ticks=2, item_id='3', refine_num=4,
+        effects=[dict(cleanse_id=5, value=7709, quality=6, locked=False),
+                 dict(cleanse_id=6, value=40, quality=3, locked=True)], pending_effects=[])
+    observed = deepcopy(current)
+    observed['effects'].reverse()
+    observed['effects'][0]['row'] = 1
+    verify_a_collection_preview(current, observed)
+    for key in ('pid', 'process_start_ticks', 'item_id', 'refine_num'):
+        changed = deepcopy(current)
+        changed[key] = 'changed'
+        with pytest.raises(RuntimeError, match='禁止消耗'):
+            verify_a_collection_preview(current, changed)
+    for key, value in [('value', 8000), ('locked', True), ('quality', 5)]:
+        changed = deepcopy(current)
+        changed['effects'][0][key] = value
+        with pytest.raises(RuntimeError, match='禁止消耗'):
+            verify_a_collection_preview(current, changed)
+    changed = deepcopy(current)
+    changed['pending_effects'] = deepcopy(changed['effects'])
+    with pytest.raises(RuntimeError, match='禁止消耗'):
+        verify_a_collection_preview(current, changed)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime, time as time_cls, timedelta
 from pathlib import Path
@@ -22,6 +23,39 @@ LUNDAO_SAFETY_THRESHOLD_CHANGE_TIMES = (
     time_cls(21, 0),
 )
 _FAZE_QUALITY_TO_CROSS = {quality: 1 << (quality - 1) for quality in range(1, 8)}
+
+
+def lundao_unique_cjk_name(target: dict[str, Any], roster: dict[str, Any]) -> str:
+    """Return a >=3-Han OCR name only when a complete roster binds it uniquely.
+
+    Decorative Unicode letters may disappear in OCR. The UI still uses edit
+    distance with the established threshold, and the caller rechecks the live
+    seat/role binding before clicking. Short or ambiguous names fail
+    closed. All occupants, including allies, participate in collision checks.
+    """
+    if not roster.get('complete') or not roster.get('available'):
+        return ''
+    han = lambda value: ''.join(re.findall(r'[\u3400-\u4dbf\u4e00-\u9fff]', str(value or '')))
+    hint = han(target.get('name'))
+    if len(hint) < 3:
+        return ''
+    from backend.core.fanxiu.runtime_gui.text import (
+        DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD, normalize_ocr_name, ocr_name_similarity,
+    )
+    if normalize_ocr_name(target.get('name')) == hint:
+        return ''  # Ordinary names keep the established matching contract.
+    matches = [seat for seat in roster.get('seats') or []
+               if isinstance(seat, dict) and isinstance(seat.get('owner'), dict)
+               and ocr_name_similarity(hint, han(seat['owner'].get('name')))
+               >= DEFAULT_OCR_NAME_SIMILARITY_THRESHOLD]
+    if len(matches) != 1:
+        return ''
+    seat = matches[0]
+    if (str(seat.get('seat_id')) != str(target.get('seat_id') or target.get('id'))
+            or not target.get('role_id')
+            or str(seat['owner'].get('role_id')) != str(target['role_id'])):
+        return ''
+    return hint
 
 
 def lundao_purchase_allowed(at: datetime) -> bool:
@@ -375,6 +409,8 @@ def evaluate_lundao_room_opportunity(
     has_action = empty_count > 0 or bool(eligible_no_law)
     actionable = threshold_met and has_action
     target = None if empty_count > 0 else (eligible_no_law[0] if eligible_no_law else None)
+    if target is not None:
+        target = {**target, 'ocr_cjk_name': lundao_unique_cjk_name(target, seat_facts)}
     return {
         "ok": True,
         "status": "actionable" if actionable else "wait",

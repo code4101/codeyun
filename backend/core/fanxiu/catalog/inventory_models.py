@@ -185,8 +185,8 @@ def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | 
         # 同 code 又有满值时不凭低值重复项下结论。缺项仍不等于非满。
         if known_nonfull_a - full_codes:
             return "错升"
-        # 完成/缺 A 的判断仍要求完整六槽；不猜测低阶的解锁数量。
-        if not a_codes or len(effects) != 6 or any(
+        # 按红色阶数核对完整槽位：1–5 阶五槽，6 阶起六槽。
+        if not a_codes or len(effects) != (5 if rank < 6 else 6) or any(
             (not effect.get("code") and effect.get("type") != 3) or "affix" not in effect for effect in effects
         ):
             return "待识别"
@@ -201,7 +201,7 @@ def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | 
         return "巅峰" if any(effect["affix"] in ("巅", "颠") for effect in effects) else "道威"
     if is_break is None:
         return "待识别"
-    return "初始" if rank < 6 else "预备"
+    return "初始" if rank < 1 else "预备"
 
 
 class FanxiuSpiritArtifactPartRow(BaseModel):

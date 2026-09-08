@@ -92,6 +92,30 @@ def test_refine_plan_locks_all_five_other_rows_even_c():
     assert refine_other_lock_ids(candidates(), 1) == (2, 3, 4, 5, 6)
 
 
+@pytest.mark.parametrize('lock_mask', range(64))
+@pytest.mark.parametrize('target_value,expected_locks,target_id', [
+    (7709, (1, 2, 3, 4, 6), 5),  # 达标 A 精炼时临时保护 C。
+    (7000, (1, 2), None),         # 未达标则释放全部 C 和低 A 的遗留锁。
+    (8000, (1, 2, 5), None),     # 精炼完成锁住满 A，再释放 C。
+])
+def test_lock_plan_reconciles_any_inherited_state(lock_mask, target_value, expected_locks, target_id):
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    codes = ['MAXHP', 'DEFENSE', 'MAXHP_RECOVER_FIX', 'MP_RECOVER_FIX',
+             'CRI_DAMAGE_FIX', 'SPECIAL_DAMAGE_REDUCE']
+    rows = tuple(YinxianAttribute(i + 1, code, target_value if i == 4 else 40,
+                 6 if i == 4 else 3, bool(lock_mask & (1 << i)), 8000)
+                 for i, code in enumerate(codes))
+    plan = plan_a_collection(rows,
+        a_codes={'ATTACK', 'MAXMP', 'CRI_VALUE', 'CRI_DAMAGE_FIX'},
+        b_codes={'MAXHP', 'DEFENSE'},
+        c_codes={'MAXHP_RECOVER_FIX', 'MP_RECOVER_FIX', 'SPECIAL_DAMAGE_REDUCE'})
+    assert plan.desired_lock_ids == expected_locks
+    assert plan.target_cleanse_id == target_id
+    actual = {e.cleanse_id for e in rows if e.locked}
+    assert plan.action == ('locks' if actual != set(expected_locks)
+                           else 'refine' if target_id else 'yinxian')
+
+
 def test_collection_preserves_other_hit_then_releases_c_after_refining():
     from dataclasses import replace
     from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
@@ -187,3 +211,20 @@ def test_four_a_collection_keeps_capacity_without_early_b_release(full_a_count, 
     assert 6-len(plan.desired_lock_ids) == expected_unlocked
     settled = tuple(replace(e, locked=e.cleanse_id in plan.desired_lock_ids) for e in rows)
     assert plan_a_collection(settled, **policy).action == "yinxian"
+
+
+def test_five_slots_refine_and_release_b_then_finish_four_a():
+    from dataclasses import replace
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_yinxian import plan_a_collection
+    policy = dict(a_codes={'ATTACK', 'MAXMP', 'CRI_VALUE', 'CRI_DAMAGE_FIX'},
+                  b_codes={'MAXHP', 'DEFENSE'}, c_codes=set())
+    rows = tuple(YinxianAttribute(i, code, 95 if i == 3 else 100, 6, True, 100)
+        for i, code in enumerate(['ATTACK', 'MAXMP', 'CRI_VALUE', 'MAXHP', 'DEFENSE'], 1))
+    plan = plan_a_collection(rows, **policy)
+    assert plan.target_cleanse_id == 3 and plan.desired_lock_ids == (1, 2, 4, 5)
+    rows = tuple(replace(e, value=100) if e.cleanse_id == 3 else e for e in rows)
+    plan = plan_a_collection(rows, **policy)
+    assert plan.desired_lock_ids == (1, 2, 3, 4)  # 释放最低优先级守御，不覆盖满 A。
+    rows = tuple(replace(e, code='CRI_DAMAGE_FIX', locked=False) if e.cleanse_id == 5 else e for e in rows)
+    assert plan_a_collection(rows, **policy).action == 'complete'
+    assert analyze_yinxian_sample(rows, roll_index=1, needed_a_codes={'CRI_DAMAGE_FIX'}).stop_yinxian

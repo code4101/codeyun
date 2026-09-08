@@ -31,14 +31,14 @@ class SpiritArtifactInitialPlanEntry:
 def plan_spirit_artifact_initial_parts(facts) -> tuple[SpiritArtifactInitialPlanEntry, ...]:
     """按阶段/部位排序输出本轮全部初始部件；不执行、不重新定义阶段。
 
-    ready仅表示足以达到6阶，不证明GUI路径验收。已核实材料足够时无需
+    ready仅表示能取得并装配红色1阶本体，不证明GUI路径验收。已核实材料足够时无需
     再调查外部来源；材料不足且来源未知必须needs_analysis。每件结束重算。
     """
     result, seen = [], set()
     for item in facts:
         key = item.ware_id, item.part
-        if key in seen or item.stage != '初始' or not 0 <= item.equipped_red_grade < 6:
-            raise ValueError('要求唯一部件、权威初始阶段及红色0至5阶事实')
+        if key in seen or item.stage != '初始' or item.equipped_red_grade != 0:
+            raise ValueError('要求唯一部件、权威初始阶段及红色0阶事实')
         seen.add(key)
         gap = None
         if item.verified_material_grade_units is None or item.available_raw_bodies is None:
@@ -46,11 +46,11 @@ def plan_spirit_artifact_initial_parts(facts) -> tuple[SpiritArtifactInitialPlan
         else:
             gap = calculate_preparation_gap(equipped_red_grade=item.equipped_red_grade,
                 verified_material_grade_units=item.verified_material_grade_units,
-                available_raw_bodies=item.available_raw_bodies, reset_required=False)
+                available_raw_bodies=item.available_raw_bodies, reset_required=False, target_grade=1)
             if gap.red_grade_units_missing == 0:
                 readiness, reason = 'ready', ''
             elif item.stable_supply_units is None:
-                readiness, reason = 'needs_analysis', '达到6阶的稳定来源尚未核实'
+                readiness, reason = 'needs_analysis', '取得红色本体的稳定来源尚未核实'
             elif type(item.stable_supply_units) is not int or item.stable_supply_units < 0:
                 raise ValueError('稳定供应必须为非负整数或未调查None')
             elif item.stable_supply_units >= gap.red_grade_units_missing:

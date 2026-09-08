@@ -706,6 +706,41 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
         scene = self._require_wash_scene(phase="lock")
         before = read_spirit_artifact_ui_snapshot()
+        return self._set_lock_from_snapshot(scene, before, cleanse_id, locked)
+
+    def set_locks(self, desired_lock_ids: Sequence[int], *, target_item_id: str) -> Any:
+        """以当前事实收敛整组锁；先解后锁，修正旧锁与中断留下的半成品。
+
+        首次读 Runtime，每次动作后仍验证唯一 delta；该结果直接作为下一次
+        切锁的 before，省去连续 N 次切锁的 N-1 次重复读取。缓存只在本次
+        同步调用内有效，不跨 Cell、洗炼或保存。每次点击前仍检查场景。
+        已在 1-3 的精炼切锁、恢复引仙及突破后四 A 锁定中真实通过。
+        基础属性收集接入此接口后的路径仍待单独验收。
+        """
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+
+        scene = self._require_wash_scene(phase="locks")
+        current = read_spirit_artifact_ui_snapshot()
+        effects = current.get('effects', [])
+        desired = set(desired_lock_ids)
+        ids = {e['cleanse_id'] for e in effects}
+        if (str(current.get('item_id')) != str(target_item_id)
+                or not current.get('is_wash') or current.get('pending_effects')
+                or len(effects) != 6 or len(ids) != 6
+                or not desired <= ids or len(desired) > 5):
+            raise SpiritArtifactCleanseBlocked('整组切锁要求同一本体、六条已保存属性及至多五把锁', phase='locks')
+        changes = sorted((e for e in effects if e['locked'] != (e['cleanse_id'] in desired)),
+                         key=lambda e: e['cleanse_id'] in desired)
+        for index, effect in enumerate(changes):
+            if index:
+                scene = self._require_wash_scene(phase='locks')
+            current = self._set_lock_from_snapshot(
+                scene, current, effect['cleanse_id'], effect['cleanse_id'] in desired)
+        return current
+
+    def _set_lock_from_snapshot(self, scene: int, before: dict, cleanse_id: int, locked: bool) -> Any:
+        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+
         effects = before.get("effects", [])
         matches = [effect for effect in effects if effect["cleanse_id"] == cleanse_id]
         if not before["is_wash"] or len(matches) != 1 or len(effects) != 6:
@@ -799,7 +834,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         在点击前拒绝零库存。其它品质/突破/词条条件由客户端检查；若只出现
         条件不足提示则等待确认失败，保留现场，不继续任何消耗动作。
         同次确认场景的已验证帧复用于说明OCR；分段计时随preview返回。
-        本次帧复用改动尚待真实连续使用验收，不跨动作复用画面。
+        同帧复用及合并读取已在 1-3 连续引仙/精炼中通过，不跨动作复用画面。
         """
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
         from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import advanced_item_confirmation_names
@@ -817,9 +852,17 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
         started = time.monotonic()
         timings = {}
-        catalog = self.inspect_advanced_items(fast=fast_observation)
+        combined_before = None
+        if fast_observation:
+            from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import read_spirit_artifact_advanced_snapshot
+            self.open_advanced_items()
+            combined = read_spirit_artifact_advanced_snapshot(fast=True)
+            catalog, combined_before = combined['catalog'], combined['target_snapshot']
+        else:
+            catalog = self.inspect_advanced_items(fast=False)
         timings['catalog'] = time.monotonic() - started
         timings['catalog_detail'] = catalog.get('timings', {})
+        timings['combined_before'] = combined_before is not None
         matches = [row for row in catalog['items'] if row['item'] == item_id]
         if len(matches) != 1 or matches[0]['count'] <= 0:
             raise SpiritArtifactCleanseBlocked('当前灵器没有该道具或库存为零', phase='preview_advanced')
@@ -828,7 +871,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         if not name.startswith('洗灵') or len(name) <= 2:
             raise SpiritArtifactCleanseBlocked('高级洗炼道具名称未解析', phase='preview_advanced')
         ui_started = time.monotonic()
-        before = observe()
+        before = combined_before if combined_before is not None else observe()
         timings['ui_before'] = time.monotonic() - ui_started
         if before.get('item_id') != catalog['item_id'] or any(
             before[key] != catalog[key] for key in ('pid', 'process_start_ticks', 'ware_id')
@@ -892,6 +935,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             memory.remember(scroll_key, scroll_route)
         return {'scene': self.assets.advanced_confirm_scene_id, 'target_item_id': catalog['item_id'],
                 'item_id': item_id, 'name': item['name'], 'count': item['count'],
+                'observation': {key: after[key] for key in (
+                    'pid', 'process_start_ticks', 'item_id', 'effects', 'pending_effects', 'refine_num')},
                 'timings': {**timings, 'total': time.monotonic() - started},
                 'inventory_diagnostics': catalog.get('inventory_diagnostics', {}),
                 'unlocked_effects': [effect for effect in after['effects'] if not effect['locked']]}

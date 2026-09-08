@@ -40,7 +40,7 @@ def test_unknown_stays_unknown_and_unbroken_stays_prepared():
     assert stage(partial=True) == "待识别"
     assert stage(is_break=None) == "待识别"
     assert stage(is_break=False) == "预备"
-    assert stage(is_break=False, rank=5) == "初始"
+    assert stage(is_break=False, rank=5) == "预备"
 
 
 def test_s_tiers_still_require_all_a():
@@ -95,3 +95,16 @@ def test_partial_unknown_or_duplicate_a_does_not_prove_wrong_upgrade():
     assert classify_spirit_artifact_stage(**args, effects=[{"code":"ATTACK", "affix":"满"}]) == "待识别"
     assert classify_spirit_artifact_stage(**args, effects=[{"code":"ATTACK", "affix":"满"},
                                                            {"code":"ATTACK", "affix":""}]) == "待识别"
+
+
+@pytest.mark.parametrize("rank,expected", [(0, "初始"), (1, "预备"), (5, "预备"), (6, "预备")])
+def test_new_red_grade_threshold(rank, expected):
+    assert stage(is_break=False, rank=rank) == expected
+
+
+def test_five_slot_breakthrough_requires_complete_four_a():
+    effects = [{"code": code, "affix": "满"} for code in FOUR_A] + [{"code": "MAXHP", "affix": ""}]
+    assert classify_spirit_artifact_stage(rank=1, base_id=14000406, is_break=True,
+        effects=effects, a_codes=FOUR_A) == "突破"
+    assert classify_spirit_artifact_stage(rank=6, base_id=14000406, is_break=True,
+        effects=effects, a_codes=FOUR_A) == "待识别"

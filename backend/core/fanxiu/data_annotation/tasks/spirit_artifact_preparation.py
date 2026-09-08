@@ -30,8 +30,11 @@ def calculate_preparation_gap(
     verified_material_grade_units: int,
     available_raw_bodies: int,
     reset_required: bool,
+    target_grade: int = 6,
 ) -> SpiritArtifactPreparationGap:
-    """计算达到6阶的最少新增红色1阶本体数，不替调用方兑换。
+    """计算指定目标阶数的新增红色1阶本体数，不替调用方兑换。
+
+    初始到预备传 target_grade=1；默认6仅保留显式升六阶方案，非阶段门槛。
 
     无红色装备传0；材料单位含库存原始本体，不含当前装备，不能重复计数。
     错升时当前装备仅在已确认可吃回时传其阶数；尚未证明则不要调用。
@@ -39,6 +42,8 @@ def calculate_preparation_gap(
     重置或0阶装配至少需要一个原始本体；新增的该本体同时贡献1阶，
     因而总缺口取两种约束的较大值，而非相加。
     """
+    if type(target_grade) is not int or target_grade < 1:
+        raise ValueError("目标阶数必须为正整数")
     values = (equipped_red_grade, verified_material_grade_units, available_raw_bodies)
     if any(type(value) is not int or value < 0 for value in values):
         raise ValueError("阶数、材料单位及原始本体数量必须为非负整数")
@@ -46,7 +51,7 @@ def calculate_preparation_gap(
         raise ValueError("原始本体必须已计入材料单位")
     needs_raw = reset_required or equipped_red_grade == 0
     raw_missing = int(needs_raw and available_raw_bodies == 0)
-    missing = max(raw_missing, 6 - equipped_red_grade - verified_material_grade_units, 0)
+    missing = max(raw_missing, target_grade - equipped_red_grade - verified_material_grade_units, 0)
     return SpiritArtifactPreparationGap(raw_missing, missing)
 
 

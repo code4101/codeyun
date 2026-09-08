@@ -1,4 +1,6 @@
-"""洗灵突破的单次业务动作；流程已手工验证，本封装尚待真实验收。
+"""洗灵突破的单次业务动作；1-3 突破与四 A 锁定已真实通过。
+
+完成边界内的全馆自动同步是后补接入，尚待下一次真实验收。
 
 只从已就绪的 #668 发起，#722 只确认一次。中断恢复仅支持明确选择
 finish_result_only=True 并且当前确为 #723：核验指定本体已突破后继续收尾。
@@ -31,8 +33,8 @@ def validate_spirit_artifact_breakthrough_attributes(
     """
     if len(a_codes) != 4 or part not in range(1, 7):
         raise ValueError('突破需要明确的四 A 策略与部位')
-    if len(effects) != 6 or len({e['cleanse_id'] for e in effects}) != 6:
-        raise ValueError('突破需要完整且唯一的六条已保存属性')
+    if len(effects) not in (5, 6) or len({e['cleanse_id'] for e in effects}) != len(effects):
+        raise ValueError('突破需要完整且唯一的五／六条已保存属性')
     attributes = tuple(YinxianAttribute(
         e['cleanse_id'], rules[e['cleanse_id']]['code'], e['value'],
         e['quality'], e['locked'], rules[e['cleanse_id']]['max'],
@@ -68,9 +70,8 @@ def lock_spirit_artifact_after_breakthrough(
     if {rules['rules'][uid]['code'] for uid in a_ids} != a_codes:
         raise RuntimeError('突破收尾缺少本灵器完整 A 类，不能宣称完成')
     gui = SpiritArtifactCleanseRuntimeGuiAdapter(context, execute)
-    for effect in before['effects']:
-        if effect['cleanse_id'] in a_ids and not effect['locked']:
-            gui.set_lock(effect['cleanse_id'], True)
+    desired = a_ids | {e['cleanse_id'] for e in before['effects'] if e['locked']}
+    gui.set_locks(tuple(sorted(desired)), target_item_id=target.item_id)
     after = read_spirit_artifact_wash_observation(target, verify_ui=True)
     values = lambda s: {e['cleanse_id']: (e['value'], e['quality']) for e in s['effects']}
     locks = {e['cleanse_id']: e['locked'] for e in after['effects']}
@@ -132,7 +133,7 @@ def breakthrough_spirit_artifact(
         record('item_observed', snapshot=snapshot)
         if snapshot.get('is_break') is not expected_break or snapshot['pending_effects']:
             raise RuntimeError('突破本体状态或待采用属性与预期不一致')
-        if len(snapshot['effects']) != 6:
+        if len(snapshot['effects']) not in (5, 6):
             raise RuntimeError('突破本体属性槽位不完整')
         return snapshot
 
@@ -208,9 +209,15 @@ def breakthrough_spirit_artifact(
             context, execute, target=target, evidence_path=path,
         )
         after = locked['snapshot']
+        # 阶段变化的完成边界同时发布全馆事实；查询页面本身不读取游戏。
+        # 同步失败须报告，不能将已突破动作重发；可独立重新同步收尾。
+        phase = 'sync_hall'
+        from ...instrumentation.spirit_artifact_collector import collect_spirit_artifact_snapshot_once
+        hall = collect_spirit_artifact_snapshot_once()
         result = dict(status='finished_existing_result' if finish_result_only else 'complete',
                       before=before, snapshot=after, lock_state_reset=True,
                       a_locked_ids=locked['a_locked_ids'],
+                      hall_updated_at=hall['runtime_updated_at'],
                       elapsed_seconds=time.monotonic() - started)
         record('breakthrough_finished', **result)
         return result

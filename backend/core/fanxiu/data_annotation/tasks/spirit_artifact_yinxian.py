@@ -72,12 +72,12 @@ def analyze_yinxian_sample(
 ) -> YinxianSample:
     """每次实际消耗产生独立样本；不按命中/颜色筛样本，不按内容去重。
 
-    candidates 是完整六条候选。统计包含全部未锁项，红条最高比例不限定 A；
+    candidates 是完整五／六条候选。统计包含全部未锁项，红条最高比例不限定 A；
     任意需要的未锁 A 达阈值就停止继续引仙石，hits 保留本轮全部命中。
     本函数不自动保存；保存前仍需验证候选来自本轮且没有改动原锁定项。
     """
-    if roll_index <= 0 or len(candidates) != 6 or len({e.cleanse_id for e in candidates}) != 6:
-        raise ValueError('引仙石样本需要独立轮次和完整六条候选')
+    if roll_index <= 0 or len(candidates) not in (5, 6) or len({e.cleanse_id for e in candidates}) != len(candidates):
+        raise ValueError('引仙石样本需要独立轮次和完整五／六条候选')
     unlocked = tuple(e for e in candidates if not e.locked)
     # 即使没有目标或没有红条，也验证配置比例，避免错误配置被空集合掩盖。
     meets_yinxian_target(is_needed_a=False, quality=0, basic_score=0,
@@ -91,14 +91,14 @@ def analyze_yinxian_sample(
 
 
 def refine_other_lock_ids(current: Sequence[YinxianAttribute], target_cleanse_id: int) -> tuple[int, ...]:
-    """当前已保存六条里，只留选中目标可精炼，其余五条都应锁。
+    """当前已保存六条里，只留选中目标可精炼，其余 N−1 条都应锁。
 
     返回期望锁集合，由既有锁账本仅切换差异；不选择目标、不点击或消耗。
     目标已满时调用方应跳过精炼消耗，并进入锁满 A、解除 C 锁的下一步。
     """
-    if (len(current) != 6 or len({e.cleanse_id for e in current}) != 6
+    if (len(current) not in (5, 6) or len({e.cleanse_id for e in current}) != len(current)
             or target_cleanse_id not in {e.cleanse_id for e in current}):
-        raise ValueError('精炼锁计划需要已保存的完整六条及明确目标')
+        raise ValueError('精炼锁计划需要已保存的完整五／六条及明确目标')
     return tuple(e.cleanse_id for e in current if e.cleanse_id != target_cleanse_id)
 
 
@@ -113,8 +113,8 @@ class ACollectionPlan:
 def plan_b_supplement(current: Sequence[YinxianAttribute], *, a_codes: set[str],
                       target_code: str) -> ACollectionPlan:
     """A 全满后，将已存在的指定 B 洗至红色；不要求比例或精炼。"""
-    if (len(current) != 6 or len({e.cleanse_id for e in current}) != 6
-            or len({e.code for e in current}) != 6 or not a_codes
+    if (len(current) not in (5, 6) or len({e.cleanse_id for e in current}) != len(current)
+            or len({e.code for e in current}) != len(current) or not a_codes
             or target_code not in {'MAXMP', 'MAXHP', 'DEFENSE'} or target_code in a_codes):
         raise ValueError('补 B 需要完整唯一属性和明确 B 目标')
     if not a_codes <= {e.code for e in current if e.is_full and e.quality >= 6}:
@@ -137,13 +137,13 @@ def plan_a_collection(
     """根据已保存事实计算下一步，不依赖上一 Cell 的步骤游标。
 
     调用前必须处理待保存候选；每次采用候选后重新调用。多个达标 A 逐个
-    精炼，其余五条全锁；完成后仅释放 C 和未达门槛的 A，保留 B。
+    精炼，其余 N−1 条全锁；完成后仅释放 C 和未达门槛的 A，保留 B。
     仍缺 A 且无 C/低 A 槽位时，释放保留优先级最低的 B；未知 B 则阻塞。
     执行方先验证锁计划，再消耗，
     每次真实消耗独立记录样本；本函数既不读写游戏，也不宣称动作已成功。
     """
-    if (len(current) != 6 or len({e.cleanse_id for e in current}) != 6
-            or len({e.code for e in current}) != 6 or not a_codes
+    if (len(current) not in (5, 6) or len({e.cleanse_id for e in current}) != len(current)
+            or len({e.code for e in current}) != len(current) or not a_codes
             or a_codes & b_codes or a_codes & c_codes or b_codes & c_codes):
         raise ValueError('A 类培养需要完整唯一词条及互斥类别')
     meets_yinxian_target(is_needed_a=False, quality=0, basic_score=0,
@@ -171,11 +171,13 @@ def plan_a_collection(
         desired = tuple(sorted(e.cleanse_id for e in current
                                if e.code in b_codes or e.code in a_codes & full))
         action = 'complete' if a_codes <= full else 'yinxian'
-        if action == 'yinxian' and len(desired) == 6:
+        if action == 'yinxian' and len(desired) == len(current):
             retained_b = [e for e in current if e.code in b_codes]
             if not retained_b or any(e.code not in B_RETENTION_PRIORITY for e in retained_b):
                 return ACollectionPlan('blocked', desired, reason='没有可用槽位，B 类保留优先级未知')
             released = min(retained_b, key=lambda e: B_RETENTION_PRIORITY[e.code])
             desired = tuple(i for i in desired if i != released.cleanse_id)
     return ACollectionPlan('locks' if actual_locks != set(desired) else action,
-                           desired, target.cleanse_id if target else None)
+                           desired, target.cleanse_id if target else None,
+                           reason=('精炼目标 A：临时锁住其余 N−1 条（含 C），精炼结束后重算'
+                                   if target else '引仙寻找缺失 A：解除 C 与未达标 A 的旧锁，保护满 A 并按需释放 B'))

@@ -35,15 +35,17 @@ class BasicAttributeDecision:
 def plan_basic_attributes(
     current: Sequence[WashAttribute], candidate: Sequence[WashAttribute] = (),
 ) -> BasicAttributeDecision:
-    """当前和候选均为完整六条；候选为空表示没有待保存结果。
+    """当前和候选均为完整五／六条；候选为空表示没有待保存结果。
 
 Runtime map 的遍历顺序不是 UI 行序，本模块只返回词条 ID，不推测点击行。
 保存后必须重新绑定 UI 行序。非目标已锁项的解锁策略尚未讨论，显式阻塞。
 """
     for rows in (current, candidate):
-        if rows and (len(rows) != 6 or len({e.cleanse_id for e in rows}) != 6
+        if rows and (len(rows) not in (5, 6) or len({e.cleanse_id for e in rows}) != len(rows)
                      or any(e.cleanse_id <= 0 or not e.name or type(e.locked) is not bool for e in rows)):
             raise ValueError('需要完整、唯一且有名称与锁状态的六条属性')
+    if candidate and len(candidate) != len(current):
+        raise ValueError('候选槽位数与当前属性不一致')
     if not current:
         raise ValueError('当前属性不能为空')
     present = {e.canonical_name for e in current} & BASIC_ATTRIBUTES

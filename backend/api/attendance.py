@@ -276,6 +276,21 @@ def reconcile_independent_attendance_wjx_course_fields() -> SimpleNamespace:
     return _mutate_independent_attendance_wjx_sheet(reconcile)
 
 
+def update_independent_attendance_wjx_status(*, seq: int, process_status: str) -> SimpleNamespace:
+    """Record a questionnaire resolution by sequence, preserving all row projections."""
+    def update(document_json: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        document = _normalize_attendance_wjx_sheet_document(document_json)
+        if _find_attendance_wjx_sheet_row_index(document, int(seq)) is None:
+            raise HTTPException(status_code=404, detail=f"问卷数据不存在：{seq}")
+        next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
+            document, {"序号": int(seq), "处理状态": process_status.strip()},
+            preserve_process_status=False,
+        )
+        return next_document, changed
+
+    return _mutate_independent_attendance_wjx_sheet(update)
+
+
 def correct_independent_attendance_wjx_course(
     *,
     seq: int,

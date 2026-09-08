@@ -93,6 +93,7 @@ from backend.core.fanxiu.data_annotation.tasks.lundao import (
     LUNDAO_SANQING_ROOM_ID,
     current_lundao_player_profile,
     evaluate_lundao_room_opportunity,
+    lundao_unique_cjk_name,
     lundao_player_profile_from_runtime,
     lundao_purchase_allowed,
     lundao_safety_threshold,
@@ -7841,6 +7842,7 @@ class DailyFoundationTaskMixin:
         target = dict(target_player or {})
         target_name = _sanitize_ocr_text(target.get("name"))
         target_id = str(target.get("seat_id") or target.get("id") or "").strip()
+        cjk_name = str(target.get('ocr_cjk_name') or '')
         if not target_id:
             raise RuntimeError("论道_座位：#297 踢人抢座缺少上游确定的目标玩家，已停止且未点击")
         if not target_name:
@@ -7867,6 +7869,8 @@ class DailyFoundationTaskMixin:
                     room_id=int(room_id),
                 )
                 latest_roster = latest.get("roster") if isinstance(latest.get("roster"), dict) else {}
+                if cjk_name and lundao_unique_cjk_name(target, latest_roster) != cjk_name:
+                    raise RuntimeError('论道_座位：中文姓名与当前完整名单不再唯一绑定，未点击')
                 target_seat_id = int(target.get("seat_id") or target.get("id") or 0)
                 still_present = any(
                     isinstance(seat, dict)
@@ -7906,7 +7910,7 @@ class DailyFoundationTaskMixin:
                 297,
                 "模板",
                 "区服姓名",
-                target_name,
+                cjk_name or target_name,
                 container_shape="窗口",
                 frame_data_url=frame,
                 match_mode="name",
@@ -8380,8 +8384,10 @@ class DailyFoundationTaskMixin:
         overlay_ids = {386, 375, 295}
         source_ids = {186, 85}
         if confirm_lundao_exit:
-            # #54 确认由弹窗层处理，业务只等待离场后的真实落点。
-            source_ids.add(53)
+            # This confirmation belongs to the authorized exit transaction.
+            # Keep it in Layer 0: generic overlay dismissal cancels the exit
+            # and sends us back to #53 indefinitely.
+            source_ids.update({53, 54})
         candidate_ids = sorted(terminal_ids | overlay_ids | source_ids)
         for attempt in range(1, 5):
             if scene_id in terminal_ids:
@@ -8402,7 +8408,7 @@ class DailyFoundationTaskMixin:
                     f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
                 )
 
-            exit_shape = "离开"
+            exit_shape = "确认" if confirm_lundao_exit and scene_id == 54 else "离开"
             self._log(
                 "action",
                 f"{label}：收尾识别 #{scene_id}，点击正式标注「{exit_shape}」（第 {attempt}/4 次）",
@@ -8411,7 +8417,7 @@ class DailyFoundationTaskMixin:
                 waited_scene = yield from context.wait_click_then_scene(
                     scene_id,
                     exit_shape,
-                    sorted(terminal_ids | overlay_ids),
+                    sorted(terminal_ids | overlay_ids | ({54} if confirm_lundao_exit else set())),
                     settle_seconds=1.5,
                     timeout=15.0,
                     max_clicks=1,

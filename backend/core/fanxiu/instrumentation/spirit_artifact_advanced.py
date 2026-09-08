@@ -69,6 +69,29 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
     SpiritWareItem配置；其版本是否与运行态完全一致仍需独立核验。
     后置身份复核已随第4器连续消费真实验收；第9器高级窗口仍待真实验收。
     """
+    return _read_advanced_items(fast=fast, include_target_snapshot=False)
+
+
+def read_spirit_artifact_advanced_snapshot(*, fast: bool = False) -> dict[str, Any]:
+    """同次读取高级列表、库存和该窗口选中的本体属性，无游戏动作。
+
+    返回 catalog（与 read_spirit_artifact_advanced_items 同契约）、
+    target_snapshot（item Runtime 完整 effects/pending_effects/锁/实例字段）
+    和 timings。目标读取夹在列表观察与独立新 reader 的末尾窗口身份复核
+    之间，绑定窗口成员、列表、UID、器号和游戏进程；不使用同 reader 缓存
+    冒充二次观察。库存及本体各由原公共提供方负责恢复。
+
+    调用方可把 target_snapshot 用作本次 preview 的 before，仍须核验业务
+    计划、未锁属性与库存，并在点击/消费后重新读取验证，不跨动作缓存。
+    这是有边界检查的顺序观察，不是原子快照，也不能排除 ABA。
+    新组合路径已在 1-3 连续引仙/精炼中真实通过；耗时依设备及现场而变。
+    """
+    result = _read_advanced_items(fast=fast, include_target_snapshot=True)
+    target = result.pop('target_snapshot')
+    return {'catalog': result, 'target_snapshot': target, 'timings': result['timings']}
+
+
+def _read_advanced_items(*, fast: bool, include_target_snapshot: bool) -> dict[str, Any]:
     from backend.core.fanxiu.catalog.lua_config import load_default_fanxiu_lang_map
     from .backpack import read_backpack_item_counts
     from .item_config import read_loaded_item_metadata
@@ -217,6 +240,20 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
 
     result = read_ui_runtime_snapshot([], read, fast=fast)
     expected_identity = result.pop('_panel_identity')
+    if include_target_snapshot:
+        from .spirit_artifact import read_spirit_artifact_item_runtime
+
+        target_started = time.monotonic()
+        target = read_spirit_artifact_item_runtime(result['item_id'])
+        timings['target_snapshot'] = time.monotonic() - target_started
+        if any(target.get(key) != result.get(key) for key in
+               ('pid', 'process_start_ticks', 'ware_id', 'item_id')):
+            raise FanxiuRuntimeMemoryError('高级洗炼列表与本体目标或游戏进程不一致')
+        # Preserve both committed and pending maps verbatim: an existing preview
+        # is a legitimate observation, not permission to save or consume it.
+        if not all(isinstance(target.get(key), list) for key in ('effects', 'pending_effects')):
+            raise FanxiuRuntimeMemoryError('高级洗炼本体属性或候选投影不完整')
+        result['target_snapshot'] = target
     guard_started = time.monotonic()
     current_identity = read_ui_runtime_snapshot(
         [], lambda ctx: _read_advanced_panel_identity(ctx, supported_wares), fast=fast,
@@ -227,6 +264,6 @@ def read_spirit_artifact_advanced_items(*, fast: bool = False) -> dict[str, Any]
     total = time.monotonic() - started
     # 包括公共观察器建 context/恢复及末尾身份复核，不误算成配置表解析。
     timings['observer_and_postcheck'] = max(0.0, total - sum(
-        timings.get(key, 0.0) for key in ('lang', 'supported_wares', 'window_config', 'metadata', 'inventory')))
+        timings.get(key, 0.0) for key in ('lang', 'supported_wares', 'window_config', 'metadata', 'inventory', 'target_snapshot')))
     return {**result, 'timings': {**timings, 'total': total},
             'observation_failures': read_failures}

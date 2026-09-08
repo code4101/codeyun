@@ -27,7 +27,7 @@ def plan_breakthrough_preparation(
     from ...catalog.spirit_artifact_wash_rules import BASE_ATTRIBUTE_PRIORITY
     if b_preference is None:
         b_preference = tuple(code for code in BASE_ATTRIBUTE_PRIORITY if code not in a_codes)
-    if (len(current) != 6 or len({e.code for e in current}) != 6 or len(a_codes) != 4
+    if (len(current) not in (5, 6) or len({e.code for e in current}) != len(current) or len(a_codes) != 4
             or type(client_can_breakthrough) is not bool or type(is_break) is not bool
             or type(required_red_count) is not int or not 1 <= required_red_count <= 6
             or len(set(b_preference)) != len(b_preference) or a_codes & set(b_preference)):

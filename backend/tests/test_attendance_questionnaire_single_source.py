@@ -51,6 +51,29 @@ def test_questionnaire_mutation_uses_independent_attendance_database(monkeypatch
     assert document["rows"][0][6] == "测试学员"
 
 
+def test_public_status_update_preserves_neighbor_and_rebinds_entities(monkeypatch):
+    columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
+    document = attendance._normalize_attendance_wjx_sheet_document({
+        "columns": columns, "rows": [["751"], ["750"]],
+        "grid_rows": [columns], "data_start_row": 1,
+    })
+
+    def mutate(mutator):
+        result, changed = mutator(document)
+        assert changed
+        return SimpleNamespace(document_json=result)
+
+    monkeypatch.setattr(attendance, "_mutate_independent_attendance_wjx_sheet", mutate)
+    result = attendance.update_independent_attendance_wjx_status(
+        seq=750, process_status="已处理：账号已关联",
+    ).document_json
+    index = columns.index("处理状态")
+    assert result["rows"][0][index] == ""
+    assert result["rows"][1][index] == "已处理：账号已关联"
+    assert result["grid_rows"][2][index] == "已处理：账号已关联"
+    assert result["entity_cells"]["row_wjx_750"][result["column_ids"][index]]["value"] == "已处理：账号已关联"
+
+
 def test_questionnaire_normalization_rebuilds_row_entities_from_sequence():
     columns = list(attendance.ATTENDANCE_WJX_DATA_COLUMNS)
     status_index = columns.index("处理状态")
