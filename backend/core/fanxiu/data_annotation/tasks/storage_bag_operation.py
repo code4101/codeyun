@@ -17,6 +17,7 @@ STORAGE_BAG_SCENE = 525
 QUICK_OPERATION_SCENE = 526
 REWARD_SCENE = 227
 DANYAO_REWARD_SCENE = 351
+USE_RESULT_SCENE = 544
 EMPTY_OPERATION_TOAST = "暂无可快捷操作的选项"
 NO_REWARD_STABLE_SECONDS = 10.0
 NO_REWARD_STABLE_POLLS = 3
@@ -166,7 +167,7 @@ def _finish_reward_chain(context: Any, *, deadline: float):
     stable_scene: int | None = None
     while time.monotonic() < deadline:
         landed, _score, frame = yield from context.current_scene(
-            (REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
+            (USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
             update=True,
             label="储物袋_操作：识别奖励链",
         )
@@ -175,7 +176,13 @@ def _finish_reward_chain(context: Any, *, deadline: float):
             return "empty_toast"
         if _quick_operation_panel_visible(context, landed, frame):
             landed = QUICK_OPERATION_SCENE
-        if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE):
+        # #227's shared continue footer can also match a #544 use-result
+        # overlay. Prefer the latter's two-part identity on the same frame;
+        # wait_click will independently guard the selected scene before input.
+        if all(context.shape_matches(USE_RESULT_SCENE, title, frame_data_url=frame)
+               is not None for title in ("昆仑结果背景", "点击屏幕继续标识")):
+            landed = USE_RESULT_SCENE
+        if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE, USE_RESULT_SCENE):
             break
         if landed in (STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE):
             now = time.monotonic()
@@ -204,8 +211,8 @@ def _finish_reward_chain(context: Any, *, deadline: float):
         raise TimeoutError(
             "储物袋_操作：执行后未进入奖励链，也未形成稳定 #526 无奖励固定点"
         )
-    if landed == REWARD_SCENE:
-        yield from context.wait_click(REWARD_SCENE, "继续", timeout=8.0)
+    if landed in (REWARD_SCENE, USE_RESULT_SCENE):
+        yield from context.wait_click(landed, "继续", timeout=8.0)
         landed, _frame = yield from _observe_known_scene(
             context,
             (DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE),

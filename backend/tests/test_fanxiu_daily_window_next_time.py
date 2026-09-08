@@ -14,6 +14,35 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
 
 
 @pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        ("2026-09-08 12:59:59", "2026-09-08 13:00:00"),
+        ("2026-09-08 13:00:00", "2026-09-09 00:00:00"),
+        ("2026-09-08 21:30:00", "2026-09-09 00:00:00"),
+        ("2026-09-09 00:00:00", "2026-09-09 13:00:00"),
+        ("2026-09-13 13:00:00", "2026-09-14 13:00:00"),
+        ("2026-09-13 21:30:00", "2026-09-14 13:00:00"),
+        ("2026-09-14 00:00:00", "2026-09-14 13:00:00"),
+    ],
+)
+def test_mojie_followup_uses_next_midnight_after_noon(current, expected):
+    from backend.core.fanxiu.data_annotation.tasks.daily_foundation import DailyFoundationTaskMixin
+
+    runner = DailyFoundationTaskMixin()
+    assert runner._next_mojie_raid_followup_time_text(datetime.fromisoformat(current)) == expected
+
+
+@pytest.mark.parametrize("day", [9, 10, 11, 12, 13])
+def test_mojie_week_completion_starts_thursday_and_resumes_monday_noon(day):
+    from backend.core.fanxiu.data_annotation.tasks.daily_foundation import DailyFoundationTaskMixin
+
+    runner = DailyFoundationTaskMixin()
+    current = datetime(2026, 9, day)
+    assert runner._mojie_raid_completion_window_open(current) is (day >= 10)
+    assert runner._next_mojie_raid_week_start_time_text(current) == "2026-09-14 13:00:00"
+
+
+@pytest.mark.parametrize(
     ("task_id", "expected"),
     [
         ("daily-lundao-seat", "2026-08-14 15:30:00"),

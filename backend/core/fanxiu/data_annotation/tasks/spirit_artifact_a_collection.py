@@ -152,6 +152,7 @@ def run_a_collection(
         current = save_pending(current) if accept_existing else current
 
     consumed = 0
+    prior_catalog = None
     with gui.advanced_scroll_session(f'a-collection-{time.time_ns()}', scroll_profile=scroll_profile):
         while True:
             # 完整业务候选优先于全局相似结果页，活动干扰走既有守护。
@@ -187,8 +188,9 @@ def run_a_collection(
                         'target_cleanse_id': plan.target_cleanse_id,
                         'reason': plan.reason,
                         'desired_lock_ids': sorted(plan.desired_lock_ids)})
-                gui.set_locks(plan.desired_lock_ids, target_item_id=target.item_id)
-                current = read_spirit_artifact_wash_observation(target)
+                current = gui.set_locks(plan.desired_lock_ids, target_item_id=target.item_id)
+                from ...instrumentation.spirit_artifact_wash_observation import validate_spirit_artifact_wash_snapshot
+                validate_spirit_artifact_wash_snapshot(current, target, verify_ui=True)
                 if {e['cleanse_id'] for e in current['effects'] if e['locked']} != set(plan.desired_lock_ids):
                     raise RuntimeError('切锁后最终锁状态与计划不一致，停止')
                 record({'record_type': 'locks_updated', 'probability_sample': False,
@@ -198,12 +200,14 @@ def run_a_collection(
             material = 14000006 if plan.action == 'yinxian' else 14000007
             iteration_started = time.monotonic()
             # preview 校验当前实例、库存、未锁项、道具确认文案；窗口路线在本程序内复用。
-            preview = gui.preview_advanced_item(material, fast_observation=fast_observation)
+            preview = gui.preview_advanced_item(material, fast_observation=fast_observation,
+                prior_catalog=prior_catalog, expected_snapshot=current)
             if preview['target_item_id'] != target.item_id:
                 raise RuntimeError('使用道具确认目标与培养目标不一致')
             # 复用 preview 已读取的确认页事实，不追加 Runtime；不能等消耗后
             # 才发现打开列表之前已有外部保存/切锁，导致本轮计划过期。
             verify_a_collection_preview(current, preview['observation'])
+            prior_catalog = preview['catalog']
             preview_seconds = time.monotonic() - iteration_started
             if time.time() >= stop_at - 30:
                 gui.cancel()

@@ -52,6 +52,10 @@ class _MailPolicyClassificationError(RuntimeError):
         self.unknown_items = list(unknown_items or [])
 
 
+class _MailWindowAmbiguous(RuntimeError):
+    """Identical title/time rows cannot establish a unique mail identity."""
+
+
 class MailTaskMixin:
     # 邮件详情偶尔会在服务器结算或连续翻页后延迟二十余秒才稳定为
     # #122/#123。12 秒会把仍在加载的真实详情误判成 unknown。
@@ -665,7 +669,12 @@ class MailTaskMixin:
             if candidates:
                 strongest = max(item[0] for item in candidates)
                 strongest_candidates = [item for item in candidates if item[0] == strongest]
-                _count, offset, _evidence = min(strongest_candidates, key=lambda item: item[1])
+                if len(strongest_candidates) != 1:
+                    raise _MailWindowAmbiguous(
+                        "邮件_选择性领取：同名同时间窗口存在多个等强序列位置，禁止猜测最小偏移；"
+                        f"offsets={[item[1] for item in strongest_candidates]}"
+                    )
+                _count, offset, _evidence = strongest_candidates[0]
                 anchor_count = strongest
             else:
                 # A controlled scroll gives us a continuity boundary.  OCR can
@@ -781,6 +790,8 @@ class MailTaskMixin:
         known_top = True
         scroll_calls = 0
         wrong_detail_recoveries: dict[str, int] = {}
+        ambiguity_deleted = 0
+        ambiguity_delete_batches = 0
         while len(claimed_ids) < len(target_by_id):
             self._raise_if_stopped(stop_event)
             window: dict[str, Any] | None = None
@@ -802,6 +813,9 @@ class MailTaskMixin:
                         known_top=known_top,
                     )
                     break
+                except _MailWindowAmbiguous as exc:
+                    last_mapping_error = exc
+                    break
                 except RuntimeError as exc:
                     last_mapping_error = exc
                     if ocr_attempt >= 3:
@@ -814,6 +828,30 @@ class MailTaskMixin:
                     yield from context.wait_action_settle(0.6 if known_top else 1.0)
                     context.clear_frame()
             if window is None:
+                if (
+                    isinstance(last_mapping_error, _MailWindowAmbiguous)
+                    and cleanup_after_claim
+                    and self._deletable_runtime_mail_garbage(snapshot)
+                ):
+                    # Remove only already-proven garbage through the normal
+                    # protected-mail deletion contract, then establish a new
+                    # top-of-list anchor. Never resolve a tie by clicking.
+                    self._log("info", f"{last_mapping_error}；清理已领邮件后重新从顶部定位")
+                    cleanup = yield from self._delete_read_mail_until_clean(
+                        context, view121, stop_event,
+                        reason="同名窗口歧义清理已领邮件",
+                    )
+                    ambiguity_deleted += int(cleanup["deleted_count"])
+                    ambiguity_delete_batches += int(cleanup["batch_count"])
+                    snapshot = cleanup["snapshot"]
+                    yield from self._leave_mail_scene_to_world(
+                        ctx, stop_event, context, 121, label="邮件_选择性领取",
+                    )
+                    yield from self._open_mail_selective_claim_entry(context)
+                    previous_offset = -1
+                    known_top = True
+                    context.clear_frame()
+                    continue
                 raise last_mapping_error or RuntimeError("邮件_选择性领取：首屏映射失败")
             mappings = list(window["mappings"])
             visible_targets = [
@@ -1038,6 +1076,9 @@ class MailTaskMixin:
                 reason="批量领取完成后统一删除",
             )
             final_snapshot = cleanup["snapshot"]
+            cleanup["before_count"] += ambiguity_deleted
+            cleanup["deleted_count"] += ambiguity_deleted
+            cleanup["batch_count"] += ambiguity_delete_batches
         else:
             final_snapshot = self._read_complete_precise_mail_snapshot(
                 stop_event,

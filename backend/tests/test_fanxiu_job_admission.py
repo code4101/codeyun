@@ -28,6 +28,8 @@ class _Runner(DailyFoundationTaskMixin):
 @pytest.mark.parametrize(
     ("method_name", "task_id", "now", "expected_next_time"),
     [
+        ("daily_mojie_raid_admission", "legacy-daily-mojie-raid", datetime(2026, 9, 14, 0, 0, 0), "2026-09-14 13:00:00"),
+        ("daily_mojie_raid_admission", "legacy-daily-mojie-raid", datetime(2026, 9, 14, 12, 59, 59), "2026-09-14 13:00:00"),
         ("daily_dongtian_admission", "legacy-daily-dongtian", datetime(2026, 7, 29, 13, 59, 59), "2026-07-29 14:00:00"),
         ("daily_dongtian_admission", "legacy-daily-dongtian", datetime(2026, 7, 29, 22, 0, 0), "2026-07-30 14:00:00"),
         ("daily_lingmai_clear_admission", "legacy-daily-lingmai-clear", datetime(2026, 7, 29, 22, 0, 0), "2026-07-30 21:30:00"),

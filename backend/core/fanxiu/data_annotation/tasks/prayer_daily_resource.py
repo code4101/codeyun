@@ -46,6 +46,41 @@ def fragment_center(fragment: dict[str, Any]) -> tuple[float, float]:
     )
 
 
+def prayer_entry_from_tokens(tokens: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
+    """Resolve a four-character prayer label when OCR merged adjacent menu columns.
+
+    Use actual character boxes, never the merged line's center. The observed
+    愿→原 confusion is accepted only with the complete four-character label
+    and a contiguous same-line glyph sequence; the destination is still checked.
+    """
+    lines: dict[str, list[dict[str, Any]]] = {}
+    for token in tokens:
+        if token.get("parent_line_id"):
+            lines.setdefault(str(token["parent_line_id"]), []).append(token)
+    candidates = []
+    for line in lines.values():
+        line.sort(key=lambda item: float(item.get("x") or 0))
+        for end in range(4, len(line) + 1):
+            label = line[end - 4:end]
+            text = "".join(_normalized_ocr_text(item.get("text")) for item in label)
+            if len(text) != 4 or not re.fullmatch(r"..祈[愿原]", text):
+                continue
+            if any(len(_normalized_ocr_text(item.get("text"))) != 1 for item in label):
+                continue
+            if any(
+                float(b["x"]) - float(a["x"]) - float(a["w"]) > float(a["h"]) * 0.5
+                for a, b in zip(label, label[1:])
+            ):
+                continue
+            x = min(float(item["x"]) for item in label)
+            y = min(float(item["y"]) for item in label)
+            right = max(float(item["x"]) + float(item["w"]) for item in label)
+            bottom = max(float(item["y"]) + float(item["h"]) for item in label)
+            if 0 <= x < 250 and 0 <= y < 1200 and right > x and bottom > y:
+                candidates.append(dict(text=text, x=x, y=y, w=right-x, h=bottom-y))
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def prayer_entry_action_point(fragment: dict[str, Any]) -> tuple[float, float]:
     """Return the visual icon center immediately above the prayer OCR label."""
 
@@ -621,6 +656,10 @@ class PrayerDailyResourceTaskMixin:
                 self._raise_if_stopped(stop_event)
                 world_frame = context.cur_frame(update=True)
                 entry = prayer_entry_fragment(context.ocr_fragments(world_frame))
+                if entry is None:
+                    entry = prayer_entry_from_tokens(context.ocr_tokens_in_shapes(
+                        34, ("左侧菜单",), frame_data_url=world_frame,
+                    ))
                 if entry is not None:
                     break
                 yield from context.wait_action_settle(0.5)

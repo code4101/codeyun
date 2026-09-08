@@ -594,7 +594,7 @@ def default_kernel_scheduler_tasks(
             "daily_mojie_raid",
             "日常_奇袭魔界",
             description="每日",
-            initial_times=("10:00",),
+            initial_times=("13:00",),
             initial_weekdays=(0,),
             dispatch_order=30,
         ),

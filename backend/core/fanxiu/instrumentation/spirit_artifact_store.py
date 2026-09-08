@@ -76,7 +76,7 @@ def project_spirit_artifact_part_update(
 ) -> dict[str, Any]:
     """纯投影局部更新：只覆盖同一装配实例，保留全馆原观测时间和其他行。
 
-    part 为调用方已取得的新鲜 enriched Runtime 部件，必须包含六条完整词条、
+    part 为调用方已取得的新鲜 enriched Runtime 部件，必须包含五或六条完整词条、
     pid/start、无候选以及明确 is_break；不在此读取游戏或猜测当前装配。
     observed_at 是这次部件观察时间，不能用写入时间冒充。原快照须已绑定该
     ware/part/item_id。换本体须显式给出预期旧 UID，以及部件观察后取得的
@@ -97,8 +97,10 @@ def project_spirit_artifact_part_update(
     target = SpiritArtifactWashTarget(str(part.get('item_id') or ''), part['ware_id'], part['part'],
                                       (part['pid'], part['process_start_ticks']), part['base_id'])
     validate_spirit_artifact_wash_snapshot(part, target, verify_ui=False)
-    if type(part.get('is_break')) is not bool or part['pending_effects'] or len(part['effects']) != 6:
-        raise ValueError('局部同步要求明确突破状态、六条属性且无候选')
+    if type(part.get('is_break')) is not bool or part['pending_effects'] or len(part['effects']) not in (5, 6):
+        raise ValueError('局部同步要求明确突破状态、五或六条属性且无候选')
+    if type(part.get('grade')) is int and len(part['effects']) != (6 if part['grade'] >= 6 else 5):
+        raise ValueError('局部同步属性数量与当前阶数不符')
     for effect in part['effects']:
         if (not (effect.get('code') or effect.get('type') == 3)
                 or not effect.get('name') or 'affix' not in effect

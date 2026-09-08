@@ -62,6 +62,26 @@ def use_visible_upgrade_materials(context, execute, *, scene_id=717,
     raise RuntimeError('五批升级后仍未用完，保留现场')
 
 
+def select_artifact_tab(context, execute, label, *, optional=False):
+    """页签数量会改变布局，按当前文字定位；升品缺席是正常能力差异。"""
+    from ..ocr_spatial import find_text_matches, select_text_match
+    band = context.shape_box(667, '升阶页签')
+    for attempt in range(2):
+        tokens = [t for t in context.full_frame_ocr_tokens(update=True)
+                  if band['y'] <= t['y'] + t['h'] / 2 <= band['y'] + band['h']]
+        def find(text):
+            return select_text_match(find_text_matches(tokens, text), text)
+        match = find(label)
+        if match is not None:
+            context.click_frame_point(667, *match.point())
+            execute(context.wait_action_settle(1.2))
+            return True
+        if optional and all(find(text) is not None for text in ('装配', '升阶')):
+            return False
+        execute(context.wait_action_settle(.5))
+    raise RuntimeError(f'灵器页签 {label} 未识别，保留现场')
+
+
 def finish_visible_artifact(context, execute):
     """从装配页开始：本灵器升阶用完，再悟境用完；无 Runtime 读取。"""
     results = {}
@@ -69,18 +89,23 @@ def finish_visible_artifact(context, execute):
                               (731, '升品页签', '执行悟境')):
         batches = []
         for _ in range(7):
-            context.click_shape_center(667, tab)
-            execute(context.wait_action_settle(1.5))
+            if not select_artifact_tab(context, execute, '升阶' if page == 717 else '升品',
+                                       optional=page == 731):
+                results[tab] = {'status': 'unavailable'}
+                break
+            # 页签就绪后再读0，避免旧页的0/1被当成本页已完成。
+            landed = execute(context.wait_scene([page], wait=5)).scene_id
+            if landed != page:
+                raise RuntimeError(f'切入升级页 #{page} 时遇到 #{landed}，保留现场')
             result = use_visible_upgrade_materials(context, execute,
                 scene_id=page, action_shape=button)
             batches.append(result)
-            context.click_shape_center(page, '装配')
-            execute(context.wait_action_settle(1.2))
+            select_artifact_tab(context, execute, '装配')
             if result['clicks'] == 0:
                 break
         else:
             raise RuntimeError('灵器重新选中七次仍未用完，保留现场')
-        results[tab] = batches
+        results.setdefault(tab, batches)
     return results
 
 

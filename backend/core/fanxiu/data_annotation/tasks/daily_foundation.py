@@ -4508,8 +4508,15 @@ class DailyFoundationTaskMixin:
         )
 
     def daily_mojie_raid_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        """Sunday's 22:00 closure skips all navigation and resumes next Monday."""
+        """Skip the weekly closed interval; Monday's first run is at 13:00."""
         now = _behavior_tree_executor._now()
+        if now.weekday() == 0 and now.time() < time_cls(13, 0):
+            return self._persist_admission_decision(dict(payload or {}), {
+                "result": "success",
+                "message": "日常_奇袭魔界：周一首次运行时间为 13:00，未执行游戏操作",
+                "next_time": now.replace(hour=13, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S"),
+                "current_scene": None,
+            })
         if now.weekday() != 6 or now.time() < time_cls(22, 0):
             return None
         return self._persist_admission_decision(dict(payload or {}), {
@@ -5074,7 +5081,7 @@ class DailyFoundationTaskMixin:
             days_until_next_monday = 7
         next_monday = now + timedelta(days=days_until_next_monday)
         return next_monday.replace(
-            hour=10,
+            hour=13,
             minute=0,
             second=0,
             microsecond=0,
@@ -5110,24 +5117,20 @@ class DailyFoundationTaskMixin:
         self,
         now: datetime | None = None,
     ) -> str:
-        """Check at 13:00/21:30; Sunday's final check closes the weekly cycle."""
+        """Check at 13:00 and midnight, skipping Monday midnight."""
 
         current = now or _behavior_tree_executor._now()
         if self._mojie_raid_settlement_only(current):
             return self._next_mojie_raid_week_start_time_text(current)
-        for hour, minute in ((13, 0), (21, 30)):
-            candidate = current.replace(
-                hour=hour,
-                minute=minute,
-                second=0,
-                microsecond=0,
-            )
-            if candidate > current:
-                return candidate.strftime("%Y-%m-%d %H:%M:%S")
+        candidate = current.replace(hour=13, minute=0, second=0, microsecond=0)
+        if candidate > current:
+            return candidate.strftime("%Y-%m-%d %H:%M:%S")
+        if current.weekday() == 6:
+            return self._next_mojie_raid_week_start_time_text(current)
         return (
             current + timedelta(days=1)
         ).replace(
-            hour=13,
+            hour=0,
             minute=0,
             second=0,
             microsecond=0,

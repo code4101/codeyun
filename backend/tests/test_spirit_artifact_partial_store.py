@@ -49,6 +49,16 @@ def test_partial_save_cas_does_not_overwrite_concurrent_update(tmp_path):
         assert saved["runtime_partial_updated_at"] == 20.
 
 
+def test_five_slot_part_sync_preserves_all_current_attributes():
+    snapshot, part = data()
+    part.update(grade=3, is_break=False, effects=part['effects'][:5])
+    updated = project_spirit_artifact_part_update(snapshot, part, observed_at=20.)
+    row = updated['artifacts'][0]['rows'][0]
+    assert row['rank'] == 3
+    assert len(row['runtime_effects']) == 5
+    assert updated['artifacts'][0]['rows'][1] == {'untouched': True}
+
+
 def replacement_data():
     snapshot, part = data()
     part = {**part, 'item_id': 'new', 'is_break': False, 'grade': 6}
