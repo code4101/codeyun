@@ -480,7 +480,8 @@ class MumuProcessMemory:
         Pure lookup equivalence is tested; live Runtime speedup awaits sampling.
         """
         regions = self.regions
-        if regions is not self._region_index_source or not isinstance(regions, tuple):
+        # Existing long-lived memory instances may predate the index fields.
+        if regions is not getattr(self, '_region_index_source', None) or not isinstance(regions, tuple):
             ordered = tuple(sorted((r for r in regions if "r" in r.permissions),
                                    key=lambda r: r.start))
             disjoint = (all(r.start < r.end for r in ordered)
@@ -1031,14 +1032,15 @@ class LuaJitReader:
                 f"Lua table 结构越界：0x{int(address):x}"
             )
         result: dict[int, Any] = {}
-        # Lua arrays are zero-based in this reader while integer keys are
-        # one-based in Lua table semantics.
-        array_keys = {key for key in wanted if 1 <= key <= array_size}
+        # LuaJIT's array storage contains key 0 at offset 0 (as table() and
+        # indexed_list_items() also expose). Integer key k is array[k], not
+        # array[k-1]; asize itself belongs to the hash side, if present.
+        array_keys = {key for key in wanted if 0 <= key < array_size}
         if array_keys:
             array_address = struct.unpack_from("<Q", header, 16)[0]
             for key in array_keys:
                 value_raw = struct.unpack(
-                    "<Q", self.memory.read(array_address + (key - 1) * 8, 8)
+                    "<Q", self.memory.read(array_address + key * 8, 8)
                 )[0]
                 if self.tag(value_raw) != _LUA_NIL_TAG:
                     result[key] = self.value(value_raw)

@@ -798,6 +798,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         OnClickItem 在库存为零时会打开获取途径并发出洗炼请求，因此必须
         在点击前拒绝零库存。其它品质/突破/词条条件由客户端检查；若只出现
         条件不足提示则等待确认失败，保留现场，不继续任何消耗动作。
+        同次确认场景的已验证帧复用于说明OCR；分段计时随preview返回。
+        本次帧复用改动尚待真实连续使用验收，不跨动作复用画面。
         """
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
         from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import advanced_item_confirmation_names
@@ -837,6 +839,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         scroll_key, scroll_route = None, ()
         memory = self._advanced_scroll_memory
         locate_started = time.monotonic()
+        locator_detail = {}
         if memory is None:
             observed = self.execute(self.context.wait_scene([self.assets.advanced_items_scene_id], wait=10))
             if observed.scene_id != self.assets.advanced_items_scene_id:
@@ -852,18 +855,31 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             from .spirit_artifact_advanced_scroll import locate_advanced_item_with_experience
             match, scroll_key, scroll_route = locate_advanced_item_with_experience(
                 self.context, self.execute, scene_id=self.assets.advanced_items_scene_id,
-                catalog=catalog, item_id=item_id, memory=memory)
+                catalog=catalog, item_id=item_id, memory=memory, diagnostics=locator_detail)
             if scroll_key is not None:
                 memory.forget(scroll_key)  # 确认失败或中断时，不留成功经验。
+            click_started = time.monotonic()
             self.context.click_frame_point(self.assets.advanced_items_scene_id, *match.point())
-        self.execute(self.context.wait_scene([self.assets.advanced_confirm_scene_id], wait=10))
-        self._require_scene(self.assets.advanced_confirm_scene_id, phase='preview_advanced')
-        frame = self.context.cur_frame(update=True)
+            timings['item_click'] = time.monotonic() - click_started
+        timings['locate_and_click'] = time.monotonic() - locate_started
+        timings['locator'] = locator_detail
+        confirm_started = time.monotonic()
+        confirmed = self.execute(self.context.wait_scene([self.assets.advanced_confirm_scene_id], wait=10))
+        if confirmed.scene_id != self.assets.advanced_confirm_scene_id:
+            raise SpiritArtifactCleanseBlocked('使用道具确认场景不符',
+                code=SpiritArtifactCleanseErrorCode.SCENE_MISMATCH, phase='preview_advanced',
+                evidence={'expected': self.assets.advanced_confirm_scene_id, 'current': confirmed.scene_id})
+        # No intervening action: scene identity and instruction OCR use the
+        # same validated frame. Do not take two more screenshots to recheck it.
+        frame = confirmed.frame_data_url or self.context.cur_frame(update=True)
+        timings['confirm_wait'] = time.monotonic() - confirm_started
+        confirm_ocr_started = time.monotonic()
         tokens = self.context.ocr_tokens_in_shapes(self.assets.advanced_confirm_scene_id,
                                                   ['使用道具说明'], frame_data_url=frame)
         text = ''.join(token['text'] for token in tokens).replace('·', '').replace(' ', '')
         if not any(candidate in text for candidate in advanced_item_confirmation_names(item)):
             raise SpiritArtifactCleanseBlocked('使用确认未包含所选道具名称', phase='preview_advanced')
+        timings['confirm_ocr'] = time.monotonic() - confirm_ocr_started
         timings['locate_confirm'] = time.monotonic() - locate_started
         ui_started = time.monotonic()
         after = observe()

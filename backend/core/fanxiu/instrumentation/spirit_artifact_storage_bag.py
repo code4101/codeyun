@@ -105,6 +105,7 @@ def resolve_spirit_artifact_bag_source_coverage(bag, metadata, *, effect_text_sn
             'unresolved_gift_reward_ids': gifts,
             'verified_random_gift_ids': random_gifts,
             'choice_sources_complete': not unknown,
+            'stable_sources_complete': not unknown and not gifts,
             'source_type_observed_at': metadata['captured_at']}
 
 
@@ -174,6 +175,23 @@ def sync_spirit_artifact_storage_bag(session: Session) -> dict[str, Any]:
         runtime, load_fanxiu_item_runtime_index(rebuild_missing=False)["cards_by_id"],
         hall["artifacts"], (previous or hall)["storage_bag_items"], captured_at=captured_at,
     )
+    # 页面GET不读游戏；显式同步时一次批查目录未知项，再一次批查礼包效果。
+    # 不把名字缺失等同来源未知，也不把type=2笼统当随机。
+    unresolved = payload.get('unresolved_item_ids') or []
+    if unresolved:
+        from .item_config import read_item_metadata_runtime, read_item_text_runtime
+        metadata = read_item_metadata_runtime(unresolved, force=True)
+        effect_ids = sorted({r['runtime_effect_description_id']
+            for r in metadata['items_by_id'].values()
+            if r.get('item_type_id') == 2 and r.get('runtime_effect_description_id')})
+        texts = read_item_text_runtime(effect_ids) if effect_ids else None
+        payload = resolve_spirit_artifact_bag_source_coverage(
+            payload, metadata, effect_text_snapshot=texts)
+        payload['source_metadata_evidence'] = metadata
+        payload['source_effect_text_evidence'] = texts
+    else:
+        payload.update(choice_sources_complete=True, stable_sources_complete=True,
+                       unresolved_choice_source_ids=[], unresolved_gift_reward_ids=[])
     row = session.exec(select(FanxiuPacketBusinessRecord).where(
         FanxiuPacketBusinessRecord.domain == DOMAIN,
         FanxiuPacketBusinessRecord.record_key == "current",

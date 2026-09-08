@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -137,13 +138,17 @@ def locate_advanced_item_with_experience(
     context: Any, execute: Callable[[Any], Any], *, scene_id: int,
     catalog: Mapping[str, Any], item_id: int, memory: AdvancedScrollMemory,
     max_scrolls_per_direction: int = 10,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[Any, AdvancedScrollKey | None, tuple[str, ...]]:
     """只定位、不点击；复用正式 Shape 拖动和区域 OCR，不读 Runtime。
 
     返回 match 仅可立即用于点击；key/route 在确认页身份验证后才可 remember。
     每次拖动后须仍为列表；错误页立即停止，不进入双向搜索。身份使用
     wait_scene 的真实返回值及同帧 OCR；全局层命中不等于目标列表命中。
+    diagnostics 可接收本次定位分段耗时、路线命中与拖动次数，不影响返回协议。
+    缓存路线末次场景验证帧直接用于OCR，不在无动作间重复等待；尚待真实验收。
     """
+    started = time.monotonic()
     shape = context.shape(scene_id, '道具列表')
     names = {row['item']: str(row['name'])
              for row in catalog['items']}
@@ -152,21 +157,48 @@ def locate_advanced_item_with_experience(
     profile = memory.profile
     layout = advanced_scroll_layout(catalog, shape.raw, profile=profile)
     last_frame = None
+    detail = diagnostics if diagnostics is not None else {}
+    detail.clear()
+    detail.update({key: 0.0 for key in ('scene_wait_seconds', 'ocr_seconds',
+        'title_match_seconds', 'cached_drag_seconds', 'cached_settle_seconds',
+        'search_scroll_seconds')})
+    detail.update(profile=asdict(profile), scene_checks=0, ocr_calls=0,
+                  cached_drags=0, search_drags=0, cache_route_found=False,
+                  cache_failed=False)
+
+    def elapsed(key, since):
+        detail[key] = detail.get(key, 0.0) + time.monotonic() - since
+
+    def complete(match, key, route, mode):
+        detail.update(total_seconds=time.monotonic() - started, mode=mode,
+                      route=list(route), drag_count=len(route))
+        return match, key, route
 
     def require_list(phase):
         nonlocal last_frame
+        at = time.monotonic()
+        detail['scene_checks'] += 1
         observed = execute(context.wait_scene([scene_id], wait=10))
         last_frame = observed.frame_data_url or context.cur_frame(update=True)
+        elapsed('scene_wait_seconds', at)
         if observed.scene_id != scene_id:
             raise AdvancedItemLocationError(context, expected=scene_id,
                 observed=observed.scene_id, frame=last_frame, phase=phase,
                 problem_code='advanced_list.scene_mismatch')
         return last_frame
 
+    def tokens_from(frame):
+        at = time.monotonic()
+        tokens = context.ocr_tokens_in_shapes(scene_id, ['道具列表'], frame_data_url=frame)
+        detail['ocr_calls'] += 1
+        elapsed('ocr_seconds', at)
+        return tokens
+
     def observe_start():
         frame = require_list('locate_start')
-        tokens = context.ocr_tokens_in_shapes(scene_id, ['道具列表'], frame_data_url=frame)
+        tokens = tokens_from(frame)
         visible, target = [], None
+        at = time.monotonic()
         for current_id, name in names.items():
             match = find_advanced_item_title(tokens, name)
             if match is not None:
@@ -174,40 +206,56 @@ def locate_advanced_item_with_experience(
                 visible.append((current_id, round(x / 4), round(y / 4)))
                 if current_id == item_id:
                     target = match
+        elapsed('title_match_seconds', at)
         return target, tuple(sorted(visible))
 
-    def find_target():
-        frame = require_list('locate_after_scroll')
-        tokens = context.ocr_tokens_in_shapes(scene_id, ['道具列表'], frame_data_url=frame)
-        return find_advanced_item_title(tokens, names[item_id])
+    def find_target(frame=None):
+        if frame is None:
+            frame = require_list('locate_after_scroll')
+        tokens = tokens_from(frame)
+        at = time.monotonic()
+        match = find_advanced_item_title(tokens, names[item_id])
+        elapsed('title_match_seconds', at)
+        return match
 
     match, start = observe_start()
     key = AdvancedScrollKey(layout, start, item_id) if start else None
     traversed: list[str] = []
     if match is not None:
-        return match, key, ()
+        return complete(match, key, (), 'visible')
     route = memory.route(key) if key is not None else None
+    detail['cache_route_found'] = route is not None
     if route is not None:
         # 缓存的是实际尝试过的拖动序列（含到边界的最后一次），不是部件下标。
         for direction in route:
+            at = time.monotonic()
+            detail['cached_drags'] += 1
             context.drag_shape_content(shape, direction=direction,
                                        ratio=profile.ratio, duration=profile.duration)
+            elapsed('cached_drag_seconds', at)
+            at = time.monotonic()
             execute(context.wait_action_settle(profile.settle_seconds))
+            elapsed('cached_settle_seconds', at)
             traversed.append(direction)
             require_list('cached_scroll')
-        match = find_target()
+        # No action since the last list guard: use exactly its verified frame.
+        match = find_target(frame=last_frame)
         if match is not None:
-            return match, key, tuple(traversed)
+            return complete(match, key, tuple(traversed), 'cache')
+        detail['cache_failed'] = True
         memory.forget(key)
 
     for direction in ('down', 'up'):
         for _ in range(max(0, min(10, max_scrolls_per_direction))):
+            at = time.monotonic()
+            detail['search_drags'] += 1
             changed = execute(context.scroll_shape_content(shape, direction=direction,
                 ratio=profile.ratio, duration=profile.duration, settle_seconds=profile.settle_seconds))
+            elapsed('search_scroll_seconds', at)
             traversed.append(direction)
             match = find_target()
             if match is not None:
-                return match, key, tuple(traversed)
+                return complete(match, key, tuple(traversed), 'search')
             if not changed:
                 break
     if key is not None:

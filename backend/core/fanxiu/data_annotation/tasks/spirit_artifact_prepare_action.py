@@ -92,6 +92,22 @@ def prepare_owned_spirit_artifact_to_six(
             raise RuntimeError(f'初始升阶预期{scenes}，实际#{result.scene_id}')
         return result.scene_id
 
+    def leave_result_once(scene, allowed):
+        """新鲜匹配后只点击一次；动画滞留仅观察，避免重复落点穿透。"""
+        fresh = wait(*allowed)
+        if fresh != scene:
+            return fresh
+        record('result_continue_attempt', scene_id=scene)
+        context.click_shape_center(scene, '点击屏幕继续')
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            landed = wait(*allowed)
+            if landed != scene:
+                record('result_left', scene_id=scene, landed_scene_id=landed)
+                return landed
+            time.sleep(.5)
+        raise RuntimeError(f'结果页#{scene}点击一次后未离开，不重复点击')
+
     def observe():
         state = read_spirit_artifact_owned_runtime([target.ware_id])
         inventory, equipped = state['inventory'], state['equipped']
@@ -110,7 +126,31 @@ def prepare_owned_spirit_artifact_to_six(
             raise RuntimeError('升阶页灵器/进程错配')
         return grade
 
-    scene = wait(666, 667, 717, 720, 721, 718, 719)
+    def select_grade_target(scene):
+        if scene in (668, 714):
+            context.click_shape_center(scene, '装配')
+            scene = wait(667)
+        if scene == 666:
+            gui.select_artifact(target.ware_id, artifact_name)
+            scene = wait(667)
+        if scene == 667:
+            context.click_shape_center(667, '升阶页签')
+            wait(717)
+        ui = grade_identity()
+        matches = [r for r in ui['parts'] if r['part'] == target.part and r['item_id'] == target.item_id]
+        if len(matches) != 1 or matches[0]['index'] not in range(4):
+            raise RuntimeError('目标不在已验证首屏4格，需要独立滚动定位验收')
+        context.click_shape_center(717, f"首屏第{matches[0]['index'] + 1}格")
+        deadline = time.monotonic() + 15
+        while True:
+            ui = grade_identity()
+            if (ui['part'], ui['item_id']) == (target.part, target.item_id):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError('点击后升阶目标UID未对齐')
+            time.sleep(.3)
+
+    scene = wait(666, 667, 717, 668, 714, 720, 721, 718, 719)
     if scene in (718, 719):
         raise RuntimeError('入口有未决升阶确认，不重放')
     current = observe()
@@ -118,29 +158,10 @@ def prepare_owned_spirit_artifact_to_six(
     for _ in range(12):
         if scene not in (720, 721):
             break
-        context.click_shape_center(scene, '点击屏幕继续')
-        scene = wait(720, 721, 717, 667, 666)
+        scene = leave_result_once(scene, (720, 721, 717, 667, 666, 668, 714))
     else:
         raise RuntimeError('连续业务结果页超过上限')
-    if scene == 666:
-        gui.select_artifact(target.ware_id, artifact_name)
-        scene = wait(667)
-    if scene == 667:
-        context.click_shape_center(667, '升阶页签')
-        wait(717)
-    ui = grade_identity()
-    matches = [r for r in ui['parts'] if r['part'] == target.part and r['item_id'] == target.item_id]
-    if len(matches) != 1 or matches[0]['index'] not in range(4):
-        raise RuntimeError('目标不在已验证首屏4格，需要独立滚动定位验收')
-    context.click_shape_center(717, f"首屏第{matches[0]['index'] + 1}格")
-    deadline = time.monotonic() + 15
-    while True:
-        ui = grade_identity()
-        if (ui['part'], ui['item_id']) == (target.part, target.item_id):
-            break
-        if time.monotonic() >= deadline:
-            raise RuntimeError('点击后升阶目标UID未对齐')
-        time.sleep(.3)
+    select_grade_target(scene)
     consumed = []
     while True:
         current = observe()
@@ -157,15 +178,23 @@ def prepare_owned_spirit_artifact_to_six(
         context.click_shape_center(717, '执行升阶')
         deadline, confirmed, stable_since = time.monotonic() + 100, set(), None
         while time.monotonic() < deadline:
-            scene = wait(721, 720, 719, 718, 717)
+            scene = wait(721, 720, 719, 718, 717, 668, 714)
             if scene in (718, 719):
                 if scene not in confirmed:
                     confirmed.add(scene)
                     context.click_shape_center(scene, '确认')
                 stable_since = None
             elif scene in (720, 721):
-                context.click_shape_center(scene, '点击屏幕继续')
+                leave_result_once(scene, (721, 720, 719, 718, 717, 668, 714))
                 stable_since = None
+            elif scene in (668, 714):
+                # 已观察到洗炼页落点，原因未证实；先证明消费完成再重新定位。
+                after = observe()
+                removed = verify_raw_upgrade_delta(current, after, target=target, candidates=candidates)
+                record('upgrade_verified_wash_landing', scene=scene, consumed_item_id=removed)
+                select_grade_target(scene)
+                consumed.append(removed)
+                break
             elif stable_since is None:
                 after = observe()
                 if after != current:

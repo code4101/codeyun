@@ -14,16 +14,8 @@ from .runtime_memory import FanxiuRuntimeMemoryError, as_int, table_ref
 from .ui_runtime_context import read_ui_object_field, read_ui_runtime_snapshot
 
 
-def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
-    """返回升阶页 ware_id/part/item_id/grade 和零基有序 parts 列表。
-
-    仅接受唯一当前灵器窗口及其正在显示的升阶页。parts 保留未拥有的
-    槽位（item_id 为 None）；selected_index 对应此列表。部位身份再与
-    当前背包实例互证，读取中页面变化或列表不完整时抛错，不自行恢复。
-    can_upgrade 是客户端升阶提示，不能作为重置或消耗授权。
-    """
-    from .spirit_artifact import read_spirit_artifact_inventory_runtime
-
+def _read_grade_panel() -> dict[str, Any]:
+    """Read only the active panel; the public observer owns cross-model checks."""
     from ..catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
     supported_ware_ids = spirit_artifact_ware_ids()
 
@@ -50,11 +42,19 @@ def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
                 if ware_id not in supported_ware_ids or group is None:
                     continue
                 tab_index = as_int(field(group, 'curTabIndex'))
-                panels, panel_count = reader.list_items(field(group, 'panelShowComps'))
-                if (tab_index is None or panel_count != len(panels)
-                        or not 0 <= tab_index < len(panels)):
+                # TabPanelGroup.ShowTab only materializes the selected index;
+                # unlike V_PartList, its CList intentionally has lazy holes.
+                panels = reader.fields(field(group, 'panelShowComps'))
+                panel_count = as_int(panels.get('count'))
+                panel_storage = table_ref(panels.get('_dt_'))
+                if (tab_index is None or panel_count is None
+                        or not 0 <= tab_index < panel_count or panel_storage is None):
                     raise FanxiuRuntimeMemoryError('灵器当前页签链不完整')
-                panel = table_ref(field(table_ref(panels[tab_index]), 'm_panel'))
+                selected = reader.numeric_fields(panel_storage.address, frozenset({tab_index + 1}))
+                component = table_ref(selected.get(tab_index + 1))
+                panel = table_ref(field(component, 'm_panel'))
+                if panel is None:
+                    raise FanxiuRuntimeMemoryError('灵器当前升阶页签尚未加载')
                 # GradePanel 专属成员组合，不能只凭页签编号认定当前页。
                 if not all(table_ref(field(panel, name)) for name in (
                         'SpiritWareScroll', 'curGradeTF', 'nextGradeTF',
@@ -94,23 +94,68 @@ def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
                 raise FanxiuRuntimeMemoryError(f'当前升阶窗口必须唯一，实际 {len(candidates)}')
             return next(iter(candidates.values()))
 
-        result = observe()
-        inventory = read_spirit_artifact_inventory_runtime()
-        matches = [item for item in inventory['items'] if item['item_id'] == result['item_id']]
-        if len(matches) != 1:
-            raise FanxiuRuntimeMemoryError('升阶选中实例在背包中不唯一')
-        item = matches[0]
-        if ((inventory['pid'], inventory['process_start_ticks'])
-                != (ctx.memory.pid, ctx.memory.process_start_ticks)
-                or (item['ware_id'], item['part'], item['grade'])
-                != (result['ware_id'], result['part'], result['grade'])):
-            raise FanxiuRuntimeMemoryError('升阶选中部件身份或阶数与当前背包不一致，请等待页面刷新')
-        if observe() != result:
-            raise FanxiuRuntimeMemoryError('读取期间升阶页或选中部件变化，请重新观察')
-        # 地址只参与本次一致性检查，不作为业务身份或可复用定位信息。
-        result.pop('panel_address')
-        return {**result, 'base_id': item['base_id'], 'read_only': True,
-                'captured_at': time.time(), 'source': 'active_spiritware_grade_panel',
-                'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks}
+        return {**observe(), 'pid': ctx.memory.pid,
+                'process_start_ticks': ctx.memory.process_start_ticks}
 
     return read_ui_runtime_snapshot([], read)
+
+
+def project_spirit_artifact_grade_observation(before, after, inventory, *, equipped=None):
+    """纯互证：两次独立 UI 观察夹住完整库存，可选严格装备引用互证。"""
+    if before != after:
+        raise FanxiuRuntimeMemoryError('读取期间升阶页面或进程变化')
+    identity = (before['pid'], before['process_start_ticks'])
+    if (inventory.get('complete') is not True
+            or (inventory['pid'], inventory['process_start_ticks']) != identity):
+        raise FanxiuRuntimeMemoryError('升阶库存不完整或进程变化')
+    matches = [row for row in inventory['items'] if row['item_id'] == before['item_id']]
+    if len(matches) != 1:
+        raise FanxiuRuntimeMemoryError('升阶选中实例在完整库存中不唯一')
+    item = matches[0]
+    if any(item[key] != before[key] for key in ('ware_id', 'part', 'grade')):
+        raise FanxiuRuntimeMemoryError('升阶选中部件身份或阶数与库存不一致')
+    if equipped is not None:
+        slots = [row for row in equipped['items']
+                 if (row['ware_id'], row['part']) == (before['ware_id'], before['part'])]
+        if ((equipped['pid'], equipped['process_start_ticks']) != identity
+                or len(slots) != 1 or slots[0]['item_id'] != before['item_id']):
+            raise FanxiuRuntimeMemoryError('升阶选中实例与精确装配引用不一致')
+    result = dict(before)
+    result.pop('panel_address')
+    return {**result, 'base_id': item['base_id'], 'read_only': True,
+            'captured_at': time.time(), 'source': 'active_spiritware_grade_panel'}
+
+
+def read_spirit_artifact_grade_snapshot() -> dict[str, Any]:
+    """独立读取升阶 UI 与完整库存；前后 UI 使用不同读上下文核验。
+
+    返回契约不变；can_upgrade 仅是客户端提示，不代表材料消耗授权。
+    """
+    from .spirit_artifact import read_spirit_artifact_inventory_runtime
+    before = _read_grade_panel()
+    inventory = read_spirit_artifact_inventory_runtime()
+    after = _read_grade_panel()
+    return project_spirit_artifact_grade_observation(before, after, inventory)
+
+
+def read_spirit_artifact_grade_owned_snapshot() -> dict[str, Any]:
+    """单轮联合读取当前升阶目标与完整库存/精确装配，不接收旧快照。
+
+    新 UI 前态→公开 owned(当前灵器)→新 UI 后态；只读取一次全库存。
+    两个 UI 上下文各自从活动组件重新确认页面成员，校验进程、页面、
+    UID/部位/阶数及装备引用；变化即拒绝，不跨业务动作复用。
+    返回 grade、owned 及分段 timings_seconds；尚待真实对照与性能验收。
+    """
+    from .spirit_artifact_equipped import read_spirit_artifact_owned_runtime
+    started = time.perf_counter()
+    before = _read_grade_panel()
+    panel_at = time.perf_counter()
+    owned = read_spirit_artifact_owned_runtime([before['ware_id']])
+    owned_at = time.perf_counter()
+    after = _read_grade_panel()
+    grade = project_spirit_artifact_grade_observation(
+        before, after, owned['inventory'], equipped=owned['equipped'])
+    return {'grade': grade, 'owned': owned, 'timings_seconds': {
+        'panel_before': panel_at - started, 'owned': owned_at - panel_at,
+        'panel_after': time.perf_counter() - owned_at,
+        'total': time.perf_counter() - started}}

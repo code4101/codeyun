@@ -36,3 +36,10 @@ def test_non_choice_type_closes_choice_gap_without_claiming_fixed_gift_rewards()
     assert result['choice_sources_complete'] is True
     assert result['unresolved_gift_reward_ids'] == [10]
     assert result['unresolved_item_ids'] == [10, 20]  # 名称目录依旧未知
+    meta['items_by_id']['10']['runtime_effect_description_id'] = 99
+    result = resolve_spirit_artifact_bag_source_coverage(bag, meta,
+        effect_text_snapshot={'pid': 1, 'process_start_ticks': 2,
+                              'texts_by_id': {'99': '打开后会随机掉落以下道具'}})
+    assert result['unresolved_gift_reward_ids'] == []
+    assert result['verified_random_gift_ids'] == [10]
+    assert result['stable_sources_complete'] is True

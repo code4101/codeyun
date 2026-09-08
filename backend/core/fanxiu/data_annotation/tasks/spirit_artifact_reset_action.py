@@ -180,7 +180,11 @@ def reset_spirit_artifact_from_owned_raw(
             click(715, '更换')
             wait(716)
             click(716, '第2个本体')
-            wait(667)
+            replacement_scene = wait(729, 667).scene_id
+            if replacement_scene == 729:
+                # 低品质换高品质时的业务选择；取消意味着继续装备但不继承。
+                click(729, '不继承')
+                wait(667)
             equipped(target.item_id)
             identity()
         elif entry.scene_id == 717:
