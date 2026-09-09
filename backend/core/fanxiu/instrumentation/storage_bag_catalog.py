@@ -167,11 +167,19 @@ def sync_storage_bag_atlas(
         existing_rows = [dict(row) for row in store.get("items") or [] if isinstance(row, Mapping)]
         by_id = {int(row["base_id"]): row for row in existing_rows if str(row.get("base_id") or "").isdigit()}
         next_order = max((int(row.get("atlas_order") or 0) for row in existing_rows), default=0)
+        newer_ids = {int(row['base_id']) for row in existing_rows
+                     if row.get('quantity_observed_at') and
+                     datetime.fromisoformat(row['quantity_observed_at']) > datetime.fromisoformat(captured_at)}
         for row in existing_rows:
+            if int(row['base_id']) in newer_ids:
+                continue
             row.update({"num": 0, "runtime_order": None, "instance_count": 0, "present": False})
+            row['quantity_observed_at'] = captured_at
 
         for live_row in live["items"]:
             base_id = int(live_row["base_id"])
+            if base_id in newer_ids:
+                continue
             row = by_id.get(base_id)
             if row is None:
                 next_order += 1
@@ -189,6 +197,7 @@ def sync_storage_bag_atlas(
                     "instance_count": int(live_row["instance_count"]),
                     "present": True,
                     "last_seen_at": captured_at,
+                    "quantity_observed_at": captured_at,
                 }
             )
             if live_row.get("item") is not None:
@@ -204,6 +213,51 @@ def sync_storage_bag_atlas(
         }
         _write_store(resolved_path, payload)
         return _atlas_projection(payload, runtime_available=True)
+
+
+def publish_storage_bag_item_counts(
+    counts: Mapping[int, int], evidence: Mapping[str, Any], *,
+    cards_by_id: Mapping[Any, Any] | None = None,
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    """发布已知物品的新数量；未观测项不变，旧观测不能覆盖新值。
+
+    使用只读背包模型的批量观测，不将局部数量冒充完整储物袋快照。
+    图鉴目录仍由完整同步维护。
+    """
+    import math
+    observed_at = evidence.get('observed_at')
+    if (not isinstance(observed_at, (int, float)) or not math.isfinite(observed_at)
+            or observed_at <= 0 or evidence.get('read_only') is not True
+            or evidence.get('source') != 'BackpackMgr.Model.BackpackData.ItemVoDic'
+            or not evidence.get('pid') or evidence.get('process_start_ticks') is None):
+        raise ValueError('库存数量缺少有效 Runtime 观测证据')
+    if any(type(k) is not int or k <= 0 or type(v) is not int or v < 0 for k, v in counts.items()):
+        raise ValueError('物品编号与数量必须为有效整数')
+    captured_at = datetime.fromtimestamp(observed_at).astimezone().isoformat(timespec='microseconds')
+    resolved_path = storage_bag_atlas_path(path)
+    with _STORE_LOCK:
+        store = _read_store(resolved_path)
+        rows = {int(row['base_id']): row for row in store['items']}
+        missing = counts.keys() - rows.keys()
+        if any(_catalog_card(cards_by_id or {}, key) is None for key in missing):
+            raise ValueError('未知物品须先同步储物袋目录')
+        next_order = max((int(row.get('atlas_order') or 0) for row in rows.values()), default=0)
+        for key in sorted(missing):
+            next_order += 1
+            row = dict(base_id=key, atlas_order=next_order, num=counts[key],
+                       item=_catalog_card(cards_by_id, key), first_seen_at=captured_at)
+            store['items'].append(row)
+            rows[key] = row
+        for base_id, count in counts.items():
+            row = rows[base_id]
+            previous = row.get('quantity_observed_at') or store.get('updated_at')
+            if previous and datetime.fromisoformat(previous) > datetime.fromisoformat(captured_at):
+                continue
+            row.update(num=count, present=count > 0, quantity_observed_at=captured_at,
+                       quantity_evidence=dict(evidence))
+        _write_store(resolved_path, store)
+        return _atlas_projection(store, runtime_available=True)
 
 
 def sync_storage_bag_from_game(session) -> dict[str, Any]:

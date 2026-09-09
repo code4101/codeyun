@@ -14,6 +14,22 @@ from .storage_bag_catalog import build_storage_bag_catalog_snapshot
 DOMAIN = "spirit_artifact_storage_bag_snapshot"
 
 
+def sync_known_spirit_artifact_box_counts(session: Session) -> dict[str, Any]:
+    """显式读取已知灵器箱子库存并发布共享图鉴，无需打开游戏储物袋。"""
+    from .backpack import read_backpack_item_counts
+    from .storage_bag_catalog import publish_storage_bag_item_counts
+    from ..catalog.item import load_fanxiu_item_runtime_index
+    snapshot = load_spirit_artifact_storage_bag_snapshot(session)
+    ids = {int(item['base_id']) for item in (snapshot or {}).get('storage_bag_items', [])}
+    if not ids:
+        raise ValueError('尚无灵器箱子目录，请先同步储物袋')
+    counts, evidence = read_backpack_item_counts(
+        ids, manager_key='spirit-artifact-box-counts', force_refresh=True)
+    publish_storage_bag_item_counts(counts, evidence,
+        cards_by_id=load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'])
+    return load_spirit_artifact_storage_bag_snapshot(session)
+
+
 def resolve_stable_spirit_artifact_rewards(
     card: Mapping[str, Any], items_by_base_id: Mapping[int, Any],
 ) -> tuple[int, ...]:

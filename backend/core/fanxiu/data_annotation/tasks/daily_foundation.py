@@ -669,16 +669,19 @@ class DailyFoundationTaskMixin:
         claimed_now: list[int] = []
         scroll_attempts = 0
         final_frame = frame
+        final_milestone = max(WEEKLY_ACTIVITY_REWARD_MILESTONES)
         while True:
             claimable_thresholds = [
                 int(value) for value in runtime_snapshot.get("claimable_thresholds") or []
             ]
-            if not claimable_thresholds:
+            if not claimable_thresholds and final_milestone in reward_states:
                 break
             validate_gui_cross_check(runtime_snapshot, reward_states)
             visible_claimable = [
                 milestone for milestone in claimable_thresholds if milestone in reward_states
-            ]
+            ][:1]
+            # 每次动作后重算候选；刷新 Runtime 不会使旧列表自动失效。
+            # 全部已领时仍滚到最高档，完成页面终态核验。
             if not visible_claimable:
                 if scroll_attempts >= 4:
                     raise RuntimeError(
@@ -734,7 +737,6 @@ class DailyFoundationTaskMixin:
         remaining_claimable = [int(value) for value in runtime_snapshot.get("claimable_thresholds") or []]
         if remaining_claimable:
             raise RuntimeError(f"周常_活跃度：领取后仍有 Runtime 可领档：{remaining_claimable}")
-        final_milestone = max(WEEKLY_ACTIVITY_REWARD_MILESTONES)
         if reward_states.get(final_milestone, {}).get("state") != "claimed":
             raise RuntimeError(f"周常_活跃度：右边界 {final_milestone} 档未显示绿色勾")
         final_tokens = context.full_frame_ocr_tokens(final_frame)

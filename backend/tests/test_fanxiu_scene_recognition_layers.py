@@ -140,62 +140,6 @@ def test_business_tasks_do_not_call_private_scene_identifiers() -> None:
     assert offenders == []
 
 
-def test_business_tasks_cannot_take_ownership_of_layer0_popup_ids() -> None:
-    tasks_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation" / "tasks"
-    # Verified against the formal production asset tree. Updating that popup
-    # domain requires updating this contract in the same change.
-    popup_ids = {
-        27, 28, 32, 36, 47, 50, 54, 56, 59, 84, 86, 191, 195, 210,
-        226, 262, 278, 287, 289, 300, 302, 353, 354, 355, 393, 433,
-        507, 530, 608, 609, 663,
-    }
-    guarded_calls = {
-        "current_scene",
-        "wait_scene",
-        "expect_views",
-        "wait_click",
-        "wait_click_then_scene",
-        "click_shape",
-        "click_shape_center",
-    }
-    offenders: list[tuple[Path, int, list[int]]] = []
-    for path in tasks_root.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-        constants: dict[str, int] = {}
-        for statement in tree.body:
-            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                continue
-            value = statement.value
-            if not isinstance(value, ast.Constant) or not isinstance(value.value, int):
-                continue
-            targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            for target in targets:
-                if isinstance(target, ast.Name):
-                    constants[target.id] = int(value.value)
-        for node in ast.walk(tree):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in guarded_calls
-            ):
-                continue
-            values = {
-                int(item.value)
-                for item in ast.walk(node)
-                if isinstance(item, ast.Constant) and isinstance(item.value, int)
-            }
-            values.update(
-                constants[item.id]
-                for item in ast.walk(node)
-                if isinstance(item, ast.Name) and item.id in constants
-            )
-            overlap = sorted(values & popup_ids)
-            if overlap:
-                offenders.append((path, node.lineno, overlap))
-
-    assert offenders == []
-
-
 def test_current_scene_calls_are_executed_as_behavior_tree_generators() -> None:
     production_root = Path(__file__).parents[1] / "core" / "fanxiu" / "data_annotation"
     offenders: list[tuple[Path, int]] = []
@@ -356,52 +300,6 @@ def test_layered_wait_reports_actual_business_layer_not_asset_layer(monkeypatch)
     assert match.matched_layer == 0
     assert match.scope == "business"
     assert score == 95.0
-    assert frame == "frame"
-
-
-def test_popup_layer0_cannot_be_reclassified_as_a_business_scene(monkeypatch) -> None:
-    runner = create_behavior_tree_executor()
-    popup = _scene(313, 2)
-    popup["shapes"].append({"id": "close-313", "title": "空白"})
-    business = _scene(301, 2)
-    raw_context = {
-        "asset_tree": [
-            {"type": "folder", "title": "弹窗", "children": [popup]},
-            business,
-        ],
-        "images": {313: popup, 301: business},
-        "_fanxiu_scene_observation_probe": True,
-    }
-    context = BehaviorTreeContext(runner, raw_context)
-    monkeypatch.setattr(context, "cur_frame", lambda update=False: "frame")
-    recognized = iter((313, 301))
-    monkeypatch.setattr(
-        runner,
-        "_identify_scene_number_by_graph",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            scene_id=next(recognized),
-            score=99.0,
-            status="matched",
-            matched_layer=0,
-        ),
-    )
-    handled: list[int] = []
-    monkeypatch.setattr(
-        runner,
-        "_handle_recognized_popup_candidate",
-        lambda _context, candidate, **_kwargs: handled.append(
-            runner._image_number(candidate["image"])
-        ) or True,
-    )
-
-    match, score, frame = _drain_result(
-        context._recognize_scene_layers([313, 301], wait=0)
-    )
-
-    assert handled == [313]
-    assert match.scene_id == 301
-    assert match.scope == "business"
-    assert score == 99.0
     assert frame == "frame"
 
 

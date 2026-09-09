@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
+from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 from backend.core.fanxiu.instrumentation import fanxiu_instrumentation_service
 from backend.core.fanxiu.runtime_gui import validate_runtime_evidence
 
@@ -162,9 +163,16 @@ def _observe_known_scene(
 
 
 def _finish_reward_chain(context: Any, *, deadline: float):
+    """Drain known reward pages until the bag is stable, within one deadline.
+
+    Result overlays can replace each other while recognition is running.
+    Only a guard rejection before target input allows re-observation; other
+    errors propagate, and quick-operation submission is never retried here.
+    """
     stable_since: float | None = None
     stable_polls = 0
     stable_scene: int | None = None
+    continued_reward = False
     while time.monotonic() < deadline:
         landed, _score, frame = yield from context.current_scene(
             (USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
@@ -176,14 +184,22 @@ def _finish_reward_chain(context: Any, *, deadline: float):
             return "empty_toast"
         if _quick_operation_panel_visible(context, landed, frame):
             landed = QUICK_OPERATION_SCENE
-        # #227's shared continue footer can also match a #544 use-result
-        # overlay. Prefer the latter's two-part identity on the same frame;
-        # wait_click will independently guard the selected scene before input.
-        if all(context.shape_matches(USE_RESULT_SCENE, title, frame_data_url=frame)
-               is not None for title in ("昆仑结果背景", "点击屏幕继续标识")):
-            landed = USE_RESULT_SCENE
         if landed in (REWARD_SCENE, DANYAO_REWARD_SCENE, USE_RESULT_SCENE):
-            break
+            stable_scene = None
+            stable_since = None
+            stable_polls = 0
+            try:
+                yield from context.wait_click(landed, "继续", timeout=8.0)
+            except SceneClickMismatch as exc:
+                if exc.actual_scene_id not in (
+                    REWARD_SCENE, DANYAO_REWARD_SCENE,
+                    USE_RESULT_SCENE, STORAGE_BAG_SCENE,
+                ):
+                    raise
+            else:
+                continued_reward = True
+            yield from context.wait_action_settle(0.25)
+            continue
         if landed in (STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE):
             now = time.monotonic()
             if stable_scene != landed:
@@ -198,7 +214,7 @@ def _finish_reward_chain(context: Any, *, deadline: float):
                 return (
                     "empty_fixed_point"
                     if landed == QUICK_OPERATION_SCENE
-                    else "storage_fixed_point"
+                    else "reward_complete" if continued_reward else "storage_fixed_point"
                 )
         else:
             # Unknown/toast-obscured frames do not count toward the fixed-point
@@ -209,25 +225,8 @@ def _finish_reward_chain(context: Any, *, deadline: float):
         yield from context.wait_action_settle(0.25)
     else:
         raise TimeoutError(
-            "储物袋_操作：执行后未进入奖励链，也未形成稳定 #526 无奖励固定点"
+            "储物袋_操作：奖励链未在截止时间内收敛到稳定储物袋或无奖励固定点"
         )
-    if landed in (REWARD_SCENE, USE_RESULT_SCENE):
-        yield from context.wait_click(landed, "继续", timeout=8.0)
-        landed, _frame = yield from _observe_known_scene(
-            context,
-            (DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE),
-            deadline=deadline,
-        )
-    if landed == DANYAO_REWARD_SCENE:
-        yield from context.wait_click(DANYAO_REWARD_SCENE, "继续", timeout=8.0)
-        landed, _frame = yield from _observe_known_scene(
-            context,
-            (STORAGE_BAG_SCENE,),
-            deadline=deadline,
-        )
-    if landed != STORAGE_BAG_SCENE:
-        raise RuntimeError(f"储物袋_操作：奖励链落点非法：{landed}")
-    return "reward_complete"
 
 
 def execute_storage_bag_operation_task(

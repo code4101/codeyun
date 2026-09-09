@@ -28,6 +28,26 @@ def _runtime_snapshot() -> dict:
     }
 
 
+def test_count_publication_is_partial_and_monotonic(tmp_path):
+    from datetime import datetime
+    from backend.core.fanxiu.instrumentation.storage_bag_catalog import publish_storage_bag_item_counts
+    path = tmp_path / 'atlas.json'
+    sync_storage_bag_atlas(_runtime_snapshot(), {}, captured_at='2026-09-09T10:00:00+08:00', path=path)
+    evidence = dict(pid=123, process_start_ticks=1, read_only=True,
+                    source='BackpackMgr.Model.BackpackData.ItemVoDic',
+                    observed_at=datetime.fromisoformat('2026-09-09T10:02:00+08:00').timestamp())
+    for _ in range(2):
+        result = publish_storage_bag_item_counts({101: 0}, evidence, path=path)
+        assert {r['base_id']: r['num'] for r in result['items']} == {101: 0, 202: 7, 303: 1}
+    result = sync_storage_bag_atlas(_runtime_snapshot(), {}, captured_at='2026-09-09T10:01:00+08:00', path=path)
+    assert result['items'][0]['num'] == 0
+    result = sync_storage_bag_atlas(_runtime_snapshot(), {}, captured_at='2026-09-09T10:03:00+08:00', path=path)
+    assert result['items'][0]['num'] == 2
+    assert publish_storage_bag_item_counts({101: 0}, evidence, path=path)['items'][0]['num'] == 2
+    with pytest.raises(ValueError):
+        publish_storage_bag_item_counts({404: 0}, evidence, path=path)
+
+
 def test_storage_bag_catalog_preserves_runtime_order_and_duplicate_names() -> None:
     cards = {
         "101": {"id": "101", "name": "同名箱", "quality_name": "紫色品质", "icon": "a.png"},

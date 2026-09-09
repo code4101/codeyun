@@ -8,10 +8,13 @@ from ...instrumentation.spirit_artifact_wash_observation import (
 from .spirit_artifact_advanced_scroll import AdvancedScrollProfile
 from .spirit_artifact_yinxian import YinxianAttribute, meets_yinxian_target
 
+DEFAULT_PREPARED_TARGET_RATIO = .95
+
 
 def run_spirit_artifact_prepared_round(
     context, execute, *, process_identity: tuple[int, int], evidence_dir: Path,
     stop_at: float, max_consumptions: int = 100,
+    target_ratio: float = DEFAULT_PREPARED_TARGET_RATIO,
 ) -> dict:
     """连续培养预备部件；每件突破同步后重新排序，截止/预算/异常即停止。
 
@@ -55,6 +58,7 @@ def run_spirit_artifact_prepared_round(
                      'SPECIAL_DAMAGE_FIX', 'SPECIAL_DAMAGE_REDUCE'},
             evidence_dir=Path(evidence_dir) / f'cultivate-{ware_id}-{row.order}',
             stop_at=stop_at, max_consumptions=max_consumptions-consumed,
+            target_ratio=target_ratio,
             navigate=spirit_artifact_memory.snapshot(target) is None)
         consumed += outcome['consumed']
         if outcome['status'] != 'complete':
@@ -68,7 +72,7 @@ def run_spirit_artifact_prepared_round(
 def run_spirit_artifact_cultivation(
     context, execute, *, target: SpiritArtifactWashTarget, rules: dict,
     c_codes: set[str], evidence_dir: Path, stop_at: float,
-    max_consumptions: int = 100, target_ratio: float = .90,
+    max_consumptions: int = 100, target_ratio: float = DEFAULT_PREPARED_TARGET_RATIO,
     scroll_profile: AdvancedScrollProfile | None = None,
     fast_observation: bool = True,
     navigate: bool = False,

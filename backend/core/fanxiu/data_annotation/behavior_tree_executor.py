@@ -165,7 +165,7 @@ from backend.core.fanxiu.client.mumu_control import (
     _encode_png_frame,
 )
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeExecutionError
+from backend.core.fanxiu.behavior_tree.errors import BehaviorTreeExecutionError, SceneClickMismatch
 from backend.core.fanxiu.info_window import publish_fanxiu_scene_recognition
 from backend.core.temp_paths import codeyun_temp_root, prune_temp_files, trim_file_tail
 from pyxllib.autogui import (
@@ -746,9 +746,10 @@ class BehaviorTreeContext(AutomationContext):
                         "recognized_scene_id": 546,
                     },
                 )
-            # Popup ownership is absolute.  A business task cannot reclassify
-            # an interruption as foreground merely by including the same ID
-            # in its expected candidates; Layer 0 must clear it first.
+            # One graph result, one owner: explicit business candidates take
+            # precedence over the popup catalogue (S0 first, then P - S0).
+            if layer0_scene_id in business_id_set:
+                return commit(layer0_recognition, frame, scope="business")
             if layer0_scene_id in popup_by_scene_id:
                 if len(handled_popup_ids) >= 9:
                     sequence = " -> ".join(f"#{item}" for item in handled_popup_ids)
@@ -773,9 +774,6 @@ class BehaviorTreeContext(AutomationContext):
                 # Popup handling is inserted into the business flow. A new
                 # frame may only be observed on the next behavior-tree tick.
                 continue
-            if layer0_scene_id in business_id_set:
-                return commit(layer0_recognition, frame, scope="business")
-
             has_business_layer0 = layer0 is not None and bool(business_ids)
             if has_business_layer0 and elapsed < wait_seconds:
                 continue
@@ -1196,8 +1194,10 @@ class BehaviorTreeContext(AutomationContext):
         )
         guarded_scene_id = int(getattr(guarded_match, "id", guarded_match))
         if guarded_scene_id != int(view.id):
-            raise RuntimeError(
-                f"{label}：点击前场景为 #{guarded_scene_id}，不是预期 #{view.id}，拒绝点击"
+            raise SceneClickMismatch(
+                f"{label}：点击前场景为 #{guarded_scene_id}，不是预期 #{view.id}，拒绝点击",
+                expected_scene_id=int(view.id),
+                actual_scene_id=guarded_scene_id,
             )
         self._emit_execution_action(
             f"点击 #{view.id or '?'}「{self._shape_path(target)}」",
@@ -6409,6 +6409,12 @@ class BehaviorTreeContext(AutomationContext):
         match = yield from self.wait_scene(
             [69], wait=20.0, label=f"{label}：处理干扰并重新确认日常列表"
         )
+        if match.scene_id != 69:
+            self.require_scene_repair(
+                match.scene_id, match.frame_data_url,
+                reason=f"{label}：日常列表已被其它场景替换，停止滚动和入口点击",
+                expected_scene_ids=[69],
+            )
         frame = match.frame_data_url
         lines = self.runner._ocr_fragments_in_scene_shapes(self.ctx, frame, self.view(69).raw)
         return frame, lines
@@ -11204,94 +11210,6 @@ class BehaviorTreeExecutor(
                 *source_edges,
             ]
 
-    def _scene_route_ranking(
-        self,
-        tree: list[dict[str, Any]],
-        scene_id: int,
-        target_scene_id: int,
-    ) -> tuple[int, int]:
-        if int(scene_id) == int(target_scene_id):
-            return 10, 0
-        route = self._find_scene_route(tree, scene_id, target_scene_id)
-        if route is not None:
-            ambiguous_edges = sum(1 for edge in route if len(edge.get("target_ids") or []) != 1)
-            return -ambiguous_edges, len(route)
-        simple_edges: dict[int, list[list[int]]] = {}
-        for item in tree:
-            if not isinstance(item, dict):
-                continue
-            item_id = self._image_number(item)
-            if item_id is None:
-                continue
-            for shape in self._flatten_shapes(item.get("shapes")):
-                target_ids = self._scene_jump_target_ids(tree, shape)
-                if target_ids:
-                    simple_edges.setdefault(int(item_id), []).append([int(target_id) for target_id in target_ids])
-        queue: list[tuple[int, int, int]] = [(int(scene_id), 0, 0)]
-        seen = {int(scene_id)}
-        while queue:
-            node_id, distance, ambiguity = queue.pop(0)
-            for target_ids in simple_edges.get(node_id, []):
-                next_ambiguity = ambiguity + (0 if len(target_ids) == 1 else 1)
-                for next_id in target_ids:
-                    if next_id == int(target_scene_id):
-                        return -next_ambiguity, distance + 1
-                    if next_id in seen:
-                        continue
-                    seen.add(next_id)
-                    queue.append((next_id, distance + 1, next_ambiguity))
-        image = next((item for item in tree if isinstance(item, dict) and self._image_number(item) == int(scene_id)), None)
-        if isinstance(image, dict):
-            for shape in self._flatten_shapes(image.get("shapes")):
-                target_ids = self._scene_jump_target_ids(tree, shape)
-                if int(target_scene_id) in target_ids:
-                    return (0 if len(target_ids) == 1 else -1), 1
-        if int(scene_id) in self._scene_jump_confirmation_scene_ids(tree):
-            return 1, 1
-        return -100, 9999
-
-    def _identify_scene_number_for_route(
-        self,
-        ctx: dict[str, Any],
-        frame_data_url: str,
-        tree: list[dict[str, Any]],
-        target_scene_id: int,
-        candidate_scene_ids: list[int],
-    ) -> tuple[int | None, float]:
-        images = ctx.get("images") or {}
-        if not isinstance(images, dict) or not candidate_scene_ids:
-            return None, 0.0
-
-        ranked: list[tuple[int, float, int, int]] = []
-        for candidate_scene_id in candidate_scene_ids:
-            try:
-                scene_id = int(candidate_scene_id)
-            except (TypeError, ValueError):
-                continue
-            image = images.get(scene_id)
-            if not isinstance(image, dict):
-                continue
-            if self._image_layer(image) >= 3 or not self._scene_identity_shapes(image):
-                continue
-            score = float(self._scene_score(ctx, image, frame_data_url) or 0.0)
-            if score < 60.0:
-                continue
-            clarity, route_len = self._scene_route_ranking(tree, scene_id, int(target_scene_id))
-            if clarity <= -100:
-                continue
-            ranked.append((clarity, score, -route_len, scene_id))
-        if not ranked:
-            scene_id, score = self._identify_scene_number(ctx, frame_data_url, candidate_scene_ids)
-            return scene_id, score
-        ranked.sort(reverse=True)
-        clarity, score, neg_route_len, scene_id = ranked[0]
-        route_len = -neg_route_len
-        self._log(
-            "detail",
-            f"go_scene：路径候选命中 #{scene_id} {score:.0f}%，明确性 {clarity}，路径长度 {route_len}",
-        )
-        return scene_id, score
-
     def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
         tree = self._resolved_asset_tree(tree)
         source_shape = {"title": "离开"}
@@ -13894,6 +13812,17 @@ class BehaviorTreeExecutor(
                     update=True,
                     label=f"场景跳转：等待 #{source_scene_id} 动作落点",
                 )
+            if matched_expected is not None and matched_expected not in handled_intermediate_scene_ids:
+                current_image = (ctx.get("images") or {}).get(int(matched_expected))
+                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
+                if confirm_shape is not None:
+                    handled_intermediate_scene_ids.add(int(matched_expected))
+                    confirm_title = str(confirm_shape.get("title") or "确认")
+                    self._log("action", f"场景跳转确认：#{matched_expected}，点击 {confirm_title}")
+                    context.click_shape(int(matched_expected), Shape(confirm_shape, parent_view=context.view(int(matched_expected))), frame_data_url=frame)
+                    left_source = True
+                    start = time.monotonic()
+                    continue
             if matched_expected == source_scene_id and source_scene_id not in expected_ids:
                 history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% preferred-source ignored left={left_source}")
                 matched_expected = None
@@ -13911,17 +13840,6 @@ class BehaviorTreeExecutor(
             # action's expected-scene scope alive and let the bounded
             # ``declared_self_loop`` branch below confirm a real self-loop.
             if matched_expected is not None and matched_expected != source_scene_id:
-                if not left_source and matched_expected != source_scene_id:
-                    default_scene_id, default_score, _ = context.recognize_scene_in_frame(
-                        frame_data_url=frame
-                    )
-                    if default_scene_id == source_scene_id and float(default_score or 0) >= float(expected_score or 0):
-                        last_scene_id, last_score, last_frame = default_scene_id, default_score, frame
-                        history.append(
-                            f"{elapsed:.1f}s #{default_scene_id} {default_score:.0f}% "
-                            f"expected=#{matched_expected} {expected_score:.0f}% left={left_source}"
-                        )
-                        continue
                 last_scene_id, last_score, last_frame = matched_expected, expected_score, frame
                 if matched_expected != source_scene_id:
                     left_source = True
@@ -13939,84 +13857,14 @@ class BehaviorTreeExecutor(
                 remember_landing(int(matched_expected), float(expected_score or 0.0), frame, elapsed, outcome="declared_landing")
                 return matched_expected
 
-            if expected_ids and preferred_wait_seconds > 0 and elapsed < preferred_wait_seconds:
-                route_candidate_ids = [
-                    candidate_id
-                    for candidate_id in self._scene_route_candidate_ids(tree, target_scene_id)
-                    if int(candidate_id) not in expected_id_set
-                    and int(candidate_id) != int(source_scene_id)
-                ]
-                route_scene_id, route_score = self._identify_scene_number_for_route(
-                    ctx,
-                    frame,
-                    tree,
-                    target_scene_id,
-                    route_candidate_ids,
-                )
-                if (
-                    route_scene_id is not None
-                    and self._find_scene_route(tree, int(route_scene_id), target_scene_id) is not None
-                ):
-                    fallback_scene_id = int(route_scene_id)
-                    fallback_score = float(route_score or 0.0)
-                    history.append(
-                        f"{elapsed:.1f}s #{fallback_scene_id} {fallback_score:.0f}% "
-                        f"route-capable-layer0-interruption target={expected_ids}"
-                    )
-                else:
-                    last_scene_id, last_score, last_frame = None, expected_score, frame
-                    history.append(f"{elapsed:.1f}s unknown layer0-wait target={expected_ids}")
-                    with self._lock:
-                        self._status.update({
-                            "phase": "go_scene_wait_layer0",
-                            "current_scene": None,
-                            "message": (
-                                f"跳转等待：#{source_scene_id} -> #{target_scene_id}，"
-                                f"继续等待预期落点 {expected_ids}，当前 layer0 未命中 {expected_score:.0f}%"
-                            ),
-                            "updated_at": time.time(),
-                        })
-                    continue
-
-            if fallback_scene_id is not None:
-                scene_id, score = fallback_scene_id, fallback_score
-            else:
-                scene_id, score, _ = context.recognize_scene_in_frame(
-                    frame_data_url=frame
-                )
-            if scene_id is None:
-                route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
-                scene_id, score = self._identify_scene_number_for_route(
-                    ctx,
-                    frame,
-                    tree,
-                    target_scene_id,
-                    route_candidate_ids,
-                )
-            if scene_id is not None:
-                navigation_scene_id = self._navigation_scene_id(ctx, scene_id, frame)
-                # Do not keep the original auxiliary reference id when it is
-                # not a reliable navigation scene.
-                scene_id = navigation_scene_id
+            # Reuse the single layered result; navigation cannot re-identify
+            # the same frame by path convenience or discard its specific ID.
+            scene_id, score = (
+                (fallback_scene_id, fallback_score)
+                if fallback_scene_id is not None
+                else (matched_expected, expected_score)
+            )
             last_scene_id, last_score, last_frame = scene_id, score, frame
-            if scene_id is not None and scene_id not in handled_intermediate_scene_ids:
-                current_image = (ctx.get("images") or {}).get(scene_id)
-                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
-                if confirm_shape is not None:
-                    confirm_title = str(confirm_shape.get("title") or "确认")
-                    handled_intermediate_scene_ids.add(scene_id)
-                    with self._lock:
-                        self._status.update({
-                            "phase": "go_scene_confirm",
-                            "current_scene": scene_id,
-                            "message": f"跳转确认：#{source_scene_id} -> #{target_scene_id}，点击 {confirm_title}",
-                            "updated_at": time.time(),
-                        })
-                    self._log("action", f"场景跳转确认：#{scene_id}，点击 {confirm_title}")
-                    self._click_shape(ctx, current_image, confirm_shape, frame)
-                    left_source = True
-                    start = time.monotonic()
-                    continue
             if scene_id is not None and scene_id != source_scene_id and int(scene_id) in expected_ids:
                 left_source = True
                 history.append(f"{elapsed:.1f}s #{scene_id} {score:.0f}% declared-landing left={left_source}")
@@ -14243,7 +14091,6 @@ class BehaviorTreeExecutor(
         best_layer3_auxiliary: dict[str, Any] | None = None
         attempts = 0
         continuous_unknown_started_at: float | None = None
-        route_candidate_ids = self._scene_route_candidate_ids(tree, target_scene_id)
         ctx.pop("_last_go_scene_recognition_wait_elapsed", None)
         ctx.pop("_last_go_scene_recognition_evidence", None)
 
@@ -14271,19 +14118,6 @@ class BehaviorTreeExecutor(
                 > float(best_layer3_auxiliary.get("score") or 0.0)
             ):
                 best_layer3_auxiliary = dict(layer3_auxiliary)
-
-            if current_scene_id is None:
-                current_scene_id, route_score = self._identify_scene_number_for_route(
-                    ctx,
-                    frame,
-                    tree,
-                    target_scene_id,
-                    route_candidate_ids,
-                )
-                score = max(float(score or 0.0), float(route_score or 0.0))
-                best_score = max(best_score, float(score or 0.0))
-                if current_scene_id is not None:
-                    recognition_status = "route_candidate"
 
             if current_scene_id is not None and self._scene_matches_id(
                 int(current_scene_id),
