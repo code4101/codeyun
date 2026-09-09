@@ -41,6 +41,7 @@ PUBLIC_EXCHANGE_ACTIVITY_TYPES = (
     "lingchong-jingwu",
     "lianti-faxiang",
     "dandao-wending",
+    "xiling-zhengwu",
     "tiandi-yiju",
 )
 
@@ -261,6 +262,13 @@ class LingzhuangHuadaoActivityAdapter:
         return collect_and_store_lingzhuang_huadao_activity(
             session, activity_id=activity_id
         )
+
+
+class XilingZhengwuActivityAdapter:
+    def collect_activity(self, session: Session, *, activity_id: str) -> Any:
+        from backend.core.fanxiu.activity.resource_ranking import collect_and_store_xiling_zhengwu_activity
+
+        return collect_and_store_xiling_zhengwu_activity(session, activity_id=activity_id)
 
 
 class YaochiFlowerFestivalActivityAdapter:
@@ -694,6 +702,31 @@ def _resource_page(scopes: tuple[str, ...]) -> PageContract:
     )
 
 
+XILING_ZHENGWU_SPEC = ExchangeActivitySpec(
+    activity_type="xiling-zhengwu",
+    family="resource_rank",
+    label="洗灵证武",
+    worldline_vo_types=("CrossRankActivityVO",),
+    currency_type=0,
+    currency_name="洗灵奇石",
+    rank_scopes=(
+        _rank_scope(
+            "personal", label="个人榜", role="primary", subject="role",
+            reward_tiers_enabled=True, required=True, vo_type=PERSONAL_RANK_VO,
+            binding=RankActivityIdBinding(source="activity_self_or_follow", follow_index=0),
+        ),
+        _rank_scope(
+            "plane", label="位面榜", role="comparative", subject="server",
+            reward_tiers_enabled=True, required=False, vo_type=PLANE_RANK_VO,
+            binding=RankActivityIdBinding(source="activity_follow", follow_index=1),
+        ),
+    ),
+    shop=None,
+    page=_resource_page(("personal", "plane")),
+    adapter=XilingZhengwuActivityAdapter(),
+)
+
+
 LINGZHUANG_HUADAO_SPEC = ExchangeActivitySpec(
     activity_type="lingzhuang-huadao",
     family="resource_rank",
@@ -867,6 +900,7 @@ EXCHANGE_ACTIVITY_SPECS = build_exchange_activity_registry(
         LINGCHONG_JINGWU_SPEC,
         LIANTI_FAXIANG_SPEC,
         DANDAO_WENDING_SPEC,
+        XILING_ZHENGWU_SPEC,
     )
 )
 

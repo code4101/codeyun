@@ -172,6 +172,16 @@ def locate_advanced_item_with_experience(
         detail[key] = detail.get(key, 0.0) + time.monotonic() - since
 
     def complete(match, key, route, mode):
+        if route:
+            # 滚动刚结束时文字仍可能回弹，旧落点会点到相邻道具。
+            # 只在实际滚动后重读落点；无滚动命中仍直接点击。
+            execute(context.wait_action_settle(.6))
+            stable_frame = context.cur_frame(update=True)
+            match = find_target(stable_frame)
+            if match is None:
+                raise AdvancedItemLocationError(context, expected=scene_id, observed=scene_id,
+                    frame=stable_frame, phase='settled_target',
+                    problem_code='advanced_list.target_not_located', diagnostics=detail)
         detail.update(total_seconds=time.monotonic() - started, mode=mode,
                       route=list(route), drag_count=len(route))
         return match, key, route
@@ -223,6 +233,7 @@ def locate_advanced_item_with_experience(
 
     match, start = observe_start()
     key = AdvancedScrollKey(layout, start, item_id) if start else None
+    detail.update(layout=layout, start=list(start))
     traversed: list[str] = []
     if match is not None:
         return complete(match, key, (), 'visible')

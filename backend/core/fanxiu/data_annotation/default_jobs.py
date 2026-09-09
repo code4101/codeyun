@@ -337,7 +337,7 @@ def register_fanxiu_default_jobs() -> None:
             payload,
             task_type="daily_mozu",
             label="日常_魔祖",
-            flow=runner.daily_mozu_flow,
+            flow=runner.daily_mozu_finish_flow if payload.get("finish_only") is True else runner.daily_mozu_flow,
         ))
 
     @register_fanxiu_data_annotation_task_cell(

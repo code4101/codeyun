@@ -1,6 +1,10 @@
-from __future__ import annotations
+"""Activity-neutral, closed-loop positive-integer slider control.
 
-"""Activity-neutral, closed-loop positive-integer slider control."""
+设计文档：C:/home/chenkunze/slns/skills/凡修/references/业务层/数值滑轨配置.md
+按比例定位 → 回读反馈逼近 → 精调实现；资产描述与流程函数分别复用。
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Mapping, Protocol
@@ -57,6 +61,8 @@ class IntegerButtonAssets:
 
 @dataclass(frozen=True)
 class IntegerSliderAssets:
+    """滑轨语义资产及定位锚点；三阶段控制契约见模块设计文档。"""
+
     settings_scene_id: int
     count_region: str = "挑战次数"
     count_decrease: str = "挑战次数_减少"
@@ -296,6 +302,7 @@ def _proportional_position(
 def _coarse_pixel_converge(
     context, assets, desired, *, current, maximum, threshold, geometry,
     count_label, runtime_reader, read_counts=None,
+    max_button_actions=_MAX_DIRECT_BUTTON_ACTIONS,
 ) -> Iterator[Any]:
     probes: list[dict[str, Any]] = []
     interpolation_rows: list[dict[str, Any]] = []
@@ -387,7 +394,7 @@ def _coarse_pixel_converge(
         # The probe is calibration, not the approach itself. Only after
         # applying D may a small residual enter the button phase.
         if (_estimated_button_actions(assets, current=current, desired=desired)
-                <= _MAX_DIRECT_BUTTON_ACTIONS
+                <= max_button_actions
                 and abs(desired - current) < abs(probe_count_delta)):
             return current, probes, interpolation_rows, "within_drag_grain"
     raise RuntimeError(
@@ -397,17 +404,21 @@ def _coarse_pixel_converge(
 
 
 def _fine_tune_batches(
-    context, assets, desired, *, current, count_label, runtime_reader, read_counts=None
+    context, assets, desired, *, current, count_label, runtime_reader, read_counts=None,
+    max_button_actions=_MAX_DIRECT_BUTTON_ACTIONS,
 ) -> Iterator[Any]:
     batches: list[dict[str, int]] = []
-    remaining_clicks = _MAX_DIRECT_BUTTON_ACTIONS
+    remaining_clicks = max_button_actions
+    no_progress_batches = 0
     click = getattr(context, "click_shape_center_fast", None)
     if not callable(click):
         click = context.click_shape_center
     large_step = int(getattr(assets, "count_large_step", 0) or 0)
     large_decrease = getattr(assets, "count_decrease_large", None)
     large_increase = getattr(assets, "count_increase_large", None)
-    for _index in range(5):
+    # Every nonterminal batch spends at least one click, bounding even partial
+    # input acceptance by the explicit action budget. Observe after <=100 taps.
+    for _index in range(max_button_actions):
         if current == desired:
             return current, batches
         residual = abs(desired - current)
@@ -421,13 +432,16 @@ def _fine_tune_batches(
                 f"{count_label}尚需 {large_clicks + unit_clicks} 次加减，"
                 f"超过剩余精调预算 {remaining_clicks}；必须继续拖拽逼近，未继续逐个点击"
             )
+        batch_budget = min(100, remaining_clicks)
+        large_clicks = min(large_clicks, batch_budget)
+        unit_clicks = min(unit_clicks, batch_budget - large_clicks)
         remaining_clicks -= large_clicks + unit_clicks
         before = current
         for _ in range(large_clicks):
             click(assets.settings_scene_id, large_action)
             # The game drops back-to-back ADB taps while the slider is still
             # animating.  Pace the burst locally so one batch expresses the
-            # requested delta instead of burning five OCR-heavy retries.
+            # requested delta instead of burning repeated OCR-heavy retries.
             yield from context.wait_action_settle(0.18)
         for _ in range(unit_clicks):
             click(assets.settings_scene_id, unit_action)
@@ -451,13 +465,17 @@ def _fine_tune_batches(
         })
         if current == before:
             # GUI input can occasionally drop an isolated +/- click.  A lost
-            # click is safe and consumes one of the five bounded batches; the
-            # next batch recomputes the residual from a fresh read.
+            # click consumes the action budget. Three unchanged batches prove
+            # this attempt is not progressing; do not spend the whole budget.
+            no_progress_batches += 1
+            if no_progress_batches >= 3:
+                raise RuntimeError(f"{count_label}连续3批精调无进展：{current}")
             continue
+        no_progress_batches = 0
         if (desired - before) * (current - before) < 0:
             raise RuntimeError(f"{count_label}批量精调向反方向变化")
     if current != desired:
-        raise RuntimeError(f"{count_label}在5批精调内未收敛：{current} != {desired}")
+        raise RuntimeError(f"{count_label}在{max_button_actions}次精调预算内未收敛：{current} != {desired}")
     return current, batches
 
 
@@ -495,6 +513,7 @@ def _set_track_only_count(
     runtime_reader: Callable[[], int | Mapping[str, Any]] | None,
     threshold: int,
     read_counts: dict[str, int] | None = None,
+    max_button_actions: int = _MAX_DIRECT_BUTTON_ACTIONS,
 ) -> Iterator[Any]:
     """Control a CommonShop-style track whose thumb has no separate asset."""
 
@@ -616,7 +635,7 @@ def _set_track_only_count(
             "probe_count_delta": probe_delta,
         })
         if (_estimated_button_actions(assets, current=current, desired=desired)
-                <= _MAX_DIRECT_BUTTON_ACTIONS
+                <= max_button_actions
                 and abs(desired - current) < abs(probe_delta)):
             coarse_exit = "within_drag_grain"
             break
@@ -631,6 +650,7 @@ def _set_track_only_count(
         current=current,
         count_label=count_label,
         runtime_reader=runtime_reader, read_counts=read_counts,
+        max_button_actions=max_button_actions,
     )
     return {
         "before": before,
@@ -660,8 +680,9 @@ def set_verified_integer_slider_count(
     maximum: int | None = None,
     runtime_count_reader: Callable[[], int | Mapping[str, Any]] | None = None,
     initial_count: int | None = None,
+    max_button_actions: int = _MAX_DIRECT_BUTTON_ACTIONS,
 ) -> Iterator[Any]:
-    """Proportional positioning, pixel feedback, then at most five +/- batches.
+    """Proportional positioning, pixel feedback, then budgeted +/- batches.
 
     ``initial_count`` reuses the caller's freshly verified positive integer;
     no GUI action may intervene before this call. Pass no Runtime reader to
@@ -672,12 +693,21 @@ def set_verified_integer_slider_count(
     positioning and pixel feedback and enters fine tuning directly. Larger
     errors start with proportional positioning, even with large-step buttons.
     An explicit maximum gates every path, including already-exact and short
-    button adjustments. The slider's fine stage permits at most 30 clicks
-    across five batches; a large residual must be resolved by dragging.
+    button adjustments. ``max_button_actions`` is the separate total +/-
+    action budget (default 30), for both thumb and track-only sliders. After
+    applying measured pixel feedback, a residual below that probe's value
+    grain may enter fine tuning if it fits this budget. Each fine batch sends
+    at most 100 clicks and then rereads; every nonterminal batch spends at
+    least one action, so the total batch count is bounded by the same budget.
+    Three consecutive unchanged batches fail. The target remains exact;
+    neither parameter is an acceptance tolerance.
     """
 
     if isinstance(desired, bool) or not isinstance(desired, int) or desired <= 0:
         raise ValueError(f"{count_label}必须为正整数")
+    if (isinstance(max_button_actions, bool)
+            or not isinstance(max_button_actions, int) or max_button_actions <= 0):
+        raise ValueError(f"{count_label}精调动作预算必须为正整数")
     if maximum is not None:
         if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 1:
             raise ValueError(f"{count_label}上限必须为正整数")
@@ -712,6 +742,7 @@ def set_verified_integer_slider_count(
             current=before,
             count_label=count_label,
             runtime_reader=runtime_count_reader, read_counts=read_counts,
+            max_button_actions=max_button_actions,
         )
         return {
             "before": before,
@@ -733,6 +764,7 @@ def set_verified_integer_slider_count(
             count_label=count_label,
             runtime_reader=runtime_count_reader, read_counts=read_counts,
             threshold=threshold,
+            max_button_actions=max_button_actions,
         )
         return {**result, "count_reads": read_counts}
     geometry = _slider_geometry(context, assets)
@@ -744,10 +776,12 @@ def set_verified_integer_slider_count(
         context, assets, desired, current=current, maximum=observed_maximum,
         threshold=threshold,
         geometry=geometry, count_label=count_label, runtime_reader=runtime_count_reader, read_counts=read_counts,
+        max_button_actions=max_button_actions,
     )
     current, batches = yield from _fine_tune_batches(
         context, assets, desired, current=current,
         count_label=count_label, runtime_reader=runtime_count_reader, read_counts=read_counts,
+        max_button_actions=max_button_actions,
     )
     return {
         "before": before, "after": current, "maximum": observed_maximum,

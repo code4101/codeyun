@@ -330,6 +330,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
     def _require_wash_scene(self, *, phase: str) -> int:
         current = self.current_scene_id()
+        if current == self.assets.effect_activation_scene_id:
+            current = self.finish_effect_activation().scene_id
         if current not in self.assets.wash_scene_ids:
             raise SpiritArtifactCleanseBlocked("当前不是洗炼页", phase=phase)
         return current
@@ -452,7 +454,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         scene = self._require_wash_scene(phase="select_part")
         names = load_spirit_artifact_templates()[ware_id][1]
         part_id = list(names).index(part_name) + 1
-        for attempt in range(3):
+        for attempt in range(6):
             tokens = self.context.ocr_tokens_in_shapes(
                 scene, ['部件列表'], crop=True, padding=0,
                 frame_data_url=self.context.cur_frame(update=True),
@@ -460,17 +462,20 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             try:
                 point, direction = locate_spirit_artifact_part(tokens, names, part_id)
             except ValueError as exc:
+                if attempt < 5:
+                    self.execute(self.context.wait_action_settle(2))
+                    continue
                 raise SpiritArtifactCleanseBlocked(str(exc), phase='select_part') from exc
             if point is not None:
                 self.context.click_frame_point(scene, *point)
                 self.execute(self.context.wait_action_settle(.7))
                 break
-            if attempt < 2:
+            if attempt < 5:
                 self.execute(self.context.scroll_shape_content(
                     self.context.shape(scene, '部件列表'), direction=direction))
                 self.execute(self.context.wait_action_settle(.7))
         else:
-            raise SpiritArtifactCleanseBlocked('三轮 OCR 未定位目标部件',
+            raise SpiritArtifactCleanseBlocked('六轮 OCR 未定位目标部件',
                 code=SpiritArtifactCleanseErrorCode.ASSET_MISSING, phase='select_part')
         return self.execute(self.context.wait_scene(list(self.assets.wash_scene_ids), wait=8))
 
@@ -493,7 +498,9 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             rule = read_spirit_artifact_auto_open_rule()
             raise SpiritArtifactCleanseBlocked('自动洗炼入口当前不可见；受活动开放条件及部件品质限制',
                 code=SpiritArtifactCleanseErrorCode.CONTROL_UNAVAILABLE, phase='open_auto_settings', evidence=rule)
-        self.context.click_frame_point(scene, *match.point())
+        # OCR 只确认入口可见；当前框中心已实测能打开设置。
+        # 文本中心落在图标下缘，存在点击后仍停留洗炼页的真实样本。
+        self.context.click_shape_center(scene, self.assets.auto_settings_shape)
         result = self.execute(self.context.wait_scene(
             [self.assets.auto_unlocked_warning_scene_id, self.assets.auto_settings_scene_id], wait=10))
         return result
@@ -502,10 +509,13 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         """Open #671 without changing controls or activating KeepBtn."""
 
         assets = self.assets
-        current = self.current_scene_id()
+        # 用户可停在当前洗炼页；一次全局采样可能误判动画帧。
+        # 按本动作的合法前置/落点等待，已经打开设置时直接返回。
+        current = self.execute(self.context.wait_scene(
+            [*assets.wash_scene_ids, assets.auto_settings_scene_id,
+             assets.auto_unlocked_warning_scene_id], wait=10)).scene_id
         if current in assets.wash_scene_ids:
-            self._open_auto_entry()
-            current = self.current_scene_id()
+            current = self._open_auto_entry().scene_id
         if current == assets.auto_settings_scene_id:
             return current
         if current != assets.auto_unlocked_warning_scene_id:
@@ -592,23 +602,14 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         if current in assets.layer0_candidate_ids:
             self.cancel()
             current = self.current_scene_id()
-        if current in assets.wash_scene_ids:
-            self._transition(
-                current,
-                assets.equip_tab_shape,
-                assets.detail_scene_id,
-                phase="return_to_detail",
-            )
-            current = assets.detail_scene_id
-        if current == assets.detail_scene_id:
-            self._transition(
-                assets.detail_scene_id,
-                assets.return_shape,
-                assets.overview_scene_id,
-                assets.part_detail_scene_id,
-                phase="return_to_overview",
-            )
-            current = self.current_scene_id()
+        if current in (*assets.wash_scene_ids, assets.detail_scene_id):
+            # 各页签共用 SpiritWareView 的外侧背景出口。底部“返回”坐标
+            # 在装配页可点进部件详情，不能作为返回封面的确定动作。
+            self.execute(self.context.wait_scene(
+                [*assets.wash_scene_ids, assets.detail_scene_id], wait=10))
+            self.context.click_shape_center(assets.detail_scene_id, '背景返回封面')
+            current = self.execute(self.context.wait_scene(
+                [assets.overview_scene_id], wait=10)).scene_id
         if current == assets.part_detail_scene_id:
             self._transition(current, "右侧暗幕关闭", assets.overview_scene_id,
                              phase="close_part_detail")
@@ -691,7 +692,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
 
         scene = self._require_wash_scene(phase="lock")
-        before = read_spirit_artifact_ui_snapshot()
+        before = read_spirit_artifact_ui_snapshot(fast=True)
         return self._set_lock_from_snapshot(scene, before, cleanse_id, locked)
 
     def set_locks(self, desired_lock_ids: Sequence[int], *, target_item_id: str) -> Any:
@@ -706,7 +707,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
 
         scene = self._require_wash_scene(phase="locks")
-        current = read_spirit_artifact_ui_snapshot()
+        current = read_spirit_artifact_ui_snapshot(fast=True)
         effects = current.get('effects', [])
         desired = set(desired_lock_ids)
         ids = {e['cleanse_id'] for e in effects}
@@ -741,7 +742,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         expected[cleanse_id]["locked"] = locked
         deadline = time.monotonic() + 10
         while True:
-            after = read_spirit_artifact_ui_snapshot()
+            after = read_spirit_artifact_ui_snapshot(fast=True)
             if any(before[k] != after[k] for k in ("pid", "process_start_ticks", "item_id", "refine_num")):
                 raise SpiritArtifactCleanseBlocked("锁操作期间页面目标改变", phase="lock")
             actual = {e["cleanse_id"]: {k: v for k, v in e.items() if k != "row"}
@@ -749,7 +750,11 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             if actual == expected and before["pending_effects"] == after["pending_effects"]:
                 return after
             if time.monotonic() >= deadline:
-                raise SpiritArtifactCleanseBlocked("锁操作没有形成预期唯一 delta", phase="lock")
+                raise SpiritArtifactCleanseBlocked(
+                    "锁操作没有形成预期唯一 delta", phase="lock",
+                    evidence={'scene': scene, 'cleanse_id': cleanse_id,
+                              'expected': expected, 'actual': actual,
+                              'pending_effects': after['pending_effects']})
             time.sleep(0.2)
 
     def open_advanced_items(self) -> Any:
@@ -911,6 +916,19 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         timings['locator'] = locator_detail
         confirm_started = time.monotonic()
         confirmed = self.execute(self.context.wait_scene([self.assets.advanced_confirm_scene_id], wait=10))
+        if confirmed.scene_id == self.assets.advanced_items_scene_id:
+            # 列表滚动落稳前的点击可能未打开详情；尚未使用道具，可重新定位一次。
+            if memory is None:
+                self.execute(self.context.wait_click_ocr_text(
+                    self.assets.advanced_items_scene_id, name[2:], in_shapes=['道具列表'],
+                    max_scrolls_per_direction=2, timeout_seconds=15, crop_fallback=True))
+            else:
+                match, scroll_key, scroll_route = locate_advanced_item_with_experience(
+                    self.context, self.execute, scene_id=self.assets.advanced_items_scene_id,
+                    catalog=catalog, item_id=item_id, memory=memory,
+                    initial_frame=confirmed.frame_data_url)
+                self.context.click_frame_point(self.assets.advanced_items_scene_id, *match.point())
+            confirmed = self.execute(self.context.wait_scene([self.assets.advanced_confirm_scene_id], wait=10))
         if confirmed.scene_id != self.assets.advanced_confirm_scene_id:
             raise SpiritArtifactCleanseBlocked('使用道具确认场景不符',
                 code=SpiritArtifactCleanseErrorCode.SCENE_MISMATCH, phase='preview_advanced',
@@ -960,11 +978,13 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         )
 
     def start_auto_cleanse(self, prepared: PreparedSpiritArtifactCleanse) -> Any:
-        raise SpiritArtifactCleanseBlocked(
-            "AutoSet KeepBtn 会立即开始 200ms 洗炼循环，正式 adapter 默认禁用",
-            code=SpiritArtifactCleanseErrorCode.AUTH_MISSING,
-            phase="consume",
-        )
+        from .spirit_artifact_auto_batch import start_spirit_artifact_auto_batch
+        if not prepared.ready:
+            raise SpiritArtifactCleanseBlocked('自动洗炼计划未就绪', phase='consume')
+        return start_spirit_artifact_auto_batch(
+            self.context, self.execute, item_id=prepared.request.target.item_id,
+            max_material_cost=prepared.request.budget.max_material_cost,
+            max_rolls=prepared.request.budget.max_rolls)
 
     def _observe_selected(self, target: SpiritArtifactTarget) -> SpiritArtifactObservation:
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot

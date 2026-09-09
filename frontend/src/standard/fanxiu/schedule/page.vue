@@ -19,6 +19,7 @@ type GameplayActivityType =
   | 'tiandi-yiju'
 
 type ResourceActivityType =
+  | 'xiling-zhengwu'
   | 'lingzhuang-huadao'
   | 'yaochi-flower-festival'
   | 'yuanding-sansheng'
@@ -36,6 +37,7 @@ const gameplayTypes = new Set<GameplayActivityType>([
   'tiandi-yiju',
 ])
 const resourceTypes = new Set<ResourceActivityType>([
+  'xiling-zhengwu',
   'lingzhuang-huadao',
   'yaochi-flower-festival',
   'yuanding-sansheng',

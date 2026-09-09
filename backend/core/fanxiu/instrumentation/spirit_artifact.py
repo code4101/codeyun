@@ -70,6 +70,7 @@ _cached_snapshot: dict[str, Any] | None = None
 _bridge_failed_process: tuple[int, int] | None = None
 _bridge_failure_text = ""
 _item_location_cache: dict[tuple[int, int, str], Any] = {}
+_item_index_keys: dict[tuple[int, int, str], frozenset[Any]] = {}
 
 
 def _artifact_position(base_id: int) -> tuple[int, int] | None:
@@ -192,7 +193,7 @@ def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate:
     measured = time.monotonic()
     # 缓存当前字典的逻辑键，不能缓存洗炼回包即替换的 VO 指针。
     # 每次从新字典取当前对象并核验 UID；键消失/身份不符才全量定位。
-    # 真实诊断：VO 缓存导致每轮解析 557 个对象。按键优化尚待动作后复验。
+    # 先复用键，再检查回包产生的新键；两者都失败才重新定位。
     location_key = (memory.pid, memory.process_start_ticks, str(item_id))
     cached_location = None if force_relocate else _item_location_cache.get(location_key)
     candidates = list(values.items())
@@ -202,6 +203,15 @@ def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate:
             candidates = [(cached_location, values[cached_location])]
     else:
         _item_location_cache.pop(location_key, None)
+        # 回包可能同时替换 Long 字典键和 VO；只检查新增键即可找回该实例。
+        # 变化不止一项或未命中时仍回退全量，不能把新键直接当成目标。
+        prior_keys = None if force_relocate else _item_index_keys.get(location_key)
+        if prior_keys is not None:
+            changed = [key for key in values if key not in prior_keys]
+            matches = [(key, values[key]) for key in changed
+                       if str(reader.long(_fields(reader, values[key]).get('id'))) == str(item_id)]
+            if len(matches) == 1:
+                candidates = matches
     phases['location_cache'] = time.monotonic() - measured
     measured = time.monotonic()
     found = []
@@ -214,7 +224,9 @@ def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate:
             continue
         if len(_item_location_cache) >= 48:
             _item_location_cache.clear()
+            _item_index_keys.clear()
         _item_location_cache[location_key] = dictionary_key
+        _item_index_keys[location_key] = frozenset(values)
         ext = _fields(reader, item.get("ext"))
         found.append({"item_id": str(item_id), "base_id": as_int(item.get("baseId")),
                       "ware_id": position[0] + 1, "part": position[1] + 1,

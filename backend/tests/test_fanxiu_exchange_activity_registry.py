@@ -69,7 +69,7 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
         if spec.family == "resource_rank"
     } == {
         "lingzhuang-huadao", "yaochi-flower-festival", "yuanding-sansheng",
-        "lingchong-jingwu", "lianti-faxiang", "dandao-wending",
+        "lingchong-jingwu", "lianti-faxiang", "dandao-wending", "xiling-zhengwu",
     }
     with pytest.raises(ValueError, match="重复"):
         build_exchange_activity_registry(

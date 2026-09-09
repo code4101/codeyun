@@ -9,6 +9,62 @@ from .spirit_artifact_advanced_scroll import AdvancedScrollProfile
 from .spirit_artifact_yinxian import YinxianAttribute, meets_yinxian_target
 
 
+def run_spirit_artifact_prepared_round(
+    context, execute, *, process_identity: tuple[int, int], evidence_dir: Path,
+    stop_at: float, max_consumptions: int = 100,
+) -> dict:
+    """连续培养预备部件；每件突破同步后重新排序，截止/预算/异常即停止。
+
+    调用方先完成错升、初始阶段的本轮分析。本入口仅推进预备→突破，
+    不启用工程调度、不处理无双。总览用于选择，首次属性读取核验本体；
+    中断后从新事实重跑，不保存下一部件游标。
+    """
+    from sqlmodel import Session
+    from backend.db import engine
+    from ...catalog.inventory_models import FanxiuSpiritArtifactHallSnapshot
+    from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
+    from ...instrumentation.spirit_artifact_store import load_spirit_artifact_runtime_snapshot
+    from ...instrumentation.spirit_artifact_memory import spirit_artifact_memory
+    from .spirit_artifact_preparation import spirit_artifact_priority
+
+    if max_consumptions <= 0 or stop_at <= time.time():
+        raise ValueError('培养需要有效期限和消耗预算')
+    consumed, completed = 0, []
+    while time.time() < stop_at - 90 and consumed < max_consumptions:
+        with Session(engine) as session:
+            payload = load_spirit_artifact_runtime_snapshot(session)
+        if not payload or not payload.get('runtime_complete'):
+            raise ValueError('缺少完整灵器总览，不能规划培养')
+        hall = FanxiuSpiritArtifactHallSnapshot.model_validate(payload)
+        if any(row.stage in ('错升', '待识别') for ware in hall.artifacts for row in ware.rows):
+            return dict(status='blocked', stop_reason='earlier_stage_needs_analysis',
+                        consumed=consumed, completed=completed)
+        candidates = [(ware.order, row) for ware in hall.artifacts for row in ware.rows
+                      if row.stage == '预备']
+        if not candidates:
+            return dict(status='complete', stop_reason='no_prepared_parts',
+                        consumed=consumed, completed=completed)
+        ware_id, row = min(candidates, key=lambda value:
+                           spirit_artifact_priority('预备', value[0], value[1].order))
+        target = SpiritArtifactWashTarget(row.runtime_item_id, ware_id, row.order,
+                                         process_identity, row.runtime_base_id)
+        outcome = run_spirit_artifact_cultivation(
+            context, execute, target=target,
+            rules=dict(load_spirit_artifact_wash_rules()['cleanse_by_id']),
+            c_codes={'MAXHP_RECOVER_FIX', 'MP_RECOVER_FIX',
+                     'SPECIAL_DAMAGE_FIX', 'SPECIAL_DAMAGE_REDUCE'},
+            evidence_dir=Path(evidence_dir) / f'cultivate-{ware_id}-{row.order}',
+            stop_at=stop_at, max_consumptions=max_consumptions-consumed,
+            navigate=spirit_artifact_memory.snapshot(target) is None)
+        consumed += outcome['consumed']
+        if outcome['status'] != 'complete':
+            return dict(status=outcome['status'], stop_reason=outcome['stop_reason'],
+                        consumed=consumed, completed=completed, target=target)
+        completed.append(f'{ware_id}-{row.order}')
+    return dict(status='paused', stop_reason='deadline_paused' if time.time() >= stop_at-90
+                else 'budget_paused', consumed=consumed, completed=completed)
+
+
 def run_spirit_artifact_cultivation(
     context, execute, *, target: SpiritArtifactWashTarget, rules: dict,
     c_codes: set[str], evidence_dir: Path, stop_at: float,

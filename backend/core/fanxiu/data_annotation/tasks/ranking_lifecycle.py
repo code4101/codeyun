@@ -40,7 +40,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     ranking_checkpoint_retry_times,
     record_ranking_checkpoint_result,
 )
-from backend.core.fanxiu.activity.ranking_reconcile import reconcile_ranking_occurrence
+from backend.core.fanxiu.activity.ranking_reconcile import reconcile_ranking_occurrence, sync_ranking_schedule
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 
 
@@ -301,6 +301,9 @@ def _execute_family_job(
     results: list[dict[str, Any]] = []
 
     with Session(engine) as session:
+        # Page registration is read-only with respect to the game and must not
+        # disappear when an activity's action checkpoints are still in R&D.
+        sync_ranking_schedule(session, schedule, now=now, family=family)
         completed = completed_ranking_checkpoint_keys(session, family=family)
         prior_attempt_counts = {
             (row.instance_key, row.checkpoint_kind, row.business_date): int(

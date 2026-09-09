@@ -246,6 +246,7 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
         "tiandi-yiju": (9, 13, 17),
     }
     activity_ids = {
+        "xiling-zhengwu": (1043801, 2043801, 4043801, 8043801, 16043801, 32043801),
         "xianyuan-duokui": (846001,),
         # Version-specific Activity ids belong only in this adapter boundary.
         # The normalized Runtime schedule deliberately does not retain raw VO
@@ -771,6 +772,11 @@ def next_ranking_lifecycle_time(
     if next_daily <= local_now:
         next_daily += timedelta(days=1)
     candidates: list[datetime] = [next_daily]
+    # The game publishes new occurrences at 05:00. A midnight discovery with
+    # no actionable checkpoint must still revisit today's newly opened list.
+    publication_time = _at(local_now.date(), time(5, 0), local_now.tzinfo)
+    if publication_time > local_now:
+        candidates.append(publication_time)
     for occurrence in occurrences:
         local_day = now.astimezone(occurrence.start_at.tzinfo).date()
         for day in (local_day, local_day + timedelta(days=1)):

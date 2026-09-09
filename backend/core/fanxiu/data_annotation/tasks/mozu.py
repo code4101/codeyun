@@ -19,6 +19,8 @@ _MOZU_PARTICIPATION_SECONDS = 30.0
 class MozuTaskMixin:
     def daily_mozu_admission(self, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         payload = dict(payload or {})
+        if payload.get("finish_only") is True:
+            return None
         now = job_now()
         window_start = now.replace(hour=12, minute=30, second=0, microsecond=0)
         window_end = now.replace(hour=12, minute=35, second=0, microsecond=0)
@@ -32,6 +34,29 @@ class MozuTaskMixin:
             "next_time": next_run_text,
             "current_scene": None,
         })
+
+    def daily_mozu_finish_flow(self, context: Any):
+        """仅收尾已进入的魔祖战场；允许窗口外执行，绝不重新参战。
+
+        用于已确认参战而退出失败的正式 Job 人工复验。
+        世界页只证明收尾已完成，允许退出成功后写回失败的幂等复验，
+        不以此推断参与或奖励成功。
+        """
+        view = yield from context.wait_scene([338, 557, 34], wait=30.0)
+        scene_id = view.scene_id
+        if scene_id not in {338, 557, 34}:
+            raise RuntimeError("日常_魔祖：仅收尾要求已确认的魔祖战场")
+        if scene_id != 34:
+            yield from context.wait_click_then_scene(
+                scene_id, "离开", [186, 86, 339, 34], timeout=60.0, settle_seconds=1.5
+            )
+            yield from context.go_scene(34)
+        landed = yield from context.wait_scene([34], wait=15.0)
+        if landed.scene_id != 34:
+            raise RuntimeError("日常_魔祖：收尾未确认返回世界")
+        next_run = (job_now() + timedelta(days=1)).replace(hour=12, minute=30, second=0, microsecond=0)
+        context.set_next_time(next_run.strftime("%Y-%m-%d %H:%M:%S"))
+        return {"result": "success", "message": "日常_魔祖：已确认战场安全退出并返回世界（仅收尾）", "exit_confirmed": True, "current_scene": 34}
 
     def daily_mozu_flow(self, context: Any):
         now = job_now()

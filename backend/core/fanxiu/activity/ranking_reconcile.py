@@ -31,7 +31,9 @@ from backend.core.fanxiu.activity.exchange_event import (
     store_exchange_activity_observation,
     upsert_exchange_activity_snapshot,
 )
-from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
+from backend.core.fanxiu.activity.ranking_lifecycle import (
+    RankingOccurrence, RankingFamily, discover_ranking_occurrences, occurrence_relevant_on,
+)
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 from backend.models import (
     FanxiuExchangeActivity,
@@ -212,6 +214,31 @@ def seed_ranking_occurrence(
     if activity is None:
         raise RuntimeError("榜单 occurrence 入库后无法回读")
     return activity
+
+
+def sync_ranking_schedule(
+    session: Session,
+    schedule: Mapping[str, Any],
+    *,
+    now: datetime,
+    family: RankingFamily | None = None,
+) -> list[str]:
+    """Persist today's registered occurrences independently of action maturity.
+
+    Explicit database synchronization from a complete Runtime schedule; no GUI
+    or ranking collection. Repeating it updates the same occurrence identities.
+    Unloaded ranks remain unavailable rather than being represented as empty.
+    """
+    if not (schedule.get("available") and schedule.get("complete")):
+        raise ValueError("榜单入库需要完整 Runtime 日程")
+    from backend.core.fanxiu.activity.exchange_activity_registry import EXCHANGE_ACTIVITY_SPECS
+
+    return [
+        seed_ranking_occurrence(session, occurrence, captured_at=str(schedule.get("captured_at") or now.isoformat())).id
+        for occurrence in discover_ranking_occurrences(schedule, family=family)
+        if occurrence.activity_type in EXCHANGE_ACTIVITY_SPECS
+        and occurrence_relevant_on(occurrence, now.date())
+    ]
 
 
 def _count(session: Session, model: Any, predicate: Any) -> int:
@@ -444,6 +471,7 @@ def reconcile_ranking_occurrence(
 
 
 __all__ = [
+    "sync_ranking_schedule",
     "reconcile_ranking_occurrence",
     "seed_ranking_occurrence",
 ]

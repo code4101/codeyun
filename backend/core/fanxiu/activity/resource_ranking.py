@@ -297,7 +297,7 @@ def ensure_yuanding_sansheng_activity(session: Session) -> str:
     )
 
 
-def _yuanding_rank_rows(rank: dict[str, Any], *, scope: str) -> list[dict[str, Any]]:
+def _resource_rank_rows(rank: dict[str, Any], *, scope: str) -> list[dict[str, Any]]:
     size = int(rank.get("rank_list_size") or 0)
     rows: list[dict[str, Any]] = []
     for item in rank.get("items") or []:
@@ -366,8 +366,8 @@ def collect_and_store_yuanding_sansheng_activity(
 
     personal = read_activity_rank_fact(session, YUANDING_SANSHENG_PERSONAL_RANK_ID)
     group = read_activity_rank_fact(session, YUANDING_SANSHENG_GROUP_RANK_ID)
-    rows = _yuanding_rank_rows(personal, scope="personal")
-    rows.extend(_yuanding_rank_rows(group, scope="plane"))
+    rows = _resource_rank_rows(personal, scope="personal")
+    rows.extend(_resource_rank_rows(group, scope="plane"))
     captured_at = max(str(personal["captured_at"]), str(group["captured_at"]))
     evidence = dict(activity.evidence or {})
     evidence.update(
@@ -393,6 +393,56 @@ def collect_and_store_yuanding_sansheng_activity(
         session,
         activity_type=YUANDING_SANSHENG_ACTIVITY_TYPE,
         activity_id=activity.id,
+    ).selected_activity
+
+
+def collect_and_store_xiling_zhengwu_activity(
+    session: Session, *, activity_id: str,
+) -> Any:
+    """Save already-loaded rank facts for this exact washing-event occurrence.
+
+    Reading never opens the game page; unavailable managers retain old data.
+    Rank IDs come from the occurrence's static follow bindings, not a fixed
+    cross-server variant. All required facts are read before replacing rows.
+    """
+    activity = session.get(FanxiuExchangeActivity, activity_id)
+    if activity is None or activity.activity_type != "xiling-zhengwu":
+        raise ValueError("洗灵证武活动不存在")
+    if not is_exchange_activity_active(activity):
+        raise ValueError("洗灵证武活动不在有效日期内")
+    identities = dict((activity.evidence or {}).get("rank_scope_identities") or {})
+    if "personal" not in identities:
+        raise ValueError("洗灵证武缺少本期个人榜绑定")
+    facts = {
+        scope: read_activity_rank_fact(session, int(identity["runtime_rank_activity_id"]))
+        for scope, identity in identities.items()
+    }
+    rows = []
+    for scope, fact in facts.items():
+        fact_time = datetime.fromisoformat(str(fact["captured_at"]))
+        start_time = datetime.fromisoformat(activity.start_at)
+        if fact_time.tzinfo is None:
+            fact_time = fact_time.astimezone()
+        if start_time.tzinfo is None:
+            start_time = start_time.astimezone()
+        if fact_time < start_time:
+            raise ValueError("洗灵证武榜单事实早于本期开始，保留上次快照")
+        if int(fact.get("rank_list_size") or 0) > 0 and not fact.get("items"):
+            raise ValueError("洗灵证武榜单明细尚未加载，保留上次快照")
+        rows.extend(_resource_rank_rows(fact, scope=scope))
+    captured_at = max(str(fact["captured_at"]) for fact in facts.values())
+    evidence = dict(activity.evidence or {})
+    for scope, fact in facts.items():
+        evidence["rank_list_size" if scope == "personal" else "plane_rank_list_size"] = int(fact.get("rank_list_size") or 0)
+    activity.evidence = evidence
+    activity.source_kind = "standard_runtime_facts"
+    session.add(activity)
+    replace_exchange_rankings(
+        session, activity_type=activity.activity_type, activity_id=activity.id,
+        rows=rows, captured_at=captured_at,
+    )
+    return list_exchange_activity_snapshot(
+        session, activity_type=activity.activity_type, activity_id=activity.id,
     ).selected_activity
 
 

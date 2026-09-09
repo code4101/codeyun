@@ -14,8 +14,10 @@ const YuandingSanshengPage = defineAsyncComponent(() => import('../yuanding-sans
 const LingchongJingwuPage = defineAsyncComponent(() => import('../lingchong-jingwu/page.vue'))
 const LiantiFaxiangPage = defineAsyncComponent(() => import('../lianti-faxiang/page.vue'))
 const DandaoWendingPage = defineAsyncComponent(() => import('../dandao-wending/page.vue'))
+const XilingZhengwuPage = defineAsyncComponent(() => import('../xiling-zhengwu/page.vue'))
 
 type ResourceActivityType =
+  | 'xiling-zhengwu'
   | 'lingzhuang-huadao'
   | 'yaochi-flower-festival'
   | 'yuanding-sansheng'
@@ -35,6 +37,7 @@ const props = withDefaults(defineProps<{
 })
 
 const activityOptions: { label: string; value: ResourceActivityType }[] = [
+  { label: '洗灵证武', value: 'xiling-zhengwu' },
   { label: '灵装化道', value: 'lingzhuang-huadao' },
   { label: '瑶池花会', value: 'yaochi-flower-festival' },
   { label: '缘定三生', value: 'yuanding-sansheng' },
@@ -81,6 +84,7 @@ watch(
 )
 
 const selectedPage = computed(() => ({
+  'xiling-zhengwu': XilingZhengwuPage,
   'lingzhuang-huadao': LingzhuangHuadaoPage,
   'yaochi-flower-festival': YaochiFlowerFestivalPage,
   'yuanding-sansheng': YuandingSanshengPage,

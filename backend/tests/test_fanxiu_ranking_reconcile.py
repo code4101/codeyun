@@ -10,6 +10,48 @@ from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
 from backend.models import FanxiuExchangeActivity, FanxiuExchangeShopItem
 
 
+def test_schedule_registration_is_idempotent_without_enabling_gameplay():
+    from datetime import timezone, timedelta
+    from backend.core.fanxiu.activity.schedule_page import load_fanxiu_schedule_ranking_snapshot
+    from backend.core.fanxiu.activity.ranking_lifecycle import due_ranking_checkpoints, discover_ranking_occurrences
+
+    tz = timezone(timedelta(hours=8))
+    now = datetime(2026, 9, 9, 18, tzinfo=tz)
+
+    def stamp(day, hour):
+        return int(datetime(2026, 9, day, hour, tzinfo=tz).timestamp() * 1000)
+
+    schedule = {
+        "available": True, "complete": True, "captured_at": now.isoformat(),
+        "items": [
+            {"id": 8080001400004, "activityId": 8080001, "activityType": 8,
+             "serverCount": 8, "startTime": stamp(9, 10), "endTime": stamp(11, 22),
+             "prepareEndTime": stamp(9, 5), "closePanelTime": stamp(12, 23)},
+            {"id": 8043801400027, "activityId": 8043801, "activityType": 12,
+             "serverCount": 8, "startTime": stamp(8, 5), "endTime": stamp(9, 22),
+             "prepareEndTime": stamp(7, 5), "closePanelTime": stamp(9, 23)},
+        ],
+    }
+    with _session() as session:
+        first = ranking_reconcile.sync_ranking_schedule(session, schedule, now=now)
+        assert ranking_reconcile.sync_ranking_schedule(session, schedule, now=now) == first
+        snapshot = load_fanxiu_schedule_ranking_snapshot(session, business_date=now.date())
+        assert snapshot.gameplay_rank.activity_type == "xutian-palace"
+        assert snapshot.resource_rank.activity_type == "xiling-zhengwu"
+        assert len(snapshot.resource_rank.snapshot.activities) == 1
+        activity = session.get(FanxiuExchangeActivity, first[0])
+        if activity.activity_type != "xiling-zhengwu":
+            activity = session.get(FanxiuExchangeActivity, first[1])
+        assert activity.game_rank_activity_id == 43805
+        assert activity.evidence["rank_scope_identities"]["plane"]["runtime_rank_activity_id"] == 43806
+        assert activity.evidence["refresh_status"]["rankings"] == "unavailable"
+    assert not [
+        checkpoint for checkpoint in due_ranking_checkpoints(
+            discover_ranking_occurrences(schedule), now=now, production_only=True,
+        ) if checkpoint.activity_type == "xutian-palace"
+    ]
+
+
 def _session() -> Session:
     engine = create_engine("sqlite://")
     SQLModel.metadata.create_all(engine)

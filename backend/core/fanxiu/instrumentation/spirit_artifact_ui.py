@@ -114,8 +114,11 @@ def bind_spirit_artifact_ui_effects(rows: list[dict], committed: list[dict]) -> 
     return [{'row': effect['row'], **current[effect['cleanse_id']]} for effect in rows]
 
 
-def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
-    """返回当前灵器、页签、洗炼选中实例与成本；缺失或歧义直接报错。"""
+def read_spirit_artifact_ui_snapshot(*, fast: bool = False) -> dict[str, Any]:
+    """返回当前灵器、页签、洗炼选中实例与成本；缺失或歧义直接报错。
+
+    fast 复用进程绑定的快速校验，仍重新读取页面成员与实际属性。
+    """
 
     from ..catalog.spirit_artifact_wash_rules import spirit_artifact_ware_ids
     supported_ware_ids = spirit_artifact_ware_ids()
@@ -204,4 +207,4 @@ def read_spirit_artifact_ui_snapshot() -> dict[str, Any]:
         return {**next(iter(candidates.values())), 'source': 'active_spiritware_view',
                 'pid': ctx.memory.pid, 'process_start_ticks': ctx.memory.process_start_ticks}
 
-    return read_ui_runtime_snapshot([], read)
+    return read_ui_runtime_snapshot([], read, fast=fast)

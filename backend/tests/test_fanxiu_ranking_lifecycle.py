@@ -724,7 +724,7 @@ def test_magic_1900_is_extra_checkpoint_not_a_parallel_job() -> None:
         (cross,),
         now=datetime(2026, 8, 22, 0, 31, tzinfo=TZ),
         completed_keys=completed,
-    ) == datetime(2026, 8, 22, 12, 0, tzinfo=TZ)
+    ) == datetime(2026, 8, 22, 5, 0, tzinfo=TZ)
     mail_due = due_ranking_checkpoints(
         (cross,),
         now=datetime(2026, 8, 22, 12, 0, tzinfo=TZ),
