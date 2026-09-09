@@ -26,6 +26,7 @@ def run_a_collection(
     supplement_b_code: str | None = None,
     evaluate_existing_candidate: bool = False,
     scroll_profile=None,
+    initial_snapshot: dict | None = None,
 ) -> dict:
     """调用即授权在指定目标上切锁、消耗引仙/精炼石、采用达标候选。
 
@@ -40,7 +41,7 @@ def run_a_collection(
     既存候选评价只记观察事件，不重复统计历史消耗或概率样本。
     supplement_b_code 指定 A 全满后的独立补 B 阶段：仅筛红色，不精炼。
     """
-    from ...instrumentation.backpack import read_backpack_item_counts
+    from ...instrumentation.spirit_artifact_memory import spirit_artifact_memory as memory_model
 
     if max_consumptions <= 0 or stop_at <= time.time():
         raise ValueError('连续洗灵需要有效期限及消耗上限')
@@ -65,7 +66,12 @@ def run_a_collection(
         raise RuntimeError('入口存在未决道具确认，保留现场且禁止重发确认')
     if entry.scene_id == 721:
         gui.finish_effect_activation()
-    current = read_spirit_artifact_wash_observation(target, verify_ui=True)
+    if initial_snapshot is None:
+        current = read_spirit_artifact_wash_observation(target, verify_ui=True)
+    else:
+        from ...instrumentation.spirit_artifact_wash_observation import validate_spirit_artifact_wash_snapshot
+        validate_spirit_artifact_wash_snapshot(initial_snapshot, target, verify_ui=True)
+        current = initial_snapshot
     if current.get('is_break') is not False:
         raise RuntimeError('A 类培养入口须确认本体尚未突破；已突破或状态未知时停止')
     if current['pending_effects'] and not evaluate_existing_candidate:
@@ -152,19 +158,9 @@ def run_a_collection(
         current = save_pending(current) if accept_existing else current
 
     consumed = 0
-    prior_catalog = None
     with gui.advanced_scroll_session(f'a-collection-{time.time_ns()}', scroll_profile=scroll_profile):
         while True:
-            # 完整业务候选优先于全局相似结果页，活动干扰走既有守护。
-            # #713 仍由显式业务确认处理，不交给通用弹窗守护。
-            landed = execute(context.wait_scene([713, 721, 668, 714, 712], wait=12))
-            if landed.scene_id == 713:
-                raise RuntimeError('出现未决道具确认，保留现场且禁止重发确认')
-            if landed.scene_id == 721:
-                gui.finish_effect_activation()
-                current = read_spirit_artifact_wash_observation(target, verify_ui=True)
-                if current.get('is_break') is not False:
-                    raise RuntimeError('效果激活收尾后本体已突破或状态未知，停止当前培养')
+            # 动作提供方负责页面就绪；纯属性规划不再先做一次重复场景识别。
             if supplement_b_code is not None:
                 plan = plan_b_supplement(attributes(current['effects']), a_codes=a_codes,
                                          target_code=supplement_b_code)
@@ -191,6 +187,7 @@ def run_a_collection(
                 current = gui.set_locks(plan.desired_lock_ids, target_item_id=target.item_id)
                 from ...instrumentation.spirit_artifact_wash_observation import validate_spirit_artifact_wash_snapshot
                 validate_spirit_artifact_wash_snapshot(current, target, verify_ui=True)
+                memory_model.remember_snapshot(current)
                 if {e['cleanse_id'] for e in current['effects'] if e['locked']} != set(plan.desired_lock_ids):
                     raise RuntimeError('切锁后最终锁状态与计划不一致，停止')
                 record({'record_type': 'locks_updated', 'probability_sample': False,
@@ -201,25 +198,32 @@ def run_a_collection(
             iteration_started = time.monotonic()
             # preview 校验当前实例、库存、未锁项、道具确认文案；窗口路线在本程序内复用。
             preview = gui.preview_advanced_item(material, fast_observation=fast_observation,
-                prior_catalog=prior_catalog, expected_snapshot=current)
+                expected_snapshot=current)
             if preview['target_item_id'] != target.item_id:
                 raise RuntimeError('使用道具确认目标与培养目标不一致')
-            # 复用 preview 已读取的确认页事实，不追加 Runtime；不能等消耗后
-            # 才发现打开列表之前已有外部保存/切锁，导致本轮计划过期。
+            # 对照已知计划；正常独占连续操作不为未改变的事实追加 Runtime。
             verify_a_collection_preview(current, preview['observation'])
-            prior_catalog = preview['catalog']
+            current = {**current, 'pending_revision': preview['pending_revision']}
             preview_seconds = time.monotonic() - iteration_started
             if time.time() >= stop_at - 30:
                 gui.cancel()
                 gui.cancel()
                 return finish('paused', 'deadline_paused', plan)
             after = None
+            result_timings = {}
             try:
+                measured = time.monotonic()
                 context.click_shape_center(713, '确认使用道具')
                 execute(context.wait_scene([714], wait=12))
+                result_timings['confirm_and_wait'] = time.monotonic() - measured
+                measured = time.monotonic()
                 after = read_spirit_artifact_wash_observation(target)
-                counts, inventory = read_backpack_item_counts([material], manager_key='spirit-artifact-advanced')
-            except Exception as error:
+                result_timings['candidate_read'] = time.monotonic() - measured
+                measured = time.monotonic()
+                inventory_after = memory_model.confirm_use(material, current, after)
+                result_timings['validate_and_deduct'] = time.monotonic() - measured
+            except BaseException as error:
+                memory_model.invalidate()
                 # 确认已尝试，动作/读取失败不表示没有消耗，也不能算已确认抽样。
                 record({'record_type': 'unverified_consumption', 'material_id': material,
                         'before': current, 'after': after,
@@ -229,11 +233,7 @@ def run_a_collection(
                         'elapsed_seconds': time.monotonic() - iteration_started})
                 raise RuntimeError('道具确认后观察失败；已记录未核实消耗，禁止自动重试') from error
             consumed += 1
-            consumption_verified = (
-                (inventory['pid'], inventory['process_start_ticks']) == target.process_identity
-                and preview['count'] - counts[material] == 1
-                and effect_map(after['effects']) == effect_map(current['effects'])
-                and len(after['pending_effects']) == len(current['effects']))
+            consumption_verified = True
             # 即使后置验证失败，也保留原始观察；不靠候选内容变化断言独立消耗。
             try:
                 raw_sample = attributes(after['pending_effects'])
@@ -241,7 +241,8 @@ def run_a_collection(
                 # 未知词条不能使已消耗的一次样本从统计证据中消失。
                 record({'material_id': material, 'before': current, 'after': after,
                         'consumption_verified': consumption_verified,
-                        'inventory_before': preview['count'], 'inventory_after': counts[material],
+                        'inventory_before': preview['count'], 'inventory_after': inventory_after,
+                        'inventory_source': 'kernel_model',
                         'normalization_error': str(error),
                         'preview_seconds': preview_seconds,
                         'elapsed_seconds': time.monotonic() - iteration_started})
@@ -252,13 +253,15 @@ def run_a_collection(
                     'record_type': 'consumption', 'sample_origin': 'current_invocation_consumption',
                     'probability_sample': consumption_verified and material == 14000006,
                     'consumption_verified': consumption_verified,
-                    'inventory_before': preview['count'], 'inventory_after': counts[material],
+                    'inventory_before': preview['count'], 'inventory_after': inventory_after,
+                    'inventory_source': 'kernel_model',
                     'highest_red_ratio': highest_red_ratio,
                     'unlocked_candidates': [dict(cleanse_id=e.cleanse_id, code=e.code,
                         value=e.value, quality=e.quality, normal_max=e.normal_max)
                         for e in raw_sample if not e.locked],
                     'preview_seconds': preview_seconds,
                     'preview_timings': preview.get('timings', {}),
+                    'result_timings': result_timings,
                     'inventory_diagnostics': preview.get('inventory_diagnostics', {}),
                     'elapsed_seconds': time.monotonic() - iteration_started})
             if not consumption_verified:

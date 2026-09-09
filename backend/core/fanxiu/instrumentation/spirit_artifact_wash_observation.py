@@ -83,8 +83,11 @@ def read_spirit_artifact_wash_observation(
         errors.append({'layer': layer, 'code': exc.code, 'error': str(exc)})
 
     def result(snapshot: dict[str, Any], path: str, ui_verified: bool) -> dict[str, Any]:
-        return {**snapshot, 'observation_path': path, 'ui_verified': ui_verified,
+        value = {**snapshot, 'observation_path': path, 'ui_verified': ui_verified,
                 'observed_at': time.time(), 'fallback_errors': errors}
+        from .spirit_artifact_memory import spirit_artifact_memory
+        spirit_artifact_memory.remember_snapshot(value)
+        return value
 
     if not verify_ui:
         try:

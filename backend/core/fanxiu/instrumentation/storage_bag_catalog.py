@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -155,10 +156,14 @@ def sync_storage_bag_atlas(
 ) -> dict[str, Any]:
     """Merge a complete live snapshot into the cumulative atlas and persist it atomically."""
 
+    if (runtime_snapshot.get('tab') or {}).get('number') != 1:
+        raise ValueError('全量同步必须使用普通储物袋完整页签')
     live = build_storage_bag_catalog_snapshot(runtime_snapshot, cards_by_id, captured_at=captured_at)
     resolved_path = storage_bag_atlas_path(path)
     with _STORE_LOCK:
         store = _read_store(resolved_path)
+        if store.get('updated_at') and datetime.fromisoformat(captured_at) < datetime.fromisoformat(store['updated_at']):
+            return _atlas_projection(store, runtime_available=False, reason='忽略过期观测')
         existing_rows = [dict(row) for row in store.get("items") or [] if isinstance(row, Mapping)]
         by_id = {int(row["base_id"]): row for row in existing_rows if str(row.get("base_id") or "").isdigit()}
         next_order = max((int(row.get("atlas_order") or 0) for row in existing_rows), default=0)
@@ -199,6 +204,20 @@ def sync_storage_bag_atlas(
         }
         _write_store(resolved_path, payload)
         return _atlas_projection(payload, runtime_available=True)
+
+
+def sync_storage_bag_from_game(session) -> dict[str, Any]:
+    """显式采集普通储物袋全集一次，发布共享图鉴；不执行使用或领取。"""
+    from . import fanxiu_instrumentation_service
+    from ..catalog.item import load_fanxiu_item_runtime_index
+    from ..storage_bag_usage import ensure_storage_bag_atlas_analysis
+    runtime = fanxiu_instrumentation_service.backpack_ui_snapshot()
+    bag = sync_storage_bag_atlas(
+        runtime, load_fanxiu_item_runtime_index(rebuild_missing=False)['cards_by_id'],
+        captured_at=datetime.now().astimezone().isoformat(timespec='microseconds'))
+    ensure_storage_bag_atlas_analysis(session, bag)
+    session.commit()
+    return bag
 
 
 def load_storage_bag_atlas(

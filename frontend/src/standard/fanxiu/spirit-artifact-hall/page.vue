@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus';
 import { ArrowDown, ArrowUp, Refresh } from '@element-plus/icons-vue';
 import {
   getFanxiuSpiritArtifactHall,
-  syncFanxiuSpiritArtifactStorageBag,
+  syncFanxiuBusinessStorageBag,
   saveFanxiuSpiritArtifactHall,
   type FanxiuSpiritArtifactHallSnapshot,
 } from '@/api/fanxiu';
@@ -147,7 +147,7 @@ function stageStyle(stage: string) {
 const stageExplanations = [
   { stage: '错升', rule: '已突破，但本灵器 A 类未全部满／巅', note: '当前自动处理采用重置策略；高级补救由用户手动处理。' },
   { stage: '初始', rule: '<1 阶', note: '阶数指红色本体阶数，无红色记为 0 阶。' },
-  { stage: '预备', rule: '≥1 阶', note: '1–5 阶五条属性，6 阶起六条。' },
+  { stage: '预备', rule: '≥1 阶', note: '1–4 阶五条属性，5 阶起六条。' },
   { stage: '突破', rule: '本灵器全部 A 类满／巅且已突破', note: '' },
   { stage: '无双', rule: '突破 + 灵器无双', note: '—' },
   { stage: '道威', rule: '无双 + 混沌道威', note: '—' },
@@ -300,7 +300,9 @@ const syncingStorageBag = ref(false);
 async function syncStorageBag() {
   syncingStorageBag.value = true;
   try {
-    const snapshot = await syncFanxiuSpiritArtifactStorageBag();
+    const result = await syncFanxiuBusinessStorageBag();
+    if (!result.ok) throw new Error(result.reason || "同步储物袋失败");
+    const snapshot = await getFanxiuSpiritArtifactHall();
     storageBagItems.value = normalizeStorageBagItems(snapshot.storage_bag_items);
     ElMessage.success('储物袋数量与自选奖励已同步');
   } catch (error: any) {
@@ -1185,7 +1187,17 @@ onBeforeUnmount(() => {
                 <span class="stage-badge" :style="stageStyle(row.cells[part - 1].stage)">
                   {{ row.cells[part - 1].stage }}
                 </span>
-                <span>{{ displayRedGrade(row.cells[part - 1]) }}阶{{ row.cells[part - 1].realm }}境</span>
+                <span class="artifact-levels">
+                  <span>{{ row.cells[part - 1].partName }}</span>
+                  <span :class="{
+                    'grade-started': displayRedGrade(row.cells[part - 1]) >= 1 && displayRedGrade(row.cells[part - 1]) < 5,
+                    'grade-unlocked': displayRedGrade(row.cells[part - 1]) >= 5,
+                  }">{{ displayRedGrade(row.cells[part - 1]) }}阶</span>
+                  <span :class="{
+                    'realm-unlocked': row.cells[part - 1].realm === 1,
+                    'realm-skilled': row.cells[part - 1].realm >= 2,
+                  }">{{ row.cells[part - 1].realm }}境</span>
+                </span>
               </div>
             </template>
           </el-table-column>
@@ -1231,6 +1243,27 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 13px;
   line-height: 1.6;
+}
+
+.artifact-levels {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.grade-started {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.grade-unlocked,
+.realm-unlocked {
+  color: #2563eb;
+  font-weight: 600;
+}
+
+.realm-skilled {
+  color: #9333ea;
+  font-weight: 600;
 }
 
 .artifact-summary-cell {

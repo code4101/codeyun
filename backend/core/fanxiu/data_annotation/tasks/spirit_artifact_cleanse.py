@@ -61,7 +61,8 @@ class SpiritArtifactCleanseGuiAssets:
 
     @property
     def business_scene_ids(self) -> tuple[int, ...]:
-        return (self.overview_scene_id, self.detail_scene_id, self.part_detail_scene_id, *self.wash_scene_ids)
+        from .spirit_artifact_upgrade_count import ARTIFACT_TAB_SCENES
+        return (self.overview_scene_id, self.part_detail_scene_id, *ARTIFACT_TAB_SCENES)
 
     @property
     def wash_scene_ids(self) -> tuple[int, ...]:
@@ -389,61 +390,68 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
 
     def select(self, fresh: FreshSpiritArtifactSnapshot) -> Any:
         """导航到任意灵器的指定实例；每层都用 Runtime 校验身份。"""
-        from backend.core.fanxiu.instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
+        observation = fresh.observation
+        return self.select_item(
+            observation.target.item_id, observation.target.ware_id,
+            observation.artifact_name, observation.part_name)
 
-        observation, assets = fresh.observation, self.assets
+    def select_item(self, item_id: str, ware_id: int, artifact_name: str, part_name: str) -> Any:
+        """复用当前灵器页面定位实例；跨灵器仅退回封面，不绕行世界页。"""
+        from .spirit_artifact_upgrade_count import ARTIFACT_TAB_SCENES, select_artifact_tab
+        from ...instrumentation.spirit_artifact_memory import spirit_artifact_memory
+
+        if ware_id not in spirit_artifact_ware_ids() or not all((item_id, artifact_name, part_name)):
+            raise SpiritArtifactCleanseBlocked('目标实例或名称缺失', phase='select')
+        known_ware = spirit_artifact_memory.selected_ware
+        spirit_artifact_memory.navigation_started()
+        assets = self.assets
         current = self.current_scene_id()
-        if current in (*assets.wash_scene_ids, assets.detail_scene_id):
-            selected = read_spirit_artifact_ui_identity(window_kind='view')
-            if selected['ware_id'] != observation.target.ware_id:
-                self.return_to_world()
-                current = assets.world_scene_id
-        elif current not in (assets.world_scene_id, assets.overview_scene_id):
+        if current in ARTIFACT_TAB_SCENES and known_ware != ware_id:
+            # 固定顺序导航不读 Runtime；在封面按名称重新定位即可。
+            self.context.click_shape_center(assets.detail_scene_id, '背景返回封面')
+            current = self.execute(self.context.wait_scene([assets.overview_scene_id], wait=8)).scene_id
+            if current != assets.overview_scene_id:
+                raise SpiritArtifactCleanseBlocked('切换灵器未返回封面', phase='select')
+        elif current not in (*ARTIFACT_TAB_SCENES, assets.world_scene_id, assets.overview_scene_id):
             self.return_to_world()
             current = assets.world_scene_id
         if current == assets.world_scene_id:
             self.open_overview()
             current = assets.overview_scene_id
         if current == assets.overview_scene_id:
-            self.select_artifact(observation.target.ware_id, observation.artifact_name)
-            current = assets.detail_scene_id
-        if current == assets.detail_scene_id:
-            self._transition(current, assets.wash_tab_shape, *assets.wash_scene_ids, phase='open_wash')
-        return self.select_wash_part(observation.target.item_id, observation.part_name)
+            current = self.select_artifact(ware_id, artifact_name, tab=assets.wash_tab_shape)
+        if current in ARTIFACT_TAB_SCENES and current not in assets.wash_scene_ids:
+            select_artifact_tab(self.context, self.execute, assets.wash_tab_shape)
+            landed = self.execute(self.context.wait_scene(list(assets.wash_scene_ids), wait=8)).scene_id
+            if landed not in assets.wash_scene_ids:
+                raise SpiritArtifactCleanseBlocked('洗炼页尚未就绪', phase='open_wash')
+        return self.select_wash_part(ware_id, part_name)
 
-    def select_artifact(self, ware_id: int, artifact_name: str) -> Any:
-        """复用固定顺序 OCR 导航，进入后核对洗炼目标的 Runtime 身份。"""
-        from .spirit_artifact_upgrade_count import open_artifact_for_upgrade
-        from backend.core.fanxiu.instrumentation.spirit_artifact_ui_identity import read_spirit_artifact_ui_identity
-
+    def select_artifact(self, ware_id: int, artifact_name: str, *, tab: str = "装配") -> Any:
+        """固定顺序与 OCR 导航；精确本体随培养属性读取一并核验。"""
+        from .spirit_artifact_upgrade_count import open_artifact_for_upgrade, select_artifact_tab
         self._require_scene(self.assets.overview_scene_id, phase='select_artifact')
         if ware_id not in spirit_artifact_ware_ids() or not artifact_name:
             raise SpiritArtifactCleanseBlocked('无效灵器身份', phase='select_artifact')
-        open_artifact_for_upgrade(self.context, self.execute, artifact_name)
-        self._require_scene(self.assets.detail_scene_id, phase='select_artifact')
-        selected = read_spirit_artifact_ui_identity(window_kind='view')
-        if selected['ware_id'] != ware_id:
-            raise SpiritArtifactCleanseBlocked('灵器名称点击后 Runtime ID 不一致', phase='select_artifact')
-        return selected
+        if tab not in ('装配', '洗炼'):
+            raise ValueError('灵器导航目标页签须为装配或洗炼')
+        landed = open_artifact_for_upgrade(self.context, self.execute, artifact_name)
+        expected = (self.assets.detail_scene_id,) if tab == '装配' else self.assets.wash_scene_ids
+        if landed not in expected:
+            select_artifact_tab(self.context, self.execute, tab)
+            landed = self.execute(self.context.wait_scene(list(expected), wait=8)).scene_id
+        if landed not in expected:
+            raise SpiritArtifactCleanseBlocked('目标页签未就绪', phase='select_artifact')
+        return landed
 
-    def select_wash_part(self, item_id: str, part_name: str) -> Any:
-        """按固定名称顺序定位当前可见部件，点击后核验精确实例。"""
-        from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
+    def select_wash_part(self, ware_id: int, part_name: str) -> Any:
+        """配置给出固定顺序，OCR 定位部件；实例随首次培养属性读取核验。"""
         from backend.core.fanxiu.catalog.spirit_artifact_identity import load_spirit_artifact_templates
         from .spirit_artifact_part_navigation import locate_spirit_artifact_part
 
         scene = self._require_wash_scene(phase="select_part")
-        before = read_spirit_artifact_ui_snapshot()
-        matches = [p for p in before.get("parts", []) if p["itemUid"] == str(item_id)]
-        if len(matches) != 1:
-            raise SpiritArtifactCleanseBlocked("目标实例不属于当前灵器的部件列表", phase="select_part")
-        if before["item_id"] == str(item_id):
-            return before
-        part_ids = [p.get('partId') for p in before['parts']]
-        if len(part_ids) != 6 or any(type(p) is not int for p in part_ids) or set(part_ids) != set(range(1, 7)):
-            raise SpiritArtifactCleanseBlocked('部件列表缺少完整唯一的 partId，不能按数组位置猜测', phase='select_part')
-        part_id = matches[0]['partId']
-        names = load_spirit_artifact_templates()[before['ware_id']][1]
+        names = load_spirit_artifact_templates()[ware_id][1]
+        part_id = list(names).index(part_name) + 1
         for attempt in range(3):
             tokens = self.context.ocr_tokens_in_shapes(
                 scene, ['部件列表'], crop=True, padding=0,
@@ -464,12 +472,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         else:
             raise SpiritArtifactCleanseBlocked('三轮 OCR 未定位目标部件',
                 code=SpiritArtifactCleanseErrorCode.ASSET_MISSING, phase='select_part')
-        after = read_spirit_artifact_ui_snapshot()
-        if after.get("item_id") != str(item_id) or after.get('part') != part_id or any(
-            before[key] != after[key] for key in ("pid", "process_start_ticks", "ware_id")
-        ):
-            raise SpiritArtifactCleanseBlocked("部位选择后 Runtime 实例不匹配", phase="select_part")
-        return after
+        return self.execute(self.context.wait_scene(list(self.assets.wash_scene_ids), wait=8))
 
     def probe_auto_settings_warning(self) -> Any:
         """Open the verified #669 guard only; never confirm it."""
@@ -755,13 +758,15 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         不经过 _require_wash_scene/_transition 的重复无动作观察。仍使用
         正式点击保护及落点等待，场景只在本次动作前消费，不跨动作缓存。
         业务确认/结果显式保留在 Layer 0；意外落到这些页面时停止。
-        此入口缩减尚待真实连续调用与已打开列表两条路径验收。
+        连续打开路径已在 7-5 验收；既存列表直接返回分支待复验。
         """
         assets = self.assets
         candidates = list(dict.fromkeys((assets.advanced_items_scene_id,
             *assets.wash_scene_ids, *assets.layer0_candidate_ids)))
         observed = self.execute(self.context.wait_scene(candidates, wait=12,
             label='洗灵：高级列表入口'))
+        if observed.scene_id == assets.effect_activation_scene_id:
+            observed = self.finish_effect_activation()
         if observed.scene_id == assets.advanced_items_scene_id:
             return observed
         if observed.scene_id not in assets.wash_scene_ids:
@@ -811,7 +816,6 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             self._advanced_scroll_memory = None
 
     def preview_advanced_item(self, item_id: int, *, fast_observation: bool = False,
-                              prior_catalog: Mapping[str, Any] | None = None,
                               expected_snapshot: Mapping[str, Any] | None = None) -> Any:
         """按 Runtime 道具 ID 定位并显示使用确认，不点击确认。
 
@@ -820,8 +824,9 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         条件不足提示则等待确认失败，保留现场，不继续任何消耗动作。
         同次确认场景的已验证帧复用于说明OCR；分段计时随preview返回。
         同帧复用及合并读取已在 1-3 连续引仙/精炼中通过，不跨动作复用画面。
-        prior_catalog 仅供同一未突破本体的连续调用复用静态道具目录；调用方
-        提供最近动作后已验证快照，库存和确认页属性仍新读，不跨运行保存目录。
+        调用方
+        提供最近动作后已验证快照；目录与固定消耗库存由 Kernel 模型复用。
+        外部操作后须使 spirit_artifact_memory 失效。库存模型已跨 Cell 连续验收。
         """
         from backend.core.fanxiu.instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
         from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import advanced_item_confirmation_names
@@ -837,42 +842,29 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
                 raise SpiritArtifactCleanseBlocked('轻量窗口身份与本体读取不一致', phase='preview_advanced')
             return snapshot
 
+        from ...instrumentation.spirit_artifact_memory import spirit_artifact_memory as memory_model
         started = time.monotonic()
         timings = {}
         combined_before = None
-        if prior_catalog is not None:
-            from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
-            identity_keys = ('pid', 'process_start_ticks', 'ware_id', 'item_id')
-            if (expected_snapshot is None or expected_snapshot.get('is_break') is not False
-                    or any(expected_snapshot.get(key) is None
-                           or expected_snapshot.get(key) != prior_catalog.get(key)
-                           for key in identity_keys)):
-                raise SpiritArtifactCleanseBlocked('目录复用要求同进程、同一本体且尚未突破', phase='preview_advanced')
-            if sum(row['item'] == item_id for row in prior_catalog['items']) != 1:
-                raise SpiritArtifactCleanseBlocked('复用目录没有唯一目标道具', phase='preview_advanced')
-            self.open_advanced_items()
-            counts, inventory = read_backpack_item_counts(
-                [item_id], manager_key='spirit-artifact-advanced')
-            if any(inventory.get(key) != expected_snapshot[key]
-                   for key in ('pid', 'process_start_ticks')):
-                raise SpiritArtifactCleanseBlocked('道具库存与培养目标进程不一致', phase='preview_advanced')
-            catalog = {**prior_catalog, 'items': [
-                {**row, 'count': counts[item_id]} if row['item'] == item_id else dict(row)
-                for row in prior_catalog['items']], 'timings': {},
-                'inventory_diagnostics': {key: inventory.get(key) for key in
-                    ('discovery', 'backpack_root_cache_hit')}}
-            combined_before = expected_snapshot
+        list_frame = None
+        cached = memory_model.catalog(expected_snapshot) if expected_snapshot is not None else None
+        if cached is not None:
+            opened = self.open_advanced_items()
+            list_frame = opened.frame_data_url
+            catalog, combined_before = cached, expected_snapshot
         elif fast_observation:
             from backend.core.fanxiu.instrumentation.spirit_artifact_advanced import read_spirit_artifact_advanced_snapshot
             self.open_advanced_items()
             combined = read_spirit_artifact_advanced_snapshot(fast=True)
             catalog, combined_before = combined['catalog'], combined['target_snapshot']
+            memory_model.remember_catalog(catalog)
         else:
             catalog = self.inspect_advanced_items(fast=False)
+            memory_model.remember_catalog(catalog)
         timings['catalog'] = time.monotonic() - started
         timings['catalog_detail'] = catalog.get('timings', {})
         timings['combined_before'] = combined_before is not None
-        timings['catalog_reused'] = prior_catalog is not None
+        timings['catalog_reused'] = cached is not None
         matches = [row for row in catalog['items'] if row['item'] == item_id]
         if len(matches) != 1 or matches[0]['count'] <= 0:
             raise SpiritArtifactCleanseBlocked('当前灵器没有该道具或库存为零', phase='preview_advanced')
@@ -908,7 +900,8 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             from .spirit_artifact_advanced_scroll import locate_advanced_item_with_experience
             match, scroll_key, scroll_route = locate_advanced_item_with_experience(
                 self.context, self.execute, scene_id=self.assets.advanced_items_scene_id,
-                catalog=catalog, item_id=item_id, memory=memory, diagnostics=locator_detail)
+                catalog=catalog, item_id=item_id, memory=memory, diagnostics=locator_detail,
+                initial_frame=list_frame)
             if scroll_key is not None:
                 memory.forget(scroll_key)  # 确认失败或中断时，不留成功经验。
             click_started = time.monotonic()
@@ -935,21 +928,19 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         timings['confirm_ocr'] = time.monotonic() - confirm_ocr_started
         timings['locate_confirm'] = time.monotonic() - locate_started
         ui_started = time.monotonic()
-        after = observe()
+        # 打开列表和确认框不改变属性，复用当前已知事实；新随机结果才读 Runtime。
+        after = before
+        if 'pending_revision' not in after:
+            from ...instrumentation.spirit_artifact import read_spirit_artifact_item_runtime
+            after = read_spirit_artifact_item_runtime(catalog['item_id'])
         timings['ui_after'] = time.monotonic() - ui_started
-        def canonical(rows):
-            # 调用方快照可能来自 UI：行号和 map 遍历顺序不是属性变化。
-            return sorted((e['cleanse_id'], e['value'], e['quality'], e['locked']) for e in rows)
-        if any(before[key] != after[key] for key in (
-            'pid', 'process_start_ticks', 'ware_id', 'item_id', 'refine_num'
-        )) or any(canonical(before[key]) != canonical(after[key])
-                  for key in ('effects', 'pending_effects')):
-            raise SpiritArtifactCleanseBlocked('查看确认期间部件状态改变', phase='preview_advanced')
         if memory is not None and scroll_key is not None and len(scroll_route) <= 30:
             memory.remember(scroll_key, scroll_route)
         return {'scene': self.assets.advanced_confirm_scene_id, 'target_item_id': catalog['item_id'],
                 'catalog': catalog,
                 'item_id': item_id, 'name': item['name'], 'count': item['count'],
+                'inventory_source': catalog.get('inventory_source', 'runtime_observation'),
+                'pending_revision': after['pending_revision'],
                 'observation': {key: after[key] for key in (
                     'pid', 'process_start_ticks', 'item_id', 'effects', 'pending_effects', 'refine_num')},
                 'timings': {**timings, 'total': time.monotonic() - started},

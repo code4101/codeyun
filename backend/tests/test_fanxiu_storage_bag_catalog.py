@@ -62,6 +62,17 @@ def test_storage_bag_catalog_keeps_unknown_id_as_a_live_row() -> None:
     assert result["unresolved_item_ids"] == [101, 202, 303]
 
 
+def test_filtered_snapshot_cannot_clear_shared_inventory(tmp_path):
+    path = tmp_path / 'atlas.json'
+    runtime = _runtime_snapshot()
+    sync_storage_bag_atlas(runtime, {}, captured_at='2026-09-09T10:00:00+08:00', path=path)
+    runtime['tab']['number'] = 2
+    runtime['items'] = []
+    with pytest.raises(ValueError, match='完整页签'):
+        sync_storage_bag_atlas(runtime, {}, captured_at='2026-09-09T10:01:00+08:00', path=path)
+    assert load_storage_bag_atlas(path=path)['current_type_count'] == 3
+
+
 def test_storage_bag_catalog_aggregates_multiple_slots_of_the_same_id() -> None:
     snapshot = _runtime_snapshot()
     snapshot["items"].append(

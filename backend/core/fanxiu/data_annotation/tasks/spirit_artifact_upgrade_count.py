@@ -1,6 +1,9 @@
 """升阶/悟境共用的 GUI 数量循环；不读取 Runtime，不核对扣料。"""
 import re
 
+# 同一灵器窗口的合法页签落点；页面可能保留上次选中的页签。
+ARTIFACT_TAB_SCENES = (667, 668, 714, 717, 731)
+
 
 def parse_upgrade_material_count(text, *, numerator_only=False):
     """材料 OCR：分子须是整数；整行回退只接受单件消耗，不猜丢失斜线。"""
@@ -116,20 +119,28 @@ def open_artifact_for_upgrade(context, execute, name):
     from ...catalog.spirit_artifact_identity import load_spirit_artifact_templates
     ordered = [value[0] for _, value in sorted(load_spirit_artifact_templates().items())]
     target = ordered.index(name)
+    empty_observations = 0
     for _ in range(9):
         tokens = context.ocr_tokens_in_shapes(666, ['灵器列表'], crop=True, padding=0,
-            frame_data_url=context.cur_frame(update=True))
+            frame_data_url=context.cur_frame(update=True),
+            options={'ocr_version': 'PP-OCRv5'})
         point = locate_spirit_artifact_name(tokens, names)
         if point is not None:
             context.click_frame_point(666, *point)
-            landed = execute(context.wait_scene([667], wait=5)).scene_id
-            if landed != 667:
+            landed = execute(context.wait_scene(list(ARTIFACT_TAB_SCENES), wait=8)).scene_id
+            if landed not in ARTIFACT_TAB_SCENES:
                 raise RuntimeError(f'灵器名称点击后进入 #{landed}，保留现场')
-            return
+            return landed
         visible = [i for i, label in enumerate(ordered)
                    if locate_spirit_artifact_name(tokens, (label,)) is not None]
         if not visible:
+            # 封面刚打开或滚动结束时，名称可能仍在入场动画中。
+            if empty_observations == 0:
+                empty_observations += 1
+                execute(context.wait_action_settle(.6))
+                continue
             raise RuntimeError('灵器列表 OCR 未识别出任何已配置名称，保留现场')
+        empty_observations = 0
         if min(visible) < target < max(visible):
             raise RuntimeError(f'目标 {name} 位于可见范围但名称未识别，保留现场')
         direction = 'right' if target > max(visible) else 'left'

@@ -19,10 +19,11 @@ from typing import Any
 
 class AdvancedItemLocationError(RuntimeError):
     """定位失败证据；不把列表消失误报为道具不存在。"""
-    def __init__(self, context, *, expected, observed, frame, phase, problem_code):
+    def __init__(self, context, *, expected, observed, frame, phase, problem_code, diagnostics=None):
         from ..scene_diagnostics import save_scene_diagnostic_frame
         from ..scene_escalation import scene_repair_guidance, format_scene_repair_guidance
         self.problem_code, self.phase = problem_code, phase
+        self.diagnostics = dict(diagnostics or {})
         self.expected_scene_id, self.scene_id = expected, observed
         self.evidence_frame_path = save_scene_diagnostic_frame(
             context.runner, frame, kind='advanced_item_location', label=phase,
@@ -139,14 +140,15 @@ def locate_advanced_item_with_experience(
     catalog: Mapping[str, Any], item_id: int, memory: AdvancedScrollMemory,
     max_scrolls_per_direction: int = 10,
     diagnostics: dict[str, Any] | None = None,
+    initial_frame: str | None = None,
 ) -> tuple[Any, AdvancedScrollKey | None, tuple[str, ...]]:
     """只定位、不点击；复用正式 Shape 拖动和区域 OCR，不读 Runtime。
 
     返回 match 仅可立即用于点击；key/route 在确认页身份验证后才可 remember。
-    每次拖动后须仍为列表；错误页立即停止，不进入双向搜索。身份使用
+    短批次拖动后须仍为列表；错误页立即停止，不进入双向搜索。身份使用
     wait_scene 的真实返回值及同帧 OCR；全局层命中不等于目标列表命中。
     diagnostics 可接收本次定位分段耗时、路线命中与拖动次数，不影响返回协议。
-    缓存路线末次场景验证帧直接用于OCR，不在无动作间重复等待；尚待真实验收。
+    缓存路线末次场景验证帧直接用于OCR，不在无动作间重复等待；已在 7-5 连续验收。
     """
     started = time.monotonic()
     shape = context.shape(scene_id, '道具列表')
@@ -164,7 +166,7 @@ def locate_advanced_item_with_experience(
         'search_scroll_seconds')})
     detail.update(profile=asdict(profile), scene_checks=0, ocr_calls=0,
                   cached_drags=0, search_drags=0, cache_route_found=False,
-                  cache_failed=False)
+                  cache_failed=False, search_observations=[])
 
     def elapsed(key, since):
         detail[key] = detail.get(key, 0.0) + time.monotonic() - since
@@ -195,7 +197,8 @@ def locate_advanced_item_with_experience(
         return tokens
 
     def observe_start():
-        frame = require_list('locate_start')
+        # 上层刚等待到列表、期间无 GUI 动作时复用那一帧。
+        frame = initial_frame or require_list('locate_start')
         tokens = tokens_from(frame)
         visible, target = [], None
         at = time.monotonic()
@@ -227,7 +230,7 @@ def locate_advanced_item_with_experience(
     detail['cache_route_found'] = route is not None
     if route is not None:
         # 缓存的是实际尝试过的拖动序列（含到边界的最后一次），不是部件下标。
-        for direction in route:
+        for index, direction in enumerate(route):
             at = time.monotonic()
             detail['cached_drags'] += 1
             context.drag_shape_content(shape, direction=direction,
@@ -237,7 +240,9 @@ def locate_advanced_item_with_experience(
             execute(context.wait_action_settle(profile.settle_seconds))
             elapsed('cached_settle_seconds', at)
             traversed.append(direction)
-            require_list('cached_scroll')
+            # 已验证路线最多连续三次可逆拖动，再确认真实页面。
+            if (index + 1) % 3 == 0 or index == len(route) - 1:
+                require_list('cached_scroll')
         # No action since the last list guard: use exactly its verified frame.
         match = find_target(frame=last_frame)
         if match is not None:
@@ -250,10 +255,13 @@ def locate_advanced_item_with_experience(
             at = time.monotonic()
             detail['search_drags'] += 1
             changed = execute(context.scroll_shape_content(shape, direction=direction,
-                ratio=profile.ratio, duration=profile.duration, settle_seconds=profile.settle_seconds))
+                ratio=profile.ratio, duration=profile.duration, settle_seconds=profile.settle_seconds,
+                unchanged_confirmations=2))
             elapsed('search_scroll_seconds', at)
             traversed.append(direction)
             match = find_target()
+            detail['search_observations'].append(
+                {'direction': direction, 'can_continue': bool(changed), 'target_found': match is not None})
             if match is not None:
                 return complete(match, key, tuple(traversed), 'search')
             if not changed:
@@ -262,4 +270,4 @@ def locate_advanced_item_with_experience(
         memory.forget(key)
     raise AdvancedItemLocationError(context, expected=scene_id, observed=scene_id,
         frame=last_frame, phase=f'bounded_search:{names[item_id]}',
-        problem_code='advanced_list.target_not_located')
+        problem_code='advanced_list.target_not_located', diagnostics=detail)

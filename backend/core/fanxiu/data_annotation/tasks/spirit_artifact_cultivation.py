@@ -15,13 +15,14 @@ def run_spirit_artifact_cultivation(
     max_consumptions: int = 100, target_ratio: float = .90,
     scroll_profile: AdvancedScrollProfile | None = None,
     fast_observation: bool = True,
+    navigate: bool = False,
 ) -> dict:
-    """在当前洗炼页连续凑基础、培养 A、突破；不导航或注册作业。
+    """连续凑基础、培养 A、突破；navigate=True 时先导航至指定本体。
 
     未齐四基础且没有达标 A 才补基础；已有达标/满 A 直接保护并继续培养。
     入口候选交给所选策略重新评价。普通洗炼和高级道具共用一次消耗预算；
     任一子步骤暂停即返回，只有实际突破成功才 complete。突破接口负责一次
-    总览同步；异常由调用方处理，禁止自动重发不确定动作。整合待真实验收。
+    总览同步；异常由调用方处理，禁止自动重发不确定动作。
     """
     from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
     from ...instrumentation.spirit_artifact_affixes import read_spirit_artifact_affix_rules
@@ -34,11 +35,20 @@ def run_spirit_artifact_cultivation(
     profile = scroll_profile if scroll_profile is not None else AdvancedScrollProfile(.8, .8, .4)
     if not isinstance(profile, AdvancedScrollProfile):
         raise TypeError('scroll_profile 必须是 AdvancedScrollProfile')
+    if navigate:
+        from ...catalog.spirit_artifact_identity import load_spirit_artifact_templates
+        from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
+        name, parts = load_spirit_artifact_templates()[target.ware_id]
+        SpiritArtifactCleanseRuntimeGuiAdapter(context, execute).select_item(
+            target.item_id, target.ware_id, name, parts[target.part - 1])
     configured = load_spirit_artifact_wash_rules()['wares'][target.ware_id]
     a_codes = set(configured['a_codes'])
     rules = dict(rules)
     evidence_dir = Path(evidence_dir)
-    current = read_spirit_artifact_wash_observation(target, verify_ui=True)
+    from ...instrumentation.spirit_artifact_memory import spirit_artifact_memory
+    current = None if navigate else spirit_artifact_memory.snapshot(target)
+    if current is None:
+        current = read_spirit_artifact_wash_observation(target, verify_ui=True)
     consumed, steps = 0, []
 
     def result(status, reason):
@@ -93,6 +103,7 @@ def run_spirit_artifact_cultivation(
                 evidence_path=evidence_dir / 'a.jsonl', stop_at=stop_at,
                 max_consumptions=remaining, target_ratio=target_ratio,
                 fast_observation=fast_observation, scroll_profile=profile,
+                initial_snapshot=current if current.get('is_wash') is True else None,
                 evaluate_existing_candidate=True)
             consumed += outcome['consumed']
         steps.append({'step': step, 'result': outcome})

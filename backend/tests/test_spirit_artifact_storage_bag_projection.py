@@ -4,6 +4,7 @@ import pytest
 
 from backend.core.fanxiu.instrumentation.spirit_artifact_storage_bag import (
     build_spirit_artifact_storage_bag_snapshot,
+    project_spirit_artifact_storage_bag,
 )
 
 
@@ -47,3 +48,24 @@ def test_projection_rejects_incomplete_or_filtered_inventory(complete, tab):
              "tab": {"number": tab}, "items": []},
             {}, [], [], captured_at="2026-09-07T16:33:09+08:00",
         )
+
+
+def test_shared_atlas_update_changes_projection_without_dedicated_snapshot(tmp_path):
+    from backend.core.fanxiu.instrumentation.storage_bag_catalog import sync_storage_bag_atlas, load_storage_bag_atlas
+    path = tmp_path / 'atlas.json'
+    cards = {'10': {'id': 10, 'name': '自选箱', 'optional_gift_rewards': [
+        {'id': 20, 'name': '灵器·轴', 'count': 1}]}}
+    artifacts = [{'name': '灵器', 'rows': [{'part_name': '轴'}]}]
+    runtime = {'complete': True, 'source': 'active_backpack_panel_item_info_list',
+               'tab': {'number': 1}, 'items': [
+                   {'ui_index': 0, 'base_id': 10, 'instance_id': '100', 'num': 4},
+                   {'ui_index': 1, 'base_id': 30, 'instance_id': '101', 'num': 9}]}
+    sync_storage_bag_atlas(runtime, cards, captured_at='2026-09-09T10:00:00+08:00', path=path)
+    view = project_spirit_artifact_storage_bag(load_storage_bag_atlas(path=path), cards, artifacts, [])
+    assert view['storage_bag_items'][0]['quantity'] == 4
+    runtime['items'] = runtime['items'][1:]
+    sync_storage_bag_atlas(runtime, cards, captured_at='2026-09-09T10:01:00+08:00', path=path)
+    atlas = load_storage_bag_atlas(path=path)
+    view = project_spirit_artifact_storage_bag(atlas, cards, artifacts, view['storage_bag_items'])
+    assert view['storage_bag_items'][0]['quantity'] == 0
+    assert next(r for r in atlas['items'] if r['base_id'] == 30)['num'] == 9

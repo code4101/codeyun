@@ -69,7 +69,7 @@ _cached_at = 0.0
 _cached_snapshot: dict[str, Any] | None = None
 _bridge_failed_process: tuple[int, int] | None = None
 _bridge_failure_text = ""
-_item_location_cache: dict[tuple[int, int, str], LuaRef] = {}
+_item_location_cache: dict[tuple[int, int, str], Any] = {}
 
 
 def _artifact_position(base_id: int) -> tuple[int, int] | None:
@@ -164,44 +164,57 @@ def read_spirit_artifact_item_runtime(item_id: str, *, force_relocate: bool = Fa
 
     # 锁回包/保存属性会分配新的 Lua 表。让实际消费该映射的观察器统一恢复，
     # 外层 UI 观察器刷新自己的映射不能修复另一次 acquire 的旧映射。
-    return read_ui_runtime_snapshot([], lambda context: _read_spirit_artifact_item_runtime(
-        context, item_id, force_relocate=force_relocate))
+    def project(context):
+        started = time.monotonic()
+        result = _read_spirit_artifact_item_runtime(context, item_id, force_relocate=force_relocate)
+        return {**result, 'runtime_timings': {**context.timings,
+                'projection': time.monotonic() - started}, 'runtime_context_mode': context.cache_mode}
+
+    # 公共 fast 上下文保留进程、Lua state 和当前根验证，不重建完整字符串索引。
+    return read_ui_runtime_snapshot([], project, fast=True)
 
 
 def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate: bool) -> dict[str, Any]:
     from .runtime_memory import resolve_lua_global_manager_root
     memory, reader = context.memory, context.reader
+    phases = {}
+    measured = time.monotonic()
     root, _, _ = resolve_lua_global_manager_root(
         memory, manager_key="spirit-artifact-item-global",
         state_address=context.binding.state_address, global_name="BackpackMgr",
         required_methods=frozenset({"Inst_get"}), validate=_backpack_data_fields,
     )
+    phases['manager_root'] = time.monotonic() - measured
+    measured = time.monotonic()
     data = _backpack_data_fields(reader, root)
     values = _fields(reader, _fields(reader, data.get("_SpiritWareItemDic")).get("_valueTable_"))
-    # Cache only the location, never attributes. A fresh reader verifies live
-    # dictionary membership and item identity on every read; replaced/consumed
-    # objects fall back to discovery. Process generations cannot share pointers.
+    phases['item_index'] = time.monotonic() - measured
+    measured = time.monotonic()
+    # 缓存当前字典的逻辑键，不能缓存洗炼回包即替换的 VO 指针。
+    # 每次从新字典取当前对象并核验 UID；键消失/身份不符才全量定位。
+    # 真实诊断：VO 缓存导致每轮解析 557 个对象。按键优化尚待动作后复验。
     location_key = (memory.pid, memory.process_start_ticks, str(item_id))
     cached_location = None if force_relocate else _item_location_cache.get(location_key)
-    candidates = list(values.values())
-    if cached_location is not None and cached_location in candidates:
-        cached_item = _fields(reader, cached_location)
+    candidates = list(values.items())
+    if cached_location is not None and cached_location in values:
+        cached_item = _fields(reader, values[cached_location])
         if str(reader.long(cached_item.get("id"))) == str(item_id):
-            candidates = [cached_location]
+            candidates = [(cached_location, values[cached_location])]
     else:
         _item_location_cache.pop(location_key, None)
+    phases['location_cache'] = time.monotonic() - measured
+    measured = time.monotonic()
     found = []
-    for raw in candidates:
+    for dictionary_key, raw in candidates:
         item = _fields(reader, raw)
         if str(reader.long(item.get("id"))) != str(item_id):
             continue
         position = _artifact_position(as_int(item.get("baseId")) or 0)
         if position is None:
             continue
-        if isinstance(raw, LuaRef):
-            if len(_item_location_cache) >= 48:
-                _item_location_cache.clear()
-            _item_location_cache[location_key] = raw
+        if len(_item_location_cache) >= 48:
+            _item_location_cache.clear()
+        _item_location_cache[location_key] = dictionary_key
         ext = _fields(reader, item.get("ext"))
         found.append({"item_id": str(item_id), "base_id": as_int(item.get("baseId")),
                       "ware_id": position[0] + 1, "part": position[1] + 1,
@@ -210,6 +223,11 @@ def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate:
                       "realm": as_int(ext.get("pinLevel")),
                       "quantity": as_int(item.get("num")),
                       "refine_num": as_int(ext.get("refineNum")) or 0,
+                      # FillData 每次为候选创建新的属性 VO；内容相同不等于旧回包。
+                      # 仅作同进程、同实例连续动作的观察版本，不作持久身份。
+                      "pending_revision": sorted(
+                          (str(k), v.address) for k, v in _fields(reader, ext.get("refineMap")).items()
+                          if isinstance(v, LuaRef)),
                       "effects": _read_effect_map(reader, ext.get("attrMap"), artifact_index=position[0]),
                       "pending_effects": _read_effect_map(reader, ext.get("refineMap"), artifact_index=position[0])})
     if len(found) != 1:
@@ -217,7 +235,9 @@ def _read_spirit_artifact_item_runtime(context, item_id: str, *, force_relocate:
     for key in ("effects", "pending_effects"):
         found[0][key] = [{k: effect[k] for k in ("cleanse_id", "value", "quality", "locked")}
                          for effect in found[0][key]]
-    return {**found[0], "pid": memory.pid, "process_start_ticks": memory.process_start_ticks}
+    phases['item_fields'] = time.monotonic() - measured
+    return {**found[0], "pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
+            'runtime_projection_timings': phases, 'runtime_candidates': len(candidates)}
 
 
 def read_spirit_artifact_inventory_runtime() -> dict[str, Any]:

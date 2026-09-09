@@ -1,4 +1,4 @@
-"""普通洗炼凑齐四基础属性的连续研发入口；尚待真实游戏验收。
+"""普通洗炼凑齐四基础属性的连续培养入口。
 
 复用纯策略和正式 GUI/Runtime，不打开高级洗炼、不使用任何石头。
 未知候选入口拒绝；运行内失败候选可被下一次普通洗炼覆盖，预算停止时
@@ -128,7 +128,7 @@ def run_basic_attribute_collection(
                 gui.finish_effect_activation()
                 saved = read_spirit_artifact_wash_observation(target)
                 if saved['pending_effects'] or effects_map(saved['effects']) != pending:
-                    raise RuntimeError('保存新属性后实际六条未与候选一致')
+                    raise RuntimeError('保存新属性后实际属性未与候选一致')
                 record('saved', before=current, after=saved)
                 current = saved
                 continue
@@ -158,7 +158,6 @@ def run_basic_attribute_collection(
                 raise RuntimeError('洗炼前页面与候选状态不一致')
             identity()
             after = None
-            remaining = None
             record('wash_attempt', roll_index=rolls+1, before=before, cost=cost, inventory_before=owned)
             try:
                 context.click_shape_center(scene, '执行洗炼' if scene == 714 else '执行洗炼（研发禁止）')
@@ -183,21 +182,21 @@ def run_basic_attribute_collection(
                     if time.monotonic() >= candidate_deadline:
                         raise RuntimeError('等待本轮新候选超时；不重放洗炼消耗')
                     time.sleep(.5)
-                remaining = counts()
                 locked = {k: v for k, v in effects_map(before['effects']).items() if v[2]}
                 pending = effects_map(after['pending_effects'])
-                verified = (owned - remaining == cost and len(pending) == len(before['effects'])
+                # 次数增加与完整新候选证明本轮完成；不以库存刷新时序再判一次扣减。
+                verified = (len(pending) == len(before['effects'])
                     and after['refine_num'] == before['refine_num'] + 1
                     and effects_map(after['effects']) == effects_map(before['effects'])
                     and all(pending.get(k) == v for k, v in locked.items()))
                 record('wash_result', roll_index=rolls+1, before=before, after=after,
-                    cost=cost, inventory_before=owned, inventory_after=remaining,
+                    cost=cost, inventory_before=owned,
                     consumption_verified=verified)
                 if not verified:
-                    raise RuntimeError('普通洗炼消耗或候选后置验证不符')
+                    raise RuntimeError('普通洗炼候选后置验证不符')
             except Exception as exc:
                 record('unverified_consumption', before=before, after=after,
-                       inventory_before=owned, inventory_after=remaining, error=repr(exc))
+                       inventory_before=owned, error=repr(exc))
                 raise
             rolls += 1
             current = after

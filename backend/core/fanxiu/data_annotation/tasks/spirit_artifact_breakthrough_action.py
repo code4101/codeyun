@@ -1,9 +1,9 @@
 """洗灵突破的单次业务动作；1-3 突破与四 A 锁定已真实通过。
 
-完成边界内的全馆自动同步是后补接入，尚待下一次真实验收。
+完成边界内刷新全馆快照；五槽部件培养、突破与同步已真实通过。
 
 只从已就绪的 #668 发起，#722 只确认一次。中断恢复仅支持明确选择
-finish_result_only=True 并且当前确为 #723：核验指定本体已突破后继续收尾。
+finish_result_only=True 并且当前确为 #723 或 #721：核验指定本体已突破后继续收尾。
 不会从 #722 自动恢复/重复确认，也不会将 #668 已突破当作本次动作成功。
 """
 from __future__ import annotations
@@ -113,10 +113,11 @@ def breakthrough_spirit_artifact(
 
     def wait_for(expected, allowed, seconds):
         """确认页/结果动画可能滞留；只观察，不重放已发送的动作。"""
+        expected_scenes = (expected,) if isinstance(expected, int) else tuple(expected)
         deadline = time.monotonic() + seconds
         while True:
             landed = execute(context.wait_scene(list(allowed), wait=12))
-            if landed.scene_id == expected:
+            if landed.scene_id in expected_scenes:
                 return landed
             if landed.scene_id not in allowed or time.monotonic() >= deadline:
                 raise RuntimeError(f'突破过渡未到达 #{expected}，实际 #{landed.scene_id}')
@@ -152,8 +153,8 @@ def breakthrough_spirit_artifact(
              assets.effect_activation_scene_id, *assets.wash_scene_ids], wait=12))
         before = None
         if finish_result_only:
-            if entry.scene_id != assets.breakthrough_result_scene_id:
-                raise RuntimeError('仅收尾模式要求当前明确为突破结果 #723')
+            if entry.scene_id not in (assets.breakthrough_result_scene_id, assets.effect_activation_scene_id):
+                raise RuntimeError('仅收尾模式要求当前明确为突破结果 #723 或效果激活 #721')
             phase = 'existing_result_verification'
             identity()
             item(True)
@@ -192,15 +193,23 @@ def breakthrough_spirit_artifact(
             confirmed = True
             context.click_shape_center(assets.breakthrough_confirm_scene_id, '确认突破')
             phase = 'verify_result'
-            wait_for(assets.breakthrough_result_scene_id,
+            wait_for((assets.breakthrough_result_scene_id, assets.effect_activation_scene_id),
                      (assets.breakthrough_result_scene_id, assets.breakthrough_confirm_scene_id,
-                      assets.wash_scene_id), 25)
-            item(True)  # 先核实成功，再关闭结果；读取失败保留 #723。
+                      assets.effect_activation_scene_id, assets.wash_scene_id), 25)
+            item(True)  # 先核实成功，再关闭当前结果；读取失败保留现场。
         phase = 'finish_result'
-        context.click_shape_center(assets.breakthrough_result_scene_id, '点击屏幕继续')
-        landed = gui.finish_effect_activation()
-        if landed.scene_id != assets.wash_scene_id:
-            raise RuntimeError('突破结果收尾未回到无候选洗炼页')
+        # 组合效果可能盖在突破结果前面，也可能随后出现；仅点击实际可见页。
+        result_scenes = (assets.breakthrough_result_scene_id, assets.effect_activation_scene_id)
+        for _ in range(8):
+            landed = execute(context.wait_scene([*result_scenes, assets.wash_scene_id], wait=12))
+            if landed.scene_id == assets.wash_scene_id:
+                break
+            if landed.scene_id not in result_scenes:
+                raise RuntimeError('突破结果收尾落点不明，保留现场')
+            context.click_shape_center(landed.scene_id, '点击屏幕继续')
+            execute(context.wait_action_settle(.8))
+        else:
+            raise RuntimeError('突破连续结果超出已知边界，保留现场')
         phase = 'verify_completed'
         after = item(True)
         identity()
