@@ -11,7 +11,10 @@ import time
 from pathlib import Path
 
 from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
-from .spirit_artifact_yinxian import YinxianAttribute, analyze_yinxian_sample, plan_a_collection, plan_b_supplement
+from .spirit_artifact_yinxian import (
+    DEFAULT_PREPARED_TARGET_RATIO, YinxianAttribute, analyze_yinxian_sample,
+    plan_a_collection, plan_b_supplement,
+)
 from ...instrumentation.spirit_artifact_wash_observation import (
     SpiritArtifactWashTarget, read_spirit_artifact_wash_observation,
 )
@@ -20,7 +23,7 @@ from ...instrumentation.spirit_artifact_wash_observation import (
 def run_a_collection(
     context, execute, *, target: SpiritArtifactWashTarget, rules: dict,
     a_codes: set[str] | None = None, b_codes: set[str] | None = None, c_codes: set[str],
-    evidence_path: Path, stop_at: float, target_ratio: float = .90,
+    evidence_path: Path, stop_at: float, target_ratio: float = DEFAULT_PREPARED_TARGET_RATIO,
     max_consumptions: int = 100,
     fast_observation: bool = False,
     supplement_b_code: str | None = None,

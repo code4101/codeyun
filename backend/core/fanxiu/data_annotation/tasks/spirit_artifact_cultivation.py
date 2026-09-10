@@ -6,9 +6,9 @@ from ...instrumentation.spirit_artifact_wash_observation import (
     SpiritArtifactWashTarget, read_spirit_artifact_wash_observation,
 )
 from .spirit_artifact_advanced_scroll import AdvancedScrollProfile
-from .spirit_artifact_yinxian import YinxianAttribute, meets_yinxian_target
-
-DEFAULT_PREPARED_TARGET_RATIO = .95
+from .spirit_artifact_yinxian import (
+    DEFAULT_PREPARED_TARGET_RATIO, YinxianAttribute, meets_yinxian_target,
+)
 
 
 def run_spirit_artifact_prepared_round(

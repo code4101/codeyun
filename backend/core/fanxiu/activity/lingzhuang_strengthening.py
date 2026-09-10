@@ -529,6 +529,32 @@ def read_lingzhuang_strengthening_runtime_snapshot(
     }
 
 
+def read_lingzhuang_equipment_reward_snapshot(*, game_task_activity_id: int, cross_count: int = 1) -> dict[str, Any]:
+    """Join the live equipment ladder with QuestMgr's claimed-state evidence."""
+    from backend.core.fanxiu.instrumentation.daily_task_rewards import (
+        TaskRewardDomainSpec, build_activity_task_reward_snapshot, read_activity_task_reward_snapshots,
+    )
+
+    ladder = read_lingzhuang_strengthening_runtime_snapshot(
+        cross_count=cross_count, game_task_activity_id=game_task_activity_id,
+    )
+    rows = sorted(ladder.get("equipment_tasks") or [], key=lambda row: row["order"])
+    shared = read_activity_task_reward_snapshots((), include_activity_tasks=True)
+    if not ladder.get("complete") or len(rows) != 14 or not shared.get("ok"):
+        raise RuntimeError("灵装化道装备奖励：任务阶梯或 QuestMgr 数据不完整")
+    projection = build_activity_task_reward_snapshot(
+        spec=TaskRewardDomainSpec(
+            key="lingzhuang_equipment", label="灵装化道装备任务", activity_id=game_task_activity_id,
+            task_ids=tuple(row["task_id"] for row in rows), condition_key="",
+            thresholds=tuple(row["target"] for row in rows),
+        ),
+        task_entries=shared.get("task_entries") or [],
+        finished_task_ids=shared.get("finished_task_ids") or [],
+    )
+    return {**projection, "ok": True, "available": True,
+            "equipment_current": ladder.get("equipment_current"), "equipment_tasks": rows}
+
+
 def _empty_snapshot() -> LingzhuangStrengtheningSnapshot:
     return _enrich_static_task_reference(LingzhuangStrengtheningSnapshot(
         rows=[

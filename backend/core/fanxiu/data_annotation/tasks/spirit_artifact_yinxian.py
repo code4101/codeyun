@@ -6,13 +6,17 @@ from types import MappingProxyType
 from typing import Sequence
 
 
+# 所需 A 类达到基础满值的此比例后转入精炼；最终仍须满值再突破。
+DEFAULT_PREPARED_TARGET_RATIO = .92
+
+
 # 用户明确的 B 类保留顺序：灵力 > 气血 > 守御。未知身份不推断优先级。
 B_RETENTION_PRIORITY = MappingProxyType({'MAXMP': 3, 'MAXHP': 2, 'DEFENSE': 1})
 
 
 def meets_yinxian_target(
     *, is_needed_a: bool, basic_score: int | float | Decimal,
-    basic_full_score: int, target_ratio: float | Decimal = Decimal('0.90'),
+    basic_full_score: int, target_ratio: float | Decimal = DEFAULT_PREPARED_TARGET_RATIO,
 ) -> bool:
     """需要的 A 类达到该部位基础满分的目标比例。
 
@@ -68,7 +72,7 @@ class YinxianSample:
 
 def analyze_yinxian_sample(
     candidates: Sequence[YinxianAttribute], *, roll_index: int,
-    needed_a_codes: set[str], target_ratio: float | Decimal = Decimal('0.90'),
+    needed_a_codes: set[str], target_ratio: float | Decimal = DEFAULT_PREPARED_TARGET_RATIO,
 ) -> YinxianSample:
     """每次实际消耗产生独立样本；不按命中/颜色筛样本，不按内容去重。
 
@@ -132,7 +136,7 @@ def plan_b_supplement(current: Sequence[YinxianAttribute], *, a_codes: set[str],
 
 def plan_a_collection(
     current: Sequence[YinxianAttribute], *, a_codes: set[str], c_codes: set[str],
-    b_codes: set[str], target_ratio: float | Decimal = Decimal('0.90'),
+    b_codes: set[str], target_ratio: float | Decimal = DEFAULT_PREPARED_TARGET_RATIO,
 ) -> ACollectionPlan:
     """根据已保存事实计算下一步，不依赖上一 Cell 的步骤游标。
 

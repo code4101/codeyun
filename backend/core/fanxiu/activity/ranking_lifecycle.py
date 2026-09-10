@@ -58,6 +58,7 @@ BEAST_ABYSS_MANUAL_CLEAR_KIND = "beast_abyss_manual_clear_2150"
 XIANMENG_ACTIVE_KIND = "xianmeng_active_1000"
 TIANDI_YIJU_ACTIVE_KIND = "tiandi_yiju_active_1005"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
+LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_tier12_0515"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 10)
@@ -628,6 +629,8 @@ def checkpoints_for_occurrence(
             )
         )
     resource_kinds = (
+        (LINGZHUANG_STRENGTHENING_KIND, time(5, 15),
+         occurrence.activity_type == "lingzhuang-huadao" and occurrence.cross_count == 1),
         (
             RESOURCE_FREE_GIFT_KIND,
             RESOURCE_FREE_GIFT_TIME,

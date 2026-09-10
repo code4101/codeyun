@@ -57,6 +57,7 @@ class TianjigeQuizProbe:
     answer: TianjigeQuizAnswer | None = None
     profile_thread_count: int = 0
     elapsed_seconds: float = 0.0
+    profile_excerpt: str = ""
 
 
 def _normalize_text(value: Any) -> str:
@@ -383,6 +384,7 @@ def probe_tianjige_forum_quiz(
                 status="waiting_thread",
                 profile_thread_count=profile_thread_count,
                 elapsed_seconds=max(0.0, time.monotonic() - started_at),
+                profile_excerpt=str(getattr(tab.ele("tag:body", timeout=1), "text", "") or "")[:12000],
             )
             if overall_deadline is None or time.monotonic() >= overall_deadline:
                 return waiting

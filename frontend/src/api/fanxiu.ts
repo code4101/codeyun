@@ -558,6 +558,7 @@ export interface FanxiuGameWindow2FrameStatus {
 
 export interface FanxiuInfoWindowSettings {
   enabled: boolean;
+  auto_refresh: boolean;
   show_scene_id: boolean;
   show_scene_score: boolean;
   show_scene_identity_shapes: boolean;

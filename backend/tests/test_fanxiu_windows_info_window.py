@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from backend.core.fanxiu.info_window import FanxiuWindowsInfoWindowClient
 from backend.core.fanxiu.windows_info_window import (
     INFO_WINDOW_POLL_MILLISECONDS,
@@ -9,6 +11,39 @@ from backend.core.fanxiu.windows_info_window import (
     calculate_render_rect,
     select_overlay_boxes,
 )
+
+
+@pytest.mark.parametrize("enabled, auto, committed_at, now, expected", [
+    (True, True, 100, 109.99, False),
+    (True, True, 100, 110, True),
+    (True, True, 110, 110, False),
+    (False, True, 100, 120, False),
+    (True, False, 100, 120, False),
+    (True, True, 0, 120, True),
+])
+def test_info_window_refresh_deadline(enabled, auto, committed_at, now, expected):
+    from backend.core.fanxiu.info_window_refresh import info_window_refresh_due
+
+    assert info_window_refresh_due(
+        {"enabled": enabled, "auto_refresh": auto},
+        {"committed_at": committed_at}, now=now,
+    ) is expected
+
+
+@pytest.mark.parametrize("enabled, committed_at, requested_at, reason", [
+    (True, 80, 89, "expired"),
+    (True, 99, 100, "disabled_or_fresh"),
+    (False, 80, 100, "disabled_or_fresh"),
+])
+def test_queued_info_window_refresh_rechecks_admission(monkeypatch, enabled, committed_at, requested_at, reason):
+    from backend.core.fanxiu import info_window_refresh as refresh
+
+    monkeypatch.setattr(refresh.time, "time", lambda: 100)
+    monkeypatch.setattr(refresh, "fanxiu_info_window_settings_path", lambda: None)
+    monkeypatch.setattr(refresh, "read_json_state_dict", lambda _: {"enabled": enabled, "auto_refresh": True})
+    monkeypatch.setattr(refresh.fanxiu_info_window_state, "read", lambda: {"committed_at": committed_at})
+    # No game double: all denied requests must return before touching a binding.
+    assert refresh.refresh_info_window_in_kernel(None, requested_at=requested_at)["reason"] == reason
 
 
 def test_info_window_uses_low_frequency_snapshot_polling() -> None:

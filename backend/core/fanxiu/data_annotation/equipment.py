@@ -1022,6 +1022,7 @@ def strengthen_selected_equipment_once(
     game_task_activity_id: int | None = None,
     settle_seconds: float = 1.0,
     poll_attempts: int = 4,
+    max_material_cost: int | None = None,
 ):
     """Click once and persist exact structured before/after Runtime values.
 
@@ -1059,6 +1060,12 @@ def strengthen_selected_equipment_once(
         before.equipment_tasks = list(stored_before.equipment_tasks)
         before.task_progress_captured_at = stored_before.task_progress_captured_at
     before_target = resolve_equipment_strengthening_target(before, category, part)
+
+    if max_material_cost is not None:
+        visible = read_selected_equipment_strengthening(context)
+        cost = visible.resource_required
+        if cost is None or cost <= 0 or cost > max_material_cost:
+            raise RuntimeError("强化前批次费用超出剩余预算或无法读取，未点击")
 
     context.click_shape(
         EQUIPMENT_STRENGTHENING_VIEW_ID,
@@ -1130,6 +1137,10 @@ def strengthen_selected_equipment_once(
             activity_id=activity_id,
             observed_snapshot=after,
         )
+    if max_material_cost is not None and consumed > max_material_cost:
+        raise RuntimeError(
+            f"强化实际消耗 {consumed} 超过点击前预算 {max_material_cost}，已保留样本并停止"
+        )
     return {
         "ok": True,
         "activity_id": activity_id,
@@ -1149,6 +1160,39 @@ def strengthen_selected_equipment_once(
     }
 
 
+def reduce_equipment_strengthening_batch(context: Any):
+    """只切换十连选项，保留费用更低的状态；不点击强化、不消费材料。
+
+    用切换前后显示费用验证粒度，不假定进入页面时复选框的初始状态。
+    若已是小批次，切换导致费用增加，则恢复原状态并验证费用恢复。
+    """
+    before = read_selected_equipment_strengthening(context)
+    if before.resource_required is None or before.resource_required <= 0:
+        raise RuntimeError("缩小强化批次前无法读取费用")
+    yield from context.wait_click(EQUIPMENT_STRENGTHENING_VIEW_ID, "十连强化")
+    yield from context.wait_action_settle(1.0)
+    context.clear_frame()
+    after = read_selected_equipment_strengthening(context)
+    if after.resource_required is None or after.resource_required <= 0:
+        raise RuntimeError("切换十连后费用无法读取，未执行强化")
+    if after.resource_required < before.resource_required:
+        return after
+    yield from context.wait_click(EQUIPMENT_STRENGTHENING_VIEW_ID, "十连强化")
+    yield from context.wait_action_settle(1.0)
+    context.clear_frame()
+    restored = read_selected_equipment_strengthening(context)
+    if restored.resource_required != before.resource_required:
+        raise RuntimeError("十连选项恢复后费用不一致，未执行强化")
+    return restored
+
+
+def strengthening_overshoot_limit(target: int, percent: int = 5) -> int:
+    """目标外最多允许的材料数，向下取整；0 表示严格不超。"""
+    if target <= 0 or not 0 <= percent <= 100:
+        raise ValueError("强化目标须为正数，超量百分比须在 0..100")
+    return target * percent // 100
+
+
 def complete_equipment_strengthening_tasks(
     context: Any,
     *,
@@ -1158,6 +1202,7 @@ def complete_equipment_strengthening_tasks(
     cross_count: int = 16,
     game_task_activity_id: int | None = None,
     max_clicks: int = 200,
+    max_overshoot_percent: int = 5,
 ):
     """Follow the stable part route until the requested equipment-task target.
 
@@ -1166,6 +1211,9 @@ def complete_equipment_strengthening_tasks(
     the absolute material target and takes no implicit tier assumptions.
     A target is selected once per part and kept until that material can no
     longer fund the next visible batch, matching the user's averaging policy.
+    Before every click, the visible batch cost must fit target + overshoot cap;
+    oversized batches move to the next canonical part. Never spend past the cap
+    merely to guarantee completion. Already-complete attempts spend nothing.
     """
 
     from backend.core.fanxiu.activity.lingzhuang_strengthening import (
@@ -1215,6 +1263,7 @@ def complete_equipment_strengthening_tasks(
             "skipped": "already_complete",
         }
 
+    overshoot_limit = strengthening_overshoot_limit(requested_target, max_overshoot_percent)
     route = plan_equipment_strengthening_route(initial)
     actions: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -1251,6 +1300,7 @@ def complete_equipment_strengthening_tasks(
                 "detail": str(exc),
             })
             continue
+        progress = int(live.equipment_current or 0)
         while len(actions) < max(1, int(max_clicks)):
             observation = read_selected_equipment_strengthening(context)
             current = observation.resource_current
@@ -1259,6 +1309,12 @@ def complete_equipment_strengthening_tasks(
                 raise RuntimeError(
                     f"{route_target.category}{route_target.part}强化资源分子/分母无法可靠读取，已停止"
                 )
+            if required > requested_target - progress:
+                observation = yield from reduce_equipment_strengthening_batch(context)
+                current = observation.resource_current
+                required = observation.resource_required
+                if current is None or required is None or required <= 0:
+                    raise RuntimeError("缩小强化批次后费用无法可靠读取，已停止")
             if current < required:
                 skipped.append({
                     "part": route_target.part,
@@ -1268,6 +1324,14 @@ def complete_equipment_strengthening_tasks(
                     "material_required": required,
                 })
                 break
+            budget = requested_target + overshoot_limit - progress
+            if required > budget:
+                skipped.append({
+                    "part": route_target.part, "category": route_target.category,
+                    "reason": "batch_exceeds_target_budget",
+                    "material_required": required, "remaining_budget": budget,
+                })
+                break  # 尝试后续部位的小额批次，不为凑档无限超支。
             action = yield from strengthen_selected_equipment_once(
                 context,
                 activity_id=activity_id,
@@ -1275,8 +1339,10 @@ def complete_equipment_strengthening_tasks(
                 part=route_target.part,
                 cross_count=int(cross_count),
                 game_task_activity_id=game_task_activity_id,
+                max_material_cost=budget,
             )
             actions.append(action)
+            progress = int(action.get("equipment_task_after") or 0)
             if int(action.get("equipment_task_after") or 0) >= requested_target:
                 return {
                     "ok": True,
@@ -1307,7 +1373,7 @@ def complete_equipment_strengthening_tasks(
             else None
         )
         raise EquipmentStrengtheningResourceExhausted(
-            f"路线可用玄铁耗尽，装备任务仅到 {equipment_progress} / {requested_target}",
+            f"当前可用批次无法在超量上限内继续，装备任务仅到 {equipment_progress} / {requested_target}",
             target_progress=requested_target,
             equipment_progress=equipment_progress,
             cumulative_material=cumulative_material,

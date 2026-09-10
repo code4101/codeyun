@@ -72,6 +72,7 @@ class FanxiuDataAnnotationDoctorWatchEnsureResponse(BaseModel):
 
 class FanxiuInfoWindowSettings(BaseModel):
     enabled: bool = True
+    auto_refresh: bool = False
     show_scene_id: bool = True
     show_scene_score: bool = True
     show_scene_identity_shapes: bool = True

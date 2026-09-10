@@ -13,6 +13,8 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
+from backend.core.fanxiu.data_annotation.tasks.task_reward_rows import claim_task_rows_by_ocr
+
 
 BEAST_ABYSS_EXPLORE_SCENE_ID = 657
 BEAST_ABYSS_TASK_SCENE_ID = 664
@@ -81,38 +83,6 @@ def discover_beast_abyss_reward_tabs(
         seen.add(title)
         tabs.append(BeastAbyssRewardTab(title, x + w / 2, y + h / 2))
     return tuple(sorted(tabs, key=lambda item: item.center_x))
-
-
-def _read_third_row_title(
-    context: Any,
-    assets: BeastAbyssTaskRewardAssets,
-) -> str:
-    frame = context.cur_frame(update=True)
-    text = context.ocr_text_in_shapes(
-        assets.task_scene_id,
-        (assets.observer_shape,),
-        padding=0,
-        frame_data_url=frame,
-        crop=True,
-    )
-    return _normalized_ocr_text(text)
-
-
-def _wait_read_third_row_title(
-    context: Any,
-    assets: BeastAbyssTaskRewardAssets,
-    *,
-    attempts: int = 3,
-) -> Generator[Any, None, str]:
-    """Read the verified observer ROI, retrying only transport-level misses."""
-
-    for attempt in range(max(1, int(attempts))):
-        title = _read_third_row_title(context, assets)
-        if title:
-            return title
-        if attempt + 1 < attempts:
-            yield from context.wait_action_settle(0.4)
-    raise RuntimeError("兽渊任务奖励：第3行任务标题连续 OCR 为空")
 
 
 def _open_beast_abyss_task_page(
@@ -209,37 +179,14 @@ def claim_beast_abyss_task_rewards(
             tab.center_y,
         )
         yield from context.wait_action_settle(0.8)
-        title = yield from _wait_read_third_row_title(context, assets)
-        unchanged = 0
-        advances = 0
-        clicks = 0
-        while unchanged < confirmations:
-            if clicks >= click_limit:
-                raise RuntimeError(
-                    f"兽渊任务奖励：Tab「{tab.title}」在 {click_limit} 次点击内未收敛"
-                )
-            context.click_shape_center(
-                assets.task_scene_id,
-                assets.first_row_shape,
-            )
-            clicks += 1
-            yield from context.wait_action_settle(click_settle_seconds)
-            next_title = yield from _wait_read_third_row_title(context, assets)
-            if next_title != title:
-                title = next_title
-                unchanged = 0
-                advances += 1
-            else:
-                unchanged += 1
-        results.append(
-            {
-                "tab": tab.title,
-                "clicks": clicks,
-                "detected_advances": advances,
-                "unchanged_confirmations": unchanged,
-                "final_observer": title,
-            }
+        result = yield from claim_task_rows_by_ocr(
+            context, scene_id=assets.task_scene_id,
+            first_row_shape=assets.first_row_shape, observer_shape=assets.observer_shape,
+            label=f"兽渊任务奖励：Tab「{tab.title}」",
+            click_settle_seconds=click_settle_seconds,
+            no_change_confirmations=confirmations, max_clicks=click_limit,
         )
+        results.append({"tab": tab.title, **result})
 
     yield from _return_to_beast_abyss_home(context, assets)
     return {

@@ -3,13 +3,14 @@ from __future__ import annotations
 """Windows renderer for the Fanxiu information window.
 
 The renderer consumes the persisted scene snapshot and draws a click-through
-vector layer over MuMu's Android render viewport.  It never captures the game,
-performs recognition, or sends input.
+vector layer over MuMu's Android render viewport. Optional stale refresh submits
+a read-only observation to the sole Kernel; rendering never sends game input.
 """
 
 import argparse
 import ctypes
 import os
+import threading
 import time
 import tkinter as tk
 from ctypes import wintypes
@@ -29,6 +30,10 @@ from backend.core.fanxiu.info_window import (
     read_fanxiu_info_window_user_settings,
     write_fanxiu_info_window_settings,
     write_fanxiu_info_window_user_settings,
+)
+from backend.core.fanxiu.info_window_refresh import (
+    FANXIU_INFO_WINDOW_STALE_SECONDS,
+    info_window_refresh_due,
 )
 from backend.core.services.launcher import popen_python_module_service
 from backend.core.temp_paths import codeyun_temp_root
@@ -182,6 +187,9 @@ class FanxiuWindowsInfoWindow:
         self.visible = False
         self.payload: dict[str, Any] = {}
         self.settings = read_fanxiu_info_window_settings()
+        self.refresh_thread: threading.Thread | None = None
+        self.last_refresh_attempt_at = float('-inf')
+        self.refresh_error = ""
 
         self.root = tk.Tk(className="FanxiuInfoWindow")
         self.root.withdraw()
@@ -366,9 +374,46 @@ class FanxiuWindowsInfoWindow:
                 "overlay_hwnd": self.overlay_hwnd,
                 "target_hwnd": self.target_hwnd,
                 "updated_at": time.time(),
+                "auto_refresh_supported": True,
+                "refresh_running": bool(self.refresh_thread and self.refresh_thread.is_alive()),
+                "refresh_error": self.refresh_error,
             })
         except Exception:
             pass
+
+    def _refresh_if_stale(self, now: float) -> None:
+        # Never block Tk or accumulate Cells while the Kernel is busy/offline.
+        if self.refresh_thread and self.refresh_thread.is_alive():
+            return
+        if now - self.last_refresh_attempt_at < FANXIU_INFO_WINDOW_STALE_SECONDS:
+            return
+        if not info_window_refresh_due(self.settings, self.payload, now=time.time()):
+            return
+        self.last_refresh_attempt_at = now
+        self.refresh_thread = threading.Thread(target=self._refresh_scene, daemon=True)
+        self.refresh_thread.start()
+
+    def _refresh_scene(self) -> None:
+        from backend.core.fanxiu.behavior_tree.jupyter_kernel import (
+            execute_fanxiu_jupyter_cell,
+            fanxiu_kernel_manager_status,
+        )
+
+        try:
+            status = fanxiu_kernel_manager_status()
+            if not status.get("alive") or status.get("execution_state") != "idle":
+                return
+            # Jupyter serializes a racing Job submission. The Cell rechecks its
+            # expiry and snapshot; keep one worker until it actually completes.
+            result = execute_fanxiu_jupyter_cell(
+                "from backend.core.fanxiu.info_window_refresh import refresh_info_window_in_kernel\n"
+                f"refresh_info_window_in_kernel(fanxiu, requested_at={time.time()!r})",
+                timeout_seconds=None,
+                max_output_chars=1000,
+            )
+            self.refresh_error = str(result.get("error") or "")
+        except Exception as exc:
+            self.refresh_error = f"{type(exc).__name__}: {exc}"
 
     def poll(self) -> None:
         now = time.monotonic()
@@ -381,6 +426,7 @@ class FanxiuWindowsInfoWindow:
                 self._hide()
             else:
                 self._read_payload()
+                self._refresh_if_stale(now)
                 rect = self._render_geometry()
                 if rect.width <= 0 or rect.height <= 0:
                     self._hide()
@@ -516,6 +562,12 @@ def update_info_window_control(settings: dict[str, Any], *, user_id: int | None 
         else write_fanxiu_info_window_settings(settings)
     )
     write_fanxiu_info_window_settings(saved)
+    # An already-running renderer may predate this capability. Upgrade only
+    # the overlay process, never restart or interrupt the game Kernel.
+    if saved["enabled"] and saved["auto_refresh"]:
+        current = fanxiu_windows_info_window_client.status()
+        if current.get("running") and not current.get("auto_refresh_supported"):
+            stop_windows_renderer()
     renderer = start_windows_renderer() if saved["enabled"] else stop_windows_renderer()
     return {
         "ok": True,

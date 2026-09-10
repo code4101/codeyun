@@ -927,3 +927,23 @@ def test_invalid_or_duplicate_runtime_rows_fail_closed_without_duplicate_checkpo
     rows = discover_ranking_occurrences(schedule, identities=IDENTITIES)
 
     assert len(rows) == 3
+
+
+@pytest.mark.parametrize("cross_count,expected", [(1, 1), (8, 0), (16, 0)])
+def test_lingzhuang_tier12_is_only_scheduled_for_server_rank(cross_count, expected):
+    from backend.core.fanxiu.activity.ranking_lifecycle import LINGZHUANG_STRENGTHENING_KIND
+    occurrence = RankingOccurrence(
+        activity_type="lingzhuang-huadao", family="resource_rank", runtime_id="test", activity_id=1044311,
+        start_at=datetime(2026, 9, 10, 5, 0, 5, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 10, 5, tzinfo=TZ),
+        end_at=datetime(2026, 9, 10, 22, tzinfo=TZ),
+        close_at=datetime(2026, 9, 12, 22, tzinfo=TZ), cross_count=cross_count,
+    )
+    checkpoints = [c for c in checkpoints_for_occurrence(occurrence, business_day=occurrence.start_at.date())
+                   if c.checkpoint_kind == LINGZHUANG_STRENGTHENING_KIND]
+    assert len(checkpoints) == expected
+    if checkpoints:
+        checkpoint = checkpoints[0]
+        assert checkpoint.due_at == datetime(2026, 9, 10, 5, 15, tzinfo=TZ)
+        assert all(c.checkpoint_kind != LINGZHUANG_STRENGTHENING_KIND for c in due_ranking_checkpoints(
+            [occurrence], now=datetime(2026, 9, 10, 18, tzinfo=TZ), completed_keys=[checkpoint.key]))

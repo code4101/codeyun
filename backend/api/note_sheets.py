@@ -21714,15 +21714,42 @@ def revise_attendance_video_progress(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
-        document,
-        sheet_id=sheet_id,
-        workbook_id=workbook_id,
-    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有该资源权限")
+    independent = _bind_independent_attendance_document(
+        document, sheet_id=sheet_id, workbook_id=workbook_id,
+    )
+    if independent is not None:
+        from types import SimpleNamespace
+        from xlsln.kq5034.engine.client import (
+            AttendanceVersionConflict, AttendanceStorageError, LocalAttendanceSheetClient,
+        )
+
+        client = LocalAttendanceSheetClient()
+        try:
+            recalculation = client.revise_attendance_video_progress(
+                attendance_sheet_id=sheet_id,
+                cells=[cell.model_dump() for cell in payload.cells],
+                revision_label=payload.revision_label.strip(),
+                expected_version=payload.base_version,
+            )
+            source = client.get_document(SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id))
+        except AttendanceVersionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except AttendanceStorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return NoteSheetAttendanceVideoRevisionResponse(
+            sheet=NoteSheetDetailResponse.model_validate(_build_independent_attendance_detail_payload(
+                session, document, source, access=access, workbook=_workbook, current_user=current_user,
+            )),
+            revision_label=payload.revision_label.strip(),
+            updated_count=int(recalculation.get("revision_target_count") or 0),
+            recalculation=recalculation,
+        )
     _check_sheet_base_version(document, payload.base_version)
 
     revision_label = payload.revision_label.strip()

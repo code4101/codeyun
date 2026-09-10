@@ -11,6 +11,7 @@ FANXIU_WINDOWS_INFO_WINDOW_HEARTBEAT_TTL_SECONDS = 3.0
 FANXIU_INFO_WINDOW_DECISION_SCOPE = "decision"
 FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
     "enabled": True,
+    "auto_refresh": False,
     "show_scene_id": True,
     "show_scene_score": True,
     "show_scene_identity_shapes": True,

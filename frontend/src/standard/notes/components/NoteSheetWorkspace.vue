@@ -14568,6 +14568,19 @@ function syncContextMenuSelectionFromEvent(event: MouseEvent) {
     return
   }
 
+  // The capture handler stops Handsontable's native contextmenu handler.
+  // Select the clicked data cell here so menu actions do not use a stale cell.
+  if (cell.tagName === 'TD') {
+    const hot = getHotInstance()
+    const coords = hot?.getCoords(cell as HTMLTableCellElement)
+    if (coords && coords.row >= 0 && coords.col >= 0) {
+      if (!shouldPreserveSelectionForContextPointer(event, coords.row, coords.col)) {
+        hot?.selectCell(coords.row, coords.col, coords.row, coords.col, true, false)
+      }
+      return
+    }
+  }
+
   const rowMarkerValue = cell.dataset.sheetRowMarker
   if (rowMarkerValue != null) {
     const row = normalizeNonNegativeInt(rowMarkerValue, -1)
@@ -18801,7 +18814,7 @@ async function handleAttendanceVideoRevisionFromSelection(revisionLabel: string)
       sheetRemoteConflictActive = true
       ElMessage.warning('工作表数据已由其他页面或系统任务更新，已保留本地草稿，请刷新后合并')
     } else {
-      ElMessage.error('修订失败')
+      ElMessage.error(getSheetActionErrorMessage(error, '修订失败'))
     }
   } finally {
     sheetCellActionRunning.value = null

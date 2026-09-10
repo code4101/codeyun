@@ -1,7 +1,7 @@
 import axios from 'axios'
 
 import api from '@/api'
-import type { NoteSheetDetail, WorkbookDetail } from '@/api/noteSheets'
+import { fetchNoteSheet, fetchWorkbook, type NoteSheetDetail, type WorkbookDetail } from '@/api/noteSheets'
 
 export type AttendanceOrderLookupMode = 'hybrid' | 'db_only' | 'browser_only'
 const ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS = 620000
@@ -505,6 +505,12 @@ const independentAttendanceReadOnlyAccess = {
 }
 
 export async function fetchIndependentAttendanceWorkbookById(workbookId: number) {
+  // Legacy attendance URLs are aliases for the same resource, not a different
+  // permission model. The common API reads attendance-owned data and resolves
+  // the current user's actual grants. Only unregistered resources use the
+  // independent read-only fallback; a 403 must never be bypassed.
+  const registered = await fetchWorkbook(workbookId)
+  if (registered) return registered
   try {
     const response = await api.get<{
       id: number
@@ -557,6 +563,8 @@ export async function fetchIndependentAttendanceSheetDocumentById(
   sheetId: number,
   options?: { workbookId?: number | null },
 ) {
+  const registered = await fetchNoteSheet(sheetId, { workbookId: options?.workbookId })
+  if (registered) return registered
   try {
     const response = await api.get<{
       id: number

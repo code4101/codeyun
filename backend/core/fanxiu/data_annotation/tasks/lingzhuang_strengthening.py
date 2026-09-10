@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import threading
-from datetime import date
+from collections.abc import Generator
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from backend.db import engine
 from backend.models import FanxiuExchangeActivity
 
 
-DEFAULT_TARGET_TIER = 10
+DEFAULT_TARGET_TIER = 12
 STANDARD_JOB_ID = "lingzhuang-strengthening"
 
 
@@ -59,10 +60,35 @@ def resolve_lingzhuang_strengthening_activity(
         (
             activity
             for activity in activities
-            if is_exchange_activity_active(activity, today=current_day)
+            if int(activity.cross_count) == 1 and is_exchange_activity_active(activity, today=current_day)
         ),
         None,
     )
+
+
+def claim_lingzhuang_equipment_rewards(
+    context: Any, *, game_task_activity_id: int,
+) -> Generator[Any, None, dict[str, Any]]:
+    """装备奖励复用兽渊的 OCR 列表推进算法，领奖不读取 Runtime。"""
+    from backend.core.fanxiu.data_annotation.tasks.task_reward_rows import claim_task_rows_by_ocr
+    from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import (
+        RESOURCE_RANK_GIFT_ADAPTERS, open_resource_rank_activity_page,
+    )
+
+    scene = yield from context.wait_scene([735, 676], wait=5, required=False)
+    if scene is None or scene.scene_id != 735:
+        adapter = next(a for a in RESOURCE_RANK_GIFT_ADAPTERS if a.key == "lingzhuang-huadao")
+        yield from open_resource_rank_activity_page(
+            context, adapter, activity_id=game_task_activity_id, now=datetime.now().astimezone(),
+        )
+        yield from context.wait_click_then_scene(676, "任务", [735], timeout=15)
+    result = yield from claim_task_rows_by_ocr(
+        context, scene_id=735, first_row_shape="首条任务领取区",
+        observer_shape="首行任务标题", progress_shape="首行任务进度",
+        label="灵装化道装备奖励", claimed_texts=("已完成", "已领取"), max_clicks=20,
+    )
+    yield from context.wait_click_then_scene(735, "榜单", [676], timeout=15)
+    return {"ok": True, **result}
 
 
 def execute_lingzhuang_strengthening_task(
@@ -117,6 +143,7 @@ def execute_lingzhuang_strengthening_task(
             cross_count=int(activity.cross_count),
             game_task_activity_id=game_task_activity_id,
             max_clicks=max(1, int(payload.get("max_clicks") or 200)),
+            max_overshoot_percent=int(payload.get("max_overshoot_percent", 5)),
         )
     except EquipmentStrengtheningResourceExhausted as exc:
         message = f"灵装化道_强化：{exc}，按当前存量正常停止"
@@ -132,6 +159,9 @@ def execute_lingzhuang_strengthening_task(
             "cumulative_material": exc.cumulative_material,
         }
 
+    rewards = yield from claim_lingzhuang_equipment_rewards(
+        context, game_task_activity_id=game_task_activity_id,
+    )
     message = (
         f"灵装化道_强化：装备任务已到 {int(result['equipment_progress'])}"
         f" / {int(result['target_progress'])}"
@@ -142,6 +172,7 @@ def execute_lingzhuang_strengthening_task(
         "outcome": "target_reached",
         "message": message,
         "activity_id": activity.id,
+        "rewards": rewards,
     }
 
 
@@ -149,5 +180,6 @@ __all__ = [
     "DEFAULT_TARGET_TIER",
     "STANDARD_JOB_ID",
     "execute_lingzhuang_strengthening_task",
+    "claim_lingzhuang_equipment_rewards",
     "resolve_lingzhuang_strengthening_activity",
 ]

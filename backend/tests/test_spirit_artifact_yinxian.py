@@ -24,6 +24,15 @@ def test_unneeded_attribute_does_not_hit_even_when_full():
                                     basic_score=150, basic_full_score=150)
 
 
+@pytest.mark.parametrize(('score', 'full', 'accepted'), [
+    ('91.999', 100, False), (92, 100, True),
+    ('137.999', 150, False), (138, 150, True),
+])
+def test_default_target_is_92_percent(score, full, accepted):
+    assert meets_yinxian_target(is_needed_a=True, basic_score=Decimal(str(score)),
+                                basic_full_score=full) is accepted
+
+
 def test_invalid_ratio_does_not_silently_accept():
     with pytest.raises(ValueError):
         meets_yinxian_target(is_needed_a=True, basic_score=100,
@@ -32,7 +41,7 @@ def test_invalid_ratio_does_not_silently_accept():
 
 def candidates():
     return (
-        YinxianAttribute(1, 'ATTACK', 90, 6, False, 100),
+        YinxianAttribute(1, 'ATTACK', 92, 6, False, 100),
         YinxianAttribute(2, 'CRI_VALUE', 100, 6, False, 100),
         YinxianAttribute(3, 'C', 110, 6, False, 100),
         YinxianAttribute(4, 'MAXMP', 10, 3, True, 100),

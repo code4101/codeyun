@@ -1702,7 +1702,14 @@ class BehaviorTreeContext(AutomationContext):
         scene: View | int,
         *,
         wait: float | None = None,
+        known_paths_only: bool = False,
     ) -> Any:
+        """Navigate using asset edges; reuse action landings as Layer-0 hints.
+
+        Each hint is checked on a fresh frame; a miss keeps the normal layered
+        fallback. known_paths_only disables unknown-route exploration, without
+        changing recognition, popup handling or replanning of known edges.
+        """
         target_scene_id = scene.id if isinstance(scene, View) else int(scene)
         if not isinstance(self.asset_tree_path, Path):
             raise RuntimeError("缺少场景移动资产树路径")
@@ -1722,6 +1729,8 @@ class BehaviorTreeContext(AutomationContext):
             or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in go_scene_parameters.values())
         ):
             go_scene_kwargs["layer0_wait_seconds"] = wait
+        if known_paths_only:
+            go_scene_kwargs["known_paths_only"] = True
         result = go_scene_task(
             self.ctx,
             self.asset_tree_path,
@@ -14095,11 +14104,14 @@ class BehaviorTreeExecutor(
         stop_event: threading.Event,
         initial_frame: str,
         *,
+        candidate_scene_ids: list[int] | None = None,
         wait_seconds: float = DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS,
         max_wait_seconds: float = DEFAULT_GO_SCENE_OBSERVATION_TIMEOUT_SECONDS,
     ):
         """Keep observing until a scene is known or unknown is continuous.
 
+        Candidates are only fresh-frame Layer-0 hints; misses retain the full
+        layered fallback. No candidates means a normal global observation.
         Unknown is not a navigation node.  Every pass consumes a fresh full
         recognition result and yields without action until ``wait_seconds``
         has elapsed without a reliable Layer 0/1/2 scene id.  Layer 3 scores
@@ -14122,7 +14134,7 @@ class BehaviorTreeExecutor(
             attempts += 1
             ctx.pop("_last_scene_recognition_status", None)
             with self._scene_observation_probe(ctx):
-                _wait_scene_match = yield from context.wait_scene(label=f'场景移动：识别前往 #{target_scene_id} 的当前位置', wait=5.0, required=False)
+                _wait_scene_match = yield from context.wait_scene(candidate_scene_ids or None, label=f'场景移动：识别前往 #{target_scene_id} 的当前位置', wait=5.0, required=False)
                 (current_scene_id, score, frame) = (
                     (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                     if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -14234,6 +14246,7 @@ class BehaviorTreeExecutor(
         stop_event: threading.Event,
         *,
         layer0_wait_seconds: float | None = None,
+        known_paths_only: bool = False,
     ):
         tree = ctx.get("asset_tree")
         if not isinstance(tree, list):
@@ -14258,6 +14271,8 @@ class BehaviorTreeExecutor(
             started_monotonic=navigation_started_at,
         )
         ctx["_navigation_incident_recorder"] = incident_recorder
+        # Attempt-local hints: never carry a stale landing into a new Cell.
+        recognition_scene_ids: list[int] = []
         last_navigation_frame = ""
         last_navigation_scene_id: int | None = None
         last_navigation_score = 0.0
@@ -14274,7 +14289,7 @@ class BehaviorTreeExecutor(
                 stop_event,
                 seconds=DEFAULT_SCENE_RECOGNITION_POLL_SECONDS,
             )
-            _wait_scene_match = yield from context.wait_scene(label=f'场景移动：复核目标 #{target_scene_id}', wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([target_scene_id], label=f'场景移动：复核目标 #{target_scene_id}', wait=5.0, required=False)
             (full_scene_id, full_score, fresh_frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -14319,56 +14334,55 @@ class BehaviorTreeExecutor(
             last_navigation_frame = frame
             known_scene_id = ctx.pop("_go_scene_known_scene_id", None)
             if known_scene_id is not None:
-                current_scene_id, score = int(known_scene_id), float(self.scene_threshold)
-                recognition_status = "known_landing"
-            else:
-                transition_guard = ctx.get("_go_scene_unknown_transition_guard")
-                guarded_transition = False
-                guarded_wait_seconds = DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS
-                if int(target_scene_id) == 34 and isinstance(transition_guard, dict):
-                    try:
-                        reference_scene_id = int(transition_guard.get("reference_scene_id") or 0)
-                        threshold = float(transition_guard.get("similarity_threshold") or 94.0)
-                        reference_image = (ctx.get("images") or {}).get(reference_scene_id)
-                        similarity = (
-                            self._scene_reference_similarity(ctx, reference_image, frame)
-                            if isinstance(reference_image, dict) and reference_scene_id > 0
-                            else None
+                recognition_scene_ids = list(dict.fromkeys([int(known_scene_id), *recognition_scene_ids]))
+            transition_guard = ctx.get("_go_scene_unknown_transition_guard")
+            guarded_transition = False
+            guarded_wait_seconds = DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS
+            if int(target_scene_id) == 34 and isinstance(transition_guard, dict):
+                try:
+                    reference_scene_id = int(transition_guard.get("reference_scene_id") or 0)
+                    threshold = float(transition_guard.get("similarity_threshold") or 94.0)
+                    reference_image = (ctx.get("images") or {}).get(reference_scene_id)
+                    similarity = (
+                        self._scene_reference_similarity(ctx, reference_image, frame)
+                        if isinstance(reference_image, dict) and reference_scene_id > 0
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    similarity = None
+                if similarity is not None and similarity >= threshold:
+                    guarded_transition = True
+                    guarded_wait_seconds = max(
+                        DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS,
+                        float(transition_guard.get("wait_seconds") or 120.0),
+                    )
+                    phase = str(transition_guard.get("phase") or "go_scene_wait_guarded_transition")
+                    label = str(transition_guard.get("label") or "动态回城过场")
+                    if not transition_guard.get("announced"):
+                        transition_guard["announced"] = True
+                        self._log(
+                            "wait",
+                            f"场景移动：检测到{label}（与 #{reference_scene_id} 全帧相似 "
+                            f"{similarity:.0f}%），只等待可靠场景自然落地",
                         )
-                    except (TypeError, ValueError):
-                        similarity = None
-                    if similarity is not None and similarity >= threshold:
-                        guarded_transition = True
-                        guarded_wait_seconds = max(
-                            DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS,
-                            float(transition_guard.get("wait_seconds") or 120.0),
-                        )
-                        phase = str(transition_guard.get("phase") or "go_scene_wait_guarded_transition")
-                        label = str(transition_guard.get("label") or "动态回城过场")
-                        if not transition_guard.get("announced"):
-                            transition_guard["announced"] = True
-                            self._log(
-                                "wait",
-                                f"场景移动：检测到{label}（与 #{reference_scene_id} 全帧相似 "
-                                f"{similarity:.0f}%），只等待可靠场景自然落地",
-                            )
-                        with self._lock:
-                            self._status.update({
-                                "phase": phase,
-                                "current_scene": None,
-                                "message": f"场景移动：{label}中，等待自然落到 #34",
-                                "updated_at": time.time(),
-                            })
-                current_scene_id, score, frame, recognition_status = yield from self._wait_for_go_scene_recognition(
-                    ctx,
-                    context,
-                    tree,
-                    target_scene_id,
-                    stop_event,
-                    frame,
-                    wait_seconds=guarded_wait_seconds,
-                    max_wait_seconds=guarded_wait_seconds,
-                )
+                    with self._lock:
+                        self._status.update({
+                            "phase": phase,
+                            "current_scene": None,
+                            "message": f"场景移动：{label}中，等待自然落到 #34",
+                            "updated_at": time.time(),
+                        })
+            current_scene_id, score, frame, recognition_status = yield from self._wait_for_go_scene_recognition(
+                ctx,
+                context,
+                tree,
+                target_scene_id,
+                stop_event,
+                frame,
+                candidate_scene_ids=recognition_scene_ids or None,
+                wait_seconds=guarded_wait_seconds,
+                max_wait_seconds=guarded_wait_seconds,
+            )
             recognition_wait_elapsed = float(
                 ctx.pop("_last_go_scene_recognition_wait_elapsed", 0.0) or 0.0
             )
@@ -14395,7 +14409,7 @@ class BehaviorTreeExecutor(
                             f"{score:.0f}%；未形成连续一分钟 unknown，禁止执行 #424"
                         ],
                     )
-                if (yield from self._wait_or_click_navigation_fallback_return(
+                if not known_paths_only and (yield from self._wait_or_click_navigation_fallback_return(
                     ctx,
                     frame,
                     stop_event,
@@ -14524,7 +14538,8 @@ class BehaviorTreeExecutor(
             )
             if decision is None:
                 if (
-                    int(current_scene_id or 0) == 611
+                    not known_paths_only
+                    and int(current_scene_id or 0) == 611
                     and int(target_scene_id) == 34
                     and (yield from self._wait_or_click_navigation_fallback_return(
                         ctx,
@@ -14543,7 +14558,7 @@ class BehaviorTreeExecutor(
                 # from a hub is an asset/business-path defect, not permission
                 # to click generic blank/return actions and manufacture an
                 # unknown transition.
-                if isinstance(current_image, dict) and not current_is_layer1_hub:
+                if not known_paths_only and isinstance(current_image, dict) and not current_is_layer1_hub:
                     decision = self._select_scene_exploration_edge(
                         tree,
                         current_image,
@@ -14611,7 +14626,7 @@ class BehaviorTreeExecutor(
                 # frame once identified the real world as #69 and immediately
                 # clicked #69「退出」at the lower-left world entry.  Require a
                 # fresh-frame confirmation before every return-to-world click.
-                _wait_scene_match = yield from context.wait_scene(label='场景移动：回世界前复核当前场景', wait=5.0, required=False)
+                _wait_scene_match = yield from context.wait_scene([current_scene_id], label='场景移动：回世界前复核当前场景', wait=5.0, required=False)
                 (confirm_scene_id, confirm_score, confirm_frame) = (
                     (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                     if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -14674,6 +14689,12 @@ class BehaviorTreeExecutor(
                 return_source_on_stall=True,
                 layer0_wait_seconds=layer0_wait_seconds,
             )
+            # Replan with this action's context, including transition landings.
+            # This is a candidate set, not permission to trust an old scene ID.
+            recognition_scene_ids = list(dict.fromkeys(
+                ([int(actual_scene_id)] if actual_scene_id is not None else [])
+                + [int(value) for value in (edge.get("target_ids") or [])]
+            ))
             landing_evidence = ctx.pop("_last_scene_jump_evidence", None)
             after_frame = (
                 str(landing_evidence.get("frame_data_url") or "")

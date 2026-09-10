@@ -151,6 +151,7 @@ const gameStateInspectionProbeText = computed(() => (
 ));
 const defaultInfoWindowSettings: FanxiuInfoWindowSettings = {
   enabled: true,
+  auto_refresh: false,
   show_scene_id: true,
   show_scene_score: true,
   show_scene_identity_shapes: true,
@@ -1014,6 +1015,15 @@ onUnmounted(() => {
           />
         </div>
         <div class="info-window-options" :class="{ 'is-disabled': !infoWindowSettings.enabled }">
+          <label title="场景快照超过 10 秒未更新时，Kernel 空闲则识别一次；不点击游戏，关闭网页后仍有效">
+            <span>10 秒无更新自动识别</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.auto_refresh"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('auto_refresh', Boolean($event))"
+            />
+          </label>
           <label>
             <span>场景编号</span>
             <el-switch

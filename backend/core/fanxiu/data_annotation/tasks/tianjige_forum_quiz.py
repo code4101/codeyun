@@ -107,6 +107,57 @@ def _waiting_result(
     }
 
 
+def record_tianjige_missing_thread_review(activity_date: str, evidence: str) -> None:
+    """Record an Agent's completed daily check, without claiming no activity.
+
+    Suppresses duplicate repair dispatches; regular low-frequency post checks
+    continue through the activity window, so a late post can still be handled.
+    """
+    day = datetime.strptime(activity_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+    if not str(evidence).strip():
+        raise ValueError("AI 核查必须提供实际证据")
+    ledger = _read_submission_ledger()
+    ledger.update(missing_thread_review_date=day, missing_thread_review_evidence=evidence)
+    _write_submission_ledger(ledger)
+
+
+def _request_missing_thread_review(runner: Any, current: datetime, probe: TianjigeQuizProbe) -> None:
+    """Request one review per day; the receiving Agent alone changes ownership.
+
+    Successful dispatch is persisted to prevent a new Agent every poll. Failed
+    launch remains retryable on the next slow poll, without disabling engineering.
+    """
+    from backend.core.codex import CodexEscalationRequest, escalate_to_codex
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
+
+    if not read_scheduler_settings().get("job_group_enabled", True):
+        runner._log("warning", "天机阁_有奖竞答：18:10 后仍未找到当天帖子，交由当前接管 AI 核查")
+        return
+    ledger = _read_submission_ledger()
+    day = current.strftime("%Y-%m-%d")
+    if ledger.get("missing_thread_review_date") == day:
+        return
+    request = CodexEscalationRequest(
+        title=f"天机阁竞答 {day} 超过 18:10 仍未找到当天帖子",
+        problem=f"读取 {probe.profile_thread_count} 条动态仍未匹配当天竞答；不能据此断言今天没有活动。",
+        objective="核实官方发布、页面加载、日期解析与筛选，修复真实问题并通过正式入口验证，避免高频无效轮询。",
+        evidence=(probe.profile_excerpt or "本次未记录页面正文",),
+        recovery_instructions=(
+            "实际接管时先调用 backend.core.fanxiu.data_annotation.kernel_scheduler_control.take_ai_control "
+            "取得凡修运行权，再使用唯一 Kernel 内的论坛接口核查。工程没有替你切换模式。"
+            "按当前事实完成本日处理；不得把未找到写成确认没有活动。完成后归还工程运行权。"
+        ),
+    )
+    try:
+        dispatch = escalate_to_codex(request)
+    except Exception as exc:
+        runner._log("warning", f"天机阁_有奖竞答：AI 请求失败，保留工程模式，稍后重试：{exc}")
+        return
+    ledger.update(missing_thread_review_date=day, missing_thread_review_dispatch_id=dispatch.dispatch_id)
+    _write_submission_ledger(ledger)
+    runner._log("warning", f"天机阁_有奖竞答：已请求 AI 核查 {dispatch.dispatch_id}，等待 AI 实际接管")
+
+
 def execute_tianjige_forum_quiz_task(
     runner: Any,
     ctx: dict[str, Any],
@@ -155,6 +206,9 @@ def execute_tianjige_forum_quiz_task(
     )
     if probe.status == "waiting_thread":
         completed_at = _now()
+        if completed_at.time() >= clock_time(18, 10):
+            _request_missing_thread_review(runner, completed_at, probe)
+            poll_seconds = max(poll_seconds, 300.0)
         return _waiting_result(
             runner,
             completed_at,
@@ -162,7 +216,7 @@ def execute_tianjige_forum_quiz_task(
             poll_seconds=poll_seconds,
             message=(
                 f"天机阁_有奖竞答：等待页面 {probe.elapsed_seconds:.1f} 秒并读取"
-                f" {probe.profile_thread_count} 条动态后，确认当天帖子尚未发布"
+                f" {probe.profile_thread_count} 条动态后，尚未找到当天帖子（不代表未发布）"
             ),
         )
 

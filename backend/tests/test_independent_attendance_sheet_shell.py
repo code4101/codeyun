@@ -4,6 +4,45 @@ from types import SimpleNamespace
 from backend.api import attendance, note_sheets
 from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
 from fastapi import HTTPException
+import pytest
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+def test_video_revision_uses_independent_api_and_checks_permission(monkeypatch, allowed):
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+
+    access = SimpleNamespace(capabilities=SimpleNamespace(
+        can_edit_data=True, can_run_sheet_actions=allowed))
+    document = SimpleNamespace()
+    monkeypatch.setattr(note_sheets, "_get_note_sheet_or_404", lambda *a, **kw: (document, access, None))
+    monkeypatch.setattr(note_sheets, "_bind_independent_attendance_document", lambda *a, **kw: {"version": 7})
+    monkeypatch.setattr(LocalAttendanceSheetClient, "__init__", lambda self: None)
+    calls = []
+    def revise(self, **kwargs):
+        calls.append(kwargs)
+        return {"revision_target_count": 1}
+    monkeypatch.setattr(LocalAttendanceSheetClient, "revise_attendance_video_progress", revise)
+    monkeypatch.setattr(LocalAttendanceSheetClient, "get_document", lambda *a: {"version": 8})
+    monkeypatch.setattr(note_sheets, "_build_independent_attendance_detail_payload", lambda *a, **kw: dict(
+        id=1, title="考勤表", engine="handsontable", scope="notes", version=8,
+        created_at=1, updated_at=2, owner_type="course_workbook", owner_key="test", sheet_key="attendance",
+    ))
+    payload = note_sheets.NoteSheetAttendanceVideoRevisionRequest(
+        base_version=7, revision_label="当堂完成", cells=[dict(row_index=0, column_index=2)])
+    if not allowed:
+        with pytest.raises(HTTPException) as error:
+            note_sheets.revise_attendance_video_progress(1, payload, workbook_id=2,
+                session=None, current_user=SimpleNamespace(id=27))
+        assert error.value.status_code == 403
+        assert calls == []
+    else:
+        result = note_sheets.revise_attendance_video_progress(1, payload, workbook_id=2,
+            session=None, current_user=SimpleNamespace(id=27))
+        assert result.updated_count == 1
+        assert result.sheet.version == 8
+        assert calls == [dict(attendance_sheet_id=1, cells=[dict(row_index=0, column_index=2)],
+                              revision_label="当堂完成", expected_version=7)]
 
 
 def test_codeyun_sheet_shell_binds_attendance_owned_document(monkeypatch):

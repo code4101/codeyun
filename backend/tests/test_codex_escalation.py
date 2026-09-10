@@ -37,7 +37,7 @@ def test_structured_prompt_requires_full_agent_owned_closure():
     )
 
     assert prompt.startswith("# 场景识别异常")
-    assert "工程路径已经熔断" in prompt
+    assert "请求已发出不代表运行权已移交" in prompt
     assert "只是参考方向，不限制你的行动范围" in prompt
     assert "恢复工程稳定运行是唯一核心目标" in prompt
     assert "最小充分干预只是调查起点" in prompt
