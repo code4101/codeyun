@@ -8,6 +8,7 @@ model, executes Lua, or sends a pet-feeding command.
 """
 
 from typing import Any
+from datetime import datetime, timezone
 
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
 from backend.core.fanxiu.instrumentation.runtime_memory import (
@@ -308,6 +309,77 @@ def read_pet_aptitude_runtime(*, expected_pet_id: int | None = None) -> dict[str
         "target": target,
         "pending_swallow_count": declared_pending_count,
         "pending_swallow_rows": pending,
+    }
+
+
+def read_pet_rank_runtime(*, expected_pet_id: int) -> dict[str, Any]:
+    """Read one pet's owned illusion rank from the already-loaded PetMgr model.
+
+    ``expected_pet_id`` is PetAtlas/PetInfoVO.petId, not an inventory item ID.
+    Returns ``target={pet_id, owned, rank, pin}``; an absent target in a complete
+    list has owned=False, rank=0, pin=None. Missing/incomplete data raises
+    FanxiuRuntimeMemoryError and is never interpreted as unowned.
+
+    Static authority: PetData.GetPetInfoVo searches petInfoVOList by petId;
+    IsPetWillMaxLevel compares that row's level with GetMaxAltaLevel. Thus rank
+    is level; pin is the independent quality-upgrade field. No giftMap or
+    aptitude-limit requirement applies to this ownership query.
+
+    Read-only: no Lua execution, GUI, model initialization or network command.
+    Reuses the process-bound manager resolver cache, validates the loaded list
+    on every observation and caches no rank values. New reader instances read
+    fresh values. Real page exit/reopen and process-restart acceptance remain
+    to be verified; failures belong to manager resolution or list decoding.
+    """
+    pet_id = int(expected_pet_id)
+    if pet_id <= 0:
+        raise ValueError("expected_pet_id must be positive")
+
+    def decode(reader: LuaJitReader, root_address: int) -> tuple[list[dict[str, int]], int]:
+        manager = manager_index_fields(reader, root_address, _PET_METHODS)
+        instance = _fields(reader, manager.get("inst"))
+        model = _fields(reader, instance.get("Model"))
+        data = _fields(reader, model.get("PetData"))
+        info = _fields(reader, data.get("_PetInfoVo"))
+        if "petInfoVOList" not in info:
+            raise FanxiuRuntimeMemoryError("PetMgr 灵兽拥有列表尚未加载")
+        raw_rows, count = reader.list_items(info["petInfoVOList"])
+        if count is None or len(raw_rows) != count:
+            raise FanxiuRuntimeMemoryError("PetMgr 灵兽拥有列表计数不完整")
+        rows = []
+        seen = set()
+        for raw_row in raw_rows:
+            row = _fields(reader, raw_row)
+            identity, level, pin = (as_int(row.get(key)) for key in ("petId", "level", "pin"))
+            if identity is None or identity <= 0 or level is None or level < 0 or pin is None or pin < 0:
+                raise FanxiuRuntimeMemoryError("灵兽拥有行缺少有效 petId/level/pin")
+            if identity in seen:
+                raise FanxiuRuntimeMemoryError(f"灵兽 petId 重复：{identity}")
+            seen.add(identity)
+            rows.append({"pet_id": identity, "rank": level, "pin": pin})
+        return rows, count
+
+    memory = MumuProcessMemory.discover_cached()
+    state_address = int(_lua_addresses(memory)["state"], 16)
+    root, cache_hit, _environment = resolve_lua_global_manager_root(
+        memory, manager_key="pet-owned-rank", state_address=state_address,
+        global_name="PetMgr", required_methods=_PET_METHODS, validate=decode,
+    )
+    rows, count = decode(LuaJitReader(memory), root)
+    match = next((row for row in rows if row["pet_id"] == pet_id), None)
+    target = {"pet_id": pet_id, "owned": match is not None, "rank": 0, "pin": None}
+    if match is not None:
+        target.update(match)
+    return {
+        "ok": True, "available": True, "complete": True, "read_only": True,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "target": target, "declared_pet_count": count,
+        "evidence": {
+            "pid": memory.pid, "process_start_ticks": memory.process_start_ticks,
+            "manager_cache_hit": cache_hit,
+            "source": "PetMgr.Model.PetData._PetInfoVo.petInfoVOList",
+            "rank_field": "level",
+        },
     }
 
 

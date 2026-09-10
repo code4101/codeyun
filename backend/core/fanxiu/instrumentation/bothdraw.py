@@ -387,6 +387,8 @@ def build_bothdraw_runtime_reward_items(
                     or 0
                 ),
                 "reward_limit": str(row.get("reward_limit") or ""),
+                "quantity": row.get("quantity"),
+                "quantity_complete": row.get("quantity") is not None,
             }
         )
     if missing:
@@ -423,6 +425,8 @@ def _runtime_optional_reward_rows(
             candidate = {
                 "item_id": item_id,
                 "reward_limit": str(fields.get("rewardLimit") or ""),
+                # FormatStr2Reward returns amount (Long); do not infer from rewardLimit.
+                "quantity": reader.long(reward.get("amount")),
             }
             previous = rows.get(library_id)
             if previous is not None and previous != candidate:
@@ -435,93 +439,17 @@ def _runtime_optional_reward_rows(
     return rows
 
 
-_KUNLUN_REWARD_LIMIT_RE = re.compile(
-    r"^(IsGetFashionMax|IsGetTalismanGradeMax|IsGetGongFaMax)\|"
-    r"(\d+)_(\d+)_1$"
-)
-_KUNLUN_LIMIT_KIND = {
-    "IsGetFashionMax": "fashion",
-    "IsGetTalismanGradeMax": "talisman",
-    "IsGetGongFaMax": "gongfa",
-}
-
-
-def _validated_kunlun_targets(
-    reward_items: Iterable[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+def _validated_kunlun_targets(reward_items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    from .cultivation import parse_cultivation_reward_targets
+    result = []
     for item in reward_items:
-        match = _KUNLUN_REWARD_LIMIT_RE.fullmatch(
-            str(item.get("reward_limit") or "")
-        )
-        if match is None:
-            raise FanxiuRuntimeMemoryError(
-                f"昆仑候选 {item.get('library_id')} rewardLimit 无法验证"
-            )
-        limit_kind, raw_target_id, raw_item_id = match.groups()
-        kind = _KUNLUN_LIMIT_KIND[limit_kind]
-        target_id = int(raw_target_id)
-        item_id = int(raw_item_id)
-        if (
-            kind != str(item.get("kind") or "")
-            or target_id != int(item.get("target_id") or 0)
-            or item_id != int(item.get("item_id") or 0)
-        ):
-            raise FanxiuRuntimeMemoryError(
-                "昆仑候选 rewardLimit 与目录身份不一致："
-                f"limit={(kind, target_id, item_id)}, "
-                f"catalog={(item.get('kind'), item.get('target_id'), item.get('item_id'))}"
-            )
-        result.append(dict(item))
+        targets = parse_cultivation_reward_targets(str(item.get("reward_limit") or ""), reward_item_id=int(item["item_id"]))
+        result.append({**item, "targets": targets,
+                       "kind": targets[0]["kind"] if len(targets) == 1 else "bundle",
+                       "target_id": targets[0]["target_id"] if len(targets) == 1 else None})
     if len(result) != 4:
         raise FanxiuRuntimeMemoryError(f"昆仑第一排候选不完整：{len(result)}")
     return result
-
-
-def _read_loaded_fashion_rank(target_id: int) -> dict[str, Any]:
-    methods = frozenset({"Inst_get", "GetFashionSexByHandPoint"})
-
-    def data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, Any]:
-        manager = manager_index_fields(reader, root_address, methods)
-        instance = _fields(reader, manager.get("inst"))
-        model = _fields(reader, instance.get("Model"))
-        data = _fields(reader, model.get("FashionData"))
-        values, declared_count = reader.list_items(data.get("AllFashionInfoVoList"))
-        if not values or (
-            declared_count is not None and int(declared_count) != len(values)
-        ):
-            raise FanxiuRuntimeMemoryError("FashionMgr 时装清单尚未完整加载")
-        return data
-
-    memory = MumuProcessMemory.discover_cached()
-    state_address = int(_lua_addresses(memory)["state"], 16)
-    root, cache_hit, _environment = resolve_lua_global_manager_root(
-        memory,
-        manager_key="kunlun-fashion-rank",
-        state_address=state_address,
-        global_name="FashionMgr",
-        required_methods=methods,
-        validate=data_fields,
-    )
-    reader = LuaJitReader(memory)
-    values, _count = reader.list_items(
-        data_fields(reader, root).get("AllFashionInfoVoList")
-    )
-    matches = [
-        _fields(reader, value)
-        for value in values
-        if int(_fields(reader, value).get("id") or 0) == int(target_id)
-    ]
-    if len(matches) != 1:
-        raise FanxiuRuntimeMemoryError(
-            f"FashionMgr 时装 {target_id} 身份不唯一：{len(matches)}"
-        )
-    fields = matches[0]
-    return {
-        "rank": int(fields.get("level") or 0) if bool(fields.get("isGet")) else 0,
-        "owned": bool(fields.get("isGet")),
-        "cache_hit": cache_hit,
-    }
 
 
 def build_bothdraw_revenue_task_snapshot(
@@ -616,117 +544,51 @@ def build_bothdraw_revenue_task_snapshot(
 
 
 def read_kunlun_first_row_runtime() -> dict[str, Any]:
-    """Read Kunlun's four candidates and comparable owned ranks, strictly read-only."""
+    """Read candidate rewards and every cultivation component, strictly read-only.
 
+    owned_items retains item_id/name/rank/weight compatibility. A bundle's rank
+    is only its minimum component rank for display; decisions must inspect
+    components. Reward quantity is independent of rewardLimit condition counts.
+    Only managers required by this candidate set are queried.
+    """
+    from .cultivation import read_cultivation_progress_runtime
     started_at = time.perf_counter()
-    optional = read_bothdraw_optional_reward_runtime()
-    if optional.get("complete") is not True:
-        return {
-            "ok": False,
-            "complete": False,
-            "reason": str(optional.get("reason") or "昆仑第一排候选读取不完整"),
-            "reward_items": [],
-            "owned_items": [],
-        }
     try:
+        optional = read_bothdraw_optional_reward_runtime()
+        if optional.get("complete") is not True:
+            raise FanxiuRuntimeMemoryError(str(optional.get("reason") or "候选未完整加载"))
+        if int((optional.get("selected_big_reward") or {}).get("item_id") or 0) > 0:
+            # One decision per activity instance. After commitment, progression
+            # has no bearing on completing the activity and is not read again.
+            return {**optional, "owned_items": [], "components": [],
+                    "progress_skipped": True, "read_only": True,
+                    "elapsed_seconds": time.perf_counter() - started_at}
         rewards = _validated_kunlun_targets(optional.get("reward_items") or [])
-        from backend.core.fanxiu.instrumentation.gongfa_equipment import (
-            _GONGFA_MARKER,
-            _GONGFA_METHODS,
-            _gongfa_data_fields,
-            _gongfa_progression_index,
-        )
-        from backend.core.fanxiu.instrumentation.magic_treasure import (
-            _TALISMAN_METHODS,
-            _owned_talisman_rows,
-            _talisman_data_fields,
-        )
-
-        memory = MumuProcessMemory.discover_cached(max_age_seconds=None)
-        reader = LuaJitReader(memory)
-        talisman_root, talisman_cache_hit, _environment = resolve_lua_global_manager_root(
-            memory,
-            manager_key="magic-treasure-talisman",
-            state_address=int(_lua_addresses(memory)["state"], 16),
-            global_name="TalismanMgr",
-            required_methods=_TALISMAN_METHODS,
-            validate=_talisman_data_fields,
-        )
-        reader = LuaJitReader(memory)
-        talismans = {
-            int(row["talisman_id"]): row
-            for row in _owned_talisman_rows(
-                reader, _talisman_data_fields(reader, talisman_root)
-            )
-        }
-        gongfa_root, gongfa_cache_hit = resolve_manager_root(
-            memory,
-            manager_key="gongfa-equipment-state",
-            marker=_GONGFA_MARKER,
-            required_methods=_GONGFA_METHODS,
-            validate=_gongfa_data_fields,
-        )
-        reader = LuaJitReader(memory)
-        gongfa = _gongfa_progression_index(
-            reader, _gongfa_data_fields(reader, gongfa_root)
-        )
-        owned: list[dict[str, Any]] = []
-        fashion_cache_hit: bool | None = None
+        unique = {}
         for reward in rewards:
-            kind = str(reward["kind"])
-            target_id = int(reward["target_id"])
-            if kind == "fashion":
-                state = _read_loaded_fashion_rank(target_id)
-                rank = int(state["rank"])
-                is_owned = bool(state["owned"])
-                fashion_cache_hit = bool(state["cache_hit"])
-            elif kind == "talisman":
-                state = talismans.get(target_id)
-                rank = int((state or {}).get("stage") or 0)
-                is_owned = state is not None
-            elif kind == "gongfa":
-                state = gongfa.get(target_id)
-                rank = int((state or {}).get("jie") or 0)
-                is_owned = state is not None
-            else:
-                raise FanxiuRuntimeMemoryError(f"昆仑候选类型不支持：{kind}")
-            owned.append(
-                {
-                    "target_id": target_id,
-                    "item_id": int(reward["item_id"]),
-                    "name": str(reward["name"]),
-                    "kind": kind,
-                    "rank": rank,
-                    "weight": 0,
-                    "owned": is_owned,
-                }
-            )
-        return {
-            "ok": True,
-            "complete": True,
-            "source": "loaded_runtime_memory+versioned_item_catalog",
-            "reward_items": rewards,
-            "owned_items": owned,
-            "selected_big_reward": optional.get("selected_big_reward"),
-            "elapsed_seconds": time.perf_counter() - started_at,
-            "evidence": {
-                "pid": memory.pid,
-                "process_start_ticks": memory.process_start_ticks,
-                "fashion_root_cache_hit": fashion_cache_hit,
-                "talisman_root_cache_hit": talisman_cache_hit,
-                "gongfa_root_cache_hit": gongfa_cache_hit,
-            },
-        }
+            for target in reward["targets"]:
+                unique[(target["kind"], target["target_id"], target["dimension"])] = target
+        progress = read_cultivation_progress_runtime(unique.values())
+        index = {(c["kind"], c["target_id"], c["dimension"]): c for c in progress["components"]}
+        owned = []
+        for reward in rewards:
+            components = [{**index[(t["kind"],t["target_id"],t["dimension"])], **t} for t in reward["targets"]]
+            owned.append({**reward, "components": components,
+                          "rank": min(c["rank"] for c in components),
+                          "rank_is_display_only": len(components) > 1,
+                          "owned": all(c["owned"] for c in components), "weight": 0})
+        return {"ok": True, "complete": True, "read_only": True,
+                "source": "loaded_runtime_memory+versioned_item_catalog",
+                "captured_at": progress["captured_at"],
+                "reward_items": rewards, "owned_items": owned,
+                "components": progress["components"],
+                "selected_big_reward": optional.get("selected_big_reward"),
+                "elapsed_seconds": time.perf_counter()-started_at,
+                "evidence": progress["evidence"]}
     except Exception as exc:
-        return {
-            "ok": False,
-            "complete": False,
-            "source": "loaded_runtime_memory+versioned_item_catalog",
-            "reason": str(exc),
-            "reward_items": [],
-            "owned_items": [],
-            "elapsed_seconds": time.perf_counter() - started_at,
-        }
+        return {"ok": False, "complete": False, "read_only": True,
+                "reason": str(exc), "reward_items": [], "owned_items": [],
+                "elapsed_seconds": time.perf_counter()-started_at}
 
 
 def read_bothdraw_optional_reward_runtime() -> dict[str, Any]:

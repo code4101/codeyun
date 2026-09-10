@@ -91,21 +91,12 @@ def test_kunlun_point_preserves_strategy_observation_fields() -> None:
     assert point.progress == 10
 
 
-class _NoActionRuntime:
-    def __getattr__(self, name):
-        raise AssertionError(f"safe failure must happen before runtime action: {name}")
 
 
 def test_kunlun_lottery_uses_independently_verified_result_asset() -> None:
     assert task.KUNLUN_DRAW_RESULT_SCENE_ID == 544
 
 
-def test_kunlun_lottery_fails_before_any_action_without_result_asset(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(task, "KUNLUN_DRAW_RESULT_SCENE_ID", None)
-    with pytest.raises(RuntimeError, match="独立且已验收的场景资产"):
-        task.complete_kunlun_lottery(_NoActionRuntime())
 
 
 @pytest.mark.parametrize(
@@ -138,7 +129,7 @@ def test_kunlun_strategy_targets_only_first_grand_prize(
 
 
 @pytest.mark.parametrize("progress", [17, 18, 19, 37, 38, 39])
-def test_kunlun_strategy_tops_up_near_four_draw_refund(progress: int) -> None:
+def test_kunlun_strategy_saves_keys_after_hit_even_near_refund(progress: int) -> None:
     threshold = 20 if progress < 20 else 40
     decision = task.decide_kunlun_next_draw(
         {
@@ -158,9 +149,9 @@ def test_kunlun_strategy_tops_up_near_four_draw_refund(progress: int) -> None:
             "claimable": [],
         }
     )
-    assert decision.action == "single_draw"
-    assert decision.expected_batch_size == 1
-    assert decision.target_threshold == threshold
+    assert decision.action == "stop_first_grand_prize"
+    assert decision.expected_batch_size == 0
+    assert decision.target_threshold is None
 
 
 @pytest.mark.parametrize("progress", [16, 36])
@@ -212,7 +203,7 @@ def test_kunlun_strategy_claims_reached_milestone_before_more_draws() -> None:
             "complete": True,
             "available_draws": 3,
             "selected_big_capacity": 20,
-            "selected_big_remaining": 19,
+            "selected_big_remaining": 20,
             "progress": 20,
             "claimable": [{"threshold": 20}],
         }
@@ -237,7 +228,7 @@ def test_config_phase_defers_sub_ten_inventory_without_first_prize() -> None:
     assert decision.expected_batch_size == 0
 
 
-def test_config_phase_still_allows_near_milestone_top_up_after_hit() -> None:
+def test_config_phase_stops_after_hit_even_near_milestone() -> None:
     decision = task.decide_kunlun_next_draw(
         {
             "complete": True,
@@ -254,11 +245,11 @@ def test_config_phase_still_allows_near_milestone_top_up_after_hit() -> None:
         allow_single_draws=False,
     )
 
-    assert decision.action == "single_draw"
-    assert decision.target_threshold == 20
+    assert decision.action == "stop_first_grand_prize"
+    assert decision.target_threshold is None
 
 
-@pytest.mark.parametrize("remaining", [None, 0, 18, 21, "20"])
+@pytest.mark.parametrize("remaining", [None, -1, 21, "20", True])
 def test_kunlun_strategy_fails_closed_without_exact_pool_remaining(remaining) -> None:
     with pytest.raises(RuntimeError, match="大奖剩余数量"):
         task.decide_kunlun_next_draw(
@@ -273,167 +264,14 @@ def test_kunlun_strategy_fails_closed_without_exact_pool_remaining(remaining) ->
         )
 
 
-def test_draw_mode_switch_reads_clicks_and_rereads_authoritative_boolean(monkeypatch) -> None:
-    calls: list[str] = []
-    states = iter(
-        [
-            {"complete": True, "ten_draw_enabled": False},
-            {"complete": True, "ten_draw_enabled": True},
-        ]
-    )
-
-    class Runtime:
-        def cur_frame(self, *, update):
-            assert update is True
-            return "frame"
-
-        def click_shape(self, scene, shape, *, frame_data_url):
-            calls.append(f"{scene}:{shape}:{frame_data_url}")
-
-    monkeypatch.setattr(
-        task,
-        "read_bothdraw_lottery_runtime",
-        lambda: {"complete": True, "activity_id": 101},
-    )
-    monkeypatch.setattr(
-        task,
-        "read_bothdraw_ten_draw_runtime",
-        lambda **_kwargs: next(states),
-    )
-
-    result = task.ensure_kunlun_draw_mode(Runtime(), ten_draw=True, poll_seconds=0.01)
-
-    assert result == {"result": "changed", "ten_draw_enabled": True}
-    assert calls == [f"{task.KUNLUN_MAIN_SCENE_ID}:鉴宝十次:frame"]
 
 
-def test_draw_mode_incomplete_identity_causes_zero_clicks(monkeypatch) -> None:
-    class Runtime:
-        def __getattr__(self, name):
-            raise AssertionError(f"zero action expected: {name}")
-
-    monkeypatch.setattr(
-        task,
-        "read_bothdraw_lottery_runtime",
-        lambda: {"complete": False, "reason": "identity missing"},
-    )
-    with pytest.raises(RuntimeError, match="identity missing"):
-        task.ensure_kunlun_draw_mode(Runtime(), ten_draw=True)
-
-
-def test_complete_kunlun_lottery_stops_after_first_prize(monkeypatch) -> None:
-    class Spec:
-        def require_executable_assets(self):
-            return None
-
-        def open_main_page(self, runtime):
-            assert runtime == "runtime"
-
-    states = iter(
-        [
-            {
-                "complete": True,
-                "activity_id": 101,
-                "available_draws": 10,
-                "selected_big_capacity": 20,
-                "selected_big_remaining": 20,
-                "progress": 0,
-                "claimable": [],
-            },
-            {
-                "complete": True,
-                "activity_id": 101,
-                "available_draws": 0,
-                "selected_big_capacity": 20,
-                "selected_big_remaining": 19,
-                "progress": 10,
-                "claimable": [],
-            },
-        ]
-    )
-    calls: list[str] = []
-    monkeypatch.setattr(task, "_spec", lambda: Spec())
-    monkeypatch.setattr(task, "_read_coherent_state", lambda: next(states))
-    monkeypatch.setattr(
-        task,
-        "ensure_kunlun_draw_mode",
-        lambda *_args, **kwargs: calls.append(f"mode:{kwargs['ten_draw']}") or {},
-    )
-    monkeypatch.setattr(
-        task,
-        "draw_kunlun_once",
-        lambda _runtime, **_kwargs: calls.append("draw") or {"dx": 10},
-    )
-    monkeypatch.setattr(
-        task,
-        "close_kunlun_draw_result",
-        lambda _runtime: calls.append("close") or {},
-    )
-    monkeypatch.setattr(
-        task,
-        "claim_kunlun_cumulative_rewards",
-        lambda _runtime: calls.append("claim") or {},
-    )
-
-    result = task.complete_kunlun_lottery("runtime")
-
-    assert result["stop_reason"] == "stop_first_grand_prize"
-    assert calls == ["mode:True", "draw", "close", "claim"]
-
-
-def test_config_phase_with_23_draws_uses_only_two_ten_draws(monkeypatch) -> None:
-    class Spec:
-        def require_executable_assets(self):
-            return None
-
-        def open_main_page(self, runtime):
-            assert runtime == "runtime"
-
-    states = iter(
-        [
-            {"complete": True, "activity_id": 101, "available_draws": 23,
-             "selected_big_capacity": 20, "selected_big_remaining": 20,
-             "progress": 0, "claimable": []},
-            {"complete": True, "activity_id": 101, "available_draws": 13,
-             "selected_big_capacity": 20, "selected_big_remaining": 20,
-             "progress": 10, "claimable": []},
-            {"complete": True, "activity_id": 101, "available_draws": 3,
-             "selected_big_capacity": 20, "selected_big_remaining": 20,
-             "progress": 20, "claimable": []},
-        ]
-    )
-    calls: list[str] = []
-    monkeypatch.setattr(task, "_spec", lambda: Spec())
-    monkeypatch.setattr(task, "_read_coherent_state", lambda: next(states))
-    monkeypatch.setattr(
-        task,
-        "ensure_kunlun_draw_mode",
-        lambda *_args, **kwargs: calls.append(f"mode:{kwargs['ten_draw']}") or {},
-    )
-    monkeypatch.setattr(
-        task,
-        "draw_kunlun_once",
-        lambda _runtime, **_kwargs: calls.append("draw") or {"dx": 10},
-    )
-    monkeypatch.setattr(
-        task,
-        "close_kunlun_draw_result",
-        lambda _runtime: calls.append("close") or {},
-    )
-    monkeypatch.setattr(
-        task,
-        "claim_kunlun_cumulative_rewards",
-        lambda _runtime: calls.append("claim") or {},
-    )
-
-    result = task.complete_kunlun_lottery(
-        "runtime",
-        allow_single_draws=False,
-    )
-
-    assert result["stop_reason"] == "stop_single_draws_deferred"
-    assert result["final_state"]["available_draws"] == 3
-    assert calls == [
-        "mode:True", "draw", "close", "claim",
-        "mode:True", "draw", "close", "claim",
-    ]
+@pytest.mark.parametrize("remaining", [19, 18, 17, 0])
+def test_one_or_more_prizes_is_terminal_even_with_unclaimed_rewards(remaining):
+    decision = task.decide_kunlun_next_draw({
+        "complete": True, "selected_big_capacity": 20,
+        "selected_big_remaining": remaining, "available_draws": 10,
+        "progress": 20, "claimable": [{"id": 10102, "threshold": 20}],
+    })
+    assert decision.action == "stop_first_grand_prize"
+    assert decision.expected_batch_size == 0

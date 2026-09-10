@@ -72,8 +72,13 @@ def decide_kunlun_next_draw(
     remaining = snapshot.get("selected_big_remaining")
     if not isinstance(remaining, int) or isinstance(remaining, bool):
         raise RuntimeError("昆仑自选大奖剩余数量不完整，拒绝抽奖")
-    if remaining not in (19, 20):
+    if not 0 <= remaining <= capacity:
         raise RuntimeError(f"昆仑自选大奖剩余数量异常：{remaining}")
+    hit_count = capacity - remaining
+    if hit_count >= 1:
+        # A ten-draw batch may award more than one copy. One or more completes
+        # the goal; save persistent keys rather than chasing further thresholds.
+        return KunlunDrawDecision("stop_first_grand_prize", f"本期已获得 {hit_count} 个自选大奖，停止抽奖并保留密钥")
 
     milestones = [
         LotteryMilestone(
@@ -97,7 +102,7 @@ def decide_kunlun_next_draw(
         policy=LotteryPolicy(
             goal=LotteryGoal("first_hit"),
             remainder_mode="single" if allow_single_draws else "defer",
-            top_up_positive_refund_after_goal=True,
+            top_up_positive_refund_after_goal=False,
         ),
         milestones=milestones,
     )
@@ -322,7 +327,9 @@ def complete_kunlun_lottery(
                 f"actual={int(draw.get('dx') or 0)}"
             )
         close = yield from close_kunlun_draw_result(context)
-        claim = yield from claim_kunlun_cumulative_rewards(context)
+        # Re-evaluate the actual hit count at the top of the next iteration
+        # before any follow-up reward action. Previously an unconditional
+        # cumulative claim failed after two prizes had already completed the goal.
         rounds.append(
             {
                 "round": round_index + 1,
@@ -330,7 +337,6 @@ def complete_kunlun_lottery(
                 "mode": mode,
                 "draw": draw,
                 "close_result": close,
-                "claim": claim,
             }
         )
     raise RuntimeError(f"昆仑抽奖流程超过安全轮次上限：{max_rounds}")

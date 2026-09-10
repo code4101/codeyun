@@ -73,56 +73,26 @@ def read_kunlun_first_row_inputs() -> KunlunFirstRowInputs:
     )
 
 
-SHANHE_WUJIANG_TARGET_ID = 2016
-SHANHE_WANGUO_LAICHAO_STAGE = 39
-
-
-def _select_kunlun_special_effect_milestone(
-    candidates, progress
+def plan_kunlun_first_row(
+    inputs: KunlunFirstRowInputs, *, log: Callable[[str], None] | None = None,
 ) -> KunlunFirstRowDecision:
-    """Prioritize high-value special-effect milestones, not raw stats.
+    """Adapt channel geometry to the activity-neutral documented-item planner.
 
-    Value order is: spirit-stone income, recurring item resources, panel
-    percentages, ranking points, and finally combat-only effects.  古·山河无疆屏 starts at stage 30.  Runtime/config evidence shows that
-    stages 36 -> 39 consume three copies and stage 39 unlocks 万国来朝.
-    The user explicitly prefers continuing to build this long-term resource
-    line after stage 39.  Production therefore selects it whenever present;
-    absence of this exact candidate fails closed instead of choosing another.
+    Only an unconfigured instance is analysed. A committed selection is final;
+    neither ranks nor documents need re-evaluation until a new activity instance.
     """
+    from backend.core.fanxiu.activity.cultivation_choice import (
+        plan_single_cultivation_choice, committed_cultivation_choice,
+    )
+    from backend.core.fanxiu.catalog.cultivation_rules import prepare_cultivation_choice_rules
 
-    candidate = next(
-        (
-            item
-            for item in candidates
-            if int(item.target_id or 0) == SHANHE_WUJIANG_TARGET_ID
-        ),
-        None,
-    )
-    current = next(
-        (
-            item
-            for item in progress
-            if int(item.target_id) == SHANHE_WUJIANG_TARGET_ID
-        ),
-        None,
-    )
-    if candidate is None or current is None:
-        raise KunlunFirstRowUndecided("古·山河无疆屏候选或当前阶数缺失")
-    stage = int(current.rank)
-    milestone = (
-        f"目标{SHANHE_WANGUO_LAICHAO_STAGE}阶解锁万国来朝持续道具资源"
-        if stage < SHANHE_WANGUO_LAICHAO_STAGE
-        else "已解锁39阶万国来朝，继续优先山河长期资源线"
-    )
-    return KunlunFirstRowDecision(
-        column=int(candidate.column),
-        reason=f"古·山河无疆屏当前{stage}阶；{milestone}",
-    )
-
-
-KUNLUN_FIRST_ROW_SELECTOR: KunlunFirstRowSelector = (
-    _select_kunlun_special_effect_milestone
-)
+    committed = committed_cultivation_choice(inputs.reward_items,
+        int((inputs.selected_big_reward or {}).get("item_id") or 0))
+    if committed is not None:
+        return KunlunFirstRowDecision(column=committed, reason="本期已选择，直接复用；不再读取阶数或重新规划")
+    rules = prepare_cultivation_choice_rules(inputs.reward_items, inputs.owned_items, log=log)
+    plan = plan_single_cultivation_choice(inputs.reward_items, inputs.owned_items, rules)
+    return KunlunFirstRowDecision(column=plan.column, reason=plan.reason)
 
 
 def _pending_research_result(
@@ -159,25 +129,20 @@ def _select_optional_reward(
     selector: KunlunFirstRowSelector | None = None,
 ) -> dict[str, Any]:
     inputs = (inputs_reader or read_kunlun_first_row_inputs)()
-    decision = decide_kunlun_first_row(
-        inputs.reward_items,
-        inputs.owned_items,
-        selector=selector,
-    )
-    chosen = inputs.reward_items[int(decision.column) - 1]
+    # The game's committed selection is authoritative. Re-entry must not
+    # compile a new policy and replace a choice already made for this instance.
     selected = inputs.selected_big_reward or {}
     selected_item_id = int(selected.get("item_id") or 0)
-    if selected_item_id > 0:
-        if selected_item_id == int(chosen.get("item_id") or 0):
-            return {
-                "outcome": "already_configured",
-                "column": int(decision.column),
-                "reason": decision.reason,
-                "confirmed": True,
-            }
-        raise KunlunFirstRowUndecided(
-            "昆仑秘藏本期已配置为其它大奖，拒绝自动进入重新配置页面"
-        )
+    from backend.core.fanxiu.activity.cultivation_choice import committed_cultivation_choice
+    committed_column = committed_cultivation_choice(inputs.reward_items, selected_item_id)
+    if committed_column is not None:
+        return {"outcome": "already_configured", "column": committed_column,
+                "reason": "Runtime 已确认本期大奖配置，复用游戏事实", "confirmed": True}
+    if selector is None:
+        decision = plan_kunlun_first_row(inputs, log=print)
+    else:
+        decision = decide_kunlun_first_row(inputs.reward_items, inputs.owned_items, selector=selector)
+    print(f"昆仑自选规划：{decision.reason}")
     # Reading and deciding happen before opening #541.  Consequently an
     # incomplete reader or selector cannot leave a half-edited form onscreen.
     current = yield from read_kunlun_page(context, update=True)
@@ -201,7 +166,7 @@ def _run_kunlun_config_workflow(
     optional = yield from _select_optional_reward(
         context,
         inputs_reader=inputs_reader,
-        selector=selector if selector is not None else KUNLUN_FIRST_ROW_SELECTOR,
+        selector=selector,
     )
     yield from open_kunlun_tab(context, "商店")
     store = yield from complete_kunlun_store(context)
@@ -323,6 +288,8 @@ __all__ = [
     "KUNLUN_LOTTERY_JOB_NOTES",
     "KUNLUN_LOTTERY_TASK_ID",
     "KUNLUN_LOTTERY_TASK_TYPE",
+    "plan_kunlun_first_row",
+    "read_kunlun_first_row_inputs",
     "execute_kunlun_config_job",
     "execute_kunlun_lottery_job",
 ]
