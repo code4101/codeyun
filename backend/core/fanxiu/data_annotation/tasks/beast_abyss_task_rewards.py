@@ -119,10 +119,11 @@ def _open_beast_abyss_task_page(
     context: Any,
     assets: BeastAbyssTaskRewardAssets,
 ) -> Generator[Any, None, None]:
-    scene_id, _score, _frame = (yield from context.current_scene(
-        (assets.home_scene_id, assets.explore_scene_id, assets.task_scene_id),
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene((assets.home_scene_id, assets.explore_scene_id, assets.task_scene_id), wait=5.0, required=False)
+    (scene_id, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene_id or 0) == assets.explore_scene_id:
         landed = yield from context.wait_click_then_scene(
             assets.explore_scene_id,
@@ -183,10 +184,11 @@ def claim_beast_abyss_task_rewards(
     click_limit = max(confirmations, int(max_clicks_per_tab))
     yield from _open_beast_abyss_task_page(context, assets)
 
-    scene_id, score, frame = (yield from context.current_scene(
-        (assets.task_scene_id,),
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene((assets.task_scene_id,), wait=5.0, required=False)
+    (scene_id, score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene_id or 0) != assets.task_scene_id or float(score or 0.0) < 80.0:
         raise RuntimeError("兽渊任务奖励：任务页场景身份无效")
     lines = context.ocr_lines_in_shapes(

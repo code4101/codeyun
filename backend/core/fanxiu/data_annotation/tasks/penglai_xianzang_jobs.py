@@ -222,10 +222,10 @@ def _execute_xianzang_standard_job(
     context = _behavior_tree_context(runner, ctx, stop_event)
     resumed: dict[str, Any] = {}
     if resume_draw_result_page:
-        scene_id, score, _frame = yield from context.current_scene(
-            [XIANZANG_DRAW_RESULT_SCENE_ID],
-            update=True,
-            label="蓬莱仙藏：检查待关闭抽奖结果",
+        _wait_scene_match = yield from context.wait_scene([XIANZANG_DRAW_RESULT_SCENE_ID], label='蓬莱仙藏：检查待关闭抽奖结果', wait=5.0, required=False)
+        (scene_id, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if (
             int(scene_id or 0) == XIANZANG_DRAW_RESULT_SCENE_ID

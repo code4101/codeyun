@@ -85,9 +85,10 @@ def _page_from_observation(
 
 
 def read_xianzang_page(context: Any, *, update: bool = True) -> XianzangPageResult | None:
-    scene_id, score, frame = yield from context.current_scene(
-        list(XIANZANG_KNOWN_SCENE_IDS),
-        update=bool(update),
+    _wait_scene_match = yield from context.wait_scene(list(XIANZANG_KNOWN_SCENE_IDS), wait=5.0, required=False)
+    (scene_id, score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     task_observer = ""
     if int(scene_id or 0) in {XIANZANG_MAIN_SCENE_ID, XIANZANG_TASK_SCENE_ID}:
@@ -152,8 +153,10 @@ def enter_xianzang(
         0.5, float(availability_timeout_seconds)
     )
     while True:
-        scene_id, score, frame = yield from context.current_scene(
-            [int(source_scene_id)], update=True, label="蓬莱仙藏：识别活动入口"
+        _wait_scene_match = yield from context.wait_scene([int(source_scene_id)], label='蓬莱仙藏：识别活动入口', wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
@@ -198,9 +201,10 @@ def enter_xianzang(
                 timeout_seconds=timeout_seconds,
                 poll_seconds=poll_seconds,
             ))
-        scene_id, score, frame = yield from context.current_scene(
-            [int(source_scene_id)],
-            update=True,
+        _wait_scene_match = yield from context.wait_scene([int(source_scene_id)], wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         source_ready = (
             int(scene_id or 0) == int(source_scene_id)
@@ -336,9 +340,10 @@ def leave_xianzang(
     last_scene: int | None = None
     last_score = 0.0
     while True:
-        last_scene, last_score, _frame = yield from context.current_scene(
-            [34, XIANZANG_MAIN_SCENE_ID],
-            update=True,
+        _wait_scene_match = yield from context.wait_scene([34, XIANZANG_MAIN_SCENE_ID], wait=5.0, required=False)
+        (last_scene, last_score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(last_scene or 0) == 34 and float(last_score or 0) >= 90.0:
             return 34, float(last_score)

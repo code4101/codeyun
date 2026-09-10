@@ -403,8 +403,10 @@ def close_bothdraw_result(
     clicked_count = 0
     last_click_at: float | None = None
     while time.monotonic() < deadline:
-        last_scene, last_score, frame = yield from context.current_scene(
-            [result_scene_id], update=True, label=f"{spec.activity_label}：识别抽奖结果页"
+        _wait_scene_match = yield from context.wait_scene([result_scene_id], label=f'{spec.activity_label}：识别抽奖结果页', wait=5.0, required=False)
+        (last_scene, last_score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(last_scene or 0) == result_scene_id and float(last_score or 0) >= 90.0:
             now = time.monotonic()

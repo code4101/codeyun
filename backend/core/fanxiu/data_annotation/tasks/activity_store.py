@@ -177,8 +177,10 @@ def _read_stable_store_scan(
     deadline = time.monotonic() + max(0.5, float(stability_timeout_seconds))
     previous_scan: ActivityStoreRegionScan | None = None
     while True:
-        current_scene, score, frame = yield from context.current_scene(
-            [int(scene_id)], update=True, label=f"活动商店：识别 #{scene_id}"
+        _wait_scene_match = yield from context.wait_scene([int(scene_id)], label=f'活动商店：识别 #{scene_id}', wait=5.0, required=False)
+        (current_scene, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             tokens = context.ocr_tokens_in_shapes(
@@ -211,8 +213,10 @@ def _wait_store_after_purchase(
 ) -> None:
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        current_scene, score, _frame = yield from context.current_scene(
-            [int(scene_id), 227], update=True, label="活动商店：等待购买结果"
+        _wait_scene_match = yield from context.wait_scene([int(scene_id), 227], label='活动商店：等待购买结果', wait=5.0, required=False)
+        (current_scene, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(current_scene or 0) == int(scene_id) and float(score or 0) >= 80.0:
             return

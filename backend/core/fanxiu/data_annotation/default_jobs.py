@@ -578,8 +578,10 @@ def register_fanxiu_default_jobs() -> None:
 
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         current_fact_scene_ids = (445, 446)
-        current_scene_id, _score, _frame = yield from context.current_scene(
-            current_fact_scene_ids, update=True
+        _wait_scene_match = yield from context.wait_scene(current_fact_scene_ids, wait=5.0, required=False)
+        (current_scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if current_scene_id not in current_fact_scene_ids:
             yield from context.go_scene(34)
@@ -1162,14 +1164,20 @@ def register_fanxiu_default_jobs() -> None:
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         current_fact_scene_ids = (
-            69, 296, 297, 298, 371, 372, 375, 295,
+            34, 69, 296, 297, 298, 371, 372, 375, 295,
             329, 301, 302, 303, 304, 391, 52, 53,
         )
-        current_scene_id, _score, _frame = yield from context.current_scene(
-            current_fact_scene_ids, update=True
+        # 弹窗确认后可能短暂出现地图过渡页。等待业务落点，不能依据
+        # 单帧兜底结果启动回世界导航，否则随后出现的 #301 会被错误退出。
+        match = yield from context.wait_scene(
+            current_fact_scene_ids, wait=15.0,
+            label="论道_座位：等待入口或当前入座流程稳定",
         )
-        if current_scene_id not in current_fact_scene_ids:
-            yield from context.go_scene(34)
+        if match.scene_id not in current_fact_scene_ids:
+            raise RuntimeError(
+                f"论道_座位：入口等待后落到未声明场景 #{match.scene_id}，"
+                "已停止，未点击返回"
+            )
         result = yield from runner._execute_daily_lundao_task(ctx, stop_event, payload)
         yield from context.go_scene(34)
         return result

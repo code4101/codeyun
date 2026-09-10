@@ -91,7 +91,11 @@ class LingquanTaskMixin:
             return None
 
     def _enter_lingquan(self, context: Any, *, transition_timeout: float, deadline: datetime):
-        scene_id, _score, _frame = (yield from context.current_scene([389, 388, 387, 386, 66, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([389, 388, 387, 386, 66, 34], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id is None:
             self._log("info", "日常_灵泉：当前为过渡/未知画面，等待进入稳定业务场景")
             waited = yield from context.wait_scene(
@@ -165,7 +169,11 @@ class LingquanTaskMixin:
         transition_timeout: float,
     ):
         """Keep the active quiz window anchored at #389."""
-        scene_id, _score, _frame = (yield from context.current_scene([389, 388, 387, 386, 66, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([389, 388, 387, 386, 66, 34], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id == 389:
             return
         self._log(
@@ -177,7 +185,11 @@ class LingquanTaskMixin:
             transition_timeout=transition_timeout,
             deadline=cutoff,
         )
-        scene_id, _score, _frame = (yield from context.current_scene([389], update=True))
+        _wait_scene_match = yield from context.wait_scene([389], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id != 389:
             raise TimeoutError("日常_灵泉：窗口内恢复后仍未确认到 #389")
 
@@ -347,10 +359,11 @@ class LingquanTaskMixin:
     def _exit_lingquan_to_world(self, context: Any, *, timeout: float):
         """Consume every nested leave layer until the real world scene is reached."""
         deadline = time.monotonic() + max(1.0, float(timeout))
-        scene_id, _score, _frame = (yield from context.current_scene(
-            [34, 388, 186],
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene([34, 388, 186], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
 
         # 灵泉结束后可能叠着多层内部场景：活动专用 #388、通用离开层
         # #186，以及每次离开产生的确认弹窗。确认弹窗由 wait_scene Layer 0

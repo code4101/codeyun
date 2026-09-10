@@ -41,8 +41,10 @@ def _wait_scene(
     last_score = 0.0
     last_text = ""
     while True:
-        last_scene, last_score, frame = yield from context.current_scene(
-            list(XUTIAN_SCENE_IDS), update=True
+        _wait_scene_match = yield from context.wait_scene(list(XUTIAN_SCENE_IDS), wait=5.0, required=False)
+        (last_scene, last_score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         last_text = context.ocr_text(frame)
         if int(last_scene or 0) == int(target) and float(last_score) >= minimum_score:
@@ -63,7 +65,11 @@ def _wait_one_of(
     last_score = 0.0
     last_text = ""
     while True:
-        last_scene, last_score, frame = yield from context.current_scene(list(targets), update=True)
+        _wait_scene_match = yield from context.wait_scene(list(targets), wait=5.0, required=False)
+        (last_scene, last_score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         last_text = context.ocr_text(frame)
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_text
@@ -76,15 +82,21 @@ def _wait_one_of(
 
 
 def _enter_rankings(context: Any) -> None:
-    scene, score, _frame = (yield from context.current_scene(
-        [34, 66, *XUTIAN_SCENE_IDS], update=True
-    ))
+    _wait_scene_match = yield from context.wait_scene([34, 66, *XUTIAN_SCENE_IDS], wait=5.0, required=False)
+    (scene, score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene or 0) not in XUTIAN_SCENE_IDS:
         if int(scene or 0) != 66:
             result = context.go_scene(66)
             if hasattr(result, "send"):
                 yield from result
-        scene, score, _frame = (yield from context.current_scene([66], update=True))
+        _wait_scene_match = yield from context.wait_scene([66], wait=5.0, required=False)
+        (scene, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if int(scene or 0) != 66 or float(score) < 90.0:
             raise RuntimeError(
                 f"#66 未可靠识别日程页：scene={scene}, score={float(score):.1f}"
@@ -94,7 +106,11 @@ def _enter_rankings(context: Any) -> None:
         )
         yield from _wait_scene(context, XUTIAN_MAIN_SCENE_ID)
 
-    scene, _score, frame = (yield from context.current_scene(list(XUTIAN_SCENE_IDS), update=True))
+    _wait_scene_match = yield from context.wait_scene(list(XUTIAN_SCENE_IDS), wait=5.0, required=False)
+    (scene, _score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene or 0) == XUTIAN_PERSONAL_RANK_SCENE_ID:
         return
     if int(scene or 0) == XUTIAN_PLANE_RANK_SCENE_ID:
@@ -135,7 +151,11 @@ def _store_rankings() -> tuple[str, int, int]:
 
 
 def _return_world(context: Any) -> tuple[int, float]:
-    scene, _score, frame = (yield from context.current_scene(list(XUTIAN_SCENE_IDS), update=True))
+    _wait_scene_match = yield from context.wait_scene(list(XUTIAN_SCENE_IDS), wait=5.0, required=False)
+    (scene, _score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene or 0) != XUTIAN_MAIN_SCENE_ID:
         context.click_shape(int(scene), "返回", frame_data_url=frame)
         scene, score, _text = yield from _wait_one_of(context, (34, 66, XUTIAN_MAIN_SCENE_ID))
@@ -149,7 +169,11 @@ def _return_world(context: Any) -> tuple[int, float]:
         result = context.go_scene(34)
         if hasattr(result, "send"):
             yield from result
-        scene, score, _frame = (yield from context.current_scene([34], update=True))
+        _wait_scene_match = yield from context.wait_scene([34], wait=5.0, required=False)
+        (scene, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天殿榜单作业收尾未可靠回到 #34：scene={scene}, score={float(score):.1f}"

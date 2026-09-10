@@ -221,7 +221,11 @@ def classify_beast_abyss_auto_terminal(text: str) -> BeastAbyssAutoTerminal:
 
 
 def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]):
-    scene_id, _score, frame = yield from context.current_scene(list(scene_ids), update=True)
+    _wait_scene_match = yield from context.wait_scene(list(scene_ids), wait=5.0, required=False)
+    (scene_id, _score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     text = context.ocr_text(frame)
     if scene_id not in scene_ids or not any(_compact(anchor) in _compact(text) for anchor in anchors):
         raise RuntimeError(
@@ -384,9 +388,11 @@ def enter_beast_abyss_explore(
     )
     scene_id = None
     for _entry_probe in range(6):
-        scene_id, _score, _frame = (yield from context.current_scene(
-            list(entry_scenes), update=True
-        ))
+        _wait_scene_match = yield from context.wait_scene(list(entry_scenes), wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id in entry_scenes:
             break
         if _entry_probe < 5:
@@ -414,7 +420,11 @@ def enter_beast_abyss_explore(
     elif scene_id != assets.explore_scene_id:
         raise RuntimeError(f"兽渊预检要求从活动页或探查页开始：scene={scene_id!r}")
     for _attempt in range(24):
-        scene_id, _score, _frame = (yield from context.current_scene(list(entry_scenes), update=True))
+        _wait_scene_match = yield from context.wait_scene(list(entry_scenes), wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id == assets.explore_scene_id:
             break
         action = {
@@ -518,10 +528,11 @@ def run_prepared_beast_abyss_native_auto(
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = (yield from context.current_scene(
-            [assets.completed_notice_scene_id, *assets.terminal_scene_ids],
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene([assets.completed_notice_scene_id, *assets.terminal_scene_ids], wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id == assets.completed_notice_scene_id:
             notice_text = context.ocr_text(frame)
             notice_terminal = classify_beast_abyss_auto_terminal(notice_text)
@@ -534,9 +545,11 @@ def run_prepared_beast_abyss_native_auto(
                     label="兽渊自动探查完成：确认进入结果页",
                 )
                 scene_id = int(getattr(landed, "id", landed))
-                _confirmed, _score, frame = (yield from context.current_scene(
-                    list(assets.terminal_scene_ids), update=True
-                ))
+                _wait_scene_match = yield from context.wait_scene(list(assets.terminal_scene_ids), wait=5.0, required=False)
+                (_confirmed, _score, frame) = (
+                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+                )
                 last_scene = (
                     int(scene_id) if scene_id in assets.terminal_scene_ids else None
                 )

@@ -2,6 +2,7 @@
 import pytest
 from backend.core.fanxiu.data_annotation.tasks import kunlun_secret as selection
 from backend.core.fanxiu.data_annotation.tasks import kunlun_secret_jobs as jobs
+from backend.core.fanxiu.activity.cultivation_choice import CultivationChoiceError
 
 def _reward_items() -> list[dict[str, object]]:
     return [
@@ -49,3 +50,41 @@ def test_runtime_reader_snapshot_is_required_complete(monkeypatch) -> None:
     )
     with pytest.raises(selection.KunlunFirstRowUndecided, match="FashionMgr 尚未加载"):
         jobs.read_kunlun_first_row_inputs()
+
+
+@pytest.mark.parametrize("layers, expected", [
+    ([[3, 3], [30], [6], [5]], 1),
+    ([[8], [5], [2], [4]], 3),
+    ([[8], [2], [2], [4]], 2),
+    ([[8], [2], [0], [4]], 3),
+    ([[8, 1], [2], [3], [4]], 1),
+])
+def test_first_row_uses_lowest_layer_then_leftmost(layers, expected) -> None:
+    owned = tuple({"item_id": 101 + index,
+                   "components": [{"rank": rank} for rank in ranks]}
+                  for index, ranks in enumerate(layers))
+    inputs = jobs.KunlunFirstRowInputs(tuple(_reward_items()), tuple(reversed(owned)))
+    assert jobs.plan_kunlun_first_row(inputs).column == expected
+
+
+@pytest.mark.parametrize("rank", [None, -1, True, "0"])
+def test_first_row_invalid_progress_is_not_zero(rank) -> None:
+    inputs = jobs.KunlunFirstRowInputs(
+        ({"item_id": 101},),
+        ({"item_id": 101, "components": [{"rank": rank}]},),
+    )
+    with pytest.raises(CultivationChoiceError, match="层数无效"):
+        jobs.plan_kunlun_first_row(inputs)
+
+
+def test_first_row_missing_progress_stops_selection() -> None:
+    inputs = jobs.KunlunFirstRowInputs(tuple(_reward_items()), ())
+    with pytest.raises(CultivationChoiceError, match="缺失"):
+        jobs.plan_kunlun_first_row(inputs)
+
+
+def test_first_row_committed_selection_needs_no_progress() -> None:
+    inputs = jobs.KunlunFirstRowInputs(
+        tuple(_reward_items()), (), {"item_id": 103},
+    )
+    assert jobs.plan_kunlun_first_row(inputs).column == 3

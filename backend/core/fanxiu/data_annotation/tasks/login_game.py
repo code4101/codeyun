@@ -91,10 +91,10 @@ class LoginGameTaskMixin:
         )
         startup_gate = mumu_device_startup_grace_state()
         login_required = bool(startup_gate.get("login_required"))
-        scene_id, _score, frame = yield from context.current_scene(
-            self.login_game_scene_ids,
-            update=True,
-            label="登录前置：识别当前场景",
+        _wait_scene_match = yield from context.wait_scene(self.login_game_scene_ids, label='登录前置：识别当前场景', wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         frame_text = context.ocr_text(frame)
         scene_id = self._resolve_login_scene(scene_id, frame_text)
@@ -167,9 +167,10 @@ class LoginGameTaskMixin:
             # Login is also the post-restart cleanup transaction. Use the
             # canonical layered recognizer so ordinary popup nodes are handled
             # and recognition repeats before the login state machine proceeds.
-            scene_id, score, frame = yield from context.current_scene(
-                self.login_game_scene_ids,
-                label="登录游戏：识别当前场景",
+            _wait_scene_match = yield from context.wait_scene(self.login_game_scene_ids, label='登录游戏：识别当前场景', wait=5.0, required=False)
+            (scene_id, score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             frame_text = context.ocr_text(frame)
             scene_id = self._resolve_login_scene(scene_id, frame_text)

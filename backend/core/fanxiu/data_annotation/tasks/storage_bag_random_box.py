@@ -285,10 +285,10 @@ def plan_current_random_box_click(
     """Re-register one fresh #525 frame and resolve the exact instance."""
 
     view = context.view(STORAGE_BAG_SCENE)
-    scene_id, _score, current_data_url = yield from context.current_scene(
-        [STORAGE_BAG_SCENE],
-        update=True,
-        label="储物袋随机箱：定位前识别 #525",
+    _wait_scene_match = yield from context.wait_scene([STORAGE_BAG_SCENE], label='储物袋随机箱：定位前识别 #525', wait=5.0, required=False)
+    (scene_id, _score, current_data_url) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     if scene_id != STORAGE_BAG_SCENE:
         raise StorageBagRandomBoxBlocked("定位前全图模型未把当前帧唯一识别为 #525")
@@ -355,10 +355,10 @@ def plan_current_random_box_click(
             "窗口",
             frame_data_url=current_data_url,
         )
-        verification_scene_id, _score, verification_data_url = yield from context.current_scene(
-            [STORAGE_BAG_SCENE],
-            update=True,
-            label="储物袋随机箱：点击前复验 #525",
+        _wait_scene_match = yield from context.wait_scene([STORAGE_BAG_SCENE], label='储物袋随机箱：点击前复验 #525', wait=5.0, required=False)
+        (verification_scene_id, _score, verification_data_url) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if verification_scene_id != STORAGE_BAG_SCENE:
             raise StorageBagRandomBoxBlocked("点击前复验未识别为 #525")

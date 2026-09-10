@@ -155,7 +155,11 @@ def navigate_to_daily_task_reward_cover(
         raise ValueError(f"未知日常任务奖励域：{domain}") from exc
 
     candidates = [spec.target_scene_id, *spec.landing_scene_ids, 69, 34]
-    scene_id, _score, frame = (yield from context.current_scene(candidates, update=True))
+    _wait_scene_match = yield from context.wait_scene(candidates, wait=5.0, required=False)
+    (scene_id, _score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     scene_id = _scene_id(scene_id)
     text = context.ocr_text(frame)
 

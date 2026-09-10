@@ -394,7 +394,11 @@ def _enter_adapter_from_schedule(
     for attempt in range(3):
         context.runner._raise_if_stopped(context.stop_event)
         frame = context.cur_frame(update=True)
-        scene, score, _ = (yield from context.current_scene([SCHEDULE_SCENE_ID], update=False))
+        _wait_scene_match = yield from context.wait_scene([SCHEDULE_SCENE_ID], wait=5.0, required=False)
+        (scene, score, _) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene != SCHEDULE_SCENE_ID or score < 90:
             raise RuntimeError(
                 f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：#66 身份无效 {scene}/{score:.0f}"
@@ -452,12 +456,11 @@ def open_resource_rank_activity_page(
 ):
     """Open one active resource-ranking occurrence and return its main scene."""
 
-    scene, _score, _frame = (yield from context.current_scene(
-        [34, 66, *(adapter.page_scene_ids), *(
-            (adapter.intro_scene_id,) if adapter.intro_scene_id is not None else ()
-        )],
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene([34, 66, *adapter.page_scene_ids, *((adapter.intro_scene_id,) if adapter.intro_scene_id is not None else ())], wait=5.0, required=False)
+    (scene, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if scene not in adapter.page_scene_ids:
         if scene != 66:
             result = context.go_scene(66)
@@ -492,7 +495,11 @@ def _open_adapter_gift_page(
     activity_id: int,
     now: datetime,
 ):
-    scene, _score, _frame = (yield from context.current_scene([605], update=True))
+    _wait_scene_match = yield from context.wait_scene([605], wait=5.0, required=False)
+    (scene, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if scene == 605:
         return
     scene = yield from open_resource_rank_activity_page(

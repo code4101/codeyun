@@ -81,7 +81,11 @@ def execute_lilian_claim_task(
     )
 
     yield from context.go_scene(34)
-    scene_id, _score, _frame = (yield from context.current_scene([34], update=True))
+    _wait_scene_match = yield from context.wait_scene([34], wait=5.0, required=False)
+    (scene_id, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if scene_id != 34:
         raise RuntimeError(
             f"历练_领取：收取后未返回 #34，当前 #{scene_id or 'unknown'}"

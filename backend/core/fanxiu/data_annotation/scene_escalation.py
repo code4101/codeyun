@@ -105,12 +105,11 @@ def _escalate_scene_repair(
     expected_scene_ids: Iterable[int], evidence_frame_path: str | None,
     asset_tree_path: Path | None, scene_id: int | None, problem: str, attempt_id: str,
 ) -> CodexDispatch | None:
-    """Stop engineering dispatch and hand one scene incident to Codex.
+    """Report a scene incident without changing scheduler ownership.
 
-    This function runs at the end of the failing Scheduler Cell. It disables
-    future Job dispatch directly instead of interrupting the Cell that is
-    currently unwinding. The independent Agent must wait for that Cell to end
-    before it uses the shared Kernel or GUI.
+    Requesting an Agent does not prove that one has started or taken control.
+    Only the active Agent/user may explicitly take_ai_control; evidence or
+    dispatch failures must leave engineering mode and its retry policy intact.
     """
 
     normalized_task_id = str(task_id or "").strip()
@@ -119,17 +118,14 @@ def _escalate_scene_repair(
         raise ValueError("场景异常升级缺少 Scheduler Job id")
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import (
         read_scheduler_settings,
-        set_scheduler_job_group_enabled,
     )
 
     # The unique Kernel serializes incidents. A disabled group already belongs
     # to AI: propagate to that owner instead of spawning recursive repair agents.
     if not read_scheduler_settings().get("job_group_enabled", True):
         return None
-    # Fail closed even when evidence persistence or dispatch itself fails.
-    set_scheduler_job_group_enabled(False)
     if not normalized_evidence or not Path(normalized_evidence).is_file():
-        raise ValueError("场景异常升级缺少可读取的原始帧；工程队列已熔断")
+        raise ValueError("场景异常升级缺少可读取的原始帧；调度模式未改变")
 
     scene_ids = tuple(dict.fromkeys(int(scene_id) for scene_id in expected_scene_ids))
     guidance = scene_repair_guidance(
@@ -169,6 +165,9 @@ def _escalate_scene_repair(
             "工程仅使用已标注动作；未猜坐标、未使用 Android Back",
         ),
         recovery_instructions=(
+            "工程未切换调度模式。你实际开始接管时，先调用 "
+            "backend.core.fanxiu.data_annotation.kernel_scheduler_control.take_ai_control(entry_id) "
+            f"取得运行权（entry_id={entry_id!r}），再操作共享 Kernel 或游戏。"
             f"先确认旧 Job {normalized_task_id} 的 attempt_id 已清空、last_result 已终态且 Kernel 空闲。修复并按需重载后，"
             f"从 Scheduler 正式入口重新提交 Job {normalized_task_id} 的完整新 attempt；"
             "不得恢复旧 Cell、generator 或 scene cursor。新 attempt 形成合法业务终态后，"

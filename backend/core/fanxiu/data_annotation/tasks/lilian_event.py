@@ -167,10 +167,11 @@ def _choose_lilian_option(
     max_attempts = max(1, int(payload.get("lilian_option_click_attempts") or 3))
     timeout = float(payload.get("lilian_result_timeout") or 30.0)
     for attempt in range(max_attempts):
-        scene_id, _score, _frame = (yield from context.current_scene(
-            [436, 437, 438],
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene([436, 437, 438], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id in (437, 438):
             return scene_id
         if scene_id != 436:
@@ -200,10 +201,11 @@ def _choose_lilian_option(
                 label=f"历练_事件：等待事件结果（{attempt + 1}/{max_attempts}）",
             )
         except TimeoutError:
-            scene_id, _score, _frame = (yield from context.current_scene(
-                [436, 437, 438],
-                update=True,
-            ))
+            _wait_scene_match = yield from context.wait_scene([436, 437, 438], wait=5.0, required=False)
+            (scene_id, _score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             if scene_id in (437, 438):
                 return scene_id
             if scene_id == 436 and attempt + 1 < max_attempts:
@@ -422,10 +424,11 @@ def execute_lilian_event_task(
         asset_tree_path,
         stop_event=stop_event,
     )
-    scene_id, _score, _frame = (yield from context.current_scene(
-        [34],
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene([34], wait=5.0, required=False)
+    (scene_id, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if scene_id != 34:
         raise LilianEventFlowError(
             f"历练_事件：作业入口必须是 #34，而是 #{scene_id or 'unknown'}"

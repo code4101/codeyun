@@ -458,8 +458,10 @@ def ensure_xianzang_row_choices_selected(
     if not desired or desired[0] < 1 or desired[-1] > count:
         raise ValueError(f"第 {row_number} 排候选范围必须为 1..{count}：{desired!r}")
     target_view = context.view(int(scene_id))
-    current_scene, score, frame = yield from context.current_scene(
-        [int(scene_id)], update=True, label="蓬莱仙藏：勾选前确认自选页"
+    _wait_scene_match = yield from context.wait_scene([int(scene_id)], label='蓬莱仙藏：勾选前确认自选页', wait=5.0, required=False)
+    (current_scene, score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
@@ -549,8 +551,10 @@ def complete_xianzang_optional_reward_selection(
             final_scene_score=100.0,
         )
 
-    current_scene, score, frame = yield from context.current_scene(
-        [int(scene_id)], update=True, label="蓬莱仙藏：确认前复核自选页"
+    _wait_scene_match = yield from context.wait_scene([int(scene_id)], label='蓬莱仙藏：确认前复核自选页', wait=5.0, required=False)
+    (current_scene, score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     if int(current_scene or 0) != int(scene_id) or float(score or 0) < 90.0:
         raise RuntimeError(
@@ -565,8 +569,10 @@ def complete_xianzang_optional_reward_selection(
     final_score = 100.0
     while True:
         candidates = [int(scene_id), *expected_after]
-        final_scene, final_score, _frame = yield from context.current_scene(
-            candidates, update=True, label="蓬莱仙藏：等待自选确认落地"
+        _wait_scene_match = yield from context.wait_scene(candidates, label='蓬莱仙藏：等待自选确认落地', wait=5.0, required=False)
+        (final_scene, final_score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         final_text = context.ocr_text(_frame)
         landed_on_numbered_scene = (

@@ -137,10 +137,11 @@ class YuandingSanshengTaskMixin:
             frame = context.cur_frame(update=True)
             fragments = context.ocr_fragments(frame)
             last_text = fragment_text(fragments)
-            scene_id, _score, _frame = (yield from context.current_scene(
-                [34, 66, YUANDING_MAIN_SCENE_ID],
-                update=False,
-            ))
+            _wait_scene_match = yield from context.wait_scene([34, 66, YUANDING_MAIN_SCENE_ID], wait=5.0, required=False)
+            (scene_id, _score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             if yuanding_page_state(scene_id, fragments, last_text) == expected_state:
                 return frame, fragments
             yield from context.wait_action_settle(0.35)
@@ -164,10 +165,11 @@ class YuandingSanshengTaskMixin:
         frame = context.cur_frame(update=True)
         fragments = context.ocr_fragments(frame)
         text = fragment_text(fragments)
-        scene_id, _score, _frame = (yield from context.current_scene(
-            [34, 66, YUANDING_MAIN_SCENE_ID],
-            update=False,
-        ))
+        _wait_scene_match = yield from context.wait_scene([34, 66, YUANDING_MAIN_SCENE_ID], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         state = yuanding_page_state(scene_id, fragments, text)
         if state == "unknown":
             raise RuntimeError(

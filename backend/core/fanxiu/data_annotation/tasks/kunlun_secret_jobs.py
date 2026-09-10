@@ -76,22 +76,16 @@ def read_kunlun_first_row_inputs() -> KunlunFirstRowInputs:
 def plan_kunlun_first_row(
     inputs: KunlunFirstRowInputs, *, log: Callable[[str], None] | None = None,
 ) -> KunlunFirstRowDecision:
-    """Adapt channel geometry to the activity-neutral documented-item planner.
-
-    Only an unconfigured instance is analysed. A committed selection is final;
-    neither ranks nor documents need re-evaluation until a new activity instance.
-    """
+    """首次选最低层数，并列取最左；本期已选则沿用，不读取收益文档。"""
     from backend.core.fanxiu.activity.cultivation_choice import (
-        plan_single_cultivation_choice, committed_cultivation_choice,
+        choose_lowest_cultivation_layer, committed_cultivation_choice,
     )
-    from backend.core.fanxiu.catalog.cultivation_rules import prepare_cultivation_choice_rules
 
     committed = committed_cultivation_choice(inputs.reward_items,
         int((inputs.selected_big_reward or {}).get("item_id") or 0))
     if committed is not None:
         return KunlunFirstRowDecision(column=committed, reason="本期已选择，直接复用；不再读取阶数或重新规划")
-    rules = prepare_cultivation_choice_rules(inputs.reward_items, inputs.owned_items, log=log)
-    plan = plan_single_cultivation_choice(inputs.reward_items, inputs.owned_items, rules)
+    plan = choose_lowest_cultivation_layer(inputs.reward_items, inputs.owned_items)
     return KunlunFirstRowDecision(column=plan.column, reason=plan.reason)
 
 
@@ -163,14 +157,14 @@ def _run_kunlun_config_workflow(
     inputs_reader: Callable[[], KunlunFirstRowInputs] | None = None,
     selector: KunlunFirstRowSelector | None = None,
 ) -> dict[str, Any]:
+    tasks = yield from complete_kunlun_tasks(context)
+    yield from open_kunlun_tab(context, "商店")
+    store = yield from complete_kunlun_store(context)
     optional = yield from _select_optional_reward(
         context,
         inputs_reader=inputs_reader,
         selector=selector,
     )
-    yield from open_kunlun_tab(context, "商店")
-    store = yield from complete_kunlun_store(context)
-    tasks = yield from complete_kunlun_tasks(context)
     lottery = yield from complete_kunlun_lottery(context, allow_single_draws=False)
     return {
         "optional": optional,
@@ -222,7 +216,7 @@ def execute_kunlun_config_job(
         raise RuntimeError("昆仑秘藏_配置收尾未可靠回到 #34")
     runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
     message = (
-        "昆仑秘藏_配置：自选、商店、任务、首奖抽取与返回流程已闭环，"
+        "昆仑秘藏_配置：任务、商店、自选、首奖抽取与返回流程已闭环，"
         "已清空 next_time，等待活动_每日清单同步再次触发"
     )
     runner._log("success", message)

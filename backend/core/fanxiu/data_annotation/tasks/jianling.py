@@ -60,8 +60,10 @@ class JianlingTaskMixin:
 
         for round_index in range(1, max_rounds + 1):
             self._raise_if_stopped(stop_event)
-            scene_id, _score, frame = yield from context.current_scene(
-                [351, 349], update=True
+            _wait_scene_match = yield from context.wait_scene([351, 349], wait=5.0, required=False)
+            (scene_id, _score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
 
             if scene_id == 351:

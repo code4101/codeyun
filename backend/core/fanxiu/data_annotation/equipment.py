@@ -732,9 +732,10 @@ def ensure_equipment_strengthening(
     deliberately raised in place so callers retain the current game screen.
     """
 
-    scene_id, _score, _frame = yield from context.current_scene(
-        (EQUIPMENT_STRENGTHENING_VIEW_ID, EQUIPMENT_VIEW_ID, WORLD_VIEW_ID),
-        update=True,
+    _wait_scene_match = yield from context.wait_scene((EQUIPMENT_STRENGTHENING_VIEW_ID, EQUIPMENT_VIEW_ID, WORLD_VIEW_ID), wait=5.0, required=False)
+    (scene_id, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     if scene_id == EQUIPMENT_STRENGTHENING_VIEW_ID:
         return {

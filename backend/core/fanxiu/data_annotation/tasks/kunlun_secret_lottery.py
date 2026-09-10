@@ -59,6 +59,8 @@ def decide_kunlun_next_draw(
     snapshot: dict[str, Any],
     *,
     allow_single_draws: bool = True,
+    closing_entry: bool = False,
+    post_hit_target: int | None = None,
 ) -> KunlunDrawDecision:
     """Plan one bounded action whose objective is the first selected grand prize."""
 
@@ -75,9 +77,15 @@ def decide_kunlun_next_draw(
     if not 0 <= remaining <= capacity:
         raise RuntimeError(f"昆仑自选大奖剩余数量异常：{remaining}")
     hit_count = capacity - remaining
+    if hit_count >= 1 and closing_entry:
+        return KunlunDrawDecision("stop_first_grand_prize", "收尾开始前已中奖，直接结束")
+    if snapshot.get("claimable"):
+        return KunlunDrawDecision("claim_rewards", "领取已达成的累抽奖励")
     if hit_count >= 1:
-        # A ten-draw batch may award more than one copy. One or more completes
-        # the goal; save persistent keys rather than chasing further thresholds.
+        if allow_single_draws and post_hit_target is not None and progress < post_hit_target:
+            if kunlun_refund_target(snapshot) == post_hit_target:
+                return KunlunDrawDecision("single_draw", "收尾本轮已中奖，单抽补齐下一档",
+                                          expected_batch_size=1, target_threshold=post_hit_target)
         return KunlunDrawDecision("stop_first_grand_prize", f"本期已获得 {hit_count} 个自选大奖，停止抽奖并保留密钥")
 
     milestones = [
@@ -123,6 +131,26 @@ def decide_kunlun_next_draw(
         expected_batch_size=decision.expected_batch_size,
         target_threshold=decision.target_threshold,
     )
+
+
+def kunlun_refund_target(snapshot: dict[str, Any]) -> int | None:
+    """本轮中奖后只选紧邻下一档；返还等于开销也补，不能跳过中间档。"""
+    progress = int(snapshot["progress"])
+    upcoming = [r for r in snapshot.get("rewards") or []
+                if int(r.get("threshold") or 0) > progress]
+    if not upcoming:
+        return None
+    reward = min(upcoming, key=lambda r: int(r["threshold"]))
+    threshold = int(reward["threshold"])
+    gap = threshold - progress
+    cost = int(snapshot.get("cost_per_draw") or 1)
+    if cost <= 0:
+        raise RuntimeError("单抽消耗必须为正数")
+    refund = _reward_item_count(str(reward.get("reward") or ""),
+                                int(snapshot.get("cost_type") or 0)) // cost
+    if gap <= int(snapshot["available_draws"]) and refund >= gap:
+        return threshold
+    return None
 
 
 def _read_coherent_state() -> dict[str, Any]:
@@ -299,12 +327,23 @@ def complete_kunlun_lottery(
     spec.require_executable_assets()
     yield from _open_main(context)
     rounds: list[dict[str, Any]] = []
+    post_hit_target = None
+    hit_handled = False
     for round_index in range(max(1, int(max_rounds))):
         state = _read_coherent_state()
         decision = decide_kunlun_next_draw(
-            state,
-            allow_single_draws=allow_single_draws,
+            state, allow_single_draws=allow_single_draws,
+            closing_entry=allow_single_draws and round_index == 0,
+            post_hit_target=post_hit_target,
         )
+        # 先领完已达成奖励，再选一次补档目标；目标只存活于本次调用。
+        if (allow_single_draws and round_index > 0 and not hit_handled
+                and decision.action == "stop_first_grand_prize"):
+            hit_handled = True
+            post_hit_target = kunlun_refund_target(state)
+            decision = decide_kunlun_next_draw(
+                state, allow_single_draws=True, post_hit_target=post_hit_target,
+            )
         if decision.action == "claim_rewards":
             claim = yield from claim_kunlun_cumulative_rewards(context)
             rounds.append({"round": round_index + 1, "action": "claim_rewards", "claim": claim})
@@ -327,9 +366,6 @@ def complete_kunlun_lottery(
                 f"actual={int(draw.get('dx') or 0)}"
             )
         close = yield from close_kunlun_draw_result(context)
-        # Re-evaluate the actual hit count at the top of the next iteration
-        # before any follow-up reward action. Previously an unconditional
-        # cumulative claim failed after two prizes had already completed the goal.
         rounds.append(
             {
                 "round": round_index + 1,
@@ -347,6 +383,7 @@ __all__ = [
     "close_kunlun_draw_result",
     "complete_kunlun_lottery",
     "decide_kunlun_next_draw",
+    "kunlun_refund_target",
     "draw_kunlun_once",
     "ensure_kunlun_draw_mode",
 ]

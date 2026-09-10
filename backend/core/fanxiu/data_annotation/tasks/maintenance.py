@@ -54,9 +54,10 @@ class MaintenanceTaskMixin:
             )
         else:
             # Lightweight test/context adapters may expose only the public view.
-            scene_id, score, frame = yield from context.current_scene(
-                self.maintenance_probe_scene_ids,
-                update=update,
+            _wait_scene_match = yield from context.wait_scene(self.maintenance_probe_scene_ids, wait=5.0, required=False)
+            (scene_id, score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
         text = context.ocr_text(frame)
         return infer_game_startup_scene(scene_id, text), score, frame, text

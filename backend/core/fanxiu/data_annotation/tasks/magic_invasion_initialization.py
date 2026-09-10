@@ -29,9 +29,10 @@ COMMON_SHOP_DIALOG_SCENE = 566
 def _leave_loaded_magic_shop(context: Any, *, label: str) -> Iterator[Any]:
     """Normalize a retained Magic shop/dialog through annotated exits only."""
 
-    dialog, _score, _frame = yield from context.current_scene(
-        (COMMON_SHOP_DIALOG_SCENE,),
-        update=True,
+    _wait_scene_match = yield from context.wait_scene((COMMON_SHOP_DIALOG_SCENE,), wait=5.0, required=False)
+    (dialog, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     if dialog == COMMON_SHOP_DIALOG_SCENE:
         context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "关闭详情")
@@ -67,7 +68,11 @@ def _enter_exact_magic_occurrence(
     """Enter one Runtime-bound occurrence through the shared #66 navigator."""
 
     yield from _leave_loaded_magic_shop(context, label=label)
-    current, _score, _frame = yield from context.current_scene((34, 66), update=True)
+    _wait_scene_match = yield from context.wait_scene((34, 66), wait=5.0, required=False)
+    (current, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if current == 34:
         yield from context.go_scene(66)
     elif current != 66:

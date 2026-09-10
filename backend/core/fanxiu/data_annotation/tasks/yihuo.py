@@ -36,7 +36,11 @@ class 日常异火任务Mixin:
                 return
 
     def 日常异火流程(self, context: Any):
-        scene_id, _score, frame = (yield from context.current_scene([261, 260, 259, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([261, 260, 259, 34], wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         current_text = context.ocr_text(frame)
         if self._daily_yihuo_text_is_claimed(current_text):
             yield from self._daily_yihuo_return_best_effort(context)

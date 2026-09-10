@@ -1661,8 +1661,10 @@ class MailTaskMixin:
         last_scene_hint: int | None = None
         stable_scene_reads = 0
         while time.monotonic() - started_at < max(1.0, float(timeout)):
-            scene_id, _score, frame = yield from context.current_scene(
-                [122, 123], update=True, label="邮件：确认详情浮层"
+            _wait_scene_match = yield from context.wait_scene([122, 123], label='邮件：确认详情浮层', wait=5.0, required=False)
+            (scene_id, _score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             last_frame = frame
             if scene_id not in {122, 123}:

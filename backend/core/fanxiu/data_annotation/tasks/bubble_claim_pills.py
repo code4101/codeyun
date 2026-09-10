@@ -18,7 +18,11 @@ class BubbleClaimPillsTaskMixin:
 
     @staticmethod
     def _bubble_overlay_scene(context: Any, scene_ids: tuple[int, ...], *, update: bool = True):
-        scene_id, score, frame = yield from context.current_scene(list(scene_ids), update=update)
+        _wait_scene_match = yield from context.wait_scene(list(scene_ids), wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id in scene_ids:
             return scene_id, score, frame
         direct: list[tuple[float, int]] = []

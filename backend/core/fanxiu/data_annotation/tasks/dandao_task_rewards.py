@@ -160,10 +160,11 @@ def run_dandao_task_rewards_flow(
             break
         if len(claimed_ids) >= limit:
             raise RuntimeError(f"{DANDAO_TASK_REWARDS_LABEL}：领取达到安全上限 {limit} 仍未收敛")
-        scene_id, score, frame = (yield from context.current_scene(
-            [DANDAO_TASK_REWARDS_SCENE_ID],
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene([DANDAO_TASK_REWARDS_SCENE_ID], wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if int(scene_id or 0) != DANDAO_TASK_REWARDS_SCENE_ID or float(score or 0.0) < 80.0:
             raise RuntimeError(f"{DANDAO_TASK_REWARDS_LABEL}：领取前未可靠识别 #598")
         task_id = claimable[0]

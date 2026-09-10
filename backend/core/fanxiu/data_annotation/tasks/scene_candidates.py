@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-# 这些编号只在仙缘业务步骤调用 current_scene(...) 时构成 Layer 0。
+# 这些编号只在仙缘业务步骤调用 wait_scene(...) 时构成 Layer 0。
 # 资产本身仍按场景身份规则派生到默认 Layer 1/2；其中 #201/#202 是 Layer 2；#203 离开确认由弹窗守护处理。
 DAILY_XIANYUAN_LAYER0_SCENE_IDS = (202, 201, 200, 199, 198, 197, 69, 34)
 DAILY_XIANYUAN_RETURN_LAYER0_SCENE_IDS = tuple(reversed(DAILY_XIANYUAN_LAYER0_SCENE_IDS))

@@ -104,10 +104,10 @@ def _wait_quick_operation_panel(context: Any, *, timeout: float):
     deadline = time.perf_counter() + timeout
     last_frame: str | None = None
     while time.perf_counter() < deadline:
-        scene_id, _score, frame = yield from context.current_scene(
-            (QUICK_OPERATION_SCENE,),
-            update=True,
-            label="储物袋_操作：识别快捷操作面板",
+        _wait_scene_match = yield from context.wait_scene((QUICK_OPERATION_SCENE,), label='储物袋_操作：识别快捷操作面板', wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         last_frame = frame
         if scene_id == QUICK_OPERATION_SCENE:
@@ -138,10 +138,10 @@ def _observe_known_scene(
     """Observe only; unknown/toast-obscured frames never trigger a click."""
 
     while time.monotonic() < deadline:
-        scene_id, _score, frame = yield from context.current_scene(
-            list(scene_ids),
-            update=True,
-            label="储物袋_操作：识别动作后场景",
+        _wait_scene_match = yield from context.wait_scene(list(scene_ids), label='储物袋_操作：识别动作后场景', wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         text = _compact_text(context.ocr_text(frame))
         if EMPTY_OPERATION_TOAST in text and accept_empty_toast:
@@ -174,10 +174,10 @@ def _finish_reward_chain(context: Any, *, deadline: float):
     stable_scene: int | None = None
     continued_reward = False
     while time.monotonic() < deadline:
-        landed, _score, frame = yield from context.current_scene(
-            (USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE),
-            update=True,
-            label="储物袋_操作：识别奖励链",
+        _wait_scene_match = yield from context.wait_scene((USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE), label='储物袋_操作：识别奖励链', wait=5.0, required=False)
+        (landed, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         text = _compact_text(context.ocr_text(frame))
         if EMPTY_OPERATION_TOAST in text:

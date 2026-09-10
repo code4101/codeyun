@@ -339,7 +339,11 @@ def classify_yunmeng_auto_terminal(text: str) -> YunmengAutoTerminal:
 
 
 def _observe(context: Any, scene_ids: tuple[int, ...], anchors: tuple[str, ...]):
-    scene_id, _score, frame = yield from context.current_scene(list(scene_ids), update=True)
+    _wait_scene_match = yield from context.wait_scene(list(scene_ids), wait=5.0, required=False)
+    (scene_id, _score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     text = context.ocr_text(frame)
     if scene_id not in scene_ids or not all(
         _compact(anchor) in _compact(text) for anchor in anchors
@@ -542,10 +546,11 @@ def run_yunmeng_native_auto(
     last_text = ""
     for _poll in range(max(1, int(terminal_polls))):
         yield from context.wait_action_settle(poll_seconds)
-        scene_id, _score, frame = (yield from context.current_scene(
-            list(assets.terminal_scene_ids),
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene(list(assets.terminal_scene_ids), wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         last_scene = int(scene_id) if scene_id in assets.terminal_scene_ids else None
         last_text = context.ocr_text(frame)
         terminal = classify_yunmeng_auto_terminal(last_text)

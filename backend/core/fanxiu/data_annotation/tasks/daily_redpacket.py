@@ -48,10 +48,11 @@ class DailyRedpacketTaskMixin:
     def _prepare_daily_redpacket_world(self, context: Any, *, transition_timeout: float):
         """Unwind an interrupted chat input layer through formal GUI shapes."""
 
-        scene_id, _score, _frame = (yield from context.current_scene(
-            [390, 30, 332, 34],
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene([390, 30, 332, 34], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id in {390, 30}:
             self._log(
                 "action",
@@ -1071,7 +1072,11 @@ class DailyRedpacketTaskMixin:
                 timeout=transition_timeout,
             ))
         except TimeoutError:
-            scene_id, _score, _frame = (yield from context.current_scene([332, 34], update=True))
+            _wait_scene_match = yield from context.wait_scene([332, 34], wait=5.0, required=False)
+            (scene_id, _score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             if scene_id == 34:
                 return (yield from context.wait_scene(
                     [34],
@@ -1091,7 +1096,11 @@ class DailyRedpacketTaskMixin:
                 timeout=transition_timeout,
             ))
         except TimeoutError:
-            scene_id, _score, _frame = (yield from context.current_scene([30, 332, 20, 34], update=True))
+            _wait_scene_match = yield from context.wait_scene([30, 332, 20, 34], wait=5.0, required=False)
+            (scene_id, _score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             if scene_id in {332, 20, 34}:
                 return (yield from context.wait_scene(
                     [332,
@@ -1222,7 +1231,11 @@ class DailyRedpacketTaskMixin:
                 )
                 break
             except TimeoutError:
-                scene_id, _score, _frame = (yield from context.current_scene([30], update=True))
+                _wait_scene_match = yield from context.wait_scene([30], wait=5.0, required=False)
+                (scene_id, _score, _frame) = (
+                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+                )
                 if scene_id != 30:
                     return 0, False
         if current is None:

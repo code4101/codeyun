@@ -50,6 +50,37 @@ def committed_cultivation_choice(
     return matches[0]
 
 
+def choose_lowest_cultivation_layer(
+    reward_items: Sequence[Mapping[str, Any]],
+    owned_items: Sequence[Mapping[str, Any]],
+) -> CultivationChoice:
+    """Choose the lowest current layer, breaking ties by left-to-right order.
+
+    A bundle uses its lowest component layer. Confirmed unowned components
+    have layer zero; missing or invalid progress must not become zero.
+    No documents, milestone analysis or target-layer planning is involved.
+    """
+    if not reward_items:
+        raise CultivationChoiceError("自选候选为空")
+    comparisons = []
+    for column, reward in enumerate(reward_items, 1):
+        item_id = int(reward["item_id"])
+        matches = [row for row in owned_items if row.get("item_id") == item_id]
+        if len(matches) != 1:
+            raise CultivationChoiceError(f"道具 {item_id} 的当前层数缺失或重复")
+        components = matches[0].get("components") or []
+        ranks = [part.get("rank") for part in components]
+        if not ranks or any(type(rank) is not int or rank < 0 for rank in ranks):
+            raise CultivationChoiceError(f"道具 {item_id} 的当前层数无效")
+        comparisons.append({"item_id": item_id, "column": column, "rank": min(ranks)})
+    chosen = min(comparisons, key=lambda row: (row["rank"], row["column"]))
+    return CultivationChoice(
+        item_id=chosen["item_id"], column=chosen["column"],
+        reason=f"选择当前最低 {chosen['rank']} 层的第 {chosen['column']} 项；并列取最左",
+        targets=(), comparisons=tuple(comparisons),
+    )
+
+
 def validate_cultivation_rule(
     rule: Mapping[str, Any], *, item_id: int, allowed_keys: set[str], source_refs: set[str]
 ) -> dict[str, Any]:

@@ -594,10 +594,11 @@ class PrayerDailyResourceTaskMixin:
         entry_timeout = float(payload.get("entry_timeout_seconds") or 60.0)
         page_timeout = float(payload.get("page_timeout_seconds") or 12.0)
 
-        current_scene, _score, current_frame = (yield from context.current_scene(
-            [34, 69, 194, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
-            update=True,
-        ))
+        _wait_scene_match = yield from context.wait_scene([34, 69, 194, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID], wait=5.0, required=False)
+        (current_scene, _score, current_frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         # A confirmed new-round overlay legitimately hides every #455 scene
         # identity anchor.  Recover this one proven overlay before applying the
         # normal safe-scene gate, then re-identify the underlying page.
@@ -623,20 +624,22 @@ class PrayerDailyResourceTaskMixin:
                 wait=page_timeout,
                 label="祈愿_每日资源：确认新一轮后恢复祈愿主页 #455",
             )
-            current_scene, _score, current_frame = (yield from context.current_scene(
-                [PRAYER_MAIN_SCENE_ID],
-                update=True,
-            ))
+            _wait_scene_match = yield from context.wait_scene([PRAYER_MAIN_SCENE_ID], wait=5.0, required=False)
+            (current_scene, _score, current_frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             current_fragments = context.ocr_fragments(current_frame)
         if current_scene in {69, 194}:
             # #194 can be left behind by an older, incorrect world-side
             # ``进入`` click.  Both scenes have proven graph routes back to the
             # stable world anchor, so recover before opening the daily entry.
             yield from context.go_scene(34)
-            current_scene, _score, current_frame = (yield from context.current_scene(
-                [34, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
-                update=True,
-            ))
+            _wait_scene_match = yield from context.wait_scene([34, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID], wait=5.0, required=False)
+            (current_scene, _score, current_frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
         page_state = prayer_page_state(
             current_scene,
             current_fragments,
@@ -678,10 +681,11 @@ class PrayerDailyResourceTaskMixin:
                     break
                 except RuntimeError as exc:
                     entry_error = exc
-                    scene_id, _score, _frame = (yield from context.current_scene(
-                        [34, 194, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID],
-                        update=True,
-                    ))
+                    _wait_scene_match = yield from context.wait_scene([34, 194, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID], wait=5.0, required=False)
+                    (scene_id, _score, _frame) = (
+                        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+                    )
                     if scene_id in {PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID}:
                         _frame, main_fragments, store_tab = yield from self._wait_prayer_store_tab(
                             context,

@@ -102,7 +102,11 @@ class XianfuTaskMixin:
         raw_max_continue = payload.get("max_continue", 20)
         max_continue = int(20 if raw_max_continue in {None, ""} else raw_max_continue)
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        scene_id, score, _frame = (yield from context.current_scene([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([177, 176, 175, 174, 173, 172, 185, 171, 69, 34], wait=5.0, required=False)
+        (scene_id, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         self._reject_non_xianfu_scene(scene_id, task_label="仙府_寻访仙侣")
         current_text = context.ocr_text(_frame)
         if scene_id is None:
@@ -296,7 +300,11 @@ class XianfuTaskMixin:
                 self._log_locked("action", "仙府_寻访仙侣：点击 #175「关闭」")
             close_shape.click(context)
             yield from context.wait_action_settle(1.0)
-            scene_id, _score, frame = (yield from context.current_scene([174, 175], update=True))
+            _wait_scene_match = yield from context.wait_scene([174, 175], wait=5.0, required=False)
+            (scene_id, _score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             text = context.ocr_text(frame)
             if scene_id == 174 or self._xianfu_visit_text_is_juepin(text):
                 return "success"
@@ -345,7 +353,11 @@ class XianfuTaskMixin:
         current_candidates: tuple[int, ...] = (177, 176, 175, 174, 173, 172, 171, 34),
     ):
         for _attempt in range(6):
-            scene_id, score, _frame = (yield from context.current_scene(current_candidates, update=True))
+            _wait_scene_match = yield from context.wait_scene(current_candidates, wait=5.0, required=False)
+            (scene_id, score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             text = context.ocr_text(_frame)
             if scene_id is None:
                 if self._xianfu_visit_text_is_continue_popup(text):
@@ -526,7 +538,11 @@ class XianfuTaskMixin:
             )
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         preferred = [347, 177, 176, 172, 185, 171, 34]
-        scene_id, score, _frame = (yield from context.current_scene(preferred, update=True))
+        _wait_scene_match = yield from context.wait_scene(preferred, wait=5.0, required=False)
+        (scene_id, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         self._reject_non_xianfu_scene(scene_id, task_label="仙府_领悟绝技")
         current_text = (
             ""

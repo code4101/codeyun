@@ -105,9 +105,10 @@ def complete_xianzang_tasks(
             raise RuntimeError(
                 f"蓬莱仙藏任务连续领取超过 {click_limit} 次仍未收敛，拒绝继续点击"
             )
-        scene_id, score, frame = yield from context.current_scene(
-            [XIANZANG_TASK_SCENE_ID],
-            update=True,
+        _wait_scene_match = yield from context.wait_scene([XIANZANG_TASK_SCENE_ID], wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(scene_id or 0) != XIANZANG_TASK_SCENE_ID or float(score or 0) < 80.0:
             raise RuntimeError("领取前未可靠识别 #450，拒绝点击任务")
@@ -118,9 +119,10 @@ def complete_xianzang_tasks(
         )
         clicked_count += 1
         yield from context.wait_action_settle(max(0.0, float(retry_seconds)))
-        scene_id, score, frame = yield from context.current_scene(
-            [XIANZANG_TASK_SCENE_ID],
-            update=True,
+        _wait_scene_match = yield from context.wait_scene([XIANZANG_TASK_SCENE_ID], wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(scene_id or 0) != XIANZANG_TASK_SCENE_ID or float(score or 0) < 80.0:
             raise RuntimeError("领取后未可靠识别 #450，拒绝继续点击任务")

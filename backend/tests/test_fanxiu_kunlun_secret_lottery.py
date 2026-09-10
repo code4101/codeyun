@@ -267,11 +267,48 @@ def test_kunlun_strategy_fails_closed_without_exact_pool_remaining(remaining) ->
 
 
 @pytest.mark.parametrize("remaining", [19, 18, 17, 0])
-def test_one_or_more_prizes_is_terminal_even_with_unclaimed_rewards(remaining):
+def test_one_or_more_prizes_claims_reached_rewards_before_stopping(remaining):
     decision = task.decide_kunlun_next_draw({
         "complete": True, "selected_big_capacity": 20,
         "selected_big_remaining": remaining, "available_draws": 10,
         "progress": 20, "claimable": [{"id": 10102, "threshold": 20}],
     })
-    assert decision.action == "stop_first_grand_prize"
+    assert decision.action == "claim_rewards"
     assert decision.expected_batch_size == 0
+
+
+def closing_snapshot(progress=17, available=10):
+    return {"complete": True, "selected_big_capacity": 20,
+            "selected_big_remaining": 19, "progress": progress,
+            "available_draws": available, "cost_type": 9001, "cost_per_draw": 1,
+            "claimable": [], "rewards": [
+                {"threshold": 20, "reward": "Item|9001_4", "state": "locked"},
+                {"threshold": 40, "reward": "Item|9001_30", "state": "locked"}]}
+
+
+@pytest.mark.parametrize("progress,available,target", [(16,4,20),(17,3,20),(18,2,20),(15,10,None),(17,2,None)])
+def test_closing_next_refund_includes_break_even(progress, available, target):
+    state = closing_snapshot(progress, available)
+    assert task.kunlun_refund_target(state) == target
+    decision = task.decide_kunlun_next_draw(state, post_hit_target=target)
+    assert decision.action == ("single_draw" if target else "stop_first_grand_prize")
+
+
+def test_closing_entry_already_hit_skips_rewards_and_top_up():
+    state = closing_snapshot()
+    state["claimable"] = [{"threshold": 10}]
+    assert task.decide_kunlun_next_draw(state, closing_entry=True).action == "stop_first_grand_prize"
+
+
+def test_closing_only_fills_one_committed_threshold():
+    state = closing_snapshot(20)
+    state["claimable"] = [{"threshold": 20}]
+    assert task.decide_kunlun_next_draw(state, post_hit_target=20).action == "claim_rewards"
+    state["claimable"] = []
+    assert task.decide_kunlun_next_draw(state, post_hit_target=20).action == "stop_first_grand_prize"
+
+
+def test_refund_uses_draw_cost_not_raw_currency():
+    state = closing_snapshot(17)
+    state["cost_per_draw"] = 2
+    assert task.kunlun_refund_target(state) is None

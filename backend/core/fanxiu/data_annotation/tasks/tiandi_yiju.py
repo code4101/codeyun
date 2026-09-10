@@ -1027,9 +1027,11 @@ def _refresh_tiandi_yiju_exchange_facts(
 def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float = 120.0):
     """Click once and accept a result overlay or the live direct-board terminal."""
 
-    scene_id, _score, _frame = (yield from context.current_scene(
-        [TIANDI_YIJU_ALLY_CONFIRM_SCENE], update=True
-    ))
+    _wait_scene_match = yield from context.wait_scene([TIANDI_YIJU_ALLY_CONFIRM_SCENE], wait=5.0, required=False)
+    (scene_id, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if scene_id != TIANDI_YIJU_ALLY_CONFIRM_SCENE:
         yield from context.wait_click(TIANDI_YIJU_AUTO_DIALOG_SCENE, "对弈")
         yield from context.wait_action_settle(1.0)
@@ -1048,7 +1050,11 @@ def _start_one_tiandi_yiju_round_and_wait_result(context: Any, *, timeout: float
         ]
         if TIANDI_YIJU_RESULT_OVERLAY_SCENE is not None:
             candidates.append(TIANDI_YIJU_RESULT_OVERLAY_SCENE)
-        scene_id, score, frame = (yield from context.current_scene(candidates, update=True))
+        _wait_scene_match = yield from context.wait_scene(candidates, wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         last_text = context.ocr_text(frame)
         compact = _compact_ocr(last_text)
         if "批战结束" not in compact:

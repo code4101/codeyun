@@ -96,7 +96,11 @@ class SignupMiscTaskMixin:
         return {"result": "success", "claimed": 领取数量, "signup_page_opened": True, "evidence": "claimed_rewards"}
 
     def _日常报名进入日常页(self, context: Any):
-        scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([69, 34], wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         text = context.ocr_text(frame)
         if self._日常报名文本是报名后活动页(text):
             return "活动页"
@@ -131,9 +135,10 @@ class SignupMiscTaskMixin:
         # scene.  Guard #69, locate/click the #75 Shape on that fresh frame,
         # then verify the real successor #23 explicitly.
         for attempt in range(2):
-            scene_id, _score, frame = yield from context.current_scene(
-                [69, 23],
-                update=True,
+            _wait_scene_match = yield from context.wait_scene([69, 23], wait=5.0, required=False)
+            (scene_id, _score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             if int(scene_id) == 23:
                 break
@@ -309,7 +314,11 @@ class SignupMiscTaskMixin:
         )
 
     def _日常报名返回日常页(self, context: Any):
-        scene_id, _score, frame = (yield from context.current_scene([23, 69, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([23, 69, 34], wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         text = context.ocr_text(frame)
         if scene_id in (69, 34):
             return
@@ -322,7 +331,11 @@ class SignupMiscTaskMixin:
         yield from context.wait_click(23, "返回")
 
     def _日常报名返回世界(self, context: Any):
-        scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([69, 34], wait=5.0, required=False)
+        (scene_id, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         text = context.ocr_text(frame)
         if scene_id == 34:
             return
@@ -339,7 +352,11 @@ class SignupMiscTaskMixin:
                         },
                         label="日常_报名：等待活动页返回",
                     )
-                scene_id, _score, frame = (yield from context.current_scene([69, 34], update=True))
+                _wait_scene_match = yield from context.wait_scene([69, 34], wait=5.0, required=False)
+                (scene_id, _score, frame) = (
+                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+                )
                 text = context.ocr_text(frame)
                 if scene_id == 34:
                     return

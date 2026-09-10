@@ -102,7 +102,11 @@ class WeeklyShengzuTaskMixin:
         max_scrolls: int,
         transition_timeout: float,
     ):
-        scene_id, _score, _frame = (yield from context.current_scene([383, 384, 385, 69, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([383, 384, 385, 69, 34], wait=5.0, required=False)
+        (scene_id, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if scene_id == 385:
             return
         if scene_id == 383:

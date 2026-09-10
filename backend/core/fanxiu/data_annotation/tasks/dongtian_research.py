@@ -25,10 +25,11 @@ def enter_dongtian_home_for_research(
     )
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
     allowed_start_scene_ids = (34, 66, 477, 69)
-    scene_id, _score, frame = (yield from context.current_scene(
-        allowed_start_scene_ids,
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene(allowed_start_scene_ids, wait=5.0, required=False)
+    (scene_id, _score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     text = context.ocr_text(frame)
     if scene_id not in allowed_start_scene_ids:
         raise RuntimeError(
@@ -44,10 +45,11 @@ def enter_dongtian_home_for_research(
             label=task_label,
         )
         if recovered:
-            scene_id, _score, frame = (yield from context.current_scene(
-                [34, 69],
-                update=True,
-            ))
+            _wait_scene_match = yield from context.wait_scene([34, 69], wait=5.0, required=False)
+            (scene_id, _score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
             text = context.ocr_text(frame)
         scene_id = yield from runner._enter_daily_from_world_like(
             ctx,

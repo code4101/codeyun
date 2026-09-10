@@ -267,7 +267,11 @@ class MoyuChallengeTaskMixin:
         }
 
     def _moyu_return_world(self, context: Any):
-        current, _score, _frame = (yield from context.current_scene([401, 400, 34], update=True))
+        _wait_scene_match = yield from context.wait_scene([401, 400, 34], wait=5.0, required=False)
+        (current, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if current == 401:
             context.click_shape_center(401, "返回")
             landing = yield from context.wait_scene(
@@ -321,7 +325,11 @@ class MoyuChallengeTaskMixin:
         a generic scene graph cannot express the dynamic daily-list entry.
         """
         payload = dict(payload or {})
-        current, _score, _frame = (yield from context.current_scene([466, 401], update=True))
+        _wait_scene_match = yield from context.wait_scene([466, 401], wait=5.0, required=False)
+        (current, _score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if current not in {466, 401}:
             yield from self._moyu_open_activity(context, payload)
             current = 401

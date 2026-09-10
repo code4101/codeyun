@@ -441,10 +441,11 @@ def execute_magic_invasion_tail_checkpoint(
         session.commit()
 
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    dialog_scene, _dialog_score, _dialog_frame = (yield from context.current_scene(
-        (COMMON_SHOP_DIALOG_SCENE,),
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene((COMMON_SHOP_DIALOG_SCENE,), wait=5.0, required=False)
+    (dialog_scene, _dialog_score, _dialog_frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if dialog_scene == COMMON_SHOP_DIALOG_SCENE:
         context.click_shape_center(COMMON_SHOP_DIALOG_SCENE, "关闭详情")
         yield from wait_magic_invasion_exchange_shop_ready(
@@ -473,10 +474,11 @@ def execute_magic_invasion_tail_checkpoint(
             wait=20.0,
             label=f"{label}：从本期兑换宝阁返回活动主页",
         )
-    current_scene, _score, _frame = (yield from context.current_scene(
-        (34, 66),
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene((34, 66), wait=5.0, required=False)
+    (current_scene, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if current_scene != 34:
         # Normalize every retry through the world.  Item-description overlays
         # can survive the shop's return action and corrupt #66 calendar OCR;
@@ -615,10 +617,11 @@ def execute_magic_invasion_tail_checkpoint(
         wait=30.0,
         label=f"{label}：等待结束态活动页",
     )
-    scene, _score, _frame = (yield from context.current_scene(
-        (509, 519, 520, 521, MAGIC_ENDED_HOME_SCENE),
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene((509, 519, 520, 521, MAGIC_ENDED_HOME_SCENE), wait=5.0, required=False)
+    (scene, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if scene != MAGIC_SHOP_SCENE:
         if scene not in {509, 520, 521, MAGIC_ENDED_HOME_SCENE}:
             raise RuntimeError(f"{label}：活动页场景无法对齐：{scene}")
@@ -749,10 +752,11 @@ def execute_magic_invasion_tail_checkpoint(
         wait=20.0,
         label=f"{label}：离开兑换宝阁",
     )
-    landed, _score, _frame = (yield from context.current_scene(
-        (34, 509, MAGIC_ENDED_HOME_SCENE),
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene((34, 509, MAGIC_ENDED_HOME_SCENE), wait=5.0, required=False)
+    (landed, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if landed != 34:
         yield from context.go_scene(34)
     return {

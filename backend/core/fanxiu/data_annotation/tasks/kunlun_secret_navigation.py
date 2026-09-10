@@ -52,8 +52,10 @@ def _page_from_observation(
 
 
 def read_kunlun_page(context: Any, *, update: bool = True) -> KunlunPageResult | None:
-    scene_id, score, frame = yield from context.current_scene(
-        list(KUNLUN_KNOWN_SCENE_IDS), update=bool(update)
+    _wait_scene_match = yield from context.wait_scene(list(KUNLUN_KNOWN_SCENE_IDS), wait=5.0, required=False)
+    (scene_id, score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     return _page_from_observation(scene_id, float(score or 0), context.ocr_text(frame))
 
@@ -92,8 +94,10 @@ def enter_kunlun(
 
     deadline = time.monotonic() + max(0.5, float(availability_timeout_seconds))
     while True:
-        scene_id, score, frame = yield from context.current_scene(
-            [int(source_scene_id)], update=True, label="昆仑秘藏：识别活动入口"
+        _wait_scene_match = yield from context.wait_scene([int(source_scene_id)], label='昆仑秘藏：识别活动入口', wait=5.0, required=False)
+        (scene_id, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(scene_id or 0) != int(source_scene_id) or float(score or 0) < 90.0:
             raise RuntimeError(
@@ -178,8 +182,10 @@ def leave_kunlun(
     context.click_shape(KUNLUN_MAIN_SCENE_ID, "返回", frame_data_url=frame)
     deadline = time.monotonic() + max(0.5, float(timeout_seconds))
     while True:
-        scene_id, score, _ = yield from context.current_scene(
-            [34, KUNLUN_MAIN_SCENE_ID], update=True, label="昆仑秘藏：等待返回世界"
+        _wait_scene_match = yield from context.wait_scene([34, KUNLUN_MAIN_SCENE_ID], label='昆仑秘藏：等待返回世界', wait=5.0, required=False)
+        (scene_id, score, _) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(scene_id or 0) == 34 and float(score or 0) >= 90.0:
             return 34, float(score)

@@ -262,8 +262,10 @@ def _wait_scene(
     last_score = 0.0
     last_frame = ""
     while time.monotonic() < deadline:
-        last_scene, last_score, last_frame = yield from context.current_scene(
-            list(targets), update=True
+        _wait_scene_match = yield from context.wait_scene(list(targets), wait=5.0, required=False)
+        (last_scene, last_score, last_frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(last_scene or 0) in targets and float(last_score) >= 80.0:
             return int(last_scene), float(last_score), last_frame
@@ -282,14 +284,11 @@ def _enter_xutian_map(context: Any) -> Iterator[Any]:
         select_schedule_activity,
     )
 
-    current_scene, current_score, _frame = (yield from context.current_scene(
-        [
-            XUTIAN_TUTORIAL_SCENE_ID,
-            XUTIAN_SETTINGS_SCENE_ID,
-            XUTIAN_MAP_SCENE_ID,
-        ],
-        update=True,
-    ))
+    _wait_scene_match = yield from context.wait_scene([XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_SETTINGS_SCENE_ID, XUTIAN_MAP_SCENE_ID], wait=5.0, required=False)
+    (current_scene, current_score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if (
         int(current_scene or 0) == XUTIAN_TUTORIAL_SCENE_ID
         and float(current_score) >= 80.0
@@ -331,9 +330,11 @@ def _enter_xutian_map(context: Any) -> Iterator[Any]:
         # visible.  Let that delayed overlay settle before deciding the entry
         # is complete.
         yield from context.wait_action_settle(2.0)
-        scene, _score, frame = (yield from context.current_scene(
-            [XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID], update=True
-        ))
+        _wait_scene_match = yield from context.wait_scene([XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID], wait=5.0, required=False)
+        (scene, _score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
     if scene == XUTIAN_TUTORIAL_SCENE_ID:
         context.click_shape_center(XUTIAN_TUTORIAL_SCENE_ID, "点击空白关闭")
         yield from _wait_scene(context, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
@@ -565,9 +566,11 @@ def _configure_and_run_batch(
     allow_boost_items: bool = False,
     before_start: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Iterator[Any]:
-    scene, score, _frame = (yield from context.current_scene(
-        [XUTIAN_SETTINGS_SCENE_ID], update=True
-    ))
+    _wait_scene_match = yield from context.wait_scene([XUTIAN_SETTINGS_SCENE_ID], wait=5.0, required=False)
+    (scene, score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
         context.click_shape_center(XUTIAN_MAP_SCENE_ID, "自动挑战")
         yield from _wait_scene(context, (XUTIAN_SETTINGS_SCENE_ID,), timeout_seconds=15.0)
@@ -1141,9 +1144,11 @@ def execute_xutian_native_auto_job(
     # The Heaven Runtime model is lazily initialized by entering the activity.
     yield from _enter_xutian_map(context)
     if not isinstance(existing_mark, dict):
-        scene, score, _frame = (yield from context.current_scene(
-            [XUTIAN_SETTINGS_SCENE_ID], update=True
-        ))
+        _wait_scene_match = yield from context.wait_scene([XUTIAN_SETTINGS_SCENE_ID], wait=5.0, required=False)
+        (scene, score, _frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
             context.click_shape_center(XUTIAN_MAP_SCENE_ID, "自动挑战")
             yield from _wait_scene(context, (XUTIAN_SETTINGS_SCENE_ID,), timeout_seconds=15.0)
@@ -1285,7 +1290,11 @@ def execute_xutian_native_auto_job(
             elapsed_seconds=elapsed,
         )
     yield from context.go_scene(34)
-    scene, score, _frame = (yield from context.current_scene([34], update=True))
+    _wait_scene_match = yield from context.wait_scene([34], wait=5.0, required=False)
+    (scene, score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if int(scene or 0) != 34 or float(score) < 90.0:
         raise RuntimeError(
             f"虚天自动挑战收尾未可靠回到 #34：scene={scene}, score={score}"

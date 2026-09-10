@@ -21,7 +21,7 @@ def isolated_scheduler(monkeypatch):
     return state
 
 
-def test_persistent_scene_unknown_stops_dispatch_before_starting_codex(monkeypatch, tmp_path) -> None:
+def test_persistent_scene_unknown_dispatches_without_changing_ownership(monkeypatch, tmp_path) -> None:
     evidence_path = tmp_path / "unknown.png"
     evidence_path.write_bytes(b"png")
     evidence_path.with_suffix(".json").write_text("{}", encoding="utf-8")
@@ -63,14 +63,15 @@ def test_persistent_scene_unknown_stops_dispatch_before_starting_codex(monkeypat
     )
 
     assert result.dispatch_id == "dispatch-1"
-    assert events[0] == ("scheduler", False)
-    assert events[1][0] == "codex"
+    assert len(events) == 1
+    assert events[0][0] == "codex"
     request = captured["request"]
     assert "#301, #302" in request.evidence[1]
     assert "恢复凡修稳定工程运行" in request.objective
     assert "整个 CodeYun" in request.objective
     assert any("render_unknown_scene_overview" in item for item in request.suggested_focus)
     assert "不得恢复旧 Cell" in request.recovery_instructions
+    assert "take_ai_control(entry_id)" in request.recovery_instructions
     assert any("重新启用工程 Job 派发" in item for item in request.completion_criteria)
 
 
@@ -90,11 +91,11 @@ def test_persistent_scene_unknown_requires_a_real_evidence_file(tmp_path, isolat
         assert "原始帧" in str(exc)
     else:
         raise AssertionError("Codex escalation must not start without evidence")
-    assert isolated_scheduler["job_group_enabled"] is False
+    assert isolated_scheduler["job_group_enabled"] is True
 
 
 @pytest.mark.parametrize("engineering", [True, False])
-def test_known_scene_repairs_once_without_recursive_ai_dispatch(
+def test_known_scene_requests_preserve_ownership_until_ai_takes_control(
     monkeypatch, tmp_path, isolated_scheduler, engineering,
 ):
     isolated_scheduler["job_group_enabled"] = engineering
@@ -103,7 +104,7 @@ def test_known_scene_repairs_once_without_recursive_ai_dispatch(
     requests = []
 
     def dispatch(request):
-        assert not isolated_scheduler["job_group_enabled"]
+        assert isolated_scheduler["job_group_enabled"]
         requests.append(request)
         return object()
 
@@ -114,7 +115,8 @@ def test_known_scene_repairs_once_without_recursive_ai_dispatch(
             scene_id=63, expected_scene_ids=[34], evidence_frame_path=str(evidence),
             asset_tree_path=None, reason="#63 缺少返回世界的安全路径",
         )
-    assert len(requests) == int(engineering)
+    assert len(requests) == 2 * int(engineering)
+    assert isolated_scheduler["job_group_enabled"] is engineering
     if requests:
         request = requests[0]
         assert any("render_scene_comparison" in item for item in request.suggested_focus)
@@ -122,7 +124,7 @@ def test_known_scene_repairs_once_without_recursive_ai_dispatch(
         assert "attempt_id 已清空" in request.recovery_instructions
 
 
-def test_dispatch_failure_keeps_queue_stopped(monkeypatch, tmp_path, isolated_scheduler):
+def test_dispatch_failure_keeps_engineering_enabled(monkeypatch, tmp_path, isolated_scheduler):
     evidence = tmp_path / "scene63.png"
     evidence.write_bytes(b"png")
 
@@ -136,4 +138,4 @@ def test_dispatch_failure_keeps_queue_stopped(monkeypatch, tmp_path, isolated_sc
             scene_id=63, expected_scene_ids=[34], evidence_frame_path=str(evidence),
             asset_tree_path=None, reason="缺少返回",
         )
-    assert not isolated_scheduler["job_group_enabled"]
+    assert isolated_scheduler["job_group_enabled"]

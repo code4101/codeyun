@@ -113,8 +113,10 @@ def _wait_scene(context: Any, target: int, *, timeout: float = 20.0) -> tuple[in
 
 
 def _open_main(context: Any) -> None:
-    scene, score, frame = yield from context.current_scene(
-        list(HOLY_WOOD_KNOWN_SCENES), update=True, label="圣木祈愿：识别当前页面"
+    _wait_scene_match = yield from context.wait_scene(list(HOLY_WOOD_KNOWN_SCENES), label='圣木祈愿：识别当前页面', wait=5.0, required=False)
+    (scene, score, frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
     if int(scene or 0) == HOLY_WOOD_RESULT_SCENE_ID and float(score or 0) >= 80.0:
         yield from _close_result(context)
@@ -139,8 +141,10 @@ def _close_result(context: Any, *, timeout: float = 30.0, max_clicks: int = 4) -
     clicks = 0
     last_click_at = 0.0
     while time.monotonic() < deadline:
-        scene, score, frame = yield from context.current_scene(
-            [HOLY_WOOD_MAIN_SCENE_ID, HOLY_WOOD_RESULT_SCENE_ID], update=True
+        _wait_scene_match = yield from context.wait_scene([HOLY_WOOD_MAIN_SCENE_ID, HOLY_WOOD_RESULT_SCENE_ID], wait=5.0, required=False)
+        (scene, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if int(scene or 0) == HOLY_WOOD_MAIN_SCENE_ID and float(score or 0) >= 80.0:
             return
@@ -170,9 +174,10 @@ def _open_tab(context: Any, scene_id: int, shape_title: str) -> int:
     if scene_id == HOLY_WOOD_TASK_SCENE_ID:
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
-            landed, score, _frame = yield from context.current_scene(
-                [HOLY_WOOD_TASK_SCENE_ID, HOLY_WOOD_PRAYER_TASK_SCENE_ID],
-                update=True,
+            _wait_scene_match = yield from context.wait_scene([HOLY_WOOD_TASK_SCENE_ID, HOLY_WOOD_PRAYER_TASK_SCENE_ID], wait=5.0, required=False)
+            (landed, score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             if int(landed or 0) in {
                 HOLY_WOOD_TASK_SCENE_ID,
@@ -197,8 +202,10 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
     task_scene_id = yield from _open_tab(context, HOLY_WOOD_TASK_SCENE_ID, "活动任务")
     if all(str(row.get("name") or "").startswith("圣木祈愿") for row in snapshot.get("claimable") or []):
         for _attempt in range(3):
-            scene, score, frame = yield from context.current_scene(
-                [HOLY_WOOD_TASK_SCENE_ID, HOLY_WOOD_PRAYER_TASK_SCENE_ID], update=True
+            _wait_scene_match = yield from context.wait_scene([HOLY_WOOD_TASK_SCENE_ID, HOLY_WOOD_PRAYER_TASK_SCENE_ID], wait=5.0, required=False)
+            (scene, score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             if (
                 int(scene or 0) == HOLY_WOOD_PRAYER_TASK_SCENE_ID
@@ -222,7 +229,11 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
         if len(clicked) >= max(1, int(max_clicks)):
             raise RuntimeError("圣木祈愿任务领取超过安全上限")
         task_id = int(claimable[0].get("task_id") or 0)
-        scene, score, frame = yield from context.current_scene([task_scene_id], update=True)
+        _wait_scene_match = yield from context.wait_scene([task_scene_id], wait=5.0, required=False)
+        (scene, score, frame) = (
+            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        )
         if int(scene or 0) != task_scene_id or float(score or 0) < 80.0:
             raise RuntimeError("圣木祈愿任务点击前页面身份无效")
         context.click_shape(task_scene_id, "进度", frame_data_url=frame)

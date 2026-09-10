@@ -151,7 +151,11 @@ def execute_yunmeng_tail_job(
             raise RuntimeError(f"{label}：当前不在正式结束后的兑换保留阶段")
 
     context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-    initial_scene, _score, _frame = (yield from context.current_scene((565, 566), update=True))
+    _wait_scene_match = yield from context.wait_scene((565, 566), wait=5.0, required=False)
+    (initial_scene, _score, _frame) = (
+        (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+        if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
     if initial_scene == 565:
         context.click_shape_center(565, "云梦试剑")
         yield from context.wait_action_settle(1.0)
