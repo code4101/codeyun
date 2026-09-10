@@ -41,11 +41,11 @@ class ZhenxieTaskMixin:
         """Enter the event from any valid timed-event landing scene."""
 
         scene_id, _score, _frame = (yield from context.current_scene(
-            [63, 271, 272, 85, 86, 34, 66],
+            [63, 271, 272, 85, 34, 66],
             update=True,
         ))
         current = scene_id
-        if current not in {63, 271, 272, 85, 86}:
+        if current not in {63, 271, 272, 85}:
             yield from context.go_scene(34)
             yield from context.wait_click_then_scene(34, "日程", 66)
             yield from context.wait_action_settle(3.0)
@@ -123,7 +123,7 @@ class ZhenxieTaskMixin:
         if current == 272:
             yield from context.wait_click(272, "前往")
             return
-        if current in {85, 86}:
+        if current == 85:
             return
         raise RuntimeError(
             f"日常_镇邪：未能到达 #272/#85，当前 #{current if current is not None else 'unknown'}"
@@ -136,7 +136,6 @@ class ZhenxieTaskMixin:
         landing = yield from context.wait_scene(
             [34,
             85,
-            86,
             186,
             272,
             271],
@@ -152,13 +151,12 @@ class ZhenxieTaskMixin:
                 return 34
             if current == 271:
                 raise RuntimeError("日常_镇邪：仍停在 #271 报名页，未参加且该页没有安全离场动作")
-            if current in {85, 86, 186}:
+            if current in {85, 186}:
                 context.click_shape(current, "离开")
                 yield from context.wait_action_settle(2.0)
                 landed = yield from context.wait_scene(
                     [34,
                     85,
-                    86,
                     186],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：点击离开后重新识别多层落点",
@@ -176,7 +174,6 @@ class ZhenxieTaskMixin:
                 landed = yield from context.wait_scene(
                     [34,
                     85,
-                    86,
                     186],
                     wait=max(1.0, deadline - time.monotonic()),
                     label="日常_镇邪：重新识别多层离场上下文",

@@ -2638,15 +2638,6 @@ class DailyChallengeTaskMixin:
                 repeat_risk="重复挑战",
             )
             return "success"
-        if scene_id == 203:
-            self._record_daily_xianyuan_done(payload, message="挑战流程已完成")
-            yield from self._safe_daily_done_cleanup(
-                lambda: self._leave_daily_xianyuan_battle(ctx, stop_event, payload, ref_image),
-                label="日常_挑战仙缘",
-                action="离开挑战结果",
-                repeat_risk="重复挑战",
-            )
-            return "success"
         raise RuntimeError(f"日常_挑战仙缘：无法从 #{scene_id} 恢复挑战流程")
 
     def _daily_xianyuan_reference_image(self, ctx: dict[str, Any]) -> dict[str, Any]:
@@ -2892,23 +2883,7 @@ class DailyChallengeTaskMixin:
             lines = observer.ocr_fragments(frame)
             text = observer.ocr_text(frame)
             last_text = text or last_text
-            confirm_matches = self._daily_xianyuan_text_button_matches(
-                lines,
-                r"确认|确定",
-                left_ratio=0.25,
-                right_ratio=0.85,
-                top_ratio=0.45,
-                bottom_ratio=0.88,
-                width=width,
-                height=height,
-            )
-            if confirm_matches:
-                x, y, matched_text = confirm_matches[-1]
-                with self._lock:
-                    self._log_locked("action", f"日常_挑战仙缘：点击离开确认「{matched_text}」")
-                observer.click_frame_point(View(ref_image), x, y)
-                yield from observer.wait_action_settle(float(payload.get("xianyuan_click_settle_seconds") or 2.0))
-                continue
+            # 离开确认由 current_scene 的弹窗守护统一处理，业务不猜确认坐标。
             now = time.monotonic()
             if now - last_leave_click >= 3.0:
                 leave_matches = self._daily_xianyuan_text_button_matches(
@@ -2931,7 +2906,7 @@ class DailyChallengeTaskMixin:
                 yield from observer.wait_action_settle(float(payload.get("xianyuan_leave_settle_seconds") or 2.0))
                 last_leave_click = now
             if now >= deadline:
-                raise TimeoutError(f"日常_挑战仙缘：点击离开后等待确认框超时，OCR={last_text[:120]}")
+                raise TimeoutError(f"日常_挑战仙缘：点击离开后等待返回世界超时，OCR={last_text[:120]}")
 
     def _daily_xianyuan_dialogue_button_matches(
         self,

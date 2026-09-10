@@ -48,7 +48,7 @@ class MozuTaskMixin:
             raise RuntimeError("日常_魔祖：仅收尾要求已确认的魔祖战场")
         if scene_id != 34:
             yield from context.wait_click_then_scene(
-                scene_id, "离开", [186, 86, 339, 34], timeout=60.0, settle_seconds=1.5
+                scene_id, "离开", [186, 339, 34], timeout=60.0, settle_seconds=1.5
             )
             yield from context.go_scene(34)
         landed = yield from context.wait_scene([34], wait=15.0)

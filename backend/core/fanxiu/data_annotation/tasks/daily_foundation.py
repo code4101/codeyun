@@ -2553,8 +2553,11 @@ class DailyFoundationTaskMixin:
     def _daily_boss_reward_remaining_from_scene(self, ctx: dict[str, Any], image: dict[str, Any]) -> int | None:
         asset_tree_path = ctx.get("asset_tree_path")
         context = self._behavior_tree_context(ctx, asset_tree_path if isinstance(asset_tree_path, Path) else None)
-        text = context.ocr_text_in_shapes(View(image), ("剩余奖励次数",), padding=12)
-        return _parse_daily_boss_reward_remaining(text)
+        value, _text = context.ocr_value_in_shapes(
+            View(image), ("剩余奖励次数",), padding=12,
+            parse_value=_parse_daily_boss_reward_remaining,
+        )
+        return value
 
     def _daily_boss_runtime_snapshot(
         self,
@@ -4633,6 +4636,7 @@ class DailyFoundationTaskMixin:
                 319,
                 ("剩余次数",),
                 padding=int(payload.get("mojie_raid_remaining_padding") or 16),
+                max_attempts=1,
             )
             if not numbers and "确定" in str(text or ""):
                 self._log(
@@ -4646,20 +4650,11 @@ class DailyFoundationTaskMixin:
                         319,
                         ("剩余次数",),
                         padding=int(payload.get("mojie_raid_remaining_padding") or 16),
+                        max_attempts=1,
                     )
-            anchored_remaining = self._daily_mojie_raid_remaining_ocr_fallback(text)
-            if anchored_remaining is not None:
-                if numbers and int(numbers[0]) != anchored_remaining:
-                    self._log(
-                        "warning",
-                        "日常_奇袭魔界：#319 数字裁剪受邻近属性值污染，"
-                        f"通用数字={int(numbers[0])}，按「剩余进攻次数」语义锚定={anchored_remaining}",
-                    )
-                remaining = anchored_remaining
-            elif numbers:
-                remaining = int(numbers[0])
-            else:
-                raise RuntimeError(f"日常_奇袭魔界：未能读取 #319「剩余次数」，OCR={text[:120]}")
+            remaining, text = self.read_daily_mojie_raid_remaining(
+                context, payload, initial_ocr=(numbers, text),
+            )
             self._log("detail", f"日常_奇袭魔界：剩余次数 {remaining}，OCR={text[:80]}")
             if remaining <= 0:
                 # 单帧 OCR 的 0 会直接把整个作业推进到下周，代价过高。
@@ -4667,38 +4662,28 @@ class DailyFoundationTaskMixin:
                 confirm_seconds = float(payload.get("mojie_raid_zero_confirm_seconds") or 2.0)
                 self._log("warning", "日常_奇袭魔界：首次读到剩余次数 0，等待新帧复核后再结束本周")
                 yield from context.wait_action_settle(confirm_seconds)
-                confirm_numbers, confirm_text = context.ocr_numbers_in_shapes(
-                    319,
-                    ("剩余次数",),
-                    padding=int(payload.get("mojie_raid_remaining_padding") or 16),
+                context.clear_frame()
+                remaining, confirm_text = self.read_daily_mojie_raid_remaining(
+                    context, payload,
                 )
-                anchored_confirm = self._daily_mojie_raid_remaining_ocr_fallback(confirm_text)
-                if anchored_confirm is not None:
-                    remaining = anchored_confirm
-                elif confirm_numbers:
-                    remaining = int(confirm_numbers[0])
-                else:
-                    raise RuntimeError(
-                        f"日常_奇袭魔界：首次读到 0，但新帧未能复核 #319「剩余次数」，OCR={confirm_text[:120]}"
-                    )
                 self._log("detail", f"日常_奇袭魔界：剩余次数复核 {remaining}，OCR={confirm_text[:80]}")
             if remaining <= 0:
                 confirmed_at = _behavior_tree_executor._now()
                 if not self._mojie_raid_completion_window_open(confirmed_at):
                     next_time = self._schedule_mojie_raid_thursday_verification(
                         payload,
-                        reason="连续两帧确认剩余次数为 0，但尚未到周四，不能判定本周完成",
+                        reason="两次有效新帧确认剩余次数为 0，但尚未到周四，不能判定本周完成",
                         now=confirmed_at,
                     )
-                    message = f"连续两帧确认剩余次数为 0，但未到周四；复核时间 {next_time}"
+                    message = f"两次有效新帧确认剩余次数为 0，但未到周四；复核时间 {next_time}"
                 else:
                     next_time = self._schedule_next_mojie_raid_week(
                         payload,
-                        reason="周四起连续两帧确认剩余次数为 0，本周已完成",
+                        reason="周四起两次有效新帧确认剩余次数为 0，本周已完成",
                         confirmed_remaining=remaining,
                         confirmed_at=confirmed_at,
                     )
-                    message = f"周四起连续两帧确认剩余次数为 0，本周完成；下次 {next_time}"
+                    message = f"周四起两次有效新帧确认剩余次数为 0，本周完成；下次 {next_time}"
                 yield from context.wait_click(319, "返回")
                 return terminal(message)
             existing_team_match = shape_matches(319, "队伍") if callable(shape_matches) else None
@@ -5031,6 +5016,34 @@ class DailyFoundationTaskMixin:
                 )
 
         raise last_error or TimeoutError("日常_奇袭魔界：点击 #320 修罗据点后未进入 #321")
+
+    def read_daily_mojie_raid_remaining(
+        self, context: Any, payload: dict[str, Any] | None = None, *, initial_ocr=None,
+    ):
+        """次数语义锚定留在业务；无数值时换帧重试由通用 OCR 接口负责。"""
+        payload = payload or {}
+
+        def parse_remaining(text):
+            anchored = self._daily_mojie_raid_remaining_ocr_fallback(text)
+            values = parse_ocr_values(text)
+            if anchored is not None:
+                return anchored
+            return values[0] if values else None
+
+        if initial_ocr is not None:
+            _numbers, initial_text = initial_ocr
+            remaining = parse_remaining(initial_text)
+            if remaining is not None:
+                return remaining, initial_text
+        remaining, text = context.ocr_value_in_shapes(
+            319, ("剩余次数",), parse_value=parse_remaining,
+            padding=int(payload.get("mojie_raid_remaining_padding") or 16),
+            max_attempts=max(1, int(payload.get("mojie_raid_remaining_ocr_attempts") or 5)),
+            retry_interval=max(0.1, float(payload.get("mojie_raid_remaining_ocr_interval") or 2.0)),
+        )
+        if remaining is None:
+            raise RuntimeError(f"日常_奇袭魔界：多次 OCR 未能读取 #319「剩余次数」，最后 OCR={text[:120]}")
+        return remaining, text
 
     def _daily_mojie_raid_remaining_ocr_fallback(self, text: str) -> int | None:
         normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
@@ -5592,13 +5605,14 @@ class DailyFoundationTaskMixin:
         max_remaining = max(0, int(payload.get("max_runs") or 7))
         last_text = ""
         for attempt in range(max_attempts):
-            numbers, last_text = context.ocr_numbers_in_shapes(308, ("次数",), padding=padding)
+            numbers, last_text = context.ocr_numbers_in_shapes(308, ("次数",), padding=padding, max_attempts=1)
             if not numbers:
                 crop_numbers, crop_text = context.ocr_numbers_in_shapes(
                     308,
                     ("次数",),
                     padding=padding,
                     crop=True,
+                    max_attempts=1,
                 )
                 if crop_numbers:
                     numbers, last_text = crop_numbers, crop_text
@@ -6874,10 +6888,8 @@ class DailyFoundationTaskMixin:
             return None
 
     def _daily_lundao_remaining_attempts(self, context: Any) -> int:
-        text = context.ocr_text_in_shapes(296, ["次数"], padding=8)
-        normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
-        values = parse_ocr_values(normalized)
-        if values is None:
+        values, normalized = context.ocr_numbers_in_shapes(296, ["次数"], padding=8)
+        if not values:
             raise RuntimeError(f"论道_座位：未能从 #296[次数] 读取首个数值，OCR={normalized[:80]}")
         return values[0]
 
@@ -8245,7 +8257,7 @@ class DailyFoundationTaskMixin:
                         yield from self._leave_shared_scene_186_to_world(
                             context,
                             label="论道_座位",
-                            confirm_lundao_exit=True,
+                            include_lundao_scene=True,
                         )
                         self._log(
                             "success",
@@ -8270,7 +8282,7 @@ class DailyFoundationTaskMixin:
             return "success"
         if scene_id == 186:
             yield from self._leave_shared_scene_186_to_world(
-                context, label="论道_座位", confirm_lundao_exit=True,
+                context, label="论道_座位", include_lundao_scene=True,
             )
             self._log("success", "论道_座位：已从 #186 点击「离开」并退出回世界")
             return "success"
@@ -8379,7 +8391,7 @@ class DailyFoundationTaskMixin:
 
     def _leave_shared_scene_186_to_world(
         self, context: Any, *, label: str,
-        confirm_lundao_exit: bool = False, source_scene_id: int = 186,
+        include_lundao_scene: bool = False, source_scene_id: int = 186,
     ) -> str:
         """Leave a shared scene; Layer 0 owns every intermediate popup."""
 
@@ -8388,11 +8400,9 @@ class DailyFoundationTaskMixin:
         terminal_ids = {34, 69}
         overlay_ids = {386, 375, 295}
         source_ids = {186, 85}
-        if confirm_lundao_exit:
-            # This confirmation belongs to the authorized exit transaction.
-            # Keep it in Layer 0: generic overlay dismissal cancels the exit
-            # and sends us back to #53 indefinitely.
-            source_ids.update({53, 54})
+        if include_lundao_scene:
+            # 论道只声明可离开的业务页；#54 确认由弹窗守护处理。
+            source_ids.add(53)
         candidate_ids = sorted(terminal_ids | overlay_ids | source_ids)
         for attempt in range(1, 5):
             if scene_id in terminal_ids:
@@ -8413,7 +8423,7 @@ class DailyFoundationTaskMixin:
                     f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
                 )
 
-            exit_shape = "确认" if confirm_lundao_exit and scene_id == 54 else "离开"
+            exit_shape = "离开"
             self._log(
                 "action",
                 f"{label}：收尾识别 #{scene_id}，点击正式标注「{exit_shape}」（第 {attempt}/4 次）",
@@ -8422,7 +8432,7 @@ class DailyFoundationTaskMixin:
                 waited_scene = yield from context.wait_click_then_scene(
                     scene_id,
                     exit_shape,
-                    sorted(terminal_ids | overlay_ids | ({54} if confirm_lundao_exit else set())),
+                    sorted(terminal_ids | overlay_ids),
                     settle_seconds=1.5,
                     timeout=15.0,
                     max_clicks=1,
@@ -8452,7 +8462,7 @@ class DailyFoundationTaskMixin:
                 "禁止借用其它场景的「离开」坐标"
             )
         return (yield from self._leave_shared_scene_186_to_world(
-            context, label="论道_座位", confirm_lundao_exit=True,
+            context, label="论道_座位", include_lundao_scene=True,
             source_scene_id=53,
         ))
 
@@ -9410,16 +9420,9 @@ class DailyFoundationTaskMixin:
                 timeout=float(payload.get("lingmai_guiyuan_open_timeout_seconds") or 15.0),
                 label=f"{task_label}：打开 #589 归元凝神",
             )
-        frame = context.cur_frame(update=True)
-        resource_text = context.ocr_text_in_shapes(
-            589,
-            ("凝神资源",),
-            frame_data_url=frame,
-        )
-        values = parse_ocr_values(
-            resource_text,
-            expected_count=2,
-            allow_extra_numbers=False,
+        values, resource_text = context.ocr_value_in_shapes(
+            589, ("凝神资源",),
+            parse_value=lambda text: parse_ocr_values(text, expected_count=2),
         )
         if values is None:
             self._log(
@@ -9463,16 +9466,9 @@ class DailyFoundationTaskMixin:
             timeout=float(payload.get("lingmai_guiyuan_continue_timeout_seconds") or 15.0),
             label=f"{task_label}：关闭归元凝神成功层",
         )
-        after_frame = context.cur_frame(update=True)
-        after_text = context.ocr_text_in_shapes(
-            589,
-            ("凝神资源",),
-            frame_data_url=after_frame,
-        )
-        after_values = parse_ocr_values(
-            after_text,
-            expected_count=2,
-            allow_extra_numbers=False,
+        after_values, after_text = context.ocr_value_in_shapes(
+            589, ("凝神资源",),
+            parse_value=lambda text: parse_ocr_values(text, expected_count=2),
         )
         if after_values is None or after_values[0] != available - cost:
             raise RuntimeError(
@@ -9559,12 +9555,10 @@ class DailyFoundationTaskMixin:
             )
             yield from context.wait_action_settle(float(payload.get("lingmai_amount_settle_seconds") or 1.0))
             frame = context.cur_frame(update=True)
-            amount_text = context.ocr_text_in_shapes(
-                314,
-                ("消耗体力",),
-                frame_data_url=frame,
+            amount, amount_text = context.ocr_value_in_shapes(
+                314, ("消耗体力",),
+                parse_value=self._parse_daily_lingmai_clear_stamina,
             )
-            amount = self._parse_daily_lingmai_clear_stamina(amount_text)
             if amount is None:
                 raise RuntimeError(
                     f"{task_label}：#314 拖动后未可靠读取消耗体力「{amount_text}」，禁止确认"

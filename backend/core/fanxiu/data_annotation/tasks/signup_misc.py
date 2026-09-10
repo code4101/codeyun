@@ -184,9 +184,14 @@ class SignupMiscTaskMixin:
             1,
             min(3, int(payload.get("signup_bottom_confirmations", 2) or 2)),
         )
-        同项打开上限 = max(1, int(payload.get("signup_claim_open_attempts", 3) or 3))
-        上次报名项: tuple[int, str] | None = None
-        同项打开次数 = 0
+        # The initial top row can be hidden by the announcement overlay.
+        # Probe its annotated button once; scrolling later retains overlap.
+        已处理行: set[int] = set()
+        领取成功 = yield from self._日常报名点击并处理(
+            context, lambda: context.click_shape_center(23, "第1个报名"),
+        )
+        领取数量 += int(领取成功)
+        看到已报名项 = not 领取成功
         while True:
             ensure_daily_signup_traversal_budget(
                 deadline=deadline,
@@ -197,10 +202,12 @@ class SignupMiscTaskMixin:
                 max_scrolls=max_scrolls,
                 phase="扫描报名列",
             )
+            frame = context.cur_frame(update=True)
             已报名项 = context.ocr_row_clicks_in_shape(
                 23,
                 "报名列",
                 include=("已报名",),
+                frame_data_url=frame,
             )
             看到已报名项 = 看到已报名项 or bool(已报名项)
             matches = context.ocr_row_clicks_in_shape(
@@ -209,7 +216,9 @@ class SignupMiscTaskMixin:
                 include=("报名",),
                 exclude=("已报名",),
                 click_target="unoccluded_text",
+                frame_data_url=frame,
             )
+            matches = [m for m in matches if not any(abs(round(m[1]) - y) <= 24 for y in 已处理行)]
             if matches:
                 ensure_daily_signup_traversal_budget(
                     deadline=deadline,
@@ -222,34 +231,13 @@ class SignupMiscTaskMixin:
                     before_item=True,
                 )
                 x, y, text = matches[0]
-                当前报名项 = (round(y), str(text or "").strip())
-                if 当前报名项 == 上次报名项:
-                    同项打开次数 += 1
-                else:
-                    上次报名项 = 当前报名项
-                    同项打开次数 = 1
-                context.click_frame_point(23, x, y)
-                if not (yield from self._日常报名等待领取页(context)):
-                    if 同项打开次数 >= 同项打开上限:
-                        raise RuntimeError(
-                            f"日常_报名：同一报名项连续 {同项打开次数} 次未打开领取页 #24："
-                            f"{text!r}；可能存在公告遮挡或入口状态异常"
-                        )
-                    if hasattr(context, "wait_action_settle"):
-                        yield from context.wait_action_settle(1.0)
-                    continue
-                yield from context.wait_click(24, "领取")
-                领取数量 += 1
+                领取成功 = yield from self._日常报名点击并处理(
+                    context, lambda: context.click_frame_point(23, x, y),
+                )
+                已处理行.add(round(y))
+                领取数量 += int(领取成功)
+                看到已报名项 = 看到已报名项 or not 领取成功
                 无变化确认次数 = 0
-                上次报名项 = None
-                同项打开次数 = 0
-                领取后落点 = yield from self._日常报名等待领取后落点(context)
-                if 领取后落点 != "报名页":
-                    return {
-                        "claimed": 领取数量,
-                        "bottom_confirmed": False,
-                        "saw_signed_item": 看到已报名项,
-                    }
                 continue
 
             # Once a no-change probe is observed, allow the configured second
@@ -268,8 +256,9 @@ class SignupMiscTaskMixin:
                     before_scroll=True,
                 )
             滚动次数 += 1
-            滚动有变化 = yield from context.scroll_shape_content(23, "报名列")
+            滚动有变化 = yield from context.scroll_shape_content(23, "报名列", ratio=0.7)
             if 滚动有变化:
+                已处理行.clear()
                 无变化确认次数 = 0
                 continue
             无变化确认次数 += 1
@@ -281,12 +270,29 @@ class SignupMiscTaskMixin:
             "saw_signed_item": 看到已报名项,
         }
 
-    def _日常报名等待领取页(self, context: Any) -> bool:
-        try:
-            yield from context.wait_scene([24])
+    def _日常报名点击并处理(self, context: Any, click: Any) -> bool:
+        """A signed row toggles details; an unsigned row opens reward #24.
+
+        Wait the full five-second window before treating #23 as the detail
+        branch. Reuse the exact click to dismiss it, never retry opening #24.
+        """
+        click()
+        match = yield from context.wait_scene([24], wait=5)
+        scene_id = int(match.scene_id)
+        if scene_id == 24:
+            yield from context.wait_click(24, "领取")
+            landing = yield from self._日常报名等待领取后落点(context)
+            if landing != "报名页":
+                raise RuntimeError(f"日常_报名：领取后落点为{landing}，未返回报名页")
             return True
-        except TimeoutError:
-            return False
+        if scene_id != 23:
+            raise RuntimeError(f"日常_报名：点击报名后意外到达 #{scene_id}")
+        click()
+        yield from context.wait_action_settle(0.8)
+        match = yield from context.wait_scene([23], wait=5)
+        if int(match.scene_id) != 23:
+            raise RuntimeError("日常_报名：收起活动详情后未恢复 #23")
+        return False
 
     def _日常报名等待领取后落点(self, context: Any) -> str:
         return (

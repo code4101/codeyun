@@ -25,6 +25,37 @@ def next_daily_xuanhuang_time(now: datetime | None = None) -> str:
     ).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def leave_xuanhuang(context: Any, *, view_timeout: float = 60.0):
+    """执行已获准的玄荒退出；离开确认统一由弹窗守护处理。
+
+    点击离开后只等待最终落点，不把弹窗出现前短暂的 #85 当作下一步。
+    未到最终落点就停止；本函数不决定何时结束战斗。
+    """
+    timeout = max(30.0, float(view_timeout))
+    landing = yield from context.wait_scene(
+        [420, 395, 85, 34, 55], wait=timeout, label="日常_玄荒：识别退出起点",
+    )
+    if landing.id in (420, 85):
+        yield from context.wait_click(landing.id, "离开", timeout=timeout)
+    elif landing.id == 395:
+        # #395 复用现有 #420 的同位置离开标注。
+        context.click_shape_center(420, "离开")
+    elif landing.id not in (34, 55):
+        raise RuntimeError(f"日常_玄荒：退出起点 #{landing.id} 不支持，停止")
+    landing = yield from context.wait_scene(
+        [34, 55], wait=timeout,
+        label="日常_玄荒：等待最终退出落点（离开确认由弹窗守护处理）",
+    )
+    if landing.id == 55:
+        yield from context.go_scene(34)
+        landing = yield from context.wait_scene(
+            [34], wait=timeout, label="日常_玄荒：验证返回世界 #34",
+        )
+    if landing.id != 34:
+        raise RuntimeError(f"日常_玄荒：退出未到世界 #34，实际 #{landing.id}，停止")
+    return landing
+
+
 class DailyXuanhuangTaskMixin:
     def _daily_xuanhuang_runtime_snapshot(
         self,
@@ -266,50 +297,7 @@ class DailyXuanhuangTaskMixin:
         *,
         view_timeout: float,
     ):
-        yield from context.wait_click(
-            420,
-            "离开",
-            timeout=view_timeout,
-        )
-        landing = yield from context.wait_scene(
-            [34,
-            395,
-            85],
-            wait=max(30.0, view_timeout),
-            label="日常_玄荒：离开战斗后等待世界 #34、副本 #395 或区域内页 #85",
-        )
-        if landing.id == 85:
-            # Real #420 departure can land on the formally recognized
-            # generic region interior. Use its own annotated Leave control;
-            # do not wait for #34/#395 until the already-known #85 is gone.
-            yield from context.wait_click(
-                85,
-                "离开",
-                timeout=view_timeout,
-            )
-            region_landing = yield from context.wait_scene(
-                [34,
-                55],
-                wait=max(30.0, view_timeout),
-                label="日常_玄荒：#85 离开后等待世界或大地图（确认弹窗由 Layer 0 处理）",
-            )
-            if region_landing.id == 55:
-                yield from context.go_scene(34)
-        if landing.id == 395:
-            # #395 与 #420 使用同一右侧「离开」按钮位置。复用既有
-            # #420 shape 坐标，不修改资产树；该点击会进入通用 #86
-            # 确认弹窗，然后才能真正返回世界。
-            context.click_shape_center(420, "离开")
-            confirm = yield from context.wait_scene(
-                [34,
-                55],
-                wait=max(30.0, view_timeout),
-                label="日常_玄荒：副本 #395 离开后等待世界或大地图（确认弹窗由 Layer 0 处理）",
-            )
-            if confirm.id == 55:
-                # 实机存在直接落到 #55「大地图」的分支；通用场景图
-                # 已能从 #55 安全返回 #34，复用它而不新增/修改标注。
-                yield from context.go_scene(34)
+        return (yield from leave_xuanhuang(context, view_timeout=view_timeout))
 
     def _run_daily_xuanhuang_flow(
         self,

@@ -162,7 +162,7 @@ class DailyResourceTaskMixin:
             remaining = None
             last_text = ""
             for read_index in range(max_read):
-                numbers, last_text = context.ocr_numbers_in_shapes(252, ("次数",), padding=16)
+                numbers, last_text = context.ocr_numbers_in_shapes(252, ("次数",), padding=16, max_attempts=1)
                 self._log("detail", f"日常_供奉：读取次数 {index + 1}.{read_index + 1} OCR={last_text} nums={numbers}")
                 if numbers:
                     remaining = numbers[0]
@@ -279,7 +279,7 @@ class DailyResourceTaskMixin:
                         self._log("success", f"日常_供奉：升级后已离开 #254，到达 #{scene_id} {score:.0f}%，升级 {upgraded} 次")
                         return upgraded
                     raise
-                nums, last_text = context.ocr_numbers_in_shapes(254, ("数值",), padding=26)
+                nums, last_text = context.ocr_numbers_in_shapes(254, ("数值",), padding=26, max_attempts=1)
                 self._log("detail", f"日常_供奉：读取法则数值 {loop_index + 1}.{read_index + 1} OCR={last_text} nums={nums}")
                 parsed = self._parse_daily_gongfeng_law_progress(last_text)
                 if parsed is not None:
@@ -1641,13 +1641,12 @@ class DailyResourceTaskMixin:
 
             if scene_id in (294, 295):
                 if scene_id == 294 and not reward_score_checked:
-                    reward_text = context.ocr_text_in_shapes(
-                        294,
-                        ("个人积分",),
+                    reward_points, reward_text = context.ocr_value_in_shapes(
+                        294, ("个人积分",),
                         padding=int(payload.get("reward_score_ocr_padding") or 12),
                         crop=True,
+                        parse_value=lambda raw: self._parse_daily_xianmeng_personal_scores(raw) or None,
                     )
-                    reward_points = self._parse_daily_xianmeng_personal_scores(reward_text)
                     if reward_points:
                         reward_score_checked = True
                         average_score = sum(reward_points) / len(reward_points)
@@ -1897,6 +1896,7 @@ class DailyResourceTaskMixin:
                 ("次数",),
                 padding=int(payload.get("attack_count_ocr_padding") or 20),
                 crop=True,
+                max_attempts=1,
             )
             if numbers and int(numbers[0]) >= 0:
                 return int(numbers[0])
@@ -2242,7 +2242,7 @@ class DailyResourceTaskMixin:
         if isinstance(getattr(context, "ctx", None), dict):
             try:
                 scene_id = yield from self._wait_daily_xianmeng_exact_view(
-                    context, 293, 317, 294, 295, 471, 475, 476, 474, 473, 34, timeout=2.0
+                    context, 293, 317, 294, 295, 471, 475, 474, 473, 34, timeout=2.0
                 )
             except TimeoutError:
                 scene_id = 0
@@ -2274,11 +2274,7 @@ class DailyResourceTaskMixin:
         if scene_id == 475:
             context.click_shape_center(475, "离开")
             yield from context.wait_action_settle(0.8)
-            yield from self._wait_daily_xianmeng_exact_view(context, 476, timeout=8.0)
-            scene_id = 476
-        if scene_id == 476:
-            context.click_shape_center(476, "确认")
-            yield from context.wait_action_settle(1.0)
+            yield from self._wait_daily_xianmeng_exact_view(context, 34, timeout=30.0)
         yield from context.go_scene(34)
         yield from context.wait_scene([34], wait=30.0, label="日常_仙盟：确认返回世界 #34")
         return "success"

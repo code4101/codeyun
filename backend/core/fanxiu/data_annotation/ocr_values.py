@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 
 def parse_ocr_values(
@@ -64,3 +64,37 @@ def parse_ocr_fraction_numbers(
     if denominator <= 0:
         return None
     return numerator, denominator
+
+
+NumericValue = TypeVar("NumericValue")
+
+
+def retry_numeric_ocr(
+    read_text: Callable[[], str],
+    parse_value: Callable[[str], NumericValue | None],
+    *,
+    wait: Callable[[float], None],
+    max_attempts: int = 5,
+    retry_interval: float = 2.0,
+    on_retry: Callable[[int, str], None] | None = None,
+) -> tuple[NumericValue | None, str]:
+    """Bounded read-only retry policy; only None means unreadable, never zero.
+
+    The reader supplies a fresh observation for each attempt. Parsing, capture,
+    interruption and other exceptions propagate immediately. Exhaustion returns
+    None plus the last text so the existing business failure policy stays intact.
+    No gameplay action is replayed by this helper.
+    """
+    if max_attempts < 1 or retry_interval < 0:
+        raise ValueError("OCR retries require max_attempts >= 1 and retry_interval >= 0")
+    text = ""
+    for attempt in range(1, max_attempts + 1):
+        text = str(read_text() or "")
+        value = parse_value(text)
+        if value is not None:
+            return value, text
+        if attempt < max_attempts:
+            if on_retry is not None:
+                on_retry(attempt, text)
+            wait(retry_interval)
+    return None, text

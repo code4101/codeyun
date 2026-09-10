@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
 from pyxllib.autogui import Shape, View
 
 
-def test_unsolicited_nested_leave_popup_uses_own_cancel_not_parent_background() -> None:
+def test_leave_popup_always_uses_own_confirm_not_parent_background() -> None:
     runner = create_behavior_tree_executor()
     parent = {
         "type": "image",
@@ -59,11 +61,11 @@ def test_unsolicited_nested_leave_popup_uses_own_cancel_not_parent_background() 
             clicks.append((int(view.id), str(shape.title)))
 
     assert runner._handle_recognized_popup_candidate(Context(), candidate, score=99.0)
-    assert clicks == [(86, "取消")]
-    assert runner.status()["last_guard_event"]["action"] == "click:取消"
+    assert clicks == [(86, "确认")]
+    assert runner.status()["last_guard_event"]["action"] == "click:确认"
 
 
-def test_unsolicited_leave_popup_without_own_cancel_fails_closed() -> None:
+def test_leave_popup_without_own_confirm_fails_closed() -> None:
     runner = create_behavior_tree_executor()
     popup = {
         "type": "image",
@@ -73,7 +75,7 @@ def test_unsolicited_leave_popup_without_own_cancel_fails_closed() -> None:
         "height": 1600,
         "shapes": [
             {"title": "离开场景标识", "isSceneIdentity": True},
-            {"title": "确认", "x": 0.62, "y": 0.64, "w": 0.12, "h": 0.04},
+            {"title": "取消", "x": 0.62, "y": 0.64, "w": 0.12, "h": 0.04},
         ],
     }
     clicks: list[tuple[int, str]] = []
@@ -97,7 +99,7 @@ def test_unsolicited_leave_popup_without_own_cancel_fails_closed() -> None:
 
     assert runner._handle_recognized_popup_candidate(Context(), candidate, score=99.0)
     assert clicks == []
-    assert runner.status()["last_guard_event"]["action"] == "missing_cancel"
+    assert runner.status()["last_guard_event"]["action"] == "missing_confirm"
 
 
 def test_popup_group_node_can_bind_explicit_recovery_action() -> None:
@@ -399,10 +401,11 @@ def test_popup_asset_description_can_bind_missing_jump_annotation() -> None:
     assert clicks == [(278, "确认")]
 
 
-def test_delayed_leave_confirmation_retains_only_declared_recent_exit_intent():
+@pytest.mark.parametrize("scene_id", [54, 86, 203, 289, 476])
+def test_leave_confirmation_does_not_depend_on_click_age_or_declared_edge(scene_id):
     import time
     runner = create_behavior_tree_executor()
-    popup = View({"type": "image", "id": 86, "shapes": [{"title": "确认"}, {"title": "取消"}]})
+    popup = View({"type": "image", "id": scene_id, "shapes": [{"title": "确认"}, {"title": "取消"}]})
     clicks = []
     class Context:
         ctx = {"asset_tree": []}
@@ -415,8 +418,8 @@ def test_delayed_leave_confirmation_retains_only_declared_recent_exit_intent():
     assert clicks.pop() == "确认"
     context.last_clicked_at = time.monotonic() - 100
     runner._handle_auto_close_leave_confirm_popup(context, popup, {}, score=100)
-    assert clicks.pop() == "取消"
+    assert clicks.pop() == "确认"
     context.last_clicked_at = time.monotonic() - 45
     context.last_clicked_shape = Shape({"title": "离开", "sceneJumpTarget": "34"})
     runner._handle_auto_close_leave_confirm_popup(context, popup, {}, score=100)
-    assert clicks.pop() == "取消"
+    assert clicks.pop() == "确认"

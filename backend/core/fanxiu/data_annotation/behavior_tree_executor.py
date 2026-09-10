@@ -105,7 +105,7 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
     select_fuzzy_text_match,
     union_fragment_box,
 )
-from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
+from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values, retry_numeric_ocr
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 from backend.core.fanxiu.data_annotation.slider_control import (
     BalancedPointState,
@@ -746,9 +746,11 @@ class BehaviorTreeContext(AutomationContext):
                         "recognized_scene_id": 546,
                     },
                 )
-            # One graph result, one owner: explicit business candidates take
-            # precedence over the popup catalogue (S0 first, then P - S0).
-            if layer0_scene_id in business_id_set:
+            # One graph result, one owner. Leave confirmations have a single
+            # global owner even when old assets declare them as destinations.
+            # Other explicitly requested popup scenes remain business-owned.
+            if (layer0_scene_id in business_id_set
+                    and layer0_scene_id not in self.runner._LEAVE_CONFIRM_VIEW_IDS):
                 return commit(layer0_recognition, frame, scope="business")
             if layer0_scene_id in popup_by_scene_id:
                 if len(handled_popup_ids) >= 9:
@@ -3112,6 +3114,54 @@ class BehaviorTreeContext(AutomationContext):
         )
         return self.runner._ocr_text(lines)
 
+    def ocr_value_in_shapes(
+        self,
+        view: View | int | str,
+        shape_titles: Iterable[str],
+        *,
+        parse_value: Callable[[str], Any | None],
+        padding: int = 16,
+        frame_data_url: str | None = None,
+        crop: bool = False,
+        max_attempts: int = 5,
+        retry_interval: float = 2.0,
+    ) -> tuple[Any | None, str]:
+        """按业务格式读取数值，无法解析时只重取新帧，不重复业务动作。
+
+        parser 返回 None 才重试，0/小数/元组等有效结果立即返回。默认
+        五次、间隔两秒，可中断；耗尽保留 None 和末次原文，由业务决定失败。
+        指定 frame_data_url 是同帧证据解析，仅一次；已有轮询可设 max_attempts=1。
+        """
+        titles = tuple(shape_titles)
+        attempt = 0
+        stop = self.stop_event or threading.Event()
+
+        def read_text() -> str:
+            nonlocal attempt
+            self.runner._raise_if_stopped(stop)
+            if attempt and frame_data_url is None:
+                self.clear_frame()
+            attempt += 1
+            return self.ocr_text_in_shapes(
+                view, titles, padding=padding,
+                frame_data_url=frame_data_url, crop=crop,
+            ).translate(FULLWIDTH_DIGIT_TRANSLATION)
+
+        def wait(seconds: float) -> None:
+            stop.wait(seconds)
+            self.runner._raise_if_stopped(stop)
+
+        return retry_numeric_ocr(
+            read_text, parse_value, wait=wait,
+            max_attempts=1 if frame_data_url is not None else max_attempts,
+            retry_interval=retry_interval,
+            on_retry=lambda index, text: self.runner._log(
+                "warning",
+                f"数值 OCR {titles} 第 {index}/{max_attempts} 次未读到有效数值，"
+                f"{retry_interval:g} 秒后换帧重试；OCR={text[:120]}",
+            ),
+        )
+
     def ocr_numbers_in_shapes(
         self,
         view: View | int | str,
@@ -3120,17 +3170,25 @@ class BehaviorTreeContext(AutomationContext):
         padding: int = 16,
         frame_data_url: str | None = None,
         crop: bool = False,
+        max_attempts: int = 5,
+        retry_interval: float = 2.0,
+        expected_count: int | None = None,
+        allow_extra_numbers: bool = False,
     ) -> tuple[list[int], str]:
-        text = self.ocr_text_in_shapes(
-            view,
-            shape_titles,
-            padding=padding,
-            frame_data_url=frame_data_url,
-            crop=crop,
+        """读取整数组；实时 OCR 无有效数字时共用有界换帧重试。
+
+        expected_count 可约束单值或分子/分母；空结果保持原有 ([], text)
+        契约，已识别的 0 不会被当成空。固定帧和外层轮询不叠加重试。
+        """
+        values, text = self.ocr_value_in_shapes(
+            view, shape_titles, padding=padding, frame_data_url=frame_data_url,
+            crop=crop, max_attempts=max_attempts, retry_interval=retry_interval,
+            parse_value=lambda raw: parse_ocr_values(
+                raw, expected_count=expected_count,
+                allow_extra_numbers=allow_extra_numbers,
+            ),
         )
-        normalized = str(text or "").translate(FULLWIDTH_DIGIT_TRANSLATION)
-        values = parse_ocr_values(normalized) or ()
-        return list(values), normalized
+        return list(values or ()), text
 
     def set_slider_value(
         self,
@@ -9087,10 +9145,7 @@ class BehaviorTreeExecutor(
     ) -> str:
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         scene_id = yield from context.wait_scene(
-            [34,
-            289,
-            86,
-            219],
+            [34, 219],
             wait=float(payload.get("after_complete_timeout") or 8.0),
             label="日常_双修：等待修炼完成后的正式落点",
         )
@@ -9098,9 +9153,7 @@ class BehaviorTreeExecutor(
             scene_id = scene_id.id
         if scene_id == 34:
             return self._complete_daily_shuangxiu_after_continue(current_scene=34)
-        if scene_id in {289, 86}:
-            yield from self._confirm_daily_shuangxiu_leave(ctx, stop_event, payload, scene_id=int(scene_id))
-        elif scene_id == 219:
+        if scene_id == 219:
             yield from self._leave_daily_shuangxiu_training_ready(ctx, stop_event, payload)
         else:
             raise RuntimeError(f"日常_双修：修炼完成后的落点 #{scene_id} 尚未实现")
@@ -9145,52 +9198,12 @@ class BehaviorTreeExecutor(
             yield from self._wait_action_settle(ctx, stop_event, seconds=settle_seconds)
         context = self._behavior_tree_context(ctx, stop_event=stop_event)
         scene_id = yield from context.wait_scene(
-            [289,
-            86,
-            34],
+            [34],
             wait=float(payload.get("leave_result_timeout") or 8.0),
-            label="日常_双修：等待离开确认或世界",
+            label="日常_双修：等待守护处理离开确认后返回世界",
         )
-        if isinstance(scene_id, View):
-            scene_id = scene_id.id
-        if scene_id in {289, 86}:
-            yield from self._confirm_daily_shuangxiu_leave(ctx, stop_event, payload, scene_id=int(scene_id))
-
-    def _confirm_daily_shuangxiu_leave(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        payload: dict[str, Any],
-        *,
-        scene_id: int | None = None,
-    ):
-        if scene_id not in {289, 86}:
-            raise RuntimeError("日常_双修：未识别到正式离开确认场景 #289/#86，禁止借用确认坐标")
-        confirm_id = int(scene_id)
-        confirm_image = ctx.get("images", {}).get(confirm_id)
-        if not isinstance(confirm_image, dict):
-            raise RuntimeError(f"日常_双修：缺少 #{confirm_id}「离开确认」标注，无法确认离开")
-        confirm_shape = self._find_shape(confirm_image, "确认", "确定", "离开")
-        if confirm_shape is None:
-            raise RuntimeError(f"日常_双修：#{confirm_id} 缺少「离开/确认」按钮标注，无法确认离开")
-        with self._lock:
-            self._set_status_locked(
-                "running",
-                "日常_双修：确认离开场景",
-                phase="daily_shuangxiu_confirm_leave",
-                current_scene=confirm_id,
-            )
-            self._log_locked("action", f"日常_双修：点击 #{confirm_id}「{confirm_shape.get('title') or '确认'}」离开场景")
-        box = self._box(confirm_shape, confirm_image)
-        self._click_frame_point(
-            ctx,
-            confirm_image,
-            float(box.get("x") or 0) + float(box.get("w") or 0) / 2,
-            float(box.get("y") or 0) + float(box.get("h") or 0) / 2,
-        )
-        settle_seconds = float(payload.get("leave_confirm_settle_seconds") or 1.0)
-        if settle_seconds > 0:
-            yield from self._wait_action_settle(ctx, stop_event, seconds=settle_seconds)
+        if scene_id.id != 34:
+            raise RuntimeError(f"日常_双修：离开后未到世界，实际 #{scene_id.id}")
 
     def _complete_daily_shuangxiu_after_continue(self, *, current_scene: int | None) -> str:
         with self._lock:
@@ -9406,7 +9419,7 @@ class BehaviorTreeExecutor(
         yield from self._return_xianfu_pages_to_world(
             context,
             task_label="仙府_领悟绝技",
-            current_candidates=(177, 176, 172, 171, 86, 34),
+            current_candidates=(177, 176, 172, 171, 34),
         )
         return "success"
 
@@ -11173,6 +11186,8 @@ class BehaviorTreeExecutor(
 
     def _add_dynamic_confirm_scene_edges(self, edges: dict[int, list[dict[str, Any]]]) -> None:
         for source_id, source_edges in list(edges.items()):
+            if source_id in self._LEAVE_CONFIRM_VIEW_IDS:
+                continue  # 离开确认仅由弹窗守护处理，不派生第二个确认动作。
             image = next(
                 (edge.get("image") for edge in source_edges if isinstance(edge.get("image"), dict)),
                 None,
@@ -11210,19 +11225,6 @@ class BehaviorTreeExecutor(
                 *source_edges,
             ]
 
-    def _scene_jump_confirmation_scene_ids(self, tree: list[dict[str, Any]]) -> list[int]:
-        tree = self._resolved_asset_tree(tree)
-        source_shape = {"title": "离开"}
-        candidates = SceneNavigator(tree).confirmation_scene_ids(
-            lambda image: self._scene_jump_intermediate_confirm_shape(image, source_shape) is not None
-        )
-        seen = {int(scene_id) for scene_id in candidates}
-        for image_id in self._resolve_scene_image_title_ids(tree, "离开场景"):
-            if int(image_id) not in seen:
-                candidates.append(int(image_id))
-                seen.add(int(image_id))
-        return candidates
-
     def _scene_route_candidate_ids(self, tree: list[dict[str, Any]], target_scene_id: int) -> list[int]:
         tree = self._resolved_asset_tree(tree)
         images = self._index_images(tree)
@@ -11239,7 +11241,7 @@ class BehaviorTreeExecutor(
 
         candidates = SceneNavigator(tree).route_candidate_ids(
             target_scene_id,
-            confirmation_scene_ids=self._scene_jump_confirmation_scene_ids(tree),
+            confirmation_scene_ids=(),
         )
         candidates = [int(scene_id) for scene_id in candidates if is_route_candidate(int(scene_id))]
         candidate_set = {int(scene_id) for scene_id in candidates}
@@ -13617,29 +13619,6 @@ class BehaviorTreeExecutor(
                 self._status.update({"current_scene": scene_id, "updated_at": time.time()})
         return scene_id, score, frame_data_url
 
-    def _scene_jump_intermediate_confirm_shape(
-        self,
-        current_image: dict[str, Any] | None,
-        source_shape: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        if current_image is None:
-            return None
-        scene_title = str(current_image.get("title") or "").strip()
-        filename = str(current_image.get("filename") or "").strip()
-        source_title = str(source_shape.get("title") or "").strip()
-        if source_title not in {"离开", "返回", "关闭", "退出"}:
-            return None
-        if filename == "0086.png" or "离开场景" in scene_title:
-            for shape in self._flatten_shapes(current_image.get("shapes")):
-                if str(shape.get("title") or "").strip() in {"确认", "确定"}:
-                    return shape
-        if "离开" not in scene_title and "退出" not in scene_title:
-            return None
-        for shape in self._flatten_shapes(current_image.get("shapes")):
-            if str(shape.get("title") or "").strip() in {"确认", "确定"}:
-                return shape
-        return None
-
     def _xianfu_home_text_is_scene(self, text: str) -> bool:
         normalized = _sanitize_ocr_text(text)
         world_markers = (
@@ -13752,7 +13731,6 @@ class BehaviorTreeExecutor(
         last_score = 0.0
         last_frame = ""
         history: list[str] = []
-        handled_intermediate_scene_ids: set[int] = set()
         left_source = False
         shape_jump_target = str(shape.get("sceneJumpTarget") or "").strip()
         dynamic_landing = bool(edge.get("_dynamic_confirm_edge")) or shape_jump_target == "-1" or shape_jump_target.startswith("-1(")
@@ -13812,17 +13790,6 @@ class BehaviorTreeExecutor(
                     update=True,
                     label=f"场景跳转：等待 #{source_scene_id} 动作落点",
                 )
-            if matched_expected is not None and matched_expected not in handled_intermediate_scene_ids:
-                current_image = (ctx.get("images") or {}).get(int(matched_expected))
-                confirm_shape = self._scene_jump_intermediate_confirm_shape(current_image, shape)
-                if confirm_shape is not None:
-                    handled_intermediate_scene_ids.add(int(matched_expected))
-                    confirm_title = str(confirm_shape.get("title") or "确认")
-                    self._log("action", f"场景跳转确认：#{matched_expected}，点击 {confirm_title}")
-                    context.click_shape(int(matched_expected), Shape(confirm_shape, parent_view=context.view(int(matched_expected))), frame_data_url=frame)
-                    left_source = True
-                    start = time.monotonic()
-                    continue
             if matched_expected == source_scene_id and source_scene_id not in expected_ids:
                 history.append(f"{elapsed:.1f}s #{matched_expected} {expected_score:.0f}% preferred-source ignored left={left_source}")
                 matched_expected = None

@@ -31,7 +31,7 @@ class FanxiuEmulatorRestartRequired(RuntimeError):
 
 class SceneInterruptionMixin:
     """Popup candidate indexing and actions used by unified scene recognition."""
-    _LEAVE_CONFIRM_VIEW_IDS = (289, 86)
+    _LEAVE_CONFIRM_VIEW_IDS = (54, 86, 203, 289, 476)
 
     def _handle_disconnect_reconnect_popup(self, _context: Any) -> bool:
         """Retired compatibility hook; disconnects require a formal popup scene."""
@@ -279,75 +279,28 @@ class SceneInterruptionMixin:
         event: dict[str, Any],
         *,
         score: float,
-        candidate: dict[str, Any] | None = None,
-        expected_scene_ids: set[int] | None = None,
     ) -> bool:
+        """Complete leaving; the business decides whether/when to click Leave.
+
+        Once this modal is recognized, confirm it without re-deciding exit
+        intent from a context-local click record or an elapsed-time heuristic.
+        """
         view_id = int(view.id or 0)
-        view_label = f"#{view_id}" if view_id else "#?"
-        pending_shape = getattr(context, "last_clicked_shape", None)
-        pending_age = time.monotonic() - float(
-            getattr(context, "last_clicked_at", 0.0) or 0.0
-        )
-        pending_title = str(
-            (pending_shape.title if isinstance(pending_shape, Shape) else "") or ""
-        ).strip()
-        tree = getattr(context, "ctx", {}).get("asset_tree", [])
-        declared_ids = (
-            self._scene_jump_target_ids(tree, pending_shape.raw)
-            if isinstance(pending_shape, Shape) else []
-        )
-        # A leave confirmation may be accepted only as the immediate declared
-        # response to an exit-like action just executed. Merely listing
-        # #86/#289 as a business candidate grants no ownership; unexpected
-        # instances still use the inherited parent-background dismissal below.
-        if (
-            (
-                # OCR and source-scene disambiguation can consume over 40s
-                # before the modal is recognized. Preserve the most recent
-                # explicitly annotated exit intent across that bounded wait;
-                # any intervening click replaces last_clicked_shape.
-                (pending_age <= 15.0 or (pending_age <= 90.0 and view_id in declared_ids))
-                and pending_title in {"离开", "返回", "退出", "关闭", "回到世界"}
-            )
-            or view_id in (expected_scene_ids or set())
-        ):
-            confirm_shape = view.get_shape("确认")
-            if confirm_shape is None:
-                self._record_popup_guard_missing(
-                    view_id or None,
-                    f"场景识别命中声明的离开确认：{view_label} {score:.0f}%，缺少「确认」标注",
-                    event,
-                    "missing_confirm",
-                )
-                return True
-            context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
-            self._record_popup_guard_click(
-                view_id or None,
-                f"场景识别处理：{view_label} 是「{pending_title}」声明落点，点击「确认」 {score:.0f}%",
-                event,
-                "确认",
-            )
-            return True
-        # An unsolicited leave confirmation must be dismissed inside its own
-        # modal.  The old inherited parent-background point (828, 328) sits on
-        # top of the underlying HUD's hide-interface control.  Some clients
-        # dismiss the modal and propagate that same tap, hiding every HUD
-        # control and leaving navigation in a persistent unknown scene.
-        cancel_shape = view.get_shape("取消")
-        if cancel_shape is None:
+        confirm_shape = view.get_shape("确认")
+        if confirm_shape is None:
             self._record_popup_guard_missing(
                 view_id or None,
-                f"场景识别命中未授权的离开确认：{view_label} {score:.0f}%，缺少自身「取消」标注",
+                f"场景识别命中离开确认：#{view_id} {score:.0f}%，缺少「确认」标注",
                 event,
-                "missing_cancel",
+                "missing_confirm",
             )
             return True
-        context.click_shape(view, cancel_shape, frame_data_url=context.cur_frame())
+        context.click_shape(view, confirm_shape, frame_data_url=context.cur_frame())
         self._record_popup_guard_click(
             view_id or None,
-            f"场景识别处理：{view_label} 未绑定当前离开动作，点击自身「取消」 {score:.0f}%",
+            f"场景识别处理：#{view_id} 离开确认，点击「确认」 {score:.0f}%",
             event,
-            "取消",
+            "确认",
         )
         return True
 
@@ -501,6 +454,13 @@ class SceneInterruptionMixin:
             "action": "",
         }
 
+        # Leave confirmation has one continuation, independent of the generic
+        # popup ownership heuristics below.
+        if view.id in self._LEAVE_CONFIRM_VIEW_IDS:
+            return self._handle_auto_close_leave_confirm_popup(
+                context, view, event, score=score,
+            )
+
         pending_shape = getattr(context, "last_clicked_shape", None)
         pending_age = time.monotonic() - float(
             getattr(context, "last_clicked_at", 0.0) or 0.0
@@ -559,15 +519,6 @@ class SceneInterruptionMixin:
                 event,
                 score=score,
                 allow_confirm_actions=allow_confirm_actions,
-            )
-        if view.id in self._LEAVE_CONFIRM_VIEW_IDS:
-            return self._handle_auto_close_leave_confirm_popup(
-                context,
-                view,
-                event,
-                score=score,
-                candidate=candidate,
-                expected_scene_ids=expected_scene_ids,
             )
         if view.id == 287:
             return self._handle_auto_close_popup_287(

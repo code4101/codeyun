@@ -324,8 +324,10 @@ class DaofaTaskMixin:
         return {"status": "success", "prompt_seen": prompt_seen, "result_text": result_text, "final_scene": 376}
 
     def _daofa_remaining_from_ocr(self, context: Any) -> int | None:
-        text = context.ocr_text_in_shapes(376, ("次数",), padding=12)
-        fraction = parse_ocr_values(text, expected_count=2, allow_extra_numbers=True)
+        fraction, text = context.ocr_value_in_shapes(
+            376, ("次数",), padding=12,
+            parse_value=lambda raw: parse_ocr_values(raw, expected_count=2, allow_extra_numbers=True),
+        )
         if fraction is None:
             fraction = parse_ocr_values(context.ocr_text(update=True), expected_count=2, allow_extra_numbers=True)
         return fraction[0] if fraction is not None else None
