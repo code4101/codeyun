@@ -781,6 +781,20 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         result = self.execute(self.context.click_shape_center_then_scene(
             observed.scene_id, '高级洗炼', assets.advanced_items_scene_id,
             timeout=25, label='洗灵：打开高级列表'))
+        if result.scene_id == observed.scene_id:
+            # 保存属性后的首次打开可能未生效。只有确认仍在原洗炼页才
+            # 重试一次不消耗资源的打开动作；若列表已打开则直接返回，
+            # 其它落点仍保留原错误，不重发任何道具使用或保存动作。
+            retry_scene = self.execute(self.context.wait_scene(candidates, wait=12,
+                label='洗灵：复核高级列表未打开'))
+            if retry_scene.scene_id == assets.advanced_items_scene_id:
+                return retry_scene
+            if retry_scene.scene_id == observed.scene_id:
+                result = self.execute(self.context.click_shape_center_then_scene(
+                    retry_scene.scene_id, '高级洗炼', assets.advanced_items_scene_id,
+                    timeout=25, label='洗灵：重试打开高级列表'))
+            else:
+                result = retry_scene
         if result.scene_id != assets.advanced_items_scene_id:
             from .spirit_artifact_advanced_scroll import AdvancedItemLocationError
             raise AdvancedItemLocationError(self.context, expected=assets.advanced_items_scene_id,

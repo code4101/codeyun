@@ -113,7 +113,7 @@ CLOCKIN_DATA_BASE_COLUMNS = [
     "clockin_id",
 ]
 CLOCKIN_DATA_COLUMNS = [*CLOCKIN_DATA_BASE_COLUMNS]
-IDENTITY_REPAIR_GRACE_DAYS = 3
+IDENTITY_REPAIR_GRACE_DAYS = 0
 
 COURSE_SHEET_SPECS = [
     CourseSheetSpec(VIDEO_CONFIG_SHEET_KEY, "视频配置", 30),
@@ -431,7 +431,7 @@ def repair_fanbei_registration_user_ids_after_grace_period(
     now: datetime | None = None,
     grace_days: int = IDENTITY_REPAIR_GRACE_DAYS,
 ) -> dict[str, Any]:
-    """Correct confidently wrong primary IDs after course data has had time to appear."""
+    """Check proven identity mismatches from opening day, including the first three days."""
     bundle = _load_fanbei_course_sheet_bundle(
         session,
         attendance=attendance,
@@ -483,7 +483,7 @@ def repair_fanbei_registration_user_ids_after_grace_period(
         _append_registration_detection_note(
             target_row,
             indexes,
-            f"开课满{int(grace_days)}天主动校正用户ID：{item['old_user_id']} → {item['new_user_id']}；"
+            f"全空检查主动校正用户ID：{item['old_user_id']} → {item['new_user_id']}；"
             f"课程数据：视频{item['video_count']}/打卡{item['clockin_count']}"
             f"{f'；依据：{evidence}' if evidence else ''}",
         )

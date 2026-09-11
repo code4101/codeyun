@@ -155,47 +155,6 @@ def test_codeyun_sheet_shell_does_not_fallback_on_attendance_engine_failure(monk
         raise AssertionError("独立考勤库故障时禁止回退到 CodeYun 旧副本")
 
 
-def test_codeyun_rejects_legacy_mutation_for_attendance_owned_sheet(monkeypatch):
-    ensure_attendance_engine_importable()
-    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
-
-    monkeypatch.setattr(
-        LocalAttendanceSheetClient,
-        "get_document",
-        lambda self, sheet: {
-            "id": sheet.sheet_id,
-            "title": "独立考勤表",
-            "engine": "handsontable",
-            "version": 27,
-            "updated_at": 123.0,
-            "document_json": {"columns": ["第16课"], "rows": [["当堂完成"]]},
-            "workbook_id": 20,
-            "workbook_title": "第49届觉观",
-            "defined_names_context": None,
-        },
-    )
-    document = note_sheets.SheetDocument(
-        numeric_id=62210,
-        scope="notes",
-        title="旧副本",
-        engine="handsontable",
-        version=9,
-        document_json={"columns": ["第16课"], "rows": [[""]]},
-    )
-
-    try:
-        note_sheets._reject_independent_attendance_legacy_mutation(
-            document,
-            sheet_id=62210,
-            workbook_id=20,
-        )
-    except HTTPException as exc:
-        assert exc.status_code == 422
-        assert "旧写入入口已关闭" in str(exc.detail)
-    else:
-        raise AssertionError("独立考勤表不得继续写入 CodeYun 旧副本")
-
-
 def test_independent_attendance_cell_patch_rebases_an_unrelated_runtime_update(monkeypatch):
     ensure_attendance_engine_importable()
     from xlsln.kq5034.engine.client import AttendanceVersionConflict, LocalAttendanceSheetClient

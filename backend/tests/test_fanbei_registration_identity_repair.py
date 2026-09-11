@@ -89,11 +89,13 @@ def test_plan_does_not_guess_between_multiple_high_confidence_ids(monkeypatch):
     assert _plan_fanbei_registration_user_id_repairs(rows, progress) == []
 
 
-def test_identity_repair_starts_only_after_three_days():
+def test_identity_repair_starts_on_opening_day():
     start = date(2026, 8, 9)
 
-    assert not _fanbei_identity_repair_eligible(start, date(2026, 8, 11))
-    assert _fanbei_identity_repair_eligible(start, date(2026, 8, 12))
+    assert not _fanbei_identity_repair_eligible(start, date(2026, 8, 8))
+    assert _fanbei_identity_repair_eligible(start, date(2026, 8, 9))
+    assert _fanbei_identity_repair_eligible(start, date(2026, 8, 10))
+    assert _fanbei_identity_repair_eligible(start, date(2026, 8, 11))
 
 
 def test_step2_maps_resolved_identity_back_to_attendance_user_id():

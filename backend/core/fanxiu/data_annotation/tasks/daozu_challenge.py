@@ -324,6 +324,18 @@ class DaozuChallengeTaskMixin:
                 )
                 return
             if scene_id == 251:
+                # 启动帧的解锁文案可能尚未就绪；返回路线页后仍须消费
+                # 当前资格终态，不能仅因发过点击就空等完整监控期限。
+                route_frame = context.cur_frame(update=True)
+                if self._daozu_realm_locked_score(context, route_frame) >= 55.0:
+                    self._clear_scheduler_task_payload_flag(task_id, DAOZU_CHAIN_START_MARK)
+                    payload.pop(DAOZU_CHAIN_START_MARK, None)
+                    yield from context.go_scene(34)
+                    self._finish_daozu_challenge(
+                        context, task_id=task_id, next_time=next_time,
+                        message="道祖_挑战结束：路线页确认境界未达到解锁要求，已返回世界",
+                    )
+                    return
                 if route_terminal_allowed:
                     route_state = self._read_daozu_challenge_state()
                     if (
@@ -342,6 +354,10 @@ class DaozuChallengeTaskMixin:
                 # The first fresh frame after the start click may still be the
                 # launch page while the native dungeon is loading. Keep
                 # observing; the persisted start mark prevents a second click.
+                if not route_terminal_allowed and time.monotonic() >= deadline - timeout + DAOZU_STARTUP_WAIT_SECONDS:
+                    raise RuntimeError(
+                        "道祖_挑战：启动后持续停留路线页且无已确认终态，停止空等；保留防重复标记"
+                    )
                 yield from context.wait_action_settle(poll_interval)
                 continue
             # The button and the countdown execute the same native transition.

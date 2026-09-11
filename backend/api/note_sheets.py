@@ -6202,10 +6202,13 @@ def _get_effective_defined_name_literal(
     name: str,
 ) -> str:
     target_key = _normalize_sheet_text(name).lower()
-    for item in reversed(_merge_effective_defined_names(
+    source = getattr(document, "_attendance_source", None)
+    context = source.get("defined_names_context") if source else None
+    names = context["effective"] if context else _merge_effective_defined_names(
         _get_workbook_defined_names(session, workbook),
         _get_sheet_defined_names(dict(document.document_json or {})),
-    )):
+    )
+    for item in reversed(names):
         if _normalize_sheet_text(item.get("name")).lower() == target_key:
             return _defined_name_literal_value(item.get("formula"))
     return ""
@@ -6745,6 +6748,7 @@ def _update_registration_order_match_document(
     session: Session | None = None,
     current_user: User | None = None,
     use_browser_fallback: bool = False,
+    lookup_provider: Any = None,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
@@ -6766,7 +6770,7 @@ def _update_registration_order_match_document(
     if not rows:
         return normalized, _build_registration_match_summary()
 
-    lookup_order = _load_attendance_order_lookup_provider()
+    lookup_order = lookup_provider or _load_attendance_order_lookup_provider()
     lookup_mode = _normalize_registration_order_lookup_mode()
 
     updated_count = 0
@@ -7072,6 +7076,7 @@ def _update_registration_user_match_document(
     course_name: str,
     shop_id: int,
     use_browser_fallback: bool,
+    lookup_provider: Any = None,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
@@ -7080,7 +7085,7 @@ def _update_registration_user_match_document(
     if not rows:
         return normalized, _build_registration_match_summary()
 
-    lookup_user = _load_attendance_user_lookup_provider()
+    lookup_user = lookup_provider or _load_attendance_user_lookup_provider()
 
     updated_count = 0
     skipped_count = 0
@@ -7536,6 +7541,60 @@ def _format_registration_detection_candidate_summary(
     if len(candidates) > limit:
         parts.append(f"另有{len(candidates) - limit}个")
     return "；".join(parts)
+
+
+def _save_registration_identity_detection(
+    *, session: Session, document: SheetDocument, attendance: SheetDocument,
+    next_document: dict[str, Any], current_user: User, workbook: WorkbookDocument,
+    workbook_id: int | None, source: dict[str, Any] | None, rebuild: bool,
+) -> dict[str, Any] | None:
+    """Save identity and its projection together regardless of storage owner."""
+    course_name = _get_registration_course_name(document, workbook)
+    if source is not None:
+        from xlsln.kq5034.engine.client import LocalAttendanceSheetClient, AttendanceVersionConflict
+        changes = [dict(sheet_id=_require_sheet_numeric_id(document),
+                        expected_version=source["version"], document_json=next_document)]
+        att_id = _require_sheet_numeric_id(attendance)
+        if rebuild:
+            att_source = _bind_independent_attendance_document(attendance, sheet_id=att_id, workbook_id=workbook_id)
+            if att_source is None:
+                raise HTTPException(status_code=409, detail="考勤表不属于相同运行时")
+            projected, _ = _sync_registration_rows_to_attendance_document(next_document, att_source["document_json"])
+            changes.append(dict(sheet_id=att_id, expected_version=att_source["version"], document_json=projected))
+        try:
+            results = LocalAttendanceSheetClient().replace_documents(
+                changes, rebuild_attendance_sheet_id=att_id if rebuild else None, course_name=course_name,
+            )
+        except AttendanceVersionConflict as exc:
+            raise HTTPException(status_code=409, detail="工作表数据已更新，请刷新后重试") from exc
+        _bind_independent_attendance_document(document, sheet_id=_require_sheet_numeric_id(document), workbook_id=workbook_id)
+        _broadcast_sheet_resource_update(document)
+        if rebuild:
+            _bind_independent_attendance_document(attendance, sheet_id=att_id, workbook_id=workbook_id)
+            _broadcast_sheet_resource_update(attendance)
+        return results[-1].get("rebuild")
+    changed = next_document != dict(document.document_json or {})
+    if changed:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+    summary = None
+    if rebuild:
+        summary = _rebuild_registration_attendance_after_user_id_detection(
+            session, attendance=attendance, course_name=course_name,
+        )
+        attendance.updated_by_user_id = current_user.id
+        attendance.updated_at = time.time()
+        session.add(attendance)
+    session.commit()
+    session.refresh(document)
+    if changed:
+        _broadcast_sheet_resource_update(document)
+    if rebuild:
+        session.refresh(attendance)
+    return summary
 
 
 def _rebuild_registration_attendance_after_user_id_detection(
@@ -9697,6 +9756,9 @@ def _serialize_note_sheet_action_detail(
     access: NoteSheetResourceAccess,
     current_user: User | None,
 ) -> NoteSheetDetailResponse:
+    _bind_independent_attendance_document(
+        document, sheet_id=_require_sheet_numeric_id(document),
+    )
     workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
     parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     return NoteSheetDetailResponse.model_validate(
@@ -9726,11 +9788,18 @@ def _run_registration_match_action(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
-        document,
-        sheet_id=sheet_id,
-        workbook_id=workbook_id,
+    from backend.core.attendance.registration_actions import run_independent_registration_action
+    result = run_independent_registration_action(
+        session=session, current_user=current_user, document=document, access=access,
+        workbook=workbook, workbook_id=workbook_id, action=action,
+        use_browser_fallback=use_browser_fallback,
     )
+    if result is not None:
+        return NoteSheetRegistrationMatchResponse(
+            sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
+            action=action, **{k: result[k] for k in
+                ("updated_count", "skipped_count", "error_count", "warning_count", "message")},
+        )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
 
@@ -10018,6 +10087,25 @@ def _save_registration_match_row(
     return True
 
 
+def _run_independent_registration_background(*, run_id: str, **kwargs: Any) -> bool:
+    """Keep the existing job protocol while dispatching storage on the server."""
+    from backend.core.attendance.registration_actions import run_independent_registration_action
+    result = run_independent_registration_action(
+        **kwargs, is_current=lambda: _is_registration_match_run_current(run_id),
+    )
+    if result is None:
+        return False
+    if result["cancelled"]:
+        _finish_registration_match_run(run_id, "cancelled", message="匹配任务已停止，未写入")
+    else:
+        _update_registration_match_run(
+            run_id, processed_count=1, total_count=1,
+            **{k: result[k] for k in ("updated_count", "skipped_count", "error_count", "warning_count")},
+        )
+        _finish_registration_match_run(run_id, "completed", message=result["message"])
+    return True
+
+
 def _run_registration_order_match_background(
     *,
     run_id: str,
@@ -10050,6 +10138,13 @@ def _run_registration_order_match_background(
                 required_role="editor",
                 workbook_id=workbook_id,
             )
+            if _run_independent_registration_background(
+                run_id=run_id, session=session, current_user=current_user,
+                document=document, access=access, workbook=workbook, workbook_id=workbook_id,
+                action=NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
+                use_browser_fallback=use_browser_fallback, sync_attendance=True,
+            ):
+                return
             if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
                 raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
 
@@ -10148,6 +10243,13 @@ def _run_registration_user_match_background(
                 required_role="editor",
                 workbook_id=workbook_id,
             )
+            if _run_independent_registration_background(
+                run_id=run_id, session=session, current_user=current_user,
+                document=document, access=access, workbook=workbook, workbook_id=workbook_id,
+                action=NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+                use_browser_fallback=use_browser_fallback, sync_attendance=False,
+            ):
+                return
             if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
                 raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
 
@@ -10339,6 +10441,13 @@ def _run_registration_composite_update_background(
                 required_role="editor",
                 workbook_id=workbook_id,
             )
+            if _run_independent_registration_background(
+                run_id=run_id, session=session, current_user=current_user,
+                document=document, access=access, workbook=workbook, workbook_id=workbook_id,
+                action=NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE,
+                use_browser_fallback=use_browser_fallback, sync_attendance=True,
+            ):
+                return
             if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
                 raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
 
@@ -10737,6 +10846,9 @@ def _run_clockin_link_detection_background(
             if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
                 raise HTTPException(status_code=403, detail="没有执行打卡链接检测的权限")
 
+            independent_source = _bind_independent_attendance_document(
+                document, sheet_id=sheet_id, workbook_id=workbook_id,
+            )
             current_document = _normalize_document_json(dict(document.document_json or {}))
             root_url = _get_effective_defined_name_literal(session, document, workbook, "打卡根目录")
             if not root_url:
@@ -10783,7 +10895,12 @@ def _run_clockin_link_detection_background(
                 targets,
                 detection_result,
             )
-            if next_document != current_document:
+            if independent_source is not None:
+                _replace_independent_attendance_summary_document(
+                    document, independent_source, next_document,
+                    sheet_id=sheet_id, workbook_id=workbook_id,
+                )
+            elif next_document != current_document:
                 document.document_json = next_document
                 document.version = max(int(document.version or 1), 1) + 1
                 document.updated_by_user_id = current_user.id
@@ -19172,6 +19289,7 @@ def _bind_independent_attendance_document(
     attributes.set_committed_value(document, "version", payload["version"])
     attributes.set_committed_value(document, "updated_at", payload["updated_at"])
     attributes.set_committed_value(document, "document_json", payload["document_json"])
+    document._attendance_source = payload
     return payload
 
 
@@ -19250,26 +19368,6 @@ def _build_independent_attendance_detail_payload(
     return result
 
 
-def _reject_independent_attendance_legacy_mutation(
-    document: SheetDocument,
-    *,
-    sheet_id: int,
-    workbook_id: int | None = None,
-) -> None:
-    if _bind_independent_attendance_document(
-        document,
-        sheet_id=sheet_id,
-        workbook_id=workbook_id,
-    ) is not None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "该表由独立考勤数据库管理；此 CodeYun 旧写入入口已关闭，"
-                "请使用考勤独立表格 API"
-            ),
-        )
-
-
 def _replace_independent_attendance_summary_document(
     document: SheetDocument,
     source: dict[str, Any],
@@ -19334,12 +19432,6 @@ def _patch_independent_attendance_document(
         AttendanceVersionConflict,
         LocalAttendanceSheetClient,
     )
-
-    if any(operation.op not in {"set-cell-value", "set-cell-meta"} for operation in payload.ops):
-        raise HTTPException(
-            status_code=409,
-            detail="独立考勤表结构由考勤系统管理；当前页面只能保存单元格内容和格式",
-        )
 
     reference = SimpleNamespace(sheet_id=sheet_id, workbook_id=workbook_id)
     client = LocalAttendanceSheetClient()
@@ -19783,13 +19875,23 @@ def update_note_sheet_attendance_course_data(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    independent_source = _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
     )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行表格动作的权限")
+
+    if independent_source is not None:
+        from xlsln.kq5034.engine.client import LocalAttendanceSheetClient
+        result = LocalAttendanceSheetClient().update_course_data(
+            sheet_id=sheet_id, course_type=payload.course_type,
+            course_name=payload.course_name, include_frozen=payload.include_frozen,
+        )
+        _bind_independent_attendance_document(document, sheet_id=sheet_id, workbook_id=workbook_id)
+        _broadcast_sheet_resource_update(document)
+        return result
 
     if payload.course_type == "nianzhu":
         from backend.core.attendance.nianzhu_course_sheets import (
@@ -20285,7 +20387,7 @@ def update_sheet_defined_names_endpoint(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    independent_source = _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -20297,7 +20399,12 @@ def update_sheet_defined_names_endpoint(
 
     current_document = dict(document.document_json or {})
     next_document = _replace_sheet_defined_names(current_document, payload.names)
-    if next_document != current_document:
+    if independent_source is not None:
+        _replace_independent_attendance_summary_document(
+            document, independent_source, next_document,
+            sheet_id=sheet_id, workbook_id=workbook_id,
+        )
+    elif next_document != current_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_by_user_id = current_user.id
@@ -20315,6 +20422,10 @@ def update_sheet_defined_names_endpoint(
         )
         _broadcast_sheet_resource_update(document)
 
+    if independent_source is not None:
+        refreshed = _bind_independent_attendance_document(document, sheet_id=sheet_id, workbook_id=workbook_id)
+        if refreshed.get("defined_names_context"):
+            return NoteSheetDefinedNamesResponse.model_validate(refreshed["defined_names_context"])
     workbook_names = _get_workbook_defined_names(session, workbook)
     worksheet_names = _get_sheet_defined_names(dict(document.document_json or {}))
     return NoteSheetDefinedNamesResponse(
@@ -20696,7 +20807,7 @@ def start_note_sheet_clockin_link_detection_run(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -20790,7 +20901,7 @@ def start_note_sheet_registration_match_run(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -20929,7 +21040,7 @@ def detect_note_sheet_registration_user_id(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    independent_source = _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -20961,6 +21072,17 @@ def detect_note_sheet_registration_user_id(
     )
     if attendance is None or (video_data is None and clockin_data is None):
         raise HTTPException(status_code=404, detail="当前工作簿缺少考勤表或课程数据表")
+
+    attendance_access = _resolve_sheet_resource_access(session, attendance, current_user, workbook=workbook)
+    if not attendance_access.capabilities.can_edit_data:
+        raise HTTPException(status_code=403, detail="没有编辑考勤表的权限")
+    for related in (attendance, video_data, clockin_data):
+        if related is not None:
+            bound = _bind_independent_attendance_document(
+                related, sheet_id=_require_sheet_numeric_id(related), workbook_id=workbook_id,
+            )
+            if independent_source is not None and bound is None:
+                raise HTTPException(status_code=409, detail="课程数据表不属于相同运行时")
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     next_document, _linked_index = _ensure_registration_linked_user_id_column(current_document)
@@ -21013,24 +21135,11 @@ def detect_note_sheet_registration_user_id(
         )
         rows[payload.row_index] = target_row
         next_document = _replace_document_data_rows(next_document, rows)
-        if next_document != current_document:
-            document.document_json = next_document
-            document.version = max(int(document.version or 1), 1) + 1
-            document.updated_by_user_id = current_user.id
-            document.updated_at = time.time()
-            session.add(document)
-        rebuild_summary = _rebuild_registration_attendance_after_user_id_detection(
-            session,
-            attendance=attendance,
-            course_name=_get_registration_course_name(document, workbook),
+        rebuild_summary = _save_registration_identity_detection(
+            session=session, document=document, attendance=attendance,
+            next_document=next_document, current_user=current_user, workbook=workbook,
+            workbook_id=workbook_id, source=independent_source, rebuild=True,
         )
-        attendance.updated_by_user_id = current_user.id
-        attendance.updated_at = time.time()
-        session.add(attendance)
-        session.commit()
-        session.refresh(document)
-        session.refresh(attendance)
-        _broadcast_sheet_resource_update(document)
         return NoteSheetRegistrationUserIdDetectionResponse(
             sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
             attendance_sheet=None,
@@ -21054,23 +21163,11 @@ def detect_note_sheet_registration_user_id(
         )
         rows[payload.row_index] = target_row
         next_document = _replace_document_data_rows(next_document, rows)
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-        rebuild_summary = _rebuild_registration_attendance_after_user_id_detection(
-            session,
-            attendance=attendance,
-            course_name=_get_registration_course_name(document, workbook),
+        rebuild_summary = _save_registration_identity_detection(
+            session=session, document=document, attendance=attendance,
+            next_document=next_document, current_user=current_user, workbook=workbook,
+            workbook_id=workbook_id, source=independent_source, rebuild=True,
         )
-        attendance.updated_by_user_id = current_user.id
-        attendance.updated_at = time.time()
-        session.add(attendance)
-        session.commit()
-        session.refresh(document)
-        session.refresh(attendance)
-        _broadcast_sheet_resource_update(document)
         return NoteSheetRegistrationUserIdDetectionResponse(
             sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
             attendance_sheet=None,
@@ -21151,30 +21248,11 @@ def detect_note_sheet_registration_user_id(
 
     rows[payload.row_index] = target_row
     next_document = _replace_document_data_rows(next_document, rows)
-    document_changed = next_document != current_document
-    if document_changed:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-
-    if applied:
-        rebuild_summary = _rebuild_registration_attendance_after_user_id_detection(
-            session,
-            attendance=attendance,
-            course_name=_get_registration_course_name(document, workbook),
-        )
-        attendance.updated_by_user_id = current_user.id
-        attendance.updated_at = time.time()
-        session.add(attendance)
-
-    session.commit()
-    session.refresh(document)
-    if document_changed:
-        _broadcast_sheet_resource_update(document)
-    if applied:
-        session.refresh(attendance)
+    rebuild_summary = _save_registration_identity_detection(
+        session=session, document=document, attendance=attendance,
+        next_document=next_document, current_user=current_user, workbook=workbook,
+        workbook_id=workbook_id, source=independent_source, rebuild=applied,
+    )
 
     attendance_sheet: NoteSheetDetailResponse | None = None
     if applied:
@@ -21223,7 +21301,7 @@ def sort_note_sheet(
         required_role="editor",
         workbook_id=workbook_id,
     )
-    _reject_independent_attendance_legacy_mutation(
+    independent_source = _bind_independent_attendance_document(
         document,
         sheet_id=sheet_id,
         workbook_id=workbook_id,
@@ -21243,7 +21321,12 @@ def sort_note_sheet(
         direction=payload.direction,
     )
 
-    if current_document != next_document:
+    if independent_source is not None:
+        _replace_independent_attendance_summary_document(
+            document, independent_source, next_document,
+            sheet_id=sheet_id, workbook_id=workbook_id,
+        )
+    elif current_document != next_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
         document.updated_by_user_id = current_user.id
@@ -22133,6 +22216,50 @@ def update_workbook(
     )
 
 
+def _independent_workbook_names(
+    *, session: Session, current_user: User | None, workbook_id: int,
+    payload: NoteSheetDefinedNamesUpdateRequest | None = None,
+) -> NoteSheetDefinedNamesResponse | None:
+    from types import SimpleNamespace
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient, AttendanceStorageError, AttendanceVersionConflict
+    client = LocalAttendanceSheetClient()
+    try:
+        book = client.get_workbook_document(workbook_id)
+    except AttendanceStorageError:
+        return None
+    if payload is not None:
+        for item in payload.worksheets:
+            _, access, _ = _get_note_sheet_or_404(
+                session, current_user, item.sheet_id, required_role="editor", workbook_id=workbook_id,
+            )
+            if not access.capabilities.can_edit_config:
+                raise HTTPException(status_code=403, detail="没有修改工作表名称配置的权限")
+        try:
+            book = client.update_workbook_defined_names(
+                workbook_id=workbook_id, names=[item.model_dump() for item in payload.names],
+                worksheets=[item.model_dump() for item in payload.worksheets],
+            )
+        except AttendanceVersionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AttendanceStorageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    worksheets = []
+    for item in book["sheets"]:
+        try:
+            _get_note_sheet_or_404(session, current_user, item["id"], required_role="viewer", workbook_id=workbook_id)
+        except HTTPException as exc:
+            if exc.status_code in {403, 404}:
+                continue
+            raise
+        detail = client.get_document(SimpleNamespace(sheet_id=item["id"], workbook_id=workbook_id))
+        worksheets.append(dict(sheet_id=item["id"], sheet_title=item["title"], sheet_version=detail["version"],
+                               names=detail["defined_names_context"]["worksheet"]))
+    return NoteSheetDefinedNamesResponse(workbook_id=workbook_id, workbook=book["defined_names"],
+                                         worksheets=worksheets, effective=book["defined_names"])
+
+
 @router.get("/workbooks/{workbook_id}/defined-names", response_model=NoteSheetDefinedNamesResponse)
 def get_workbook_defined_names_endpoint(
     workbook_id: int,
@@ -22140,6 +22267,9 @@ def get_workbook_defined_names_endpoint(
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="viewer")
+    independent = _independent_workbook_names(session=session, current_user=current_user, workbook_id=workbook_id)
+    if independent is not None:
+        return independent
     names = _get_workbook_defined_names(session, workbook)
     worksheets = _list_workbook_defined_name_worksheets(session, workbook, current_user)
     return NoteSheetDefinedNamesResponse(
@@ -22158,6 +22288,11 @@ def update_workbook_defined_names_endpoint(
     current_user: User = Depends(get_current_active_user),
 ):
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="editor")
+    independent = _independent_workbook_names(
+        session=session, current_user=current_user, workbook_id=workbook_id, payload=payload,
+    )
+    if independent is not None:
+        return independent
     names = _normalize_defined_names(payload.names, scope="workbook", strict=True)
     _set_workbook_defined_names(session, workbook, names)
     updated_documents: list[SheetDocument] = []
