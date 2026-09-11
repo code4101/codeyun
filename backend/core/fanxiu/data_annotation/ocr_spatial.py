@@ -263,6 +263,17 @@ def _split_stream_by_geometry(
     max_gap_height_ratio: float,
 ) -> list[list[dict[str, Any]]]:
     segments: list[list[dict[str, Any]]] = []
+    # Paddle can emit a vertical label as one parent line. Keep its token order,
+    # but measure adjacency along that line's dominant axis (e.g. 轮回域).
+    # Unlinked tokens still use horizontal rows; never infer a vertical line
+    # by joining independent labels merely because their x coordinates align.
+    vertical = False
+    if len(stream) > 1 and stream[0].get("parent_line_id") is not None:
+        first, last = _box(stream[0]), _box(stream[-1])
+        if first is not None and last is not None:
+            dx = (last[0] + last[2] - first[0] - first[2]) / 2
+            dy = (last[1] + last[3] - first[1] - first[3]) / 2
+            vertical = dy > abs(dx)
     for token in stream:
         token_box = _box(token)
         if token_box is None:
@@ -287,6 +298,16 @@ def _split_stream_by_geometry(
             token_box[0] >= previous_box[0]
             and gap <= max(previous_height, token_height) * max_gap_height_ratio
         )
+        if vertical:
+            previous_width = previous_box[2] - previous_box[0]
+            token_width = token_box[2] - token_box[0]
+            overlap = max(0.0, min(previous_box[2], token_box[2]) - max(previous_box[0], token_box[0]))
+            aligned = overlap / max(1.0, min(previous_width, token_width)) >= 0.5
+            adjacent = (
+                token_box[1] >= previous_box[1]
+                and token_box[1] - previous_box[3]
+                <= max(previous_width, token_width) * max_gap_height_ratio
+            )
         if not aligned or not adjacent:
             segments.append([token])
         else:
@@ -302,8 +323,8 @@ def segment_ocr_tokens(
     """Split OCR tokens into contiguous visual text groups.
 
     The result is geometric rather than linguistic: Paddle line identity keeps
-    rows separate, while horizontal gaps split nearby controls into reusable
-    token groups.
+    lines separate, while gaps along their horizontal or vertical reading axis
+    split nearby controls into reusable token groups.
     """
 
     ratio = max(0.0, float(max_gap_height_ratio))

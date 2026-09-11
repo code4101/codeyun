@@ -27,7 +27,6 @@ def run_spirit_artifact_prepared_round(
     from ...catalog.inventory_models import FanxiuSpiritArtifactHallSnapshot
     from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
     from ...instrumentation.spirit_artifact_store import load_spirit_artifact_runtime_snapshot
-    from ...instrumentation.spirit_artifact_memory import spirit_artifact_memory
     from .spirit_artifact_preparation import spirit_artifact_priority
 
     if max_consumptions <= 0 or stop_at <= time.time():
@@ -59,7 +58,11 @@ def run_spirit_artifact_prepared_round(
             evidence_dir=Path(evidence_dir) / f'cultivate-{ware_id}-{row.order}',
             stop_at=stop_at, max_consumptions=max_consumptions-consumed,
             target_ratio=target_ratio,
-            navigate=spirit_artifact_memory.snapshot(target) is None)
+            # Cached attributes describe the item, not the visible page. An
+            # engineering task may have navigated away while that cache lived.
+            # Every selected part enters through GUI identity verification;
+            # the continuous cultivation loop may then reuse its observations.
+            navigate=True)
         consumed += outcome['consumed']
         if outcome['status'] != 'complete':
             return dict(status=outcome['status'], stop_reason=outcome['stop_reason'],

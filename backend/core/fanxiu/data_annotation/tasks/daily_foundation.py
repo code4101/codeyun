@@ -9310,12 +9310,16 @@ class DailyFoundationTaskMixin:
 
         task_label = "灵脉_座位"
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-        _wait_scene_match = yield from context.wait_scene([382, 375, 374, 443, 318, 588, 306, 305, 288, 286, 285, 69, 34], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([380, 382, 375, 374, 443, 318, 588, 306, 305, 288, 286, 285, 69, 34], wait=5.0, required=False)
         (scene_id, score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         text = context.ocr_text(frame)
+        if scene_id == 380:
+            return (yield from self._recover_daily_lingmai_occupied_arrival(
+                ctx, stop_event, payload, context, task_label=task_label
+            ))
         if scene_id == 306:
             return (yield from self._finish_daily_lingmai_to_world(
                 context, payload, task_label=task_label, scene_id=scene_id, frame=frame
@@ -11816,18 +11820,47 @@ class DailyFoundationTaskMixin:
             )
 
         yield from context.wait_scene(
-            [288],
+            [288, 380],
             wait=float(payload.get("lingmai_after_confirm_timeout") or 90.0),
             label=f"{task_label}：点击 #287「确认」后等待真实 #288 占领页",
         )
-        _wait_scene_match = yield from context.wait_scene([288], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([288, 380], wait=5.0, required=False)
         (scene_after, score_after, frame_after) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         text_after = context.ocr_text(frame_after)
+        if scene_after == 380:
+            return (yield from self._recover_daily_lingmai_occupied_arrival(
+                ctx, stop_event, payload, context, task_label=task_label
+            ))
+        if scene_after != 288:
+            raise RuntimeError(f"{task_label}：到达场景为 #{scene_after}，未确认空位，停止占领")
         self._log("success", f"{task_label}：已到达 #288，当前 #{scene_after if scene_after is not None else 'unknown'} {score_after:.0f}%，点击「占领」")
         return (yield from self._continue_daily_lingmai_from_final_occupy(ctx, stop_event, payload, context, task_label=task_label))
+
+    def _recover_daily_lingmai_occupied_arrival(
+        self, ctx, stop_event, payload, context, *, task_label: str,
+    ):
+        """Arrival can show an occupied seat; never infer permission to kick.
+
+        Dismiss the dialogue and re-enter the normal fresh-state decision tree.
+        The resulting page may be #588 (existing seat), not the original list.
+        Bound repeated occupancy changes across recursive entry payload copies.
+        """
+        attempts = int(payload.get("__lingmai_occupied_arrivals") or 0)
+        if attempts >= 2:
+            raise RuntimeError(f"{task_label}：连续两次到达已占座位，停止并等待重新检查")
+        payload["__lingmai_occupied_arrivals"] = attempts + 1
+        self._log("warning", f"{task_label}：到达 #380 已占座位，关闭对白并重新确认座位状态")
+        yield from context.wait_click(380, "打扰了")
+        match = yield from context.wait_scene(
+            [588, 286, 285, 403, 34], wait=15.0, required=False,
+            label=f"{task_label}：关闭已占座位对白",
+        )
+        if match is None or match.scene_id == 380:
+            raise RuntimeError(f"{task_label}：未确认关闭 #380，停止重新选位")
+        return (yield from self._run_daily_lingmai_task(ctx, stop_event, payload))
 
     def _click_daily_lingmai_kick_target(
         self,

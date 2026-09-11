@@ -574,6 +574,7 @@ def default_kernel_scheduler_tasks(
         job("xianqiao-trial", "xianqiao_trial", "仙窍_试炼", description="每日", initial_times=("05:00",), payload={"target_daily_purchases": 0, "max_challenges": 10, "battle_timeout": 360, "max_execution_seconds": 3600}),
         job("legacy-daily-vip", "daily_vip", "日常_vip", description="每日", initial_times=("00:00",)),
         job("daily-signin", "daily_signin", "日常_签到", description="每日", initial_times=("00:00",)),
+        job("resource-xinghai", "resource_xinghai", "资源_星海", description="每日", initial_times=("00:00",)),
         job("daily-xuanhuang", "daily_xuanhuang", "日常_玄荒", description="每日", initial_times=("05:00",), payload={"recommend_timeout_seconds": 60, "battle_timeout_seconds": 120, "max_execution_seconds": 10800}),
         job("daily-redpacket", "daily_redpacket", "日常_红包", description="动态", initial_times=("05:00",), payload={"interval_seconds": 43200}),
         job("dongtian-seating", "dongtian_seating", "洞天_上座", description="每日", initial_next_time=next_dongtian_seating_at(current, include_current=True).strftime("%Y-%m-%d %H:%M:%S"), payload={"max_execution_seconds": 900}),

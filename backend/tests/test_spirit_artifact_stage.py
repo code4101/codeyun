@@ -108,3 +108,12 @@ def test_five_slot_breakthrough_requires_complete_four_a():
         effects=effects, a_codes=FOUR_A) == "突破"
     assert classify_spirit_artifact_stage(rank=6, base_id=14000406, is_break=True,
         effects=effects, a_codes=FOUR_A) == "待识别"
+
+
+def test_observed_grade_five_six_slot_breakthrough():
+    # 2026-09-11 5-4 突破后的真实六槽结构，四项 A 均为满值。
+    codes = ["ATTACK", "ALL_SKILL_REDUCE_FIX", "BLOCK_VALUE_GF", "BLOCK_VALUE_UNGF"]
+    effects = [{"code": code, "affix": "满"} for code in codes]
+    effects += [{"code": "MAXHP", "affix": ""}, {"code": "MAXMP", "affix": ""}]
+    assert classify_spirit_artifact_stage(rank=5, base_id=14002806, is_break=True,
+        effects=effects, a_codes=codes) == "突破"

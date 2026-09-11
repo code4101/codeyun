@@ -329,11 +329,22 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             )
 
     def _require_wash_scene(self, *, phase: str) -> int:
-        current = self.current_scene_id()
+        # A full discovery pass can itself exceed five seconds (live: 8.12s
+        # during a broadcast), exhausting current_scene_id's short probe before
+        # another frame is observed. Wait for this operation's admitted pages;
+        # transient unknown frames must not be reported as a known wrong page.
+        match = self.execute(self.context.wait_scene(
+            [*self.assets.wash_scene_ids, self.assets.effect_activation_scene_id],
+            wait=15.0, required=False, label=f'洗灵 {phase}：确认洗炼页',
+        ))
+        current = match.scene_id if match is not None else None
         if current == self.assets.effect_activation_scene_id:
             current = self.finish_effect_activation().scene_id
         if current not in self.assets.wash_scene_ids:
-            raise SpiritArtifactCleanseBlocked("当前不是洗炼页", phase=phase)
+            raise SpiritArtifactCleanseBlocked(
+                "等待15秒仍未确认洗炼页" if current is None else "当前不是洗炼页",
+                phase=phase, evidence={'current': current},
+            )
         return current
 
     def _transition(
@@ -414,6 +425,17 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             current = self.execute(self.context.wait_scene([assets.overview_scene_id], wait=8)).scene_id
             if current != assets.overview_scene_id:
                 raise SpiritArtifactCleanseBlocked('切换灵器未返回封面', phase='select')
+        elif current is not None and current not in assets.observation_scene_ids:
+            # Other jobs may finish on a known external page (live: #400).
+            # Its return path belongs to the shared scene graph; the local
+            # return_to_world contract only closes spirit-artifact surfaces.
+            self.execute(self.context.go_scene(assets.world_scene_id))
+            current = self.execute(self.context.wait_scene(
+                [assets.world_scene_id], wait=15,
+                label='洗灵：从外部业务回到世界',
+            )).scene_id
+            if current != assets.world_scene_id:
+                raise SpiritArtifactCleanseBlocked('外部业务导航未返回世界', phase='select')
         elif current not in (*ARTIFACT_TAB_SCENES, assets.world_scene_id, assets.overview_scene_id):
             self.return_to_world()
             current = assets.world_scene_id

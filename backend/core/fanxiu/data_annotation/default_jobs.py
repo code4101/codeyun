@@ -75,6 +75,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "weekly_shengzu",
     "daily_vip",
     "daily_signin",
+    "resource_xinghai",
     "daily_xuanhuang",
     "daily_dongtian",
     "daily_dongtian_clear",
@@ -1345,6 +1346,11 @@ def register_fanxiu_default_jobs() -> None:
         result = yield from runner._execute_daily_vip_task(ctx, stop_event, payload)
         yield from context.go_scene(34)
         return result
+
+    @register_fanxiu_data_annotation_task_cell("resource_xinghai", "资源_星海", scheduler_supported=True)
+    def _run_resource_xinghai(runner: Any, ctx: dict[str, Any], payload: dict[str, Any], stop_event: threading.Event) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.xinghai import execute_xinghai_task
+        return (yield from execute_xinghai_task(runner, ctx, payload, stop_event))
 
     @register_fanxiu_data_annotation_task_cell("daily_signin", "日常_签到", scheduler_supported=True)
     def _run_data_annotation_daily_signin_task_cell(

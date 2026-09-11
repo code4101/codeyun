@@ -185,8 +185,9 @@ def classify_spirit_artifact_stage(*, rank: int, base_id: int, is_break: bool | 
         # 同 code 又有满值时不凭低值重复项下结论。缺项仍不等于非满。
         if known_nonfull_a - full_codes:
             return "错升"
-        # 按红色阶数核对完整槽位：1–5 阶五槽，6 阶起六槽。
-        if not a_codes or len(effects) != (5 if rank < 6 else 6) or any(
+        # 低阶至少五槽，但突破后也可能已有六槽（实测 5-4 红色五阶）。
+        # 阶数只约束最少槽数，不能把额外的有效槽位判成观察不完整。
+        if not a_codes or not (5 if rank < 6 else 6) <= len(effects) <= 6 or any(
             (not effect.get("code") and effect.get("type") != 3) or "affix" not in effect for effect in effects
         ):
             return "待识别"

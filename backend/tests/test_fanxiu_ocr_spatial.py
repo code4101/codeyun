@@ -35,6 +35,21 @@ def test_spatial_ocr_selects_tokens_then_groups_text():
     assert [fragment["text"] for fragment in result["fragments"]] == ["是否创建队伍？"]
 
 
+@pytest.mark.parametrize("separate_line,far_gap,expected", [(False, False, 1), (True, False, 0), (False, True, 0)])
+def test_vertical_label_keeps_line_and_gap_boundaries(separate_line, far_gap, expected):
+    # Real #259 Paddle character boxes: horizontal-only segmentation lost all
+    # three-character vertical names despite successful OCR recognition.
+    tokens = [
+        {"text": text, "x": 715, "y": y, "w": 67, "h": height,
+         "parent_line_id": f"line-{i if separate_line else 0}", "order": i}
+        for i, (text, y, height) in enumerate([("轮", 783, 67), ("回", 838, 67), ("域", 1100 if far_gap else 905, 60)])
+    ]
+    matches = find_text_matches(tokens, "轮回域")
+    assert len(matches) == expected
+    if expected:
+        assert matches[0].box == {"x": 715.0, "y": 783.0, "w": 67.0, "h": 182.0}
+
+
 def test_spatial_ocr_uses_real_variable_width_character_boxes():
     tokens = [
         {"text": "甲", "x": 0, "y": 10, "w": 10, "h": 20},
