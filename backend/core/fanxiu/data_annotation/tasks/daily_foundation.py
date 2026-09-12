@@ -3372,6 +3372,14 @@ class DailyFoundationTaskMixin:
     ):
         if scene_id == 69:
             return 69
+        if scene_id == 661:
+            # #661 是带地标「进入」按钮的世界 HUD；进入地标不会回到 #34。
+            # 复用正式标注的日常入口，避免场景图沿历史误学边进入天道外墟。
+            yield from context.wait_click(661, "日常")
+            match = yield from context.wait_scene([69], wait=15.0)
+            if match.scene_id != 69:
+                raise RuntimeError(f"{label}：世界变体进入日常后落到 #{match.scene_id}")
+            return 69
         if scene_id is None:
             scene_id, _score, frame = context.recognize_scene_in_frame(frame_data_url=frame)
             text = context.ocr_text(frame)
@@ -6663,7 +6671,7 @@ class DailyFoundationTaskMixin:
             raise RuntimeError("缺少论道_座位资产树路径，无法执行作业")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
 
-        scene_match = yield from context.wait_scene([69, 34, 296, 297, 298, 371, 372, 375, 329, 301, 303, 304, 391, 52, 53], wait=5.0)
+        scene_match = yield from context.wait_scene([69, 34, 661, 296, 297, 298, 371, 372, 375, 329, 301, 303, 318, 304, 391, 52, 53], wait=5.0)
         (scene_id, _score, frame) = (scene_match.scene_id, scene_match.score, scene_match.frame_data_url)
         # Candidate-set scoring can project a real world frame onto #69 when
         # current-scene closure candidates are included.  Before treating that broad result as
@@ -6677,7 +6685,7 @@ class DailyFoundationTaskMixin:
             if anchored_scene_id in {69, 34}:
                 scene_id, _score = anchored_scene_id, anchored_score
         text = context.ocr_text(frame)
-        if scene_id in {34, 69}:
+        if scene_id in {34, 661, 69}:
             runtime_guard = yield from self._daily_lundao_world_runtime_guard(
                 context,
                 payload,
@@ -6694,7 +6702,12 @@ class DailyFoundationTaskMixin:
                 result,
                 reason=f"从当前中间场景 #{scene_id} 收口完成",
             )
-        if scene_id in {329, 301, 303, 52, 53}:
+        if scene_id == 318:
+            dialogue_text = re.sub(r'\s+', '', text)
+            if not (('听道' in dialogue_text or '闻道' in dialogue_text)
+                    and self._daily_lundao_runtime_confirms_seated()):
+                raise RuntimeError('论道_座位：共享对白 #318 缺少听道语义或实际入座证据，保留现场')
+        if scene_id in {329, 301, 303, 318, 52, 53}:
             result = yield from self._complete_daily_lundao_seat_and_leave(context, stop_event, scene_id)
             return self._finish_daily_lundao_current_scene_action(
                 payload,
@@ -7855,7 +7868,7 @@ class DailyFoundationTaskMixin:
             and int(execution_status.get("room_id") or 0) != LUNDAO_DALUO_ROOM_ID
         ):
             return None
-        if scene_id != 34:
+        if scene_id not in {34, 661}:
             yield from context.go_scene(34)
         now = _behavior_tree_executor._now()
         if int(current_left) <= 0:
@@ -8295,7 +8308,7 @@ class DailyFoundationTaskMixin:
     ) -> dict[str, Any]:
         """共用 #303 推进人物对话；实际胜利页和入座页决定流程，不猜对话阶段。"""
         terminal_scenes = (52, 53, 186, 329, 301)
-        candidates = [303, 375, 295, *terminal_scenes]
+        candidates = [303, 318, 375, 295, *terminal_scenes]
         scene_id = start_scene
         clicks = 0
         for _cycle in range(8):
@@ -8306,7 +8319,11 @@ class DailyFoundationTaskMixin:
             if scene_id in terminal_scenes:
                 return {"status": "dialogue_finished", "clicks": clicks,
                         "scene_id": int(scene_id), "score": 100.0}
-            if scene_id == 303:
+            if scene_id == 318:
+                yield from context.wait_click(318, '确认')
+                clicks += 1
+                yield from context.wait_action_settle(1.0)
+            elif scene_id == 303:
                 clicks += (yield from context.advance_dialogue(
                     303, "对话", label="论道_座位：推进人物对话",
                 ))
@@ -8460,7 +8477,7 @@ class DailyFoundationTaskMixin:
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
-        elif scene_id in {303, 375, 295}:
+        elif scene_id in {303, 318, 375, 295}:
             dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
                 context,
                 start_scene=scene_id,
@@ -8752,15 +8769,32 @@ class DailyFoundationTaskMixin:
         )
 
     def _leave_daily_lundao_seated_for_daily_entry(self, context: Any, scene_id: int | None):
+        from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
+
         if scene_id != 53:
             raise RuntimeError(
                 f"论道闻道中只接受正式场景 #53，当前 #{scene_id if scene_id is not None else 'unknown'}，"
                 "禁止借用其它场景的「离开」坐标"
             )
-        return (yield from self._leave_shared_scene_186_to_world(
-            context, label="论道_座位", include_lundao_scene=True,
-            source_scene_id=53,
-        ))
+        for attempt in range(3):
+            try:
+                return (yield from self._leave_shared_scene_186_to_world(
+                    context, label="论道_座位", include_lundao_scene=True,
+                    source_scene_id=53,
+                ))
+            except SceneClickMismatch:
+                # The server can confirm seated before the final character
+                # speech appears. The click guard prevents leaving through
+                # that speech; consume only a freshly identified dialogue.
+                match = yield from context.wait_scene([318, 303, 53], wait=5.0)
+                if match.scene_id not in {318, 303}:
+                    raise
+                result = yield from self._advance_daily_lundao_kick_dialogue(
+                    context, start_scene=match.scene_id,
+                )
+                if result['scene_id'] != 53:
+                    raise RuntimeError(f"论道_座位：延迟对白后未回到正式闻道页：#{result['scene_id']}")
+        raise RuntimeError('论道_座位：离场前连续出现延迟对白，保留现场')
 
     def _advance_daily_lundao_seat_confirmation(
         self,
@@ -8786,6 +8820,10 @@ class DailyFoundationTaskMixin:
                 # so an old #302 identity string must not become a new gate.
                 yield from context.wait_click(301, "入座")
                 yield from context.wait_action_settle(2.0)
+                # Preserve the actual confirmation before generic popup handling.
+                # A #47 dismissal can otherwise erase why a room switch failed.
+                confirmation_frame = context.cur_frame(update=True)
+                self._log("detail", "论道_座位：入座后确认文案：" + context.ocr_text(confirmation_frame))
                 # The declared #302 confirmation is consumed inside Layer 0
                 # on the next scene observation.
             scene_match = yield from context.wait_scene([303, 301, 329, 52, 53, 186, 237, 18, 14, 69, 34], wait=5.0)

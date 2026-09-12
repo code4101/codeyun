@@ -131,6 +131,37 @@ def test_schedule_selects_new_cross_magic_instance_after_server_instance() -> No
     assert selected.cross_count == 8
 
 
+def test_schedule_ignores_tomorrow_preview_until_its_start_date() -> None:
+    engine = _engine()
+    with Session(engine) as session:
+        current = _activity(
+            "xutian-palace", "gameplay_rank",
+            start_date="2026-09-10", end_date="2026-09-11",
+            close_date="2026-09-12",
+        )
+        upcoming = _activity(
+            "beast-abyss", "gameplay_rank",
+            start_date="2026-09-12", end_date="2026-09-13",
+            close_date="2026-09-14",
+        )
+        upcoming.prepare_at = "2026-09-11T05:00:00+08:00"
+        session.add(current)
+        session.add(upcoming)
+        session.commit()
+
+        today = load_fanxiu_schedule_ranking_snapshot(
+            session, business_date=date(2026, 9, 11),
+        )
+        tomorrow = load_fanxiu_schedule_ranking_snapshot(
+            session, business_date=date(2026, 9, 12),
+        )
+
+    assert today.gameplay_rank.activity_type == "xutian-palace"
+    assert today.gameplay_rank.snapshot.selected_activity.id == current.id
+    assert tomorrow.gameplay_rank.activity_type == "beast-abyss"
+    assert tomorrow.gameplay_rank.snapshot.selected_activity.id == upcoming.id
+
+
 def test_materializer_failure_keeps_persisted_beast_abyss_history_visible(monkeypatch) -> None:
     class UnavailableRuntimeAdapter:
         def collect_activity(self, session: Session, *, activity_id: str):

@@ -1165,8 +1165,8 @@ def register_fanxiu_default_jobs() -> None:
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         current_fact_scene_ids = (
-            34, 69, 296, 297, 298, 371, 372, 375, 295,
-            329, 301, 302, 303, 304, 391, 52, 53,
+            34, 661, 69, 296, 297, 298, 371, 372, 375, 295,
+            329, 301, 302, 303, 318, 304, 391, 52, 53,
         )
         # 弹窗确认后可能短暂出现地图过渡页。等待业务落点，不能依据
         # 单帧兜底结果启动回世界导航，否则随后出现的 #301 会被错误退出。
@@ -1180,7 +1180,9 @@ def register_fanxiu_default_jobs() -> None:
                 "已停止，未点击返回"
             )
         result = yield from runner._execute_daily_lundao_task(ctx, stop_event, payload)
-        yield from context.go_scene(34)
+        world = yield from context.wait_scene([34, 661], wait=5.0, required=False)
+        if world is None or world.scene_id not in {34, 661}:
+            yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(

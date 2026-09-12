@@ -483,6 +483,28 @@ def test_ordered_goods_keep_page_order_and_closing_goods_have_fixed_tail_order()
     assert tuned.priority_group_goods_ids[ExchangePriorityId.CLOSING_GOODS] == (4, 5)
 
 
+def test_name_repair_rebuilds_priority_without_changing_purchase_facts() -> None:
+    from backend.core.fanxiu.activity.exchange_event import update_exchange_shop_item_names
+
+    with _session() as session:
+        activity_id = upsert_exchange_activity_snapshot(session, {
+            "activity_type": "xutian-palace", "cross_count": 8,
+            "start_date": "2026-09-09", "end_date": "2026-09-11",
+            "expected_shop_item_count": 1,
+            "shop_items": [{"goods_id": 1, "item_id": 32010, "source_order": 1,
+                            "name": "32010", "token_cost": 400,
+                            "purchase_limit": 260, "purchased_count": 3}],
+        })
+        result = update_exchange_shop_item_names(
+            session, activity_type="xutian-palace", activity_id=activity_id,
+            item_names={32010: "道则碎片·轮回域"},
+        )
+        assert result.exchange_plan["priority_group_goods_ids"]["道则碎片"] == [1]
+        assert result.exchange_plan["priority_group_goods_ids"]["顺序道具"] == []
+        item = result.shop_items[0]
+        assert (item.token_cost, item.purchase_limit, item.purchased_count) == (400, 260, 3)
+
+
 def test_get_snapshot_rematerializes_old_plan_schema_without_touching_game() -> None:
     with _session() as session:
         activity_id = upsert_exchange_activity_snapshot(

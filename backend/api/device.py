@@ -11,6 +11,7 @@ from sqlmodel import Session, select
 from backend.core.access.auth import get_current_user_from_token
 from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.devices.device import get_device_id, get_device_token
+from backend.core.devices.host_access import ensure_host_device_access
 from backend.db import get_session
 from backend.models import User, UserDevice
 from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceTokenRead, UserDeviceUpdate
@@ -190,6 +191,7 @@ def read_user_device_token(
     link = session.get(UserDevice, entry_id)
     if not link or link.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Device entry not found")
+    ensure_host_device_access(current_user, mode=link.mode, device_id=link.device_id)
     _sync_local_entry_token(session, link)
     token = _effective_entry_token(link)
     if not token:
@@ -205,6 +207,7 @@ def add_user_device(
 ):
     mode = device_in.mode
     token = (device_in.token or "").strip()
+    ensure_host_device_access(current_user, mode=mode, device_id=(device_in.device_id or "").strip())
 
     if mode == "local":
         token = get_device_token() or token
@@ -226,6 +229,7 @@ def add_user_device(
         detected_name = ""
         if not device_id:
             device_id, detected_name = _fetch_remote_device_identity(server_url, token)
+        ensure_host_device_access(current_user, mode=mode, device_id=device_id)
         name = (device_in.name or device_in.alias or detected_name or device_id).strip() or device_id
 
     new_link = UserDevice(
@@ -254,6 +258,7 @@ def update_user_device(
     link = session.get(UserDevice, entry_id)
     if not link or link.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Device entry not found")
+    ensure_host_device_access(current_user, mode=link.mode, device_id=link.device_id)
 
     next_token = link.token
     next_server_url = link.server_url
@@ -279,6 +284,7 @@ def update_user_device(
         if not next_token or not next_server_url:
             raise HTTPException(status_code=400, detail="远程执行设备缺少后端地址或访问令牌")
         device_id, detected_name = _fetch_remote_device_identity(next_server_url, next_token)
+        ensure_host_device_access(current_user, mode=link.mode, device_id=device_id)
         link.device_id = device_id
         link.token = next_token
         link.server_url = next_server_url

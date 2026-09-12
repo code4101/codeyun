@@ -40,6 +40,7 @@ import { useNoteStore, type NoteProgramRule, type TabState } from '@/api/notes';
 import { markBootPerf, markBootPerfAsync } from '@/utils/bootPerf';
 
 const StarNotes = defineAsyncComponent(() => import('./StarNotes.vue'));
+const TimelineNotes = defineAsyncComponent(() => import('./TimelineNotes.vue'));
 markBootPerf('notes-center.module');
 const loadCalendarNotes = async () => {
   const perfEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('perf');
@@ -65,6 +66,7 @@ const noteStore = useNoteStore();
 const { tabs, activeTabId } = storeToRefs(noteStore);
 
 const getTabComponent = (type: TabState['type']) => {
+  if (type === 'timeline') return TimelineNotes;
   if (type === 'calendar') return CalendarNotes;
   if (type === 'list') return ListNotes;
   return StarNotes;

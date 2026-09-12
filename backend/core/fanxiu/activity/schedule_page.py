@@ -49,7 +49,8 @@ def _current_family_snapshot(
     relevant = [
         row
         for row in rows
-        if _boundary_date(row.prepare_at, fallback=row.start_date)
+        # 日程展示当日期次，明日活动的预告不能覆盖今日活动或领奖期。
+        if _boundary_date(row.start_at, fallback=row.start_date)
         <= business_date
         <= exchange_activity_close_panel_at(row).date()
     ]

@@ -31,6 +31,7 @@ class SpiritArtifactCleanseGuiAssets:
     """Formal scene/shape contract from the first reversible UI survey."""
 
     world_scene_id: int = 34
+    world_entry_scene_id: int = 661
     world_menu_scene_id: int = 35
     overview_scene_id: int = 666
     detail_scene_id: int = 667
@@ -87,6 +88,7 @@ class SpiritArtifactCleanseGuiAssets:
     def observation_scene_ids(self) -> tuple[int, ...]:
         return (
             self.world_scene_id,
+            self.world_entry_scene_id,
             self.world_menu_scene_id,
             *self.business_scene_ids,
             *self.layer0_candidate_ids,
@@ -354,7 +356,15 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         *target_scene_ids: int,
         phase: str,
     ) -> Any:
-        self._require_scene(source_scene_id, phase=phase)
+        if phase == 'open_world_menu':
+            # The landmark label can appear/disappear between fresh frames.
+            # Both annotated world variants own the same menu action.
+            current = self.current_scene_id()
+            if current not in (self.assets.world_scene_id, self.assets.world_entry_scene_id):
+                raise SpiritArtifactCleanseBlocked('打开菜单前已离开世界', phase=phase)
+            source_scene_id = current
+        else:
+            self._require_scene(source_scene_id, phase=phase)
         result = self.execute(
             self.context.click_shape_center_then_scene(
                 source_scene_id,
@@ -381,15 +391,15 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         current = self.current_scene_id()
         if current == assets.overview_scene_id:
             return current
-        if current != assets.world_scene_id:
+        if current not in (assets.world_scene_id, assets.world_entry_scene_id):
             raise SpiritArtifactCleanseBlocked(
-                "灵器总览只允许从稳定世界 #34 启动",
+                "灵器总览只允许从稳定世界 #34/#661 启动",
                 code=SpiritArtifactCleanseErrorCode.SCENE_MISMATCH,
                 phase="open_overview",
                 evidence={"current": current},
             )
         self._transition(
-            assets.world_scene_id,
+            current,
             assets.open_menu_shape,
             assets.world_menu_scene_id,
             phase="open_world_menu",
@@ -429,17 +439,22 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             # Other jobs may finish on a known external page (live: #400).
             # Its return path belongs to the shared scene graph; the local
             # return_to_world contract only closes spirit-artifact surfaces.
-            self.execute(self.context.go_scene(assets.world_scene_id))
+            # #400 returns to the world landmark variant #661. Its "进入"
+            # opens that landmark again; it is not a route back to #34.
+            if current == 400:
+                self.execute(self.context.wait_click(400, '返回'))
+            else:
+                self.execute(self.context.go_scene(assets.world_scene_id))
             current = self.execute(self.context.wait_scene(
-                [assets.world_scene_id], wait=15,
+                [assets.world_scene_id, assets.world_entry_scene_id], wait=15,
                 label='洗灵：从外部业务回到世界',
             )).scene_id
-            if current != assets.world_scene_id:
+            if current not in (assets.world_scene_id, assets.world_entry_scene_id):
                 raise SpiritArtifactCleanseBlocked('外部业务导航未返回世界', phase='select')
-        elif current not in (*ARTIFACT_TAB_SCENES, assets.world_scene_id, assets.overview_scene_id):
+        elif current not in (*ARTIFACT_TAB_SCENES, assets.world_scene_id, assets.world_entry_scene_id, assets.overview_scene_id):
             self.return_to_world()
             current = assets.world_scene_id
-        if current == assets.world_scene_id:
+        if current in (assets.world_scene_id, assets.world_entry_scene_id):
             self.open_overview()
             current = assets.overview_scene_id
         if current == assets.overview_scene_id:

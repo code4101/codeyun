@@ -114,7 +114,7 @@ export interface NoteEdge {
 export interface TabState {
   id: string;
   label: string;
-  type: 'galaxy' | 'calendar' | 'list' | 'planet';
+  type: 'galaxy' | 'calendar' | 'list' | 'planet' | 'timeline';
   data?: { noteId: NoteKey; mode?: 'planetary' | 'satellite' };
   closable: boolean;
 }
@@ -1448,6 +1448,7 @@ export const useNoteStore = defineStore('notes', () => {
 
   const tabs = ref<TabState[]>([
     { id: 'calendar', label: '日历', type: 'calendar', closable: false },
+    { id: 'timeline', label: '时间轴', type: 'timeline', closable: false },
     { id: 'galaxy', label: '星系', type: 'galaxy', closable: false },
     { id: 'list', label: '列表', type: 'list', closable: false }
   ]);

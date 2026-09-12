@@ -51,9 +51,10 @@ class FanxiuInstrumentationProbeRequest(FanxiuInstrumentationTarget):
 
 
 def _authorize(current_user: User, session: Session) -> None:
+    # 此接口读取部署主机 Runtime，远程截图客户端授权不包含本机资料访问。
     ensure_feature_access(
         session,
-        feature_key="fanxiu",
+        feature_key="fanxiu.instrumentation",
         current_user=current_user,
     )
 

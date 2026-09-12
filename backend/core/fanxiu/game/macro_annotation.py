@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import logging
 import re
 import tempfile
 import threading
@@ -23,6 +24,7 @@ from backend.core.fanxiu.game.window_models import (
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.ocr.spatial_document import extract_ocr_spatial_document
+from backend.core.temp_paths import codeyun_temp_root
 from backend.models import User
 
 
@@ -264,7 +266,9 @@ def _recognize_data_annotation_ocr_frame(
         cached = _get_cached_ocr_frame(cache_key)
         if cached is not None:
             return cached
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as file:
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=".png", dir=codeyun_temp_root("fanxiu", "ocr-frames"),
+        ) as file:
             file.write(image_bytes)
             temp_path = Path(file.name)
         preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle", options=canonical_options)
@@ -291,7 +295,7 @@ def _recognize_data_annotation_ocr_frame(
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                logging.getLogger(__name__).warning("OCR 临时截图清理失败：%s", temp_path, exc_info=True)
 
 
 def _annotate_game_macro_shape_with_ai(

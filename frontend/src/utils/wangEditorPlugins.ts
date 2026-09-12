@@ -7,6 +7,7 @@ import {
   SlateRange,
   SlateTransforms,
 } from '@wangeditor/editor'
+import { withNoteMarkdownShortcuts } from './noteMarkdownShortcuts'
 
 const INDENT_STEP_EM = 2
 const MAX_INDENT_EM = 40
@@ -129,6 +130,7 @@ export const registerWangEditorPlugins = () => {
   if (isRegistered) return
 
   Boot.registerPlugin(withExpandedSelectionTabIndent)
+  Boot.registerPlugin(withNoteMarkdownShortcuts)
 
   Boot.registerMenu({
     key: 'image-merge-button',

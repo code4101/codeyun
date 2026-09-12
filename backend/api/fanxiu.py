@@ -36,6 +36,7 @@ from backend.core.access.auth import (
 )
 from backend.core.access.feature_access_guard import ensure_feature_access, require_feature_access_dependency
 from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
+from backend.core.devices.host_access import ensure_host_device_access
 from backend.core.runtime.game_window_service import (
     GameWindowServiceError,
     get_game_window_service_status,
@@ -513,6 +514,10 @@ router = APIRouter(
 )
 status_router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
+)
+# 本机 Kernel 家族有无设备 ID 的全局操作，不能继承公开图鉴的访问权限。
+kernel_scheduler_router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("fanxiu.kernel-scheduler"))],
 )
 service_router = APIRouter()
 chars_router = APIRouter(
@@ -1680,6 +1685,7 @@ def _get_user_device_or_404(session: Session, current_user: User, entry_id: str)
     entry = session.get(UserDevice, entry_id)
     if not entry or entry.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Device entry not found")
+    ensure_host_device_access(current_user, mode=entry.mode, device_id=entry.device_id)
     if not entry.is_active:
         raise HTTPException(status_code=400, detail="Device entry is inactive")
     return entry
@@ -3940,7 +3946,7 @@ def get_fanxiu_game_window2_match_image_service(
     return _match_game_window2_service_image(filename)
 
 
-@status_router.get("/kernel-scheduler/status", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.get("/kernel-scheduler/status", response_model=FanxiuKernelSchedulerStatus)
 def get_fanxiu_kernel_scheduler_status(
     entry_id: str = Query("", max_length=128),
     include_cell_logs: bool = Query(True),
@@ -3969,7 +3975,7 @@ def get_fanxiu_kernel_scheduler_status(
     return FanxiuKernelSchedulerStatus.model_validate(payload)
 
 
-@status_router.get(
+@kernel_scheduler_router.get(
     "/kernel-scheduler/info-window",
     response_model=FanxiuInfoWindowControlStatus,
 )
@@ -3988,7 +3994,7 @@ def get_fanxiu_data_annotation_info_window(
     )
 
 
-@status_router.post(
+@kernel_scheduler_router.post(
     "/kernel-scheduler/info-window/settings",
     response_model=FanxiuInfoWindowControlStatus,
 )
@@ -4119,7 +4125,7 @@ def _restart_fanxiu_kernel_scheduler_device(
     )
 
 
-@status_router.post("/kernel-scheduler/behavior-tree/set", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/behavior-tree/set", response_model=FanxiuKernelSchedulerStatus)
 def set_fanxiu_kernel_scheduler_behavior_tree(
     req: FanxiuKernelSchedulerBehaviorTreeRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4145,7 +4151,7 @@ def set_fanxiu_kernel_scheduler_service_behavior_tree(
     return _set_fanxiu_kernel_scheduler_behavior_tree_enabled(entry, entry_id, req)
 
 
-@status_router.post("/kernel-scheduler/kernel/restart", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/kernel/restart", response_model=FanxiuKernelSchedulerStatus)
 def restart_fanxiu_kernel_scheduler_kernel(
     req: FanxiuKernelSchedulerKernelRestartRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4171,7 +4177,7 @@ def restart_fanxiu_kernel_scheduler_service_kernel(
     return _restart_fanxiu_kernel_scheduler_kernel(entry, entry_id, req)
 
 
-@status_router.post(
+@kernel_scheduler_router.post(
     "/kernel-scheduler/device/restart",
     response_model=FanxiuKernelSchedulerDeviceRestartResponse,
 )
@@ -4200,7 +4206,7 @@ def restart_fanxiu_kernel_scheduler_service_device(
     return _restart_fanxiu_kernel_scheduler_device(entry_id)
 
 
-@status_router.post("/kernel-scheduler/cells/task", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/cells/task", response_model=FanxiuKernelSchedulerStatus)
 def submit_fanxiu_kernel_scheduler_task_cell(
     req: FanxiuKernelSchedulerTaskCellRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4249,7 +4255,7 @@ def submit_fanxiu_kernel_scheduler_service_task_cell(
     )
 
 
-@status_router.post("/kernel-scheduler/cells/code", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/cells/code", response_model=FanxiuKernelSchedulerStatus)
 def submit_fanxiu_kernel_scheduler_code_cell(
     req: FanxiuKernelSchedulerCodeCellRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4277,7 +4283,7 @@ def submit_fanxiu_kernel_scheduler_service_code_cell(
     )
 
 
-@status_router.post("/kernel-scheduler/task/stop", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/task/stop", response_model=FanxiuKernelSchedulerStatus)
 def stop_fanxiu_kernel_scheduler_task(
     req: FanxiuKernelSchedulerStopRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4353,7 +4359,7 @@ def _set_fanxiu_kernel_scheduler_guard_group(
     return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-@status_router.post("/kernel-scheduler/guard/set", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/guard/set", response_model=FanxiuKernelSchedulerStatus)
 def set_fanxiu_kernel_scheduler_guard(
     req: FanxiuKernelSchedulerGuardRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4365,7 +4371,7 @@ def set_fanxiu_kernel_scheduler_guard(
     return _set_fanxiu_kernel_scheduler_guard_item(entry, entry_id, req)
 
 
-@status_router.post("/kernel-scheduler/guard/group/set", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/guard/group/set", response_model=FanxiuKernelSchedulerStatus)
 def set_fanxiu_kernel_scheduler_guard_group(
     req: FanxiuKernelSchedulerGuardGroupRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4405,7 +4411,7 @@ def set_fanxiu_kernel_scheduler_service_guard_group(
     return _set_fanxiu_kernel_scheduler_guard_group(entry, entry_id, req)
 
 
-@status_router.get("/kernel-scheduler/logs", response_model=FanxiuKernelSchedulerLogResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/logs", response_model=FanxiuKernelSchedulerLogResponse)
 def get_fanxiu_kernel_scheduler_logs(
     limit: int = Query(80, ge=1, le=2000),
     scope: str = Query("", max_length=64),
@@ -4581,7 +4587,7 @@ def _cell_log_boundary(entry: FanxiuKernelSchedulerLogEntry) -> bool:
     return ("启动" in message and "任务" in message) or "作业已启动" in message or "task cell 已启动" in message or "Scheduler：启动" in message
 
 
-@status_router.get("/kernel-scheduler/cell-logs", response_model=FanxiuKernelSchedulerCellLogResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/cell-logs", response_model=FanxiuKernelSchedulerCellLogResponse)
 def get_fanxiu_kernel_scheduler_cell_logs(
     limit: int = Query(20, ge=1, le=200),
     log_limit: int = Query(1000, ge=1, le=5000),
@@ -4657,7 +4663,7 @@ def get_fanxiu_kernel_scheduler_cell_logs(
     return FanxiuKernelSchedulerCellLogResponse(cells=response_cells, path=str(_kernel_execution_state_path()))
 
 
-@status_router.get("/kernel-scheduler/world-facts", response_model=FanxiuDataAnnotationWorldFactsResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/world-facts", response_model=FanxiuDataAnnotationWorldFactsResponse)
 def get_fanxiu_data_annotation_world_facts(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4684,7 +4690,7 @@ def _doctor_watch_latest_payload_for_frontend() -> dict[str, Any]:
     }
 
 
-@status_router.get("/kernel-scheduler/doctor-watch/latest", response_model=FanxiuDataAnnotationDoctorWatchLatestResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/doctor-watch/latest", response_model=FanxiuDataAnnotationDoctorWatchLatestResponse)
 def get_fanxiu_data_annotation_doctor_watch_latest(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4693,7 +4699,7 @@ def get_fanxiu_data_annotation_doctor_watch_latest(
     return FanxiuDataAnnotationDoctorWatchLatestResponse.model_validate(_doctor_watch_latest_payload_for_frontend())
 
 
-@status_router.post("/kernel-scheduler/doctor-watch/ensure", response_model=FanxiuDataAnnotationDoctorWatchEnsureResponse)
+@kernel_scheduler_router.post("/kernel-scheduler/doctor-watch/ensure", response_model=FanxiuDataAnnotationDoctorWatchEnsureResponse)
 def ensure_fanxiu_data_annotation_doctor_watch(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4702,7 +4708,7 @@ def ensure_fanxiu_data_annotation_doctor_watch(
     return FanxiuDataAnnotationDoctorWatchEnsureResponse.model_validate(_kernel_scheduler_control.ensure_doctor_watch_background())
 
 
-@status_router.delete("/kernel-scheduler/logs", response_model=FanxiuKernelSchedulerLogResponse)
+@kernel_scheduler_router.delete("/kernel-scheduler/logs", response_model=FanxiuKernelSchedulerLogResponse)
 def clear_fanxiu_kernel_scheduler_logs(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4723,7 +4729,7 @@ def clear_fanxiu_kernel_scheduler_logs(
     return FanxiuKernelSchedulerLogResponse(entries=[], path=str(_kernel_execution_state_path()))
 
 
-@status_router.get("/kernel-scheduler/tasks", response_model=FanxiuKernelSchedulerTasksResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/tasks", response_model=FanxiuKernelSchedulerTasksResponse)
 def get_fanxiu_kernel_scheduler_tasks(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4743,7 +4749,7 @@ def get_fanxiu_kernel_scheduler_tasks(
     )
 
 
-@status_router.get(
+@kernel_scheduler_router.get(
     "/kernel-scheduler/state-inspection",
     response_model=FanxiuGameStateInspectionStatus,
 )
@@ -4755,7 +4761,7 @@ def get_fanxiu_game_state_inspection_status(
     return FanxiuGameStateInspectionStatus.model_validate(read_game_state_inspection_status())
 
 
-@status_router.get("/kernel-scheduler/plan", response_model=FanxiuKernelSchedulerPlanResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/plan", response_model=FanxiuKernelSchedulerPlanResponse)
 def get_fanxiu_kernel_scheduler_plan(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4764,7 +4770,7 @@ def get_fanxiu_kernel_scheduler_plan(
     return FanxiuKernelSchedulerPlanResponse.model_validate(_build_kernel_scheduler_plan())
 
 
-@status_router.get(
+@kernel_scheduler_router.get(
     "/kernel-scheduler/time-sequence",
     response_model=FanxiuKernelSchedulerTimeSequenceResponse,
 )
@@ -4782,7 +4788,7 @@ def get_fanxiu_kernel_scheduler_time_sequence(
     )
 
 
-@status_router.put(
+@kernel_scheduler_router.put(
     "/kernel-scheduler/time-sequence",
     response_model=FanxiuKernelSchedulerTimeSequenceResponse,
 )
@@ -4806,7 +4812,7 @@ def put_fanxiu_kernel_scheduler_time_sequence(
     )
 
 
-@status_router.put("/kernel-scheduler/tasks", response_model=FanxiuKernelSchedulerTasksResponse)
+@kernel_scheduler_router.put("/kernel-scheduler/tasks", response_model=FanxiuKernelSchedulerTasksResponse)
 def put_fanxiu_kernel_scheduler_tasks(
     tasks: list[FanxiuKernelSchedulerTaskUpdate],
     current_user: User = Depends(get_current_active_user),
@@ -4832,7 +4838,7 @@ def put_fanxiu_kernel_scheduler_tasks(
     )
 
 
-@status_router.get("/kernel-scheduler/settings", response_model=FanxiuKernelSchedulerTasksResponse)
+@kernel_scheduler_router.get("/kernel-scheduler/settings", response_model=FanxiuKernelSchedulerTasksResponse)
 def get_fanxiu_kernel_scheduler_settings(
     current_user: User = Depends(get_current_active_user),
     session: Session = Depends(get_session),
@@ -4852,7 +4858,7 @@ def get_fanxiu_kernel_scheduler_settings(
     )
 
 
-@status_router.put("/kernel-scheduler/settings", response_model=FanxiuKernelSchedulerTasksResponse)
+@kernel_scheduler_router.put("/kernel-scheduler/settings", response_model=FanxiuKernelSchedulerTasksResponse)
 def put_fanxiu_kernel_scheduler_settings(
     req: FanxiuKernelSchedulerSettingsRequest,
     current_user: User = Depends(get_current_active_user),
@@ -4988,7 +4994,7 @@ def _run_due_fanxiu_kernel_scheduler_tasks(
     return FanxiuKernelSchedulerStatus.model_validate(status)
 
 
-@status_router.post("/kernel-scheduler/task/run-now", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/task/run-now", response_model=FanxiuKernelSchedulerStatus)
 def run_now_fanxiu_kernel_scheduler_task(
     req: FanxiuKernelSchedulerRunNowRequest,
     current_user: User = Depends(get_current_active_user),
@@ -5006,7 +5012,7 @@ def run_now_fanxiu_kernel_scheduler_task(
     return _run_now_fanxiu_kernel_scheduler_task(entry, entry_id, req)
 
 
-@status_router.post(
+@kernel_scheduler_router.post(
     "/kernel-scheduler/task/trigger-once",
     response_model=FanxiuKernelSchedulerTriggerOnceResponse,
 )
@@ -5022,7 +5028,7 @@ def trigger_once_fanxiu_kernel_scheduler_task(
     return _trigger_once_fanxiu_kernel_scheduler_task(req)
 
 
-@status_router.put(
+@kernel_scheduler_router.put(
     "/kernel-scheduler/task/next-time",
     response_model=FanxiuKernelSchedulerNextTimeResponse,
 )
@@ -5052,7 +5058,7 @@ def run_now_fanxiu_kernel_scheduler_service_task(
     return _run_now_fanxiu_kernel_scheduler_task(entry, entry_id, req)
 
 
-@status_router.post("/kernel-scheduler/run-due", response_model=FanxiuKernelSchedulerStatus)
+@kernel_scheduler_router.post("/kernel-scheduler/run-due", response_model=FanxiuKernelSchedulerStatus)
 def run_due_fanxiu_kernel_scheduler_tasks(
     req: FanxiuKernelSchedulerRunDueRequest,
     current_user: User = Depends(get_current_active_user),
@@ -6898,6 +6904,8 @@ def update_char(
     return serialize_fanxiu_note_read(db_note, current_user)
 
 
+# 复用原导出路由和 URL；服务令牌路由保持原有 scope 校验。
+status_router.include_router(kernel_scheduler_router)
 router.include_router(status_router)
 router.include_router(inventory_router)
 router.include_router(chars_router)

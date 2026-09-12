@@ -7174,6 +7174,111 @@ class BehaviorTreeExecutor(
         self._clear_tick_frame(ctx)
         yield BehaviorTreeStatus.RUNNING
 
+    def analyze_external_frame(
+        self, frame_data_url: str, *, frame_width: int, frame_height: int,
+        target_scene_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Recognize an uploaded frame and propose one declared navigation action.
+
+        This isolated observation has no device, Kernel, popup handler, asset
+        mutation, frame persistence or authoritative local scene projection.
+        The caller owns bounded polling, freshness and action acknowledgement.
+        No learned transition counts are written from untrusted client receipts.
+        Navigation requires the asset's exact canvas size: OCR regions use that
+        coordinate system, so another size must not produce a guessed click.
+        Remote live navigation has not yet been accepted against a real game.
+        """
+        from types import SimpleNamespace
+        from backend.core.fanxiu.data_annotation.storage import (
+            DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID,
+            data_annotation_asset_tree_path,
+            read_data_annotation_asset_tree_snapshot,
+        )
+
+        if not frame_data_url or frame_width <= 0 or frame_height <= 0:
+            raise ValueError("必须提供已解码的外部截图和尺寸")
+        path = data_annotation_asset_tree_path()
+        snapshot = read_data_annotation_asset_tree_snapshot(path)
+        if not snapshot.exists or not snapshot.tree:
+            return {"status": "blocked", "reason": "assets_unavailable", "observation": {}}
+        tree = self._resolved_asset_tree(snapshot.tree)
+        images = self._index_images(tree)
+        if target_scene_id is not None and target_scene_id not in images:
+            return {"status": "blocked", "reason": "target_scene_missing", "observation": {}}
+        ctx = {
+            "entry": SimpleNamespace(mode="local", entry_id=DEFAULT_FANXIU_DATA_ANNOTATION_ENTRY_ID),
+            "asset_tree": tree, "images": images, "asset_tree_path": path,
+            "asset_tree_revision": snapshot.revision,
+            "external_frame_only": True, "_disable_recognition_ambiguity_recording": True,
+        }
+        with self._scene_observation_probe(ctx):
+            recognition = self._identify_scene_number_by_graph(ctx, frame_data_url)
+        scene_id = recognition.scene_id
+        image = images.get(scene_id, {})
+        observation = {
+            "scene_id": scene_id, "scene_title": str(image.get("title") or ""),
+            "score": recognition.score, "recognition_status": recognition.status,
+            "matched_layer": recognition.matched_layer, "asset_revision": snapshot.revision,
+            "frame_width": frame_width, "frame_height": frame_height,
+        }
+        result: dict[str, Any] = {"status": "completed", "observation": observation}
+        if target_scene_id is None:
+            return result
+        if scene_id is None:
+            return {**result, "status": "running", "reason": "scene_unknown",
+                    "action": {"kind": "wait", "wait_ms": 1000}}
+        if scene_id == 546:
+            return {**result, "status": "blocked", "reason": "game_maintenance"}
+        # Similarity is auxiliary evidence and must not authorize an action.
+        if recognition.status == "similarity_tiebreak":
+            return {**result, "status": "blocked", "reason": "scene_ambiguous"}
+        if scene_id == target_scene_id:
+            return result
+        edges = explicit_scene_jump_edges(tree)
+        queue: list[tuple[int, list[dict[str, Any]]]] = [(scene_id, [])]
+        visited = {scene_id}
+        route = None
+        for source_id, prefix in queue:
+            if source_id == target_scene_id:
+                route = prefix
+                break
+            for edge in edges.get(source_id, []):
+                if self._scene_navigation_shape_risk(edge["shape"]):
+                    continue
+                for landing_id in edge["target_ids"]:
+                    if landing_id not in visited:
+                        visited.add(landing_id)
+                        queue.append((landing_id, [*prefix, edge]))
+        if not route:
+            return {**result, "status": "blocked", "reason": "navigation_path_missing"}
+        edge = route[0]
+        image, shape = edge["image"], edge["shape"]
+        width, height = self._frame_size(image)
+        if (frame_width, frame_height) != (width, height):
+            observation["expected_frame_size"] = {"width": width, "height": height}
+            return {**result, "status": "blocked", "reason": "frame_size_unsupported"}
+        conditions = self._shape_match_conditions(shape)
+        # Fixed navigation regions with matching explicitly disabled are a
+        # supported asset contract (e.g. the world menu arrow). Their position
+        # is trusted only after the containing scene and exact canvas match.
+        match = {"matched": True} if not conditions and not shape.get("floating") else None
+        for condition in conditions:
+            match = self._match_shape(ctx, image, shape, frame_data_url, condition=condition)
+            if match.get("matched"):
+                break
+        if not match or not match.get("matched"):
+            return {**result, "status": "running", "reason": "navigation_shape_not_visible",
+                    "action": {"kind": "wait", "wait_ms": 1000}}
+        point = self._shape_match_resolved_click_point(image, shape, match)
+        if point is None and not shape.get("floating"):
+            point = ActionPlanner().shape_center(image, shape)
+        if point is None or not (0 <= point[0] < frame_width and 0 <= point[1] < frame_height):
+            return {**result, "status": "blocked", "reason": "navigation_shape_unresolved"}
+        return {**result, "status": "running", "action": {
+            "kind": "tap", "x": int(point[0]), "y": int(point[1]),
+            "shape_id": str(shape.get("id") or ""), "shape_title": str(shape.get("title") or ""),
+        }}
+
     def _view_for_image(self, image: dict[str, Any]) -> View:
         return View(image)
 
@@ -11766,6 +11871,9 @@ class BehaviorTreeExecutor(
             match_strategy=match_strategy,
             ocr_enabled=ocr_enabled,
         )
+        if ctx.get("external_frame_only"):
+            payload.update(save_match_frame=False, require_supplied_frame=True)
+            payload["asset_revision"] = str(ctx.get("asset_tree_revision") or "")
         entry: Any = ctx["entry"]
         return _match_game_window2_service(payload) if entry.mode == "local" else _match_remote_game_window2(entry, payload)
 

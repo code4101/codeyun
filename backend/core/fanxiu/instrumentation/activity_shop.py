@@ -1012,7 +1012,29 @@ def collect_activity_shop_runtime(
         )
     )
 
-    names = item_names or {}
+    names = dict(item_names or {})
+    missing_name_ids = {
+        int(group[0][4]) for group in selected.values()
+        if not str(names.get(int(group[0][4])) or "").strip()
+        or str(names.get(int(group[0][4]))).isdigit()
+    }
+    if missing_name_ids:
+        # 热更新物品可能尚未进入静态目录；仅补读本页缺失项及其语言文本。
+        from backend.core.fanxiu.instrumentation.item_config import (
+            read_item_metadata_runtime,
+            read_item_text_runtime,
+        )
+
+        metadata = read_item_metadata_runtime(sorted(missing_name_ids))["items_by_id"]
+        text_ids = {
+            row["runtime_name_id"] for row in metadata.values()
+            if not row.get("item_name") and row.get("runtime_name_id")
+        }
+        texts = read_item_text_runtime(sorted(text_ids))["texts_by_id"] if text_ids else {}
+        for item_id, row in metadata.items():
+            name = row.get("item_name") or texts.get(row.get("runtime_name_id"))
+            if name:
+                names[item_id] = str(name)
     items_by_id: dict[int, dict[str, Any]] = {}
     sort_order_by_id: dict[int, int] = {}
     currencies: set[int] = set()

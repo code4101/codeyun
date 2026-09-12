@@ -4766,6 +4766,7 @@ def match_fanxiu_screenshot_box_frame(
     ocr_min_confidence: float = 0.0,
     debug_match: bool = False,
     save_match_frame: bool = True,
+    require_supplied_frame: bool = False,
 ) -> dict[str, Any]:
     source_asset = resolve_data_annotation_image_asset(filename, entry_id=entry_id)
     if not source_asset.exists:
@@ -4783,6 +4784,8 @@ def match_fanxiu_screenshot_box_frame(
 
     current_frame = _decode_image_data_url_bgr(current_frame_data_url or "") if current_frame_data_url else None
     if current_frame is None:
+        if require_supplied_frame:
+            raise ValueError("外部截图缺失或无法解码，禁止回退设备截图")
         current_frame = capture_mumu_window_frame(
             title=title,
             title_match=title_match,

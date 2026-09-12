@@ -360,6 +360,7 @@ def match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
                 ocr_min_confidence=float(payload.get("ocr_min_confidence") or 0.0),
                 debug_match=bool(payload.get("debug_match")),
                 save_match_frame=bool(payload.get("save_match_frame", True)),
+                require_supplied_frame=bool(payload.get("require_supplied_frame", False)),
             ),
         )
     except Exception as exc:

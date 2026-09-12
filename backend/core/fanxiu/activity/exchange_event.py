@@ -580,6 +580,29 @@ def update_exchange_priorities(
     return _detail(session, activity)
 
 
+def update_exchange_shop_item_names(
+    session: Session, *, activity_type: str, activity_id: str, item_names: dict[int, str]
+) -> ExchangeActivityDetail:
+    """Repair verified display names without changing purchase facts or freshness."""
+    activity = _get_activity(session, activity_type, activity_id)
+    if any(not str(name).strip() or str(name).strip().isdigit() for name in item_names.values()):
+        raise ValueError("道具名称必须为已解析文本")
+    items = _items(session, activity.id)
+    changed = False
+    for item in items:
+        if item.item_id in item_names:
+            name = item_names[item.item_id].strip()
+            if item.name != name:
+                item.name = name
+                session.add(item)
+                changed = True
+    if changed:
+        # 名称参与语义分组；名称修正与派生兑换计划必须在同一事务更新。
+        _persist_exchange_shop_plan(session, activity=activity, items=items)
+    session.commit()
+    return _detail(session, activity)
+
+
 def update_exchange_shop_item_lock(
     session: Session, *, activity_type: str, activity_id: str, goods_id: int, locked: bool
 ) -> ExchangeActivityDetail:
