@@ -362,6 +362,7 @@ def match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
                 save_match_frame=bool(payload.get("save_match_frame", True)),
                 require_supplied_frame=bool(payload.get("require_supplied_frame", False)),
                 sampling_size=payload.get("sampling_size"),
+                scan_scales=payload.get("scan_scales"),
             ),
         )
     except Exception as exc:

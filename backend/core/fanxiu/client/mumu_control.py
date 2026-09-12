@@ -35,6 +35,10 @@ from backend.core.fanxiu.data_annotation.storage import resolve_data_annotation_
 from backend.core.fanxiu.client.adb_device import (
     fanxiu_adb_device_service,
 )
+from backend.core.fanxiu.client.remote_transport import (
+    remote_device_active, call_remote_device, remote_bytes, remote_metadata,
+    reject_local_device_access,
+)
 from backend.core.ocr.preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.devices.window_capture_preview import (
     WindowCapture,
@@ -586,6 +590,7 @@ def _mumu_device_startup_grace_seconds(default: float = 300.0) -> float:
 
 
 def _mumu_manager_path() -> Path | None:
+    reject_local_device_access("MuMuManager discovery")
     try:
         adb_path = fanxiu_adb_device_service.adb_path()
     except Exception:
@@ -978,6 +983,8 @@ def _mumu_manager_control(vmindex: str, command: str, *, timeout: float = 12.0) 
 
 
 def _mumu_manager_launch_app(vmindex: str, package: str = FANXIU_ANDROID_PACKAGE) -> dict[str, Any]:
+    if remote_device_active():
+        return call_remote_device("launch", {"package": package}, timeout_s=30)
     payload = _run_mumu_manager_json(
         ["control", "--vmindex", str(vmindex or "1"), "app", "launch", "--package", str(package or FANXIU_ANDROID_PACKAGE)],
         timeout=12,
@@ -1114,6 +1121,7 @@ def _find_mumu_desktop_main_window() -> dict[str, Any]:
 
 
 def _find_mumu_window_candidate(normalized_title: str, title_match: str) -> tuple[WindowCandidate, str, str]:
+    reject_local_device_access("desktop window capture/input")
     """Find the actual MuMu game window instead of any window mentioning MuMu."""
 
     if str(normalized_title or "").strip().lower() == DEFAULT_TARGET_TITLE.lower() and title_match != "exact":
@@ -1371,6 +1379,8 @@ def reset_mumu_device_health_state() -> None:
 
 
 def mumu_device_health_check(*, vmindex: str = "1", force: bool = False) -> dict[str, Any]:
+    if remote_device_active():
+        return call_remote_device("health", timeout_s=20)
     now_mono = time.monotonic()
     with _MUMU_DEVICE_HEALTH_LOCK:
         cached = dict(_mumu_device_health_state)
@@ -1505,6 +1515,8 @@ def restart_fanxiu_game_after_ui_failure(*, reason: str) -> dict[str, Any]:
 
 
 def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", force_restart: bool = False) -> dict[str, Any]:
+    if remote_device_active():
+        return call_remote_device("recover", {"reason": reason, "force_restart": force_restart}, timeout_s=35)
     if not _mumu_device_auto_recovery_enabled():
         state = mumu_device_health_check(vmindex=vmindex, force=True)
         state["recovered"] = False
@@ -1670,6 +1682,12 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
 
 
 def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = True) -> dict[str, Any]:
+    if remote_device_active():
+        # The owning attempt reports the original client failure. Host startup
+        # grace, device health counters and native recovery describe another
+        # transport and must not hide it or trigger a local diagnostic probe.
+        return {"status": "broken", "last_error": str(error), "recovered": False,
+                "input": "remote-client", "recovery_deferred": "client_maintenance_required"}
     message = str(error or "")
     now = time.time()
     frame_unusable = _is_mumu_frame_unusable_error(message)
@@ -1730,6 +1748,8 @@ def record_mumu_adb_failure(error: Any, *, vmindex: str = "1", recover: bool = T
 
 
 def ensure_mumu_device_healthy(*, vmindex: str = "1", recover: bool = True, force: bool = False, reason: str = "heartbeat") -> dict[str, Any]:
+    if remote_device_active():
+        return call_remote_device("health", timeout_s=20)
     state = mumu_device_health_check(vmindex=vmindex, force=force)
     in_grace, grace_remaining = _mumu_device_in_startup_grace()
     if in_grace and state.get("status") in {"starting", "broken", "stopped", "suspect"}:
@@ -2017,6 +2037,12 @@ def _run_mumu_adb_input(
     timeout_s: int = 5,
     prepared_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if remote_device_active():
+        if _mumu_adb_input_command_kind(command) == "probe":
+            result = call_remote_device("health", timeout_s=15)
+            return {**result, **remote_metadata(result)}
+        result = call_remote_device("input", {"command": command, "timeout_seconds": timeout_s}, timeout_s=timeout_s + 5)
+        return {**result, **remote_metadata(result)}
     started = time.perf_counter()
     timing: dict[str, Any] = {
         "command_kind": _mumu_adb_input_command_kind(command),
@@ -2214,6 +2240,9 @@ def _run_mumu_adb_shell_text(
     timeout_s: int = 5,
     preferred_serials: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    if remote_device_active():
+        result = call_remote_device("shell_text", {"command": command, "timeout_seconds": timeout_s}, timeout_s=timeout_s + 5)
+        return str(result.get("stdout") or "").strip(), remote_metadata(result)
     adb_path = fanxiu_adb_device_service.adb_path()
     errors: list[str] = []
     candidate_serials = _dedupe_mumu_adb_serials([*(preferred_serials or []), *_mumu_adb_serial_candidates()])
@@ -2381,6 +2410,11 @@ def ensure_mumu_adb_resolution(*, vmindex: str = "1") -> dict[str, Any]:
 
 
 def wait_mumu_adb_online(*, vmindex: str = "1", timeout_s: float = 45.0) -> dict[str, Any]:
+    if remote_device_active():
+        result = call_remote_device("health", timeout_s=min(35, timeout_s))
+        if result.get("status") != "healthy":
+            raise RuntimeError("客户端 Android 尚未就绪")
+        return {"ok": True, "boot_completed": "1", "adb": remote_metadata(result)}
     deadline = time.monotonic() + max(1.0, float(timeout_s))
     last_error = ""
     preferred_serials = _mumu_adb_serial_candidates()
@@ -2402,6 +2436,8 @@ def wait_mumu_adb_online(*, vmindex: str = "1", timeout_s: float = 45.0) -> dict
 
 def ensure_mumu_adb_root(*, vmindex: str = "1", timeout_s: float = 20.0) -> dict[str, Any]:
     """Restore and verify root ADB after a MuMu VM restart."""
+    if remote_device_active():
+        return call_remote_device("root", timeout_s=min(35, timeout_s + 5))
 
     adb_path = fanxiu_adb_device_service.adb_path()
     deadline = time.monotonic() + max(1.0, float(timeout_s))
@@ -2471,6 +2507,8 @@ def ensure_mumu_adb_root(*, vmindex: str = "1", timeout_s: float = 20.0) -> dict
 
 
 def _run_mumu_adb_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+    if remote_device_active():
+        return remote_bytes(call_remote_device("shell_bytes", {"command": command, "timeout_seconds": timeout_s}, timeout_s=timeout_s + 5))
     _ensure_mumu_adb_port_available()
     try:
         from adb_shell.adb_device import AdbDeviceTcp
@@ -2513,6 +2551,8 @@ def _close_mumu_adb_session() -> None:
 
 
 def _mumu_adb_session_shell_bytes(command: str, *, timeout_s: int = 8) -> tuple[bytes, dict[str, Any]]:
+    if remote_device_active():
+        return remote_bytes(call_remote_device("shell_bytes", {"command": command, "timeout_seconds": timeout_s}, timeout_s=timeout_s + 5))
     _ensure_mumu_adb_port_available()
     try:
         from adb_shell.adb_device import AdbDeviceTcp
@@ -2647,6 +2687,11 @@ def text_mumu_adb(text: str) -> dict[str, Any]:
 
 
 def screencap_mumu_adb_png() -> tuple[bytes, dict[str, Any]]:
+    if remote_device_active():
+        data, metadata = remote_bytes(call_remote_device("capture", timeout_s=20), max_bytes=6 * 1024 * 1024)
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RuntimeError("客户端截图不是 PNG")
+        return data, metadata
     try:
         data, meta = _mumu_adb_session_shell_bytes("screencap -p", timeout_s=10)
     except Exception as session_exc:
@@ -2696,6 +2741,8 @@ _mumu_adb_stream_last_error = ""
 
 
 def get_mumu_adb_cached_stream_frame(*, max_age_seconds: float = 3.0) -> bytes | None:
+    if remote_device_active():
+        return None
     now = time.monotonic()
     with _MUMU_ADB_STREAM_FRAME_LOCK:
         if _mumu_adb_stream_frame_data is None:
@@ -3668,6 +3715,8 @@ def _store_latest_frame(cache_key: tuple[Any, ...], frame: Any) -> None:
 
 
 def _load_latest_frame(cache_key: tuple[Any, ...]) -> Any | None:
+    if remote_device_active():
+        return None
     with _LATEST_FRAME_LOCK:
         item = _LATEST_FRAME_CACHE.get(cache_key)
     if item is None:
@@ -4676,6 +4725,45 @@ def _match_local_pixel_frame(
     }
 
 
+def normalize_scan_scales(values: Any = None) -> tuple[float, ...]:
+    """Validate explicitly declared floating-template scales; omission is 1:1."""
+    import math
+
+    if values is None:
+        return (1.0,)
+    if not isinstance(values, (list, tuple)) or not 1 <= len(values) <= 17:
+        raise ValueError("scan_scales must contain 1..17 explicit scales")
+    scales = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("scan_scales must contain numbers")
+        scale = float(value)
+        if not math.isfinite(scale) or not 0.5 <= scale <= 2.0:
+            raise ValueError("scan_scales must be finite and between 0.5 and 2.0")
+        if scale not in scales:
+            scales.append(scale)
+    return tuple(scales)
+
+
+def suppress_overlapping_scan_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse scale hypotheses for one image object, retaining distinct objects."""
+    selected: list[dict[str, Any]] = []
+    for candidate in sorted(matches, key=lambda item: float(item.get("score") or 0), reverse=True):
+        box = candidate["box"]
+        duplicate = False
+        for previous in selected:
+            other = previous["box"]
+            intersection = (max(0, min(box["x"] + box["w"], other["x"] + other["w"]) - max(box["x"], other["x"]))
+                            * max(0, min(box["y"] + box["h"], other["y"] + other["h"]) - max(box["y"], other["y"])))
+            union = box["w"] * box["h"] + other["w"] * other["h"] - intersection
+            if union > 0 and intersection / union >= 0.5:
+                duplicate = True
+                break
+        if not duplicate:
+            selected.append(candidate)
+    return selected[:50]
+
+
 def _match_scan_frame(
     reference_crop: Any,
     current_frame: Any,
@@ -4685,7 +4773,32 @@ def _match_scan_frame(
     alpha_mask: Any = None,
     tolerance_min: Any = None,
     tolerance_max: Any = None,
+    scan_scales: tuple[float, ...] | list[float] | None = None,
 ) -> dict[str, Any]:
+    scales = normalize_scan_scales(scan_scales)
+    if scales != (1.0,):
+        import cv2
+
+        template = _ensure_bgr_frame(reference_crop)
+        height, width = template.shape[:2]
+        matches = []
+        for scale in scales:
+            size = (max(1, round(width * scale)), max(1, round(height * scale)))
+            def resize_optional(value: Any) -> Any:
+                return None if value is None else cv2.resize(value, size, interpolation=cv2.INTER_LINEAR)
+            result = _match_scan_frame(
+                cv2.resize(template, size, interpolation=cv2.INTER_LINEAR),
+                current_frame, current_search_box, current_box, pixel_tolerance,
+                resize_optional(_normalize_alpha_mask(alpha_mask, width, height)),
+                resize_optional(tolerance_min), resize_optional(tolerance_max),
+            )
+            matches.extend({**item, "template_scale": scale} for item in result.get("matches", []))
+        matches = suppress_overlapping_scan_matches(matches)
+        best = matches[0] if matches else {
+            "box": current_box, "similarity": 0, "score": 0.0,
+            "crop_similarity": 0, "crop_score": 0.0,
+        }
+        return {**best, "search_radius": -1, "matches": matches}
     frame = _ensure_bgr_frame(current_frame)
     frame_height, frame_width = frame.shape[:2]
     search_box = _normalize_match_box(current_search_box, frame_width, frame_height)
@@ -4856,7 +4969,9 @@ def match_fanxiu_screenshot_box_frame(
     save_match_frame: bool = True,
     require_supplied_frame: bool = False,
     sampling_size: tuple[int, int] | None = None,
+    scan_scales: tuple[float, ...] | list[float] | None = None,
 ) -> dict[str, Any]:
+    scan_scales = normalize_scan_scales(scan_scales)
     source_asset = resolve_data_annotation_image_asset(filename, entry_id=entry_id)
     if not source_asset.exists:
         raise FileNotFoundError(f"data-annotation 图片不存在：{source_asset.path}")
@@ -5051,6 +5166,7 @@ def match_fanxiu_screenshot_box_frame(
             alpha_mask,
             tolerance_min,
             tolerance_max,
+            scan_scales=scan_scales,
         )
     else:
         fixed_match = _match_local_pixel_frame(

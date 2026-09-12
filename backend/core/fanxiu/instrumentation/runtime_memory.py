@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import struct
 import threading
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
 from backend.core.fanxiu.client import mumu_control
+from backend.core.fanxiu.client.remote_transport import remote_device_scope_id
 from backend.core.temp_paths import codeyun_temp_root
 
 
@@ -28,6 +30,7 @@ _MAX_LUA_TABLE_HASH_MASK = 32767
 _ROOT_CACHE_LOCK = threading.Lock()
 _PROCESS_CACHE_LOCK = threading.Lock()
 _PROCESS_CACHE_TTL_SECONDS = 300.0
+_process_cache_scope_id = ""
 _process_cache: tuple[
     float,
     int,
@@ -35,7 +38,7 @@ _process_cache: tuple[
     str,
     tuple["MemoryRegion", ...],
 ] | None = None
-_INTERNED_STRING_CACHE: dict[tuple[int, int, int, int, str], int] = {}
+_INTERNED_STRING_CACHE: dict[tuple[str, int, int, int, int, str], int] = {}
 _SnapshotT = TypeVar("_SnapshotT")
 
 
@@ -90,6 +93,7 @@ def resolve_interned_lua_string(
     """Resolve one GCstr through a single LuaJIT intern bucket and chain."""
 
     cache_key = (
+        getattr(memory, "device_scope_id", remote_device_scope_id()),
         int(memory.pid),
         int(memory.process_start_ticks),
         int(string_table_address),
@@ -292,6 +296,7 @@ class MumuProcessMemory:
         regions: Iterable[MemoryRegion],
     ) -> None:
         self.pid = int(pid)
+        self.device_scope_id = remote_device_scope_id()
         self.process_start_ticks = int(process_start_ticks)
         self.adb_serial = str(adb_serial)
         self.regions = tuple(regions)
@@ -340,6 +345,7 @@ class MumuProcessMemory:
     def _read_transport(
         self, command: str, *, timeout_s: int, expected_size: int
     ) -> bytes:
+        self._require_device_scope()
         started = time.perf_counter()
         self._diagnostics["transport_calls"] += 1
         try:
@@ -356,9 +362,40 @@ class MumuProcessMemory:
         finally:
             self._diagnostics["transport_seconds"] += time.perf_counter() - started
 
+    def _require_device_scope(self) -> None:
+        if self.device_scope_id != remote_device_scope_id():
+            raise FanxiuRuntimeMemoryError(
+                "Runtime 内存快照所属设备已切换，请重新发现进程",
+                code="memory_device_scope_changed",
+            )
+
+    def _read_remote_chunks(self, address: int, size: int) -> bytes:
+        """Transport large regions in bounded receipts; cache only the full snapshot."""
+        parts = []
+        for offset in range(0, size, 16 * 1024 * 1024):
+            count = min(16 * 1024 * 1024, size - offset)
+            start = address + offset
+            block = 4096 if start % 4096 == 0 and count % 4096 == 0 else 1
+            data = self._read_transport(
+                f"dd if=/proc/{self.pid}/mem bs={block} skip={start // block} "
+                f"count={count // block} 2>/dev/null",
+                timeout_s=30,
+                expected_size=count,
+            )
+            if len(data) != count:
+                raise FanxiuRuntimeMemoryError(
+                    f"读取凡修 Runtime 内存不完整：期望 {count}，实际 {len(data)}",
+                    code="memory_read_failed",
+                )
+            parts.append(data)
+        self._require_device_scope()
+        return b"".join(parts)
+
     @classmethod
     def discover(cls) -> "MumuProcessMemory":
-        global _process_cache
+        from backend.core.fanxiu.client.remote_transport import ensure_remote_runtime_ready
+        ensure_remote_runtime_ready()
+        global _process_cache, _process_cache_scope_id
         pid_text, adb_meta = mumu_control._run_mumu_adb_shell_text(
             f"pidof {mumu_control.FANXIU_ANDROID_PACKAGE}",
             timeout_s=8,
@@ -399,6 +436,7 @@ class MumuProcessMemory:
             regions=regions,
         )
         with _PROCESS_CACHE_LOCK:
+            _process_cache_scope_id = memory.device_scope_id
             _process_cache = (
                 time.monotonic(),
                 memory.pid,
@@ -417,8 +455,10 @@ class MumuProcessMemory:
     ) -> "MumuProcessMemory":
         """Reuse process identity/maps for bounded read-only patrol snapshots."""
 
+        from backend.core.fanxiu.client.remote_transport import ensure_remote_runtime_ready
+        ensure_remote_runtime_ready()
         with _PROCESS_CACHE_LOCK:
-            cached = _process_cache
+            cached = _process_cache if _process_cache_scope_id == remote_device_scope_id() else None
         if cached is not None:
             (
                 cached_at,
@@ -504,6 +544,7 @@ class MumuProcessMemory:
         return region if region.contains(address, size) else None
 
     def read(self, address: int, size: int, *, max_size: int = 1 << 20) -> bytes:
+        self._require_device_scope()
         self._diagnostics["read_calls"] += 1
         address, size = int(address), int(size)
         if size < 0 or size > int(max_size):
@@ -528,6 +569,10 @@ class MumuProcessMemory:
                 offset = address - cached_address
                 self._diagnostics["cache_hits"] += 1
                 return cached_data[offset : offset + size]
+        if self.device_scope_id and size > 16 * 1024 * 1024:
+            data = self._read_remote_chunks(address, size)
+            self._read_cache[key] = data
+            return data
         if size <= self._MEMORY_PAGE_BYTES:
             # Lua table traversal performs many adjacent pointer-sized reads.
             # One ADB shell round-trip per 8-byte pointer turns a cached-root
@@ -594,6 +639,7 @@ class MumuProcessMemory:
         still decode and validate every requested field from the fresh bytes.
         """
 
+        self._require_device_scope()
         self._diagnostics["prefetch_calls"] += 1
         page = self._MEMORY_PAGE_BYTES
         span = self._SMALL_READ_PREFETCH_BYTES
@@ -650,6 +696,7 @@ class MumuProcessMemory:
                 offset += size
 
     def read_region(self, region: MemoryRegion) -> bytes:
+        self._require_device_scope()
         self._diagnostics["read_region_calls"] += 1
         if region.size > 64 * 1024 * 1024:
             raise FanxiuRuntimeMemoryError(f"Runtime 根发现区域过大：{region.size}")
@@ -657,6 +704,10 @@ class MumuProcessMemory:
         if key in self._read_cache:
             self._diagnostics["cache_hits"] += 1
             return self._read_cache[key]
+        if self.device_scope_id and region.size > 16 * 1024 * 1024:
+            data = self._read_remote_chunks(region.start, region.size)
+            self._read_cache[key] = data
+            return data
         block_size = 4096
         if region.start % block_size or region.size % block_size:
             return self.read(
@@ -1361,17 +1412,22 @@ class LuaJitReader:
         return (high << 32) | (low & 0xFFFFFFFF)
 
 
+def _runtime_cache_directory(scope_id: str) -> Path:
+    """Keep legacy local paths; remote workers never share process-address facts."""
+    root = codeyun_temp_root("fanxiu-runtime-memory")
+    if scope_id:
+        return root / "workers" / hashlib.sha256(scope_id.encode()).hexdigest()
+    return root
+
+
 def _cache_path(manager_key: str) -> Path:
-    return (
-        codeyun_temp_root("fanxiu-runtime-memory")
-        / f"{manager_key.lower()}-root.json"
-    )
+    return _runtime_cache_directory(remote_device_scope_id()) / f"{manager_key.lower()}-root.json"
 
 
 def _cached_runtime_root_anchors(memory: MumuProcessMemory) -> tuple[int, ...]:
     """Return Lua addresses already proven for this exact game process."""
 
-    cache_dir = codeyun_temp_root("fanxiu-runtime-memory")
+    cache_dir = _runtime_cache_directory(memory.device_scope_id)
     anchors: set[int] = set()
     try:
         paths = tuple(cache_dir.glob("*-root.json"))
@@ -1381,7 +1437,8 @@ def _cached_runtime_root_anchors(memory: MumuProcessMemory) -> tuple[int, ...]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if (
-                as_int(payload.get("pid")) != memory.pid
+                str(payload.get("device_scope_id") or "") != memory.device_scope_id
+                or as_int(payload.get("pid")) != memory.pid
                 or as_int(payload.get("process_start_ticks"))
                 != memory.process_start_ticks
             ):
@@ -1403,7 +1460,8 @@ def _read_cached_root(memory: MumuProcessMemory, path: Path) -> int | None:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
     if (
-        as_int(payload.get("pid")) != memory.pid
+        str(payload.get("device_scope_id") or "") != memory.device_scope_id
+        or as_int(payload.get("pid")) != memory.pid
         or as_int(payload.get("process_start_ticks"))
         != memory.process_start_ticks
     ):
@@ -1420,6 +1478,7 @@ def _write_cached_root(
     path.write_text(
         json.dumps(
             {
+                "device_scope_id": memory.device_scope_id,
                 "pid": memory.pid,
                 "process_start_ticks": memory.process_start_ticks,
                 "root_address": int(root_address),

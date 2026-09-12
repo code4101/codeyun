@@ -25,6 +25,8 @@ class FanxiuAdbDeviceService:
         self._cached_env_path = ""
 
     def adb_path(self) -> Path:
+        from backend.core.fanxiu.client.remote_transport import reject_local_device_access
+        reject_local_device_access("ADB executable discovery")
         env_path = str(os.environ.get("FANXIU_ADB_PATH") or "").strip()
         with self._adb_path_lock:
             cached = self._cached_adb_path

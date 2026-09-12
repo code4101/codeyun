@@ -39,7 +39,8 @@ class BoundedBodyRoute(APIRoute):
             size = 0
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > MAX_BODY_BYTES:
+                limit = 45 * 1024 * 1024 if request.url.path.endswith("/results") else MAX_BODY_BYTES
+                if size > limit:
                     raise HTTPException(413, "截图请求过大")
                 chunks.append(chunk)
             body = b"".join(chunks)
@@ -183,3 +184,96 @@ def step_session(session_id: str, payload: StepRequest, user: User = Depends(rem
 @router.delete("/sessions/{session_id}")
 def close_session(session_id: str, user: User = Depends(remote_user)):
     return _call(remote_sessions.close, user.id, session_id)
+
+
+def bridge_user(user: User = Depends(remote_user)) -> User:
+    if not user.is_superuser:
+        raise HTTPException(403, "设备执行桥目前仅供超级管理员本人测试")
+    return user
+
+
+class ConnectDevice(StrictRequest):
+    device_id: str = Field(min_length=1, max_length=128)
+    client_instance_id: str = Field(min_length=1, max_length=128)
+    metadata: dict = Field(default_factory=dict)
+
+
+class PollDevice(StrictRequest):
+    wait_seconds: float = Field(default=20, ge=0, le=25)
+
+
+class DeviceResult(StrictRequest):
+    request_id: str = Field(min_length=1, max_length=64)
+    status: Literal["ok", "error", "uncertain"]
+    result: dict = Field(default_factory=dict)
+    error: str = Field(default="", max_length=2000)
+
+
+class DeviceRpc(StrictRequest):
+    worker_id: str = Field(min_length=1, max_length=64)
+    request_id: str = Field(min_length=1, max_length=64)
+    operation: str = Field(max_length=32)
+    args: dict = Field(default_factory=dict)
+    timeout_s: float = Field(default=30, ge=1, le=120)
+
+
+@router.post("/devices/connect")
+def connect_device(payload: ConnectDevice, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    return _call(device_bridge.connect, user.id, **payload.model_dump())
+
+
+@router.post("/devices/{worker_id}/poll")
+def poll_device(worker_id: str, payload: PollDevice, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    return _call(device_bridge.poll, user.id, worker_id, payload.wait_seconds)
+
+
+@router.post("/devices/{worker_id}/results")
+def device_result(worker_id: str, payload: DeviceResult, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    return _call(device_bridge.result, user.id, worker_id, **payload.model_dump())
+
+
+@router.delete("/devices/{worker_id}")
+def disconnect_device(worker_id: str, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    return _call(device_bridge.close, user.id, worker_id)
+
+
+@router.post("/device-rpc")
+def device_rpc(payload: DeviceRpc, request: Request):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    # This is server-internal RPC, not a substitute for worker user login.
+    if request.client is None or request.client.host not in {"127.0.0.1", "::1"}:
+        raise HTTPException(403, "设备 RPC 仅限服务端本机调用")
+    token = request.headers.get("X-Fanxiu-Bridge", "")
+    return _call(device_bridge.signed_rpc, token, **payload.model_dump())
+
+
+class RunNextDevice(StrictRequest):
+    stop_at: str = Field(min_length=10, max_length=64)
+
+
+@router.post("/devices/{worker_id}/run-next")
+def run_next_device(worker_id: str, payload: RunNextDevice, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    from backend.core.fanxiu.remote.job_worker import job_worker
+    _call(device_bridge.describe, user.id, worker_id)
+    return _call(job_worker.next, worker_id, payload.stop_at)
+
+
+@router.get("/devices/{worker_id}/jobs")
+def device_jobs(worker_id: str, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    from backend.core.fanxiu.remote.job_worker import job_worker
+    _call(device_bridge.describe, user.id, worker_id)
+    return job_worker.status(worker_id)
+
+
+@router.post("/devices/{worker_id}/resume-jobs")
+def resume_device_jobs(worker_id: str, user: User = Depends(bridge_user)):
+    from backend.core.fanxiu.remote.device_bridge import device_bridge
+    from backend.core.fanxiu.remote.job_worker import job_worker
+    _call(device_bridge.describe, user.id, worker_id)
+    return _call(job_worker.resume, worker_id)

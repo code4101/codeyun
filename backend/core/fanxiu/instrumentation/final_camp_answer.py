@@ -248,6 +248,11 @@ def get_final_camp_answer_snapshot(
 ) -> dict[str, Any]:
     """Return immediately; refresh the read-only native snapshot in background."""
 
+    from backend.core.fanxiu.client.remote_transport import remote_device_active
+    if remote_device_active():
+        from .scoped_snapshot import read_scoped_snapshot
+        return read_scoped_snapshot(read_final_camp_answer_snapshot, max_age_seconds=max_age_seconds)
+
     global _CACHE_REFRESHING, _CACHE_LAST_STARTED
     now_monotonic = time.monotonic()
     start_refresh = False

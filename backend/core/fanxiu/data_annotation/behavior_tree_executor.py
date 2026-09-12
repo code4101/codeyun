@@ -11927,6 +11927,7 @@ class BehaviorTreeExecutor(
             "box": self._box(shape, image),
             "scan_box": scan_box_payload if scan else None,
             "scan": scan,
+            "scan_scales": shape.get("scanScales") if scan else None,
             "pixel_tolerance": int(shape.get("pixelTolerance") if shape.get("pixelTolerance") is not None else 20),
             "alpha_mask_data_url": ((shape.get("alphaMask") or {}).get("dataUrl") if isinstance(shape.get("alphaMask"), dict) else None),
             "ocr_mask_mode": shape.get("ocrMaskMode") or "inherit-envelope",

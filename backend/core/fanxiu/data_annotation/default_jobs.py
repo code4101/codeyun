@@ -315,10 +315,22 @@ def register_fanxiu_default_jobs() -> None:
         ctx: dict[str, Any],
         payload: dict[str, Any],
         stop_event: threading.Event,
-    ) -> str:
-        del payload
-        runner._execute_hide_floating_window(ctx, stop_event)
-        return "success"
+    ) -> Any:
+        # Login and explicit hiding share the same verified SDK postcondition.
+        # A dispatched drag is not proof that the overlay disappeared.
+        result = yield from runner._ensure_bubble_hidden(ctx, stop_event, payload)
+        if runner._execute_hide_floating_window(ctx, stop_event):
+            context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+            for _ in range(2):
+                yield from context.wait_action_settle(0.8)
+                frame = context.cur_frame(update=True)
+                if context.shape_matches(58, "图标", frame_data_url=frame) is not None:
+                    raise RuntimeError("隐藏浮动窗：拖拽后图标仍可见")
+            result = {"result": "success", "message": "隐藏浮动窗：气泡及通用浮窗均已验证隐藏"}
+        runner._persist_scheduler_task_next_time(
+            str(payload.get("__scheduler_task_id") or "hide-floating-window"), None,
+        )
+        return result
 
     @register_fanxiu_data_annotation_task_cell(
         "daily_mozu",

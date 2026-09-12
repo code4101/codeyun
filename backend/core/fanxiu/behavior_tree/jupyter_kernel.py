@@ -521,6 +521,8 @@ class FanxiuJupyterBinding:
             )
 
     def run_task_cell(self, task_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        from contextlib import nullcontext
+        from backend.core.fanxiu.client.remote_transport import use_remote_device, call_remote_device
         from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
 
         definition = get_fanxiu_data_annotation_task_cell_definition(str(task_type or ""))
@@ -555,7 +557,15 @@ class FanxiuJupyterBinding:
             repair_error = getattr(self.runner, "_scene_repair_error", None)
             if repair_error is not None:
                 raise repair_error
-            result = self.run_task(task_type, normalized_payload)
+            worker_id = str(normalized_payload.get("__remote_worker_id") or "")
+            # Setup failures belong to this formal attempt too. Only the public
+            # worker id enters Cell history; scoped credentials stay internal.
+            with use_remote_device(worker_id) if worker_id else nullcontext():
+                if normalized_payload.get("__remote_bootstrap"):
+                    if not worker_id or task_type != "login_game":
+                        raise ValueError("客户端启动准备仅用于绑定设备的登录作业")
+                    call_remote_device("launch", {"package": "com.frxxcrjpwssc3.ggws"}, timeout_s=30)
+                result = self.run_task(task_type, normalized_payload)
             # Business handlers may catch Exception for local recovery. Once
             # scene repair took ownership, a normal return cannot seal success.
             repair_error = getattr(self.runner, "_scene_repair_error", None)

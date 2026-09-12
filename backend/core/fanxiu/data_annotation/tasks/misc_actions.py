@@ -83,7 +83,6 @@ class MiscActionTaskMixin:
         frame = context.cur_frame(update=True)
         threshold = self.scene_thresholds.get("hide_floating", 55)
         for scene_id, source_title, target_title in (
-            (421, "气泡", "拖拽隐藏"),
             (58, "图标", "隐藏区"),
         ):
             score = context.shape_score(scene_id, source_title, frame_data_url=frame)
