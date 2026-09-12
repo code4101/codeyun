@@ -132,11 +132,17 @@ def _call(operation, *args, **kwargs):
 
 @router.get("/capabilities")
 def capabilities(user: User = Depends(remote_user)):
+    from backend.core.fanxiu.client.mumu_control import DEFAULT_FIXED_WIDTH, DEFAULT_FIXED_HEIGHT
     return {"protocol_version": 1, "feature_key": "fanxiu.remote",
             "jobs": [{"id": "observe", "title": "识别当前画面"},
                      {"id": "navigate", "title": "前往已标注场景", "requires": ["target_scene_id"]},
                      {"id": "runtime_probe", "title": "按需验证本机 Runtime 内存读取", "requires": ["runtime.process"]}],
             "observation_channels": ["screenshot", "runtime"],
+            "screenshot_geometry": {"reference_width": DEFAULT_FIXED_WIDTH,
+                                    "reference_height": DEFAULT_FIXED_HEIGHT,
+                                    "aspect_ratio": "9:16", "minimum_width": 540,
+                                    "action_coordinates": "source_pixels",
+                                    "requires_scene_match": True},
             "runtime_queries": ["process"],
             "limits": {"max_image_bytes": MAX_IMAGE_BYTES, "max_steps": MAX_STEPS,
                        "action_ttl_seconds": ACTION_TTL_SECONDS, "session_idle_seconds": SESSION_IDLE_SECONDS},

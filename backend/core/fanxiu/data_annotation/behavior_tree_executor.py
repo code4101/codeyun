@@ -7177,6 +7177,7 @@ class BehaviorTreeExecutor(
     def analyze_external_frame(
         self, frame_data_url: str, *, frame_width: int, frame_height: int,
         target_scene_id: int | None = None,
+        sampling_size: tuple[int, int] | None = None,
     ) -> dict[str, Any]:
         """Recognize an uploaded frame and propose one declared navigation action.
 
@@ -7184,9 +7185,9 @@ class BehaviorTreeExecutor(
         mutation, frame persistence or authoritative local scene projection.
         The caller owns bounded polling, freshness and action acknowledgement.
         No learned transition counts are written from untrusted client receipts.
-        Navigation requires the asset's exact canvas size: OCR regions use that
-        coordinate system, so another size must not produce a guessed click.
-        Remote live navigation has not yet been accepted against a real game.
+        The supplied frame uses the asset canvas. sampling_size records its
+        original pixel dimensions before normalization, for image bandwidth
+        matching only; OCR and proposed coordinates stay on the asset canvas.
         """
         from types import SimpleNamespace
         from backend.core.fanxiu.data_annotation.storage import (
@@ -7210,6 +7211,7 @@ class BehaviorTreeExecutor(
             "asset_tree": tree, "images": images, "asset_tree_path": path,
             "asset_tree_revision": snapshot.revision,
             "external_frame_only": True, "_disable_recognition_ambiguity_recording": True,
+            "external_sampling_size": sampling_size,
         }
         with self._scene_observation_probe(ctx):
             recognition = self._identify_scene_number_by_graph(ctx, frame_data_url)
@@ -11841,7 +11843,23 @@ class BehaviorTreeExecutor(
                     f"ADB 黑帧仍在有界观察窗口 {elapsed:.1f}/{threshold:.1f}s，{wait_seconds:.1f}s 后重试同一截图事务",
                 )
                 time.sleep(wait_seconds)
-        return self._data_url(bytes(response.body or b""))
+        # Local Tasks and uploaded observations share one annotation canvas.
+        # Native dimensions remain in context for image bandwidth matching;
+        # the ADB input provider maps the declared canvas to current wm size.
+        from io import BytesIO
+        from PIL import Image
+        from backend.core.fanxiu.remote.frame_geometry import FrameGeometry
+        from backend.core.fanxiu.client.mumu_control import DEFAULT_FIXED_WIDTH, DEFAULT_FIXED_HEIGHT
+        raw = bytes(response.body or b"")
+        with Image.open(BytesIO(raw)) as image:
+            geometry = FrameGeometry(*image.size, int(DEFAULT_FIXED_WIDTH), int(DEFAULT_FIXED_HEIGHT))
+            normalized = geometry.normalize_image(image)
+            ctx["frame_sampling_size"] = image.size
+            if image.size == normalized.size:
+                return self._data_url(raw)
+            output = BytesIO()
+            normalized.save(output, format="PNG")
+            return self._data_url(output.getvalue())
 
     def _screencap(self, ctx: dict[str, Any]) -> str:
         frame_data_url = ctx.get("_tick_frame_data_url")
@@ -11873,7 +11891,10 @@ class BehaviorTreeExecutor(
         )
         if ctx.get("external_frame_only"):
             payload.update(save_match_frame=False, require_supplied_frame=True)
+            payload["sampling_size"] = ctx.get("external_sampling_size")
             payload["asset_revision"] = str(ctx.get("asset_tree_revision") or "")
+        elif ctx.get("frame_sampling_size"):
+            payload["sampling_size"] = ctx["frame_sampling_size"]
         entry: Any = ctx["entry"]
         return _match_game_window2_service(payload) if entry.mode == "local" else _match_remote_game_window2(entry, payload)
 

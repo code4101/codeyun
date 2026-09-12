@@ -714,7 +714,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         schedule_label="每小时检查",
         retry_label="失败后 10 分钟重试",
         action=enqueue_tibo_x_archive_job,
-        manual_warning="会访问 X 的公开 RSS 镜像并调用本机 AI 翻译；按消息 ID 去重，只更新专用摘录书。",
+        manual_warning="会访问 XCancel 公开时间线；在线翻译失败时使用本机 AI 翻译，按消息 ID 去重更新专用摘录书。",
         default_visible=False,
     ),
     BackgroundTaskSpec(

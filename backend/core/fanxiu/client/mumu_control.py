@@ -2283,6 +2283,60 @@ def _parse_wm_density_text(text: str) -> int | None:
     return int(matches[-1])
 
 
+def configure_mumu_display(
+    *, width: int, height: int, dpi: int, vmindex: str = "1", restart: bool = False,
+) -> dict[str, Any]:
+    """Set native MuMu display settings, optionally cold-start that instance.
+
+    This is an explicit setup operation, not a screenshot/read helper. Android
+    wm overrides alone can leave Unity's surface at the old size with borders.
+    Cold-start uses the existing independent Windows launcher and deliberately
+    does not restore the default 900x1600, start Jobs, or enable guards.
+    With restart=False the settings take effect on the next emulator restart.
+    """
+    if not (320 <= width <= 4096 and 320 <= height <= 4096 and 120 <= dpi <= 640):
+        raise ValueError("MuMu 显示尺寸或 DPI 超出支持范围")
+    target = str(vmindex)
+    before = _run_mumu_manager_json([
+        "setting", "--vmindex", target, "--key", "resolution_mode",
+        "--key", "resolution_width.custom", "--key", "resolution_height.custom",
+        "--key", "resolution_dpi.custom",
+    ])
+    settings = _run_mumu_manager_json([
+        "setting", "--vmindex", target, "--key", "resolution_mode", "--value", "custom",
+        "--key", "resolution_width.custom", "--value", str(width),
+        "--key", "resolution_height.custom", "--value", str(height),
+        "--key", "resolution_dpi.custom", "--value", str(dpi),
+    ])
+    result = {"before": before, "settings": settings, "restarted": False}
+    if not restart:
+        return result
+    _mumu_manager_control(target, "shutdown", timeout=15)
+    deadline = time.monotonic() + 20
+    while _mumu_manager_player_info(target).get("is_process_started"):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("MuMu 未完成停止，不能重新启动")
+        time.sleep(1)
+    _mumu_manager_control(target, "launch", timeout=15)
+    deadline = time.monotonic() + 90
+    while True:
+        info = _mumu_manager_player_info(target)
+        if info.get("is_android_started") and info.get("adb_host_ip"):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("MuMu 显示配置更新后未完成启动")
+        time.sleep(2)
+    online = wait_mumu_adb_online(vmindex=target, timeout_s=30)
+    serials = [online["adb"]["adb_serial"]]
+    size_text, _ = _run_mumu_adb_shell_text("wm size", preferred_serials=serials)
+    density_text, _ = _run_mumu_adb_shell_text("wm density", preferred_serials=serials)
+    result.update(restarted=True, player=info, adb=online["adb"],
+                  actual={"size": size_text, "density": density_text})
+    if _parse_wm_size_text(size_text) != (width, height) or _parse_wm_density_text(density_text) != dpi:
+        raise RuntimeError(f"MuMu 冷启动后显示配置未生效：{result['actual']}")
+    return result
+
+
 def ensure_mumu_adb_resolution(*, vmindex: str = "1") -> dict[str, Any]:
     expected_width = int(DEFAULT_FIXED_WIDTH)
     expected_height = int(DEFAULT_FIXED_HEIGHT)
@@ -4029,6 +4083,40 @@ def _normalize_tolerance_frames(tolerance_min: Any, tolerance_max: Any, width: i
     return min_frame, max_frame
 
 
+def smooth_image_tolerance_bounds(lower: Any, upper: Any, *, sigma: float):
+    """Transport a BGR pixel envelope through Gaussian sampling smoothing.
+
+    A Gaussian has nonnegative weights, so filtering ordered lower/upper
+    bounds encloses every filtered admissible image. The envelope describes
+    only a Shape crop: pixels outside it are unknown, bounded by 0 and 255,
+    rather than reflected from its edge. Callers first normalize both arrays
+    to the same crop size. No device access or pixel-tolerance adjustment.
+    """
+    import math
+    import cv2
+    import numpy as np
+
+    if not math.isfinite(sigma) or sigma <= 0:
+        raise ValueError("高斯采样 sigma 必须为有限正数")
+    if lower.shape != upper.shape or lower.ndim != 3 or lower.shape[2] != 3 or not lower.size:
+        raise ValueError("采样包络必须为同尺寸非空 BGR 图像")
+    if lower.dtype != np.uint8 or upper.dtype != np.uint8:
+        raise ValueError("采样包络必须为 uint8 图像")
+    low, high = np.minimum(lower, upper), np.maximum(lower, upper)
+    # This exceeds OpenCV's automatic uint8 Gaussian kernel radius (~3 sigma).
+    # The padded image border therefore cannot affect the retained crop.
+    padding = max(1, math.ceil(4 * sigma))
+    result = []
+    for bound, outside in ((low, 0), (high, 255)):
+        padded = cv2.copyMakeBorder(
+            bound, padding, padding, padding, padding,
+            cv2.BORDER_CONSTANT, value=(outside, outside, outside),
+        )
+        filtered = cv2.GaussianBlur(padded, (0, 0), sigma)
+        result.append(filtered[padding:-padding, padding:-padding].copy())
+    return result[0], result[1]
+
+
 def _compare_frame_crops(
     reference_crop: Any,
     current_crop: Any,
@@ -4767,6 +4855,7 @@ def match_fanxiu_screenshot_box_frame(
     debug_match: bool = False,
     save_match_frame: bool = True,
     require_supplied_frame: bool = False,
+    sampling_size: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     source_asset = resolve_data_annotation_image_asset(filename, entry_id=entry_id)
     if not source_asset.exists:
@@ -4805,6 +4894,31 @@ def match_fanxiu_screenshot_box_frame(
         encode_frame=bool(save_match_frame),
     )
     current_height, current_width = current_frame.shape[:2]
+    # Uploaded low-resolution frames have already been normalized to the asset
+    # canvas. Compare at a common bandwidth without relaxing pixelTolerance.
+    # Blur whole frames before cropping to avoid artificial Shape-edge pixels.
+    # OCR always receives the original unfiltered frame. Native-resolution
+    # matching (all existing local callers) follows the unchanged path.
+    if sampling_size and not (ocr_enabled and str(ocr_text or "").strip()):
+        sw, sh = sampling_size
+        if (sw <= 0 or sh <= 0 or sw * 2 < source_width
+                or sw * source_height != sh * source_width
+                or (current_width, current_height) != (source_width, source_height)):
+            raise ValueError("采样尺寸必须对应等比例归一后的完整参考画布")
+        if sw < source_width:
+            import cv2
+            sigma = source_width / sw
+            reference_frame = cv2.GaussianBlur(reference_frame, (0, 0), sigma)
+            current_frame = cv2.GaussianBlur(current_frame, (0, 0), sigma)
+            reference_crop = _crop_frame_box(reference_frame, source_box)
+            if tolerance_min is not None and tolerance_max is not None:
+                tolerance_min, tolerance_max = _normalize_tolerance_frames(
+                    tolerance_min, tolerance_max, source_box["w"], source_box["h"],
+                )
+                if tolerance_min is not None and tolerance_max is not None:
+                    tolerance_min, tolerance_max = smooth_image_tolerance_bounds(
+                        tolerance_min, tolerance_max, sigma=sigma,
+                    )
     current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
     current_crop = _crop_frame_box(current_frame, current_box)
     ocr_mask = _decode_image_data_url_gray(ocr_mask_data_url or "") if ocr_mask_data_url else None

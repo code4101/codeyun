@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,11 +40,8 @@ class LoginGameTaskMixin:
     @staticmethod
     def _is_resource_loading_frame(frame_text: str) -> bool:
         compact = "".join(str(frame_text or "").split())
-        return "AppVer" in compact and (
-            "正在初始化资源" in compact
-            or "初始化资源" in compact
-            or "正在加载资源" in compact
-        )
+        # Adjacent OCR line boxes can duplicate the final character (化化).
+        return "AppVer" in compact and bool(re.search(r"(?:初始化化?|加载载?)资源", compact))
 
     @staticmethod
     def _visible_bubble_proves_game_ready(context: Any, *, frame: str) -> bool:
@@ -161,6 +159,7 @@ class LoginGameTaskMixin:
             stop_event=stop_event,
         )
         loading_started_at: float | None = None
+        unknown_started_at: float | None = None
         action_attempt_counts: dict[int, int] = {}
         while True:
             self._raise_if_stopped(stop_event)
@@ -173,6 +172,12 @@ class LoginGameTaskMixin:
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             frame_text = context.ocr_text(frame)
+            if scene_id is None:
+                # Loading screens may have no scene asset. Scene-scoped OCR
+                # is empty there, so it cannot prove resource initialization.
+                # Full-frame text only authorizes the existing bounded wait.
+                frame_text = " ".join(str(token.get("text") or "")
+                                      for token in context.full_frame_ocr_tokens(frame))
             scene_id = self._resolve_login_scene(scene_id, frame_text)
             bubble_ready = bool(
                 scene_id is None
@@ -188,9 +193,19 @@ class LoginGameTaskMixin:
                 and self._is_resource_loading_frame(frame_text)
             )
             if scene_id is None and not bubble_ready and not resource_loading:
+                # Fade/animation frames can temporarily lose loading text.
+                # Observe for the same bounded unknown window as navigation;
+                # no click or recovery is authorized by this branch.
+                current = time.monotonic()
+                if unknown_started_at is None:
+                    unknown_started_at = current
+                if current - unknown_started_at < 60.0:
+                    yield from context.wait_action_settle(loading_poll)
+                    continue
                 raise RuntimeError(
                     "登录游戏：当前画面未识别且无资源初始化证据；拒绝点击或重启模拟器"
                 )
+            unknown_started_at = None
             if resource_loading:
                 current = time.monotonic()
                 if loading_started_at is None:

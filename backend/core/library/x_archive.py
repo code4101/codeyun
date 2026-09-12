@@ -13,7 +13,7 @@ import re
 import sqlite3
 import time
 from typing import Any, Callable, Iterable
-from urllib.parse import quote, unquote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -44,6 +44,7 @@ TIBO_X_ARCHIVE_LOOKBACK_DAYS = 30
 X_ARCHIVE_RENDER_VERSION = 6
 DISPLAY_TIMEZONE = ZoneInfo("Asia/Shanghai")
 NITTER_RSS_URL_TEMPLATE = "https://nitter.net/{handle}/rss"
+X_TIMELINE_URL_TEMPLATE = "https://xcancel.com/{handle}"
 X_PROFILE_URL_TEMPLATE = "https://x.com/{handle}"
 RSS_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -81,6 +82,18 @@ class XArchiveResult:
     translated_count: int = 0
     total_count: int = 0
     message: str = ""
+
+
+class XArchivePartialFetchError(RuntimeError):
+    """Pagination failed after valid pages; callers may publish those posts.
+
+    The incomplete backfill must remain explicit, rather than losing fresh
+    posts or reporting a full successful synchronization.
+    """
+
+    def __init__(self, posts: list[XPost], cause: Exception) -> None:
+        super().__init__(f"已获取最新消息，但历史分页未完成：{cause}")
+        self.posts = posts
 
 
 class XArchiveStore:
@@ -361,26 +374,110 @@ def fetch_nitter_rss_page(
         return response.read(), str(response.headers.get("Min-Id") or "").strip()
 
 
+def parse_nitter_timeline(data: bytes, *, handle: str) -> list[XPost]:
+    """Read public timeline posts; reject error/login pages instead of reporting no updates.
+
+    XCancel's public HTML remains available while nitter.net is offline and its
+    RSS endpoint requires a reader whitelist. Keep this adapter separate from
+    archive storage, translation and rendering.
+    """
+    soup = BeautifulSoup(data, "html.parser")
+    timeline = soup.select_one(".timeline")
+    if timeline is None:
+        raise RuntimeError("X 公开时间线不可用：响应中缺少消息列表。")
+    posts: list[XPost] = []
+    for item in timeline.select(".timeline-item"):
+        link = item.select_one("a.tweet-link")
+        if link is None:  # End-of-timeline and pagination elements are not posts.
+            continue
+        match = re.search(r"/status/(\d+)", str(link.get("href") or ""))
+        content = item.select_one(".tweet-content")
+        if match is None or content is None:
+            raise RuntimeError("X 公开时间线消息结构已变化。")
+        post_id = match.group(1)
+        # X snowflake IDs encode UTC milliseconds; independent of page locale
+        # and relative timestamps such as '2h', including old pinned posts.
+        created = datetime.fromtimestamp(
+            ((int(post_id) >> 22) + 1288834974657) / 1000, timezone.utc
+        ).astimezone(DISPLAY_TIMEZONE)
+        quoted = item.select_one(".quote")
+        quoted_author = quoted_text = ""
+        if quoted is not None:
+            name = quoted.select_one(".fullname")
+            username = quoted.select_one(".username")
+            quoted_author = " ".join(
+                [name.get_text(strip=True) if name else "",
+                 f"({username.get_text(strip=True)})" if username else ""]
+            ).strip()
+            text_node = quoted.select_one(".quote-text")
+            if text_node is not None:
+                quoted_text = normalize_quoted_text(text_node.get_text("", strip=False).strip())
+        images = list(dict.fromkeys(
+            _normalize_media_url(str(image.get("src") or ""))
+            for image in item.select(".attachments img, .quote-media img")
+            if image.get("src")
+        ))
+        posts.append(XPost(
+            id=post_id, handle=handle,
+            url=_normalize_x_url(str(link.get("href")), handle=handle, post_id=post_id),
+            created_at=created.strftime("%Y-%m-%d %H:%M"),
+            created_ts=created.timestamp(), text=content.get_text("", strip=False).strip(),
+            quoted_author=quoted_author, quoted_text=quoted_text, images=images,
+        ))
+    if not posts and not timeline.select_one(".timeline-end"):
+        raise RuntimeError("X 公开时间线未返回消息，也未标记列表结束。")
+    return posts
+
+
+def fetch_nitter_timeline_page(
+    *, handle: str, cursor: str = "", timeout_seconds: float = 30,
+) -> tuple[bytes, str]:
+    """Fetch one public HTML page and its opaque pagination cursor."""
+    url = X_TIMELINE_URL_TEMPLATE.format(handle=quote(handle, safe=""))
+    if cursor:
+        url += "?" + urlencode({"cursor": cursor})
+    request = Request(url, headers={"User-Agent": RSS_USER_AGENT, "Accept": "text/html"})
+    with urlopen(request, timeout=timeout_seconds) as response:
+        data = response.read()
+    soup = BeautifulSoup(data, "html.parser")
+    more = soup.select_one('.show-more a[href*="cursor="]')
+    next_cursor = (
+        parse_qs(urlsplit(str(more.get("href"))).query).get("cursor", [""])[0]
+        if more else ""
+    )
+    return data, next_cursor
+
+
 def crawl_x_profile(
     *,
     handle: str,
     since: datetime,
     max_pages: int = 12,
-    fetch_page: Callable[..., tuple[bytes, str]] = fetch_nitter_rss_page,
+    fetch_page: Callable[..., tuple[bytes, str]] = fetch_nitter_timeline_page,
+    parse_page: Callable[..., list[XPost]] = parse_nitter_timeline,
 ) -> list[XPost]:
     threshold = since.astimezone(DISPLAY_TIMEZONE).timestamp()
     posts: dict[str, XPost] = {}
     cursor = ""
     seen_cursors: set[str] = set()
     for _ in range(max(1, max_pages)):
-        data, next_cursor = fetch_page(handle=handle, cursor=cursor)
-        page_posts = parse_nitter_rss(data, handle=handle)
+        try:
+            data, next_cursor = fetch_page(handle=handle, cursor=cursor)
+            page_posts = parse_page(data, handle=handle)
+        except Exception as exc:
+            if not posts:
+                raise
+            raise XArchivePartialFetchError(
+                sorted(posts.values(), key=lambda post: (post.created_ts, post.id), reverse=True),
+                exc,
+            ) from exc
         if not page_posts:
             break
         for post in page_posts:
             if post.created_ts >= threshold:
                 posts[post.id] = post
-        if min(post.created_ts for post in page_posts) < threshold:
+        # A pinned old post must not stop pagination before recent posts.
+        if max(post.created_ts for post in page_posts) < threshold:
             break
         if not next_cursor or next_cursor in seen_cursors:
             break
@@ -519,7 +616,13 @@ def translate_x_posts_online(
     *,
     max_workers: int = 6,
     translate_text: Callable[[str], str] = _google_translate_text,
+    fallback_translator: Callable[..., dict[str, tuple[str, str]]] = translate_x_posts,
 ) -> dict[str, tuple[str, str]]:
+    """Translate online, retrying missing records with the configured local model.
+
+    A remote rate limit must not silently leave every new post unpublished.
+    If the local fallback fails too, propagate that failure to the job runner.
+    """
     rows = list(posts)
     translations: dict[str, tuple[str, str]] = {}
 
@@ -539,6 +642,11 @@ def translate_x_posts_online(
                 continue
             if text_zh:
                 translations[post_id] = (text_zh, quoted_text_zh)
+    missing = [post for post in rows if post.id not in translations]
+    if missing:
+        translations.update(fallback_translator(missing))
+    if any(post.id not in translations for post in rows):
+        raise RuntimeError("X 消息在线翻译和本机备用翻译均未完成全部记录。")
     return translations
 
 
@@ -779,10 +887,15 @@ def sync_x_archive(
     current = (now or datetime.now(DISPLAY_TIMEZONE)).astimezone(DISPLAY_TIMEZONE)
     store = XArchiveStore(_archive_root(handle) / "x.sqlite3")
     existing_ids = store.existing_ids(handle)
-    fetched = crawler(
-        handle=handle,
-        since=current - timedelta(days=max(1, int(lookback_days))),
-    )
+    fetch_warning = ""
+    try:
+        fetched = crawler(
+            handle=handle,
+            since=current - timedelta(days=max(1, int(lookback_days))),
+        )
+    except XArchivePartialFetchError as exc:
+        fetched = exc.posts
+        fetch_warning = str(exc)
     new_count = len({post.id for post in fetched} - existing_ids)
     store.upsert_many(fetched)
     pending = store.untranslated(handle)
@@ -808,13 +921,18 @@ def sync_x_archive(
         and translated_count == 0
         and render_version == X_ARCHIVE_RENDER_VERSION
     ):
+        if (asset.metadata_json or {}).get("sync_warning", "") != fetch_warning:
+            asset.metadata_json = {**dict(asset.metadata_json or {}), "sync_warning": fetch_warning}
+            session.add(asset)
+            session.commit()
         return XArchiveResult(
-            status="up_to_date",
+            status="partial" if fetch_warning else "up_to_date",
             book_id=asset.id,
             fetched_count=len(fetched),
             new_count=0,
             translated_count=0,
             total_count=len(posts),
+            message=fetch_warning,
         )
     imported_at = float((asset.metadata_json or {}).get("imported_at") or time.time()) if asset else time.time()
     document = build_x_book_document(
@@ -860,18 +978,20 @@ def sync_x_archive(
         "oldest_post_at": posts[-1].created_at,
         "imported_at": imported_at,
         "updated_at": timestamp,
+        "sync_warning": fetch_warning,
     }
     session.add(asset)
     _ensure_placement(session, asset, int(owner_user_id), timestamp)
     _write_document(int(owner_user_id), document)
     session.commit()
     return XArchiveResult(
-        status="created" if created else "updated",
+        status="partial" if fetch_warning else ("created" if created else "updated"),
         book_id=asset.id,
         fetched_count=len(fetched),
         new_count=new_count,
         translated_count=translated_count,
         total_count=len(posts),
+        message=fetch_warning,
     )
 
 
