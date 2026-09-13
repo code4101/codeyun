@@ -2,6 +2,22 @@ from dataclasses import replace
 
 import pytest
 
+
+@pytest.mark.parametrize("activity_id, cross_count, follow, expected", [
+    (1042801, 1, (), {"personal": 1042801}),
+    (1042811, 1, (), {"personal": 1042811}),
+    (2042801, 2, (42831, 42832), {"personal": 42831, "plane": 42832}),
+    (4042801, 4, (42803, 42804), {"personal": 42803, "plane": 42804}),
+])
+def test_yaochi_occurrence_rank_ids_follow_actual_activity_config(activity_id, cross_count, follow, expected):
+    """Activity rows: same-server owns a rank; cross-server references children."""
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type="yaochi-flower-festival", game_activity_id=activity_id,
+        cross_count=cross_count, activity_follow=follow,
+    )
+    assert {key: value.runtime_rank_activity_id for key, value in identities.items()} == expected
+    assert {key: value.reward_activity_id for key, value in identities.items()} == expected
+
 from backend.core.fanxiu.activity.exchange_activity_registry import (
     EXCHANGE_ACTIVITY_SPECS,
     BEAST_ABYSS_SPEC,

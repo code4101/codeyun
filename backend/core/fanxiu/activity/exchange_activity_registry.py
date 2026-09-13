@@ -763,7 +763,9 @@ YAOCHI_FLOWER_FESTIVAL_SPEC = ExchangeActivitySpec(
         _rank_scope(
             "personal", label="个人榜", role="primary", subject="role",
             reward_tiers_enabled=True, required=True, vo_type=PERSONAL_RANK_VO,
-            binding=RankActivityIdBinding(source="activity_follow", follow_index=0),
+            # Same-server ActivityRankMainView owns its ranking directly;
+            # cross-server ActivityRankServerMainView declares follow scopes.
+            binding=RankActivityIdBinding(source="activity_self_or_follow", follow_index=0),
         ),
         _rank_scope(
             "plane", label="位面榜", role="comparative", subject="server",

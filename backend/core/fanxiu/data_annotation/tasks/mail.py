@@ -374,7 +374,7 @@ class MailTaskMixin:
 
                 assistance = enqueue_fanxiu_unknown_item_assistance(
                     exc.unknown_items,
-                    db_bind=_db_engine,
+                    db_bind=_db_engine(),
                 )
                 self._log(
                     "error",

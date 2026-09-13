@@ -280,8 +280,14 @@ def test_mail_policy_snapshot_requires_explicit_complete_classification():
 def test_mail_terminal_unknown_requests_deduplicated_engineering_assistance(monkeypatch):
     runner = create_behavior_tree_executor()
     captured = []
+    bind = object()
+    monkeypatch.setattr(
+        "backend.core.fanxiu.data_annotation.tasks.mail._db_engine",
+        lambda: bind,
+    )
 
-    def fake_enqueue(evidence, **_kwargs):
+    def fake_enqueue(evidence, **kwargs):
+        assert kwargs["db_bind"] is bind
         captured.extend(evidence)
         return {
             "queued": True,

@@ -968,7 +968,8 @@ class LuaJitReader:
         if array_size:
             if self.memory.readable_region(array_address, array_size * 8) is None:
                 raise FanxiuRuntimeMemoryError(
-                    f"Lua table array 地址无效：0x{array_address:x}"
+                    f"Lua table array 地址无效：0x{array_address:x}",
+                    code="memory_address_unmapped",
                 )
             raw_array = self.memory.read(array_address, array_size * 8)
             array = [

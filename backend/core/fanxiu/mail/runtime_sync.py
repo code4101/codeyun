@@ -34,7 +34,7 @@ def _merge_runtime_mail_payload(
     existing: dict[str, Any] | None,
     runtime_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Overlay volatile Runtime state without erasing richer historical evidence."""
+    """Keep current Runtime rewards authoritative and retain historical context."""
 
     previous = dict(existing or {})
     merged = dict(previous)
@@ -53,17 +53,42 @@ def _merge_runtime_mail_payload(
     legacy_import = previous.get("packet") if isinstance(previous.get("packet"), dict) else {}
     for key in (
         "mail_content_text",
-        "mail_rewards",
-        "mail_rewards_summary",
-        "mail_rewards_unresolved",
-        "mail_rewards_unresolved_reason",
-        "has_attachment_hint",
         "seat_eviction_event",
     ):
         if previous.get(key) not in (None, "", [], {}):
             merged[key] = previous[key]
         elif legacy_import.get(key) not in (None, "", [], {}):
             merged[key] = legacy_import[key]
+    reward_keys = (
+        "mail_rewards", "mail_rewards_summary", "mail_rewards_unresolved",
+        "mail_rewards_unresolved_reason", "has_attachment_hint",
+        "orphan_action_status", "packet_orphan_action",
+    )
+    if isinstance(runtime_payload.get("mail_rewards"), list):
+        historical = {
+            key: previous.get(key, legacy_import.get(key)) for key in reward_keys
+            if key in previous or key in legacy_import
+        }
+        if historical:
+            merged.setdefault("historical_reward_evidence", historical)
+        # An explicit empty Runtime list is current evidence too. Never revive
+        # earlier rewards or import-time unknown flags over this new snapshot.
+        rewards = runtime_payload["mail_rewards"]
+        merged["mail_rewards_summary"] = _mail_rewards_summary(rewards)
+        for key in reward_keys[2:]:
+            merged.pop(key, None)
+        runtime = runtime_payload.get("runtime") or {}
+        if not rewards and runtime.get("has_attachment"):
+            merged["mail_rewards_unresolved"] = True
+            merged["mail_rewards_unresolved_reason"] = "Runtime reports attachments but decoded rewards are empty"
+        elif runtime_payload.get("mail_rewards_unresolved"):
+            merged["mail_rewards_unresolved"] = True
+            merged["mail_rewards_unresolved_reason"] = runtime_payload.get("mail_rewards_unresolved_reason", "")
+    else:
+        # A caller without a fresh reward observation cannot erase evidence.
+        for key in reward_keys:
+            if key not in runtime_payload and key not in merged and key in legacy_import:
+                merged[key] = legacy_import[key]
     merged.pop("packet", None)
     if legacy_import:
         merged["source_layers"] = ["historical_import", "runtime_memory"]

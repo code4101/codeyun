@@ -3012,23 +3012,47 @@ class BehaviorTreeContext(AutomationContext):
                     return match
                 yield from self.wait_action_settle(max(0.0, float(poll_seconds or 0.0)))
 
+        def visible_text_keys(frame: str) -> set[str]:
+            return {
+                text for row in self.ocr_fragments_in_shapes(
+                    target_view, shape_titles, padding=padding,
+                    frame_data_url=frame, crop=True,
+                )
+                if (text := _sanitize_ocr_text(row.get("text")))
+            }
+
         for cycle_index in range(cycle_limit):
             for direction in directions:
+                unchanged_before_frame: str | None = None
+                unchanged_observations = 0
                 for scroll_index in range(scroll_limit + 1):
                     frame = self.cur_frame(update=True)
+                    # Even a visually "unchanged" scroll may reveal new rows.
+                    # Always search its resulting frame before deciding to turn.
                     match = find_in_frame(frame)
                     if match is not None:
                         return match
                     if time.monotonic() >= deadline:
                         return None
+                    if unchanged_before_frame is not None:
+                        before_keys = visible_text_keys(unchanged_before_frame)
+                        after_keys = visible_text_keys(frame)
+                        if before_keys and after_keys and not (after_keys - before_keys):
+                            unchanged_observations += 1
+                        else:
+                            # Empty OCR is missing evidence, never an endpoint.
+                            unchanged_observations = 0
+                        if unchanged_observations >= 2:
+                            break
                     if loadable_shape is None or scroll_index >= scroll_limit:
                         break
                     changed = yield from self.scroll_shape_content(
                         loadable_shape,
                         direction=direction,
                     )
-                    if not changed:
-                        break
+                    unchanged_before_frame = None if changed else frame
+                    if changed:
+                        unchanged_observations = 0
             if cycle_index + 1 < cycle_limit and time.monotonic() < deadline:
                 yield from self.wait_action_settle(
                     max(0.0, float(cycle_pause_seconds or 0.0))
@@ -3492,20 +3516,29 @@ class BehaviorTreeContext(AutomationContext):
         self,
         view: View | int | str = 358,
         *,
-        attempts: int = 6,
+        timeout_seconds: float = 30.0,
         settle_seconds: float = 0.6,
     ):
-        """Retry the bounded current-level read through transient banners."""
+        """Wait for a visible level through queued battle-result banners.
+
+        Six cached/fast OCR attempts can finish while the same banner still
+        covers the label. Bound wall-clock time instead, taking a fresh frame
+        for each observation; never infer the hidden level from slider state.
+        """
 
         last_error: RuntimeError | None = None
-        for _index in range(max(1, int(attempts))):
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        while True:
             try:
                 return self.read_current_trial_difficulty(view)
             except RuntimeError as exc:
                 last_error = exc
-                yield from self.wait_action_settle(settle_seconds)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                yield from self.wait_action_settle(min(max(0.2, settle_seconds), remaining))
         raise RuntimeError(
-            f"连续 {max(1, int(attempts))} 次未读到仙窍试炼当前难度"
+            f"等待 {timeout_seconds:g} 秒仍未读到仙窍试炼当前难度"
         ) from last_error
 
     def configure_even_trial_difficulty(

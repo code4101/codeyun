@@ -999,7 +999,8 @@ class DailyRedpacketTaskMixin:
             result_view = yield from context.wait_scene(
                 [398,
                 399,
-                672],
+                672,
+                30],
                 wait=transition_timeout,
                 label="日常_红包：等待红包结果",
             )
@@ -1014,6 +1015,20 @@ class DailyRedpacketTaskMixin:
                 )
                 return opened_count
             if int(result_view.id or 0) not in {398, 399}:
+                if int(result_view.id or 0) == 30:
+                    # An expired final packet closes directly to chat. Only
+                    # fresh complete UID facts can prove this terminal path;
+                    # the chat scene itself is not a claim receipt.
+                    after_runtime = self._daily_redpacket_require_fresh_uid_snapshot(
+                        phase="开包直接返回群聊后的候选复核"
+                    )
+                    if not after_runtime["uids"]:
+                        self._log(
+                            "success",
+                            "日常_红包：已返回群聊，fresh Runtime 确认无待处理候选；"
+                            "本次未显示领取结果，不增加领取计数",
+                        )
+                        return opened_count
                 raise RuntimeError(
                     f"日常_红包：开包后落到 #{result_view.id}，未确认领取结果，停止后续点击"
                 )

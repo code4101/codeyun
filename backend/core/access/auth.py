@@ -36,6 +36,33 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
+def create_local_owner_session(*, username: str | None = None, expires_minutes: int = 120) -> dict:
+    """Issue a normal bounded session for an explicitly authorized local OS owner.
+
+    CLI/provider only: this must never be exposed as an unauthenticated HTTP
+    endpoint. Trust is the local operator's access to this deployment's signing
+    configuration and data. No password or role changes are performed. With no
+    username, exactly one active superuser must exist; ambiguous selection fails.
+    The returned access_token is a credential and must not be logged.
+    """
+    if not 1 <= expires_minutes <= 720:
+        raise ValueError("本机管理会话有效期须为 1 至 720 分钟")
+    from backend.db import engine
+    with Session(engine) as session:
+        users = session.exec(select(User).where(User.is_active == True, User.is_superuser == True)).all()
+        candidates = [u.username for u in users]
+        selected = [u for u in users if u.username == username] if username else users
+        if len(selected) != 1:
+            raise ValueError("必须明确选择唯一启用超管；候选：" + ", ".join(candidates))
+        user = selected[0]
+        return {
+            "username": user.username,
+            "user_id": user.id,
+            "expires_minutes": expires_minutes,
+            "access_token": create_access_token({"sub": user.username}, timedelta(minutes=expires_minutes)),
+        }
+
 # --- New Token Authentication ---
 
 def generate_token() -> str:

@@ -95,7 +95,9 @@ RESOURCE_RANK_GIFT_ADAPTERS = (
             16042801,
             32042801,
         ),
-        page_scene_ids=(458, 459),
+        # Same-server preliminaries have no personal/plane tabs and use
+        # "前往提升"; #741 is the positively replayed same-server page.
+        page_scene_ids=(458, 459, 741),
         intro_scene_id=457,
         # #458/#459 and #676 share the same resource-rank bottom tab bar.
         # The existing #676 "礼包" Shape was positively replayed from #458

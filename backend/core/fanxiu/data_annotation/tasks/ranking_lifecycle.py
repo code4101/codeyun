@@ -502,6 +502,8 @@ def _execute_family_job(
                         "status": status,
                         "terminal_reason": "implicit_retry_budget_exhausted",
                     }
+            # Persist and aggregate the same resolved checkpoint status.
+            result = {**result, "status": status}
             with Session(engine) as session:
                 record_ranking_checkpoint_result(
                     session,

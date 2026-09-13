@@ -1311,11 +1311,15 @@ class DailyFoundationTaskMixin:
                     float(candidate["x"]) + float(candidate["w"]) / 2,
                     float(candidate["y"]) + float(candidate["h"]) / 2,
                 )
-                yield from context.wait_scene(
+                landed = yield from context.wait_scene(
                     [179],
                     wait=45.0,
                     label="日常_首领：等待普通首领详情 #179",
                 )
+                if landed.id != 179:
+                    raise RuntimeError(
+                        f"日常_首领：普通地图落点为 #{landed.id}，不是 #179，停止挑战"
+                    )
                 return "opened"
 
             if scroll_index >= 4:
@@ -1359,30 +1363,20 @@ class DailyFoundationTaskMixin:
         self,
         lines: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
+        # Click the card's explicit boss field, never an arbitrary preceding
+        # line: a scrolling world announcement can sit above the first card.
         for index, line in enumerate(lines):
-            title = re.sub(r"\s+", "", str(line.get("text") or ""))
-            if not title or any(
-                marker in title
-                for marker in (
-                    "当前首领",
-                    "首领境界",
-                    "刷新倒计",
-                    "剩余奖励",
-                    "掉落记录",
-                )
-            ):
+            leader = re.sub(r"\s+", "", str(line.get("text") or ""))
+            if "当前首领" not in leader:
                 continue
             following = [
                 re.sub(r"\s+", "", str(item.get("text") or ""))
                 for item in lines[index + 1 : index + 4]
             ]
-            leader = next(
-                (text for text in following if "当前首领" in text), ""
-            )
             realm = next(
                 (text for text in following if "首领境界" in text), ""
             )
-            if not leader or not realm:
+            if not realm:
                 continue
             if "未知" in leader or "后刷新" in leader:
                 continue
@@ -12695,6 +12689,8 @@ class DailyFoundationTaskMixin:
             ["法则之主名称", "法则详情", "拜谒"],
             padding=8,
             frame_data_url=frame,
+            # 全帧 OCR 会把横幅与低对比度的法则名称合并，按业务区域独立识别。
+            crop=True,
         )
         if self._baiye_text_is_completed(text):
             return "completed", text, frame
@@ -13021,6 +13017,10 @@ class DailyFoundationTaskMixin:
                 self._log_locked("action", f"日常_绿瓶拜谒：#283[剩余次数]={remaining}，点击 #283「拜谒」")
             context.click_shape_center(baiye_scene_id, "拜谒")
             yield from context.wait_action_settle(float(payload.get("green_bottle_baiye_settle_seconds") or 2.0))
+            # A click is not completion: observe the receipt without clicking again.
+            remaining_numbers, remaining_text = yield from self._read_green_bottle_baiye_remaining(
+                context, payload, scene_id=baiye_scene_id, require_exhausted=True,
+            )
         with self._lock:
             self._log_locked("success", "日常_绿瓶拜谒：今日拜谒已确认完成")
             self._set_status_locked("running", "日常_绿瓶拜谒：收尾回到世界 #34", phase="daily_green_bottle_baiye_return_world")
@@ -13060,32 +13060,50 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any],
         *,
         scene_id: int = 283,
+        require_exhausted: bool = False,
     ):
-        """有界复核 #283 剩余次数，容忍页面刚落地时的单帧 OCR 空结果。"""
+        """只读新帧复核次数；点击后必须有界等待已耗尽，绝不重复拜谒。"""
 
         max_attempts = max(1, int(payload.get("green_bottle_remaining_read_attempts") or 3))
         settle_seconds = max(0.1, float(payload.get("green_bottle_remaining_read_settle_seconds") or 0.8))
+        timeout = max(2.0, float(payload.get("green_bottle_baiye_confirm_timeout") or 20.0))
+        deadline = time.monotonic() + timeout
         last_text = ""
-        for attempt in range(1, max_attempts + 1):
-            last_text = context.ocr_text_in_shapes(
-                scene_id,
-                ["剩余次数"],
-                padding=8,
+        attempt = 0
+        while True:
+            if require_exhausted:
+                if time.monotonic() >= deadline:
+                    break
+            elif attempt >= max_attempts:
+                break
+            self._raise_if_stopped(context.stop_event)
+            attempt += 1
+            frame = context.cur_frame(update=True)
+            observed_scene, _score, _frame = context.recognize_scene_in_frame(
+                [scene_id], frame_data_url=frame,
+            )
+            last_text = (
+                context.ocr_text_in_shapes(
+                    scene_id, ["剩余次数"], padding=8,
+                    frame_data_url=frame, crop=True,
+                ) if observed_scene == scene_id else ""
             )
             numbers = parse_ocr_values(
                 _sanitize_ocr_text(last_text).translate(FULLWIDTH_DIGIT_TRANSLATION)
             )
-            if numbers is not None:
+            if numbers is not None and (not require_exhausted or numbers[0] == 0):
                 return numbers, last_text
-            if attempt < max_attempts:
+            if require_exhausted or attempt < max_attempts:
                 with self._lock:
                     self._log_locked(
                         "warning",
-                        f"日常_绿瓶拜谒：#283[剩余次数] 第 {attempt}/{max_attempts} 帧 OCR 为空，等待新帧复核",
+                        f"日常_绿瓶拜谒：#283[剩余次数] 第 {attempt} 帧未确认"
+                        f"{'耗尽' if require_exhausted else '数值'}，OCR={last_text[:80]}，等待新帧复核",
                     )
                 yield from context.wait_action_settle(settle_seconds)
         raise RuntimeError(
-            f"日常_绿瓶拜谒：连续 {max_attempts} 帧未能从 #283[剩余次数] 读取剩余次数，"
+            f"日常_绿瓶拜谒：{attempt} 帧后未能从 #283[剩余次数] 确认"
+            f"{'次数耗尽' if require_exhausted else '剩余次数'}，"
             f"最后 OCR={last_text[:80]}"
         )
 

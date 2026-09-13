@@ -30,6 +30,51 @@ def _snapshot(*items: dict) -> dict:
     }
 
 
+def test_runtime_reward_merge_replaces_unknown_names_without_losing_history():
+    from backend.core.fanxiu.mail.policy import fanxiu_mail_rewards_unresolved
+
+    old_rewards = [{"item_id": "123", "item_name": "未知道具 #123", "amount": 1}]
+    params = {"items": [{"value": "历史参数"}]}
+    previous = {
+        "mail_rewards": old_rewards,
+        "mail_rewards_summary": "未知道具 #123",
+        "mail_rewards_unresolved": True,
+        "mail_rewards_unresolved_reason": "previous decode missing",
+        "has_attachment_hint": True,
+        "orphan_action_status": "unresolved",
+        "packet_orphan_action": {"id": "historical-event"},
+        "mail_content_text": "历史完整正文",
+        "mailVo": {"i18nParams": params},
+        "seat_eviction_event": {"domain": "lundao"},
+    }
+    rewards = [{"item_id": "123", "item_name": "已解析材料", "amount": 2,
+                "name_source": "runtime_localization"}]
+    current = {"mail_rewards": rewards, "mailVo": {}, "mail_content_text": "",
+               "runtime": {"has_attachment": True}}
+    merged = runtime_sync._merge_runtime_mail_payload(previous, current)
+    assert merged["mail_rewards"] == rewards
+    assert "已解析材料" in merged["mail_rewards_summary"]
+    assert not fanxiu_mail_rewards_unresolved(merged)
+    assert merged["historical_reward_evidence"]["mail_rewards"] == old_rewards
+    assert merged["historical_reward_evidence"]["packet_orphan_action"] == {"id": "historical-event"}
+    assert merged["mail_content_text"] == "历史完整正文"
+    assert merged["mailVo"]["i18nParams"] == params
+    assert merged["seat_eviction_event"] == {"domain": "lundao"}
+    assert runtime_sync._merge_runtime_mail_payload(merged, current) == merged
+    assert previous["mail_rewards_unresolved"] is True
+
+
+def test_runtime_attachment_without_decoded_rewards_still_fails_closed():
+    from backend.core.fanxiu.mail.policy import fanxiu_mail_rewards_unresolved
+
+    merged = runtime_sync._merge_runtime_mail_payload(
+        {"mail_rewards": [{"item_id": "123", "item_name": "过去奖励", "amount": 1}]},
+        {"mail_rewards": [], "runtime": {"has_attachment": True}},
+    )
+    assert merged["mail_rewards"] == []
+    assert fanxiu_mail_rewards_unresolved(merged)
+
+
 def test_runtime_snapshot_persists_exact_claim_and_attachment_facts(monkeypatch):
     monkeypatch.setattr(runtime_sync, "ensure_fanxiu_mail_table", lambda: None)
     monkeypatch.setattr(mail_store, "ensure_fanxiu_mail_table", lambda: None)
@@ -138,7 +183,8 @@ def test_runtime_snapshot_preserves_rich_historical_payload_without_raw_source_m
     assert row.payload["mailVo"]["i18nParams"] == rich_params
     assert row.payload["mail_content_text"] == "完整正文"
     assert "packet" not in row.payload
-    assert row.payload["mail_rewards"] == [{"item_id": "1001", "amount": 2}]
+    assert row.payload["mail_rewards"] == []
+    assert row.payload["historical_reward_evidence"]["mail_rewards"] == [{"item_id": "1001", "amount": 2}]
     assert row.payload["seat_eviction_event"]["domain"] == "lundao"
     assert row.payload["runtime"]["id"] == "rich"
 

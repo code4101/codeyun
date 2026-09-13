@@ -44,28 +44,12 @@ class LoginGameTaskMixin:
         return "AppVer" in compact and bool(re.search(r"(?:初始化化?|加载载?)资源", compact))
 
     @staticmethod
-    def _visible_bubble_proves_game_ready(context: Any, *, frame: str) -> bool:
-        """Accept the formal SDK bubble as direct post-login evidence.
+    def _has_visible_login_bubble(context: Any, *, frame: str) -> bool:
+        """Locate an SDK obstruction; its visibility never proves login.
 
-        The bubble is an Android top-level overlay and can cover an arbitrary
-        business page that is intentionally absent from the login candidate
-        set.  A unique, fully resolved ``#421[气泡]`` match proves both that
-        the game has left startup and that the post-login bubble invariant
-        needs reconciliation.  A missing or ambiguous match proves nothing;
-        the bounded unknown/loading protection remains in force.
+        The same bubble appears on the announcement and cover before login.
+        A unique match authorizes only hiding it and recognizing a fresh frame.
         """
-
-        # The Android bubble can already exist on the game cover.  The cover
-        # gate must consume #18's formal scene identity, never the fixed
-        # coordinate-only ``进入游戏`` action Shape.  Action Shapes authorize
-        # a click only after their owning scene has been recognized; they are
-        # not visual evidence in their own right.
-        cover_matched, _cover_score, _cover_frame = context.match_view(
-            18,
-            frame_data_url=frame,
-        )
-        if cover_matched:
-            return False
         match = context.shape_matches(421, "气泡", frame_data_url=frame)
         resolved = (match or {}).get("resolved_box") or (match or {}).get("fixed_box")
         return bool(
@@ -160,6 +144,7 @@ class LoginGameTaskMixin:
         )
         loading_started_at: float | None = None
         unknown_started_at: float | None = None
+        unknown_bubble_hide_attempted = False
         action_attempt_counts: dict[int, int] = {}
         while True:
             self._raise_if_stopped(stop_event)
@@ -179,33 +164,39 @@ class LoginGameTaskMixin:
                 frame_text = " ".join(str(token.get("text") or "")
                                       for token in context.full_frame_ocr_tokens(frame))
             scene_id = self._resolve_login_scene(scene_id, frame_text)
-            bubble_ready = bool(
-                scene_id is None
-                and self._visible_bubble_proves_game_ready(context, frame=frame)
-            )
             # Unknown and resource loading are different facts.  Only explicit
             # loading OCR may enter the bounded loading wait; an arbitrary
             # unknown frame must fail closed and must never authorize a MuMu
             # restart.
             resource_loading = (
                 scene_id is None
-                and not bubble_ready
                 and self._is_resource_loading_frame(frame_text)
             )
-            if scene_id is None and not bubble_ready and not resource_loading:
+            if scene_id is None and not resource_loading:
                 # Fade/animation frames can temporarily lose loading text.
                 # Observe for the same bounded unknown window as navigation;
-                # no click or recovery is authorized by this branch.
+                # Only a separately matched SDK obstruction may be hidden;
+                # that action never resets this unknown-frame deadline.
                 current = time.monotonic()
                 if unknown_started_at is None:
                     unknown_started_at = current
                 if current - unknown_started_at < 60.0:
+                    if (
+                        not unknown_bubble_hide_attempted
+                        and self._has_visible_login_bubble(context, frame=frame)
+                    ):
+                        unknown_bubble_hide_attempted = True
+                        self._log("info", "登录游戏：隐藏已定位的 SDK 气泡后重新识别；气泡不构成登录完成证据")
+                        yield from self._ensure_bubble_hidden(ctx, stop_event, payload)
+                        context.clear_frame()
+                        continue
                     yield from context.wait_action_settle(loading_poll)
                     continue
                 raise RuntimeError(
                     "登录游戏：当前画面未识别且无资源初始化证据；拒绝点击或重启模拟器"
                 )
             unknown_started_at = None
+            unknown_bubble_hide_attempted = False
             if resource_loading:
                 current = time.monotonic()
                 if loading_started_at is None:
@@ -227,28 +218,20 @@ class LoginGameTaskMixin:
                     "登录游戏：已确认资源初始化画面，但等待超时；拒绝自动重启模拟器"
                 )
             loading_started_at = None
-            if scene_id == 611:
-                # #611 is a full-screen XuTian promotion overlay, not a stable
-                # business landing.  The universal lower-left return was
-                # verified in real Runtime to close it directly to #34.
-                result = context.go_scene(34)
+            if scene_id in {23, 611}:
+                # World entry can expose the daily signup or XuTian promotion
+                # page. Reconnection must close these through known asset
+                # routes and re-observe a login terminal, never assume success.
+                result = context.go_scene(34, known_paths_only=True)
                 if hasattr(result, "send"):
                     yield from result
                 continue
             # Only an explicitly modelled post-login terminal proves success.
             # Global popup candidates were handled by the layered recognizer,
             # which repeats until one of these terminals appears.
-            if scene_id in self.login_terminal_scene_ids or bubble_ready:
-                reason = (
-                    f"login_game_scene_{scene_id}"
-                    if scene_id in self.login_terminal_scene_ids
-                    else "login_game_visible_bubble"
-                )
-                location = (
-                    f"#{scene_id}"
-                    if scene_id in self.login_terminal_scene_ids
-                    else "#421 气泡覆盖的已登录业务页"
-                )
+            if scene_id in self.login_terminal_scene_ids:
+                reason = f"login_game_scene_{scene_id}"
+                location = f"#{scene_id}"
                 bubble_outcome = ""
                 mode = ""
                 bubble_reconcile = getattr(

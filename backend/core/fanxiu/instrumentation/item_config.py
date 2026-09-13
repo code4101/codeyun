@@ -133,7 +133,11 @@ def read_loaded_item_metadata(
             if item_id in _ITEM_METADATA_CACHE
         }
     missing = wanted - cached.keys()
-    if not missing:
+    unresolved_cached_names = any(
+        not row.get("item_name") and row.get("runtime_name_id")
+        for row in cached.values()
+    )
+    if not missing and not unresolved_cached_names:
         return cached, {
             "complete": True,
             "source": "DBMgr.ConfigDic[Item.Item]",
@@ -168,7 +172,8 @@ def read_loaded_item_metadata(
         "useCondition",
         "breakObtain",
     )
-    for raw_key, raw in reader.numeric_fields(table.address, frozenset(missing)).items():
+    raw_rows = reader.numeric_fields(table.address, frozenset(missing)) if missing else {}
+    for raw_key, raw in raw_rows.items():
         item_id = as_int(_packed_value(reader, raw, indexes, "id")) or as_int(raw_key)
         if item_id is None:
             continue
@@ -197,6 +202,34 @@ def read_loaded_item_metadata(
             "policy_resolution": _policy_resolution(item_type, sub_type, use_condition),
             "name_source": "runtime_config",
         }
+    # Item.Item stores localization keys after hot updates. Resolve all absent
+    # names in one read using the same process/context as the metadata. Cached
+    # nameless rows are retried: LangTable may load later in this process.
+    name_ids = {
+        int(row["runtime_name_id"]) for row in rows.values()
+        if not row.get("item_name") and row.get("runtime_name_id")
+    }
+    name_error = ""
+    unresolved_name_ids = sorted(name_ids)
+    if name_ids:
+        try:
+            localization = read_loaded_item_text(
+                name_ids, reader=reader, state_address=state_address,
+                environment_address=environment,
+            )
+            texts = localization["texts_by_id"]
+            for row in rows.values():
+                name = texts.get(row.get("runtime_name_id"))
+                if not row.get("item_name") and isinstance(name, str) and name.strip():
+                    row.update(item_name=name.strip(), name_source="runtime_localization")
+            unresolved_name_ids = sorted({
+                int(row["runtime_name_id"]) for row in rows.values()
+                if not row.get("item_name") and row.get("runtime_name_id")
+            })
+        except FanxiuRuntimeMemoryError as exc:
+            # Missing localization must not erase already proven type facts,
+            # nor invent a display name that would bypass unknown-item policy.
+            name_error = str(exc)
     with _ITEM_METADATA_CACHE_LOCK:
         if _ITEM_METADATA_CACHE_IDENTITY == identity:
             _ITEM_METADATA_CACHE.update(
@@ -210,6 +243,8 @@ def read_loaded_item_metadata(
         "missing_ids": sorted(wanted - rows.keys()),
         "metadata_cache_hit_count": len(cached),
         "manager_cache_hit": bool(cache_hit),
+        "unresolved_name_ids": unresolved_name_ids,
+        "name_resolution_error": name_error,
         "read_only": True,
     }
 
@@ -243,6 +278,30 @@ def read_item_metadata_runtime(item_ids: Iterable[int], *, force: bool = False) 
             'elapsed_seconds': round(time.perf_counter()-started, 4)}
 
 
+def read_loaded_item_text(
+    text_ids: Iterable[int], *, reader: LuaJitReader,
+    state_address: int, environment_address: int,
+) -> dict[str, Any]:
+    """Read loaded LangTable text in the caller's existing Runtime context."""
+    wanted = frozenset(text_ids)
+    if any(type(value) is not int or value <= 0 for value in wanted):
+        raise ValueError('需要正整数文本ID')
+    if not wanted:
+        return {'texts_by_id': {}, 'missing_ids': [], 'complete': True,
+                'source': 'LuaLocalization.LangTable'}
+    raw = reader.state_string_field(environment_address,
+        'LuaLocalization', state_address=state_address)
+    module = table_ref(raw)
+    table = table_ref(reader.state_string_field(module.address, 'LangTable',
+        state_address=state_address)) if module is not None else None
+    if table is None:
+        raise FanxiuRuntimeMemoryError('LuaLocalization.LangTable尚未自然加载')
+    values = reader.numeric_fields(table.address, wanted)
+    texts = {key: value for key, value in values.items() if isinstance(value, str)}
+    return {'texts_by_id': texts, 'missing_ids': sorted(wanted-texts.keys()),
+            'complete': wanted <= texts.keys(), 'source': 'LuaLocalization.LangTable'}
+
+
 def read_item_text_runtime(text_ids: Iterable[int]) -> dict[str, Any]:
     """批量读取LuaLocalization.LangTable；不调用Text/GetLan或加载语言表。
 
@@ -255,20 +314,13 @@ def read_item_text_runtime(text_ids: Iterable[int]) -> dict[str, Any]:
         raise ValueError('需要正整数文本ID')
     started = time.perf_counter()
     context = acquire_ui_runtime_context(())
-    raw = context.reader.state_string_field(context.binding.environment_address,
-        'LuaLocalization', state_address=context.binding.state_address)
-    module = table_ref(raw)
-    table = table_ref(context.reader.state_string_field(module.address, 'LangTable',
-        state_address=context.binding.state_address)) if module is not None else None
-    if table is None:
-        raise FanxiuRuntimeMemoryError('LuaLocalization.LangTable尚未自然加载')
-    values = context.reader.numeric_fields(table.address, frozenset(wanted))
-    texts = {key: value for key, value in values.items() if isinstance(value, str)}
-    return {'texts_by_id': texts, 'missing_ids': sorted(set(wanted)-texts.keys()),
-            'complete': set(wanted) <= texts.keys(), 'source': 'LuaLocalization.LangTable',
+    result = read_loaded_item_text(wanted, reader=context.reader,
+        state_address=context.binding.state_address,
+        environment_address=context.binding.environment_address)
+    return {**result,
             'pid': context.memory.pid, 'process_start_ticks': context.memory.process_start_ticks,
             'captured_at': time.time(), 'read_only': True,
             'elapsed_seconds': round(time.perf_counter()-started, 4)}
 
 
-__all__ = ["read_loaded_item_metadata", "read_item_metadata_runtime", "read_item_text_runtime"]
+__all__ = ["read_loaded_item_metadata", "read_loaded_item_text", "read_item_metadata_runtime", "read_item_text_runtime"]

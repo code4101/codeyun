@@ -630,16 +630,17 @@ class PrayerDailyResourceTaskMixin:
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
             current_fragments = context.ocr_fragments(current_frame)
-        if current_scene in {69, 194}:
-            # #194 can be left behind by an older, incorrect world-side
-            # ``进入`` click.  Both scenes have proven graph routes back to the
-            # stable world anchor, so recover before opening the daily entry.
-            yield from context.go_scene(34)
+        if current_scene in {20, 69, 194}:
+            # Login may legitimately finish on cultivation #20. These known
+            # scenes have modelled routes to the world; preserve prayer-page
+            # and confirmation-overlay re-entry instead of navigating blindly.
+            yield from context.go_scene(34, known_paths_only=True)
             _wait_scene_match = yield from context.wait_scene([34, 449, PRAYER_MAIN_SCENE_ID, PRAYER_STORE_SCENE_ID], wait=5.0, required=False)
             (current_scene, _score, current_frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
+            current_fragments = context.ocr_fragments(current_frame)
         page_state = prayer_page_state(
             current_scene,
             current_fragments,

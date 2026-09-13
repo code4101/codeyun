@@ -827,7 +827,19 @@ def read_ui_runtime_snapshot(
                 "memory_address_unmapped", "memory_read_failed",
             }:
                 raise
-            if exc.code == "memory_address_unmapped":
+            # Component readers add business context with exception chaining.
+            # Preserve the underlying recovery signal: retrying the same maps
+            # cannot observe a panel allocated outside the cached regions.
+            cause: BaseException | None = exc
+            seen: set[int] = set()
+            unmapped = False
+            while cause is not None and id(cause) not in seen:
+                seen.add(id(cause))
+                if isinstance(cause, FanxiuRuntimeMemoryError) and cause.code == "memory_address_unmapped":
+                    unmapped = True
+                    break
+                cause = cause.__cause__
+            if unmapped:
                 _refresh_context_maps(context)
         finally:
             _LOGGER.debug(

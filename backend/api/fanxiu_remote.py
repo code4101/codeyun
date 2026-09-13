@@ -124,9 +124,9 @@ class SessionResponse(BaseModel):
     status: Literal["running"]
 
 
-def _call(operation, *args, **kwargs):
+def _call(handler, *args, **kwargs):
     try:
-        return operation(*args, **kwargs)
+        return handler(*args, **kwargs)
     except RemoteError as exc:
         raise HTTPException(exc.status_code, exc.detail) from exc
 

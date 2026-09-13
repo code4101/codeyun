@@ -33,10 +33,9 @@ ACTIVITY_FREE_GIFT_KEY = "ACTIVITY_FREE_GIFT"
 def _fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:
     if value is None:
         return {}
-    try:
-        return reader.fields(value)
-    except Exception:
-        return {}
+    # An unreadable purchase record is not an absent/zero purchase record.
+    # The public snapshot converts failures into complete=False.
+    return reader.fields(value)
 
 
 def _list_values(reader: LuaJitReader, value: Any) -> list[Any]:
@@ -75,10 +74,9 @@ def _string_value(reader: LuaJitReader, value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, LuaRef):
-        try:
-            return str(reader.string(value.address) or "")
-        except Exception:
-            return ""
+        # In particular, unreadable costs must never classify a paid row as
+        # free. Preserve the failure for the public snapshot boundary.
+        return str(reader.string(value.address) or "")
     return str(value)
 
 
