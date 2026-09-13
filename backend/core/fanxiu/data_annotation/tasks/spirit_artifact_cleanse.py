@@ -651,6 +651,17 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
             self._transition(current, "右侧暗幕关闭", assets.overview_scene_id,
                              phase="close_part_detail")
             current = assets.overview_scene_id
+        if current == assets.world_menu_scene_id:
+            # #35 是 open_overview() 从 #34 打开下方菜单后的合法入口页。
+            # 从这里开始的作业必须沿 #35「关闭下方菜单」正式 shape 回 #34，
+            # 与既有离开设置页契约一致；不得落入下方 else 分支报闭环失败。
+            self._transition(
+                current,
+                "关闭下方菜单",
+                assets.world_scene_id,
+                phase="close_world_menu",
+            )
+            current = assets.world_scene_id
         if current == assets.overview_scene_id:
             result = self._transition(
                 assets.overview_scene_id,

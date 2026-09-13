@@ -1536,6 +1536,10 @@ def _run_doctor_watch(
         # sleep would absorb that write into the baseline and defer dispatch
         # for a full doctor interval.
         wake_signature = _watch_scheduler_files_signature()
+        from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_settings
+        if not read_scheduler_settings().get("job_group_enabled", True):
+            print("AI 已接管，工程巡检退出", flush=True)
+            return 0
         iteration += 1
         take_screenshot = bool(include_screenshot) and (screenshot_every <= 1 or (iteration - 1) % screenshot_every == 0)
         report = _build_doctor_report(log_limit=log_limit, include_screenshot=take_screenshot)

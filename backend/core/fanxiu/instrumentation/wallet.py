@@ -50,22 +50,6 @@ def wallet_currency_data(
     model = _required_fields(reader, instance["Model"], ("WalletData",), "钱包模型")
     data = _required_fields(reader, model["WalletData"], ("_WalletInfo",), "钱包数据")
     wallet_dictionary = reader.dictionary_fields(data["_WalletInfo"])
-    loaded_currency_types = sorted(
-        {
-            int(currency_key)
-            for key in wallet_dictionary
-            if (currency_key := as_int(key)) is not None
-        }
-    )
-    loaded_type_pairs: list[str] = []
-    for key, value in wallet_dictionary.items():
-        key_type = as_int(key)
-        if key_type is None:
-            continue
-        value_type = as_int(reader.fields(value).get("type"))
-        loaded_type_pairs.append(f"{int(key_type)}->{value_type}")
-        if len(loaded_type_pairs) >= 16:
-            break
     wallet_value = next(
         (
             value
@@ -87,6 +71,25 @@ def wallet_currency_data(
                 "currency_borrow": 0,
                 "cumulative_currency": 0,
             }
+        # These unrelated rows explain a missing target only. Successful and
+        # explicit-zero observations must not decode other currencies merely
+        # to prepare an error that will never be emitted.
+        loaded_currency_types = sorted(
+            {
+                int(currency_key)
+                for key in wallet_dictionary
+                if (currency_key := as_int(key)) is not None
+            }
+        )
+        loaded_type_pairs: list[str] = []
+        for key, value in wallet_dictionary.items():
+            key_type = as_int(key)
+            if key_type is None:
+                continue
+            value_type = as_int(reader.fields(value).get("type"))
+            loaded_type_pairs.append(f"{int(key_type)}->{value_type}")
+            if len(loaded_type_pairs) >= 16:
+                break
         preview = ",".join(str(value) for value in loaded_currency_types[:64])
         suffix = (
             f"；已加载币种 {len(loaded_currency_types)} 项：{preview}"

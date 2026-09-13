@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from backend.core.fanxiu.instrumentation import redbag_runtime_loader, wallet
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
@@ -157,4 +159,35 @@ def test_wallet_missing_currency_can_use_the_client_zero_semantics(monkeypatch) 
         "currency_amount": 0,
         "currency_borrow": 0,
         "cumulative_currency": 0,
+    }
+
+
+@pytest.mark.parametrize("target_present", [True, False])
+def test_wallet_success_does_not_decode_unrelated_currency(monkeypatch, target_present):
+    """A targeted observation cannot fail on an unrelated VO's unreadable fields."""
+    unrelated = object()
+    entries = {1: unrelated}
+    if target_present:
+        entries[14] = {"type": 14, "amount": 90, "borrow": 7, "history": 123}
+
+    class Reader:
+        def fields(self, value):
+            if value is unrelated:
+                pytest.fail("successful target read decoded unrelated diagnostic VO")
+            return value
+
+        def dictionary_fields(self, value):
+            return entries
+
+        def long(self, value):
+            return value
+
+    manager = {"inst": {"Model": {"WalletData": {"_WalletInfo": object()}}}}
+    monkeypatch.setattr(wallet, "manager_index_fields", lambda *_args: manager)
+    result = wallet.wallet_currency_data(Reader(), 123, 14, missing_as_zero=not target_present)
+    assert result == {
+        "exchange_currency": 83 if target_present else 0,
+        "currency_amount": 90 if target_present else 0,
+        "currency_borrow": 7 if target_present else 0,
+        "cumulative_currency": 123 if target_present else 0,
     }

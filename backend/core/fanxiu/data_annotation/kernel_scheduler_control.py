@@ -235,6 +235,10 @@ def ensure_doctor_watch_background(
     screenshot_every: int = 10,
     stale_after_seconds: float = 180.0,
 ) -> dict[str, Any]:
+    # Frontend polling and backend startup share this entry. AI ownership
+    # must prevent either caller from resurrecting the engineering dispatcher.
+    if not read_scheduler_settings().get("job_group_enabled", True):
+        return {"ok": True, "started": False, "reason": "job_group_disabled"}
     heartbeat = read_doctor_watch_heartbeat(stale_after_seconds=stale_after_seconds)
     candidate_pid = int(heartbeat.get("pid") or 0)
     process_active = False

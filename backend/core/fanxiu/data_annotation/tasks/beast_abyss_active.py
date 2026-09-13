@@ -788,19 +788,22 @@ def _read_settled_activity_rank_snapshot(
     *,
     require_personal_score: bool,
     label: str,
+    self_only: bool = False,
 ) -> Iterator[Any]:
     """Return two consecutive complete reads after one bounded settle window."""
     from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
         prepare_activity_rank_runtime,
         read_activity_rank_runtime_snapshot,
+        read_activity_rank_self_snapshot,
     )
+    read_snapshot = read_activity_rank_self_snapshot if self_only else read_activity_rank_runtime_snapshot
     yield from context.wait_action_settle(2.0)
     snapshot: dict[str, Any] = {}
     stable_fingerprint: tuple[Any, ...] | None = None
     stable_reads = 0
     for _attempt in range(12):
         yield from context.wait_action_settle(1.0)
-        snapshot = read_activity_rank_runtime_snapshot(rank_activity_id)
+        snapshot = read_snapshot(rank_activity_id)
         if snapshot.get("error_code") in {
             "process_cache_miss",
             "root_cache_miss",
@@ -809,7 +812,7 @@ def _read_settled_activity_rank_snapshot(
             if not loaded.get("ok"):
                 snapshot = {"reason": loaded.get("reason")}
                 continue
-            snapshot = read_activity_rank_runtime_snapshot(rank_activity_id)
+            snapshot = read_snapshot(rank_activity_id)
         raw_score = dict(snapshot.get("self_ranking") or {}).get("score")
         current_score = int(raw_score) if raw_score is not None else -1
         structurally_valid = bool(
@@ -826,6 +829,7 @@ def _read_settled_activity_rank_snapshot(
         fingerprint = (
             current_score,
             self_ranking.get("rank"),
+            self_ranking.get("role_id") or self_ranking.get("role_key"),
             int(snapshot.get("rank_list_size") or 0),
             int(snapshot.get("loaded_rank_count") or 0),
             int(snapshot.get("declared_rank_count") or 0),
@@ -842,6 +846,33 @@ def _read_settled_activity_rank_snapshot(
             str(snapshot.get("reason") or f"{label} Runtime 快照未稳定")
         )
     return snapshot
+
+
+def _enter_measurement_activity_home(context: Any, activity: FanxiuExchangeActivity) -> Iterator[Any]:
+    """Select the exact calendar instance; a generic destination cannot identify its card."""
+    from backend.core.fanxiu.data_annotation.schedule_navigation import (
+        select_schedule_activity,
+    )
+
+    yield from context.go_scene(34)
+    yield from context.go_scene(66)
+    selected = yield from select_schedule_activity(
+        context,
+        r"兽渊探秘",
+        enter=True,
+        require_runtime_alignment=True,
+        expected_activity_id=int(activity.game_activity_id or 0),
+        expected_runtime_id=str(activity.runtime_id or ""),
+        expected_cross_count=int(activity.cross_count or 0),
+        now=datetime.now().astimezone(),
+    )
+    if not str(getattr(selected, "runtime_key", "") or ""):
+        raise RuntimeError("兽渊测速：个人榜刷新后未回读精确 Runtime 实例")
+    yield from context.wait_scene(
+        [535],
+        wait=30.0,
+        label="兽渊测速：个人榜刷新后重入本期实例",
+    )
 
 
 def _refresh_personal_rank_for_measurement(
@@ -867,7 +898,7 @@ def _refresh_personal_rank_for_measurement(
     if rank_activity_id <= 0:
         raise RuntimeError("兽渊测速缺少个人榜 Runtime 身份")
 
-    yield from context.go_scene(535)
+    yield from _enter_measurement_activity_home(context, activity)
     yield from context.wait_click_then_scene(
         535,
         "兽渊榜",
@@ -885,6 +916,7 @@ def _refresh_personal_rank_for_measurement(
         rank_activity_id,
         require_personal_score=True,
         label="兽渊测速：个人榜最终积分",
+        self_only=True,
     )
     context.click_shape_center(537, "返回")
     yield from context.wait_scene(
@@ -892,32 +924,7 @@ def _refresh_personal_rank_for_measurement(
         wait=30.0,
         label="兽渊测速：个人榜刷新后返回世界",
     )
-    # Returning from the ranking page can briefly surface another activity
-    # entry.  Re-select this exact Beast Abyss occurrence instead of asking
-    # the generic graph to guess a direct route to #535.
-    from backend.core.fanxiu.data_annotation.schedule_navigation import (
-        select_schedule_activity,
-    )
-
-    yield from context.go_scene(34)
-    yield from context.go_scene(66)
-    selected = yield from select_schedule_activity(
-        context,
-        r"兽渊探秘",
-        enter=True,
-        require_runtime_alignment=True,
-        expected_activity_id=int(activity.game_activity_id or 0),
-        expected_runtime_id=str(activity.runtime_id or ""),
-        expected_cross_count=int(activity.cross_count or 0),
-        now=datetime.now().astimezone(),
-    )
-    if not str(getattr(selected, "runtime_key", "") or ""):
-        raise RuntimeError("兽渊测速：个人榜刷新后未回读精确 Runtime 实例")
-    yield from context.wait_scene(
-        [535],
-        wait=30.0,
-        label="兽渊测速：个人榜刷新后重入本期实例",
-    )
+    yield from _enter_measurement_activity_home(context, activity)
     yield from enter_beast_abyss_explore(
         context, DEFAULT_BEAST_ABYSS_NATIVE_AUTO_ASSETS
     )
@@ -1293,6 +1300,10 @@ def execute_beast_abyss_initialization_checkpoint(
     )
     pending = initialization.get("pending_batch")
     if not isinstance(pending, Mapping):
+        from backend.core.fanxiu.data_annotation.tasks.beast_abyss_native_auto import (
+            dismiss_beast_abyss_defeat,
+        )
+        yield from dismiss_beast_abyss_defeat(context)
         yield from _enter_beast_abyss_occurrence_home(
             context,
             occurrence,

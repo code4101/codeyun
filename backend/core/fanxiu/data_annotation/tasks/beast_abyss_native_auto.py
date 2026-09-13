@@ -9,7 +9,9 @@ Runtime-recognized scene; it does not provide a second command channel.
 
 from dataclasses import dataclass
 from enum import StrEnum
+import logging
 import re
+import time
 from types import SimpleNamespace
 from typing import Any, Iterator
 
@@ -24,6 +26,9 @@ from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
 from backend.core.fanxiu.data_annotation.tasks.beast_abyss_task_rewards import (
     claim_beast_abyss_task_rewards,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class BeastAbyssAutoTerminal(StrEnum):
@@ -253,7 +258,11 @@ def _read_runtime_options() -> dict[str, bool]:
         read_beast_abyss_auto_options_snapshot,
     )
 
-    snapshot = read_beast_abyss_auto_options_snapshot()
+    started = time.perf_counter()
+    try:
+        snapshot = read_beast_abyss_auto_options_snapshot()
+    finally:
+        _LOGGER.info("beast-auto phase=options_read elapsed=%.3fs", time.perf_counter() - started)
     raw = dict(snapshot.get("options") or {})
     expected = set(TOGGLES)
     if set(raw) != expected or any(type(raw[name]) is not bool for name in expected):
@@ -266,7 +275,12 @@ def configure_beast_abyss_native_auto_options(
     help_view_scene_id: int,
     options: BeastAbyssNativeAutoOptions,
 ) -> Iterator[Any]:
-    """Apply one Runtime-GUI aligned option batch, then verify it once."""
+    """Read options once; verify again only after an actual option change.
+
+    The already-correct path reuses this call's fresh complete observation,
+    not a persisted settings cache. No action or yield intervenes. Real batch
+    latency still needs measurement through the owning Kernel.
+    """
 
     desired = options.as_dict()
     if options.use_find_demon_talisman:
@@ -278,6 +292,8 @@ def configure_beast_abyss_native_auto_options(
         if not snapshot.get("evidence", {}).get("special_option_available"):
             raise RuntimeError("当前兽渊设置页没有寻妖符选项，不能启用")
     before = _read_runtime_options()
+    if before == desired:
+        return before
     for name, value in desired.items():
         if before[name] != value:
             context.click_shape_center(help_view_scene_id, TOGGLES[name].action)
@@ -345,7 +361,9 @@ def _set_count(
             f"兽渊自动探查目标超过资源安全容量："
             f"target={int(desired)}, capacity={int(maximum)}"
         )
+    started = time.perf_counter()
     live_range = read_beast_abyss_auto_count_snapshot()
+    _LOGGER.info("beast-auto phase=count_range_read elapsed=%.3fs", time.perf_counter() - started)
     live_maximum = int(live_range.get("maximum") or 0)
     if live_maximum < int(desired):
         raise RuntimeError(
@@ -364,6 +382,7 @@ def _set_count(
         count_slider_left_center_offset=assets.count_slider_left_center_offset,
         count_slider_right_center_offset=assets.count_slider_right_center_offset,
     )
+    adjustment_started = time.perf_counter()
     adjustment = yield from set_verified_integer_slider_count(
         context,
         slider_assets,
@@ -371,13 +390,32 @@ def _set_count(
         max_adjustments=10,
         count_label="兽渊自动探查次数",
         maximum=live_maximum,
-        runtime_count_reader=read_beast_abyss_auto_count_snapshot,
+        initial_count=int(live_range["current"]),
+    )
+    _LOGGER.info(
+        "beast-auto phase=count_adjust elapsed=%.3fs path=%s reads=%s",
+        time.perf_counter() - adjustment_started,
+        adjustment.get("phase"), adjustment.get("count_reads"),
     )
     if int(adjustment["after"]) != int(desired):
         raise RuntimeError(
             f"兽渊自动探查次数滑轨回读异常："
             f"expected={int(desired)}, actual={int(adjustment['after'])}"
         )
+
+
+def dismiss_beast_abyss_defeat(context: Any) -> Iterator[Any]:
+    """Dismiss only the verified PvP defeat overlay; never replay a batch."""
+    frame = context.cur_frame(update=True)
+    if not all(_shape_matches(context, 742, title, frame=frame) for title in (
+        "本次失败损失", "即将返回",
+    )):
+        return False
+    yield from context.wait_click_then_scene(
+        742, "点击屏幕继续", 657, 658, 656, timeout=20.0,
+        label="兽渊被击败：确认返回活动",
+    )
+    return True
 
 
 def enter_beast_abyss_explore(

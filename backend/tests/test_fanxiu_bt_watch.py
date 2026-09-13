@@ -92,6 +92,20 @@ def test_background_doctor_watch_does_not_capture_screenshots_by_default():
     assert inspect.signature(ensure_doctor_watch_background).parameters["include_screenshot"].default is False
 
 
+def test_ai_control_prevents_background_dispatcher_resurrection(monkeypatch):
+    from backend.core.fanxiu.data_annotation import kernel_scheduler_control as control
+
+    monkeypatch.setattr(control, "read_scheduler_settings", lambda: {"job_group_enabled": False})
+
+    def unexpected_spawn(*args, **kwargs):
+        pytest.fail("AI ownership must prevent starting a dispatcher")
+
+    monkeypatch.setattr(control, "popen_python_script_service", unexpected_spawn)
+    assert control.ensure_doctor_watch_background() == {
+        "ok": True, "started": False, "reason": "job_group_disabled",
+    }
+
+
 def test_ensure_watch_doctor_has_no_second_dispatch_mode(monkeypatch, capsys):
     captured: dict = {}
     monkeypatch.setattr(sys, "argv", ["fanxiu_bt.py", "ensure-watch-doctor"])

@@ -813,7 +813,7 @@ def select_schedule_activity(
         # Header/calendar OCR occasionally returns one incomplete frame even
         # though #66 itself is stable.  Retry the same read-only alignment on
         # fresh frames; never click until exactly one Runtime-bound row exists.
-        for alignment_attempt in range(3):
+        for alignment_attempt in range(6):
             if alignment_attempt:
                 # Announcements can obscure either the grid qualifier or the
                 # card on the first frame. Re-evaluate both on each fresh frame.
@@ -846,7 +846,7 @@ def select_schedule_activity(
                 alignment_error = exc
             if len(calendar_targets) == 1:
                 break
-            if alignment_attempt < 2:
+            if alignment_attempt < 5:
                 yield from context.wait_action_settle(0.8)
                 frame = context.cur_frame(update=True)
                 header_lines = context.ocr_fragments_in_shapes(
@@ -864,16 +864,9 @@ def select_schedule_activity(
             )
             yield from context.wait_action_settle(settle_seconds)
             return selected_target
-        if (
-            require_runtime_alignment
-            and not current_projection.exact_match
-            and not allow_unique_runtime_card_with_bad_time_ocr
-        ):
-            if alignment_error is not None:
-                raise alignment_error
-            raise RuntimeError(
-                f"#66 Runtime 对齐的日历活动命中 {len(calendar_targets)} 个，拒绝猜测入口"
-            )
+        # Grid OCR may be obscured by announcements. The independent card
+        # selector below still requires the exact Runtime identity and dates;
+        # a failed grid read must not preempt that validated fallback.
 
     # The game's intelligent default often already exposes the current major
     # activity. Preserve that fast path, but verify name and date before 前往.

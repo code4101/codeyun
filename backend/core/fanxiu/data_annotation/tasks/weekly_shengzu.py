@@ -102,11 +102,16 @@ class WeeklyShengzuTaskMixin:
         max_scrolls: int,
         transition_timeout: float,
     ):
-        _wait_scene_match = yield from context.wait_scene([383, 384, 385, 69, 34], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([338, 383, 384, 385, 69, 34], wait=5.0, required=False)
         (scene_id, _score, _frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
+        if scene_id == 338:
+            # A previous attempt can have entered combat before its navigation
+            # observation failed. Consume the live combat boundary instead of
+            # navigating back into the challenge a second time.
+            return 338
         if scene_id == 385:
             return
         if scene_id == 383:
@@ -144,28 +149,27 @@ class WeeklyShengzuTaskMixin:
         max_scrolls = max(0, int(payload.get("max_daily_scrolls") or 30))
         challenge_wait_seconds = max(30.0, float(payload.get("challenge_wait_seconds") or 30.0))
 
-        yield from self._goto_weekly_shengzu(
+        entry_scene_id = yield from self._goto_weekly_shengzu(
             context,
             max_scrolls=max_scrolls,
             transition_timeout=transition_timeout,
         )
-        completed_view = yield from context.wait_click_then_scene(
-            385,
-            "前往挑战",
-            [338, 34, 339],
-            timeout=challenge_wait_seconds,
-            label="周常_圣祖：等待挑战落点",
-        )
+        completed_view = entry_scene_id
+        if entry_scene_id != 338:
+            completed_view = yield from context.wait_click_then_scene(
+                385,
+                "前往挑战",
+                [338, 34, 339],
+                timeout=challenge_wait_seconds,
+                label="周常_圣祖：等待挑战落点",
+            )
         completed_scene_id = getattr(completed_view, "id", completed_view)
         yield from context.wait_action_settle(challenge_wait_seconds)
         if completed_scene_id == 338:
-            frame = context.cur_frame(update=True)
-            leave_match = context.click_ocr_text(
-                338,
-                "离开",
-                frame_data_url=frame,
-            )
-            self._log("action", f"周常_圣祖：运行至少 {challenge_wait_seconds:.0f} 秒后点击共用进行中页面 OCR「{leave_match.text}」")
+            # The shared combat exit is an annotated icon. Floating effects
+            # can cover its caption, so use the verified Shape contract.
+            yield from context.wait_click(338, "离开")
+            self._log("action", f"周常_圣祖：运行至少 {challenge_wait_seconds:.0f} 秒后点击共用战斗页离开 Shape")
             yield from context.wait_action_settle(1.0)
         yield from context.go_scene(34)
         message = f"周常_圣祖：已参战并运行至少 {challenge_wait_seconds:.0f} 秒，离开后返回世界 #34"

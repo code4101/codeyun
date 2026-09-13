@@ -262,7 +262,7 @@ function statDisplay(row: SpiritArtifactPartRow, label: string, legacyValue: str
 }
 
 function formatRuntimeTime(timestamp: number) {
-  return timestamp > 0 ? new Date(timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+  return timestamp > 0 ? new Date(timestamp * 1000).toLocaleString('zh-CN', { hour12: false }) : '';
 }
 
 function createPartRow(
@@ -1087,8 +1087,9 @@ onBeforeUnmount(() => {
         · {{ runtimeEquippedCount }}/{{ artifacts.length * 6 }}
       </el-tag>
       <span v-if="runtimeComplete && runtimeUpdatedAt" class="runtime-time">
-        {{ formatRuntimeTime(runtimeUpdatedAt) }}
+        快照：{{ formatRuntimeTime(runtimeUpdatedAt) }}
       </span>
+      <span v-if="runtimeComplete" class="runtime-time">刷新仅读取已保存快照，实时进度以游戏同步结果为准</span>
       <el-tag v-if="!runtimeComplete" type="warning" effect="plain">
         {{ runtimeError ? '运行态不可用，显示已保存数据' : '等待游戏运行态' }}
       </el-tag>

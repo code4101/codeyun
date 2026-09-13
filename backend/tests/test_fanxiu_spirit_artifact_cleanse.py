@@ -13,6 +13,7 @@ from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_cleanse import (
     SpiritArtifactCleanseGuiAssets,
     SpiritArtifactCleanseInterface,
     SpiritArtifactCleanseRequest,
+    SpiritArtifactCleanseRuntimeGuiAdapter,
     SpiritArtifactEffect,
     SpiritArtifactIrreversibleAuthorization,
     SpiritArtifactObservation,
@@ -330,3 +331,49 @@ def test_material_identity_is_bound_to_plan_authorization():
     authorization = SpiritArtifactIrreversibleAuthorization(first.plan_token, allow_material_consumption=True)
     with pytest.raises(SpiritArtifactCleanseBlocked, match='token'):
         require_irreversible_authorization(second, authorization, material=True)
+
+
+class _CleanseNavigationContext:
+    """Minimal Cell-context double: only the public navigation contract used here."""
+
+    def __init__(self, scene: int, transitions: dict[tuple[int, str], int]) -> None:
+        self.scene = scene
+        self.transitions = transitions
+        self.clicks: list[tuple[int, str]] = []
+
+    def click_shape_center_then_scene(self, scene, shape, *targets, **options):
+        self.clicks.append((int(scene), str(shape)))
+        landed = self.transitions[(int(scene), str(shape))]
+        self.scene = landed
+        return type("_View", (), {"id": landed, "scene_id": landed})()
+
+    def wait_scene(self, scenes, wait=5.0, **options):
+        return type("_Match", (), {"scene_id": self.scene, "score": 100.0,
+                                   "matched_layer": 0, "frame_data_url": ""})()
+
+
+def _cleanse_navigation_adapter(scene: int, transitions: dict[tuple[int, str], int]):
+    context = _CleanseNavigationContext(scene, transitions)
+    adapter = SpiritArtifactCleanseRuntimeGuiAdapter(context, lambda value: value)
+    adapter.current_scene_id = lambda: context.scene
+    return adapter, context
+
+
+def test_return_to_world_closes_world_menu_entry_35():
+    """#35 是 open_overview() 自 #34 打开的合法入口，必须沿正式 shape 回 #34。"""
+
+    adapter, context = _cleanse_navigation_adapter(35, {(35, "关闭下方菜单"): 34})
+
+    adapter.return_to_world()
+
+    assert context.clicks == [(35, "关闭下方菜单")]
+    assert adapter.current_scene_id() == 34
+
+
+def test_return_to_world_still_rejects_unmapped_pages():
+    """未映射页面继续失败关闭，不新增猜测返回路径。"""
+
+    adapter, _context = _cleanse_navigation_adapter(400, {})
+
+    with pytest.raises(SpiritArtifactCleanseBlocked, match="未落到 #34"):
+        adapter.return_to_world()
