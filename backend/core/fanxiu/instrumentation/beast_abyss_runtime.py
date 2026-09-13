@@ -548,37 +548,45 @@ def read_beast_abyss_auto_options_snapshot() -> dict[str, Any]:
         special_values, special_count = context.reader.list_items(special_list)
         special_rows = [table_ref(value) for value in special_values]
         special_rows = [value for value in special_rows if value is not None]
-        if special_count != 1 or len(special_rows) != 1:
+        special_config_id = None
+        special_item_id = None
+        special_selected = False
+        if special_count == 0 and not special_rows:
+            # An explicitly empty rendered list means this activity exposes no
+            # special-item toggle. It is disabled, not an unloaded observation.
+            pass
+        elif special_count == 1 and len(special_rows) == 1:
+            special_data = table_ref(
+                read_ui_object_field(context, special_rows[0].address, "V_Data")
+            )
+            if special_data is None:
+                raise FanxiuRuntimeMemoryError("兽渊特殊道具选项缺少 V_Data")
+            # Generated BeastExplodeUse rows are compact positional arrays rather
+            # than named tables: [1]=id, [2]=itemId.
+            special_array = list(context.reader.table(special_data.address).get("array", ()))
+            special_config_id = as_int(
+                special_array[1] if len(special_array) > 1 else None
+            )
+            special_item_id = as_int(
+                special_array[2] if len(special_array) > 2 else None
+            )
+            if special_config_id is None or special_config_id <= 0:
+                raise FanxiuRuntimeMemoryError("兽渊特殊道具选项缺少有效配置 id")
+
+            setting_rows = context.reader.dictionary_fields(data.get("_AutoSettingData"))
+            special_setting = None
+            for raw_key, raw_value in setting_rows.items():
+                if as_int(raw_key) == special_config_id:
+                    special_setting = context.reader.fields(raw_value)
+                    break
+            special_selected = bool(
+                special_setting and special_setting.get("toggle") is True
+            )
+        else:
             raise FanxiuRuntimeMemoryError(
                 "兽渊特殊道具选项无法唯一确定："
                 f"declared={special_count!r}, loaded={len(special_rows)}"
             )
-        special_data = table_ref(
-            read_ui_object_field(context, special_rows[0].address, "V_Data")
-        )
-        if special_data is None:
-            raise FanxiuRuntimeMemoryError("兽渊特殊道具选项缺少 V_Data")
-        # Generated BeastExplodeUse rows are compact positional arrays rather
-        # than named tables: [1]=id, [2]=itemId.
-        special_array = list(context.reader.table(special_data.address).get("array", ()))
-        special_config_id = as_int(
-            special_array[1] if len(special_array) > 1 else None
-        )
-        special_item_id = as_int(
-            special_array[2] if len(special_array) > 2 else None
-        )
-        if special_config_id is None or special_config_id <= 0:
-            raise FanxiuRuntimeMemoryError("兽渊特殊道具选项缺少有效配置 id")
-
-        setting_rows = context.reader.dictionary_fields(data.get("_AutoSettingData"))
-        special_setting = None
-        for raw_key, raw_value in setting_rows.items():
-            if as_int(raw_key) == special_config_id:
-                special_setting = context.reader.fields(raw_value)
-                break
-        special_selected = bool(
-            special_setting and special_setting.get("toggle") is True
-        )
 
         options = {
             name: type_id in selected_type_ids
@@ -597,6 +605,7 @@ def read_beast_abyss_auto_options_snapshot() -> dict[str, Any]:
                 "beast_root": f"0x{beast_root:x}",
                 "beast_root_cache_hit": cache_hit,
                 "selected_type_ids": sorted(selected_type_ids),
+                "special_option_available": special_count == 1,
                 "special_config_id": special_config_id,
                 "special_item_id": special_item_id,
             },

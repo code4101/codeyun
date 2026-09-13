@@ -436,32 +436,20 @@ class DailyResourceTaskMixin:
             stop_event,
             label="日常_游历：等待修仙传游历 #228",
         )
-        result = yield from context.wait_click_then_any(
-            228,
-            "购买",
-            {
-                "purchase": context.shape_visible(229, "购买并使用"),
-                "empty": context.shape_visible(233, "空白"),
-                "empty_text": context.ocr_matches(
-                    self._daily_youli_text_is_purchase_empty,
-                    label=f"{task_label}：购买次数不足 OCR",
-                    preview_chars=120,
-                ),
-                "home": context.scene_visible(228, threshold=95.0),
-                "home_text": context.ocr_matches(
-                    self._daily_youli_text_is_home,
-                    label=f"{task_label}：购买后修仙传游历 OCR",
-                    preview_chars=120,
-                ),
-            },
-            settle_seconds=float(payload.get("purchase_click_settle_seconds") or 2.0),
-            label=f"{task_label}：等待购买体力结果",
+        landed = yield from context.wait_click_then_scene(
+            228, "购买", 229, 233,
+            timeout=float(payload.get("purchase_dialog_timeout") or 20.0),
+            label=f"{task_label}：等待购买体力弹窗",
         )
-        if result in {"empty", "empty_text"}:
-            return (yield from self._close_daily_youli_purchase_empty(ctx, stop_event, image233, task_label=task_label))
-        if result in {"home", "home_text"}:
-            self._log("warning", f"{task_label}：点击购买后仍在 #228，停止购买流程")
-            return "success"
+        landed_id = getattr(landed, "scene_id", getattr(landed, "id", landed))
+        if landed_id == 233:
+            return (yield from self._close_daily_youli_purchase_empty_and_wait_home(
+                ctx, stop_event, image233, task_label=task_label,
+            ))
+        if landed_id != 229:
+            # The source page can still be visible while the dialog opens.
+            # It proves neither a completed purchase nor absence of a dialog.
+            raise RuntimeError(f"{task_label}：购买后未确认 #229/#233，当前 #{landed_id}")
         return (yield from self._click_daily_youli_purchase_uses(ctx, stop_event, payload, image229, image233, task_label=task_label))
 
     def _daily_youli_text_is_purchase(self, text: str) -> bool:

@@ -269,6 +269,14 @@ def configure_beast_abyss_native_auto_options(
     """Apply one Runtime-GUI aligned option batch, then verify it once."""
 
     desired = options.as_dict()
+    if options.use_find_demon_talisman:
+        from backend.core.fanxiu.instrumentation.beast_abyss_runtime import (
+            read_beast_abyss_auto_options_snapshot,
+        )
+
+        snapshot = read_beast_abyss_auto_options_snapshot()
+        if not snapshot.get("evidence", {}).get("special_option_available"):
+            raise RuntimeError("当前兽渊设置页没有寻妖符选项，不能启用")
     before = _read_runtime_options()
     for name, value in desired.items():
         if before[name] != value:
@@ -417,7 +425,7 @@ def enter_beast_abyss_explore(
         yield from _observe(context, (assets.home_scene_id,), ("进入活动", "兽渊探秘"))
         context.click_shape_center(assets.home_scene_id, assets.enter_activity)
         yield from context.wait_action_settle(1.0)
-    elif scene_id != assets.explore_scene_id:
+    elif scene_id not in entry_scenes:
         raise RuntimeError(f"兽渊预检要求从活动页或探查页开始：scene={scene_id!r}")
     for _attempt in range(24):
         _wait_scene_match = yield from context.wait_scene(list(entry_scenes), wait=5.0, required=False)
@@ -426,7 +434,11 @@ def enter_beast_abyss_explore(
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
         )
         if scene_id == assets.explore_scene_id:
-            break
+            # During map transitions the scene classifier can briefly retain
+            # the exploration identity. Require its visible controls as well.
+            text = _compact(context.ocr_text(_frame))
+            if any(anchor in text for anchor in ("自动探查", "快捷处理")):
+                break
         action = {
             assets.cutscene_scene_id: assets.skip_cutscene,
             assets.skip_confirm_scene_id: assets.confirm_skip,

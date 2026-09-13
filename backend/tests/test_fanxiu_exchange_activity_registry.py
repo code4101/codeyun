@@ -339,7 +339,7 @@ def test_registered_adapter_delegates_to_existing_collector(
 
     assert result == activity_type
     expected_options = (
-        {"collect_runtime_rank": False}
+        {"collect_runtime_rank": True, "collect_related_runtime_ranks": True}
         if activity_type == "beast-abyss"
         else {}
     )

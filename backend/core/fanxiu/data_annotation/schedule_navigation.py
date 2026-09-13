@@ -814,6 +814,23 @@ def select_schedule_activity(
         # though #66 itself is stable.  Retry the same read-only alignment on
         # fresh frames; never click until exactly one Runtime-bound row exists.
         for alignment_attempt in range(3):
+            if alignment_attempt:
+                # Announcements can obscure either the grid qualifier or the
+                # card on the first frame. Re-evaluate both on each fresh frame.
+                refreshed_page = context.paged_content_snapshot(
+                    SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE, frame_data_url=frame
+                )
+                refreshed_projection = constrain_to_expected_instance(
+                    classify_activity_card(
+                        refreshed_page.get("lines") or (), activity_pattern,
+                        target_date=target_date, target_moment=target_moment,
+                        runtime_entities=runtime_entities,
+                    )
+                )
+                if refreshed_projection.exact_match:
+                    current_projection = selected_projection = refreshed_projection
+                    selected_page = refreshed_page
+                    break
             try:
                 calendar_targets = resolve_schedule_runtime_activity_targets(
                     header_lines=header_lines,
@@ -847,7 +864,11 @@ def select_schedule_activity(
             )
             yield from context.wait_action_settle(settle_seconds)
             return selected_target
-        if require_runtime_alignment and not allow_unique_runtime_card_with_bad_time_ocr:
+        if (
+            require_runtime_alignment
+            and not current_projection.exact_match
+            and not allow_unique_runtime_card_with_bad_time_ocr
+        ):
             if alignment_error is not None:
                 raise alignment_error
             raise RuntimeError(

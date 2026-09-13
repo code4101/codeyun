@@ -209,7 +209,18 @@ def seed_ranking_occurrence(
     }
     if occurrence_shop is not None:
         payload["game_shop_base_id"] = occurrence_shop.base_id
+    # Updating schedule identity must not change the user's existing lock
+    # selection. Snapshot upsert also recalculates policy locks, so restore
+    # the exact prior selection inside this provider after that calculation.
+    existing_items = list(session.exec(select(FanxiuExchangeShopItem).where(
+        FanxiuExchangeShopItem.activity_id == existing.id,
+    )).all()) if existing is not None else []
+    prior_locks = {int(item.goods_id): bool(item.locked) for item in existing_items}
     activity_id = upsert_exchange_activity_snapshot(session, payload)
+    for item in existing_items:
+        item.locked = prior_locks[int(item.goods_id)]
+        session.add(item)
+    session.flush()
     activity = session.get(FanxiuExchangeActivity, activity_id)
     if activity is None:
         raise RuntimeError("榜单 occurrence 入库后无法回读")
@@ -268,20 +279,28 @@ def reconcile_ranking_occurrence(
     *,
     captured_at: str,
     required_fact_watermark: datetime | None = None,
+    collect_live_facts: bool = True,
 ) -> dict[str, Any]:
-    """Reconcile static tiers and retain current facts for one occurrence."""
+    """Reconcile static tiers and retain current facts for one occurrence.
+
+    Adapters that already collected independent facts may pass
+    ``collect_live_facts=False`` to validate and record the persisted projection
+    without reloading Runtime ranks or replacing their complete shop snapshot.
+    Retained shop evidence must cover the checkpoint watermark.
+    """
 
     spec = get_exchange_activity_spec(occurrence.activity_type)
     materialize_error = ""
-    try:
-        materialize_registered_exchange_activity(
-            session,
-            activity_type=occurrence.activity_type,
-        )
-    except (RuntimeError, ValueError) as exc:
-        # Seeding below is occurrence-exact. A materializer is an opportunistic
-        # DB catch-up and may legitimately have no open live rank at 00:30.
-        materialize_error = str(exc)
+    if collect_live_facts:
+        try:
+            materialize_registered_exchange_activity(
+                session,
+                activity_type=occurrence.activity_type,
+            )
+        except (RuntimeError, ValueError) as exc:
+            # Seeding below is occurrence-exact. A materializer is an opportunistic
+            # DB catch-up and may legitimately have no open live rank at 00:30.
+            materialize_error = str(exc)
     activity = seed_ranking_occurrence(
         session,
         occurrence,
@@ -290,18 +309,19 @@ def reconcile_ranking_occurrence(
     collect_error = ""
     collected_activity: Any | None = None
     resource_collect_error = ""
-    try:
-        collected_activity = collect_registered_exchange_activity(
-            session,
-            activity_type=occurrence.activity_type,
-            activity_id=activity.id,
-        )
-    except (RuntimeError, ValueError) as exc:
-        # Runtime pages/managers are commonly unavailable at 00:30.  The
-        # exact seed and static reward projection remain valid; old live facts
-        # must be retained instead of being replaced with an empty snapshot.
-        collect_error = str(exc)
-    if isinstance(spec.adapter, ResourceRankingResourceAdapter):
+    if collect_live_facts:
+        try:
+            collected_activity = collect_registered_exchange_activity(
+                session,
+                activity_type=occurrence.activity_type,
+                activity_id=activity.id,
+            )
+        except (RuntimeError, ValueError) as exc:
+            # Runtime pages/managers are commonly unavailable at 00:30.  The
+            # exact seed and static reward projection remain valid; old live facts
+            # must be retained instead of being replaced with an empty snapshot.
+            collect_error = str(exc)
+    if collect_live_facts and isinstance(spec.adapter, ResourceRankingResourceAdapter):
         try:
             collect_registered_resource_ranking_resources(
                 session,
@@ -385,7 +405,7 @@ def reconcile_ranking_occurrence(
         if spec.shop is None
         else (
             "updated"
-            if shop_refresh_status == "updated" or shop_watermark_satisfied
+            if (collect_live_facts and shop_refresh_status == "updated") or shop_watermark_satisfied
             else "retained"
         )
     )

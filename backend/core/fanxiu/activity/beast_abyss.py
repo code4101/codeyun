@@ -227,6 +227,111 @@ def _shop_snapshot(*, cross_count: int) -> dict[str, Any]:
 
 
 
+def collect_and_store_beast_abyss_shop(
+    session: Session,
+    *,
+    activity_id: str,
+) -> Any:
+    """Collect only the selected occurrence's complete #536 shop projection.
+
+    The caller opens the exact occurrence shop first. Runtime period and shop
+    cohort are validated here before writing. The shared snapshot provider
+    replaces the complete item set, preserves existing item locks and rebuilds
+    the exchange plan. Wallet, rankings and gameplay initialization are not
+    sampled or reset; shop collection must also work before a rank page visit.
+    """
+    from backend.core.fanxiu.activity.exchange_event import (
+        list_exchange_activity_snapshot,
+        upsert_exchange_activity_snapshot,
+        update_exchange_shop_item_lock,
+    )
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        refresh_cached_fanxiu_activity_runtime_schedule,
+    )
+
+    existing = session.get(FanxiuExchangeActivity, activity_id)
+    if existing is None or existing.activity_type != BEAST_ABYSS_ACTIVITY_TYPE:
+        raise ValueError("兽渊探秘活动实例不存在")
+    if not existing.instance_key or not existing.runtime_id or existing.game_activity_id is None:
+        raise ValueError("兽渊宝阁采集要求精确的已登记活动实例")
+    refresh_cached_fanxiu_activity_runtime_schedule(allow_discovery=True)
+    period = _runtime_period(
+        session,
+        cross_count=existing.cross_count,
+        target_date=date.fromisoformat(existing.end_date),
+        expected_runtime_id=str(existing.runtime_id),
+        expected_game_activity_id=int(existing.game_activity_id),
+    )
+    if (
+        existing.start_date != period["start_date"]
+        or existing.end_date != period["end_date"]
+        or int(existing.cross_count) != int(period["cross_count"])
+        or str(existing.runtime_id) != str(period.get("runtime_id") or "")
+        or int(existing.game_activity_id) != int(period.get("game_activity_id") or 0)
+    ):
+        raise ValueError("兽渊宝阁实例与当前运行时周期不一致")
+    prior_locked = {
+        int(item.goods_id) for item in session.exec(select(FanxiuExchangeShopItem).where(
+            FanxiuExchangeShopItem.activity_id == activity_id,
+            FanxiuExchangeShopItem.locked == True,  # noqa: E712
+        )).all()
+    }
+    shop = _shop_snapshot(cross_count=int(existing.cross_count))
+    captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    evidence = dict(existing.evidence or {})
+    refresh_status = dict(evidence.get("refresh_status") or {})
+    refresh_status.update({"shop": "updated", "shop_reason": ""})
+    evidence.update({
+        "shop": dict(shop.get("evidence") or {}),
+        "shop_snapshot_captured_at": captured_at,
+        "refresh_status": refresh_status,
+    })
+    # Pass an exact identity and only shop-owned fields. The generic provider
+    # owns full-set replacement, lock preservation and plan recomputation.
+    payload = {
+        "activity_type": BEAST_ABYSS_ACTIVITY_TYPE,
+        "instance_key": str(existing.instance_key),
+        "family": existing.family,
+        "runtime_id": str(existing.runtime_id),
+        "game_activity_id": int(existing.game_activity_id),
+        "cross_count": int(existing.cross_count),
+        "start_date": str(existing.start_date),
+        "end_date": str(existing.end_date),
+        "game_shop_base_id": BEAST_ABYSS_SHOP_BASE_ID,
+        "currency_type": BEAST_ABYSS_CURRENCY_TYPE,
+        "currency_name": BEAST_ABYSS_CURRENCY_NAME,
+        "evidence": evidence,
+        "instance_data": dict(existing.instance_data or {}),
+        "shop_items": list(shop["items"]),
+        "expected_shop_item_count": int(shop["active_shop_item_count"]),
+    }
+    persisted_id = upsert_exchange_activity_snapshot(session, payload)
+    if persisted_id != str(activity_id):
+        raise RuntimeError("兽渊宝阁写入切换了目标实例")
+    if prior_locked:
+        # There is no separate manual/policy lock provenance. Retain the
+        # pre-refresh lock selection rather than letting automatic replanning
+        # replace it. Release new policy locks first to respect the two-row cap.
+        refreshed_items = list(session.exec(select(FanxiuExchangeShopItem).where(
+            FanxiuExchangeShopItem.activity_id == activity_id,
+        )).all())
+        for item in refreshed_items:
+            if item.locked and int(item.goods_id) not in prior_locked:
+                update_exchange_shop_item_lock(
+                    session, activity_type=BEAST_ABYSS_ACTIVITY_TYPE,
+                    activity_id=activity_id, goods_id=int(item.goods_id), locked=False,
+                )
+        for item in refreshed_items:
+            if int(item.goods_id) in prior_locked and not item.locked:
+                update_exchange_shop_item_lock(
+                    session, activity_type=BEAST_ABYSS_ACTIVITY_TYPE,
+                    activity_id=activity_id, goods_id=int(item.goods_id), locked=True,
+                )
+    return list_exchange_activity_snapshot(
+        session, activity_type=BEAST_ABYSS_ACTIVITY_TYPE, activity_id=activity_id,
+    ).selected_activity
+
+
 def collect_and_store_beast_abyss_activity(
     session: Session,
     *,

@@ -143,7 +143,8 @@ def _read_ledger(
         read_wallet_currency_snapshot,
     )
     budget = read_beast_abyss_budget_snapshot()
-    wallet = read_wallet_currency_snapshot(14, allow_discovery=False)
+    # The initialized game wallet omits an event currency until its first gain.
+    wallet = read_wallet_currency_snapshot(14, allow_discovery=False, missing_as_zero=True)
     if wallet.get("source") != "runtime_memory":
         raise RuntimeError("兽渊钱包没有提供 Runtime 实时事实")
     rank_activity_id = int(activity.game_rank_activity_id or 0)
@@ -328,7 +329,6 @@ def _initialization_state_complete(
         return False
     return bool(
         stable
-        and _reward_check_complete(state.get("first_reward_check"))
         and _reward_check_complete(state.get("final_reward_check"))
         and _stored_scatter_model_matches(state.get("model"), measurements)
     )
@@ -483,8 +483,6 @@ def _persist_initialization_progress(
             )
         ):
             raise RuntimeError("兽渊相邻批次兑币增量未稳定，拒绝完成初始化")
-        if not _reward_check_complete(first_reward_check):
-            raise RuntimeError("兽渊首轮任务奖励未处理至无待领取")
         if not _reward_check_complete(final_reward_check):
             raise RuntimeError("兽渊末次任务奖励未保底检查至无待领取")
     model = (
@@ -1249,6 +1247,21 @@ def _run_auto_batch(
     return result
 
 
+def read_beast_abyss_initialization_state(occurrence: Any) -> dict[str, Any]:
+    """Read exact-occurrence recovery state before any navigation is attempted."""
+    from backend.db import engine
+
+    with Session(engine) as session:
+        activities = list(session.exec(select(FanxiuExchangeActivity).where(
+            FanxiuExchangeActivity.activity_type == "beast-abyss",
+            FanxiuExchangeActivity.instance_key == occurrence.instance_key,
+        )).all())
+        if not activities:
+            return {}
+        activity = validate_beast_abyss_occurrence(occurrence, activities)
+        return dict(dict(activity.instance_data or {}).get(BEAST_ABYSS_INITIALIZATION_KEY) or {})
+
+
 def execute_beast_abyss_initialization_checkpoint(
     runner: Any,
     ctx: dict[str, Any],
@@ -1294,20 +1307,9 @@ def execute_beast_abyss_initialization_checkpoint(
         for item in initialization.get("measurements") or ()
         if isinstance(item, Mapping)
     ]
+    # Preserve legacy reward history, but new sampling never claims between
+    # batches: stabilize and persist the dual-y model before reward cleanup.
     first_rewards = initialization.get("first_reward_check")
-    first_rewards_complete = _reward_check_complete(first_rewards)
-    if measurements and not first_rewards_complete:
-        # Older R&D batches may predate the explicit checkpoint. Claiming is
-        # idempotent, so establish the missing first-batch proof before any
-        # further stability sample.
-        first_rewards = yield from claim_beast_abyss_task_rewards(context)
-        first_rewards_complete = True
-        _persist_initialization_progress(
-            activity.id,
-            measurements,
-            completed=False,
-            first_reward_check=first_rewards,
-        )
     max_batches = min(
         BEAST_ABYSS_INITIALIZATION_MAX_BATCHES,
         max(2, int(payload.get("max_initialization_batches") or BEAST_ABYSS_INITIALIZATION_MAX_BATCHES)),
@@ -1319,7 +1321,6 @@ def execute_beast_abyss_initialization_checkpoint(
     )
     batches_this_attempt = 0
     while not stable and batches_this_attempt < max_batches:
-        previous_count = len(measurements)
         measurements = yield from run_beast_abyss_measurement_batch(
             context,
             activity,
@@ -1328,22 +1329,6 @@ def execute_beast_abyss_initialization_checkpoint(
         )
         pending = None
         batches_this_attempt += 1
-        if (
-            not first_rewards_complete
-            and previous_count == 0
-            and len(measurements) == 1
-        ):
-            # The first 100-run batch is the initial speed/yield sample.  Only
-            # after that sample settles do we remove the small task-reward
-            # disturbance, before entering the repeated stability batches.
-            first_rewards = yield from claim_beast_abyss_task_rewards(context)
-            first_rewards_complete = True
-            _persist_initialization_progress(
-                activity.id,
-                measurements,
-                completed=False,
-                first_reward_check=first_rewards,
-            )
         stable = len(measurements) >= 2 and is_beast_abyss_currency_yield_stable(
             measurements[-2], measurements[-1]
         )
@@ -1367,6 +1352,16 @@ def execute_beast_abyss_initialization_checkpoint(
             "batch_count": len(measurements),
             "initialization": state,
         }
+    # Commit the stable sample/model before any reward action. A failed reward
+    # cleanup can then resume here without purchasing another sample batch.
+    _persist_initialization_progress(
+        activity.id,
+        measurements,
+        completed=False,
+        first_reward_check=(
+            first_rewards if isinstance(first_rewards, Mapping) else None
+        ),
+    )
     final_rewards = yield from claim_beast_abyss_task_rewards(context)
     state = _persist_initialization_progress(
         activity.id,
@@ -1914,51 +1909,73 @@ def execute_beast_abyss_daily_reconcile_checkpoint(
     captured_at: datetime,
     required_fact_watermark: datetime,
 ) -> Iterator[Any]:
-    """Open #536 once so 00:30 can materialize the occurrence without playing."""
+    """Maintain the exact occurrence's shop and static reward tiers at 00:30.
 
+    Shop collection is independent of rank-page loading. A previously saved
+    complete shop covering this checkpoint is reusable; otherwise collect it
+    before recording the shared reconciliation observation. Never challenge,
+    exchange, or overwrite initialization state in this maintenance phase.
+    """
+    from backend.core.fanxiu.activity.beast_abyss import collect_and_store_beast_abyss_shop
+    from backend.core.fanxiu.activity.exchange_event import list_exchange_activity_snapshot
     from backend.core.fanxiu.activity.ranking_reconcile import (
         reconcile_ranking_occurrence,
         seed_ranking_occurrence,
     )
     from backend.db import engine
 
+    watermark = required_fact_watermark
+    if watermark.tzinfo is None:
+        watermark = watermark.astimezone()
     with Session(engine) as session:
         activity = seed_ranking_occurrence(
-            session,
-            occurrence,
-            captured_at=captured_at.isoformat(timespec="seconds"),
+            session, occurrence, captured_at=captured_at.isoformat(timespec="seconds"),
         )
         activity_id = str(activity.id)
+        detail = list_exchange_activity_snapshot(
+            session, activity_type="beast-abyss", activity_id=activity_id,
+        ).selected_activity
+        snapshot_time = None
+        try:
+            snapshot_time = datetime.fromisoformat(str(detail.shop_snapshot_captured_at or ""))
+            if snapshot_time.tzinfo is None:
+                snapshot_time = snapshot_time.astimezone()
+        except ValueError:
+            pass
+        shop_ready = bool(detail.shop_items and snapshot_time and snapshot_time >= watermark)
         session.commit()
 
-    context = runner._behavior_tree_context(
-        ctx,
-        ctx.get("asset_tree_path"),
-        stop_event=stop_event,
-    )
-    home_scene_id = yield from _enter_beast_abyss_occurrence_home(
-        context,
-        occurrence,
-        label="兽渊00:30实例化",
-    )
-    yield from context.wait_click_then_scene(
-        home_scene_id,
-        "兑换宝阁",
-        536,
-        timeout=20.0,
-        label="兽渊00:30：进入兑换宝阁",
-    )
+    context = None
+    if not shop_ready:
+        context = runner._behavior_tree_context(
+            ctx, ctx.get("asset_tree_path"), stop_event=stop_event,
+        )
+        home_scene_id = yield from _enter_beast_abyss_occurrence_home(
+            context, occurrence, label="兽渊00:30实例化",
+        )
+        match = yield from context.wait_click_then_scene(
+            home_scene_id, "兑换宝阁", 536, timeout=20.0,
+            label="兽渊00:30：进入兑换宝阁",
+        )
+        if match.id != 536:
+            raise RuntimeError("兽渊00:30：未到达兑换宝阁，保留现场")
+        with Session(engine) as session:
+            detail = collect_and_store_beast_abyss_shop(session, activity_id=activity_id)
+            if str(detail.id) != activity_id or not detail.shop_items:
+                raise RuntimeError("兽渊00:30：宝阁未保存完整目标实例数据")
+            session.commit()
     with Session(engine) as session:
         result = reconcile_ranking_occurrence(
-            session,
-            occurrence,
+            session, occurrence,
             captured_at=captured_at.isoformat(timespec="seconds"),
-            required_fact_watermark=required_fact_watermark,
+            required_fact_watermark=watermark,
+            collect_live_facts=False,
         )
         session.commit()
     if str(result.get("activity_id") or "") != activity_id:
         raise RuntimeError("兽渊00:30：采集结果切换到其他活动实例")
-    yield from context.go_scene(34)
+    if context is not None:
+        yield from context.go_scene(34)
     return result
 
 
@@ -2046,6 +2063,7 @@ __all__ = [
     "execute_beast_abyss_exchange_tail_checkpoint",
     "execute_beast_abyss_formal_checkpoint",
     "execute_beast_abyss_initialization_checkpoint",
+    "read_beast_abyss_initialization_state",
     "execute_beast_abyss_manual_clear_checkpoint",
     "execute_beast_abyss_rank_refresh_probe",
     "refresh_beast_abyss_final_rankings",

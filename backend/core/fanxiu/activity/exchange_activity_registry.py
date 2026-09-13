@@ -177,7 +177,10 @@ class BeastAbyssExchangeActivityAdapter:
         return collect_and_store_beast_abyss_activity(
             session,
             activity_id=activity_id,
-            collect_runtime_rank=False,
+            # Explicit collection refreshes facts. Read-only materialization
+            # has its own path and must not stand in for this cold-start read.
+            collect_runtime_rank=True,
+            collect_related_runtime_ranks=True,
         )
 
 

@@ -606,6 +606,87 @@ def execute_ranking_lifecycle_job(runner, ctx, payload, stop_event):
     ))
 
 
+def execute_beast_abyss_lifecycle_rnd_cell(runner, ctx, payload, stop_event):
+    """Explicitly validate today's Beast Abyss collect -> model -> formal flow.
+
+    This remains outside production scheduling. Resolve one occurrence once,
+    carry its identity through every phase, and never advance past a pending
+    phase. Existing settled measurements are resumed by the phase provider.
+    Ordinary task returns mean trigger success in the framework, so incomplete
+    R&D phases must raise after their provider has persisted recovery state.
+    """
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
+        execute_beast_abyss_daily_reconcile_checkpoint,
+        execute_beast_abyss_initialization_checkpoint,
+        execute_beast_abyss_formal_checkpoint,
+        read_beast_abyss_initialization_state,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    if not (time(10, 0) <= now.timetz().replace(tzinfo=None) < time(21, 30)):
+        raise RuntimeError("兽渊生命周期研发只能在10:00-21:30自动挑战窗口内运行")
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True, force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("兽渊生命周期研发：Runtime日程不可用或不完整")
+    matches = tuple(
+        item for item in discover_ranking_occurrences(schedule)
+        if item.family == "gameplay_rank"
+        and item.activity_type == "beast-abyss"
+        and item.start_at <= now <= item.end_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(f"兽渊生命周期研发无法唯一定位当前开放实例：matches={len(matches)}")
+    occurrence = matches[0]
+    phases = {}
+    # A pending batch owns the current GUI surface. Revisiting the shop would
+    # destroy the terminal/start evidence required by its recovery protocol.
+    pending = read_beast_abyss_initialization_state(occurrence).get("pending_batch")
+    if pending is None:
+        phases["reconcile"] = yield from execute_beast_abyss_daily_reconcile_checkpoint(
+            runner, ctx, stop_event, occurrence=occurrence, captured_at=now,
+            required_fact_watermark=max(
+                occurrence.start_at, now.replace(hour=0, minute=30, second=0, microsecond=0),
+            ),
+        )
+        if phases["reconcile"].get("status") != "completed":
+            raise RuntimeError(
+                f"兽渊采集阶段未完成 [{phases['reconcile'].get('status', 'unknown')}]："
+                f"{phases['reconcile'].get('message') or '实例事实不完整'}"
+            )
+    else:
+        phases["reconcile"] = {
+            "status": "retained", "message": "保留未结批次现场，复用本期宝阁事实恢复初始化",
+        }
+    if stop_event.is_set():
+        raise InterruptedError()
+    phases["initialization"] = yield from execute_beast_abyss_initialization_checkpoint(
+        runner, ctx, payload, stop_event, occurrence=occurrence,
+    )
+    if phases["initialization"].get("status") != "completed":
+        raise RuntimeError(
+            f"兽渊初始化阶段未完成 [{phases['initialization'].get('status', 'unknown')}]："
+            f"{phases['initialization'].get('message') or '初始化未完成，已保存状态供恢复'}"
+        )
+    if stop_event.is_set():
+        raise InterruptedError()
+    phases["formal"] = yield from execute_beast_abyss_formal_checkpoint(
+        runner, ctx, payload, stop_event, occurrence=occurrence,
+    )
+    if phases["formal"].get("status") != "completed":
+        raise RuntimeError(
+            f"兽渊正式阶段未完成 [{phases['formal'].get('status', 'unknown')}]："
+            f"{phases['formal'].get('message') or '正式运行未完成'}"
+        )
+    return {**phases["formal"], "phases": phases}
+
+
 def execute_beast_abyss_initialization_rnd_cell(runner, ctx, payload, stop_event):
     """Run only the current Beast Abyss initialization in an explicit R&D Cell."""
 
@@ -779,6 +860,7 @@ __all__ = [
     "PRODUCTION_EXCHANGE_TAIL_EXECUTOR_ACTIVITY_TYPES",
     "exchange_tail_executor_is_production",
     "execute_beast_abyss_initialization_rnd_cell",
+    "execute_beast_abyss_lifecycle_rnd_cell",
     "execute_magic_invasion_initialization_rnd_cell",
     "execute_beast_abyss_exchange_tail_rnd_cell",
     "execute_beast_abyss_rank_refresh_rnd_cell",

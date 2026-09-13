@@ -6202,12 +6202,8 @@ class DailyFoundationTaskMixin:
 
     def _daily_audit_normalize_title(self, row_text: str) -> str:
         text = _sanitize_ocr_text(row_text).translate(FULLWIDTH_DIGIT_TRANSLATION)
-        # Progress is a two-value OCR group; its visual separator is irrelevant.
-        if parse_ocr_values(text, expected_count=2) is not None:
-            text = re.sub(r"\d+", " ", text)
-        text = re.sub(r"[◎。·•●○\s]+", " ", text)
-        text = re.sub(r"(?:活|次|次数|活跃度|未占领|未入座|前往|扫荡|挑战)", " ", text)
-        return re.sub(r"\s+", "", text).strip()[:40]
+        # Strip the bullet misread as O/0, preserving meaningful title digits.
+        return re.sub(r"^[Oo0◎。·•●○\s]+", "", text).strip()
 
     def _daily_audit_row_done(
         self,
@@ -6220,7 +6216,7 @@ class DailyFoundationTaskMixin:
         min_total = _DAILY_AUDIT_COMPLETION_MIN_TOTAL.get(task_type)
         if min_total is not None:
             return total >= min_total and current >= total
-        return current >= total or "已完成" in _sanitize_ocr_text(row_text)
+        return current >= total
 
     def _daily_audit_visible_rows(
         self,
@@ -6256,32 +6252,38 @@ class DailyFoundationTaskMixin:
                 next_line["_cy"] = cy
                 visible_lines.append(next_line)
 
-        progress_centers: list[float] = []
+        frame_width, _frame_height = self._frame_size(image69)
+        scale = float(frame_width) / 900.0
+        progress_rows: list[tuple[dict[str, Any], tuple[int, int]]] = []
         for line in visible_lines:
             text = str(line.get("_text") or "")
-            if parse_ocr_values(text, expected_count=2) is not None:
-                cy = float(line.get("_cy") or 0)
-                if all(abs(cy - existing) > 45.0 for existing in progress_centers):
-                    progress_centers.append(cy)
+            # Independent fraction in the proven progress column. A title
+            # such as '0完成双人修炼1次' is not a progress observation.
+            fraction = re.fullmatch(r"[次活关]?\s*(\d+)\s*[/／丨|｜]\s*(\d+)", text)
+            if fraction and 460 * scale <= float(line["_cx"]) <= 555 * scale:
+                current, total = map(int, fraction.groups())
+                if 0 <= current <= total and total > 0:
+                    progress_rows.append((line, (current, total)))
 
         rows: list[dict[str, Any]] = []
-        for center in sorted(progress_centers):
-            progress_lines = [
+        for progress_line, progress in sorted(progress_rows, key=lambda item: item[0]["_cy"]):
+            center = float(progress_line["_cy"])
+            title_lines = [
                 line
                 for line in visible_lines
-                if -float(y_tolerance) <= float(line.get("_cy") or 0) - center <= 45.0
+                if -min(float(y_tolerance), 155.0) * scale <= float(line["_cy"]) - center <= -75 * scale
+                and 395 * scale <= float(line.get("x") or 0) <= 550 * scale
+                and float(line.get("y") or 0) >= top
+                and not re.search(r"[:：！!]|功勋|榜单积分|经验加成|经验效率|触发|击杀.*修士", str(line["_text"]))
             ]
-            fragments = [str(line.get("_text") or "") for line in progress_lines]
-            row_text = "".join(fragments)
-            # The next task title may contain its own count (for example
-            # “完成…1次”).  Limit this audit call to the visual block ending at
-            # the current progress line before invoking the shared parser.
-            progress = self._daily_task_row_progress(progress_lines, center, y_tolerance=y_tolerance)
-            if progress is None:
+            if len(title_lines) != 1:
                 continue
+            title = self._daily_audit_normalize_title(str(title_lines[0]["_text"]))
+            if not title or not re.search(r"[\u4e00-\u9fff]", title):
+                continue
+            row_text = title + " " + str(progress_line["_text"])
             current, total = progress
-            title = self._daily_audit_normalize_title(row_text)
-            identity = self._daily_audit_task_identity(row_text)
+            identity = self._daily_audit_task_identity(title)
             task_type = (identity or {}).get("task_type") or ""
             rows.append({
                 "title": title or row_text[:40],
@@ -6291,17 +6293,15 @@ class DailyFoundationTaskMixin:
                 "task_type": task_type,
                 "task_id": (identity or {}).get("task_id") or "",
                 "center_y": center,
+                "row_complete": True,
             })
         return rows
 
     def _merge_daily_audit_rows(self, rows: list[dict[str, Any]], next_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         by_key: dict[str, dict[str, Any]] = {}
         for row in [*rows, *next_rows]:
-            task_key = str(row.get("task_id") or row.get("task_type") or "").strip()
-            progress = row.get("progress") if isinstance(row.get("progress"), dict) else {}
-            fallback_key = f"{row.get('title') or row.get('text') or ''}:{progress.get('total') or ''}"
-            key = task_key or fallback_key
-            if key and key not in by_key:
+            key = self._daily_audit_normalize_title(str(row.get("title") or ""))
+            if key and (key not in by_key or bool(row.get("row_complete"))):
                 by_key[key] = row
         return list(by_key.values())
 
@@ -6346,22 +6346,43 @@ class DailyFoundationTaskMixin:
         if scene_id != 69:
             raise RuntimeError("日常_复核：未能进入 #69 日常页，无法读取次数")
 
-        max_scrolls = self._payload_int(payload, "max_scrolls", default=12)
+        max_scrolls = self._payload_int(payload, "max_scrolls", default=30)
 
+        view69 = context.view(69)
+        list_shape = context.shape(69, "滚动窗口")
         rows: list[dict[str, Any]] = []
-        for index in range(max_scrolls + 1):
-            self._raise_if_stopped(stop_event)
-            with self._lock:
-                self._set_status_locked("running", f"日常_复核：读取日常列表 {index + 1}/{max_scrolls + 1}", phase="daily_audit_scan", current_scene=69)
-            frame = context.cur_frame(update=True)
-            lines = self._ocr_fragments_in_scene_shapes(ctx, frame, image69)
-            self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_复核")
-            rows = self._merge_daily_audit_rows(rows, self._daily_audit_visible_rows(lines, image69))
-            if index >= max_scrolls:
-                break
-            changed = yield from context.scroll_shape_content(view69, list_shape, direction="down")
-            if not changed:
-                break
+        reached_boundaries: dict[str, bool] = {}
+        # Entry may retain any prior scroll offset. Collect toward both ends;
+        # pixel similarity is not proof that sparse text rows stopped moving.
+        for direction in ("up", "down"):
+            previous_keys: set[str] = set()
+            unchanged_count = 0
+            reached_boundaries[direction] = False
+            for index in range(max_scrolls + 1):
+                self._raise_if_stopped(stop_event)
+                with self._lock:
+                    self._set_status_locked("running", f"日常_复核：读取日常列表 {direction} {index + 1}/{max_scrolls + 1}", phase="daily_audit_scan", current_scene=69)
+                frame = context.cur_frame(update=True)
+                lines = self._ocr_fragments_in_scene_shapes(ctx, frame, image69)
+                self._ensure_daily_list_frame(ctx, frame, lines, task_label="日常_复核")
+                visible_rows = self._daily_audit_visible_rows(lines, image69)
+                rows = self._merge_daily_audit_rows(rows, visible_rows)
+                keys = {
+                    str(row.get("task_id") or row.get("task_type") or row.get("title") or "").strip()
+                    for row in visible_rows
+                } - {""}
+                unchanged_count = unchanged_count + 1 if keys and keys == previous_keys else 0
+                previous_keys = keys
+                if unchanged_count >= 2:
+                    reached_boundaries[direction] = True
+                    break
+                if index >= max_scrolls:
+                    break
+                # The next iteration must read the post-scroll frame even
+                # when the visual change detector returns False.
+                yield from context.scroll_shape_content(view69, list_shape, direction=direction)
+
+        scan_complete = all(reached_boundaries.values())
 
         incomplete = [row for row in rows if not bool(row.get("done"))]
         completed = [row for row in rows if bool(row.get("done"))]
@@ -6373,6 +6394,8 @@ class DailyFoundationTaskMixin:
             "updated_at": time.time(),
             "updated_at_text": _now().strftime("%Y-%m-%d %H:%M:%S"),
             "source_scene": 69,
+            "scan_complete": scan_complete,
+            "scan_boundaries": reached_boundaries,
             "row_count": len(rows),
             "rows": rows,
             "incomplete": incomplete,
@@ -6383,9 +6406,14 @@ class DailyFoundationTaskMixin:
             "unmapped_completed": unmapped_completed,
             "incomplete_task_ids": [str(row.get("task_id") or "") for row in mapped_incomplete if str(row.get("task_id") or "")],
             "completed_task_ids": [str(row.get("task_id") or "") for row in mapped_completed if str(row.get("task_id") or "")],
-            "message": f"日常页复核：读取 {len(rows)} 条，已完成 {len(completed)} 条，未完成 {len(incomplete)} 条，未完成已映射 {len(mapped_incomplete)} 条",
+            "message": f"日常页复核{'完整' if scan_complete else '未完整'}：读取 {len(rows)} 条，已完成 {len(completed)} 条，未完成 {len(incomplete)} 条，未完成已映射 {len(mapped_incomplete)} 条",
         }
         self._record_daily_audit_result(audit)
+        if not scan_complete:
+            raise RuntimeError(
+                f"{audit['message']}；达到每方向 {max_scrolls} 次滚动上限，"
+                f"未确认全部边界 {reached_boundaries}，已保留部分复核事实"
+            )
         with self._lock:
             self._set_status_locked("success", audit["message"], phase="daily_audit_done", current_scene=69)
             self._log_locked("success", audit["message"])

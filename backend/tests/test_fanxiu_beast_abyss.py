@@ -701,3 +701,67 @@ def test_refresh_retains_team_rows_when_current_fact_temporarily_disappears(
     assert [(row.rank, row.name) for row in team_rows] == [(1, "甲队"), (2, "乙队")]
     assert stored is not None
     assert stored.evidence["retained_related_ranking_scopes"] == ["team"]
+
+
+def test_shop_only_refresh_preserves_other_occurrence_wallet_rank_and_pending(monkeypatch):
+    from backend.models import FanxiuExchangeShopItem
+
+    with _session() as session:
+        common = dict(
+            activity_type="beast-abyss", cross_count=32,
+            start_date="2026-09-12", end_date="2026-09-13",
+            game_activity_id=8150001, currency_type=14,
+        )
+        current = FanxiuExchangeActivity(
+            id="current", instance_key="runtime:04", runtime_id="04",
+            current_currency=123, cumulative_currency=456,
+            instance_data={"beast_abyss_initialization": {"pending_batch": {"batch_id": "keep"}}},
+            evidence={"rank_marker": "keep", "refresh_status": {"currency": "retained"}},
+            **common,
+        )
+        other = FanxiuExchangeActivity(
+            id="other", instance_key="runtime:31", runtime_id="31", **common,
+        )
+        session.add(current)
+        session.add(other)
+        session.flush()
+        session.add(FanxiuExchangeShopItem(
+            activity_id="current", goods_id=15000001, item_id=9070095,
+            token_cost=99, locked=True,
+        ))
+        session.add(FanxiuExchangeShopItem(
+            activity_id="current", goods_id=15000002, item_id=2,
+        ))
+        rank = FanxiuExchangeRanking(activity_id="current", rank=7, score=890)
+        session.add(rank)
+        session.commit()
+        monkeypatch.setattr(beast_abyss, "_runtime_period", lambda *_args, **kwargs: {
+            "start_date": "2026-09-12", "end_date": "2026-09-13",
+            "cross_count": 32, "runtime_id": "04", "game_activity_id": 8150001,
+        })
+        monkeypatch.setattr(beast_abyss, "_shop_snapshot", lambda **kwargs: _shop_snapshot(1200))
+        result = beast_abyss.collect_and_store_beast_abyss_shop(session, activity_id="current")
+        assert result.id == "current"
+        assert len(result.shop_items) == 1
+        assert result.shop_items[0].token_cost == 1200
+        assert result.shop_items[0].locked is True
+        session.refresh(current)
+        assert (current.current_currency, current.cumulative_currency) == (123, 456)
+        assert current.instance_data["beast_abyss_initialization"]["pending_batch"] == {"batch_id": "keep"}
+        assert current.evidence["rank_marker"] == "keep"
+        assert current.evidence["shop_snapshot_captured_at"]
+        assert current.evidence["refresh_status"]["currency"] == "retained"
+        session.refresh(rank)
+        assert (rank.rank, rank.score) == (7, 890)
+        assert not session.exec(select(FanxiuExchangeShopItem).where(
+            FanxiuExchangeShopItem.activity_id == "other",
+        )).all()
+        # Bad complete-set counts fail before mutating the retained good shop.
+        malformed = {**_shop_snapshot(999), "active_shop_item_count": 2}
+        monkeypatch.setattr(beast_abyss, "_shop_snapshot", lambda **kwargs: malformed)
+        with pytest.raises(ValueError, match="不完整"):
+            beast_abyss.collect_and_store_beast_abyss_shop(session, activity_id="current")
+        kept = session.exec(select(FanxiuExchangeShopItem).where(
+            FanxiuExchangeShopItem.activity_id == "current",
+        )).one()
+        assert kept.token_cost == 1200

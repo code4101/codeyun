@@ -109,6 +109,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "ranking_lifecycle",
     "magic_invasion_initialization_rnd",
     "magic_invasion_initialization_rewards_rnd",
+    "beast_abyss_lifecycle_rnd",
     "beast_abyss_initialization_rnd",
     "beast_abyss_rank_refresh_rnd",
     "beast_abyss_exchange_tail_rnd",
@@ -2166,6 +2167,25 @@ def register_fanxiu_default_jobs() -> None:
             ctx,
             payload,
             stop_event,
+        ))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "beast_abyss_lifecycle_rnd",
+        "兽渊_生命周期研发",
+        scheduler_supported=False,
+        standard_job=False,
+    )
+    def _run_data_annotation_beast_abyss_lifecycle_rnd_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.ranking_lifecycle import (
+            execute_beast_abyss_lifecycle_rnd_cell,
+        )
+        return (yield from execute_beast_abyss_lifecycle_rnd_cell(
+            runner, ctx, payload, stop_event,
         ))
 
     @register_fanxiu_data_annotation_task_cell(

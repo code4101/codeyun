@@ -362,7 +362,7 @@ def test_completed_state_requires_stability_reward_proof_and_no_pending() -> Non
     ) is False
     assert beast_abyss_active._initialization_state_complete(
         {**base, "first_reward_check": None}
-    ) is False
+    ) is True
     assert beast_abyss_active._initialization_state_complete(
         {**base, "final_reward_check": {"checked": True}}
     ) is False
@@ -623,13 +623,13 @@ def test_ledger_uses_retained_rank_snapshot_after_leaving_rank_page(
     assert ledger.personal_rank_object_identity == "7:8:9"
 
 
-def test_first_batch_reward_then_stable_final_reward_and_dual_y_save(monkeypatch) -> None:
+def test_stable_model_saved_before_single_final_reward(monkeypatch) -> None:
     generator, reward_calls, saved, entry_calls = _run_initialization(
         monkeypatch, [_measurement(100, 20), _measurement(140, 30)]
     )
     result = _finish(generator)
     assert entry_calls == ["兽渊10:00初始化"]
-    assert reward_calls == [1, 2]
+    assert reward_calls == [2]
     assert result["scatter_points"] == [(100, 100, 20), (100, 140, 30)]
     assert saved[-1][1] is True
 
@@ -643,7 +643,7 @@ def test_five_unstable_batches_remain_retryable_without_losing_samples(monkeypat
     assert result["status"] == "pending"
     assert result["batch_count"] == 5
     assert entry_calls == ["兽渊10:00初始化"]
-    assert reward_calls == [1]
+    assert reward_calls == []
     assert saved[-1][1] is False
 
 
@@ -1213,7 +1213,7 @@ def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path)
         assert len(state["measurements"]) == 1
 
     stable_rows = [_measurement(100, 20), _measurement(140, 30)]
-    with pytest.raises(RuntimeError, match="首轮任务奖励"):
+    with pytest.raises(RuntimeError, match="末次任务奖励"):
         beast_abyss_active._persist_initialization_progress(
             "current-occurrence", stable_rows, completed=True
         )
@@ -1268,6 +1268,10 @@ def test_pending_marker_and_measurement_settle_atomically(monkeypatch, tmp_path)
     assert completed["activity_instance_id"] == "current-occurrence"
     assert completed["pending_batch"] is None
     assert completed["first_reward_check"] == first_reward_check
+    final_only = dict(completed, first_reward_check=None)
+    assert beast_abyss_active._initialization_state_complete(
+        final_only, expected_activity_id="current-occurrence",
+    )
     assert completed["final_reward_check"] == {
         "checked": True,
         "gui_opened": True,
@@ -1727,6 +1731,15 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
         ),
     )
 
+    monkeypatch.setattr(
+        beast_abyss_active,
+        "execute_beast_abyss_rank_refresh_probe",
+        lambda *_args, **_kwargs: (
+            calls.append(("refresh_ranks",))
+            or _generator_result({"status": "completed"})
+        ),
+    )
+
     class Context:
         samples = iter(((66, 100.0, "schedule"),))
 
@@ -1759,6 +1772,7 @@ def test_daily_reconcile_opens_shop_without_challenge_or_purchase(
         )
     )
 
+    assert calls[0] == ("refresh_ranks",)
     select_call = next(item for item in calls if item[0] == "select")
     assert select_call[1] == "兽渊探秘"
     assert select_call[2].date() == datetime.now().astimezone().date()

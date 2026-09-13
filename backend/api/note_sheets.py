@@ -22679,6 +22679,14 @@ def delete_workbook(
 ):
     _require_note_sheets_feature(session, current_user)
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
+    # 独立考勤先摘除调度并软删除权威工作簿；外壳删除失败可安全重试。
+    from backend.core.attendance.independent_engine_adapter import ensure_attendance_engine_importable
+    ensure_attendance_engine_importable()
+    from xlsln.kq5034.engine.client import LocalAttendanceSheetClient, AttendanceStorageError
+    try:
+        LocalAttendanceSheetClient().delete_course_workbook(workbook_id, expected_title=workbook.title)
+    except AttendanceStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     links = session.exec(
         select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
     ).all()

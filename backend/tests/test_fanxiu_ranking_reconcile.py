@@ -521,3 +521,46 @@ def test_seed_inherits_only_explicit_global_monotonic_server_day_floor(monkeypat
     }
     assert activity.evidence["server_day"] == 31
     assert "monotonic lower bound" in activity.evidence["server_day_evidence"]
+
+
+@pytest.mark.parametrize("snapshot_at,expected_status", [
+    ("2026-08-21T00:31:00+08:00", "completed"),
+    ("2026-08-20T00:31:00+08:00", "blocked"),
+])
+def test_reconcile_persisted_facts_never_collects_and_requires_fresh_shop(
+    monkeypatch, snapshot_at, expected_status,
+):
+    """A retained 'updated' flag cannot make yesterday's snapshot fresh."""
+    monkeypatch.setattr(ranking_reconcile, "_activity_definition_index",
+                        lambda: {700014: {"id": 700014, "follow": [7000114, 7000214]}})
+    def unexpected(*args, **kwargs):
+        raise AssertionError("persisted projection must not collect Runtime")
+    monkeypatch.setattr(ranking_reconcile, "materialize_registered_exchange_activity", unexpected)
+    monkeypatch.setattr(ranking_reconcile, "collect_registered_exchange_activity", unexpected)
+    monkeypatch.setattr(ranking_reconcile, "list_exchange_rankings", lambda *args, **kwargs:
+        SimpleNamespace(reward_tiers=[object()], loaded_entry_count=0,
+                        declared_rank_count=0, complete=False))
+    occurrence = _magic_occurrence(cross_count=8)
+    with _session() as session:
+        activity = ranking_reconcile.seed_ranking_occurrence(
+            session, occurrence, captured_at=snapshot_at,
+        )
+        activity.evidence = {**dict(activity.evidence or {}),
+            "shop_snapshot_captured_at": snapshot_at,
+            "refresh_status": {"shop": "updated"}}
+        session.add(activity)
+        session.add(FanxiuExchangeShopItem(activity_id=activity.id, goods_id=1,
+                    item_id=1, name="已采商品", token_cost=100, locked=True))
+        session.commit()
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session, occurrence, captured_at="2026-08-21T00:40:00+08:00",
+            required_fact_watermark=datetime.fromisoformat("2026-08-21T00:30:00+08:00"),
+            collect_live_facts=False,
+        )
+        from sqlmodel import select
+        assert session.exec(select(FanxiuExchangeShopItem).where(
+            FanxiuExchangeShopItem.activity_id == activity.id)).one().locked
+        assert result["activity_id"] == activity.id
+        assert result["status"] == expected_status
+        assert result["facts"]["shop_item_count"] == 1
+        assert result["facts"]["shop_watermark_satisfied"] == (expected_status == "completed")

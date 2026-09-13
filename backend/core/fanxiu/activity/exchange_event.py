@@ -457,6 +457,51 @@ def store_exchange_activity_observation(
     return row.id
 
 
+def select_exchange_activity_default(
+    activities: list[FanxiuExchangeActivity],
+    *,
+    schedule: dict[str, Any],
+    business_date: date,
+) -> FanxiuExchangeActivity | None:
+    """Prefer the saved current Runtime identity; retain ordered history as fallback.
+
+    Same dates/cross-count are display labels, not instance identities. This
+    projection consumes only an already-persisted schedule and never probes the
+    device. Missing, stale or ambiguous evidence cannot override the fallback.
+    """
+    fallback = activities[0] if activities else None
+    if (
+        schedule.get("source_kind") != "worldline_activity_runtime_memory"
+        or schedule.get("projection_date") != business_date.isoformat()
+    ):
+        return fallback
+    matches: list[FanxiuExchangeActivity] = []
+    for row in activities:
+        for occurrence in schedule.get("occurrences") or []:
+            if not isinstance(occurrence, dict):
+                continue
+            if not occurrence.get("identity_complete") or occurrence.get("identity_conflict"):
+                continue
+            runtime_ids = {str(value) for value in occurrence.get("runtime_ids") or []}
+            if (
+                row.runtime_id
+                and row.runtime_id in runtime_ids
+                and row.game_activity_id == occurrence.get("activity_id")
+                and row.cross_count == occurrence.get("cross_count")
+                and row.start_date == occurrence.get("start_date")
+                and row.end_date == occurrence.get("end_date")
+                and row.start_date <= business_date.isoformat()
+                <= str(occurrence.get("close_panel_at") or occurrence.get("end_at") or "")[:10]
+            ):
+                matches.append(row)
+                break
+    # Different activity types can coexist; preserve the caller's ordering.
+    # Multiple exact instances within one type are not enough evidence to pick.
+    if matches and sum(row.activity_type == matches[0].activity_type for row in matches) == 1:
+        return matches[0]
+    return fallback
+
+
 def list_exchange_activity_snapshot(
     session: Session, *, activity_type: str, activity_id: str | None = None
 ) -> ExchangeActivitySnapshot:
@@ -471,7 +516,18 @@ def list_exchange_activity_snapshot(
             )
         ).all()
     )
-    selected = next((row for row in activities if row.id == activity_id), None) if activity_id else (activities[0] if activities else None)
+    if activity_id:
+        selected = next((row for row in activities if row.id == activity_id), None)
+    else:
+        from backend.core.fanxiu.activity.daily_activity_sync import (
+            load_worldline_activity_schedule_snapshot,
+        )
+
+        selected = select_exchange_activity_default(
+            activities,
+            schedule=load_worldline_activity_schedule_snapshot(),
+            business_date=datetime.now(ZoneInfo("Asia/Shanghai")).date(),
+        )
     if selected is not None:
         _ensure_exchange_shop_plan_current(session, selected)
     detail = _detail(session, selected) if selected else None

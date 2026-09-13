@@ -10,6 +10,7 @@ from backend.core.fanxiu.activity.exchange_event import (
     LatestExchangeActivitySnapshot,
     exchange_activity_close_panel_at,
     list_exchange_activity_snapshot,
+    select_exchange_activity_default,
 )
 from backend.models import FanxiuExchangeActivity
 
@@ -56,7 +57,16 @@ def _current_family_snapshot(
     ]
     if not relevant:
         return LatestExchangeActivitySnapshot()
-    selected = relevant[0]
+    from backend.core.fanxiu.activity.daily_activity_sync import (
+        load_worldline_activity_schedule_snapshot,
+    )
+
+    selected = select_exchange_activity_default(
+        relevant,
+        schedule=load_worldline_activity_schedule_snapshot(),
+        business_date=business_date,
+    )
+    assert selected is not None
     snapshot: ExchangeActivitySnapshot = list_exchange_activity_snapshot(
         session,
         activity_type=selected.activity_type,
