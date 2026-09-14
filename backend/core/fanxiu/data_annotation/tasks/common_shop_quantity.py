@@ -26,6 +26,11 @@ COMMON_SHOP_QUANTITY_ASSETS = IntegerSliderAssets(
     count_slider_thumb="兑换数量_滑块游标",
     count_slider_left_anchor="兑换数量_滑轨左端",
     count_slider_right_anchor="兑换数量_滑轨右端",
+    # #566 at maxNum=270: the live thumb centre is x=646.7. The
+    # reference anchor is x=655.2 and the template width is 34.2,
+    # so the generic half-template inset is 8.6px
+    # too large. Bind the correction to this dialog, not every slider.
+    count_slider_right_center_offset=8.6,
 )
 SACRED_SHOP_DIALOG_SCENE = 634
 SACRED_SHOP_QUANTITY_ASSETS = IntegerSliderAssets(
@@ -82,27 +87,52 @@ def set_verified_common_shop_quantity(
             f"{label}：购买框单价 {initial.get('Price')!r} != {price}"
         )
 
-    def runtime_count() -> dict[str, int]:
-        current = _require_snapshot(snapshot_reader(), label=label)
-        return {
-            "current": int(current.get("showNum") or 0),
-            "maximum": int(current.get("maxNum") or 0),
-        }
+    # Full redemption needs Runtime only for range and final purchase proof.
+    # Live #566 acceptance covers the Beast Abyss quantity dialog.
+    if target == maximum and assets.count_slider_right_anchor:
+        # Full redemption is the usual shop operation. The right-end Shape
+        # names the track endpoint; +10 uses the game's natural cap. There
+        # is no proportional probe or unit-by-unit tuning on this path.
+        context.click_shape_center(
+            assets.settings_scene_id, assets.count_slider_right_anchor,
+        )
+        yield from context.wait_action_settle(0.5)
+        # The game clamps +10 at maxNum. One saturating action completes the
+        # small endpoint residual without measuring it or issuing unit clicks.
+        if assets.count_increase_large:
+            context.click_shape_center(
+                assets.settings_scene_id, assets.count_increase_large,
+            )
+        yield from context.wait_action_settle(0.5)
+        adjustment = {"phase": "maximum_endpoint", "before": int(initial["showNum"])}
+    else:
+        # Preserve the exact partial-quantity path. In particular, #566's
+        # single-digit label can be missed by OCR; it must not become zero.
+        def runtime_count() -> dict[str, int]:
+            current = _require_snapshot(snapshot_reader(), label=label)
+            return {
+                "current": int(current.get("showNum") or 0),
+                "maximum": int(current.get("maxNum") or 0),
+            }
 
-    adjustment = yield from set_verified_integer_slider_count(
-        context,
-        assets,
-        target,
-        maximum=maximum,
-        max_adjustments=10,
-        count_label=f"{label}购买数量",
-        runtime_count_reader=runtime_count,
-    )
-    if int(adjustment.get("after") or 0) != target:
+        adjustment = yield from set_verified_integer_slider_count(
+            context,
+            assets,
+            target,
+            maximum=maximum,
+            # A +/-10 dialog can finish a <100 residual in at most 18
+            # button actions; pixel calibration is wasteful at this scale.
+            max_adjustments=10 * int(assets.count_large_step or 1),
+            count_label=f"{label}购买数量",
+            initial_count=int(initial["showNum"]),
+            runtime_count_reader=runtime_count,
+        )
+    if adjustment.get("phase") != "maximum_endpoint" and int(adjustment.get("after") or 0) != target:
         raise RuntimeError(f"{label}：数量控制器未精确收敛到 {target}")
 
     final = _require_snapshot(snapshot_reader(), label=label)
     actual = int(final.get("showNum") or 0)
+    adjustment["after"] = actual
     actual_price = int(final.get("Price") or 0)
     owned = int(final.get("HadPrice") or 0)
     expected_total = target * price

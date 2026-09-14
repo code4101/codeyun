@@ -1,73 +1,21 @@
-from __future__ import annotations
+"""红包相对几何的确定性契约；真实识别、点击与领取在游戏中验收。"""
+import pytest
 
-from types import SimpleNamespace
-
-from backend.core.fanxiu.data_annotation.tasks.daily_redpacket import (
-    DailyRedpacketTaskMixin,
-)
+from backend.core.fanxiu.data_annotation.tasks.daily_redpacket import redpacket_group_logo_point
 
 
-class _Runner(DailyRedpacketTaskMixin):
-    def __init__(self) -> None:
-        self.matches: list[tuple[dict, dict, str, str]] = []
-        self.logs: list[tuple[str, str]] = []
-
-    @staticmethod
-    def _find_shape(image, title):
-        return next(shape for shape in image["shapes"] if shape["title"] == title)
-
-    def _match_shape(self, ctx, image, shape, frame, *, condition):
-        self.matches.append((image, shape, frame, condition))
-        return {"matched": True, "similarity": 96.0, "resolved_box": {"x": 1}}
-
-    def _log(self, kind, message):
-        self.logs.append((kind, message))
+def test_avatar_moves_with_badge_and_uses_current_asset_geometry():
+    template_badge = dict(x=178, y=1189, w=38, h=38)
+    template_logo = dict(x=98, y=1195, w=118, h=118)
+    window = dict(x=81, y=616, w=757, h=710)
+    assert redpacket_group_logo_point(dict(x=178, y=1025), template_badge, template_logo, window) == (157, 1090)
+    template_logo["x"] += 10
+    assert redpacket_group_logo_point(dict(x=178, y=1025), template_badge, template_logo, window) == (167, 1090)
 
 
-def test_claim_loop_consumes_sold_out_popup_after_open_without_counting_it():
-    class Context:
-        def __init__(self):
-            self.clicks = []
-
-        def wait_click(self, scene_id, shape, **_options):
-            self.clicks.append((scene_id, shape))
-            if False:
-                yield None
-
-        def wait_scene(self, scene_ids, **_options):
-            assert list(scene_ids) == [398, 399, 672]
-            if False:
-                yield None
-            return SimpleNamespace(id=672)
-
-    class Runner(_Runner):
-        def __init__(self):
-            super().__init__()
-            self.dismissed = 0
-
-        def _dismiss_daily_redpacket_sold_out(self, _context, **_options):
-            self.dismissed += 1
-            if False:
-                yield None
-            return SimpleNamespace(id=30)
-
-    runner = Runner()
-    context = Context()
-    generator = runner._claim_daily_redpackets(
-        context,
-        transition_timeout=5,
-        max_open_count=10,
-        current=SimpleNamespace(id=397),
-    )
-
-    try:
-        next(generator)
-    except StopIteration as done:
-        opened = done.value
-    else:  # pragma: no cover
-        raise AssertionError("sold-out branch unexpectedly yielded")
-
-    assert opened == 0
-    assert context.clicks == [(397, "开")]
-    assert runner.dismissed == 1
-    assert any("已抢光红包" in message for _kind, message in runner.logs)
+def test_avatar_outside_window_is_not_clickable():
+    with pytest.raises(RuntimeError, match="窗口外"):
+        redpacket_group_logo_point(
+            dict(x=178, y=1300), dict(x=178, y=1189),
+            dict(x=98, y=1195, w=118, h=118), dict(x=81, y=616, w=757, h=710),
+        )

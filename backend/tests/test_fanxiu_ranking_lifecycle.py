@@ -318,7 +318,7 @@ def test_registered_shop_owns_tail_capability_inside_runtime_grace_window(
     )
 
     tail = next(item for item in rows if item.checkpoint_kind == EXCHANGE_TAIL_KIND)
-    assert tail.due_at == datetime(2026, 9, 4, 0, 30, tzinfo=TZ)
+    assert tail.due_at == datetime(2026, 9, 4, 0, 10, tzinfo=TZ)
 
 
 def test_magic_exchange_tail_runs_before_runtime_closing_minute_at_0030() -> None:
@@ -344,12 +344,12 @@ def test_magic_exchange_tail_runs_before_runtime_closing_minute_at_0030() -> Non
     assert len(tail) == 1
     assert tail[0].runtime_id == occurrence.runtime_id
     assert tail[0].instance_key == occurrence.instance_key
-    assert tail[0].due_at == datetime(2026, 9, 6, 0, 25, tzinfo=TZ)
+    assert tail[0].due_at == datetime(2026, 9, 6, 0, 10, tzinfo=TZ)
     assert next_ranking_lifecycle_time(
         (occurrence,),
-        now=datetime(2026, 9, 6, 0, 24, 59, tzinfo=TZ),
+        now=datetime(2026, 9, 6, 0, 9, 59, tzinfo=TZ),
         production_only=True,
-    ) == datetime(2026, 9, 6, 0, 25, tzinfo=TZ)
+    ) == datetime(2026, 9, 6, 0, 10, tzinfo=TZ)
     assert occurrence_exchange_tail_window_contains(
         occurrence,
         datetime(2026, 9, 6, 0, 30, 59, 999999, tzinfo=TZ),
@@ -816,7 +816,7 @@ def test_unverified_beast_active_stays_disabled_without_hiding_its_shop_tail() -
         business_day=datetime(2026, 8, 24, tzinfo=TZ).date(),
     )
     assert [(item.checkpoint_kind, item.due_at.strftime("%H:%M")) for item in first_day] == [
-        (DAILY_RECONCILE_KIND, "00:30"),
+        (DAILY_RECONCILE_KIND, "00:10"),
     ]
 
     tail_day = checkpoints_for_occurrence(
@@ -824,7 +824,7 @@ def test_unverified_beast_active_stays_disabled_without_hiding_its_shop_tail() -
         business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
     )
     assert [(item.checkpoint_kind, item.due_at.strftime("%H:%M")) for item in tail_day] == [
-        (EXCHANGE_TAIL_KIND, "00:30"),
+        (EXCHANGE_TAIL_KIND, "00:10"),
     ]
 
 
@@ -947,3 +947,45 @@ def test_lingzhuang_tier12_is_only_scheduled_for_server_rank(cross_count, expect
         assert checkpoint.due_at == datetime(2026, 9, 10, 5, 15, tzinfo=TZ)
         assert all(c.checkpoint_kind != LINGZHUANG_STRENGTHENING_KIND for c in due_ranking_checkpoints(
             [occurrence], now=datetime(2026, 9, 10, 18, tzinfo=TZ), completed_keys=[checkpoint.key]))
+
+
+@pytest.mark.parametrize("status,result,reopen", [
+    ("unavailable", {"error_type": "RuntimeError"}, True),
+    ("unavailable", {"terminal_reason": "implicit_retry_budget_exhausted"}, True),
+    ("unavailable", {"terminal_reason": "shop_closed"}, False),
+    ("completed", {"error_type": "RuntimeError"}, False),
+    ("retained", {"error_type": "RuntimeError"}, False),
+])
+def test_reopen_only_legacy_failure_preserves_history(status, result, reopen):
+    from backend.core.fanxiu.activity.ranking_lifecycle_store import (
+        reopen_failed_ranking_checkpoint,
+    )
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    occurrence = discover_ranking_occurrences(_schedule(), identities=IDENTITIES)[0]
+    checkpoint = due_ranking_checkpoints(
+        (occurrence,), now=datetime(2026, 8, 22, 0, 30, tzinfo=TZ),
+    )[0]
+    with Session(engine) as session:
+        original = record_ranking_checkpoint_result(
+            session, checkpoint, status=status, result=result,
+            evidence={"fact": "keep"}, message="original failure",
+        )
+        args = dict(instance_key=checkpoint.instance_key,
+                    checkpoint_kind=checkpoint.checkpoint_kind,
+                    business_date=checkpoint.business_date)
+        if not reopen:
+            with pytest.raises(ValueError, match="Only legacy"):
+                reopen_failed_ranking_checkpoint(session, **args)
+            assert original.status == status
+            return
+        repaired = reopen_failed_ranking_checkpoint(session, **args)
+        assert repaired.status == "error"
+        assert repaired.completed_at == repaired.retry_at == ""
+        assert repaired.attempt_count == 1
+        assert repaired.evidence == {"fact": "keep"}
+        assert repaired.result == result
+        assert repaired.message == "original failure"
+        assert completed_ranking_checkpoint_keys(session) == set()
+        with pytest.raises(ValueError, match="Only legacy"):
+            reopen_failed_ranking_checkpoint(session, **args)

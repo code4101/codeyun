@@ -1859,7 +1859,10 @@ def _enter_beast_abyss_occurrence_home(
     )
     expected_home_scene_id = 696 if settlement else 535
 
-    _wait_scene_match = yield from context.wait_scene(scenes=[535, 696, 536, 66, 657, 658], wait=5.0, required=False)
+    # A stopped purchase leaves the shared detail dialog open. Recognize it
+    # explicitly so reentry uses its close/navigation Shapes, not the world
+    # shortcut intended for an unrecognized world skin.
+    _wait_scene_match = yield from context.wait_scene(scenes=[34, 535, 696, 536, 566, 66, 657, 658], wait=5.0, required=False)
     (scene_id, _score, frame) = (
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")

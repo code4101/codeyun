@@ -2826,12 +2826,34 @@ def run_now_scheduler_task(
     payload_override: dict[str, Any] | None = None,
     business_time_mode: Literal["planned", "current"] = "planned",
     interrupt_same_group: bool = True,
+    refresh_kernel_code: bool = True,
     scheduler_state_path: Path | None = None,
     scheduler_settings_path: Path | None = None,
     execution_state_path: Path | None = None,
     world_facts_path: Path | None = None,
     asset_tree_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Submit a formal attempt, optionally preserving an AI's hot-loaded Kernel.
+
+    refresh_kernel_code=False requires AI control (engineering Job group off)
+    and an already alive, idle Kernel. It neither verifies source signatures
+    nor starts/restarts a Kernel; the AI caller owns loading its changed code.
+    Reload callers holding ``from module import function`` bindings as well
+    as the changed module, so the attempt cannot retain an old function body.
+    """
+    def resident_ai_kernel() -> dict[str, Any]:
+        from backend.core.fanxiu.behavior_tree.jupyter_kernel import fanxiu_kernel_manager_status
+
+        settings = read_scheduler_settings(scheduler_settings_path=scheduler_settings_path)
+        if bool(settings.get("job_group_enabled", True)):
+            raise ValueError("refresh_kernel_code=False requires AI control with the Job group disabled")
+        kernel = fanxiu_kernel_manager_status()
+        if not kernel.get("alive") or kernel.get("execution_state") != "idle":
+            raise RuntimeError("refresh_kernel_code=False requires an alive, idle Kernel")
+        return {"ready": True, "restarted": False, "reason": "ai_hot_loaded_code", "kernel": kernel}
+
+    if not refresh_kernel_code:
+        resident_ai_kernel()
     if business_time_mode not in {"planned", "current"}:
         raise ValueError("business_time_mode 必须是 planned 或 current")
     maintain_scheduler_tasks(
@@ -2868,16 +2890,16 @@ def run_now_scheduler_task(
         state_task,
         tasks,
         entry_id=entry_id,
-        interrupt_same_group=interrupt_same_group,
+        interrupt_same_group=interrupt_same_group if refresh_kernel_code else False,
         scheduler_state_path=scheduler_state_path,
         execution_state_path=execution_state_path,
         world_facts_path=world_facts_path,
     )
     if blocked_status is not None:
         return blocked_status
-    kernel_code = ensure_scheduler_kernel_code_current(
-        entry=entry,
-        entry_id=entry_id,
+    kernel_code = (
+        ensure_scheduler_kernel_code_current(entry=entry, entry_id=entry_id)
+        if refresh_kernel_code else resident_ai_kernel()
     )
     if not bool(kernel_code.get("ready")):
         return {

@@ -2459,3 +2459,46 @@ def isolate_scheduler_defaults(monkeypatch, tmp_path):
                         lambda: tmp_path / "scheduler_tasks.json")
     monkeypatch.setattr(kernel_scheduler_control, "fanxiu_kernel_scheduler_settings_path",
                         lambda: tmp_path / "scheduler_settings.json")
+
+
+@pytest.mark.parametrize("group_enabled,alive,execution_state", [
+    (True, True, "idle"), (False, False, "idle"),
+    (False, True, "busy"), (False, True, "unknown"),
+    (False, True, "idle"),
+])
+def test_run_now_hot_loaded_kernel_requires_ai_alive_idle(
+    monkeypatch, group_enabled, alive, execution_state,
+):
+    calls = []
+    task = {"id": "ranking-lifecycle", "next_time": "2000-01-01 00:00:00"}
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_settings",
+                        lambda **kw: {"job_group_enabled": group_enabled})
+    monkeypatch.setattr(
+        "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda: {"alive": alive, "execution_state": execution_state},
+    )
+    def forbidden(**kwargs):
+        pytest.fail("hot-loaded attempt must not refresh/restart the Kernel")
+    monkeypatch.setattr(kernel_scheduler_control, "ensure_scheduler_kernel_code_current", forbidden)
+    monkeypatch.setattr(kernel_scheduler_control, "maintain_scheduler_tasks", lambda **kw: calls.append("maintain"))
+    monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda **kw: [task])
+    monkeypatch.setattr(kernel_scheduler_control, "reconcile_stale_scheduler_attempts", lambda *a, **kw: None)
+    monkeypatch.setattr(kernel_scheduler_control, "kernel_scheduler_run_now_task", lambda *a: dict(task))
+    monkeypatch.setattr(kernel_scheduler_control, "task_supported", lambda task: True)
+    def prepare(*args, **kwargs):
+        assert kwargs["interrupt_same_group"] is False
+    monkeypatch.setattr(kernel_scheduler_control, "prepare_kernel_scheduler_for_task", prepare)
+    def submit(**kwargs):
+        assert kwargs["scheduled_attempt"] is True
+        calls.append("formal_attempt")
+        return {"status": "success"}
+    monkeypatch.setattr(kernel_scheduler_control, "_run_scheduler_task_cell_and_record_terminal", submit)
+    kwargs = dict(entry=object(), entry_id="entry", task_id="ranking-lifecycle",
+                  business_time_mode="current", refresh_kernel_code=False)
+    if group_enabled or not alive or execution_state != "idle":
+        with pytest.raises((ValueError, RuntimeError), match="requires"):
+            kernel_scheduler_control.run_now_scheduler_task(**kwargs)
+        assert calls == []
+    else:
+        assert kernel_scheduler_control.run_now_scheduler_task(**kwargs) == {"status": "success"}
+        assert calls == ["maintain", "formal_attempt"]

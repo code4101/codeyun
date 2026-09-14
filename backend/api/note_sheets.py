@@ -14768,7 +14768,10 @@ def _activate_attendance_course_workbook(
             for sheet in sheets
         ],
     }
-    return LocalAttendanceSheetClient().activate_course_workbook(snapshot)
+    result = LocalAttendanceSheetClient().activate_course_workbook(snapshot)
+    from backend.core.attendance.workbook_registry import register_attendance_workbook_sheets
+    register_attendance_workbook_sheets(workbook_id=int(workbook.numeric_id))
+    return result
 
 
 def _clone_attendance_course_template_workbook(
@@ -14839,6 +14842,13 @@ def _clone_attendance_course_template_workbook(
         if source_sheet is None:
             continue
         cloned_document_json = _clone_course_template_sheet_document_json(source_sheet)
+        cloned_document_json.pop("attendance_correction_bases", None)
+        if source_sheet.sheet_key == "attendance_corrections":
+            from xlsln.kq5034.engine.attendance_corrections import COLUMNS
+            cloned_document_json = {
+                "columns": COLUMNS, "rows": [], "grid_rows": [COLUMNS],
+                "data_start_row": 1, "field_row_index": 0,
+            }
         if _normalize_sheet_text(source_sheet.sheet_key) == "attendance":
             cloned_document_json = _adapt_course_template_header_dates(
                 cloned_document_json,

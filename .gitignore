@@ -55,6 +55,8 @@ backend/data/
 /.codex-dev-logs/
 /.codex-runtime-logs/
 /凡修/
+/doc/凡修/
+/doc/考勤/
 /.trae
 /tools/*
 !/tools/zaohua_mod/

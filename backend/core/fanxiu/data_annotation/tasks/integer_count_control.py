@@ -350,6 +350,10 @@ def _coarse_pixel_converge(
                 "actual_pixels": abs(actual_delta),
                 "count_delta": delta,
             })
+            # A probe is itself an action. Consume its successful result
+            # before another drag; a zero-distance swipe can move the thumb.
+            if abs(desired - current) <= threshold:
+                return current, probes, interpolation_rows, "within_threshold"
             if delta * sign > 0 and actual_delta * sign > 0:
                 # Calibrate against observed thumb movement. The game may
                 # stop short of the commanded endpoint; using that command
@@ -597,6 +601,9 @@ def _set_track_only_count(
                 "commanded_pixels": commanded,
                 "count_delta": delta,
             })
+            if abs(desired - current) <= threshold:
+                effective = (sign * commanded, delta)
+                break
             if delta * sign > 0:
                 effective = (sign * commanded, delta)
                 break
@@ -605,6 +612,9 @@ def _set_track_only_count(
             raise RuntimeError(f"{count_label}递增像素拖拽未产生有效变化")
         probe_pixels, probe_delta = effective
         error = desired - current
+        if abs(error) <= threshold:
+            coarse_exit = "within_threshold"
+            break
         # Keep the last actual commanded position. Reconstructing it from
         # the original proportional model discards the local calibration.
         start_x = position_x

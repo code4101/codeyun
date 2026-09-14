@@ -37,7 +37,6 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
 from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     completed_ranking_checkpoint_keys,
     ensure_ranking_lifecycle_checkpoint_table,
-    list_ranking_checkpoint_rows,
     ranking_checkpoint_retry_times,
     record_ranking_checkpoint_result,
 )
@@ -46,7 +45,6 @@ from backend.core.fanxiu.data_annotation.effective_time import job_now
 
 
 CHECKPOINT_RETRY_DELAY = timedelta(minutes=10)
-MAX_DEFAULT_CHECKPOINT_ATTEMPTS = 3
 
 # This is an execution-capability registry, not a declaration that the other
 # activities lack an exchange tail.  The lifecycle planner derives that
@@ -68,19 +66,16 @@ def _default_retry_policy(
     checkpoint,
     occurrence,
     now: datetime,
-    prior_attempt_count: int,
 ) -> tuple[str, datetime | None]:
-    """Bound implicit retries and align pre-start work with the real window."""
+    """Schedule business waiting; attempt counts never prove unavailability."""
 
-    if status not in {"error", "blocked", "pending"}:
+    if status not in {"blocked", "pending"}:
         return status, None
     if checkpoint.checkpoint_kind in {
         DAILY_RECONCILE_KIND,
         MAGIC_INITIALIZATION_KIND,
     } and now < occurrence.start_at:
         return status, occurrence.start_at
-    if now > occurrence.close_at or prior_attempt_count + 1 >= MAX_DEFAULT_CHECKPOINT_ATTEMPTS:
-        return "unavailable", None
     return status, now + CHECKPOINT_RETRY_DELAY
 
 
@@ -322,13 +317,6 @@ def _execute_family_job(
         # disappear when an activity's action checkpoints are still in R&D.
         sync_ranking_schedule(session, schedule, now=now, family=family)
         completed = completed_ranking_checkpoint_keys(session, family=family)
-        prior_attempt_counts = {
-            (row.instance_key, row.checkpoint_kind, row.business_date): int(
-                row.attempt_count or 0
-            )
-            for row in list_ranking_checkpoint_rows(session)
-            if row.family == family
-        }
         planned_due = due_ranking_checkpoints(
             occurrences,
             now=now,
@@ -346,23 +334,9 @@ def _execute_family_job(
             for checkpoint in planned_due
             if checkpoint not in deferred_exchange_tails
         )
-        initial_next_time = next_ranking_lifecycle_time(
-            occurrences,
-            now=now,
-            completed_keys=completed,
-            retry_times=ranking_checkpoint_retry_times(session, family=family),
-            production_only=True,
-        )
 
-    # Persist a future wake before running any checkpoint.  Ranking checkpoints
-    # may spend a long time in GUI flows, and the external attempt reaper can
-    # observe the Cell terminal before the dispatching thread writes its final
-    # projection.  Leaving the claimed Job's old (often already-consumed)
-    # trigger in place made that race able to strand ranking-lifecycle at
-    # ``next_time = null`` even though the Cell result reported a future wake.
-    # The final write below still refines this baseline with retry_at values
-    # produced by the current attempt.
-    runner._persist_scheduler_task_next_time(scheduler_task_id, initial_next_time)
+    # Only a normal business outcome may advance next_time. Technical failures
+    # propagate to the Scheduler, which owns engineering retries and AI stops.
     xianmeng_counts: dict[str, int] = {}
     for checkpoint in due:
         if checkpoint.checkpoint_kind == XIANMENG_ACTIVE_KIND:
@@ -487,21 +461,16 @@ def _execute_family_job(
             if not isinstance(result, dict):
                 result = {"status": "completed", "message": str(result or "")}
             status = str(result.get("status") or "completed")
+            if status == "error":
+                raise RuntimeError(str(result.get("message") or "榜单 checkpoint 执行失败"))
             retry_at = _parse_retry_at(result.get("retry_at"))
-            if status in {"error", "blocked", "pending"} and retry_at is None:
+            if status in {"blocked", "pending"} and retry_at is None:
                 status, retry_at = _default_retry_policy(
                     status=status,
                     checkpoint=checkpoint,
                     occurrence=occurrence,
                     now=now,
-                    prior_attempt_count=prior_attempt_counts.get(checkpoint.key, 0),
                 )
-                if status == "unavailable":
-                    result = {
-                        **result,
-                        "status": status,
-                        "terminal_reason": "implicit_retry_budget_exhausted",
-                    }
             # Persist and aggregate the same resolved checkpoint status.
             result = {**result, "status": status}
             with Session(engine) as session:
@@ -518,33 +487,17 @@ def _execute_family_job(
         except (InterruptedError, KeyboardInterrupt):
             raise
         except Exception as exc:
-            status, retry_at = _default_retry_policy(
-                status="error",
-                checkpoint=checkpoint,
-                occurrence=occurrence,
-                now=now,
-                prior_attempt_count=prior_attempt_counts.get(checkpoint.key, 0),
-            )
-            result = {
-                "status": status,
-                "message": str(exc),
-                **(
-                    {"retry_at": retry_at.isoformat(timespec="seconds")}
-                    if retry_at is not None else
-                    {"terminal_reason": "implicit_retry_budget_exhausted"}
-                ),
-            }
+            # Preserve the first failure and GUI surface. Do not terminalize it
+            # or proceed to sibling actions; a new attempt starts from facts.
             with Session(engine) as session:
                 record_ranking_checkpoint_result(
                     session,
                     checkpoint,
-                    status=status,
+                    status="error",
                     message=str(exc),
                     result={"error_type": type(exc).__name__},
-                    retry_at=retry_at,
-                    completed_at=now if status == "unavailable" else None,
                 )
-            results.append({"checkpoint": checkpoint.as_dict(), "result": result})
+            raise
 
     with Session(engine) as session:
         completed = completed_ranking_checkpoint_keys(session, family=family)
@@ -578,7 +531,7 @@ def _execute_family_job(
     )
     runner._log("warning" if pending or unavailable else "success", message)
     return {
-        # Retriable checkpoint isolation is a successful Scheduler pass; a
+        # Business waiting is a successful Scheduler pass; a
         # terminal unavailable outcome is not and must not be reported as a
         # clean success.
         "result": "partial" if unavailable else "success",

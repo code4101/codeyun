@@ -32,7 +32,7 @@ REDPACKET_SELF_CHECK_INTERVAL_SECONDS = 12 * 60 * 60
 
 
 def redpacket_group_logo_point(badge: dict, template_badge: dict, template_logo: dict, window: dict) -> tuple[float, float]:
-    """Translate the annotated avatar with the matched badge; reject clipped avatars."""
+    """Translate the annotated avatar with the matched badge; reject out-of-window click points."""
     x = float(badge["x"]) + float(template_logo["x"]) - float(template_badge["x"]) + float(template_logo["w"]) / 2
     y = float(badge["y"]) + float(template_logo["y"]) - float(template_badge["y"]) + float(template_logo["h"]) / 2
     if not (window["x"] <= x <= window["x"] + window["w"] and window["y"] <= y <= window["y"] + window["h"]):
@@ -966,21 +966,28 @@ class DailyRedpacketTaskMixin:
             # message context menu and make cleanup less recoverable.
             raise
 
-    def _process_current_daily_redpacket_group(
+    def inspect_daily_redpacket_cards(self, context: Any) -> dict[str, Any]:
+        """Inspect the current chat card using the production detector, without clicking."""
+        frame = context.cur_frame(update=True)
+        image = context.view(30).raw
+        targets = self._daily_redpacket_ocr_targets(context.ctx, image, frame)
+        return {"targets": targets, "click_points": [self._daily_redpacket_card_click_points(image, target) for target in targets]}
+
+    def process_current_daily_redpacket_group(
         self,
         context: Any,
-        ctx: dict[str, Any],
         *,
         transition_timeout: float,
         poll_seconds: float,
         max_open_count: int,
         max_locator_clicks: int = 5,
     ):
-        # 群列表行只负责落实 Runtime 已选中的 channel/subChannelId；
-        # 它不参与判断该群是否存在红包，也不能授权群内红包卡片点击。
+        ctx = context.ctx
+        # 局部研发入口：从当前 #30 开始，只处理当前群，完成后仍停在 #30。
+        # 列表红包图像只授权进群，群内卡片必须重新识别。
         # #30 右上角的 [红包] 是游戏提供的待领红包定位入口，不是红包
-        # 卡片本身。群聊可能停在任意历史消息；先确认 #30，再优先读取
-        # 当前可见卡片，未命中时有界点击定位入口，直到卡片 OCR 连续两帧
+        # 卡片本身。群聊可能停在任意历史消息；先确认 #30 并点击可见定位入口，
+        # 再读取当前卡片，未命中时有界重试，直到卡片 OCR 连续两帧
         # 稳定出现。禁止把 #30 参考帧中的卡片坐标当作探针硬点。
         yield from context.wait_scene(
             [30],
@@ -1247,8 +1254,8 @@ class DailyRedpacketTaskMixin:
             if group is None:
                 break
             processed_groups += 1
-            count, opened_page = yield from self._process_current_daily_redpacket_group(
-                context, ctx, transition_timeout=transition_timeout,
+            count, _opened_page = yield from self.process_current_daily_redpacket_group(
+                context, transition_timeout=transition_timeout,
                 poll_seconds=poll_seconds, max_open_count=max_open_count,
                 max_locator_clicks=max_locator_clicks,
             )

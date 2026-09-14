@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 from typing import Any, Iterable, Mapping
 
+from sqlalchemy import update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -122,6 +123,53 @@ def record_ranking_checkpoint_result(
     return row
 
 
+def reopen_failed_ranking_checkpoint(
+    session: Session,
+    *,
+    instance_key: str,
+    checkpoint_kind: str,
+    business_date: str,
+) -> FanxiuRankingLifecycleCheckpoint:
+    """Reopen one legacy technical failure without recording a new attempt.
+
+    Only unavailable rows carrying the old retry-budget/error marker qualify.
+    Completed, retained and genuine business-unavailable outcomes are protected.
+    The caller still owns scheduling the family Job; this function never touches
+    the Scheduler or game. Attempt history, result and evidence remain intact.
+    """
+    row = session.exec(
+        select(FanxiuRankingLifecycleCheckpoint).where(
+            FanxiuRankingLifecycleCheckpoint.instance_key == instance_key,
+            FanxiuRankingLifecycleCheckpoint.checkpoint_kind == checkpoint_kind,
+            FanxiuRankingLifecycleCheckpoint.business_date == business_date,
+        )
+    ).one_or_none()
+    if row is None:
+        raise ValueError("Ranking checkpoint does not exist")
+    result = dict(row.result or {})
+    legacy_failure = bool(result.get("error_type")) or (
+        result.get("terminal_reason") == "implicit_retry_budget_exhausted"
+    )
+    if row.status != "unavailable" or not legacy_failure:
+        raise ValueError("Only legacy technical-unavailable checkpoints can be reopened")
+    changed = session.exec(
+        update(FanxiuRankingLifecycleCheckpoint)
+        .where(
+            FanxiuRankingLifecycleCheckpoint.id == row.id,
+            FanxiuRankingLifecycleCheckpoint.status == "unavailable",
+            FanxiuRankingLifecycleCheckpoint.updated_at == row.updated_at,
+        )
+        .values(status="error", completed_at="", retry_at="", updated_at=time.time())
+        .execution_options(synchronize_session=False)
+    )
+    if changed.rowcount != 1:
+        session.rollback()
+        raise RuntimeError("Ranking checkpoint changed while reopening; refresh before retry")
+    session.commit()
+    session.refresh(row)
+    return row
+
+
 def ranking_checkpoint_evidence(
     session: Session,
     checkpoint: RankingCheckpoint,
@@ -193,6 +241,7 @@ __all__ = [
     "ensure_ranking_lifecycle_checkpoint_table",
     "list_ranking_checkpoint_rows",
     "ranking_checkpoint_retry_times",
+    "reopen_failed_ranking_checkpoint",
     "ranking_checkpoint_evidence",
     "record_ranking_checkpoint_evidence",
     "record_ranking_checkpoint_result",

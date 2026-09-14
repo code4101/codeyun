@@ -221,7 +221,7 @@ def _arrange(monkeypatch, *, reconcile):
     return engine
 
 
-def test_job_records_daily_checkpoint_and_persists_wake_before_and_after_work(
+def test_job_records_daily_checkpoint_then_persists_wake(
     monkeypatch,
 ) -> None:
     engine = _arrange(
@@ -249,37 +249,29 @@ def test_job_records_daily_checkpoint_and_persists_wake_before_and_after_work(
     ]
     assert result["result"] == "success"
     assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ))
+        ("ranking-lifecycle", datetime(2026, 8, 21, 5, 0, tzinfo=TZ))
     ]
 
 
-def test_job_isolates_checkpoint_error_and_schedules_retry(monkeypatch) -> None:
+@pytest.mark.parametrize("returned_error", [False, True])
+def test_job_preserves_repeated_error_and_never_advances_wake(monkeypatch, returned_error):
     def fail(*_args, **_kwargs):
+        if returned_error:
+            return {"status": "error", "message": "static config unavailable"}
         raise RuntimeError("static config unavailable")
 
     engine = _arrange(monkeypatch, reconcile=fail)
     runner = _Runner()
-
-    result = _drain(
-        lifecycle_job.execute_ranking_lifecycle_job(
-            runner,
-            {"scheduler_task_id": "ranking-lifecycle"},
-            {},
-            Event(),
-        )
-    )
-
+    for _ in range(4):
+        with pytest.raises(RuntimeError, match="static config unavailable"):
+            _drain(lifecycle_job.execute_ranking_lifecycle_job(runner, {}, {}, Event()))
     with Session(engine) as session:
         row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
+        assert lifecycle_job.completed_ranking_checkpoint_keys(session) == set()
     assert row.status == "error"
-    assert row.retry_at == "2026-08-21T10:00:00+08:00"
-    assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ)),
-    ]
-    assert result["result"] == "success"
-    assert "待重试 1" in result["message"]
+    assert row.attempt_count == 4
+    assert row.completed_at == row.retry_at == ""
+    assert runner.next_times == []
 
 
 def test_job_schedules_default_retry_for_first_blocked_business_checkpoint(
@@ -310,7 +302,7 @@ def test_job_schedules_default_retry_for_first_blocked_business_checkpoint(
     assert row.retry_at == "2026-08-21T10:00:00+08:00"
     assert runner.next_times[-1] == (
         "ranking-lifecycle",
-        datetime(2026, 8, 21, 10, tzinfo=TZ),
+        datetime(2026, 8, 21, 5, tzinfo=TZ),
     )
     assert "待重试 1" in result["message"]
 
@@ -347,11 +339,10 @@ def test_job_defers_future_occurrence_to_its_start_instead_of_spinning(
         row = session.exec(select(FanxiuRankingLifecycleCheckpoint)).one()
     assert row.status == "blocked"
     assert row.retry_at == "2026-08-21T10:00:00+08:00"
-    assert runner.next_times[-1][1] == datetime(2026, 8, 21, 10, tzinfo=TZ)
+    assert runner.next_times[-1][1] == datetime(2026, 8, 21, 5, tzinfo=TZ)
 
 
-def test_job_terminalizes_implicit_retry_after_three_attempts(monkeypatch) -> None:
-    del monkeypatch
+def test_business_waiting_does_not_imply_unavailability() -> None:
     occurrence = _occurrence()
     checkpoint = next(iter(lifecycle_job.due_ranking_checkpoints(
         (_occurrence(),),
@@ -363,23 +354,17 @@ def test_job_terminalizes_implicit_retry_after_three_attempts(monkeypatch) -> No
         checkpoint=checkpoint,
         occurrence=occurrence,
         now=datetime(2026, 8, 21, 10, tzinfo=TZ),
-        prior_attempt_count=2,
     )
-    assert status == "unavailable"
-    assert retry_at is None
+    assert status == "blocked"
+    assert retry_at == datetime(2026, 8, 21, 10, 10, tzinfo=TZ)
 
 
 def test_job_reports_terminal_unavailable_separately_from_success(monkeypatch) -> None:
     engine = _arrange(
         monkeypatch,
-        reconcile=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("terminal adapter failure")
-        ),
-    )
-    monkeypatch.setattr(
-        lifecycle_job,
-        "_default_retry_policy",
-        lambda **_kwargs: ("unavailable", None),
+        reconcile=lambda *_args, **_kwargs: {
+            "status": "unavailable", "message": "业务已关闭",
+        },
     )
     runner = _Runner()
 
@@ -561,14 +546,8 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     )
     runner = _Runner()
 
-    result = _drain(
-        lifecycle_job.execute_ranking_lifecycle_job(
-            runner,
-            {"scheduler_task_id": "ranking-lifecycle"},
-            {},
-            Event(),
-        )
-    )
+    with pytest.raises(RuntimeError, match="gameplay adapter unavailable"):
+        _drain(lifecycle_job.execute_ranking_lifecycle_job(runner, {}, {}, Event()))
 
     with Session(engine) as session:
         rows = list(
@@ -581,15 +560,8 @@ def test_gameplay_job_does_not_execute_resource_sibling_when_gameplay_retries(
     assert [(row.runtime_id, row.status) for row in rows] == [
         ("server-tiandi", "error"),
     ]
-    assert result["family"] == "gameplay_rank"
-    assert rows[0].completed_at == ""
-    assert rows[0].retry_at == "2026-08-21T10:00:00+08:00"
-    assert result["result"] == "success"
-    assert "成功 0，待重试 1" in result["message"]
-    assert runner.next_times == [
-        ("ranking-lifecycle", datetime(2026, 8, 21, 10, 5, tzinfo=TZ)),
-        ("ranking-lifecycle", datetime(2026, 8, 21, 10, tzinfo=TZ))
-    ]
+    assert rows[0].completed_at == rows[0].retry_at == ""
+    assert runner.next_times == []
 
 
 def test_resource_parent_executes_only_resource_family_and_owns_its_next_time(
@@ -625,6 +597,5 @@ def test_resource_parent_executes_only_resource_family_and_owns_its_next_time(
     ]
     assert result["family"] == "resource_rank"
     assert runner.next_times == [
-        ("resource-ranking", datetime(2026, 8, 22, 0, 30).astimezone()),
-        ("resource-ranking", datetime(2026, 8, 22, 0, 30).astimezone())
+        ("resource-ranking", datetime(2026, 8, 21, 5, 0, tzinfo=TZ))
     ]
