@@ -145,6 +145,10 @@ class RankingOccurrence:
 
     @property
     def instance_key(self) -> str:
+        if self.activity_type == "magic-invasion":
+            from backend.core.fanxiu.activity.magic_occurrence_identity import magic_occurrence_key
+            return magic_occurrence_key(self.activity_id, self.cross_count,
+                                        self.start_at.isoformat(), self.end_at.isoformat())
         # Xutian's Runtime row id is not a stable occurrence identity.  The
         # same open activity has been observed changing from the early
         # cross-server suffix to the settled server suffix without changing

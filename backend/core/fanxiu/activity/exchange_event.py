@@ -278,12 +278,17 @@ def _exchange_instance_identity(payload: dict[str, Any]) -> dict[str, Any]:
     close_at = boundary(
         "close_at", "period_close_panel_time", "period_close_panel_time_ms"
     )
+    game_activity_id = payload.get("game_activity_id") or evidence.get("game_activity_id")
+    if activity_type == "magic-invasion" and game_activity_id and start_at and end_at:
+        from backend.core.fanxiu.activity.magic_occurrence_identity import magic_occurrence_key
+        instance_key = magic_occurrence_key(game_activity_id, cross_count, start_at, end_at)
+        explicit_instance_key = instance_key
     return {
         "instance_key": instance_key,
         "explicit_instance_key": bool(explicit_instance_key),
         "family": family,
         "runtime_id": str(payload.get("runtime_id") or evidence.get("runtime_id") or ""),
-        "game_activity_id": payload.get("game_activity_id") or evidence.get("game_activity_id"),
+        "game_activity_id": game_activity_id,
         "prepare_at": prepare_at or start_at,
         "start_at": start_at,
         "end_at": end_at,
@@ -469,6 +474,14 @@ def select_exchange_activity_default(
     projection consumes only an already-persisted schedule and never probes the
     device. Missing, stale or ambiguous evidence cannot override the fallback.
     """
+    # Persisted Runtime projections may still contain yesterday's settlement
+    # activity or tomorrow's preview. First choose the business-day lifecycle
+    # tier; exact Runtime identity may only refine that tier.
+    day = business_date.isoformat()
+    active = [row for row in activities if row.start_date <= day <= row.end_date]
+    collectible = [row for row in activities
+                   if row.start_date <= day <= exchange_activity_close_panel_at(row).date().isoformat()]
+    activities = active or collectible or activities
     fallback = activities[0] if activities else None
     if (
         schedule.get("source_kind") != "worldline_activity_runtime_memory"
@@ -1148,6 +1161,21 @@ def upsert_exchange_activity_snapshot(session: Session, payload: dict[str, Any])
             FanxiuExchangeActivity.instance_key == identity["instance_key"],
         )
     ).first()
+    if activity is None and activity_type == "magic-invasion" and identity["instance_key"].startswith("activity:magic-invasion:"):
+        # Upgrade a single pre-migration root in place. Exact timestamps and
+        # activity/scope are required; labels or date-only matches are unsafe.
+        from backend.core.fanxiu.activity.magic_occurrence_identity import magic_occurrence_key
+        candidates = session.exec(select(FanxiuExchangeActivity).where(
+            FanxiuExchangeActivity.activity_type == activity_type,
+            FanxiuExchangeActivity.game_activity_id == identity["game_activity_id"],
+            FanxiuExchangeActivity.cross_count == cross_count,
+        )).all()
+        matches = [row for row in candidates if row.start_at and row.end_at
+                   and magic_occurrence_key(row.game_activity_id, row.cross_count, row.start_at, row.end_at)
+                   == identity["instance_key"]]
+        if len(matches) > 1:
+            raise ValueError("魔道同一期存在重复档案，请先运行 repair_magic_occurrence_roots")
+        activity = matches[0] if matches else None
     if activity is None:
         legacy_match = session.exec(
             select(FanxiuExchangeActivity).where(

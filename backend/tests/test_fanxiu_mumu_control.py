@@ -286,6 +286,7 @@ def test_normalize_mumu_desktop_window_size_applies_recorded_xywh(monkeypatch):
     assert result["target_window_rect"] == [x, y, x + width, y + height]
     assert result["target_main_size"] == [width, height]
     assert result["already_target"] is False
+    assert result["ok"] is False  # An ignored SetWindowPos must not report success.
     assert result["applied"] is True
     assert calls[-1] == (123, None, x, y, width, height, 20)
 

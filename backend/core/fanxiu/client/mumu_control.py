@@ -1209,74 +1209,68 @@ def normalize_mumu_desktop_window_size(*, apply: bool = False, timeout_s: float 
 
 
 def _normalize_mumu_desktop_window_size(*, apply: bool = False, timeout_s: float = 0.0) -> dict[str, Any]:
-    deadline = time.monotonic() + max(float(timeout_s or 0.0), 0.0)
+    """Observe/apply the Fanxiu physical xywh, then verify it remains stable.
+
+    SetWindowPos returning is not evidence of alignment: MuMu/Qt can resize
+    again while its game window initializes. A startup caller supplies a
+    bounded timeout; success requires one second of continuously aligned
+    observations. Read-only calls never move the window or wait for settling.
+    """
+    import win32con
+    import win32gui
+
+    deadline = time.monotonic() + max(float(timeout_s or 0.0), 1.5 if apply else 0.0)
+    target_left, target_top, target_width, target_height = _target_mumu_main_window_rect()
+    target_rect = [target_left, target_top, target_left + target_width, target_top + target_height]
+    initial = None
+    applied = False
+    attempts = 0
+    aligned_since = None
     while True:
         try:
-            import win32con
-            import win32gui
-
-            before = _find_mumu_desktop_main_window()
-            initial = before
-            hwnd = int(before["hwnd"])
-            target_left, target_top, target_width, target_height = _target_mumu_main_window_rect()
-
-            def is_target(info: dict[str, Any]) -> bool:
-                current_left, current_top, _current_right, _current_bottom = info["window_rect"]
-                current_width, current_height = info["window_size_logical"]
-                return (
-                    abs(int(current_left) - target_left) <= 1
-                    and abs(int(current_top) - target_top) <= 1
-                    and abs(int(current_width) - target_width) <= 1
-                    and abs(int(current_height) - target_height) <= 1
-                )
-
-            already_target = is_target(before)
-            result: dict[str, Any] = {
-                "ok": True,
-                "target_window_rect": [target_left, target_top, target_left + target_width, target_top + target_height],
-                "target_main_size": [target_width, target_height],
-                "setpos_size": [target_width, target_height],
-                "target_main_size_logical_at_150_dpi": [
-                    DEFAULT_MUMU_MAIN_WIDTH_AT_150_DPI,
-                    DEFAULT_MUMU_MAIN_HEIGHT_AT_150_DPI,
-                ],
-                "target_render_size_physical": [int(DEFAULT_FIXED_WIDTH), int(DEFAULT_FIXED_HEIGHT)],
-                "coordinate_mode": "window_rect",
-                "before": initial,
-                "already_target": already_target,
-                "applied": False,
-            }
-            if apply:
-                attempts: list[dict[str, Any]] = []
-                for _ in range(2):
-                    if is_target(before):
-                        break
-                    win32gui.SetWindowPos(
-                        hwnd,
-                        None,
-                        int(target_left),
-                        int(target_top),
-                        int(target_width),
-                        int(target_height),
-                        win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
-                    )
-                    time.sleep(0.2)
-                    result["applied"] = True
-                    before = _find_mumu_desktop_main_window()
-                    hwnd = int(before["hwnd"])
-                    attempts.append({
-                        "after": before,
-                        "next_setpos_size": [target_width, target_height],
-                    })
-                if attempts:
-                    result["attempts"] = attempts
-                result["after"] = before
-                result["already_target"] = is_target(before)
-            return result
+            current = _find_mumu_desktop_main_window()
         except Exception:
             if time.monotonic() >= deadline:
                 raise
-            time.sleep(1.0)
+            time.sleep(0.2)
+            continue
+        if initial is None:
+            initial = current
+        aligned = all(abs(int(actual) - expected) <= 1
+                      for actual, expected in zip(current["window_rect"], target_rect))
+        now = time.monotonic()
+        if aligned:
+            if aligned_since is None:
+                aligned_since = now
+        else:
+            aligned_since = None
+        stable = aligned and (not apply or now - aligned_since >= 1.0)
+        if not apply or stable or now >= deadline:
+            result = {
+                "ok": bool(stable),
+                "target_window_rect": target_rect,
+                "target_main_size": [target_width, target_height],
+                "setpos_size": [target_width, target_height],
+                "coordinate_mode": "physical",
+                "before": initial,
+                "already_target": aligned,
+                "applied": applied,
+                "attempt_count": attempts,
+            }
+            if apply:
+                result["after"] = current
+            if not stable:
+                result["error"] = f"凡修窗口未稳定对齐：actual={current['window_rect']}, expected={target_rect}"
+            return result
+        if not aligned:
+            win32gui.SetWindowPos(
+                int(current["hwnd"]), None,
+                target_left, target_top, target_width, target_height,
+                win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE,
+            )
+            applied = True
+            attempts += 1
+        time.sleep(0.2)
 
 
 def _mumu_device_health_status_from_info(info: dict[str, Any]) -> str:
@@ -1614,11 +1608,14 @@ def recover_mumu_device(*, vmindex: str = "1", reason: str = "device_health", fo
                 app_result = _mumu_manager_launch_app(str(vmindex or "1"), FANXIU_ANDROID_PACKAGE)
             except Exception as exc:
                 app_result = {"errcode": -1, "errmsg": str(exc)}
-            try:
-                window_size_result = normalize_mumu_desktop_window_size(apply=True, timeout_s=20.0)
-            except Exception as exc:
-                window_size_result = {"ok": False, "error": str(exc)}
             frame_ready = wait_mumu_recovery_frame_ready(timeout_s=45.0)
+            # Apply the Fanxiu desktop profile after the game surface exists.
+            # Android readiness alone does not mean Qt has finished restoring
+            # its remembered window geometry. Never report recovery success
+            # when the final physical xywh remains different from the profile.
+            window_size_result = normalize_mumu_desktop_window_size(apply=True, timeout_s=20.0)
+            if not window_size_result.get("ok"):
+                raise RuntimeError(window_size_result.get("error") or "凡修窗口未对齐默认 xywh")
             # The pre-shutdown trigger is the durable recovery intent, but the
             # external Scheduler may consume it while Android is still showing
             # black startup frames. Re-assert the same idempotent intent after
@@ -2322,6 +2319,9 @@ def configure_mumu_display(
     Cold-start uses the existing independent Windows launcher and deliberately
     does not restore the default 900x1600, start Jobs, or enable guards.
     With restart=False the settings take effect on the next emulator restart.
+    A cold start with the Fanxiu standard Android profile also restores and
+    verifies its desktop xywh; experimental Android profiles keep their own
+    window geometry.
     """
     if not (320 <= width <= 4096 and 320 <= height <= 4096 and 120 <= dpi <= 640):
         raise ValueError("MuMu 显示尺寸或 DPI 超出支持范围")
@@ -2363,6 +2363,10 @@ def configure_mumu_display(
                   actual={"size": size_text, "density": density_text})
     if _parse_wm_size_text(size_text) != (width, height) or _parse_wm_density_text(density_text) != dpi:
         raise RuntimeError(f"MuMu 冷启动后显示配置未生效：{result['actual']}")
+    if (width, height, dpi) == (int(DEFAULT_FIXED_WIDTH), int(DEFAULT_FIXED_HEIGHT), int(DEFAULT_FIXED_DPI)):
+        result["window_size"] = normalize_mumu_desktop_window_size(apply=True, timeout_s=20.0)
+        if not result["window_size"].get("ok"):
+            raise RuntimeError(result["window_size"].get("error") or "凡修窗口未对齐默认 xywh")
     return result
 
 

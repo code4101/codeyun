@@ -94,6 +94,7 @@ def execute_magic_invasion_compound_checkpoint(
     stop_event: threading.Event,
     *,
     occurrence: RankingOccurrence,
+    claim_rewards: bool = True,
 ):
     """Run one occurrence: enter → ensure supply → 3×500 (+1 on miss) → rewards."""
 
@@ -226,6 +227,12 @@ def execute_magic_invasion_compound_checkpoint(
             "4×500 完成证据，"
             "拒绝提交复合 checkpoint"
         )
+
+    if not claim_rewards:
+        # Evening initialization owns reward collection after its yield model
+        # is saved. Supply/exploration remain reusable without early claiming.
+        return {"status": "completed", "supply": supply_result,
+                "exploration": explore_result, "tasks": {"status": "deferred"}}
 
     # 探查任务奖励属于本轮探查的后置收尾。首次进入 #509 时不领取，
     # 避免把上一阶段的领取动作错误写进“进入当前挑战页”节点。

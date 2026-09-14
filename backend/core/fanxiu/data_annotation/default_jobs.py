@@ -1178,7 +1178,7 @@ def register_fanxiu_default_jobs() -> None:
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         current_fact_scene_ids = (
-            34, 661, 69, 296, 297, 298, 371, 372, 375, 295,
+            20, 34, 661, 69, 296, 297, 298, 371, 372, 375, 295,
             329, 301, 302, 303, 318, 304, 391, 52, 53,
         )
         # 弹窗确认后可能短暂出现地图过渡页。等待业务落点，不能依据
@@ -1192,6 +1192,10 @@ def register_fanxiu_default_jobs() -> None:
                 f"论道_座位：入口等待后落到未声明场景 #{match.scene_id}，"
                 "已停止，未点击返回"
             )
+        # 登录允许在绿瓶结束；这是稳定入口，不是论道动作后的过渡页。
+        # 仅对此已确认的入口使用场景图回世界，保留已有入座中间页。
+        if match.scene_id == 20:
+            yield from context.go_scene(34)
         result = yield from runner._execute_daily_lundao_task(ctx, stop_event, payload)
         world = yield from context.wait_scene([34, 661], wait=5.0, required=False)
         if world is None or world.scene_id not in {34, 661}:

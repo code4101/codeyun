@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -66,6 +66,17 @@ def test_stale_or_ambiguous_schedule_preserves_fallback():
     saved = schedule()
     saved["occurrences"][0]["runtime_ids"].append(32150001400031)
     assert select_exchange_activity_default(rows, schedule=saved, business_date=TODAY) is rows[0]
+
+
+def test_today_activity_beats_preview_and_saved_settlement_identity():
+    preview, current, settlement = (activity(name) for name in ("preview", "current", "32150001400004"))
+    preview.start_date = preview.end_date = (TODAY + timedelta(days=1)).isoformat()
+    settlement.start_date = settlement.end_date = (TODAY - timedelta(days=1)).isoformat()
+    saved = schedule()
+    saved["occurrences"][0].update(start_date=settlement.start_date, end_date=settlement.end_date)
+    rows = [preview, settlement, current]
+    assert select_exchange_activity_default(rows, schedule=saved, business_date=TODAY) is current
+    assert select_exchange_activity_default(rows, schedule={}, business_date=TODAY) is current
 
 
 def test_list_and_schedule_use_saved_identity_but_explicit_history_is_respected(monkeypatch):

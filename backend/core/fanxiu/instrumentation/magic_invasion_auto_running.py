@@ -264,4 +264,32 @@ def read_magic_invasion_auto_running_snapshot() -> dict[str, Any]:
         }
 
 
-__all__ = ["read_magic_invasion_auto_running_snapshot"]
+def read_magic_invasion_counters() -> dict[str, Any]:
+    """Read manager counters independently of the auto-running overlay.
+
+    Counts are authoritative even when their map labels are covered by icons.
+    No manager method is invoked and no UI is opened to obtain this snapshot.
+    """
+    def read(context: UiRuntimeContext) -> dict[str, Any]:
+        root, _, _ = resolve_lua_global_manager_root(
+            context.memory, manager_key="magic-invasion-auto-running",
+            state_address=int(_lua_addresses(context.memory)["state"], 16),
+            global_name="MagicinvadeMgr", required_methods=_MAGIC_MANAGER_METHODS,
+            validate=lambda reader, root: _manager_fields(reader, root))
+        manager, data = _manager_fields(context.reader, root)
+        info = context.reader.fields(data.get("V_MagicInvadeInfo"))
+        counts = context.reader.dictionary_fields(info.get("counts"))
+        decoded = {int(k): _required_int(context.reader.fields(v).get("current"), f"counts[{k}]")
+                   for k, v in counts.items()}
+        if 1 not in decoded or 2 not in decoded:
+            raise FanxiuRuntimeMemoryError("魔道缺少探查/挑战次数", code="runtime_incomplete")
+        return {"explore_count": decoded[1], "challenge_count": decoded[2],
+                "had_auto_times": as_int(manager.get("hadAutoTimes")),
+                "set_auto_times": as_int(manager.get("autoSetTimes")),
+                "is_in_auto": data.get("isInAuto") is True,
+                "info": {str(k): v for k, v in info.items() if isinstance(v, (int, float, str, bool))},
+                "pid": context.memory.pid, "process_start_ticks": context.memory.process_start_ticks}
+    return read_ui_runtime_snapshot(frozenset(), read, fast=True)
+
+
+__all__ = ["read_magic_invasion_auto_running_snapshot", "read_magic_invasion_counters"]

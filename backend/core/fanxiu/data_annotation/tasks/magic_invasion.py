@@ -181,6 +181,13 @@ def next_magic_invasion_probe_time(now: datetime) -> datetime:
     return candidate
 
 
+def _read_available_explore_count() -> int:
+    """Read the manager count; the map item icon is not an OCR digit."""
+    from backend.core.fanxiu.instrumentation.magic_invasion_auto_running import read_magic_invasion_counters
+
+    return int(read_magic_invasion_counters()["explore_count"])
+
+
 def parse_available_explore_count(text: str) -> int:
     """Parse the Tianyan-backed available-explore counter, never event progress."""
 
@@ -214,7 +221,7 @@ def parse_magic_invasion_result_explore_count(
 ) -> int:
     """Read the bonus-inclusive result while validating one 500-base batch."""
 
-    match = re.search(r"快速探索\s*(\d+)\s*次", str(text or ""))
+    match = re.search(r"(?:快速)?探索\s*(\d+)\s*次", str(text or ""))
     if match is None:
         raise RuntimeError(f"魔道入侵结果没有探索次数证据：{text!r}")
     result_explore_count = int(match.group(1))
@@ -289,6 +296,7 @@ def _magic_entry_scene_ids(context: Any) -> tuple[int, ...]:
         MAGIC_INVASION_ENTRY_TRANSITION_SCENE_ID,
         MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID,
         MAGIC_INVASION_WORLD_MAP_SCENE_ID,
+        34, 661,
         *([optional_transition] if optional_transition is not None else []),
     ]))
 
@@ -319,6 +327,7 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
     )
     started_at = time.monotonic()
     visited: list[int] = []
+    clicked_scene: int | None = None
     for _step in range(MAGIC_INVASION_ENTRY_MAX_OPTIONAL_STEPS):
         elapsed = time.monotonic() - started_at
         remaining = MAGIC_INVASION_ENTRY_SETTLE_TIMEOUT_SECONDS - elapsed
@@ -329,8 +338,19 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
             wait_seconds=min(30.0, remaining),
         )
         visited.append(scene)
+        if scene == clicked_scene:
+            # The source can remain visible while its click is in flight.
+            # Reobserve; repeating the input can close the destination page.
+            yield from context.wait_action_settle(1.0)
+            continue
+        clicked_scene = None
         if scene == MAGIC_INVASION_MAP_SCENE_ID:
             return
+        if scene in {34, 661}:
+            # “前往大地图” may first close the cover onto the real world.
+            # The annotated map route owns the next click and its landing.
+            yield from context.go_scene(MAGIC_INVASION_WORLD_MAP_SCENE_ID)
+            continue
         if scene == MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID:
             context.click_shape_center(
                 MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID,
@@ -340,6 +360,7 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
             continue
         if scene == MAGIC_INVASION_MAIN_SCENE_ID:
             context.click_shape(MAGIC_INVASION_MAIN_SCENE_ID, "前往大地图")
+            clicked_scene = scene
             yield from context.wait_action_settle(0.5)
             continue
         if scene in {
@@ -408,12 +429,10 @@ def _magic_occurrence_checkpoint(
     start_at = datetime.fromtimestamp(occurrence.start_time_ms / 1000).astimezone()
     end_at = datetime.fromtimestamp(occurrence.end_time_ms / 1000).astimezone()
     business_date = datetime.now().astimezone(start_at.tzinfo).date()
+    from backend.core.fanxiu.activity.magic_occurrence_identity import magic_occurrence_key
     return RankingCheckpoint(
-        instance_key=(
-            f"context:{occurrence.occurrence_id}:activity:{occurrence.activity_id}:"
-            f"{start_at.isoformat(timespec='seconds')}:"
-            f"{end_at.isoformat(timespec='seconds')}"
-        ),
+        instance_key=magic_occurrence_key(occurrence.activity_id, occurrence.server_count,
+                                          start_at.isoformat(), end_at.isoformat()),
         activity_type="magic-invasion",
         family="gameplay_rank",
         runtime_id=occurrence.occurrence_id,
@@ -507,6 +526,14 @@ def load_magic_invasion_occurrence_progress(
         )
     if old_id == occurrence.occurrence_id and old_state == "complete":
         return dict(existing)
+    if old_id == occurrence.occurrence_id and old_state == "ready":
+        # The currency baseline is saved before navigation. A navigation
+        # failure at this boundary has not armed any consumptive action.
+        if (existing.get("confirmed_batches") or existing.get("transaction_evidence")
+                or int(existing.get("base_explore_count") or 0)
+                or int(existing.get("batch_index") or 0)):
+            raise RuntimeError("魔道 ready 状态混入批次执行证据，拒绝重跑")
+        return dict(existing)
     resumable_states = {
         "confirmed",
         "use_armed",
@@ -535,7 +562,7 @@ def load_magic_invasion_occurrence_progress(
                     if item.get("available_explore_count_after_result") is not None
                     else -1
                 )
-                != 0
+                < 0
                 for index, item in enumerate(confirmed, start=1)
             )
         ):
@@ -575,42 +602,19 @@ def load_magic_invasion_occurrence_progress(
     }
 
 
-def _read_stable_tianyan_use_dialog(context: Any) -> Iterator[Any]:
-    """Wait for two adjacent coherent Runtime reads of the Tianyan dialog."""
-
-    trace: list[dict[str, int]] = []
-    yield from context.wait_action_settle(0.35)
-    for index in range(6):
-        snapshot = read_item_batch_use_dialog_snapshot(
-            expected_item_id=TIANYAN_ITEM_ID
-        )
-        observation = {
-            key: int(snapshot.get(key) or 0)
-            for key in (
-                "item_id",
-                "current",
-                "single_use_maximum",
-                "owned_count",
-                "slider_maximum",
-            )
-        }
-        evidence = dict(snapshot.get("evidence") or {})
-        observation["pid"] = int(evidence.get("pid") or 0)
-        observation["process_start_ticks"] = int(
-            evidence.get("process_start_ticks") or 0
-        )
-        if observation["pid"] <= 0 or observation["process_start_ticks"] <= 0:
-            raise RuntimeError("天眼符使用弹窗缺少有效游戏进程身份")
-        trace.append(observation)
-        if len(trace) >= 2 and trace[-1] == trace[-2]:
-            return snapshot
-        if index < 5:
-            yield from context.wait_action_settle(0.25)
-    raise RuntimeError(f"天眼符使用弹窗运行态未稳定，观测轨迹={trace}")
-
-
 def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
-    runtime_before = yield from _read_stable_tianyan_use_dialog(context)
+    """Load missing range facts once; adjust and verify through local OCR.
+
+    The caller has established scene #514 and the Tianyan entry. Range/cap
+    assets are not yet available, so one Runtime snapshot supplies these
+    facts. Normal feedback never rereads the full dialog. On controller
+    failure, a single read-only diagnostic preserves the original failure;
+    it does not authorize retrying a drag or committing item use.
+    Live OCR accuracy and latency still require acceptance on the real dialog.
+    """
+    runtime_before = read_item_batch_use_dialog_snapshot(
+        expected_item_id=TIANYAN_ITEM_ID
+    )
     owned = int(runtime_before["owned_count"])
     single_use_maximum = int(runtime_before["single_use_maximum"])
     slider_maximum = int(runtime_before["slider_maximum"])
@@ -630,17 +634,29 @@ def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
         count_slider_left_anchor="数量滑轨左端",
         count_slider_right_anchor="数量滑轨右端",
     )
-    calibration = yield from _set_verified_slider_count(
-        context,
-        assets,
-        int(quantity),
-        max_adjustments=10,
-        maximum=slider_maximum,
-        runtime_count_reader=lambda: read_item_batch_use_dialog_snapshot(
-            expected_item_id=TIANYAN_ITEM_ID
-        ),
-        count_label="天眼符使用数量",
-    )
+    try:
+        calibration = yield from _set_verified_slider_count(
+            context,
+            assets,
+            int(quantity),
+            max_adjustments=10,
+            maximum=slider_maximum,
+            count_label="天眼符使用数量",
+        )
+    except RuntimeError as exc:
+        try:
+            diagnostic = read_item_batch_use_dialog_snapshot(
+                expected_item_id=TIANYAN_ITEM_ID
+            )
+        except RuntimeError as diagnostic_error:
+            exc.add_note(f"数量异常的 Runtime 诊断失败：{diagnostic_error}")
+        else:
+            exc.add_note(
+                f"数量异常的 Runtime 诊断：target={quantity}, "
+                f"current={diagnostic.get('current')}, "
+                f"slider_maximum={diagnostic.get('slider_maximum')}"
+            )
+        raise
     calibration_evidence = dict(calibration or {})
     try:
         verified = int(calibration_evidence["after"])
@@ -648,40 +664,13 @@ def _configure_use_quantity(context: Any, *, quantity: int) -> Iterator[Any]:
         raise RuntimeError("天眼符使用数量缺少稳定读回证据") from exc
     if verified != int(quantity):
         raise RuntimeError(f"天眼符使用数量验证失败：目标 {quantity}，实际 {verified}")
-    runtime_after = yield from _read_stable_tianyan_use_dialog(context)
-    runtime_verified = int(runtime_after["current"])
-    if runtime_verified != int(quantity):
-        raise RuntimeError(
-            f"天眼符使用数量 Runtime 验证失败：目标 {quantity}，实际 {runtime_verified}"
-        )
-    for key in ("item_id", "single_use_maximum", "owned_count", "slider_maximum"):
-        if int(runtime_after[key]) != int(runtime_before[key]):
-            raise RuntimeError(
-                f"天眼符使用弹窗在配置期间发生变化：{key}="
-                f"{runtime_before[key]}->{runtime_after[key]}"
-            )
-    before_process = dict(runtime_before.get("evidence") or {})
-    after_process = dict(runtime_after.get("evidence") or {})
-    before_identity = (
-        int(before_process.get("pid") or 0),
-        int(before_process.get("process_start_ticks") or 0),
-    )
-    after_identity = (
-        int(after_process.get("pid") or 0),
-        int(after_process.get("process_start_ticks") or 0),
-    )
-    if 0 in before_identity or before_identity != after_identity:
-        raise RuntimeError(
-            "天眼符使用数量配置期间游戏进程身份变化："
-            f"{before_identity}->{after_identity}"
-        )
     return {
         "owned_count": owned,
         "single_use_maximum": single_use_maximum,
         "slider_maximum": slider_maximum,
-        "selected_count": runtime_verified,
+        "selected_count": verified,
         "runtime_before": runtime_before,
-        "runtime_after": runtime_after,
+        "count_source": "ocr",
         "slider_calibration": calibration_evidence,
     }
 
@@ -709,9 +698,7 @@ def _commit_prepared_top_up(context: Any) -> Iterator[Any]:
     yield from _wait_scene(context, (MAGIC_INVASION_ITEM_SCENE_ID,))
     context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
     yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
-    verified = parse_available_explore_count(
-        _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-    )
+    verified = _read_available_explore_count()
     if verified != MAGIC_INVASION_EXPLORE_BATCH_SIZE:
         raise RuntimeError(f"魔道入侵补充后不是精确 500 次：{verified}")
     return verified
@@ -728,9 +715,7 @@ def ensure_magic_invasion_explore_batch_ready(context: Any) -> Iterator[Any]:
         context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
         yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
 
-    available_before = parse_available_explore_count(
-        _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-    )
+    available_before = _read_available_explore_count()
     prepared = yield from _prepare_top_up_to_batch(
         context,
         available_count=available_before,
@@ -983,7 +968,7 @@ def execute_magic_invasion_explore_job(
 
     context = prepared_context or runner._behavior_tree_context(ctx, stop_event=stop_event)
     phase = str(progress["state"])
-    if phase in {"ready", "confirmed"}:
+    if phase in {"ready", "confirmed"} or (already_on_main_scene and phase == "use_armed"):
         if already_on_map_scene:
             yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,), timeout_seconds=15.0)
         else:
@@ -1025,9 +1010,7 @@ def execute_magic_invasion_explore_job(
 
         if phase in {"ready", "confirmed"}:
             yield from ensure_fast_explore_enabled()
-            available_count = parse_available_explore_count(
-                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-            )
+            available_count = _read_available_explore_count()
             tianyan_before = _read_tianyan_inventory()
             task_before = _compact_task_snapshot(occurrence.activity_id)
             prepared = yield from _prepare_top_up_to_batch(
@@ -1074,13 +1057,9 @@ def execute_magic_invasion_explore_job(
             if scene == MAGIC_INVASION_ITEM_SCENE_ID:
                 context.click_shape_center(MAGIC_INVASION_ITEM_SCENE_ID, "关闭道具列表")
                 yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
-            verified_topup = parse_available_explore_count(
-                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-            )
+            verified_topup = _read_available_explore_count()
         elif phase == "topup_confirmed":
-            verified_topup = parse_available_explore_count(
-                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-            )
+            verified_topup = _read_available_explore_count()
         else:
             verified_topup = MAGIC_INVASION_EXPLORE_BATCH_SIZE
 
@@ -1102,6 +1081,24 @@ def execute_magic_invasion_explore_job(
             )
             if before_process != after_process:
                 raise RuntimeError("天眼符批次对账期间游戏进程代际变化，拒绝拼接快照")
+            if actual_topup == requested_topup and 0 <= verified_topup < MAGIC_INVASION_EXPLORE_BATCH_SIZE:
+                # A legacy OCR baseline can underfill a batch. Close the proven
+                # inventory debit before planning another use from current facts.
+                settled = list(progress.get("settled_partial_topups") or [])
+                settled.append({
+                    **evidence,
+                    "tianyan_after_topup": tianyan_after,
+                    "tianyan_consumed": actual_topup,
+                    "available_explore_count_after_topup": verified_topup,
+                })
+                progress.update({
+                    "state": "confirmed" if confirmed else "ready",
+                    "batch_index": len(confirmed),
+                    "transaction_evidence": {},
+                    "settled_partial_topups": settled,
+                })
+                _set_progress(occurrence, progress)
+                continue
             if actual_topup != requested_topup or verified_topup != MAGIC_INVASION_EXPLORE_BATCH_SIZE:
                 raise RuntimeError(
                     "天眼符权威库存精确扣减与地图 500 未成对成立，拒绝继续探查"
@@ -1125,6 +1122,7 @@ def execute_magic_invasion_explore_job(
             progress["state"] = "explore_armed"
             _set_progress(occurrence, progress)
             context.click_shape_center(MAGIC_INVASION_MAP_SCENE_ID, "探查")
+            yield from context.wait_action_settle(3.0)
             phase = "explore_armed"
 
         result_full_text = ""
@@ -1134,7 +1132,6 @@ def execute_magic_invasion_explore_job(
                 (
                     MAGIC_INVASION_RESULT_SCENE_ID,
                     MAGIC_INVASION_OVERFLOW_SCENE_ID,
-                    MAGIC_INVASION_MAP_SCENE_ID,
                     MAGIC_INVASION_EVENT_SCENE_ID,
                 ),
                 timeout_seconds=30.0,
@@ -1158,9 +1155,7 @@ def execute_magic_invasion_explore_job(
                 if scene == MAGIC_INVASION_EVENT_SCENE_ID:
                     context.click_shape(MAGIC_INVASION_EVENT_SCENE_ID, "稍后处理")
                     yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
-                available_after = parse_available_explore_count(
-                    _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-                )
+                available_after = _read_available_explore_count()
                 if available_after != 0:
                     raise RuntimeError(
                         "魔道入侵 explore_armed 后置事实不确定，禁止重放探查"
@@ -1201,13 +1196,11 @@ def execute_magic_invasion_explore_job(
             if scene == MAGIC_INVASION_EVENT_SCENE_ID:
                 context.click_shape(MAGIC_INVASION_EVENT_SCENE_ID, "稍后处理")
                 yield from _wait_scene(context, (MAGIC_INVASION_MAP_SCENE_ID,))
-            available_count_after = parse_available_explore_count(
-                _shape_text(context, MAGIC_INVASION_MAP_SCENE_ID, "可用探查次数")
-            )
-            if available_count_after != 0:
-                raise RuntimeError(
-                    f"魔道入侵第 {batch_index} 批结算后可用探查次数未归零：{available_count_after}"
-                )
+            available_count_after = _read_available_explore_count()
+            # The result page proves the batch; natural regeneration may
+            # already have added counts while its animation was displayed.
+            if available_count_after < 0:
+                raise RuntimeError("魔道入侵探查次数无效")
         result_explore_count = int(evidence.get("result_explore_count") or 0)
         task_after = dict(evidence.get("task_progress_after") or {})
         confirmed.append(
@@ -1277,7 +1270,7 @@ def execute_magic_invasion_explore_job(
             "success",
             f"魔道第 {batch_index}/{required_batches} 批对账：基础探查 "
             f"{base_explore_before}->{base_explore_before + 500}，"
-            f"可用探查次数 {evidence['available_explore_count_before']}->500->0，"
+            f"可用探查次数 {evidence['available_explore_count_before']}->500->{available_count_after}，"
             f"天眼符 {inventory_before_count}->{inventory_after_count}，"
             f"白龙马={'触发' if confirmed[-1]['white_dragon']['observed'] else '未触发'}",
         )
