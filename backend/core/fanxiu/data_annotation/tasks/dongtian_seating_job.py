@@ -273,6 +273,7 @@ def execute_dongtian_seating_runtime_job(
         stop_event=stop_event,
     )
     placements = 0
+    changed_places = 0
     while True:
         # The initial read or the previous placement's full postcondition
         # supplies fresh places and teams; do not repeat that expensive read.
@@ -311,8 +312,28 @@ def execute_dongtian_seating_runtime_job(
             max_scrolls=int((payload or {}).get("max_scrolls") or 24),
             probe_reader=probe_reader,
         )
-        if not validate_dongtian_empty_follower_target(dict(snapshot_reader()), target):
-            raise RuntimeError("洞天_上座：导航期间目标空席或空闲队伍已变化，未点击席位")
+        current = dict(snapshot_reader())
+        if not validate_dongtian_empty_follower_target(current, target):
+            # Opening the detail refreshes its seats. Nothing has been clicked
+            # yet, so a stale vacancy is safe to re-plan, not a failed attempt.
+            # Restrict replacement to this verified place before using its UI.
+            current_state = classify_dongtian_team_seating(current)
+            if not current_state["ok"]:
+                raise RuntimeError(f"洞天_上座：导航后 Runtime 不完整：{current_state['reason']}")
+            local = dict(current)
+            local["mines"] = [
+                mine for mine in current.get("mines") or []
+                if isinstance(mine, Mapping) and mine.get("id") == mine_id
+            ]
+            refreshed = choose_dongtian_empty_follower_target(local)
+            runner._log("info", f"洞天_上座：导航后重新选择空席，原目标={target}，当前同地点目标={refreshed}")
+            if refreshed is None:
+                changed_places += 1
+                if changed_places >= 6:
+                    raise RuntimeError("洞天_上座：连续6个地点空席发生变化，未点击占领；保留现场检查")
+                snapshot = current
+                continue
+            target = refreshed
         geometry = resolve_dongtian_fixed_seat(
             2,
             int(target["seat_id"]),

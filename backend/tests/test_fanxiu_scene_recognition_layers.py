@@ -506,6 +506,26 @@ def test_explicit_layer0_miss_does_not_fall_through_to_default_layers(monkeypatc
     assert calls == [("layer0", [301])]
 
 
+def test_uniform_white_transition_is_unknown_before_any_scene_scores(monkeypatch):
+    runner = create_behavior_tree_executor()
+    ctx = _context()
+    frame = _png_frame(runner, color=(255, 255, 255))
+
+    monkeypatch.setattr(
+        runner,
+        "_identify_scene_number_in_graph_candidates",
+        lambda *_args, **_kwargs: pytest.fail("uniform white frame must not reach scene scoring"),
+    )
+
+    assert _recognition_tuple(runner._identify_scene_number_by_graph(ctx, frame, [301])) == (
+        None,
+        0.0,
+        "unusable_frame",
+        None,
+    )
+    assert ctx["_scene_frame_quality"]["summary"]["reason"] == "uniform_white_transition"
+
+
 def test_layer1_match_short_circuits_layer2(monkeypatch):
     runner = create_behavior_tree_executor()
     calls: list[tuple[str, list[int]]] = []

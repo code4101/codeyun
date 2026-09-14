@@ -10292,6 +10292,12 @@ class BehaviorTreeExecutor(
             ctx["_last_scene_recognition_status"] = recognition.status
             return recognition
 
+        frame_quality = self._scene_frame_quality(ctx, frame_data_url)
+        if bool(frame_quality.get("unusable")):
+            if trace is not None:
+                trace.append({"event": "unusable_frame", **frame_quality})
+            return result(None, 0.0, "unusable_frame")
+
         images = ctx.get("images") or {}
         if not isinstance(images, dict) or not images:
             return result(None, 0.0, "unavailable")
@@ -10356,6 +10362,63 @@ class BehaviorTreeExecutor(
                     int(layer_label.removeprefix("layer")),
                 )
         return result(None, best_miss_score, "no_match")
+
+    def _scene_frame_quality(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+    ) -> dict[str, Any]:
+        """Reject a uniform white transition before scene assets can score it.
+
+        The game can emit a pure-white frame between an animated landing and
+        the next stable page.  Such a frame contains no identity evidence, but
+        an image Shape whose reference crop is mostly blank may otherwise score
+        above the normal scene threshold.  This guard therefore belongs before
+        every recognition layer and returns ``unknown`` semantics; it is not a
+        device-health failure and must not restart MuMu.
+        """
+
+        cached = ctx.get("_scene_frame_quality")
+        if isinstance(cached, dict) and cached.get("frame_data_url") == frame_data_url:
+            cached_summary = cached.get("summary")
+            if isinstance(cached_summary, dict):
+                return cached_summary
+        summary: dict[str, Any] = {
+            "unusable": False,
+            "reason": "",
+        }
+        try:
+            import numpy as np
+            from PIL import Image
+
+            with Image.open(io.BytesIO(self._decode_frame_data_url(frame_data_url))) as source:
+                sample = source.convert("RGB").resize((32, 32))
+            pixels = np.asarray(sample)
+            mean = [float(value) for value in np.mean(pixels, axis=(0, 1))]
+            near_white_ratio = float(np.mean(np.all(pixels >= 252, axis=2)))
+            unique_colors = int(len(np.unique(pixels.reshape(-1, 3), axis=0)))
+            unusable = bool(
+                pixels.size
+                and near_white_ratio >= 0.999
+                and min(mean) >= 252.0
+                and unique_colors <= 8
+            )
+            summary.update({
+                "unusable": unusable,
+                "reason": "uniform_white_transition" if unusable else "",
+                "mean_rgb": [round(value, 3) for value in mean],
+                "near_white_ratio": round(near_white_ratio, 6),
+                "unique_sample_colors": unique_colors,
+            })
+        except Exception as exc:
+            # Invalid/corrupt image handling remains owned by the normal frame
+            # decoder.  Quality inspection must never turn it into a false miss.
+            summary["inspection_error"] = str(exc)
+        ctx["_scene_frame_quality"] = {
+            "frame_data_url": frame_data_url,
+            "summary": summary,
+        }
+        return summary
 
     def _identify_scene_number_in_layer3_candidates(
         self,

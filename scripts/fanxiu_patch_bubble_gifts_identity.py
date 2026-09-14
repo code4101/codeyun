@@ -27,9 +27,12 @@ SCENE_ID = 591
 SCENE_FILENAME = "0591.png"
 MENU_SCENE_ID = 590
 MENU_SCENE_FILENAME = "0590.png"
+WEB_VARIANT_SCENE_ID = 743
+WEB_VARIANT_SCENE_FILENAME = "0743.png"
 TITLE_SHAPE_ID = "shape-bubble-gifts-title"
 DYNAMIC_SHAPE_ID = "shape-bubble-gifts-silver-id"
 MENU_CLOSE_SHAPE_ID = "shape-bubble-menu-close-20260914"
+WEB_VARIANT_IDENTITY_SHAPE_ID = "shape-37shouyou-gift-title-20260914"
 API_BASE = "http://127.0.0.1:8000/api/fanxiu"
 FAILURE_FRAME = Path(
     r"C:\Users\kzche\AppData\Local\Temp\codeyun\fanxiu_scene_diagnostics\scene_repair"
@@ -178,8 +181,10 @@ def main() -> None:
 
     scene = _scene(tree, SCENE_ID, SCENE_FILENAME)
     menu = _scene(tree, MENU_SCENE_ID, MENU_SCENE_FILENAME)
+    web_variant = _scene(tree, WEB_VARIANT_SCENE_ID, WEB_VARIANT_SCENE_FILENAME)
     title = _shape(scene, TITLE_SHAPE_ID)
     dynamic = _shape(scene, DYNAMIC_SHAPE_ID)
+    web_variant_identity = _shape(web_variant, WEB_VARIANT_IDENTITY_SHAPE_ID)
     if not (
         title.get("ocrEnabled") is True
         and title.get("ocrMatchRole") == "required"
@@ -190,6 +195,12 @@ def main() -> None:
         raise RuntimeError("#591 稳定‘礼包’标题身份已变化，拒绝部分覆盖")
     if dynamic.get("ocrText") != "白银":
         raise RuntimeError("#591 动态内容 Shape 已变化，拒绝部分覆盖")
+    if not (
+        web_variant_identity.get("ocrText") == "礼"
+        and web_variant_identity.get("ocrMatchRole") == "required"
+        and web_variant_identity.get("imageMatchRole") == "off"
+    ):
+        raise RuntimeError("#743 单字‘礼’身份契约已变化，拒绝部分覆盖")
 
     desired_dynamic = {
         "isSceneIdentity": False,
@@ -210,6 +221,24 @@ def main() -> None:
     if title.get("description") != desired_title_description:
         title["description"] = desired_title_description
         changed = True
+    # #743 is the same SDK gift page at a different scroll/header state. Its
+    # single-character OCR identity and #591's stable "礼包" identity match
+    # each other's references at 100%, so keeping it in the popup group makes
+    # the guard close the page while the weekly Job is intentionally entering
+    # #591. Retain the frame as a Layer-3 reference and let #591 own both
+    # visual variants and the safe Return action.
+    desired_web_variant = {
+        "isSceneIdentity": False,
+        "sceneIdentityRole": "off",
+        "description": (
+            "#591 礼包列表的页头/滚动位置变体，仅保留为参考帧。2026-09-14 正式 match "
+            "验证 #591→#743 与 #743→#591 均为 100%；单字‘礼’不得在弹窗分组抢认并自动返回。"
+        ),
+    }
+    for key, value in desired_web_variant.items():
+        if web_variant_identity.get(key) != value:
+            web_variant_identity[key] = value
+            changed = True
     interruption_fields = {
         "behaviorTreeInterruption": True,
         "behaviorTreeInterruptionAction": "返回",
@@ -253,6 +282,8 @@ def main() -> None:
                 "stable_identity_shape_id": TITLE_SHAPE_ID,
                 "menu_scene_id": MENU_SCENE_ID,
                 "menu_close_shape_id": MENU_CLOSE_SHAPE_ID,
+                "merged_reference_scene_id": WEB_VARIANT_SCENE_ID,
+                "merged_reference_scene_identity": False,
                 "explicit_interruption_chain": [591, 590],
                 "revision": revision,
                 "failure_frame": str(FAILURE_FRAME),

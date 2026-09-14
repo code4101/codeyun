@@ -241,6 +241,11 @@ def test_take_ai_control_revokes_dispatch_before_interrupt(monkeypatch):
     monkeypatch.setattr(kernel_scheduler_control, "read_scheduler_tasks", lambda **_kwargs: [])
     monkeypatch.setattr(
         kernel_scheduler_control,
+        "read_scheduler_settings",
+        lambda **_kwargs: {"job_group_enabled": True},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
         "set_scheduler_job_group_enabled",
         lambda enabled, **_kwargs: events.append(("mode", enabled)) or {"job_group_enabled": enabled},
     )
@@ -286,6 +291,11 @@ def test_take_ai_control_interrupts_unclassified_cell_and_releases_stale_attempt
     writes = []
     monkeypatch.setattr(
         kernel_scheduler_control,
+        "read_scheduler_settings",
+        lambda **_kwargs: {"job_group_enabled": True},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
         "set_scheduler_job_group_enabled",
         lambda enabled, **_kwargs: events.append(("mode", enabled)) or {"job_group_enabled": enabled},
     )
@@ -328,6 +338,46 @@ def test_take_ai_control_interrupts_unclassified_cell_and_releases_stale_attempt
     assert tasks[0]["attempt_id"] is None
     assert writes[0][1]["execution_update_ids"] == {"job-stale"}
     assert writes[0][1]["expected_execution_attempt_ids"] == {"job-stale": "attempt-stale"}
+
+
+def test_repeated_take_ai_control_preserves_existing_ai_cell_and_attempt(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "read_scheduler_settings",
+        lambda **_kwargs: {"job_group_enabled": False},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "set_scheduler_job_group_enabled",
+        lambda *_args, **_kwargs: events.append("mode-write") or {},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "kernel_scheduler_status",
+        lambda **_kwargs: {
+            "running": True,
+            "current_task_id": "ai-owned-job",
+            "kernel": {"execution_state": "busy"},
+        },
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "stop_current_task",
+        lambda *_args, **_kwargs: events.append("interrupt") or {},
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control,
+        "read_scheduler_tasks",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("不得回收 AI attempt")),
+    )
+
+    result = kernel_scheduler_control.take_ai_control("entry-a")
+
+    assert events == []
+    assert result["job_group_enabled"] is False
+    assert result["scheduler_control"] == "ai"
+    assert result["ai_control_acquired"] is False
 
 
 def test_execution_status_never_projects_running_when_kernel_is_idle(monkeypatch):

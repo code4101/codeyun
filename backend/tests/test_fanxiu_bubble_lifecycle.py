@@ -44,9 +44,9 @@ def test_login_always_wakes_the_single_bubble_job():
     assert calls == [(lifecycle.BUBBLE_WEEKLY_TASK_ID, "2026-08-18 09:04:00")]
 
 
-def test_weekly_schedule_is_next_monday_0010():
-    assert lifecycle.next_bubble_weekly_time(datetime(2026, 8, 17, 0, 10)) == "2026-08-24 00:10:00"
-    assert lifecycle.next_bubble_weekly_time(datetime(2026, 8, 16, 23, 59)) == "2026-08-17 00:10:00"
+def test_weekly_schedule_is_next_monday_midnight():
+    assert lifecycle.next_bubble_weekly_time(datetime(2026, 8, 17, 0, 10)) == "2026-08-24 00:00:00"
+    assert lifecycle.next_bubble_weekly_time(datetime(2026, 8, 16, 23, 59)) == "2026-08-17 00:00:00"
 
 
 def test_claim_and_hidden_facts_are_separate_observations(tmp_path):
@@ -148,7 +148,7 @@ def test_unclaimed_run_restores_claims_hides_then_schedules(monkeypatch, tmp_pat
     assert result["claimed_this_run"] is True
     assert runner.claim_calls == runner.hide_calls == 1
     assert len(shake_calls) == 1
-    assert runner.next_times == [("bubble-weekly-pills", "2026-08-24 00:10:00")]
+    assert runner.next_times == [("bubble-weekly-pills", "2026-08-24 00:00:00")]
 
 
 def test_claimed_run_never_shakes_or_claims_and_still_hides(monkeypatch, tmp_path):
