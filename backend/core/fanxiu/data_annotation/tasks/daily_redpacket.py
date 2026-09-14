@@ -20,10 +20,7 @@ from backend.core.fanxiu.data_annotation.redpacket_state import (
     recover_redpacket_runtime_snapshot,
 )
 from backend.core.fanxiu.instrumentation.chat import (
-    read_chat_channel_gui_target,
     read_repeated_chat_phrase,
-    select_chat_channel_title_patterns,
-    select_chat_row_anchors,
 )
 from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
 from backend.core.fanxiu.client.mumu_control import keyevents_mumu_adb, text_mumu_adb
@@ -32,6 +29,15 @@ from backend.core.fanxiu.client.mumu_control import keyevents_mumu_adb, text_mum
 REDPACKET_OCR_PATTERN = re.compile(r"首领[累猎]杀|奖赏|第一|获赠|红包")
 REDPACKET_HISTORY_PATTERN = re.compile(r"你领取了|已领取")
 REDPACKET_SELF_CHECK_INTERVAL_SECONDS = 12 * 60 * 60
+
+
+def redpacket_group_logo_point(badge: dict, template_badge: dict, template_logo: dict, window: dict) -> tuple[float, float]:
+    """Translate the annotated avatar with the matched badge; reject clipped avatars."""
+    x = float(badge["x"]) + float(template_logo["x"]) - float(template_badge["x"]) + float(template_logo["w"]) / 2
+    y = float(badge["y"]) + float(template_logo["y"]) - float(template_badge["y"]) + float(template_logo["h"]) / 2
+    if not (window["x"] <= x <= window["x"] + window["w"] and window["y"] <= y <= window["y"] + window["h"]):
+        raise RuntimeError("红包对应群头像落在列表窗口外，拒绝点击")
+    return x, y
 
 
 def _now() -> datetime:
@@ -748,214 +754,45 @@ class DailyRedpacketTaskMixin:
             yield from context.wait_action_settle(poll_seconds)
         raise TimeoutError(f"日常_红包：#30[窗口] 未找到 {REDPACKET_OCR_PATTERN.pattern}，OCR={last_text[:160]}")
 
-    def _find_and_click_daily_redpacket_group(
-        self,
-        context: Any,
-        ctx: dict[str, Any],
-        *,
-        max_scrolls: int,
-        settle_seconds: float,
-        exclude_group_keys: set[str] | None = None,
-    ):
-        """Click the exact Runtime-selected chat row using OCR only for alignment."""
+    def enter_daily_redpacket_group(
+        self, context: Any, *, max_scrolls: int = 12, settle_seconds: float = 0.8,
+    ) -> Any:
+        """在 #332 群列表按红包图像找群，点击相对定位的群头像。
 
-        snapshot = self._daily_redpacket_require_fresh_uid_snapshot(
-            phase="#332 Runtime 群列表对齐"
-        )
-        runtime_snapshot = (
-            snapshot.get("snapshot")
-            if isinstance(snapshot.get("snapshot"), dict)
-            else snapshot
-        )
-        route_plan = classify_redpacket_runtime_routes(runtime_snapshot)
-        excluded = set(exclude_group_keys or ())
-        items = [
-            item
-            for item in route_plan.get("ordinary_chat_items") or ()
-            if f"{int(item.get('channel') or 0)}_{int(item.get('sub_channel_id') or 0)}"
-            not in excluded
-        ]
-        if not items:
-            return None
-        target = items[0]
-        channel = int(target.get("channel") or 0)
-        sub_id = int(target.get("sub_channel_id") or 0)
-        direct_anchors = select_chat_row_anchors(target)
-        direct_title_patterns = select_chat_channel_title_patterns(channel)
-        gui_target = read_chat_channel_gui_target(channel, sub_id)
-        anchors = list(dict.fromkeys([
-            *direct_anchors,
-            *(gui_target.get("anchors") or ()),
-        ]))
-        title_patterns = list(dict.fromkeys([
-            *direct_title_patterns,
-            *(gui_target.get("title_patterns") or ()),
-        ]))
-        if not anchors and not title_patterns:
-            raise RuntimeError(
-                f"日常_红包：Runtime 群 {channel}_{sub_id} 缺少 GUI 对齐锚点"
-            )
-        tab_label = str(gui_target.get("tab_label") or "")
-        if tab_label not in {"全部", "活动", "群聊", "私聊", "系统"}:
-            raise RuntimeError(
-                f"日常_红包：Runtime 群 {channel}_{sub_id} 缺少受支持的 GUI Tab"
-            )
-
-        window_shape = context.shape(332, "窗口")
-        window_box = window_shape.box()
-        last_text = ""
-
-        for scroll_index in range(max(0, int(max_scrolls)) + 1):
-            frame = context.cur_frame(update=True)
-            cached = self._shared_spatial_ocr_result(ctx, frame)
-            spatial = query_spatial_ocr(cached.get("tokens") or [], window_box)
-            tokens = spatial.get("tokens") if isinstance(spatial.get("tokens"), list) else []
-            fragments = spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
-            last_text = "".join(str(token.get("text") or "") for token in tokens)
-            resolved_y = None
-            matched_anchor = ""
-            for anchor in anchors:
-                candidate = select_text_match(find_text_matches(tokens, anchor), anchor)
-                if candidate is not None:
-                    resolved_y = float(candidate.y + candidate.h / 2)
-                    matched_anchor = anchor
-                    break
-            if resolved_y is None:
-                for pattern in title_patterns:
-                    fragment = next((
-                        item
-                        for item in fragments
-                        if re.search(pattern, str(item.get("text") or ""))
-                    ), None)
-                    if fragment is not None:
-                        resolved_y = float(fragment.get("y") or 0) + float(fragment.get("h") or 0) / 2
-                        matched_anchor = f"/{pattern}/"
-                        break
-            if resolved_y is not None:
-                click_x = float(window_box["x"]) + float(window_box["w"]) * 0.55
-                click_y = resolved_y
-                context.click_frame_point(332, click_x, click_y)
-                self._log(
-                    "action",
-                    (
-                        f"日常_红包：Runtime 群 {channel}_{sub_id} 通过列表锚点"
-                        f"「{matched_anchor}」对齐，scroll={scroll_index}"
-                    ),
-                )
-                # The caller immediately waits for the destination #30 state;
-                # do not add a blind settle before that state-based wait.
-                return {
-                    "x": click_x,
-                    "y": click_y,
-                    "scroll_index": scroll_index,
-                    "channel": channel,
-                    "sub_channel_id": sub_id,
-                    "anchor": matched_anchor,
-                }
-            if scroll_index >= max(0, int(max_scrolls)):
-                break
-            context.drag_shape_content(window_shape, direction="down")
-            yield from context.wait_action_settle(settle_seconds)
-        self._log(
-            "diagnostic",
-            (
-                f"日常_红包：Runtime 群 {channel}_{sub_id} 未对齐，"
-                f"tab={tab_label}，anchors={anchors}，OCR={last_text[:240]}"
-            ),
-        )
-        return None
-
-    def _select_daily_redpacket_group_tab(
-        self,
-        context: Any,
-        *,
-        transition_timeout: float,
-        exclude_group_keys: set[str] | None = None,
-    ) -> dict[str, Any] | None:
-        """Select the exact category tab for the next fresh Runtime candidate."""
-
-        snapshot = self._daily_redpacket_require_fresh_uid_snapshot(
-            phase="#332 Runtime 群分类"
-        )
-        runtime_snapshot = (
-            snapshot.get("snapshot")
-            if isinstance(snapshot.get("snapshot"), dict)
-            else snapshot
-        )
-        excluded = set(exclude_group_keys or ())
-        items = [
-            item
-            for item in classify_redpacket_runtime_routes(runtime_snapshot).get(
-                "ordinary_chat_items"
-            )
-            or ()
-            if f"{int(item.get('channel') or 0)}_{int(item.get('sub_channel_id') or 0)}"
-            not in excluded
-        ]
-        if not items:
-            return None
-        target = items[0]
-        channel = int(target.get("channel") or 0)
-        sub_id = int(target.get("sub_channel_id") or 0)
-        gui_target = read_chat_channel_gui_target(channel, sub_id)
-        tab_label = str(gui_target.get("tab_label") or "")
-        if tab_label not in {"全部", "活动", "群聊", "私聊", "系统"}:
-            raise RuntimeError(
-                f"日常_红包：Runtime 群 {channel}_{sub_id} 无法映射 GUI Tab"
-            )
-        yield from context.click_shape_center_then_scene(
-            332,
-            tab_label,
-            332,
-            timeout=transition_timeout,
-            label=(
-                f"日常_红包：Runtime 群 {channel}_{sub_id} "
-                f"按 groupType={gui_target.get('group_type')} 切到{tab_label}"
-            ),
-        )
-        self._log(
-            "action",
-            (
-                f"日常_红包：Runtime 群 {channel}_{sub_id} 精确分流到"
-                f"[{tab_label}]，再做 GUI 行对齐"
-            ),
-        )
-        return gui_target
-
-    def _wait_and_click_daily_redpacket_group(
-        self,
-        context: Any,
-        ctx: dict[str, Any],
-        *,
-        timeout_seconds: float,
-        poll_seconds: float,
-        max_scrolls: int = 0,
-        exclude_group_keys: set[str] | None = None,
-    ):
-        """Wait for Runtime-selected group alignment, then boundedly scan the list.
-
-        ``_find_and_click_daily_redpacket_group`` keeps the action gate on the
-        current frame: scrolling never authorizes a row click by itself.  A
-        positive ``max_scrolls`` means one complete bounded list scan; once it
-        is exhausted, waiting longer on the bottom window cannot reveal a row
-        that the scan already disproved.
+        Runtime 不参与列表行定位；同一发送者/消息可能出现在多个群。
+        角标仅定位头像，头像与角标的位移来自资产，滚动后重新匹配。
+        多个红包图标均为合法候选，按从上到下逐群处理。
         """
-
-        deadline = time.monotonic() + max(1.0, float(timeout_seconds))
-        while time.monotonic() < deadline:
-            group = yield from self._find_and_click_daily_redpacket_group(
-                context,
-                ctx,
-                max_scrolls=max_scrolls,
-                settle_seconds=poll_seconds,
-                exclude_group_keys=exclude_group_keys,
-            )
-            if group is not None:
-                return group
-            if max_scrolls > 0:
+        yield from context.wait_scene([332], wait=5.0)
+        badge_shape = context.shape(332, "窗口/检索区域/红包图标")
+        logo_shape = context.shape(332, "窗口/群头像")
+        window = context.shape(332, "窗口")
+        badge_template = badge_shape.box()
+        logo_template = logo_shape.box()
+        for scroll_index in range(max(0, int(max_scrolls)) + 1):
+            matched = context.shape_matches(332, badge_shape)
+            candidates = [
+                item for item in (matched or {}).get("matches", [])
+                if float(item.get("similarity") or 0)
+                >= float((matched or {}).get("selection_threshold") or 80)
+            ]
+            if candidates:
+                candidate = min(candidates, key=lambda item: float(item["box"]["y"]))
+                badge = candidate["box"]
+                x, y = redpacket_group_logo_point(badge, badge_template, logo_template, window.box())
+                context.click_frame_point(332, x, y)
+                self._log("action", f"日常_红包：红包图像 {candidate['similarity']}% → 群头像，scroll={scroll_index}")
+                yield from context.wait_scene([30], wait=15.0)
+                return {"x": x, "y": y, "scroll_index": scroll_index}
+            if scroll_index == max(0, int(max_scrolls)):
                 break
-            yield from context.wait_action_settle(poll_seconds)
-        raise TimeoutError("日常_红包：#332[窗口] 未对齐到 Runtime 指定红包群")
+            changed = yield from context.scroll_shape_content(
+                window, direction="down", unchanged_confirmations=2,
+            )
+            if not changed:
+                break
+            yield from context.wait_action_settle(settle_seconds)
+        return None
 
     def _claim_daily_redpackets(
         self,
@@ -1153,6 +990,10 @@ class DailyRedpacketTaskMixin:
         before_runtime = self._daily_redpacket_require_fresh_uid_snapshot(
             phase="进入当前群事务前"
         )
+        locator = context.shape_matches(30, "红包")
+        if locator and locator.get("matched"):
+            yield from context.wait_click(30, "红包", timeout=transition_timeout)
+            yield from context.wait_action_settle(poll_seconds)
         targets: list[dict[str, Any]] = []
         # Two fresh OCR frames plus the settle interval must fit before
         # falling back to the locator. A 3s cold probe can time out after
@@ -1295,10 +1136,6 @@ class DailyRedpacketTaskMixin:
             raise RuntimeError("日常_红包：缺少资产树路径")
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         transition_timeout = max(3.0, float(payload.get("transition_timeout_seconds") or 15.0))
-        redpacket_confirm_seconds = max(
-            1.0,
-            float(payload.get("redpacket_confirm_seconds") or 60.0),
-        )
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 0.8))
         # Real group lists can place the alliance row after nine upward
         # swipes. Keep enough headroom while preserving the existing hard cap.
@@ -1396,147 +1233,46 @@ class DailyRedpacketTaskMixin:
                     route_plan,
                 ))
 
-        # Ordinary red packets use Runtime's channel -> groupType -> tab
-        # contract.  "全部" expands the list and is not a search strategy.
-        gui_target = yield from self._select_daily_redpacket_group_tab(
-            context,
-            transition_timeout=transition_timeout,
-            exclude_group_keys=set(),
+        # 普通红包统一走群聊列表图标；Runtime 只负责触发、特殊活动分流与终态复核。
+        yield from context.click_shape_center_then_scene(
+            332, "群聊", 332, timeout=transition_timeout,
         )
-        if gui_target is None:
-            yield from self._close_daily_redpacket_chat_to_world(
-                context,
-                transition_timeout=transition_timeout,
-            )
-            return self._daily_redpacket_result(
-                payload,
-                "fresh Runtime 已无普通红包候选，零动作退出",
-                current_scene=34,
-            )
-
-        try:
-            initial_group = yield from self._wait_and_click_daily_redpacket_group(
-                context,
-                ctx,
-                timeout_seconds=redpacket_confirm_seconds,
-                poll_seconds=poll_seconds,
-                max_scrolls=max_scrolls,
-                exclude_group_keys=set(),
-            )
-        except TimeoutError:
-            unavailable = self._daily_redpacket_require_fresh_uid_snapshot(
-                phase="#332 Runtime-GUI 群行持续未对齐"
-            )
-            unclaimable_uids = sorted(unavailable.get("uids") or ())
-            yield from self._close_daily_redpacket_chat_to_world(
-                context,
-                transition_timeout=transition_timeout,
-            )
-            return self._daily_redpacket_result(
-                payload,
-                (
-                    "#332 持续未对齐到 Runtime 指定红包群；"
-                    f"将 fresh Runtime 剩余 {len(unclaimable_uids)} 个 UID "
-                    "类型化为 chat_gui_unaligned"
-                ),
-                current_scene=34,
-                unclaimable_uids=unclaimable_uids,
-            )
-
-        window_shape = context.shape(332, "窗口")
         opened_count = 0
         processed_groups = 0
         quota_exhausted = False
-        scroll_count = 0
-        force_scroll = False
-        left_chat_stack = False
-        visually_exhausted_group_keys: set[str] = set()
-        pending_group = initial_group
-        while True:
-            group = pending_group
-            pending_group = None
-            if group is None and not force_scroll:
-                gui_target = yield from self._select_daily_redpacket_group_tab(
-                    context,
-                    transition_timeout=transition_timeout,
-                    exclude_group_keys=visually_exhausted_group_keys,
-                )
-                if gui_target is None:
-                    break
-                group = yield from self._find_and_click_daily_redpacket_group(
-                    context,
-                    ctx,
-                    max_scrolls=0,
-                    settle_seconds=poll_seconds,
-                    exclude_group_keys=visually_exhausted_group_keys,
-                )
-            force_scroll = False
-            if group is not None:
-                if processed_groups >= max_group_count:
-                    raise RuntimeError(f"日常_红包：已处理 {processed_groups} 个群仍未加载到底，停止避免无限循环")
-                processed_groups += 1
-                group_opened, opened_page = yield from self._process_current_daily_redpacket_group(
-                    context,
-                    ctx,
-                    transition_timeout=transition_timeout,
-                    poll_seconds=poll_seconds,
-                    max_open_count=max_open_count,
-                    max_locator_clicks=max_locator_clicks,
-                )
-                opened_count += int(group_opened)
-                if not opened_page:
-                    visually_exhausted_group_keys.add(
-                        f"{int(group.get('channel') or 0)}_"
-                        f"{int(group.get('sub_channel_id') or 0)}"
-                    )
-                quota_exhausted = bool(
-                    isinstance(getattr(context, "attrs", None), dict)
-                    and context.attrs.pop("daily_redpacket_quota_exhausted", False)
-                )
-                return_view = yield from self._return_daily_redpacket_group_to_list(
-                    context,
-                    transition_timeout=transition_timeout,
-                )
-                return_scene = int(return_view.id or 0)
-                if return_scene != 332:
-                    left_chat_stack = True
-                    if return_scene != 34:
-                        yield from context.go_scene(34)
-                    break
-                if quota_exhausted:
-                    break
-                # 未能打开领取页时，该 UID 可能仍在 Runtime；强制向下加载，
-                # 避免反复对齐并点击同一行。成功领取后由 fresh UID 集合决定下一目标。
-                force_scroll = not bool(opened_page)
-                continue
-            if scroll_count >= max_scrolls:
-                break
-            changed = yield from context.scroll_shape_content(
-                window_shape,
-                direction="down",
-                # The chat list can produce one near-identical stabilized frame
-                # around a page boundary even though a later row is still
-                # reachable. Require two consecutive unchanged observations
-                # before declaring the bounded search exhausted.
-                unchanged_confirmations=2,
+        while processed_groups < max_group_count:
+            group = yield from self.enter_daily_redpacket_group(
+                context, max_scrolls=max_scrolls, settle_seconds=poll_seconds,
             )
-            scroll_count += 1
-            if not changed:
+            if group is None:
                 break
-            yield from context.wait_action_settle(poll_seconds)
+            processed_groups += 1
+            count, opened_page = yield from self._process_current_daily_redpacket_group(
+                context, ctx, transition_timeout=transition_timeout,
+                poll_seconds=poll_seconds, max_open_count=max_open_count,
+                max_locator_clicks=max_locator_clicks,
+            )
+            opened_count += int(count)
+            quota_exhausted = bool(context.attrs.pop("daily_redpacket_quota_exhausted", False))
+            landing = yield from self._return_daily_redpacket_group_to_list(
+                context, transition_timeout=transition_timeout,
+            )
+            if int(landing.id or 0) != 332:
+                if int(landing.id or 0) != 34:
+                    yield from context.go_scene(34)
+                break
+            if quota_exhausted:
+                break
+        else:
+            raise RuntimeError(f"日常_红包：处理 {processed_groups} 个群仍未结束，停止避免无限循环")
 
-        if not left_chat_stack:
-            yield from self._close_daily_redpacket_chat_to_world(
-                context,
-                transition_timeout=transition_timeout,
-            )
+        # 正常收尾先回世界，再写业务终态；图标未命中不能把剩余 UID 记作成功。
+        yield from self._prepare_daily_redpacket_world(context, transition_timeout=transition_timeout)
+        remaining = self._daily_redpacket_require_fresh_uid_snapshot(phase="返回世界后的红包终态")
+        if remaining["uids"] and not quota_exhausted:
+            raise RuntimeError(f"日常_红包：图像扫描结束但仍有待处理红包 {sorted(remaining['uids'])}，保留失败供排查")
         message = (
             f"今日红包领取次数已用尽，处理 {processed_groups} 个群，共打开 {opened_count} 个红包"
-            if quota_exhausted
-            else f"红包群列表已加载到底，处理 {processed_groups} 个群，共打开 {opened_count} 个红包"
+            if quota_exhausted else f"红包处理完成，处理 {processed_groups} 个群，共打开 {opened_count} 个红包"
         )
-        return self._daily_redpacket_result(
-            payload,
-            message,
-            opened_count=opened_count,
-        )
+        return self._daily_redpacket_result(payload, message, opened_count=opened_count)
