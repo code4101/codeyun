@@ -6,7 +6,9 @@ import subprocess
 import pytest
 
 from backend.api import codex_setup as codex_setup_api
+from backend.core import opencode_usage
 from backend.core.codex import official_setup, weekly_quota
+from backend.core.codex import switch as codex_switch
 from backend.core.codex.app_server import CodexAppServerError
 
 
@@ -145,18 +147,21 @@ def test_api_status_reports_key_availability(tmp_path, monkeypatch):
 
     response = codex_setup_api.get_codex_setup_status(current_user=None, session=None)
 
-    assert response.mode == "gpt"
+    assert response.model == "gpt-6-astra"
     assert response.deepseek_key_available is True
-    assert [item.id for item in response.modes] == list(official_setup.SUPPORTED_MODES)
+    assert response.provider == "openai"
+    assert [item.id for item in response.providers] == [
+        item["id"] for item in codex_setup_api.CODEX_SETUP_PROVIDERS
+    ]
 
 
-def test_api_switch_gpt_is_noop_when_already_default(tmp_path, monkeypatch):
+def test_api_switch_openai_is_noop_when_already_default(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
     monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
 
     response = codex_setup_api.switch_codex_setup(
-        codex_setup_api.CodexSetupSwitchRequest(mode=official_setup.GPT_MODE),
+        codex_setup_api.CodexSetupSwitchRequest(provider="openai"),
         current_user=None,
         session=None,
     )
@@ -172,12 +177,26 @@ def test_api_switch_deepseek_requires_key(tmp_path, monkeypatch):
 
     with pytest.raises(Exception) as excinfo:
         codex_setup_api.switch_codex_setup(
-            codex_setup_api.CodexSetupSwitchRequest(mode=official_setup.FLASH_MODE),
+            codex_setup_api.CodexSetupSwitchRequest(provider="deepseek", model="deepseek-flash"),
             current_user=None,
             session=None,
         )
 
     assert "DeepSeek API Key" in str(excinfo.value)
+
+
+def test_api_switch_rejects_unknown_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    _write_config(tmp_path, 'model = "gpt-6-astra"\n')
+
+    with pytest.raises(Exception) as excinfo:
+        codex_setup_api.switch_codex_setup(
+            codex_setup_api.CodexSetupSwitchRequest(provider="opencode", model="kimi-k3"),
+            current_user=None,
+            session=None,
+        )
+
+    assert "不支持该模型" in str(excinfo.value)
 
 
 def test_api_switch_closes_and_reopens_codex(tmp_path, monkeypatch):
@@ -195,22 +214,23 @@ def test_api_switch_closes_and_reopens_codex(tmp_path, monkeypatch):
         calls["start"] = snapshot
         return True
 
-    def fake_switch(mode, *, api_key=None):
-        assert api_key == "sk-system"
+    def fake_switch(provider, model=None, *, api_key=None):
+        calls["switch"] = (provider, model, api_key)
         _write_config(tmp_path, 'model = "deepseek-flash"\nmodel_provider = "deepseek"\n')
-        return {"mode": mode, "output": "ok", "status": official_setup.read_codex_status()}
+        return {"mode": model, "output": "ok", "status": official_setup.read_codex_status()}
 
     monkeypatch.setattr(codex_setup_api, "stop_codex_processes", fake_stop)
     monkeypatch.setattr(codex_setup_api, "start_codex_app", fake_start)
-    monkeypatch.setattr(codex_setup_api, "switch_codex_mode", fake_switch)
+    monkeypatch.setattr(codex_setup_api, "switch_codex", fake_switch)
 
     response = codex_setup_api.switch_codex_setup(
-        codex_setup_api.CodexSetupSwitchRequest(mode=official_setup.FLASH_MODE),
+        codex_setup_api.CodexSetupSwitchRequest(provider="deepseek", model="deepseek-flash"),
         current_user=None,
         session=None,
     )
 
     assert calls["stop"] is True
+    assert calls["switch"] == ("deepseek", "deepseek-flash", "sk-system")
     assert calls["start"]["was_app_running"] is True
     assert response.restarted_app is True
     assert response.closed_process_count == 1
@@ -229,14 +249,14 @@ def test_api_switch_restarts_codex_even_on_failure(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(codex_setup_api, "start_codex_app", lambda snapshot: restarted.setdefault("snapshot", snapshot) or True)
 
-    def failing_switch(mode, *, api_key=None):
+    def failing_switch(provider, model=None, *, api_key=None):
         raise official_setup.CodexSetupError("boom")
 
-    monkeypatch.setattr(codex_setup_api, "switch_codex_mode", failing_switch)
+    monkeypatch.setattr(codex_setup_api, "switch_codex", failing_switch)
 
     with pytest.raises(Exception):
         codex_setup_api.switch_codex_setup(
-            codex_setup_api.CodexSetupSwitchRequest(mode=official_setup.FLASH_MODE),
+            codex_setup_api.CodexSetupSwitchRequest(provider="deepseek", model="deepseek-flash"),
             current_user=None,
             session=None,
         )
@@ -272,7 +292,7 @@ def test_read_codex_quota_groups_forces_chatgpt_auth(monkeypatch):
     assert groups[0]["windows"][0]["remaining_percent"] == 14
 
 
-def test_build_general_quota_window_aligns_axis_and_filters_history():
+def test_build_general_quota_window_defaults_to_seven_days():
     groups = weekly_quota.parse_codex_rate_limit_groups(_SAMPLE_RATE_LIMITS)
     snapshots = [
         {"date": "2026-09-10", "observed_at": "2026-09-10T00:00:00", "remaining_percent": 90},
@@ -297,6 +317,8 @@ def test_api_quota_returns_empty_prompt_before_collection(monkeypatch):
     monkeypatch.setattr(
         codex_setup_api, "load_codex_quota_snapshot", lambda: {"observed_at": "", "groups": []}
     )
+    monkeypatch.setattr(codex_setup_api, "list_codex_weekly_quota_snapshots", lambda: [])
+    monkeypatch.setattr(codex_setup_api, "_bootstrap_quota_snapshot", lambda: None)
 
     response = codex_setup_api.get_codex_quota(current_user=None)
 
@@ -319,6 +341,162 @@ def test_api_quota_serves_stored_snapshot(monkeypatch):
     assert response.observed_at == "2026-09-15T00:00:00"
     assert response.general_window is not None
     assert response.general_window.remaining_percent == 14
+
+
+def test_build_general_quota_window_without_live_snapshot():
+    snapshots = [
+        {
+            "date": "2026-09-14",
+            "observed_at": "2026-09-14T00:00:00",
+            "remaining_percent": 30,
+            "reset_at": "2026-09-19T08:09:41+00:00",
+        },
+        {
+            "date": "2026-09-15",
+            "observed_at": "2026-09-15T00:00:00",
+            "remaining_percent": 14,
+            "reset_at": "2026-09-19T08:09:41+00:00",
+        },
+    ]
+
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+
+    assert window["name"] == "通用使用限额"
+    assert window["reset_at"] == "2026-09-19T08:09:41+00:00"
+    assert window["remaining_percent"] == 14
+    assert [item["remaining_percent"] for item in window["points"]] == [30, 14]
+
+
+def test_api_quota_serves_history_without_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        codex_setup_api, "load_codex_quota_snapshot", lambda: {"observed_at": "", "groups": []}
+    )
+    monkeypatch.setattr(codex_setup_api, "_bootstrap_quota_snapshot", lambda: None)
+    monkeypatch.setattr(
+        codex_setup_api,
+        "list_codex_weekly_quota_snapshots",
+        lambda: [
+            {
+                "date": "2026-09-15",
+                "observed_at": "2026-09-15T00:00:00",
+                "remaining_percent": 14,
+                "reset_at": "2026-09-19T08:09:41+00:00",
+            }
+        ],
+    )
+
+    response = codex_setup_api.get_codex_quota(current_user=None)
+
+    assert response.groups == []
+    assert response.general_window is not None
+    assert len(response.general_window.points) == 1
+    assert response.observed_at == response.general_window.points[0].at
+
+
+def test_detect_provider_maps_model_provider_ids():
+    assert codex_switch.detect_provider("") == "openai"
+    assert codex_switch.detect_provider("deepseek") == "deepseek"
+    assert codex_switch.detect_provider("opencode_go") == "opencode"
+
+
+def test_switch_to_opencode_writes_provider_block_and_preserves_config(tmp_path, monkeypatch):
+    import tomllib
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'model = "deepseek-flash"\n'
+        'model_provider = "deepseek"\n'
+        'model_catalog_json = "C:/x/models.json"\n'
+        'model_reasoning_effort = "high"\n\n'
+        "[mcp_servers]\n\n"
+        "[model_providers.deepseek]\n"
+        'base_url = "https://api.deepseek.com/"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "backup-deepseek").mkdir()
+    monkeypatch.setattr(codex_switch, "read_opencode_go_key", lambda: "sk-oc")
+
+    codex_switch.switch_to_opencode(config, "deepseek-v4-pro")
+
+    data = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert data["model"] == "deepseek-v4-pro"
+    assert data["model_provider"] == "opencode_go"
+    assert "model_catalog_json" not in data
+    assert data["model_reasoning_effort"] == "high"
+    assert data["model_providers"]["deepseek"]["base_url"] == "https://api.deepseek.com/"
+    provider = data["model_providers"]["opencode_go"]
+    assert provider["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert provider["wire_api"] == "responses"
+    assert provider["experimental_bearer_token"] == "sk-oc"
+    assert provider["http_headers"]["x-opencode-session"] == codex_switch.OPENCODE_GO_SESSION
+
+
+def test_switch_to_opencode_replaces_existing_block(tmp_path, monkeypatch):
+    import tomllib
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'model = "grok-4.6"\n'
+        'model_provider = "opencode_go"\n'
+        "mcp_servers = 1\n\n"
+        "[model_providers.opencode_go]\n"
+        'base_url = "old"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "backup-deepseek").mkdir()
+    monkeypatch.setattr(codex_switch, "read_opencode_go_key", lambda: "sk-oc")
+
+    codex_switch.switch_to_opencode(config, "grok-4.6")
+
+    data = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert data["model_providers"]["opencode_go"]["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert data["mcp_servers"] == 1
+
+
+def test_parse_opencode_go_usage_converts_used_to_remaining():
+    windows = opencode_usage.parse_opencode_go_usage(
+        {
+            "usage": {
+                "rolling": {"status": "ok", "percent": 17, "resetsAt": "2026-09-15T06:45:45.104Z"},
+                "weekly": {"status": "ok", "percent": 6, "resetsAt": "2026-09-21T00:00:00.104Z"},
+                "monthly": {"status": "ok", "percent": 3, "resetsAt": "2026-10-14T14:57:19.104Z"},
+            }
+        }
+    )
+
+    assert [(item["label"], item["remaining_percent"]) for item in windows] == [
+        ("5 小时", 83),
+        ("每周", 94),
+        ("每月", 97),
+    ]
+
+
+def test_read_opencode_go_key_from_auth_file(tmp_path):
+    assert opencode_usage.read_opencode_go_key(path=tmp_path / "auth.json") == ""
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"opencode-go": {"type": "api", "key": "sk-test"}}', encoding="utf-8")
+
+    assert opencode_usage.read_opencode_go_key(path=auth_path) == "sk-test"
+
+
+def test_api_opencode_usage_returns_windows(monkeypatch):
+    monkeypatch.setattr(
+        codex_setup_api,
+        "read_opencode_go_usage",
+        lambda: {
+            "available": True,
+            "windows": [
+                {"label": "5 小时", "remaining_percent": 83, "reset_at": "", "status": "ok"}
+            ],
+            "error": "",
+        },
+    )
+
+    response = codex_setup_api.get_opencode_usage(current_user=None)
+
+    assert response.available is True
+    assert response.windows[0].remaining_percent == 83
 
 
 def test_api_quota_refresh_reports_error_without_failing(monkeypatch):

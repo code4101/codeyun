@@ -4,6 +4,26 @@
       <div class="hero-copy">
         <h1>AI聊天</h1>
       </div>
+      <div class="hero-actions">
+        <div class="view-mode-switch" role="group" aria-label="视图模式">
+          <button
+            type="button"
+            class="view-mode-btn"
+            :class="{ active: !isBattleMode }"
+            @click="setViewMode('chat')"
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            class="view-mode-btn"
+            :class="{ active: isBattleMode }"
+            @click="setViewMode('battle')"
+          >
+            对战
+          </button>
+        </div>
+      </div>
     </section>
 
     <div class="workspace-grid">
@@ -113,6 +133,23 @@
         <div class="chat-surface">
           <div ref="messagesViewportRef" class="messages-viewport">
             <div v-if="conversationRounds.length" class="conversation-workspace">
+              <div v-if="isBattleMode" class="battle-scoreboard">
+                <span class="battle-scoreboard-title">对战记分</span>
+                <template v-if="battleScoreboard.length">
+                  <span
+                    v-for="entry in battleScoreboard"
+                    :key="entry.key"
+                    class="battle-score-chip"
+                  >
+                    {{ entry.label }} · {{ entry.wins }} 胜
+                  </span>
+                  <span class="battle-scoreboard-meta">已投票 {{ battleVotedRoundCount }} 轮</span>
+                </template>
+                <span v-else class="battle-scoreboard-empty">
+                  还没有投票。每一轮里点“投给它”，这里会按模型累计胜场。
+                </span>
+              </div>
+
               <div class="conversation-round-list">
                 <article
                   v-for="(round, roundIndex) in conversationRounds"
@@ -125,6 +162,9 @@
                       <span class="conversation-round-index">第 {{ roundIndex + 1 }} 轮</span>
                       <span v-if="round.userMessage.created_at" class="conversation-round-time">
                         {{ formatTime(round.userMessage.created_at) }}
+                      </span>
+                      <span v-if="isBattleMode && roundVoteWinnerId(round.id)" class="battle-round-verdict">
+                        胜出：{{ battleWinnerLabel(round) }}
                       </span>
                     </div>
                     <el-button
@@ -149,32 +189,105 @@
                     {{ round.userMessage.content || (round.userMessage.images.length ? '（仅发送图片）' : ' ') }}
                   </div>
 
-                  <div v-if="round.assistantMessages.length" class="response-node-list">
-                    <button
-                      v-for="(assistantMessage, assistantIndex) in round.assistantMessages"
-                      :key="assistantMessage.id"
-                      type="button"
-                      class="response-node"
-                      :class="{
-                        active: assistantMessage.id === selectedAssistantMessageId,
-                        pending: assistantMessage.pending,
-                        error: assistantMessage.error,
-                      }"
-                      @click="selectAssistantMessage(assistantMessage.id)"
+                  <template v-if="round.assistantMessages.length">
+                    <div
+                      v-if="isBattleMode"
+                      class="battle-grid"
+                      :style="{ '--battle-columns': String(round.assistantMessages.length) }"
                     >
-                      <span class="response-node-index">
-                        {{ formatCompactIndex(assistantIndex, round.assistantMessages.length) }}
-                      </span>
-                      <div class="response-node-main">
-                        <span class="response-node-label">
-                          {{ assistantMessage.display_model || assistantMessage.model || 'AI 回复' }}
+                      <article
+                        v-for="(assistantMessage, assistantIndex) in round.assistantMessages"
+                        :key="assistantMessage.id"
+                        class="battle-column"
+                        :class="{
+                          pending: assistantMessage.pending,
+                          error: assistantMessage.error,
+                          winner: roundVoteWinnerId(round.id) === assistantMessage.id,
+                        }"
+                      >
+                        <header class="battle-column-head">
+                          <span class="battle-column-index">
+                            {{ formatCompactIndex(assistantIndex, round.assistantMessages.length) }}
+                          </span>
+                          <span class="battle-column-model">
+                            {{ assistantMessage.display_model || assistantMessage.model || 'AI 回复' }}
+                          </span>
+                        </header>
+
+                        <div class="battle-column-body">
+                          <div
+                            v-if="assistantMessage.content"
+                            class="message-content message-markdown"
+                            :class="{ 'message-markdown-live': assistantMessage.pending }"
+                            v-html="renderMessageHtml(assistantMessage)"
+                          ></div>
+                          <div v-else-if="assistantMessage.pending" class="message-empty-state">
+                            <span class="message-empty-title">
+                              {{ assistantMessage.supports_stream ? '正在思考...' : '正在生成完整回复...' }}
+                            </span>
+                            <span class="message-empty-caption">
+                              {{ getAssistantMessagePendingHint(assistantMessage) }}
+                            </span>
+                          </div>
+                          <div v-else class="message-content">
+                            该模型当前还没有可展示的正文内容。
+                          </div>
+                        </div>
+
+                        <footer class="battle-column-foot">
+                          <span class="battle-column-state">
+                            {{ getAssistantMessageStateText(assistantMessage) }}
+                          </span>
+                          <div class="battle-column-actions">
+                            <el-button
+                              text
+                              size="small"
+                              :icon="CopyDocument"
+                              :disabled="!assistantMessage.content"
+                              @click="copyText(assistantMessage.content)"
+                            >
+                              复制
+                            </el-button>
+                            <el-button
+                              size="small"
+                              :type="roundVoteWinnerId(round.id) === assistantMessage.id ? 'success' : 'default'"
+                              :disabled="assistantMessage.pending || !assistantMessage.content"
+                              @click="voteRound(round.id, assistantMessage.id)"
+                            >
+                              {{ roundVoteWinnerId(round.id) === assistantMessage.id ? '已胜出' : '投给它' }}
+                            </el-button>
+                          </div>
+                        </footer>
+                      </article>
+                    </div>
+
+                    <div v-else class="response-node-list">
+                      <button
+                        v-for="(assistantMessage, assistantIndex) in round.assistantMessages"
+                        :key="assistantMessage.id"
+                        type="button"
+                        class="response-node"
+                        :class="{
+                          active: assistantMessage.id === selectedAssistantMessageId,
+                          pending: assistantMessage.pending,
+                          error: assistantMessage.error,
+                        }"
+                        @click="selectAssistantMessage(assistantMessage.id)"
+                      >
+                        <span class="response-node-index">
+                          {{ formatCompactIndex(assistantIndex, round.assistantMessages.length) }}
                         </span>
-                        <span class="response-node-state">
-                          {{ getAssistantMessageStateText(assistantMessage) }}
-                        </span>
-                      </div>
-                    </button>
-                  </div>
+                        <div class="response-node-main">
+                          <span class="response-node-label">
+                            {{ assistantMessage.display_model || assistantMessage.model || 'AI 回复' }}
+                          </span>
+                          <span class="response-node-state">
+                            {{ getAssistantMessageStateText(assistantMessage) }}
+                          </span>
+                        </div>
+                      </button>
+                    </div>
+                  </template>
 
                   <div v-else class="response-node-empty">
                     当前轮次还没有模型回复节点。
@@ -260,7 +373,7 @@
             />
           </div>
 
-          <div v-if="conversationRounds.length" class="response-detail-panel">
+          <div v-if="!isBattleMode && conversationRounds.length" class="response-detail-panel">
             <div class="response-detail-shell">
               <article
                 v-if="selectedAssistantMessage"
@@ -439,12 +552,17 @@ interface ChatMessage {
   supports_stream?: boolean
 }
 
+type AiChatViewMode = 'chat' | 'battle'
+
 interface PersistedAiChatSettings {
-  version: 8
+  version: 9
   providerId: string
   model: string
   selectedModelOptionIds: string[]
+  viewMode: AiChatViewMode
 }
+
+type BattleVoteMap = Record<string, Record<string, string>>
 
 interface ChatModelOption {
   id: string
@@ -464,6 +582,7 @@ interface ConversationRound {
 
 const SETTINGS_STORAGE_KEY = 'codeyun_ai_chat_settings_v1'
 const CHAT_SESSION_DRAFT_STORAGE_KEY_PREFIX = 'codeyun_ai_chat_session_draft_v1'
+const BATTLE_VOTES_STORAGE_KEY = 'codeyun_ai_chat_battle_votes_v1'
 const MAX_IMAGE_SIZE_BYTES = 6 * 1024 * 1024
 const MAX_ATTACHMENT_COUNT = 4
 
@@ -501,6 +620,7 @@ const chatModelSelectionHydrated = ref(false)
 const chatSessionHydrated = ref(false)
 const sessionItems = ref<AiChatSessionItem[]>([])
 const activeSessionId = ref('')
+const battleVoteMap = ref<BattleVoteMap>(loadBattleVotes())
 
 let localIdSeed = 0
 
@@ -584,6 +704,36 @@ const conversationRounds = computed<ConversationRound[]>(() => {
   }
 
   return rounds
+})
+const isBattleMode = computed(() => settings.viewMode === 'battle')
+const activeSessionVotes = computed<Record<string, string>>(() => (
+  activeSessionId.value ? battleVoteMap.value[activeSessionId.value] ?? {} : {}
+))
+const battleVotedRoundCount = computed(() => Object.keys(activeSessionVotes.value).length)
+const battleScoreboard = computed(() => {
+  const votes = activeSessionVotes.value
+  const scores = new Map<string, { label: string; wins: number }>()
+
+  for (const round of conversationRounds.value) {
+    const winnerId = votes[round.id]
+    if (!winnerId) {
+      continue
+    }
+    const winner = round.assistantMessages.find(message => message.id === winnerId)
+    if (!winner) {
+      continue
+    }
+    const key = winner.model_option_id || winner.model || winner.display_model || winner.id
+    const label = winner.display_model || winner.model || '未知模型'
+    const entry = scores.get(key) ?? { label, wins: 0 }
+    entry.wins += 1
+    entry.label = label
+    scores.set(key, entry)
+  }
+
+  return [...scores.entries()]
+    .map(([key, value]) => ({ key, label: value.label, wins: value.wins }))
+    .sort((left, right) => right.wins - left.wins || left.label.localeCompare(right.label))
 })
 const selectedAssistantMessage = computed(() => (
   assistantMessages.value.find(message => message.id === selectedAssistantMessageId.value) ?? null
@@ -753,10 +903,11 @@ onBeforeUnmount(() => {
 
 function loadInitialSettings(): PersistedAiChatSettings {
   const fallback: PersistedAiChatSettings = {
-    version: 8,
+    version: 9,
     providerId: '',
     model: '',
     selectedModelOptionIds: [],
+    viewMode: 'chat',
   }
 
   const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
@@ -770,10 +921,11 @@ function loadInitialSettings(): PersistedAiChatSettings {
       ? parsed.selectedModelOptionIds.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
       : []
     return {
-      version: 8,
+      version: 9,
       providerId: typeof parsed.providerId === 'string' ? parsed.providerId : fallback.providerId,
       model: typeof parsed.model === 'string' ? parsed.model : fallback.model,
       selectedModelOptionIds,
+      viewMode: parsed.viewMode === 'battle' ? 'battle' : 'chat',
     }
   } catch (error) {
     console.warn('Failed to load AI chat settings', error)
@@ -785,12 +937,49 @@ function persistSettings() {
   localStorage.setItem(
     SETTINGS_STORAGE_KEY,
     JSON.stringify({
-      version: 8,
+      version: 9,
       providerId: settings.providerId,
       model: settings.model,
       selectedModelOptionIds: settings.selectedModelOptionIds,
+      viewMode: settings.viewMode,
     } satisfies PersistedAiChatSettings)
   )
+}
+
+function loadBattleVotes(): BattleVoteMap {
+  const raw = localStorage.getItem(BATTLE_VOTES_STORAGE_KEY)
+  if (!raw) {
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+    const normalized: BattleVoteMap = {}
+    for (const [sessionId, rounds] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!rounds || typeof rounds !== 'object' || Array.isArray(rounds)) {
+        continue
+      }
+      const roundVotes: Record<string, string> = {}
+      for (const [roundId, messageId] of Object.entries(rounds as Record<string, unknown>)) {
+        if (typeof messageId === 'string' && messageId) {
+          roundVotes[roundId] = messageId
+        }
+      }
+      if (Object.keys(roundVotes).length) {
+        normalized[sessionId] = roundVotes
+      }
+    }
+    return normalized
+  } catch (error) {
+    console.warn('Failed to load AI chat battle votes', error)
+    return {}
+  }
+}
+
+function persistBattleVotes() {
+  localStorage.setItem(BATTLE_VOTES_STORAGE_KEY, JSON.stringify(battleVoteMap.value))
 }
 
 function buildChatSessionDraftStorageKey() {
@@ -996,6 +1185,11 @@ function renderMarkdown(content: string) {
     gfm: true,
   }) as string
   return DOMPurify.sanitize(html)
+}
+
+function renderMessageHtml(message: ChatMessage) {
+  const content = message.content?.trim() || ''
+  return content ? renderMarkdown(content) : ''
 }
 
 function buildConnectionPayload(providerId = settings.providerId) {
@@ -1475,6 +1669,58 @@ function selectAssistantMessage(messageId: string) {
   selectedAssistantMessageId.value = messageId
 }
 
+function setViewMode(mode: AiChatViewMode) {
+  if (settings.viewMode === mode) {
+    return
+  }
+  settings.viewMode = mode
+  if (mode === 'battle') {
+    void scrollConversationToEnd()
+  }
+}
+
+function roundVoteWinnerId(roundId: string) {
+  return activeSessionVotes.value[roundId] ?? ''
+}
+
+function battleWinnerLabel(round: ConversationRound) {
+  const winnerId = roundVoteWinnerId(round.id)
+  if (!winnerId) {
+    return ''
+  }
+  const winner = round.assistantMessages.find(message => message.id === winnerId)
+  return winner ? (winner.display_model || winner.model || 'AI 回复') : ''
+}
+
+function writeRoundVote(roundId: string, messageId: string) {
+  const sessionId = activeSessionId.value
+  if (!sessionId) {
+    return
+  }
+  const nextRounds = { ...(battleVoteMap.value[sessionId] ?? {}) }
+  if (messageId) {
+    nextRounds[roundId] = messageId
+  } else {
+    delete nextRounds[roundId]
+  }
+  const nextMap: BattleVoteMap = { ...battleVoteMap.value }
+  if (Object.keys(nextRounds).length) {
+    nextMap[sessionId] = nextRounds
+  } else {
+    delete nextMap[sessionId]
+  }
+  battleVoteMap.value = nextMap
+  persistBattleVotes()
+}
+
+function voteRound(roundId: string, messageId: string) {
+  writeRoundVote(roundId, roundVoteWinnerId(roundId) === messageId ? '' : messageId)
+}
+
+function clearRoundVote(roundId: string) {
+  writeRoundVote(roundId, '')
+}
+
 function getAssistantMessageStateText(message: ChatMessage) {
   if (message.error) {
     return '生成异常'
@@ -1771,6 +2017,42 @@ function getErrorMessage(error: unknown) {
   color: #475569;
   font-size: 15px;
   max-width: 760px;
+}
+
+.hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.view-mode-switch {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.view-mode-btn {
+  border: none;
+  border-radius: 999px;
+  padding: 7px 18px;
+  background: transparent;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.view-mode-btn:hover {
+  color: #0f172a;
+}
+
+.view-mode-btn.active {
+  background: #fff;
+  color: #0e7490;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
 }
 
 .workspace-grid {
@@ -2322,6 +2604,135 @@ function getErrorMessage(error: unknown) {
   font-size: 13px;
 }
 
+.battle-scoreboard {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(14, 116, 144, 0.18);
+  background: linear-gradient(135deg, rgba(240, 249, 255, 0.9), rgba(255, 255, 255, 0.94));
+}
+
+.battle-scoreboard-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.battle-score-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(14, 116, 144, 0.1);
+  color: #0e7490;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.battle-scoreboard-meta,
+.battle-scoreboard-empty {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.battle-round-verdict {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0e7490;
+}
+
+.battle-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--battle-columns, 2), minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+  align-items: start;
+}
+
+.battle-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 18px;
+  background: rgba(248, 250, 252, 0.88);
+  overflow: hidden;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.battle-column.pending {
+  opacity: 0.94;
+}
+
+.battle-column.error {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: linear-gradient(135deg, rgba(254, 242, 242, 0.96), rgba(255, 255, 255, 0.96));
+}
+
+.battle-column.winner {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 14px 30px rgba(34, 197, 94, 0.14);
+}
+
+.battle-column-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.battle-column-index {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.battle-column-model {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.battle-column-body {
+  padding: 12px 14px;
+  min-height: 96px;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.battle-column-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.battle-column-state {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.battle-column-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .response-detail-shell {
   width: 100%;
   min-height: 0;
@@ -2694,6 +3105,10 @@ function getErrorMessage(error: unknown) {
 
   .conversation-workspace {
     grid-template-columns: 1fr;
+  }
+
+  .battle-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

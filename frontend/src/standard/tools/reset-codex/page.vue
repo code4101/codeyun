@@ -1,7 +1,7 @@
 <template>
   <div class="page">
     <div class="head">
-      <h1>重置 Codex 所用模型</h1>
+      <h1>本机 AI 模型与额度</h1>
       <a
         class="help"
         :href="DOC_URL"
@@ -12,25 +12,28 @@
       <span v-if="switching" class="busy">切换中…</span>
     </div>
 
-    <ul class="modes">
-      <li v-for="mode in modes" :key="mode.id">
-        <button
-          class="mode"
-          type="button"
-          :class="{ 'mode-active': status?.mode === mode.id }"
-          :disabled="switching"
-          @click="requestSwitch(mode)"
-        >
-          {{ mode.label }}
-        </button>
-      </li>
-    </ul>
+    <div class="picker">
+      <select v-model="selectedProvider" :disabled="switching" @change="onProviderChange">
+        <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+          {{ provider.label }}
+        </option>
+      </select>
+      <select v-if="currentModels.length" v-model="selectedModel" :disabled="switching">
+        <option v-for="model in currentModels" :key="model.id" :value="model.id">
+          {{ model.label }}
+        </option>
+      </select>
+      <span v-else class="picker-note">官方默认</span>
+      <button class="apply" type="button" :disabled="switching || !canApply" @click="applySwitch">
+        切换
+      </button>
+    </div>
 
     <section class="quota">
       <div class="quota-head">
-        <span class="quota-title">账号额度</span>
+        <span class="quota-title">Codex 账号额度</span>
         <span class="quota-observed">{{ observedLabel }}</span>
-        <button class="quota-refresh" type="button" :disabled="loadingQuota" @click="refreshQuota">
+        <button class="quota-refresh" type="button" :disabled="loadingQuota" @click="refreshAll">
           {{ loadingQuota ? '采集中…' : '刷新' }}
         </button>
       </div>
@@ -44,7 +47,7 @@
               :key="window.label"
               class="quota-value"
               :class="percentClass(window.remaining_percent)"
-              :title="window.reset_at ? `重置 ${formatReset(window.reset_at)}` : ''"
+              :title="window.reset_at ? `重置 ${formatClock(window.reset_at)}` : ''"
             >
               <span v-if="window.label" class="quota-window">{{ window.label }}</span>
               <span class="quota-percent">剩余 {{ window.remaining_percent }}%</span>
@@ -52,7 +55,7 @@
           </span>
         </div>
       </div>
-      <p v-else class="quota-empty">{{ quotaError || '暂无额度数据' }}</p>
+      <p v-else class="quota-empty">{{ quotaError || '点击「刷新」读取实时额度' }}</p>
 
       <svg
         v-if="chart"
@@ -113,6 +116,30 @@
         </text>
       </svg>
     </section>
+
+    <section class="quota">
+      <div class="quota-head">
+        <span class="quota-title">opencode Go</span>
+      </div>
+      <div v-if="opencode.windows.length" class="quota-rows">
+        <div class="quota-row">
+          <span class="quota-name">套餐余额</span>
+          <span class="quota-values">
+            <span
+              v-for="window in opencode.windows"
+              :key="window.label"
+              class="quota-value"
+              :class="percentClass(window.remaining_percent)"
+              :title="window.reset_at ? `重置 ${formatClock(window.reset_at)}` : ''"
+            >
+              <span class="quota-window">{{ window.label }}</span>
+              <span class="quota-percent">剩余 {{ window.remaining_percent }}%</span>
+            </span>
+          </span>
+        </div>
+      </div>
+      <p v-else class="quota-empty">{{ opencode.error || '未找到 opencode-go 凭证' }}</p>
+    </section>
   </div>
 </template>
 
@@ -123,13 +150,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   fetchCodexQuota,
   fetchCodexSetupStatus,
+  fetchOpenCodeUsage,
   refreshCodexQuota,
   switchCodexSetup,
+  type CodexProviderInfo,
   type CodexQuotaGroup,
   type CodexQuotaResponse,
-  type CodexSetupMode,
-  type CodexSetupModeInfo,
   type CodexSetupStatus,
+  type OpenCodeUsageResponse,
 } from '@/api/codexSetup'
 
 const DOC_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/codex'
@@ -140,23 +168,47 @@ const CHART_PAD_RIGHT = 8
 const CHART_PAD_TOP = 14
 const CHART_PAD_BOTTOM = 20
 
-const FALLBACK_MODES: CodexSetupModeInfo[] = [
-  { id: 'deepseek-flash', label: 'DeepSeek Flash', description: '' },
-  { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', description: '' },
-  { id: 'gpt', label: 'GPT（Codex 默认）', description: '' },
+const FALLBACK_PROVIDERS: CodexProviderInfo[] = [
+  { id: 'openai', label: 'OpenAI', models: [] },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    models: [
+      { id: 'deepseek-flash', label: 'DeepSeek Flash' },
+      { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+    ],
+  },
 ]
 
 const status = ref<CodexSetupStatus | null>(null)
 const switching = ref(false)
+const selectedProvider = ref('openai')
+const selectedModel = ref('')
 const quotaGroups = ref<CodexQuotaGroup[]>([])
 const generalWindow = ref<CodexQuotaResponse['general_window']>(null)
 const observedAt = ref('')
 const quotaError = ref('')
 const loadingQuota = ref(false)
+const opencode = ref<OpenCodeUsageResponse>({ available: false, windows: [], error: '' })
 
-const modes = computed<CodexSetupModeInfo[]>(() => (
-  status.value?.modes?.length ? status.value.modes : FALLBACK_MODES
+const providers = computed<CodexProviderInfo[]>(() => (
+  status.value?.providers?.length ? status.value.providers : FALLBACK_PROVIDERS
 ))
+
+const currentModels = computed(() => (
+  providers.value.find((item) => item.id === selectedProvider.value)?.models ?? []
+))
+
+const canApply = computed(() => {
+  const active = status.value
+  if (!active) {
+    return false
+  }
+  if (selectedProvider.value !== active.provider) {
+    return true
+  }
+  return selectedProvider.value !== 'openai' && selectedModel.value !== active.model
+})
 
 const observedLabel = computed(() => (
   observedAt.value ? `最近采集 ${formatClock(observedAt.value)}` : '尚未采集'
@@ -219,10 +271,6 @@ function formatDay(value: number) {
   return `${date.getMonth() + 1}/${date.getDate()}`
 }
 
-function formatReset(value: string) {
-  return formatClock(value)
-}
-
 function getErrorMessage(error: unknown) {
   if (typeof error === 'object' && error && 'response' in error) {
     const maybeError = error as {
@@ -240,16 +288,34 @@ function getErrorMessage(error: unknown) {
   return '请求失败'
 }
 
+function syncSelection() {
+  const active = status.value
+  if (!active) {
+    return
+  }
+  selectedProvider.value = active.provider
+  const models = providers.value.find((item) => item.id === active.provider)?.models ?? []
+  selectedModel.value = models.some((item) => item.id === active.model)
+    ? active.model
+    : (models[0]?.id ?? '')
+}
+
+function onProviderChange() {
+  const models = currentModels.value
+  selectedModel.value = models[0]?.id ?? ''
+}
+
 function applyQuota(quota: CodexQuotaResponse) {
   quotaGroups.value = quota.groups ?? []
   generalWindow.value = quota.general_window ?? null
   observedAt.value = quota.observed_at || ''
-  quotaError.value = quota.error || (quota.groups?.length ? '' : '暂无额度数据')
+  quotaError.value = quota.error || (quota.groups?.length ? '' : '点击「刷新」读取实时额度')
 }
 
 async function loadStatus() {
   try {
     status.value = await fetchCodexSetupStatus()
+    syncSelection()
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   }
@@ -263,7 +329,15 @@ async function loadQuota() {
   }
 }
 
-async function refreshQuota() {
+async function loadOpencode() {
+  try {
+    opencode.value = await fetchOpenCodeUsage()
+  } catch (error) {
+    opencode.value = { available: false, windows: [], error: getErrorMessage(error) }
+  }
+}
+
+async function refreshAll() {
   if (loadingQuota.value) {
     return
   }
@@ -281,20 +355,22 @@ async function refreshQuota() {
   } finally {
     loadingQuota.value = false
   }
+  void loadOpencode()
 }
 
-async function requestSwitch(mode: CodexSetupModeInfo) {
-  if (switching.value) {
+async function applySwitch() {
+  if (switching.value || !canApply.value) {
     return
   }
-  if (status.value?.mode === mode.id) {
-    ElMessage.info('当前已经是该配置')
-    return
-  }
+  const providerLabel = providers.value.find((item) => item.id === selectedProvider.value)?.label
+    ?? selectedProvider.value
+  const target = selectedModel.value
+    ? `${providerLabel} · ${currentModels.value.find((item) => item.id === selectedModel.value)?.label ?? selectedModel.value}`
+    : providerLabel
   try {
     await ElMessageBox.confirm(
-      `切换到「${mode.label}」？会自动关闭并重新打开 Codex。`,
-      '重置 Codex',
+      `切换到「${target}」？会自动关闭并重新打开 Codex。`,
+      '切换 Codex',
       { confirmButtonText: '切换', cancelButtonText: '取消' },
     )
   } catch {
@@ -303,8 +379,9 @@ async function requestSwitch(mode: CodexSetupModeInfo) {
 
   switching.value = true
   try {
-    const result = await switchCodexSetup(mode.id as CodexSetupMode)
+    const result = await switchCodexSetup(selectedProvider.value, selectedModel.value || undefined)
     status.value = result.status
+    syncSelection()
     ElMessage.success(result.message)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -316,6 +393,7 @@ async function requestSwitch(mode: CodexSetupModeInfo) {
 onMounted(() => {
   void loadStatus()
   void loadQuota()
+  void loadOpencode()
 })
 </script>
 
@@ -364,43 +442,57 @@ h1 {
   font-size: 13px;
 }
 
-.modes {
+.picker {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
   max-width: 420px;
-  margin: 20px 0 0;
-  padding: 0;
-  list-style: none;
+  margin-top: 20px;
 }
 
-.mode {
-  width: 100%;
-  padding: 10px 14px;
-  border: 1px solid #e9edf3;
+.picker select {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #fff;
   color: #1f2937;
   font-size: 14px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.mode:hover:not(:disabled) {
-  border-color: #94a3b8;
+.picker select:disabled {
   background: #f8fafc;
+  color: #94a3b8;
 }
 
-.mode:disabled {
+.picker-note {
+  flex: 1;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.apply {
+  flex: none;
+  padding: 8px 16px;
+  border: 1px solid #22c55e;
+  border-radius: 8px;
+  background: #22c55e;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.apply:hover:not(:disabled) {
+  background: #16a34a;
+}
+
+.apply:disabled {
+  border-color: #e2e8f0;
+  background: #f1f5f9;
+  color: #94a3b8;
   cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.mode-active {
-  border-color: #22c55e;
-  background: #f0fdf4;
 }
 
 .quota {

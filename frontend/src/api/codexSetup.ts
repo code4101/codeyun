@@ -1,15 +1,18 @@
 import api from './index'
 
-export type CodexSetupMode = 'deepseek-flash' | 'deepseek-v4-pro' | 'gpt'
-
-export interface CodexSetupModeInfo {
-  id: CodexSetupMode
+export interface CodexProviderModel {
+  id: string
   label: string
-  description: string
+}
+
+export interface CodexProviderInfo {
+  id: string
+  label: string
+  models: CodexProviderModel[]
 }
 
 export interface CodexSetupStatus {
-  mode: string
+  provider: string
   model: string
   model_provider: string
   codex_home: string
@@ -20,12 +23,13 @@ export interface CodexSetupStatus {
   deepseek_configured: boolean
   deepseek_api_key_present: boolean
   deepseek_key_available: boolean
-  modes: CodexSetupModeInfo[]
+  providers: CodexProviderInfo[]
 }
 
 export interface CodexSetupSwitchResult {
   ok: boolean
-  mode: string
+  provider: string
+  model: string
   changed: boolean
   message: string
   output: string
@@ -65,6 +69,19 @@ export interface CodexQuotaResponse {
   error: string
 }
 
+export interface OpenCodeUsageWindow {
+  label: string
+  remaining_percent: number
+  reset_at: string
+  status: string
+}
+
+export interface OpenCodeUsageResponse {
+  available: boolean
+  windows: OpenCodeUsageWindow[]
+  error: string
+}
+
 const CODEX_SETUP_SWITCH_TIMEOUT_MS = 5 * 60 * 1000
 const CODEX_QUOTA_TIMEOUT_MS = 60 * 1000
 
@@ -80,6 +97,13 @@ export async function fetchCodexQuota() {
   return response.data
 }
 
+export async function fetchOpenCodeUsage() {
+  const response = await api.get<OpenCodeUsageResponse>('/codex-setup/opencode-usage', {
+    timeout: CODEX_QUOTA_TIMEOUT_MS,
+  })
+  return response.data
+}
+
 export async function refreshCodexQuota() {
   const response = await api.post<CodexQuotaResponse>(
     '/codex-setup/quota/refresh',
@@ -89,10 +113,10 @@ export async function refreshCodexQuota() {
   return response.data
 }
 
-export async function switchCodexSetup(mode: CodexSetupMode, apiKey?: string) {
+export async function switchCodexSetup(provider: string, model?: string, apiKey?: string) {
   const response = await api.post<CodexSetupSwitchResult>(
     '/codex-setup/switch',
-    { mode, api_key: apiKey ?? null },
+    { provider, model: model ?? null, api_key: apiKey ?? null },
     { timeout: CODEX_SETUP_SWITCH_TIMEOUT_MS },
   )
   return response.data

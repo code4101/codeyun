@@ -18,6 +18,7 @@ CODEX_WEEKLY_QUOTA_RUN_TIME = "00:00"
 CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage"
 CODEX_WEEKLY_QUOTA_SOURCE = f"codex_app_server:{CODEX_RATE_LIMITS_METHOD}"
 CODEX_WEEKLY_QUOTA_HISTORY_VERSION = 2
+DEFAULT_GENERAL_QUOTA_WINDOW_DAYS = 7
 
 
 class CodexWeeklyQuotaError(RuntimeError):
@@ -210,49 +211,79 @@ def build_codex_general_quota_window(
     groups: list[dict[str, Any]],
     snapshots: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Plot the general quota across its current window (reset minus window length).
+    """Plot the general quota for the current reset window (default: last 7 days).
 
-    The time axis is rounded outward to local midnight so points recorded at 00:00
-    land on day boundaries; the history is still filtered to the real quota window.
+    All history stays persisted; the chart only shows ``[reset - window, reset]``.
+    The time axis is rounded outward to local midnight so the daily 00:00 snapshots
+    land on day boundaries, while ``reset_at`` stays precise to the minute.
     """
 
     general = next((item for item in groups if isinstance(item, dict) and item.get("id") == "codex"), None)
     if general is None and groups:
         general = groups[0]
     weekly = _general_quota_window(groups)
-    if not isinstance(general, dict) or not weekly:
-        return {"name": "", "window_start": "", "window_end": "", "reset_at": "", "remaining_percent": None, "points": []}
 
-    end = _parse_iso_timestamp(weekly.get("reset_at"))
-    minutes = int(weekly.get("window_minutes") or 0)
-    raw_start = end - dt.timedelta(minutes=minutes) if end and minutes else None
-
-    local_tz = dt.datetime.now().astimezone().tzinfo
-    start = _floor_to_local_day(raw_start, local_tz) if raw_start else None
-    axis_end = _ceil_to_local_day(end, local_tz) if end else None
-
-    points: list[dict[str, Any]] = []
+    history_points: list[dict[str, Any]] = []
     for snapshot in snapshots:
         if not isinstance(snapshot, dict):
             continue
         moment = _parse_history_timestamp(snapshot)
         if moment is None:
             continue
-        if raw_start and end and not (raw_start <= moment <= end):
-            continue
         try:
             remaining = int(snapshot.get("remaining_percent"))
         except (TypeError, ValueError):
             continue
-        points.append({"at": moment.isoformat(), "remaining_percent": max(0, min(100, remaining))})
+        history_points.append({"at": moment.isoformat(), "remaining_percent": max(0, min(100, remaining))})
+    history_points.sort(key=lambda item: item["at"])
 
-    points.sort(key=lambda item: item["at"])
+    weekly_minutes = int(weekly.get("window_minutes") or 0) if weekly else 0
+    span = (
+        dt.timedelta(minutes=weekly_minutes)
+        if weekly_minutes
+        else dt.timedelta(days=DEFAULT_GENERAL_QUOTA_WINDOW_DAYS)
+    )
+
+    end = _parse_iso_timestamp(weekly.get("reset_at")) if weekly else None
+    if end is None:
+        # Without a live snapshot, fall back to the newest persisted reset marker.
+        for snapshot in reversed(snapshots):
+            if not isinstance(snapshot, dict):
+                continue
+            candidate = _parse_iso_timestamp(snapshot.get("reset_at"))
+            if candidate is not None:
+                end = candidate
+                break
+    if end is None and history_points:
+        end = dt.datetime.fromisoformat(history_points[-1]["at"])
+
+    raw_start = end - span if end else None
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    start = _floor_to_local_day(raw_start, local_tz) if raw_start else None
+    axis_end = _ceil_to_local_day(end, local_tz) if end else None
+
+    points = [
+        item
+        for item in history_points
+        if raw_start is None or end is None or raw_start <= dt.datetime.fromisoformat(item["at"]) <= end
+    ]
+
+    name = str(general.get("name") or "") if isinstance(general, dict) else ""
+    if not name:
+        name = "通用使用限额"
+    if weekly:
+        remaining = weekly.get("remaining_percent")
+    elif history_points:
+        remaining = history_points[-1]["remaining_percent"]
+    else:
+        remaining = None
+
     return {
-        "name": str(general.get("name") or ""),
+        "name": name,
         "window_start": start.isoformat() if start else "",
         "window_end": axis_end.isoformat() if axis_end else "",
         "reset_at": end.isoformat() if end else "",
-        "remaining_percent": weekly.get("remaining_percent"),
+        "remaining_percent": remaining,
         "points": points,
     }
 
@@ -438,17 +469,26 @@ def collect_codex_weekly_quota_snapshot(
     *,
     now: dt.datetime | None = None,
     history_path: Path | None = None,
+    snapshot_path: Path | None = None,
     rate_limits_reader: Callable[..., dict[str, Any]] = read_codex_rate_limits,
     timeout_seconds: float = 25.0,
 ) -> dict[str, Any]:
     observed_at = (now or dt.datetime.now()).replace(microsecond=0)
-    payload = rate_limits_reader(timeout_seconds=timeout_seconds)
+    payload = rate_limits_reader(
+        timeout_seconds=timeout_seconds,
+        config_overrides=CODEX_CHATGPT_AUTH_OVERRIDE,
+    )
     parsed = parse_codex_rate_limits_snapshot(payload)
     record = record_codex_weekly_quota_snapshot(
         remaining_percent=int(parsed["remaining_percent"]),
         observed_at=observed_at,
         reset_at=str(parsed.get("reset_at") or ""),
         path=history_path,
+    )
+    save_codex_quota_snapshot(
+        parse_codex_rate_limit_groups(payload),
+        observed_at,
+        path=snapshot_path,
     )
     print(
         "Codex weekly quota recorded: "

@@ -7,11 +7,13 @@ import pytest
 
 from backend.core.codex.app_server import CodexAppServerError, read_codex_rate_limits
 from backend.core.codex.weekly_quota import (
+    CODEX_CHATGPT_AUTH_OVERRIDE,
     CODEX_USAGE_URL,
     CODEX_WEEKLY_QUOTA_SOURCE,
     CODEX_WEEKLY_QUOTA_TASK_KEY,
     collect_codex_weekly_quota_snapshot,
     list_codex_weekly_quota_snapshots,
+    load_codex_quota_snapshot,
     parse_codex_rate_limits_snapshot,
     parse_codex_weekly_quota_text,
     record_codex_weekly_quota_snapshot,
@@ -148,6 +150,7 @@ def test_collect_codex_weekly_quota_writes_app_server_snapshot(tmp_path):
     result = collect_codex_weekly_quota_snapshot(
         now=dt.datetime(2026, 8, 7, 0, 0, 0),
         history_path=tmp_path / "history.json",
+        snapshot_path=tmp_path / "snapshot.json",
         rate_limits_reader=read_rate_limits,
         timeout_seconds=1,
     )
@@ -155,7 +158,10 @@ def test_collect_codex_weekly_quota_writes_app_server_snapshot(tmp_path):
     assert result["date"] == "2026-08-07"
     assert result["remaining_percent"] == 40
     assert result["source"] == CODEX_WEEKLY_QUOTA_SOURCE
-    assert calls == [{"timeout_seconds": 1}]
+    assert calls == [{"timeout_seconds": 1, "config_overrides": CODEX_CHATGPT_AUTH_OVERRIDE}]
+    snapshot = load_codex_quota_snapshot(path=tmp_path / "snapshot.json")
+    assert snapshot["observed_at"] == "2026-08-07T00:00:00"
+    assert snapshot["groups"]
 
 
 class _InspectableStringIO(io.StringIO):
