@@ -273,6 +273,22 @@ def _ranking_snapshot_kind(
     return "formal_end"
 
 
+# Adapters refuse live collection once an instance sits outside its own
+# effective dates.  That is a fact about the occurrence — the calendar day can
+# never become collectable again — so it must reach a terminal business
+# outcome instead of consuming the Scheduler's ten-minute retry budget forever.
+_INSTANCE_CLOSED_COLLECT_ERROR_MARKERS = ("不在有效日期内",)
+
+
+def _collect_error_closes_instance(error: Exception) -> bool:
+    """Whether a collection failure proves the instance can never be read again."""
+
+    if not isinstance(error, ValueError):
+        return False
+    message = str(error).strip()
+    return message.endswith(_INSTANCE_CLOSED_COLLECT_ERROR_MARKERS)
+
+
 def reconcile_ranking_occurrence(
     session: Session,
     occurrence: RankingOccurrence,
@@ -307,6 +323,7 @@ def reconcile_ranking_occurrence(
         captured_at=captured_at,
     )
     collect_error = ""
+    collect_closed_instance = False
     collected_activity: Any | None = None
     resource_collect_error = ""
     if collect_live_facts:
@@ -321,6 +338,7 @@ def reconcile_ranking_occurrence(
             # exact seed and static reward projection remain valid; old live facts
             # must be retained instead of being replaced with an empty snapshot.
             collect_error = str(exc)
+            collect_closed_instance = _collect_error_closes_instance(exc)
     if collect_live_facts and isinstance(spec.adapter, ResourceRankingResourceAdapter):
         try:
             collect_registered_resource_ranking_resources(
@@ -453,9 +471,13 @@ def reconcile_ranking_occurrence(
         reason for reason in (collect_error, *required_fact_errors) if reason
     ]
     status = (
-        "blocked"
-        if blocked_reasons
-        else ("completed" if reward_tier_total else "retained")
+        "unavailable"
+        if collect_closed_instance
+        else (
+            "blocked"
+            if blocked_reasons
+            else ("completed" if reward_tier_total else "retained")
+        )
     )
     return {
         "status": status,
@@ -464,6 +486,9 @@ def reconcile_ranking_occurrence(
             + "；".join(blocked_reasons)
             if blocked_reasons
             else ""
+        ),
+        "terminal_reason": (
+            "activity_out_of_effective_dates" if collect_closed_instance else ""
         ),
         "activity_id": activity.id,
         "activity_type": occurrence.activity_type,

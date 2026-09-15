@@ -16,7 +16,13 @@ FANXIU_INFO_WINDOW_DEFAULT_SETTINGS = {
     "show_scene_score": True,
     "show_scene_identity_shapes": True,
     "show_all_shapes": False,
+    "show_magic_crystal": True,
 }
+
+# #699（魔道入侵·自动除魔运行中）is the one page whose scene number carries no
+# information: 除魔 runs by itself there, so the title shows the live 活动期间
+# 累计魔晶 instead.  Every other scene keeps the ordinary scene text.
+FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID = 699
 
 
 def _fanxiu_info_window_dir() -> Path:
@@ -95,6 +101,27 @@ def write_fanxiu_info_window_user_settings(user_id: int, payload: dict[str, Any]
     return settings
 
 
+def format_fanxiu_quantity(value: int | float) -> str:
+    """Format a game quantity with 万/亿 units and four significant digits.
+
+    Values below 一万 stay exact integers; the scaled forms keep at most four
+    significant digits and drop trailing zeros so a live counter keeps a
+    readable width (``209821`` -> ``20.98万``, ``158441`` -> ``15.84万``).
+    """
+
+    amount = int(value or 0)
+    magnitude = abs(amount)
+    sign = "-" if amount < 0 else ""
+    for unit, scale in (("亿", 100_000_000), ("万", 10_000)):
+        if magnitude < scale:
+            continue
+        scaled = magnitude / scale
+        decimals = max(0, 4 - len(str(int(scaled))))
+        text = f"{scaled:.{decimals}f}".rstrip("0").rstrip(".")
+        return f"{sign}{text}{unit}"
+    return f"{sign}{magnitude}"
+
+
 def format_fanxiu_scene_text(
     scene_id: int | None,
     score: float,
@@ -102,8 +129,30 @@ def format_fanxiu_scene_text(
     asset_directory: str = "",
     show_scene_id: bool = True,
     show_scene_score: bool = True,
+    magic_crystal: int | None = None,
 ) -> str:
+    """Format the overlay title for one committed scene observation.
+
+    :param int|None magic_crystal: live 活动期间累计魔晶 read from the Runtime
+        wallet. On #699 it replaces the scene number, because that page's
+        identity is already known while the crystal income is what the operator
+        watches. Only the scene-identity decoration is dropped there (the asset
+        directory and the 置信度): a recognition score next to a business
+        quantity is noise, while the scene number still tells the operator
+        which page the number belongs to. An unavailable reading falls back to
+        the ordinary scene text, so the title never loses its identity.
+    """
+
     scene_text = f"#{int(scene_id)}" if scene_id is not None else "unknown"
+    show_crystal = (
+        magic_crystal is not None
+        and scene_id is not None
+        and int(scene_id) == FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID
+    )
+    if show_crystal:
+        parts = [scene_text] if show_scene_id else []
+        parts.append(f"魔晶 {format_fanxiu_quantity(int(magic_crystal))}")
+        return " ".join(parts)
     parts: list[str] = []
     if show_scene_id:
         directory = str(asset_directory or "").strip().strip("/")

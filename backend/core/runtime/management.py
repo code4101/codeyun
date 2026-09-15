@@ -37,6 +37,14 @@ from backend.core.runtime.proxy_traffic_audit_runtime import (
     start_proxy_traffic_audit,
     stop_proxy_traffic_audit,
 )
+from backend.core.runtime.opencode_proxy_runtime import (
+    OPENCODE_PROXY_SERVICE_KEY,
+    OpenCodeProxyError,
+    build_opencode_proxy_log_lines,
+    get_opencode_proxy_status,
+    start_opencode_proxy,
+    stop_opencode_proxy,
+)
 from backend.core.runtime.game_window_service import (
     GAME_WINDOW_SERVICE_KEY,
     GameWindowServiceError,
@@ -607,6 +615,63 @@ def _serialize_proxy_traffic_audit_service_item(status: dict[str, Any] | None = 
     }
 
 
+def _serialize_opencode_proxy_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(status or get_opencode_proxy_status())
+    running = bool(payload.get("running"))
+    state = str(payload.get("state") or ("running" if running else "stopped"))
+    description = " · ".join(
+        part
+        for part in (
+            f"{payload.get('base_url') or ''}",
+            "Responses API 代理",
+            "DeepSeek / OpenCode Go",
+        )
+        if part
+    )
+    return {
+        "id": f"builtin:{OPENCODE_PROXY_SERVICE_KEY}",
+        "key": OPENCODE_PROXY_SERVICE_KEY,
+        "kind": "service",
+        "source": "builtin",
+        "group_id": "service:default",
+        "group_title": "默认服务",
+        "title": payload.get("title") or "opencode Go 代理",
+        "description": description,
+        "command": payload.get("module") or "",
+        "cwd": payload.get("cwd") or "",
+        "schedule": "",
+        "schedule_policy": None,
+        "schedule_label": "",
+        "next_run_at": None,
+        "timeout": None,
+        "order": 3,
+        "enabled": True,
+        "active": running,
+        "status": {
+            "running": running,
+            "state": state,
+            "state_label": payload.get("state_label") or state,
+            "healthy": bool(payload.get("healthy")),
+            "base_url": payload.get("base_url"),
+            "host": payload.get("host"),
+            "port": payload.get("port"),
+            "log_path": payload.get("log_path"),
+            "process_count": payload.get("process_count") or 0,
+            "pids": payload.get("pids") or [],
+            "controllable": True,
+        },
+        "actions": ["trigger", "stop", "logs"],
+        "raw": payload,
+        "schedule_kind": "manual",
+        "timeout_policy": "none",
+        "timeout_seconds": None,
+        "concurrency_scope": "unit",
+        "concurrency_key": OPENCODE_PROXY_SERVICE_KEY,
+        "overlap_policy": "replace",
+        "queue_key": None,
+    }
+
+
 def _behavior_tree_service_description(status: dict[str, Any]) -> str:
     parts = [str(status.get("state_label") or "")]
     if status.get("pid"):
@@ -880,6 +945,15 @@ def ensure_local_builtin_services_on_startup() -> dict[str, Any]:
             results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = start_proxy_traffic_audit()
         except ProxyTrafficAuditError as exc:
             results[PROXY_TRAFFIC_AUDIT_SERVICE_KEY] = {"status": "error", "error": str(exc)}
+
+    if _local_builtin_service_autostart_enabled(
+        "CODEYUN_OPENCODE_PROXY_AUTOSTART",
+        default=True,
+    ):
+        try:
+            results[OPENCODE_PROXY_SERVICE_KEY] = start_opencode_proxy()
+        except OpenCodeProxyError as exc:
+            results[OPENCODE_PROXY_SERVICE_KEY] = {"status": "error", "error": str(exc)}
 
     if _local_builtin_service_autostart_enabled("CODEYUN_CRITICAL_COMMAND_SERVICES_AUTOSTART"):
         from backend.core.services.monitor import ensure_local_critical_command_services
@@ -1220,6 +1294,8 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
         return build_codeyun_watchdog_log_lines()
     if item.get("key") == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
         return build_proxy_traffic_audit_log_lines()
+    if item.get("key") == OPENCODE_PROXY_SERVICE_KEY:
+        return build_opencode_proxy_log_lines()
 
     status = item.get("status") or {}
     raw = item.get("raw") or {}
@@ -1442,6 +1518,7 @@ def _build_builtin_services_status(
         _serialize_ocr_service_item(get_ocr_service_status()),
         _serialize_codeyun_watchdog_service_item(),
         _serialize_proxy_traffic_audit_service_item(),
+        _serialize_opencode_proxy_service_item(),
     ]
     if enabled_signature[0]:
         items.append(_serialize_attendance_behavior_tree_service_item())
@@ -1762,6 +1839,11 @@ def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, A
             return start_proxy_traffic_audit()
         except ProxyTrafficAuditError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if normalized_key == OPENCODE_PROXY_SERVICE_KEY:
+        try:
+            return start_opencode_proxy()
+        except OpenCodeProxyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == GAME_WINDOW_SERVICE_KEY:
         if not _fanxiu_game_window_service_enabled():
             raise HTTPException(status_code=404, detail="凡修画面流未在当前机器启用")
@@ -1819,6 +1901,8 @@ def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
         return stop_codeyun_watchdog()
     if normalized_key == PROXY_TRAFFIC_AUDIT_SERVICE_KEY:
         return stop_proxy_traffic_audit()
+    if normalized_key == OPENCODE_PROXY_SERVICE_KEY:
+        return stop_opencode_proxy()
     if normalized_key == GAME_WINDOW_SERVICE_KEY:
         if not _fanxiu_game_window_service_enabled():
             raise HTTPException(status_code=404, detail="凡修画面流未在当前机器启用")

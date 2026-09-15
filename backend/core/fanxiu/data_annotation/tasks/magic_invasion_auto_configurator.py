@@ -3,7 +3,10 @@ from __future__ import annotations
 """Runtime-aligned GUI reconciliation for 魔道入侵 native auto-exorcism."""
 
 from collections.abc import Callable, Iterator, Mapping
+from difflib import SequenceMatcher
 from typing import Any
+
+from pyxllib.autogui import frame_size
 
 from backend.core.fanxiu.data_annotation.tasks.magic_invasion_auto_config import (
     AUTO_USE_EXORCISM_ORDER,
@@ -81,6 +84,22 @@ _QUALITY_KEYS = frozenset(
     }
 )
 
+# Quality rows live inside the scrollable pane, so their vertical position is
+# only valid for the current scroll state and cannot be stored as one asset
+# per state.  The row is therefore located at runtime by OCR on its label, and
+# only the pane's own column geometry stays fixed here (900x1600 frame).
+_QUALITY_PANE_SHAPE = MAGIC_INVASION_QUALITY_SCROLL_SHAPE
+_QUALITY_ROW_CHECKBOX_X = 0.150
+_QUALITY_BOOST_ON_X = 0.761
+_QUALITY_BOOST_OFF_X = 0.839
+# Second/third line of one quality row: 四倍功勋符 then 追命索.
+_QUALITY_BOOST_ROW_OFFSETS = (0.028, 0.061)
+_QUALITY_ROW_OCR_MIN_SIMILARITY = 65.0
+_BOOST_ROW_INDEX = {
+    "quadruple_merit": 0,
+    "chase_chain": 1,
+}
+
 
 def expected_magic_invasion_auto_shape_titles() -> tuple[str, ...]:
     """Return every Shape title required to reconcile configuration.
@@ -120,7 +139,14 @@ def _preflight_pending_shapes(
     if not callable(get_shape):
         raise RuntimeError("魔道自动除魔无法读取正式场景 Shape")
 
-    required = [MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key] for key in action_keys]
+    # Only stable controls are assets: the scroll pane ROI and the global
+    # toggles that live outside it.  Quality rows are located at runtime by
+    # OCR, because their position depends on the current scroll state.
+    required = [
+        MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key]
+        for key in action_keys
+        if key not in _QUALITY_KEYS
+    ]
     if any(key in _QUALITY_KEYS for key in action_keys):
         required.insert(0, MAGIC_INVASION_QUALITY_SCROLL_SHAPE)
     missing = [title for title in required if get_shape(title) is None]
@@ -130,18 +156,84 @@ def _preflight_pending_shapes(
         )
 
 
-def _quality_shape_visible(context: Any, scene_id: int, title: str) -> bool:
-    frame = context.cur_frame(update=True)
-    try:
-        return context.shape_matches(
-            scene_id,
-            title,
-            frame_data_url=frame,
-        ) is not None
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"魔道自动除魔品质 Shape「{title}」缺少可见性识别条件"
-        ) from exc
+def _quality_row_label(action: Mapping[str, Any]) -> str:
+    """Return the quality row label a pending action belongs to."""
+
+    parent = str(action.get("quality") or "")
+    if parent:
+        return MAGIC_INVASION_AUTO_SHAPE_BY_KEY[parent]
+    key = str(action.get("key") or "")
+    if key in _QUALITY_KEYS:
+        return MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key]
+    raise KeyError(key)
+
+
+def _quality_row_anchor(
+    context: Any,
+    *,
+    scene_id: int,
+    label: str,
+) -> dict[str, float] | None:
+    """Locate one quality row by OCR on its label inside the scroll pane."""
+
+    tokens = context.ocr_tokens_in_shapes(
+        scene_id,
+        [_QUALITY_PANE_SHAPE],
+        padding=2,
+    )
+    best: tuple[tuple[float, float], Mapping[str, Any]] | None = None
+    for token in tokens or []:
+        if not isinstance(token, Mapping):
+            continue
+        text = str(token.get("text") or "").strip()
+        if not text:
+            continue
+        if text == label:
+            similarity = 1.0
+        elif label in text or text in label:
+            # 「长老」 is a substring of 「太上长老」's row title, so require the
+            # longer text to be the one actually rendered on this row.
+            similarity = 0.9 if len(text) <= len(label) else 0.5
+        else:
+            similarity = SequenceMatcher(None, text, label).ratio()
+        if similarity < 0.85:
+            continue
+        rank = (similarity, float(token.get("score") or 0.0))
+        if best is None or rank > best[0]:
+            best = (rank, token)
+    if best is None:
+        return None
+    token = best[1]
+    return {
+        "x": float(token.get("x") or 0.0) + float(token.get("w") or 0.0) / 2.0,
+        "y": float(token.get("y") or 0.0) + float(token.get("h") or 0.0) / 2.0,
+    }
+
+
+def _quality_action_point(
+    *,
+    frame_width: float,
+    frame_height: float,
+    anchor: Mapping[str, float],
+    action: Mapping[str, Any],
+) -> tuple[float, float]:
+    """Compute the click point for one row action from the row's OCR anchor."""
+
+    key = str(action.get("key") or "")
+    boost_row = next(
+        (
+            index
+            for suffix, index in _BOOST_ROW_INDEX.items()
+            if key.endswith(suffix)
+        ),
+        None,
+    )
+    if boost_row is not None:
+        desired = bool(action.get("desired"))
+        x = (_QUALITY_BOOST_ON_X if desired else _QUALITY_BOOST_OFF_X) * frame_width
+        y = float(anchor["y"]) + _QUALITY_BOOST_ROW_OFFSETS[boost_row] * frame_height
+        return x, y
+    return _QUALITY_ROW_CHECKBOX_X * frame_width, float(anchor["y"])
 
 
 def _scroll_quality_pane_to_top(
@@ -166,10 +258,10 @@ def _apply_quality_actions(
     context: Any,
     *,
     scene_id: int,
-    action_keys: tuple[str, ...],
+    actions: tuple[Mapping[str, Any], ...],
     max_scrolls: int,
 ) -> Iterator[Any]:
-    if not action_keys:
+    if not actions:
         return []
 
     yield from _scroll_quality_pane_to_top(
@@ -177,26 +269,32 @@ def _apply_quality_actions(
         scene_id=scene_id,
         max_scrolls=max_scrolls,
     )
-    pending = list(action_keys)
+    frame_width, frame_height = frame_size(context.view(scene_id).raw)
+    pending = list(actions)
     applied: list[str] = []
     for scroll_index in range(max_scrolls + 1):
-        visible = [
-            key
-            for key in pending
-            if _quality_shape_visible(
+        anchors: dict[str, dict[str, float]] = {}
+        visible: list[Mapping[str, Any]] = []
+        for action in pending:
+            anchor = _quality_row_anchor(
                 context,
                 scene_id,
-                MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key],
+                label=_quality_row_label(action),
             )
-        ]
-        for key in visible:
-            context.click_shape_center(
-                scene_id,
-                MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key],
+            if anchor is not None:
+                visible.append(action)
+                anchors[str(action["key"])] = anchor
+        for action in visible:
+            x, y = _quality_action_point(
+                frame_width=frame_width,
+                frame_height=frame_height,
+                anchor=anchors[str(action["key"])],
+                action=action,
             )
+            context.click_frame_point(scene_id, x, y)
             yield from context.wait_action_settle(0.45)
-            pending.remove(key)
-            applied.append(key)
+            pending.remove(action)
+            applied.append(str(action["key"]))
         if not pending:
             return applied
         if scroll_index >= max_scrolls:
@@ -209,9 +307,9 @@ def _apply_quality_actions(
         )
         if not changed:
             break
-    missing = [MAGIC_INVASION_AUTO_SHAPE_BY_KEY[key] for key in pending]
+    missing = [_quality_row_label(action) for action in pending]
     raise RuntimeError(
-        "魔道自动除魔品质滑窗未显示待点 Shape：" + "、".join(missing)
+        "魔道自动除魔品质滑窗未显示待点行：" + "、".join(missing)
     )
 
 
@@ -256,12 +354,16 @@ def configure_magic_invasion_auto_options(
             "after": before_plan["current"],
         }
 
-    quality_keys = tuple(key for key in action_keys if key in _QUALITY_KEYS)
     global_keys = tuple(key for key in action_keys if key not in _QUALITY_KEYS)
+    quality_actions = tuple(
+        action
+        for action in before_plan["actions"]
+        if str(action.get("key") or "") in _QUALITY_KEYS
+    )
     applied = yield from _apply_quality_actions(
         context,
         scene_id=scene_id,
-        action_keys=quality_keys,
+        actions=quality_actions,
         max_scrolls=int(max_quality_scrolls),
     )
     for key in global_keys:

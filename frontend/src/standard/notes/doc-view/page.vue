@@ -33,6 +33,16 @@
             </template>
 
             <template #meta-actions="{ readonly: editorReadonly }">
+              <el-tooltip v-if="currentNote?.format_type !== 'markdown'" content="将当前文档从HTML转为Markdown格式进行编辑(实验性)" placement="top">
+                <el-button
+                  size="small"
+                  type="warning"
+                  :disabled="editorReadonly || !currentNote"
+                  @click="convertToMarkdown"
+                >
+                  转为 MD
+                </el-button>
+              </el-tooltip>
               <el-tooltip content="根据当前标题，并参考已有条目元数据自动识别分类、形态、阶段" placement="top">
                 <el-button
                   size="small"
@@ -123,6 +133,7 @@ import type { EditableNoteExpectedFields, EditableNoteFieldName, EditableNotePat
 import { putJsonKeepalive } from '@/utils/keepaliveRequest'
 import { createSaveMutationId, getSaveClientInstanceId } from '@/utils/saveMutationIdentity'
 import DocOutline from './DocOutline.vue'
+import TurndownService from 'turndown'
 
 interface DocOutlineItem {
   key: string
@@ -622,6 +633,55 @@ function jumpToOutlineItem(key: string) {
     behavior: 'smooth',
   })
   activeOutlineKey.value = key
+}
+
+function convertToMarkdown() {
+  if (!currentNote.value) return
+  if (currentNote.value.format_type === 'markdown') return
+  
+  ElMessageBox.confirm(
+    '转为 Markdown 是实验性功能，可能会丢失部分复杂排版和业务标记。建议在测试文档上使用。转换后未点击保存前不会影响云端数据，若发现排版错误可直接刷新页面恢复。确认转换？',
+    '尝试转为 Markdown (Beta)',
+    {
+      confirmButtonText: '尝试转换',
+      cancelButtonText: '取消',
+      type: 'warning',
+    }
+  ).then(() => {
+    try {
+      const turndownService = new TurndownService({
+        headingStyle: 'atx',
+        codeBlockStyle: 'fenced',
+        br: '<br>' // Default to <br>, but we'll override how paragraphs with just <br> are handled
+      })
+      
+      // Add custom rule to preserve empty lines (<p><br></p>)
+      turndownService.addRule('emptyParagraphs', {
+        filter: function (node) {
+          return node.nodeName === 'P' && (node.innerHTML.trim() === '<br>' || node.innerHTML.trim() === '');
+        },
+        replacement: function () {
+          return '\n\n<br>\n\n';
+        }
+      });
+      
+      turndownService.addRule('preserveBr', {
+        filter: ['br'],
+        replacement: function () {
+          return '<br>\n';
+        }
+      });
+
+      const mdContent = turndownService.turndown(currentNote.value!.content || '')
+      currentNote.value!.content = mdContent
+      currentNote.value!.format_type = 'markdown'
+      handleEditorDirtyChange(true)
+      ElMessage.success('转换成功，请检查内容。如无误可点击保存')
+    } catch (e) {
+      ElMessage.error('转换失败')
+      console.error(e)
+    }
+  }).catch(() => {})
 }
 
 watch(noteId, (id) => {

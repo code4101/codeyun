@@ -48,50 +48,19 @@ def explicit_scene_jump_edges(
     return edges
 
 
-def posterior_reachable_probability(
+def _landing_evidence(
     observed_counts: Mapping[int, int],
     declared_landing_ids: Iterable[int],
-    reachable_landing_ids: Iterable[int],
-    *,
-    alpha: float = 1.0,
-) -> float:
-    """Estimate ``P(action eventually keeps a route to target)``.
+    alpha: float,
+) -> tuple[dict[int, int], float]:
+    """Return the per-landing evidence table and its diluted total.
 
-    A symmetric Dirichlet prior gives every declared/observed landing and one
-    still-unknown landing the same initial mass.  The unknown bucket prevents
-    an action with no observations from being treated as certainly reliable.
+    The frequency table is evidence, not truth.  One pseudo-observation is
+    reserved for a still-unknown landing, so a single hit is at most 50% likely
+    while ample evidence barely moves (315/560 → 56.1%).  Declared-but-never-
+    observed landings stay at zero: an unproven destination earns no mass.
     """
 
-    prior = max(1e-9, float(alpha))
-    declared = {int(item) for item in declared_landing_ids}
-    observed = {
-        int(scene_id): max(0, int(count))
-        for scene_id, count in observed_counts.items()
-    }
-    outcomes = declared | set(observed)
-    reachable = {int(item) for item in reachable_landing_ids} & outcomes
-    outcome_count_with_unknown = max(1, len(outcomes)) + 1
-    observed_total = sum(observed.values())
-    reachable_observed = sum(observed.get(scene_id, 0) for scene_id in reachable)
-    reachable_prior = prior * len(reachable)
-    denominator = observed_total + prior * outcome_count_with_unknown
-    return (reachable_observed + reachable_prior) / denominator
-
-
-def posterior_landing_probabilities(
-    observed_counts: Mapping[int, int],
-    declared_landing_ids: Iterable[int],
-    *,
-    alpha: float = 1.0,
-) -> dict[int, float]:
-    """Return the posterior probability of each known action landing.
-
-    The omitted probability mass belongs to one still-unknown landing.  This
-    keeps an unobserved declaration from looking deterministic while allowing
-    callers to multiply probabilities along an actual navigation path.
-    """
-
-    prior = max(1e-9, float(alpha))
     declared = {int(item) for item in declared_landing_ids}
     observed = {
         int(scene_id): max(0, int(count))
@@ -99,9 +68,69 @@ def posterior_landing_probabilities(
     }
     outcomes = declared | set(observed)
     if not outcomes:
+        return {}, 0.0
+    table = {scene_id: observed.get(scene_id, 0) for scene_id in outcomes}
+    evidence = float(sum(observed.values())) + max(0.0, float(alpha))
+    return table, evidence
+
+
+def posterior_reachable_probability(
+    observed_counts: Mapping[int, int],
+    declared_landing_ids: Iterable[int],
+    reachable_landing_ids: Iterable[int],
+    *,
+    alpha: float = 1.0,
+    confidence_z: float = 0.0,
+) -> float:
+    """Estimate ``P(action eventually keeps a route to target)``."""
+
+    probabilities = posterior_landing_probabilities(
+        observed_counts,
+        declared_landing_ids,
+        alpha=alpha,
+        confidence_z=confidence_z,
+    )
+    reachable = {int(item) for item in reachable_landing_ids}
+    return sum(
+        probability
+        for scene_id, probability in probabilities.items()
+        if scene_id in reachable
+    )
+
+
+def posterior_landing_probabilities(
+    observed_counts: Mapping[int, int],
+    declared_landing_ids: Iterable[int],
+    *,
+    alpha: float = 1.0,
+    confidence_z: float = 0.0,
+) -> dict[int, float]:
+    """Return the diluted, optionally confidence-floored landing probabilities.
+
+    Omitted probability mass belongs to one still-unknown landing, which is
+    what keeps a single observation from looking like a proven route.  Passing
+    ``confidence_z > 0`` additionally subtracts each landing's observation
+    error (normal approximation), so diffuse controls — a return button that
+    lands wherever the caller came from — collapse without being classified or
+    special-cased by name.
+    """
+
+    table, evidence = _landing_evidence(
+        observed_counts, declared_landing_ids, alpha,
+    )
+    if evidence <= 0:
         return {}
-    denominator = sum(observed.values()) + prior * (len(outcomes) + 1)
+    probabilities = {
+        scene_id: count / evidence for scene_id, count in table.items()
+    }
+    if confidence_z <= 0:
+        return probabilities
+    z = float(confidence_z)
     return {
-        scene_id: (observed.get(scene_id, 0) + prior) / denominator
-        for scene_id in outcomes
+        scene_id: max(
+            0.0,
+            probability
+            - z * (max(0.0, probability * (1.0 - probability)) / evidence) ** 0.5,
+        )
+        for scene_id, probability in probabilities.items()
     }

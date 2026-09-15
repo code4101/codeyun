@@ -20,6 +20,17 @@ import psutil
 _APP_PROCESS_NAMES = {"chatgpt"}
 _CODEX_PROCESS_PREFIXES = ("codex",)
 _STOP_TIMEOUT_SECONDS = 8.0
+
+
+def _normalized_name(name: str) -> str:
+    """Normalize a process name so ``ChatGPT.exe`` matches ``chatgpt``.
+
+    ``psutil`` reports the executable name including the ``.exe`` suffix on
+    Windows, while PowerShell and the start-menu AppID omit it.
+    """
+
+    lowered = name.lower()
+    return lowered[:-4] if lowered.endswith(".exe") else lowered
 _APP_ID_QUERY = (
     "(Get-StartApps | Where-Object { $_.Name -match 'ChatGPT|Codex' } | "
     "Select-Object -First 1 -ExpandProperty AppID)"
@@ -27,7 +38,7 @@ _APP_ID_QUERY = (
 
 
 def _matches_codex_process(name: str, executable: str) -> bool:
-    lowered = name.lower()
+    lowered = _normalized_name(name)
     if lowered in _APP_PROCESS_NAMES:
         return True
     if lowered.startswith(_CODEX_PROCESS_PREFIXES):
@@ -71,7 +82,7 @@ def stop_codex_processes() -> dict[str, Any]:
         executable = str(info.get("exe") or "")
         if not _matches_codex_process(name, executable):
             continue
-        if name.lower() in _APP_PROCESS_NAMES:
+        if _normalized_name(name) in _APP_PROCESS_NAMES:
             app_running = True
             app_exe = executable or app_exe
         targets.append((process, name))

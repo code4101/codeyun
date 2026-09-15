@@ -8,6 +8,7 @@ export interface CodexProviderModel {
 export interface CodexProviderInfo {
   id: string
   label: string
+  default_model?: string
   models: CodexProviderModel[]
 }
 
@@ -23,6 +24,8 @@ export interface CodexSetupStatus {
   deepseek_configured: boolean
   deepseek_api_key_present: boolean
   deepseek_key_available: boolean
+  opencode_proxy_running: boolean
+  opencode_proxy_url: string
   providers: CodexProviderInfo[]
 }
 
@@ -33,6 +36,7 @@ export interface CodexSetupSwitchResult {
   changed: boolean
   message: string
   output: string
+  notice: string
   status: CodexSetupStatus
 }
 
@@ -76,9 +80,38 @@ export interface OpenCodeUsageWindow {
   status: string
 }
 
+export interface DeepSeekBalanceItem {
+  currency: string
+  total_balance: string
+  granted_balance: string
+  topped_up_balance: string
+}
+
+export interface BalancePoint {
+  at: string
+  value: number
+}
+
+export interface BalanceWindow {
+  window_start: string
+  window_end: string
+  points: BalancePoint[]
+}
+
+export interface DeepSeekBalanceResponse {
+  available: boolean
+  is_available: boolean
+  balances: DeepSeekBalanceItem[]
+  total_window: BalanceWindow | null
+  observed_at: string
+  error: string
+}
+
 export interface OpenCodeUsageResponse {
   available: boolean
   windows: OpenCodeUsageWindow[]
+  monthly_window: CodexQuotaWindowHistory | null
+  observed_at: string
   error: string
 }
 
@@ -101,6 +134,31 @@ export async function fetchOpenCodeUsage() {
   const response = await api.get<OpenCodeUsageResponse>('/codex-setup/opencode-usage', {
     timeout: CODEX_QUOTA_TIMEOUT_MS,
   })
+  return response.data
+}
+
+export async function fetchDeepSeekBalance() {
+  const response = await api.get<DeepSeekBalanceResponse>('/codex-setup/deepseek-balance', {
+    timeout: CODEX_QUOTA_TIMEOUT_MS,
+  })
+  return response.data
+}
+
+export async function refreshDeepSeekBalance() {
+  const response = await api.post<DeepSeekBalanceResponse>(
+    '/codex-setup/deepseek-balance/refresh',
+    {},
+    { timeout: CODEX_QUOTA_TIMEOUT_MS },
+  )
+  return response.data
+}
+
+export async function refreshOpenCodeUsage() {
+  const response = await api.post<OpenCodeUsageResponse>(
+    '/codex-setup/opencode-usage/refresh',
+    {},
+    { timeout: CODEX_QUOTA_TIMEOUT_MS },
+  )
   return response.data
 }
 

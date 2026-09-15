@@ -2125,6 +2125,7 @@ class NoteNode(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     title: Optional[str] = Field(default="Untitled")
     content: str = Field(default="") # HTML content
+    format_type: str = Field(default="html", index=True) # "html" | "markdown"
     version: int = Field(default=1)
     
     # Visual weight level for notes. Non-memo nodes interpret this exponentially.

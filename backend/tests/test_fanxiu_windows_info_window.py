@@ -96,3 +96,134 @@ def test_all_shapes_scope_includes_identity_without_drawing_it_twice() -> None:
         "show_scene_identity_shapes": True,
         "show_all_shapes": True,
     }) == [identity, other]
+
+
+def test_magic_crystal_replaces_the_scene_number_on_the_auto_running_page() -> None:
+    from backend.core.fanxiu.info_window import format_fanxiu_scene_text
+
+    # #699 shows only the live quantity: no directory, number or 置信度.
+    assert format_fanxiu_scene_text(
+        699,
+        100.0,
+        asset_directory="日程/玩法榜/魔道入侵",
+        magic_crystal=37081,
+    ) == "#699 魔晶 3.708万"
+    # 场景编号 off: the reading is its own display element.
+    assert format_fanxiu_scene_text(
+        699,
+        100.0,
+        asset_directory="日程/玩法榜/魔道入侵",
+        show_scene_id=False,
+        show_scene_score=False,
+        magic_crystal=37081,
+    ) == "魔晶 3.708万"
+
+
+@pytest.mark.parametrize("value, expected", [
+    (0, "0"),
+    (876, "876"),
+    (9999, "9999"),
+    (10000, "1万"),
+    (37081, "3.708万"),
+    (158441, "15.84万"),
+    (209821, "20.98万"),
+    (12345678, "1235万"),
+    (100000000, "1亿"),
+    (150000000, "1.5亿"),
+])
+def test_game_quantities_use_万_亿_with_four_significant_digits(value, expected) -> None:
+    from backend.core.fanxiu.info_window import format_fanxiu_quantity
+
+    assert format_fanxiu_quantity(value) == expected
+
+
+@pytest.mark.parametrize("scene_id, magic_crystal", [
+    (698, 37081),   # 自动除魔配置页 keeps its scene number
+    (699, None),    # no wallet observation yet: identity must not be lost
+])
+def test_scene_number_survives_without_a_magic_crystal_observation(scene_id, magic_crystal) -> None:
+    from backend.core.fanxiu.info_window import format_fanxiu_scene_text
+
+    assert format_fanxiu_scene_text(
+        scene_id,
+        100.0,
+        asset_directory="日程/玩法榜/魔道入侵",
+        magic_crystal=magic_crystal,
+    ) == f"日程/玩法榜/魔道入侵 #{scene_id} 100%"
+
+
+def test_magic_crystal_observation_is_a_display_setting_not_a_hidden_default() -> None:
+    from backend.core.fanxiu.info_window import normalize_fanxiu_info_window_settings
+
+    assert normalize_fanxiu_info_window_settings({})["show_magic_crystal"] is True
+    assert normalize_fanxiu_info_window_settings({"show_magic_crystal": False})[
+        "show_magic_crystal"
+    ] is False
+
+
+def test_active_magic_invasion_occurrence_prefers_the_running_cross_server_phase() -> None:
+    from backend.core.fanxiu.instrumentation.magic_invasion_magic_crystal import (
+        active_magic_invasion_occurrence,
+    )
+
+    # Runtime #66 rows carry millisecond epochs and ``serverCount``; the
+    # discovery artifact stores the same facts as ISO text and ``cross_count``.
+    def row(name, start_ms, end_ms, server_count, base_id, activity_id):
+        return {
+            "name": name,
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "serverCount": server_count,
+            "base_id": base_id,
+            "activityId": activity_id,
+        }
+
+    occurrences = [
+        row("魔道入侵", 1789351200000, 1789394400000, None, 70000, 1070011400004),
+        row("魔道入侵", 1789437600000, 1789480800000, 16, 70001, 16070001400004),
+        row("论道", 1789437600000, 1789480800000, 16, 110000, 1116),
+    ]
+    running = active_magic_invasion_occurrence(
+        occurrences, now=1789476000.0
+    )
+    assert running["base_id"] == "70001"
+    assert running["cross_count"] == 16
+    assert active_magic_invasion_occurrence(occurrences, now=1789351200.0)["base_id"] == "70000"
+    # 09-14 09:00 (+08:00), before every listed 魔道入侵 window.
+    assert active_magic_invasion_occurrence(occurrences, now=1789347600.0) is None
+
+
+def test_occurrence_rows_accept_both_schedule_shapes() -> None:
+    from backend.core.fanxiu.instrumentation.magic_invasion_magic_crystal import (
+        magic_invasion_occurrence_rows,
+    )
+
+    assert magic_invasion_occurrence_rows({"items": [{"name": "魔道入侵"}]}) == [
+        {"name": "魔道入侵"}
+    ]
+    assert magic_invasion_occurrence_rows({"occurrences": [{"name": "魔道入侵"}]}) == [
+        {"name": "魔道入侵"}
+    ]
+    assert magic_invasion_occurrence_rows({}) == []
+
+
+@pytest.mark.parametrize("scene_id, enabled, ok, expected", [
+    (699, True, True, 37081),
+    (699, False, True, None),   # 魔晶数量 switch off
+    (699, True, False, None),   # no successful wallet observation yet
+    (698, True, True, None),    # only the auto-running page substitutes
+    (None, True, True, None),
+])
+def test_magic_crystal_is_only_drawn_for_a_read_auto_running_page(
+    scene_id, enabled, ok, expected
+) -> None:
+    from backend.core.fanxiu.windows_info_window import FanxiuWindowsInfoWindow
+
+    class Stub:
+        settings = {"show_magic_crystal": enabled}
+        # The title shows 活动期间累计魔晶, never the spendable balance.
+        magic_crystal = (
+            {"ok": ok, "current": 1234, "cumulative": 37081} if ok else {"ok": False}
+        )
+
+    assert FanxiuWindowsInfoWindow._magic_crystal_value(Stub(), scene_id) == expected

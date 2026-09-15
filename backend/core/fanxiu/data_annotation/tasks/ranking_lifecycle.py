@@ -767,6 +767,82 @@ def execute_magic_invasion_active_rnd_cell(runner, ctx, payload, stop_event):
     ))
 
 
+def _magic_occurrence_for_auto(occurrence) -> Any:
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion import (
+        MagicInvasionOccurrence,
+    )
+
+    return MagicInvasionOccurrence(
+        occurrence_id=occurrence.runtime_id,
+        activity_id=int(occurrence.activity_id),
+        runtime_id=int(occurrence.runtime_id),
+        start_time_ms=int(occurrence.start_at.timestamp() * 1000),
+        end_time_ms=int(occurrence.end_at.timestamp() * 1000),
+        server_count=int(occurrence.cross_count),
+        mode="cross" if int(occurrence.cross_count) > 1 else "server",
+    )
+
+
+def execute_magic_invasion_native_auto_rnd_cell(runner, ctx, payload, stop_event):
+    """Run the current Magic occurrence's native auto-exorcism batches (R&D)."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_native_auto import (
+        clear_unstarted_magic_invasion_auto_pending,
+        run_magic_invasion_auto_batch,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("魔道自动除魔研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "magic-invasion"
+        and occurrence.start_at <= now <= occurrence.end_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"魔道自动除魔研发无法唯一定位当前开放实例：matches={len(matches)}"
+        )
+    magic_occurrence = _magic_occurrence_for_auto(matches[0])
+    batches = max(1, int(payload.get("batches") or 1))
+    context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+    results: list[dict[str, Any]] = []
+    if bool(payload.get("clear_stale_pending")):
+        results.append({
+            "status": "cleared_pending",
+            "result": clear_unstarted_magic_invasion_auto_pending(
+                magic_occurrence,
+                reason=str(
+                    payload.get("clear_reason")
+                    or "研发恢复：导航期失败，未点击开启自动"
+                ),
+            ),
+        })
+    for _batch in range(batches):
+        if stop_event.is_set():
+            raise InterruptedError()
+        result = yield from run_magic_invasion_auto_batch(
+            context,
+            magic_occurrence,
+            count=int(payload.get("count") or 100),
+        )
+        results.append(result)
+        if str(result.get("status") or "") != "settled":
+            break
+    return {"status": "completed", "occurrence": magic_occurrence.occurrence_id, "results": results}
+
+
 def execute_beast_abyss_rank_refresh_rnd_cell(runner, ctx, payload, stop_event):
     """Refresh the current Beast Abyss rank tabs without challenge or exchange."""
 
@@ -855,6 +931,7 @@ __all__ = [
     "execute_beast_abyss_lifecycle_rnd_cell",
     "execute_magic_invasion_initialization_rnd_cell",
     "execute_magic_invasion_active_rnd_cell",
+    "execute_magic_invasion_native_auto_rnd_cell",
     "execute_beast_abyss_exchange_tail_rnd_cell",
     "execute_beast_abyss_rank_refresh_rnd_cell",
     "execute_ranking_lifecycle_job",

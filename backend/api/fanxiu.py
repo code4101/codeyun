@@ -2467,6 +2467,24 @@ def _normalize_kernel_scheduler_guard_items(status: dict[str, Any]) -> None:
     _kernel_scheduler_control.normalize_scheduler_guard_items(status)
 
 
+def _coerce_status_current_scene(status: dict[str, Any]) -> dict[str, Any]:
+    """Keep ``current_scene`` at its public int|None contract.
+
+    A legacy path persisted a result string (e.g. "success") into
+    ``current_scene``; that value then failed the int-typed response model and
+    turned scheduler endpoints into 500s.  Coercing here protects every
+    response that embeds the execution status.
+    """
+
+    scene_value = status.get("current_scene")
+    if scene_value is not None and type(scene_value) is not int:
+        try:
+            status["current_scene"] = int(scene_value)
+        except (TypeError, ValueError):
+            status["current_scene"] = None
+    return status
+
+
 def _kernel_scheduler_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
     _sync_behavior_tree_executor_to_core()
     status = _core_kernel_scheduler_status(
@@ -2477,6 +2495,11 @@ def _kernel_scheduler_status(*, include_cell_logs: bool = True) -> dict[str, Any
     settings = _kernel_scheduler_control.read_scheduler_settings(
         scheduler_settings_path=_kernel_scheduler_settings_path()
     )
+    # A legacy/buggy status write once persisted ``current_scene`` as a result
+    # string (e.g. "success"), which then failed the int-typed response model
+    # and turned /kernel-scheduler/status into a 500.  Keep the public
+    # contract int|None regardless of what the persisted state contains.
+    _coerce_status_current_scene(status)
     behavior_enabled = bool(settings.get("behavior_tree_enabled", True))
     status["behavior_tree_enabled"] = behavior_enabled
     if not behavior_enabled:
@@ -2607,6 +2630,7 @@ def _submit_data_annotation_task_cell(
         _raise_behavior_tree_execution_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _coerce_status_current_scene(status)
     log_source = {"code": f"run_task_cell({task_type!r}, {cell_payload!r})"}
     if source:
         log_source["source"] = source
@@ -2639,6 +2663,7 @@ def _submit_data_annotation_code_cell(
         _raise_behavior_tree_execution_http_error(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _coerce_status_current_scene(status)
     log_source = {
         "cmd": "submit_code_cell",
         "entry_id": entry_id,

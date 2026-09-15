@@ -2,40 +2,58 @@
   <div class="page">
     <div class="head">
       <h1>本机 AI 模型与额度</h1>
+      <span v-if="switching" class="busy">切换中…</span>
+    </div>
+
+    <div class="picker">
+      <el-popover
+        v-model:visible="noticeVisible"
+        placement="bottom-start"
+        :width="360"
+        trigger="manual"
+        popper-class="scope-notice-popper"
+      >
+        <template #reference>
+          <button class="apply" type="button" :disabled="switching || !canApply" @click="applySwitch">
+            {{ applyLabel }}
+          </button>
+        </template>
+        <div class="scope-notice">
+          <span class="scope-notice-text">{{ scopeNotice }}</span>
+          <button class="scope-notice-close" type="button" @click="noticeVisible = false">
+            知道了
+          </button>
+        </div>
+      </el-popover>
+      <select v-model="selectedProvider" :disabled="switching">
+        <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+          {{ provider.label }}
+        </option>
+      </select>
       <a
+        v-if="selectedProvider === 'deepseek'"
         class="help"
         :href="DOC_URL"
         target="_blank"
         rel="noopener noreferrer"
         title="查看 DeepSeek 官方文档"
       >?</a>
-      <span v-if="switching" class="busy">切换中…</span>
     </div>
 
-    <div class="picker">
-      <select v-model="selectedProvider" :disabled="switching" @change="onProviderChange">
-        <option v-for="provider in providers" :key="provider.id" :value="provider.id">
-          {{ provider.label }}
-        </option>
-      </select>
-      <select v-if="currentModels.length" v-model="selectedModel" :disabled="switching">
-        <option v-for="model in currentModels" :key="model.id" :value="model.id">
-          {{ model.label }}
-        </option>
-      </select>
-      <span v-else class="picker-note">官方默认</span>
-      <button class="apply" type="button" :disabled="switching || !canApply" @click="applySwitch">
-        切换
+    <div class="observed-row">
+      <button class="refresh" type="button" :disabled="loadingQuota" @click="refreshAll">
+        {{ loadingQuota ? '采集中…' : '刷新' }}
       </button>
+      <span class="observed">{{ latestObservedLabel }}</span>
     </div>
+
+    <p v-if="selectedProvider === 'opencode' && status && !status.opencode_proxy_running" class="hint">
+      OpenCode 代理未运行，请先在「集群 / 运行」里启动 opencode-proxy 服务。
+    </p>
 
     <section class="quota">
       <div class="quota-head">
-        <span class="quota-title">Codex 账号额度</span>
-        <span class="quota-observed">{{ observedLabel }}</span>
-        <button class="quota-refresh" type="button" :disabled="loadingQuota" @click="refreshAll">
-          {{ loadingQuota ? '采集中…' : '刷新' }}
-        </button>
+        <a class="quota-title" :href="CODEX_USAGE_URL" target="_blank" rel="noopener noreferrer">Codex 账号额度</a>
       </div>
 
       <div v-if="quotaGroups.length" class="quota-rows">
@@ -56,70 +74,32 @@
         </div>
       </div>
       <p v-else class="quota-empty">{{ quotaError || '点击「刷新」读取实时额度' }}</p>
+      <p v-if="quotaGroups.length && quotaError" class="quota-stale">最近一次余额读取失败：{{ quotaError }}</p>
 
-      <svg
-        v-if="chart"
-        class="chart"
-        :viewBox="`0 0 ${CHART_W} ${CHART_H}`"
-        role="img"
-        aria-label="通用余额变化"
-      >
-        <line
-          v-for="line in chart.grid"
-          :key="line.value"
-          :x1="CHART_PAD_LEFT"
-          :x2="CHART_W - CHART_PAD_RIGHT"
-          :y1="line.y"
-          :y2="line.y"
-          class="chart-grid"
-        />
-        <text
-          v-for="line in chart.grid"
-          :key="`label-${line.value}`"
-          :x="CHART_PAD_LEFT - 4"
-          :y="line.y + 3"
-          class="chart-axis"
-          text-anchor="end"
-        >{{ line.value }}%</text>
-
-        <line
-          v-if="chart.resetX !== null"
-          :x1="chart.resetX"
-          :x2="chart.resetX"
-          :y1="CHART_PAD_TOP"
-          :y2="CHART_H - CHART_PAD_BOTTOM"
-          class="chart-reset"
-        />
-        <text
-          v-if="chart.resetX !== null"
-          :x="chart.resetX"
-          :y="CHART_PAD_TOP - 1"
-          class="chart-axis chart-reset-label"
-          text-anchor="middle"
-        >重置 {{ chart.resetLabel }}</text>
-
-        <polyline v-if="chart.points.length > 1" :points="chart.polyline" class="chart-line" />
-        <circle
-          v-for="(point, index) in chart.points"
-          :key="index"
-          :cx="point.x"
-          :cy="point.y"
-          r="2.5"
-          class="chart-dot"
-        />
-
-        <text :x="CHART_PAD_LEFT" :y="CHART_H - 5" class="chart-axis" text-anchor="start">
-          {{ chart.startLabel }}
-        </text>
-        <text :x="CHART_W - CHART_PAD_RIGHT" :y="CHART_H - 5" class="chart-axis" text-anchor="end">
-          {{ chart.endLabel }}
-        </text>
-      </svg>
+      <QuotaLineChart v-if="chartData" :data="chartData" />
     </section>
 
     <section class="quota">
       <div class="quota-head">
-        <span class="quota-title">opencode Go</span>
+        <a class="quota-title" :href="DEEPSEEK_PLATFORM_URL" target="_blank" rel="noopener noreferrer">DeepSeek 余额</a>
+      </div>
+      <div v-if="deepseek.balances.length" class="quota-rows">
+        <div v-for="item in deepseek.balances" :key="item.currency" class="quota-row">
+          <span class="quota-name">总余额{{ item.currency ? `（${item.currency}）` : '' }}</span>
+          <span class="quota-values">
+            <span class="quota-value">¥{{ item.total_balance }}</span>
+          </span>
+        </div>
+      </div>
+      <p v-else class="quota-empty">{{ deepseek.error || '未找到可用的 DeepSeek API Key' }}</p>
+      <p v-if="deepseek.balances.length && deepseek.error" class="quota-stale">最近一次余额读取失败：{{ deepseek.error }}</p>
+
+      <QuotaLineChart v-if="deepseekChartData" :data="deepseekChartData" />
+    </section>
+
+    <section class="quota">
+      <div class="quota-head">
+        <a class="quota-title" :href="OPENCODE_GO_URL" target="_blank" rel="noopener noreferrer">OpenCode Go</a>
       </div>
       <div v-if="opencode.windows.length" class="quota-rows">
         <div class="quota-row">
@@ -138,21 +118,33 @@
           </span>
         </div>
       </div>
-      <p v-else class="quota-empty">{{ opencode.error || '未找到 opencode-go 凭证' }}</p>
+      <p v-else class="quota-empty">{{ opencode.error || '未找到 OpenCode Go 凭证' }}</p>
+      <p v-if="opencode.windows.length && opencode.error" class="quota-stale">最近一次余额读取失败：{{ opencode.error }}</p>
+
+      <QuotaLineChart v-if="opencodeChartData" :data="opencodeChartData" />
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+
+import QuotaLineChart from './QuotaLineChart.vue'
+import type { LineChartData } from './chartTypes'
 
 import {
   fetchCodexQuota,
   fetchCodexSetupStatus,
+  fetchDeepSeekBalance,
   fetchOpenCodeUsage,
   refreshCodexQuota,
+  refreshDeepSeekBalance,
+  refreshOpenCodeUsage,
   switchCodexSetup,
+  type BalanceWindow,
+  type CodexQuotaWindowHistory,
+  type DeepSeekBalanceResponse,
   type CodexProviderInfo,
   type CodexQuotaGroup,
   type CodexQuotaResponse,
@@ -161,13 +153,10 @@ import {
 } from '@/api/codexSetup'
 
 const DOC_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/agent_integrations/codex'
-const CHART_W = 400
-const CHART_H = 118
-const CHART_PAD_LEFT = 26
-const CHART_PAD_RIGHT = 8
-const CHART_PAD_TOP = 14
-const CHART_PAD_BOTTOM = 20
-
+const CODEX_USAGE_URL = 'https://chatgpt.com/codex/cloud/settings/analytics#usage'
+const DEEPSEEK_PLATFORM_URL = 'https://platform.deepseek.com/usage'
+const OPENCODE_GO_URL = 'https://opencode.ai/zh/go'
+const AUTO_REFRESH_AFTER_MS = 60 * 60 * 1000
 const FALLBACK_PROVIDERS: CodexProviderInfo[] = [
   { id: 'openai', label: 'OpenAI', models: [] },
   {
@@ -183,69 +172,75 @@ const FALLBACK_PROVIDERS: CodexProviderInfo[] = [
 const status = ref<CodexSetupStatus | null>(null)
 const switching = ref(false)
 const selectedProvider = ref('openai')
-const selectedModel = ref('')
+const scopeNotice = ref('')
+const noticeVisible = ref(false)
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
 const quotaGroups = ref<CodexQuotaGroup[]>([])
 const generalWindow = ref<CodexQuotaResponse['general_window']>(null)
 const observedAt = ref('')
 const quotaError = ref('')
 const loadingQuota = ref(false)
-const opencode = ref<OpenCodeUsageResponse>({ available: false, windows: [], error: '' })
+const opencode = ref<OpenCodeUsageResponse>({ available: false, windows: [], monthly_window: null, observed_at: '', error: '' })
+const deepseek = ref<DeepSeekBalanceResponse>({ available: false, is_available: false, balances: [], observed_at: '', error: '' })
 
 const providers = computed<CodexProviderInfo[]>(() => (
   status.value?.providers?.length ? status.value.providers : FALLBACK_PROVIDERS
 ))
 
-const currentModels = computed(() => (
-  providers.value.find((item) => item.id === selectedProvider.value)?.models ?? []
+// Allow re-applying the current provider too: re-running it rewrites the config
+// and regenerates the catalog, which is handy when debugging.  Only block until
+// the status is loaded or while a switch is already in flight.
+const canApply = computed(() => Boolean(status.value))
+
+const isReapply = computed(() => (
+  Boolean(status.value) && selectedProvider.value === status.value?.provider
 ))
 
-const canApply = computed(() => {
-  const active = status.value
-  if (!active) {
-    return false
+const applyLabel = computed(() => (isReapply.value ? '重新应用当前供应商' : '切换 Codex 模型供应商'))
+
+const latestObservedLabel = computed(() => {
+  let best = ''
+  let bestTime = Number.NEGATIVE_INFINITY
+  for (const value of [observedAt.value, opencode.value.observed_at, deepseek.value.observed_at]) {
+    const time = new Date(value).getTime()
+    if (Number.isFinite(time) && time > bestTime) {
+      bestTime = time
+      best = value
+    }
   }
-  if (selectedProvider.value !== active.provider) {
-    return true
-  }
-  return selectedProvider.value !== 'openai' && selectedModel.value !== active.model
+  return best ? `最近采集 ${formatClock(best)}` : '尚未采集'
 })
 
-const observedLabel = computed(() => (
-  observedAt.value ? `最近采集 ${formatClock(observedAt.value)}` : '尚未采集'
-))
-
-const chart = computed(() => {
-  const data = generalWindow.value
-  if (!data || !data.window_start || !data.window_end) {
+function percentWindowToChart(window: CodexQuotaWindowHistory | null): LineChartData | null {
+  if (!window || !window.window_start || !window.window_end) {
     return null
   }
-  const start = new Date(data.window_start).getTime()
-  const end = new Date(data.window_end).getTime()
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
-    return null
-  }
-  const plotW = CHART_W - CHART_PAD_LEFT - CHART_PAD_RIGHT
-  const plotH = CHART_H - CHART_PAD_TOP - CHART_PAD_BOTTOM
-  const x = (time: number) => CHART_PAD_LEFT + ((time - start) / (end - start)) * plotW
-  const y = (percent: number) => CHART_PAD_TOP + (1 - percent / 100) * plotH
-
-  const points = (data.points ?? [])
-    .map((point) => ({ time: new Date(point.at).getTime(), percent: point.remaining_percent }))
-    .filter((point) => Number.isFinite(point.time))
-    .sort((a, b) => a.time - b.time)
-    .map((point) => ({ x: x(point.time), y: y(point.percent) }))
-
-  const resetTime = data.reset_at ? new Date(data.reset_at).getTime() : NaN
   return {
-    points,
-    polyline: points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' '),
-    grid: [100, 50, 0].map((value) => ({ value, y: y(value) })),
-    resetX: Number.isFinite(resetTime) ? x(resetTime) : null,
-    resetLabel: Number.isFinite(resetTime) ? formatClock(data.reset_at) : '',
-    startLabel: formatDay(start),
-    endLabel: formatDay(end),
+    points: (window.points ?? []).map((point) => ({ at: point.at, value: point.remaining_percent })),
+    windowStart: window.window_start,
+    windowEnd: window.window_end,
+    resetAt: window.reset_at || undefined,
+    unit: '%',
+    max: 100,
   }
-})
+}
+
+function balanceWindowToChart(window: BalanceWindow | null): LineChartData | null {
+  if (!window || !window.window_start || !window.window_end) {
+    return null
+  }
+  return {
+    points: (window.points ?? []).map((point) => ({ at: point.at, value: point.value })),
+    windowStart: window.window_start,
+    windowEnd: window.window_end,
+    unit: '¥',
+    max: null,
+  }
+}
+
+const chartData = computed(() => percentWindowToChart(generalWindow.value))
+const opencodeChartData = computed(() => percentWindowToChart(opencode.value.monthly_window))
+const deepseekChartData = computed(() => balanceWindowToChart(deepseek.value.total_window))
 
 function percentClass(remaining: number) {
   if (remaining < 10) {
@@ -266,11 +261,6 @@ function formatClock(value: string) {
   return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-function formatDay(value: number) {
-  const date = new Date(value)
-  return `${date.getMonth() + 1}/${date.getDate()}`
-}
-
 function getErrorMessage(error: unknown) {
   if (typeof error === 'object' && error && 'response' in error) {
     const maybeError = error as {
@@ -289,20 +279,9 @@ function getErrorMessage(error: unknown) {
 }
 
 function syncSelection() {
-  const active = status.value
-  if (!active) {
-    return
+  if (status.value) {
+    selectedProvider.value = status.value.provider
   }
-  selectedProvider.value = active.provider
-  const models = providers.value.find((item) => item.id === active.provider)?.models ?? []
-  selectedModel.value = models.some((item) => item.id === active.model)
-    ? active.model
-    : (models[0]?.id ?? '')
-}
-
-function onProviderChange() {
-  const models = currentModels.value
-  selectedModel.value = models[0]?.id ?? ''
 }
 
 function applyQuota(quota: CodexQuotaResponse) {
@@ -333,7 +312,15 @@ async function loadOpencode() {
   try {
     opencode.value = await fetchOpenCodeUsage()
   } catch (error) {
-    opencode.value = { available: false, windows: [], error: getErrorMessage(error) }
+    opencode.value = { available: false, windows: [], monthly_window: null, observed_at: '', error: getErrorMessage(error) }
+  }
+}
+
+async function loadDeepseek() {
+  try {
+    deepseek.value = await fetchDeepSeekBalance()
+  } catch (error) {
+    deepseek.value = { available: false, is_available: false, balances: [], observed_at: '', error: getErrorMessage(error) }
   }
 }
 
@@ -355,7 +342,16 @@ async function refreshAll() {
   } finally {
     loadingQuota.value = false
   }
-  void loadOpencode()
+  try {
+    opencode.value = await refreshOpenCodeUsage()
+  } catch (error) {
+    opencode.value = { available: false, windows: [], monthly_window: null, observed_at: '', error: getErrorMessage(error) }
+  }
+  try {
+    deepseek.value = await refreshDeepSeekBalance()
+  } catch (error) {
+    deepseek.value = { available: false, is_available: false, balances: [], observed_at: '', error: getErrorMessage(error) }
+  }
 }
 
 async function applySwitch() {
@@ -364,14 +360,13 @@ async function applySwitch() {
   }
   const providerLabel = providers.value.find((item) => item.id === selectedProvider.value)?.label
     ?? selectedProvider.value
-  const target = selectedModel.value
-    ? `${providerLabel} · ${currentModels.value.find((item) => item.id === selectedModel.value)?.label ?? selectedModel.value}`
-    : providerLabel
   try {
     await ElMessageBox.confirm(
-      `切换到「${target}」？会自动关闭并重新打开 Codex。`,
-      '切换 Codex',
-      { confirmButtonText: '切换', cancelButtonText: '取消' },
+      isReapply.value
+        ? `重新应用「${providerLabel}」？会重新写入本机配置并重启 Codex。`
+        : `切换到「${providerLabel}」？会自动关闭并重新打开 Codex，模型在 Codex 内切换。`,
+      isReapply.value ? '重新应用' : '切换 Codex',
+      { confirmButtonText: isReapply.value ? '重新应用' : '切换', cancelButtonText: '取消' },
     )
   } catch {
     return
@@ -379,10 +374,13 @@ async function applySwitch() {
 
   switching.value = true
   try {
-    const result = await switchCodexSetup(selectedProvider.value, selectedModel.value || undefined)
+    const result = await switchCodexSetup(selectedProvider.value)
     status.value = result.status
     syncSelection()
     ElMessage.success(result.message)
+    if (result.notice) {
+      showScopeNotice(result.notice)
+    }
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -390,10 +388,53 @@ async function applySwitch() {
   }
 }
 
-onMounted(() => {
-  void loadStatus()
-  void loadQuota()
-  void loadOpencode()
+function showScopeNotice(text: string) {
+  scopeNotice.value = text
+  noticeVisible.value = true
+  if (noticeTimer) {
+    clearTimeout(noticeTimer)
+  }
+  noticeTimer = setTimeout(() => {
+    noticeVisible.value = false
+  }, 12000)
+}
+
+function isStale(value: string) {
+  if (!value) {
+    return true
+  }
+  const time = new Date(value).getTime()
+  if (!Number.isFinite(time)) {
+    return true
+  }
+  return Date.now() - time > AUTO_REFRESH_AFTER_MS
+}
+
+async function autoRefreshStale() {
+  const jobs: Promise<unknown>[] = []
+  if (isStale(observedAt.value)) {
+    jobs.push(refreshCodexQuota().then(applyQuota).catch(() => undefined))
+  }
+  if (isStale(opencode.value.observed_at)) {
+    jobs.push(refreshOpenCodeUsage().then((value) => { opencode.value = value }).catch(() => undefined))
+  }
+  if (isStale(deepseek.value.observed_at)) {
+    jobs.push(refreshDeepSeekBalance().then((value) => { deepseek.value = value }).catch(() => undefined))
+  }
+  if (jobs.length) {
+    await Promise.allSettled(jobs)
+  }
+}
+
+onMounted(async () => {
+  await Promise.allSettled([loadStatus(), loadQuota(), loadOpencode(), loadDeepseek()])
+  void autoRefreshStale()
+})
+
+onBeforeUnmount(() => {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer)
+  }
 })
 </script>
 
@@ -442,17 +483,49 @@ h1 {
   font-size: 13px;
 }
 
+.observed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.observed {
+  color: #a8b3c2;
+  font-size: 11px;
+}
+
+.refresh {
+  padding: 6px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #475569;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.refresh:hover:not(:disabled) {
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+
+.refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .picker {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 420px;
   margin-top: 20px;
+  flex-wrap: wrap;
 }
 
 .picker select {
-  flex: 1;
-  min-width: 0;
+  flex: none;
+  width: auto;
   padding: 8px 10px;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
@@ -495,6 +568,17 @@ h1 {
   cursor: not-allowed;
 }
 
+.hint {
+  max-width: 420px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .quota {
   max-width: 420px;
   margin-top: 22px;
@@ -512,6 +596,11 @@ h1 {
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+  text-decoration: none;
+}
+
+.quota-title:hover {
+  text-decoration: underline;
 }
 
 .quota-observed {
@@ -591,6 +680,13 @@ h1 {
   line-height: 1.6;
 }
 
+.quota-stale {
+  margin: 8px 0 0;
+  color: #b45309;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .chart {
   width: 100%;
   height: auto;
@@ -625,5 +721,33 @@ h1 {
 
 .chart-reset-label {
   fill: #94a3b8;
+}
+
+.scope-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scope-notice-text {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.scope-notice-close {
+  align-self: flex-end;
+  padding: 4px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.scope-notice-close:hover {
+  border-color: #cbd5e1;
+  color: #1e293b;
 }
 </style>

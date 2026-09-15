@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import subprocess
 
 import pytest
 
 from backend.api import codex_setup as codex_setup_api
 from backend.core import opencode_usage
-from backend.core.codex import official_setup, weekly_quota
+from backend.core.codex import app_processes, official_setup, weekly_quota
 from backend.core.codex import switch as codex_switch
 from backend.core.codex.app_server import CodexAppServerError
 
@@ -168,6 +169,7 @@ def test_api_switch_openai_is_noop_when_already_default(tmp_path, monkeypatch):
 
     assert response.ok is True
     assert response.changed is False
+    assert response.notice == ""
 
 
 def test_api_switch_deepseek_requires_key(tmp_path, monkeypatch):
@@ -191,12 +193,46 @@ def test_api_switch_rejects_unknown_model(tmp_path, monkeypatch):
 
     with pytest.raises(Exception) as excinfo:
         codex_setup_api.switch_codex_setup(
-            codex_setup_api.CodexSetupSwitchRequest(provider="opencode", model="kimi-k3"),
+            codex_setup_api.CodexSetupSwitchRequest(provider="opencode", model="definitely-not-a-model"),
             current_user=None,
             session=None,
         )
 
     assert "不支持该模型" in str(excinfo.value)
+
+
+def test_switch_codex_defaults_deepseek_to_flash(tmp_path, monkeypatch):
+    """The page picks a provider only, so DeepSeek must land on flash by default."""
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    _write_config(tmp_path, 'model = "gpt-6-astra"\n')
+    applied: dict[str, object] = {}
+
+    def fake_switch_mode(mode, *, api_key=None):
+        applied["mode"] = mode
+        applied["api_key"] = api_key
+        return {"mode": mode, "output": "", "status": official_setup.read_codex_status()}
+
+    monkeypatch.setattr(codex_switch, "switch_codex_mode", fake_switch_mode)
+
+    result = codex_switch.switch_codex("deepseek", api_key="sk-system")
+
+    assert applied["mode"] == official_setup.FLASH_MODE
+    assert applied["api_key"] == "sk-system"
+    assert result["mode"] == official_setup.FLASH_MODE
+
+
+def test_api_status_exposes_provider_default_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    _write_config(tmp_path, 'model = "gpt-6-astra"\n')
+    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+
+    response = codex_setup_api.get_codex_setup_status(current_user=None, session=None)
+
+    by_id = {item.id: item for item in response.providers}
+    assert by_id["deepseek"].default_model == official_setup.FLASH_MODE
+    assert by_id["opencode"].default_model == official_setup.FLASH_MODE
+    assert by_id["openai"].default_model == ""
 
 
 def test_api_switch_closes_and_reopens_codex(tmp_path, monkeypatch):
@@ -235,6 +271,10 @@ def test_api_switch_closes_and_reopens_codex(tmp_path, monkeypatch):
     assert response.restarted_app is True
     assert response.closed_process_count == 1
     assert "ChatGPT" in response.message
+    # The switch only rewrites machine-wide config, so the caller has to be told
+    # that already-open threads keep their own model selection.
+    assert response.changed is True
+    assert response.notice == codex_setup_api.SESSION_SCOPE_NOTICE
 
 
 def test_api_switch_restarts_codex_even_on_failure(tmp_path, monkeypatch):
@@ -262,6 +302,33 @@ def test_api_switch_restarts_codex_even_on_failure(tmp_path, monkeypatch):
         )
 
     assert restarted["snapshot"]["was_app_running"] is True
+
+
+def test_matches_codex_process_accepts_windows_exe_suffix():
+    store_app = r"C:\Program Files\WindowsApps\OpenAI.Codex_x64\app\ChatGPT.exe"
+
+    assert app_processes._matches_codex_process("ChatGPT.exe", store_app) is True
+    assert app_processes._matches_codex_process("ChatGPT", store_app) is True
+    assert app_processes._matches_codex_process("codex.exe", r"C:\Users\x\OpenAI\Codex\bin\codex.exe") is True
+    assert app_processes._matches_codex_process("node.exe", r"C:\Program Files\nodejs\node.exe") is False
+
+
+def test_stop_codex_processes_marks_store_app_as_running(monkeypatch):
+    class FakeProcess:
+        def __init__(self, pid: int, name: str, exe: str):
+            self.pid = pid
+            self.info = {"pid": pid, "name": name, "exe": exe}
+
+    store_app = r"C:\Program Files\WindowsApps\OpenAI.Codex_x64\app\ChatGPT.exe"
+    fake = FakeProcess(4321, "ChatGPT.exe", store_app)
+    monkeypatch.setattr(app_processes.psutil, "process_iter", lambda attrs=None: [fake])
+    monkeypatch.setattr(app_processes, "_terminate", lambda process: True)
+
+    snapshot = app_processes.stop_codex_processes()
+
+    assert snapshot["was_app_running"] is True
+    assert snapshot["app_exe"] == store_app
+    assert snapshot["stopped"] == [{"pid": 4321, "name": "ChatGPT.exe"}]
 
 
 def test_parse_rate_limit_groups_splits_general_and_spark():
@@ -415,6 +482,12 @@ def test_switch_to_opencode_writes_provider_block_and_preserves_config(tmp_path,
     )
     (tmp_path / "backup-deepseek").mkdir()
     monkeypatch.setattr(codex_switch, "read_opencode_go_key", lambda: "sk-oc")
+    monkeypatch.setattr(
+        codex_switch,
+        "discover_opencode_models",
+        lambda **kwargs: [{"id": "deepseek-v4-pro", "label": "deepseek-v4-pro"}],
+    )
+    monkeypatch.setattr(codex_switch, "get_opencode_proxy_base_url", lambda: "http://127.0.0.1:8787")
 
     codex_switch.switch_to_opencode(config, "deepseek-v4-pro")
 
@@ -422,13 +495,169 @@ def test_switch_to_opencode_writes_provider_block_and_preserves_config(tmp_path,
     assert data["model"] == "deepseek-v4-pro"
     assert data["model_provider"] == "opencode_go"
     assert "model_catalog_json" not in data
-    assert data["model_reasoning_effort"] == "high"
+    assert "model_reasoning_effort" not in data
     assert data["model_providers"]["deepseek"]["base_url"] == "https://api.deepseek.com/"
     provider = data["model_providers"]["opencode_go"]
-    assert provider["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert provider["base_url"] == "http://127.0.0.1:8787/v1"
     assert provider["wire_api"] == "responses"
-    assert provider["experimental_bearer_token"] == "sk-oc"
-    assert provider["http_headers"]["x-opencode-session"] == codex_switch.OPENCODE_GO_SESSION
+    assert provider["experimental_bearer_token"] == "opencode-proxy"
+
+
+def test_ensure_enabled_reasoning_efforts_merges_existing_list():
+    lines = [
+        'model = "x"',
+        "",
+        "[desktop]",
+        'enabled-reasoning-efforts = ["low", "high"]',
+        "",
+        "[other]",
+    ]
+
+    codex_switch.ensure_enabled_reasoning_efforts(lines, ["max", "low"])
+
+    assert lines[3] == 'enabled-reasoning-efforts = ["low", "high", "max"]'
+
+
+def test_ensure_enabled_reasoning_efforts_creates_desktop_section():
+    lines = ['model = "x"']
+
+    codex_switch.ensure_enabled_reasoning_efforts(lines, ["max"])
+
+    assert lines[-2:] == ["[desktop]", 'enabled-reasoning-efforts = ["max"]']
+
+
+def test_switch_to_opencode_adds_catalog_efforts_to_desktop_list(tmp_path, monkeypatch):
+    import tomllib
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "empty-cache"))
+    monkeypatch.setattr(codex_switch, "_official_deepseek_catalog", lambda: {})
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({
+            "models": [{
+                "slug": "gpt-5.3-codex",
+                "context_window": 272000,
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": [
+                    {"effort": "low", "description": "l"},
+                    {"effort": "medium", "description": "m"},
+                    {"effort": "high", "description": "h"},
+                    {"effort": "xhigh", "description": "xh"},
+                    {"effort": "max", "description": "mx"},
+                ],
+            }]
+        }),
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'model = "deepseek-flash"\n'
+        'model_provider = "deepseek"\n\n'
+        "[desktop]\n"
+        'enabled-reasoning-efforts = ["low", "medium", "high", "xhigh"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(codex_switch, "read_opencode_go_key", lambda: "sk-oc")
+    monkeypatch.setattr(
+        codex_switch,
+        "discover_opencode_models",
+        lambda **kwargs: [{"id": "kimi-k3", "label": "kimi-k3"}],
+    )
+    monkeypatch.setattr(codex_switch, "get_opencode_proxy_base_url", lambda: "http://127.0.0.1:8787")
+
+    codex_switch.switch_to_opencode(config, "kimi-k3")
+
+    data = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert data["desktop"]["enabled-reasoning-efforts"] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+
+
+def test_build_opencode_catalog_clones_codex_template(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "empty-cache"))
+    monkeypatch.setattr(codex_switch, "_official_deepseek_catalog", lambda: {})
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-5.3-codex", "display_name": "GPT 5.3 Codex", "context_window": 272000}]}),
+        encoding="utf-8",
+    )
+
+    path = codex_switch.build_opencode_catalog(
+        tmp_path, [{"id": "grok-4.6", "label": "grok-4.6"}, {"id": "kimi-k3", "label": "kimi-k3"}]
+    )
+
+    assert path is not None and path.name == "opencode_models.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert [item["slug"] for item in data["models"]] == ["grok-4.6", "kimi-k3"]
+    assert data["models"][0]["display_name"] == "grok-4.6"
+    assert data["models"][0]["context_window"] == 272000
+
+
+def test_build_opencode_catalog_uses_model_reasoning_metadata(tmp_path, monkeypatch):
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({
+            "models": [
+                {
+                    "slug": "gpt-5.3-codex",
+                    "context_window": 272000,
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": [{"effort": "medium", "description": "x"}],
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    cache_home = tmp_path / "cache"
+    (cache_home / "opencode").mkdir(parents=True)
+    (cache_home / "opencode" / "models.json").write_text(
+        json.dumps({
+            "opencode-go": {
+                "models": {
+                    "kimi-k3": {
+                        "reasoning_options": [{"type": "effort", "values": ["max"]}],
+                        "limit": {"context": 1048576},
+                    }
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    monkeypatch.setattr(codex_switch, "_official_deepseek_catalog", lambda: {})
+
+    path = codex_switch.build_opencode_catalog(tmp_path, [{"id": "kimi-k3", "label": "kimi-k3"}])
+
+    entry = json.loads(path.read_text(encoding="utf-8"))["models"][0]
+    assert [level["effort"] for level in entry["supported_reasoning_levels"]] == ["max"]
+    assert entry["default_reasoning_level"] == "max"
+    assert entry["context_window"] == 1048576
+
+
+def test_build_opencode_catalog_prefers_official_deepseek_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "empty-cache"))
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-5.3-codex", "context_window": 1, "base_instructions": "GPT"}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        codex_switch,
+        "_official_deepseek_catalog",
+        lambda: {"deepseek-flash": {"slug": "deepseek-flash", "context_window": 999999, "base_instructions": "DS"}},
+    )
+
+    path = codex_switch.build_opencode_catalog(
+        tmp_path, [{"id": "deepseek-flash", "label": "DeepSeek Flash"}, {"id": "kimi-k3", "label": "kimi-k3"}]
+    )
+
+    by_slug = {item["slug"]: item for item in json.loads(path.read_text(encoding="utf-8"))["models"]}
+    assert by_slug["deepseek-flash"]["base_instructions"] == "DS"
+    assert by_slug["deepseek-flash"]["context_window"] == 999999
+    # The opencode entry keeps the official DeepSeek tuning but is listed by its
+    # own label, without a transport prefix.
+    assert by_slug["deepseek-flash"]["display_name"] == "DeepSeek Flash"
+    assert by_slug["kimi-k3"]["base_instructions"] == "GPT"
 
 
 def test_switch_to_opencode_replaces_existing_block(tmp_path, monkeypatch):
@@ -445,11 +674,16 @@ def test_switch_to_opencode_replaces_existing_block(tmp_path, monkeypatch):
     )
     (tmp_path / "backup-deepseek").mkdir()
     monkeypatch.setattr(codex_switch, "read_opencode_go_key", lambda: "sk-oc")
+    monkeypatch.setattr(
+        codex_switch,
+        "discover_opencode_models",
+        lambda **kwargs: [{"id": "grok-4.6", "label": "grok-4.6"}],
+    )
 
     codex_switch.switch_to_opencode(config, "grok-4.6")
 
     data = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert data["model_providers"]["opencode_go"]["base_url"] == "https://opencode.ai/zen/go/v1"
+    assert data["model_providers"]["opencode_go"]["base_url"].endswith("/v1")
     assert data["mcp_servers"] == 1
 
 
@@ -480,22 +714,128 @@ def test_read_opencode_go_key_from_auth_file(tmp_path):
     assert opencode_usage.read_opencode_go_key(path=auth_path) == "sk-test"
 
 
-def test_api_opencode_usage_returns_windows(monkeypatch):
+def test_record_codex_weekly_quota_accumulates_intraday_by_hour(tmp_path):
+    path = tmp_path / "weekly_quota_history.json"
+    weekly_quota.record_codex_weekly_quota_snapshot(
+        remaining_percent=40, observed_at=dt.datetime(2026, 9, 15, 10, 0, 0), path=path
+    )
+    weekly_quota.record_codex_weekly_quota_snapshot(
+        remaining_percent=30, observed_at=dt.datetime(2026, 9, 15, 11, 30, 0), path=path
+    )
+
+    snapshots = weekly_quota.list_codex_weekly_quota_snapshots(path)
+
+    assert [item["remaining_percent"] for item in snapshots] == [40, 30]
+
+
+def test_build_deepseek_balance_window_uses_last_30_days():
+    from backend.core import deepseek_balance
+
+    now = dt.datetime(2026, 9, 15, 12, 0, tzinfo=dt.timezone.utc)
+    snapshots = [
+        {"observed_at": "2026-08-01T00:00:00", "total_balance": 10},
+        {"observed_at": "2026-09-01T00:00:00", "total_balance": 20},
+        {"observed_at": "2026-09-10T00:00:00", "total_balance": 30},
+    ]
+
+    window = deepseek_balance.build_deepseek_balance_window(snapshots, now=now)
+
+    assert [point["value"] for point in window["points"]] == [20, 30]
+
+
+def test_build_deepseek_balance_window_includes_latest_without_history():
+    from backend.core import deepseek_balance
+
+    now = dt.datetime(2026, 9, 15, 12, 0, tzinfo=dt.timezone.utc)
+
+    window = deepseek_balance.build_deepseek_balance_window(
+        [], now=now, latest_value=76.22, latest_at="2026-09-15T11:00:00+00:00"
+    )
+
+    assert len(window["points"]) == 1
+    assert window["points"][0]["value"] == 76.22
+
+
+def test_build_opencode_monthly_window_filters_history():
+    from backend.core import opencode_usage
+
+    payload = {
+        "available": True,
+        "windows": [
+            {"label": "5 小时", "remaining_percent": 80, "reset_at": ""},
+            {"label": "每周", "remaining_percent": 90, "reset_at": ""},
+            {"label": "每月", "remaining_percent": 50, "reset_at": "2026-10-14T14:57:19+00:00"},
+        ],
+        "error": "",
+    }
+    snapshots = [
+        {"date": "2026-08-01", "observed_at": "2026-08-01T00:00:00", "monthly": 99},
+        {"date": "2026-09-15", "observed_at": "2026-09-15T00:00:00", "monthly": 70},
+        {"date": "2026-09-25", "observed_at": "2026-09-25T00:00:00", "monthly": 50},
+    ]
+
+    window = opencode_usage.build_opencode_monthly_window(payload, snapshots)
+
+    assert window["reset_at"] == "2026-10-14T14:57:19+00:00"
+    assert window["remaining_percent"] == 50
+    assert [item["remaining_percent"] for item in window["points"]] == [70, 50]
+
+
+def test_opencode_usage_snapshot_roundtrip(tmp_path):
+    from backend.core import opencode_usage
+
+    path = tmp_path / "opencode_usage.json"
+    opencode_usage.save_opencode_usage_snapshot(
+        {"available": True, "windows": [], "error": ""},
+        dt.datetime(2026, 9, 15, 12, 0),
+        path=path,
+    )
+
+    snapshot = opencode_usage.load_opencode_usage_snapshot(path=path)
+
+    assert snapshot["observed_at"].startswith("2026-09-15T12:00")
+    assert snapshot["payload"]["available"] is True
+
+
+def test_api_opencode_usage_serves_stored_snapshot(monkeypatch):
     monkeypatch.setattr(
         codex_setup_api,
-        "read_opencode_go_usage",
+        "load_opencode_usage_snapshot",
         lambda: {
-            "available": True,
-            "windows": [
-                {"label": "5 小时", "remaining_percent": 83, "reset_at": "", "status": "ok"}
-            ],
-            "error": "",
+            "observed_at": "2026-09-15T12:00:00",
+            "payload": {
+                "available": True,
+                "windows": [{"label": "5 小时", "remaining_percent": 80, "reset_at": "", "status": "ok"}],
+                "error": "",
+            },
         },
     )
 
     response = codex_setup_api.get_opencode_usage(current_user=None)
 
     assert response.available is True
+    assert response.observed_at == "2026-09-15T12:00:00"
+    assert response.windows[0].remaining_percent == 80
+
+
+def test_api_opencode_usage_refresh_collects(monkeypatch):
+    monkeypatch.setattr(
+        codex_setup_api,
+        "collect_opencode_usage_snapshot",
+        lambda: {
+            "observed_at": "2026-09-15T12:00:00",
+            "payload": {
+                "available": True,
+                "windows": [{"label": "5 小时", "remaining_percent": 83, "reset_at": "", "status": "ok"}],
+                "error": "",
+            },
+        },
+    )
+
+    response = codex_setup_api.refresh_opencode_usage(current_user=None)
+
+    assert response.available is True
+    assert response.observed_at == "2026-09-15T12:00:00"
     assert response.windows[0].remaining_percent == 83
 
 
@@ -504,8 +844,37 @@ def test_api_quota_refresh_reports_error_without_failing(monkeypatch):
         raise CodexAppServerError("认证不可用")
 
     monkeypatch.setattr(codex_setup_api, "collect_codex_quota_snapshot", raiser)
+    monkeypatch.setattr(codex_setup_api, "load_codex_quota_snapshot", lambda: {"observed_at": "", "groups": []})
 
     response = codex_setup_api.refresh_codex_quota(current_user=None)
 
     assert response.groups == []
+    assert "认证不可用" in response.error
+
+
+def test_api_quota_refresh_falls_back_to_last_snapshot(monkeypatch):
+    def raiser():
+        raise CodexAppServerError("认证不可用")
+
+    monkeypatch.setattr(codex_setup_api, "collect_codex_quota_snapshot", raiser)
+    monkeypatch.setattr(codex_setup_api, "list_codex_weekly_quota_snapshots", lambda: [])
+    monkeypatch.setattr(
+        codex_setup_api,
+        "load_codex_quota_snapshot",
+        lambda: {
+            "observed_at": "2026-09-15T12:00:00",
+            "groups": [
+                {
+                    "id": "codex",
+                    "name": "Codex",
+                    "windows": [{"label": "每周", "remaining_percent": 42, "reset_at": ""}],
+                }
+            ],
+        },
+    )
+
+    response = codex_setup_api.refresh_codex_quota(current_user=None)
+
+    assert response.groups[0].windows[0].remaining_percent == 42
+    assert response.observed_at == "2026-09-15T12:00:00"
     assert "认证不可用" in response.error

@@ -156,6 +156,7 @@ const defaultInfoWindowSettings: FanxiuInfoWindowSettings = {
   show_scene_score: true,
   show_scene_identity_shapes: true,
   show_all_shapes: false,
+  show_magic_crystal: true,
 };
 const infoWindowSettings = computed(() => infoWindowStatus.value?.settings || defaultInfoWindowSettings);
 const infoWindowStatusText = computed(() => {
@@ -1040,6 +1041,15 @@ onUnmounted(() => {
               :model-value="infoWindowSettings.show_scene_score"
               :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
               @change="setInfoWindowSetting('show_scene_score', Boolean($event))"
+            />
+          </label>
+          <label title="魔道入侵自动除魔中（#699）用循环读取的 Runtime 活动期间累计魔晶替换场景编号，末尾秒数为该次读取的延迟">
+            <span>累计魔晶</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.show_magic_crystal"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_magic_crystal', Boolean($event))"
             />
           </label>
           <label title="显示当前已识别场景中标记为 isSceneIdentity 的 Shape">

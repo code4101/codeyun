@@ -60,6 +60,7 @@ def test_record_codex_weekly_quota_attributes_midnight_snapshot_to_observed_day(
             "date": "2026-08-07",
             "remaining_percent": 39,
             "observed_at": "2026-08-07T00:03:00",
+            "bucket": "2026-08-07T00:00:00",
             "reset_at": "",
             "source_url": CODEX_USAGE_URL,
             "source": CODEX_WEEKLY_QUOTA_SOURCE,

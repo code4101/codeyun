@@ -19,6 +19,13 @@ CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage"
 CODEX_WEEKLY_QUOTA_SOURCE = f"codex_app_server:{CODEX_RATE_LIMITS_METHOD}"
 CODEX_WEEKLY_QUOTA_HISTORY_VERSION = 2
 DEFAULT_GENERAL_QUOTA_WINDOW_DAYS = 7
+QUOTA_HISTORY_DEDUP_MINUTES = 10
+
+
+def _history_bucket(observed_at: dt.datetime) -> str:
+    step = max(1, QUOTA_HISTORY_DEDUP_MINUTES)
+    minute = (observed_at.minute // step) * step
+    return observed_at.replace(minute=minute, second=0, microsecond=0).isoformat()
 
 
 class CodexWeeklyQuotaError(RuntimeError):
@@ -435,11 +442,13 @@ def record_codex_weekly_quota_snapshot(
         raise ValueError("Codex 每周余额必须在 0 到 100 之间")
     resolved_path = path or get_codex_weekly_quota_history_path()
     resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    effective_date = observed_at.date().isoformat()
+    observed_text = observed_at.replace(microsecond=0).isoformat()
+    bucket = _history_bucket(observed_at)
     record = {
-        "date": effective_date,
+        "date": observed_at.date().isoformat(),
         "remaining_percent": int(remaining_percent),
-        "observed_at": observed_at.replace(microsecond=0).isoformat(),
+        "observed_at": observed_text,
+        "bucket": bucket,
         "reset_at": str(reset_at or "").strip(),
         "source_url": CODEX_USAGE_URL,
         "source": CODEX_WEEKLY_QUOTA_SOURCE,
@@ -451,10 +460,10 @@ def record_codex_weekly_quota_snapshot(
         snapshots = [
             dict(item)
             for item in history.get("snapshots") or []
-            if str(item.get("date") or "") != effective_date
+            if str(item.get("bucket") or "") != bucket
         ]
         snapshots.append(record)
-        snapshots.sort(key=lambda item: str(item.get("date") or ""))
+        snapshots.sort(key=lambda item: str(item.get("observed_at") or item.get("date") or ""))
         payload = {
             "version": CODEX_WEEKLY_QUOTA_HISTORY_VERSION,
             "snapshots": snapshots,

@@ -21,6 +21,7 @@ from typing import Any
 from pyxllib.prog import read_json_state_dict, write_json_state
 
 from backend.core.fanxiu.info_window import (
+    FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID,
     fanxiu_info_window_state_path,
     fanxiu_windows_info_window_client,
     fanxiu_windows_info_window_heartbeat_path,
@@ -41,6 +42,15 @@ from backend.core.temp_paths import codeyun_temp_root
 
 TRANSPARENT_COLOR = "#010203"
 INFO_WINDOW_POLL_MILLISECONDS = 1000
+# A wallet read costs ~30 read-only ADB calls: measured ~20s cold in a fresh
+# process (ADB session, process discovery, Lua caches) and ~1.2s once warm. The
+# loop therefore stays back-to-back while #699 is on screen, and this floor
+# only keeps a failing read from spinning the CPU; the trailing age reports the
+# freshness of the number actually shown.
+INFO_WINDOW_MAGIC_CRYSTAL_LOOP_FLOOR_SECONDS = 0.2
+# A long-lived renderer pays the cold read once and then keeps the reader hot,
+# so the first #699 visit shows a value instead of a 20-second blank title.
+INFO_WINDOW_MAGIC_CRYSTAL_WARM_INTERVAL_SECONDS = 240.0
 MUMU_TITLE_MARKER = "凡人修仙传：人界篇-Powered by"
 MUTEX_NAME = "Local\\CodeYun.FanxiuInfoWindow"
 STOP_EVENT_NAME = "Local\\CodeYun.FanxiuInfoWindow.Stop"
@@ -190,6 +200,23 @@ class FanxiuWindowsInfoWindow:
         self.refresh_thread: threading.Thread | None = None
         self.last_refresh_attempt_at = float('-inf')
         self.refresh_error = ""
+        self.magic_crystal: dict[str, Any] = {}
+        self.magic_crystal_revision = 0
+        self.last_drawn_magic_crystal_revision = 0
+        self.magic_crystal_due = False
+        self.magic_crystal_thread: threading.Thread | None = None
+        # Loop progress is republished in the heartbeat: "why is there no
+        # number" must be answerable from outside this GUI process.
+        self.magic_crystal_loop: dict[str, Any] = {
+            "attempts": 0,
+            "last_started_at": 0.0,
+            "last_seconds": 0.0,
+            "last_error": "",
+        }
+        # The drawn title is the only part of this renderer that no API can
+        # read back, so the heartbeat republishes exactly what was painted.
+        self.title_text = ""
+        self.closed = False
 
         self.root = tk.Tk(className="FanxiuInfoWindow")
         self.root.withdraw()
@@ -310,18 +337,27 @@ class FanxiuWindowsInfoWindow:
         self.canvas.delete("all")
         scene_id = self.payload.get("scene_id")
         score = max(0.0, float(self.payload.get("score") or 0.0))
+        magic_crystal = self._magic_crystal_value(scene_id)
         text = format_fanxiu_scene_text(
             int(scene_id) if scene_id is not None else None,
             score,
             asset_directory=str(self.payload.get("asset_directory") or ""),
             show_scene_id=bool(self.settings.get("show_scene_id", True)),
             show_scene_score=bool(self.settings.get("show_scene_score", True)),
+            magic_crystal=magic_crystal,
         )
         observation_age_text = format_fanxiu_observation_age(
-            self.payload.get("captured_at") or self.payload.get("observed_at")
+            (
+                self.magic_crystal.get("captured_at")
+                if magic_crystal is not None
+                else None
+            )
+            or self.payload.get("captured_at")
+            or self.payload.get("observed_at")
         )
         if observation_age_text:
             text = " ".join(part for part in (text, observation_age_text) if part)
+        self.title_text = text
         if text:
             self.canvas.create_text(
                 12,
@@ -344,6 +380,25 @@ class FanxiuWindowsInfoWindow:
             right = left + float(box.get("w") or 0.0) * scale_x
             bottom = top + float(box.get("h") or 0.0) * scale_y
             self.canvas.create_rectangle(left, top, right, bottom, outline="white", width=2)
+
+    def _magic_crystal_value(self, scene_id: Any) -> int | None:
+        """Return the live 累计魔晶 amount, only while #699 owns the title.
+
+        The page identity comes from the scene snapshot the window already
+        holds; nothing here captures a frame or recognizes a scene. The
+        trailing age then belongs to this reading instead of the scene
+        snapshot, because that is the freshness of the number being shown.
+        """
+
+        if scene_id is None or int(scene_id) != FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID:
+            return None
+        if not bool(self.settings.get("show_magic_crystal", True)):
+            return None
+        if not self.magic_crystal.get("ok"):
+            return None
+        # 活动期间累计魔晶 is the monotonic total the operator watches grow;
+        # the spendable balance can drop when the exchange shop is used.
+        return int(self.magic_crystal.get("cumulative") or 0)
 
     def _hide(self) -> None:
         if self.visible:
@@ -377,6 +432,16 @@ class FanxiuWindowsInfoWindow:
                 "auto_refresh_supported": True,
                 "refresh_running": bool(self.refresh_thread and self.refresh_thread.is_alive()),
                 "refresh_error": self.refresh_error,
+                "title_text": self.title_text,
+                "magic_crystal_due": bool(self.magic_crystal_due),
+                "magic_crystal": dict(self.magic_crystal),
+                "magic_crystal_loop": {
+                    **self.magic_crystal_loop,
+                    "thread_alive": bool(
+                        self.magic_crystal_thread
+                        and self.magic_crystal_thread.is_alive()
+                    ),
+                },
             })
         except Exception:
             pass
@@ -415,6 +480,59 @@ class FanxiuWindowsInfoWindow:
         except Exception as exc:
             self.refresh_error = f"{type(exc).__name__}: {exc}"
 
+    def _refresh_magic_crystal_loop(self) -> None:
+        """Loop the read-only 累计魔晶 wallet read while #699 owns the title.
+
+        The page identity comes from the committed scene snapshot the renderer
+        already reads, so this loop never captures a frame or recognizes a
+        scene. Each read is a memory observation, not a game action: it opens
+        no window, invokes no Lua method and never touches the Kernel or the
+        Scheduler. The Tk thread stays responsible for drawing; this thread
+        only publishes the latest snapshot, then loops until #699 is left.
+        """
+
+        reader = None
+        last_warm = float("-inf")
+        while not self.closed:
+            now = time.monotonic()
+            if not self.magic_crystal_due and not self._magic_crystal_warm_due(
+                last_warm, now
+            ):
+                time.sleep(0.5)
+                continue
+            if reader is None:
+                # Keep the renderer's import graph light until a page that
+                # actually needs Runtime facts is on screen.
+                from backend.core.fanxiu.instrumentation.magic_invasion_magic_crystal import (
+                    MagicCrystalReader,
+                )
+
+                reader = MagicCrystalReader()
+            self.magic_crystal_loop["attempts"] = (
+                int(self.magic_crystal_loop.get("attempts") or 0) + 1
+            )
+            self.magic_crystal_loop["last_started_at"] = time.time()
+            started = time.monotonic()
+            try:
+                snapshot = reader.read()
+            except Exception as exc:
+                snapshot = {
+                    "ok": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "captured_at": time.time(),
+                }
+            self.magic_crystal_loop["last_seconds"] = round(
+                time.monotonic() - started, 3
+            )
+            self.magic_crystal_loop["last_error"] = (
+                "" if snapshot.get("ok") else str(snapshot.get("reason") or "")
+            )
+            self.magic_crystal = dict(snapshot)
+            self.magic_crystal_revision += 1
+            if not self.magic_crystal_due:
+                last_warm = now
+            time.sleep(INFO_WINDOW_MAGIC_CRYSTAL_LOOP_FLOOR_SECONDS)
+
     def poll(self) -> None:
         now = time.monotonic()
         if self._stopping():
@@ -436,10 +554,44 @@ class FanxiuWindowsInfoWindow:
         except Exception:
             self.target_hwnd = None
             self._hide()
+        self._sync_magic_crystal()
         self._heartbeat(now)
         self.root.after(INFO_WINDOW_POLL_MILLISECONDS, self.poll)
 
+    def _sync_magic_crystal(self) -> None:
+        """Gate the wallet loop on the page actually being shown, then redraw."""
+
+        scene_id = self.payload.get("scene_id")
+        self.magic_crystal_due = bool(
+            self.visible
+            and self.settings.get("show_magic_crystal", True)
+            and scene_id is not None
+            and int(scene_id) == FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID
+        )
+        if not self.magic_crystal_due and self.magic_crystal:
+            # Never re-show a balance from a previous #699 visit: a new
+            # occurrence (or a spent wallet) would make it a false reading.
+            self.magic_crystal = {}
+            self.magic_crystal_revision += 1
+        if self.magic_crystal_revision != self.last_drawn_magic_crystal_revision:
+            self.last_drawn_magic_crystal_revision = self.magic_crystal_revision
+            self._draw()
+
+    def _magic_crystal_warm_due(self, last_warm: float, now: float) -> bool:
+        """Keep the Runtime reader hot even while #699 is not on screen.
+
+        The cold read dominates the first appearance (measured ~20s against
+        ~1.2s warm), and this renderer lives as long as the overlay. Warming a
+        visible window turns the first #699 visit into a quick reading without
+        capturing a frame, sending input or occupying the Kernel.
+        """
+
+        if not self.visible or not self.settings.get("show_magic_crystal", True):
+            return False
+        return now - last_warm >= INFO_WINDOW_MAGIC_CRYSTAL_WARM_INTERVAL_SECONDS
+
     def close(self) -> None:
+        self.closed = True
         self._hide()
         try:
             write_json_state(self.heartbeat_path, {
@@ -456,6 +608,12 @@ class FanxiuWindowsInfoWindow:
         self.root.destroy()
 
     def run(self) -> None:
+        self.magic_crystal_thread = threading.Thread(
+            target=self._refresh_magic_crystal_loop,
+            name="fanxiu-info-window-magic-crystal",
+            daemon=True,
+        )
+        self.magic_crystal_thread.start()
         self.root.after(0, self.poll)
         self.root.mainloop()
 

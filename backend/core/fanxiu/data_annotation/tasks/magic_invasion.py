@@ -58,6 +58,9 @@ MAGIC_INVASION_OVERFLOW_SCENE_ID = 518
 MAGIC_INVASION_ENTRY_TRANSITION_SCENE_ID = 641
 MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID = 697
 MAGIC_INVASION_WORLD_MAP_SCENE_ID = 425
+# 沙盘切换会让客户端回到角色入口页。它属于登录过渡，不是开放世界：必须
+# 点「进入」回到游戏，不能当成 #34 去走 #425 的历练路线。
+MAGIC_INVASION_ROLE_ENTRY_SCENE_ID = 661
 MAGIC_INVASION_TIANNAN_COMPLETE_SCENE_TITLE = "魔道入侵·天南大陆完成"
 MAGIC_INVASION_ENTRY_SETTLE_TIMEOUT_SECONDS = 90.0
 MAGIC_INVASION_ENTRY_MAX_OPTIONAL_STEPS = 128
@@ -346,7 +349,12 @@ def _enter_magic_invasion_map(context: Any) -> Iterator[Any]:
         clicked_scene = None
         if scene == MAGIC_INVASION_MAP_SCENE_ID:
             return
-        if scene in {34, 661}:
+        if scene == MAGIC_INVASION_ROLE_ENTRY_SCENE_ID:
+            context.click_shape_center(scene, "进入")
+            clicked_scene = scene
+            yield from context.wait_action_settle(2.0)
+            continue
+        if scene == 34:
             # “前往大地图” may first close the cover onto the real world.
             # The annotated map route owns the next click and its landing.
             yield from context.go_scene(MAGIC_INVASION_WORLD_MAP_SCENE_ID)

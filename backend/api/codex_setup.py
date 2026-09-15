@@ -24,16 +24,30 @@ from backend.core.codex.switch import (
     OPENAI_PROVIDER_ID,
     CodexSwitchError,
     detect_provider,
+    discover_opencode_models,
     restore_codeyun_backup,
     switch_codex,
 )
+from backend.core.runtime.opencode_proxy_runtime import get_opencode_proxy_status
 from backend.core.codex.weekly_quota import (
     build_codex_general_quota_window,
     collect_codex_quota_snapshot,
     list_codex_weekly_quota_snapshots,
     load_codex_quota_snapshot,
 )
-from backend.core.opencode_usage import read_opencode_go_usage
+from backend.core.deepseek_balance import (
+    build_deepseek_balance_window,
+    collect_deepseek_balance_snapshot,
+    load_deepseek_balance_snapshot,
+    read_deepseek_balance_history,
+    total_balance_value,
+)
+from backend.core.opencode_usage import (
+    build_opencode_monthly_window,
+    collect_opencode_usage_snapshot,
+    load_opencode_usage_snapshot,
+    read_opencode_usage_history,
+)
 from backend.core.settings import get_settings
 from backend.core.system_ai_resources import SystemAiResourceError, resolve_system_ai_resource
 from backend.db import get_session
@@ -44,6 +58,14 @@ router = APIRouter()
 
 DEEPSEEK_PROVIDER = "deepseek"
 
+# A provider switch only rewrites the machine-wide config; every existing Codex
+# thread keeps its own saved model selection, so the switch looks like a no-op
+# inside threads that are already open.
+SESSION_SCOPE_NOTICE = (
+    "切换只改本机默认配置：已存在的 Codex 会话会沿用它们各自的模型设置，"
+    "需要在 Codex 内逐个重新选择模型才会走新的 provider。"
+)
+
 
 class CodexProviderModel(BaseModel):
     id: str
@@ -53,6 +75,9 @@ class CodexProviderModel(BaseModel):
 class CodexProviderInfo(BaseModel):
     id: str
     label: str
+    # Slug written into config.toml when the caller picks the provider without a
+    # model; empty means "the official default of that provider".
+    default_model: str = ""
     models: list[CodexProviderModel] = Field(default_factory=list)
 
 
@@ -68,6 +93,8 @@ class CodexSetupStatusResponse(BaseModel):
     deepseek_configured: bool
     deepseek_api_key_present: bool
     deepseek_key_available: bool
+    opencode_proxy_running: bool = False
+    opencode_proxy_url: str = ""
     providers: list[CodexProviderInfo] = Field(default_factory=list)
 
 
@@ -114,6 +141,35 @@ class OpenCodeUsageWindow(BaseModel):
 class OpenCodeUsageResponse(BaseModel):
     available: bool = False
     windows: list[OpenCodeUsageWindow] = Field(default_factory=list)
+    monthly_window: Optional[CodexQuotaWindowHistory] = None
+    observed_at: str = ""
+    error: str = ""
+
+
+class DeepSeekBalanceItem(BaseModel):
+    currency: str = ""
+    total_balance: str = ""
+    granted_balance: str = ""
+    topped_up_balance: str = ""
+
+
+class BalancePoint(BaseModel):
+    at: str
+    value: float
+
+
+class BalanceWindow(BaseModel):
+    window_start: str = ""
+    window_end: str = ""
+    points: list[BalancePoint] = Field(default_factory=list)
+
+
+class DeepSeekBalanceResponse(BaseModel):
+    available: bool = False
+    is_available: bool = False
+    balances: list[DeepSeekBalanceItem] = Field(default_factory=list)
+    total_window: Optional[BalanceWindow] = None
+    observed_at: str = ""
     error: str = ""
 
 
@@ -130,6 +186,7 @@ class CodexSetupSwitchResponse(BaseModel):
     changed: bool
     message: str
     output: str = ""
+    notice: str = ""
     closed_process_count: int = 0
     restarted_app: bool = False
     status: CodexSetupStatusResponse
@@ -166,7 +223,14 @@ def _build_status(session: Session, raw: dict[str, Any] | None = None) -> CodexS
     payload = dict(raw if raw is not None else read_codex_status())
     payload["provider"] = detect_provider(str(payload.get("model_provider") or ""))
     payload["deepseek_key_available"] = bool(_resolve_deepseek_key(session))
-    payload["providers"] = [CodexProviderInfo(**item) for item in CODEX_SETUP_PROVIDERS]
+    providers = [dict(item) for item in CODEX_SETUP_PROVIDERS]
+    for item in providers:
+        if item["id"] == "opencode":
+            item["models"] = discover_opencode_models()
+    payload["providers"] = [CodexProviderInfo(**item) for item in providers]
+    proxy = get_opencode_proxy_status(probe=False)
+    payload["opencode_proxy_running"] = bool(proxy.get("running"))
+    payload["opencode_proxy_url"] = str(proxy.get("base_url") or "")
     return CodexSetupStatusResponse(**payload)
 
 
@@ -183,7 +247,7 @@ def _switch_message(
     elif provider == DEEPSEEK_PROVIDER:
         base = f"已切换到 DeepSeek · {model}"
     else:
-        base = f"已切换到 opencode Go · {model}"
+        base = f"已切换到 OpenCode Go · {model}"
 
     parts = [base]
     if closed_count:
@@ -225,12 +289,13 @@ def _bootstrap_quota_snapshot() -> dict[str, Any] | None:
         return None
 
 
-def _quota_response(groups: list[dict[str, Any]], observed_at: str) -> CodexQuotaResponse:
+def _quota_response(groups: list[dict[str, Any]], observed_at: str, error: str = "") -> CodexQuotaResponse:
     window = build_codex_general_quota_window(groups, list_codex_weekly_quota_snapshots())
     return CodexQuotaResponse(
         groups=[CodexQuotaGroup(**item) for item in groups],
         general_window=CodexQuotaWindowHistory(**window),
         observed_at=observed_at,
+        error=error,
     )
 
 
@@ -265,8 +330,30 @@ def refresh_codex_quota(
     try:
         snapshot = collect_codex_quota_snapshot()
     except (CodexAppServerError, OSError) as exc:
+        # Keep showing the last successful reading instead of blanking the panel
+        # when a refresh fails (e.g. the Codex account is logged out).
+        cached = load_codex_quota_snapshot()
+        if cached["groups"]:
+            return _quota_response(cached["groups"], cached["observed_at"], error=str(exc))
         return CodexQuotaResponse(error=str(exc))
     return _quota_response(snapshot["groups"], snapshot["observed_at"])
+
+
+_opencode_bootstrap_lock = threading.Lock()
+_opencode_bootstrap_last_attempt = 0.0
+
+
+def _bootstrap_opencode_snapshot() -> dict[str, Any] | None:
+    global _opencode_bootstrap_last_attempt
+    now = time.monotonic()
+    with _opencode_bootstrap_lock:
+        if now - _opencode_bootstrap_last_attempt < _QUOTA_BOOTSTRAP_COOLDOWN_SECONDS:
+            return None
+        _opencode_bootstrap_last_attempt = now
+    try:
+        return collect_opencode_usage_snapshot()
+    except OSError:
+        return None
 
 
 @router.get("/opencode-usage", response_model=OpenCodeUsageResponse)
@@ -274,7 +361,112 @@ def get_opencode_usage(
     current_user: Optional[User] = Depends(get_optional_current_user_from_token),
 ):
     _ensure_codex_setup_access(current_user)
-    return OpenCodeUsageResponse(**read_opencode_go_usage())
+    snapshot = load_opencode_usage_snapshot()
+    if not snapshot["payload"]:
+        bootstrapped = _bootstrap_opencode_snapshot()
+        if bootstrapped:
+            snapshot = bootstrapped
+    payload = snapshot["payload"]
+    if not payload:
+        return OpenCodeUsageResponse(error="尚未采集 opencode 用量，点击刷新")
+    window = build_opencode_monthly_window(payload, read_opencode_usage_history())
+    return OpenCodeUsageResponse(
+        **payload,
+        observed_at=snapshot["observed_at"],
+        monthly_window=CodexQuotaWindowHistory(**window),
+    )
+
+
+@router.post("/opencode-usage/refresh", response_model=OpenCodeUsageResponse)
+def refresh_opencode_usage(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+):
+    _ensure_codex_setup_access(current_user)
+    snapshot = collect_opencode_usage_snapshot()
+    payload = snapshot["payload"]
+    observed_at = snapshot["observed_at"]
+    if not payload.get("available"):
+        cached = load_opencode_usage_snapshot()
+        cached_payload = cached["payload"]
+        if cached_payload.get("available"):
+            payload = {**cached_payload, "error": payload.get("error") or cached_payload.get("error", "")}
+            observed_at = cached["observed_at"]
+    window = build_opencode_monthly_window(payload, read_opencode_usage_history())
+    return OpenCodeUsageResponse(
+        **payload,
+        observed_at=observed_at,
+        monthly_window=CodexQuotaWindowHistory(**window),
+    )
+
+
+_deepseek_balance_bootstrap_lock = threading.Lock()
+_deepseek_balance_bootstrap_last_attempt = 0.0
+
+
+def _bootstrap_deepseek_balance(session: Session) -> dict[str, Any] | None:
+    global _deepseek_balance_bootstrap_last_attempt
+    now = time.monotonic()
+    with _deepseek_balance_bootstrap_lock:
+        if now - _deepseek_balance_bootstrap_last_attempt < _QUOTA_BOOTSTRAP_COOLDOWN_SECONDS:
+            return None
+        _deepseek_balance_bootstrap_last_attempt = now
+    try:
+        return collect_deepseek_balance_snapshot(_resolve_deepseek_key(session))
+    except OSError:
+        return None
+
+
+@router.get("/deepseek-balance", response_model=DeepSeekBalanceResponse)
+def get_deepseek_balance(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_codex_setup_access(current_user)
+    snapshot = load_deepseek_balance_snapshot()
+    if not snapshot["payload"]:
+        bootstrapped = _bootstrap_deepseek_balance(session)
+        if bootstrapped:
+            snapshot = bootstrapped
+    payload = snapshot["payload"]
+    if not payload:
+        return DeepSeekBalanceResponse(error="尚未采集 DeepSeek 余额，点击刷新")
+    window = build_deepseek_balance_window(
+        read_deepseek_balance_history(),
+        latest_value=total_balance_value(payload),
+        latest_at=snapshot["observed_at"],
+    )
+    return DeepSeekBalanceResponse(
+        **payload,
+        observed_at=snapshot["observed_at"],
+        total_window=BalanceWindow(**window),
+    )
+
+
+@router.post("/deepseek-balance/refresh", response_model=DeepSeekBalanceResponse)
+def refresh_deepseek_balance(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_codex_setup_access(current_user)
+    snapshot = collect_deepseek_balance_snapshot(_resolve_deepseek_key(session))
+    payload = snapshot["payload"]
+    observed_at = snapshot["observed_at"]
+    if not payload.get("available"):
+        cached = load_deepseek_balance_snapshot()
+        cached_payload = cached["payload"]
+        if cached_payload.get("available"):
+            payload = {**cached_payload, "error": payload.get("error") or cached_payload.get("error", "")}
+            observed_at = cached["observed_at"]
+    window = build_deepseek_balance_window(
+        read_deepseek_balance_history(),
+        latest_value=total_balance_value(payload),
+        latest_at=observed_at,
+    )
+    return DeepSeekBalanceResponse(
+        **payload,
+        observed_at=observed_at,
+        total_window=BalanceWindow(**window),
+    )
 
 
 @router.post("/switch", response_model=CodexSetupSwitchResponse)
@@ -291,10 +483,8 @@ def switch_codex_setup(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="未知的供应商")
 
     model = str(payload.model or "").strip()
-    allowed_models = {item["id"] for item in provider_info.get("models", [])}
-    if provider != OPENAI_PROVIDER_ID:
-        if not model:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请选择模型")
+    if provider != OPENAI_PROVIDER_ID and model:
+        allowed_models = {item["id"] for item in provider_info.get("models", [])}
         if model not in allowed_models:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -350,11 +540,12 @@ def switch_codex_setup(
     closed_count = len(snapshot.get("stopped") or [])
     after = result.get("status") if isinstance(result, dict) else None
     new_status = _build_status(session, after if isinstance(after, dict) else None)
+    changed = new_status.provider != before_provider or new_status.model != before_model
     return CodexSetupSwitchResponse(
         ok=True,
         provider=provider,
         model=model or new_status.model,
-        changed=new_status.provider != before_provider or new_status.model != before_model,
+        changed=changed,
         message=_switch_message(
             provider,
             model or new_status.model,
@@ -363,6 +554,7 @@ def switch_codex_setup(
             app_was_running=bool(snapshot.get("was_app_running")),
         ),
         output=str(result.get("output") or ""),
+        notice=SESSION_SCOPE_NOTICE if changed else "",
         closed_process_count=closed_count,
         restarted_app=restarted,
         status=new_status,

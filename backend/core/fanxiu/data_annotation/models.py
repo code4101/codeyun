@@ -75,6 +75,11 @@ class FanxiuInfoWindowSettings(BaseModel):
     auto_refresh: bool = False
     show_scene_id: bool = True
     show_scene_score: bool = True
+    # #699 shows the live 累计魔晶 instead of the scene number. The field must
+    # live here too: this model is both the POST body and the GET response, so
+    # an unlisted key would be silently dropped in both directions and the
+    # switch would look wired while changing nothing.
+    show_magic_crystal: bool = True
     show_scene_identity_shapes: bool = True
     show_all_shapes: bool = False
 

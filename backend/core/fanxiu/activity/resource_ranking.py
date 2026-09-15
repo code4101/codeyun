@@ -573,6 +573,74 @@ def collect_and_store_lingzhuang_huadao_activity(
     ).selected_activity
 
 
+def _refresh_yaochi_rank_runtime_facts(
+    session: Session,
+    activity: FanxiuExchangeActivity,
+    *,
+    rank_activity_ids: tuple[int | None, ...],
+) -> dict[str, str]:
+    """Refresh flower-festival rank facts from the Runtime's loaded leaderboards.
+
+    The festival has no packet stage of its own: its persisted rank fact only
+    moves when something reads the live Lua rank objects.  Until now nothing
+    did, so a running instance kept whatever the last capture produced and
+    every reconciliation stayed blocked on "明细尚未加载".
+
+    This is an opportunistic refresh.  A rank the client has not loaded keeps
+    the previous fact (``retained``) instead of raising, because the caller's
+    existing completeness checks already report that boundary honestly.  Rows
+    without an occurrence binding are hand-made fixtures and are skipped.
+    """
+
+    from backend.core.fanxiu.activity.standard_observation import (
+        store_runtime_activity_rank_fact,
+    )
+    from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
+        prepare_activity_rank_runtime,
+        read_activity_rank_runtime_snapshot,
+    )
+
+    evidence = dict(activity.evidence or {})
+    occurrence_runtime_id = str(
+        evidence.get("runtime_id") or evidence.get("instance_key") or ""
+    ).strip()
+    targets = tuple(
+        dict.fromkeys(int(value) for value in rank_activity_ids if value)
+    )
+    if not targets or not occurrence_runtime_id:
+        return {}
+
+    snapshots = {
+        rank_id: read_activity_rank_runtime_snapshot(rank_id) for rank_id in targets
+    }
+    missing_ids = [
+        rank_id
+        for rank_id in targets
+        if not snapshots[rank_id].get("ok")
+        and str(snapshots[rank_id].get("error_code") or "")
+        in {"process_cache_miss", "root_cache_miss"}
+    ]
+    if missing_ids:
+        recovery = prepare_activity_rank_runtime(missing_ids)
+        if bool(recovery.get("ok")):
+            for rank_id in missing_ids:
+                snapshots[rank_id] = read_activity_rank_runtime_snapshot(rank_id)
+
+    refreshed: dict[str, str] = {}
+    for rank_id in targets:
+        snapshot = snapshots[rank_id]
+        if not snapshot.get("ok") or not snapshot.get("complete"):
+            refreshed[str(rank_id)] = "retained"
+            continue
+        store_runtime_activity_rank_fact(
+            session,
+            snapshot,
+            occurrence_runtime_id=occurrence_runtime_id,
+        )
+        refreshed[str(rank_id)] = "updated"
+    return refreshed
+
+
 def collect_and_store_yaochi_flower_festival_activity(
     session: Session,
     *,
@@ -598,6 +666,11 @@ def collect_and_store_yaochi_flower_festival_activity(
         references.get("personal_rank_activity_id") or activity.game_rank_activity_id
     )
     plane_rank_activity_id = references.get("plane_rank_activity_id")
+    rank_runtime_refresh = _refresh_yaochi_rank_runtime_facts(
+        session,
+        activity,
+        rank_activity_ids=(personal_rank_activity_id, plane_rank_activity_id),
+    )
     runtime_context = _yaochi_runtime_context(session, activity)
     reward_tiers = load_activity_rank_reward_tiers(
         reward_activity_id=personal_rank_activity_id,
@@ -723,6 +796,7 @@ def collect_and_store_yaochi_flower_festival_activity(
             "rank_protocol": rank.get("protocol"),
             "rank_fact": dict(rank.get("evidence") or {}),
             "activity_references": references,
+            "rank_runtime_refresh": rank_runtime_refresh,
             "server_day": runtime_context["server_day"] or None,
             "world_level": runtime_context["world_level"] or None,
         }

@@ -115,7 +115,7 @@
         </div>
 
         <el-alert
-          v-if="activeSite && activeSite.embed === 'blocked' && viewMode === 'embed'"
+          v-if="activeSite && activeSite.embed === 'blocked' && viewMode === 'embed' && forceEmbed"
           class="viewer-alert"
           type="warning"
           :closable="false"
@@ -156,7 +156,7 @@
           />
 
           <iframe
-            v-else-if="viewMode === 'embed'"
+            v-else-if="viewMode === 'embed' && !showBlockedFallback"
             :key="frameKey"
             class="portal-frame"
             :src="activeSite.url"
@@ -164,6 +164,26 @@
             allow="clipboard-read; clipboard-write; fullscreen; microphone; camera; geolocation"
             @load="onFrameLoad"
           />
+
+          <div v-else-if="showBlockedFallback" class="external-panel">
+            <el-icon class="external-icon is-blocked">
+              <Warning />
+            </el-icon>
+            <div class="external-name">{{ activeSite.name }}</div>
+            <div class="external-host">该站点声明禁止被其他网站嵌套</div>
+            <p class="external-note">
+              {{ activeSite.note ?? 'X-Frame-Options / CSP frame-ancestors 限制' }}，浏览器会强制拒绝加载，所以这里不放 iframe。
+              新窗口打开不受此限制，登录也最稳定。
+            </p>
+            <div class="external-actions">
+              <el-button type="primary" :icon="TopRight" @click="openExternal(activeSite.url)">
+                在新窗口打开
+              </el-button>
+              <el-button @click="tryEmbedBlockedSite">
+                仍要尝试嵌入
+              </el-button>
+            </div>
+          </div>
 
           <div v-else class="external-panel">
             <el-icon class="external-icon">
@@ -202,7 +222,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Link, Plus, Refresh, Search, TopRight } from '@element-plus/icons-vue'
+import { Link, Plus, Refresh, Search, TopRight, Warning } from '@element-plus/icons-vue'
 
 import {
   AI_PORTAL_PRESET_SITES,
@@ -246,6 +266,12 @@ const activeSite = computed<AiPortalSite | null>(
   () => allSites.value.find((site) => site.id === activeSiteId.value) ?? null,
 )
 
+const showBlockedFallback = computed(() => (
+  viewMode.value === 'embed'
+  && activeSite.value?.embed === 'blocked'
+  && !forceEmbed.value
+))
+
 const groupedSites = computed(() => {
   const keyword = filterKeyword.value.trim().toLowerCase()
   const groups: { name: string; sites: AiPortalSite[] }[] = []
@@ -268,12 +294,15 @@ const groupedSites = computed(() => {
 })
 
 if (!activeSiteId.value || !allSites.value.some((site) => site.id === activeSiteId.value)) {
-  activeSiteId.value = allSites.value[0]?.id ?? null
+  activeSiteId.value = allSites.value.find((site) => site.embed === 'ok')?.id
+    ?? allSites.value[0]?.id
+    ?? null
 }
 
 const frameKey = ref(0)
 const frameLoaded = ref(false)
 const frameStalled = ref(false)
+const forceEmbed = ref(false)
 let stallTimer: ReturnType<typeof setTimeout> | null = null
 
 function clearStallTimer() {
@@ -320,6 +349,12 @@ function openExternal(url: string | undefined) {
     return
   }
   window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function tryEmbedBlockedSite() {
+  forceEmbed.value = true
+  frameKey.value += 1
+  resetFrame()
 }
 
 async function copyUrl() {
@@ -389,10 +424,12 @@ watch(activeSiteId, (value) => {
   if (value) {
     saveActiveSiteId(value)
   }
+  forceEmbed.value = false
 })
 
 watch(viewMode, (value) => {
   saveViewMode(value)
+  forceEmbed.value = false
   if (value === 'embed') {
     frameKey.value += 1
     resetFrame()
@@ -704,6 +741,19 @@ onBeforeUnmount(clearStallTimer)
 .external-icon {
   font-size: 34px;
   color: #94a3b8;
+}
+
+.external-icon.is-blocked {
+  color: #f59e0b;
+}
+
+.external-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 
 .external-name {

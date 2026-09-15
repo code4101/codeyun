@@ -10901,6 +10901,113 @@ class BehaviorTreeExecutor(
                 queue.append(source_id)
         return distances
 
+    def _scene_navigation_reachability_values(
+        self,
+        tree: list[dict[str, Any]],
+        navigation_edges: dict[int, list[dict[str, Any]]],
+        target_scene_id: int,
+    ) -> dict[int, float]:
+        """Value-iterate the probability of still reaching the target.
+
+        Every annotated control is a stochastic transition: its landing
+        distribution is the posterior of the ``sceneJumpTarget`` frequency
+        table.  Solving ``V(s) = γ·max_a Σ_l P(l|a)·V(l)`` with ``V(target)=1``
+        answers "how likely is this scene to still arrive *cheaply*", weighing
+        the whole landing distribution instead of a single declared hop.
+
+        ``γ`` is the geometric price of one navigation step.  It has to bite:
+        at γ≈1 a detour that walks into a page and straight back out inherits
+        almost the full value of the world it returns to, so useless round
+        trips (storage bag, daily page, …) look as good as the real route.  At
+        γ=0.8 every extra step costs 20% of the remaining value.
+
+        Transitions use the confidence lower bound of each landing rather than
+        its raw posterior.  A control whose landings are genuinely diffuse —
+        a return button that goes wherever the caller came from — simply has
+        little evidence for any single destination, so its mass collapses on
+        its own.  No control is classified or special-cased by name.
+        """
+
+        discount = 0.8
+        actions: dict[int, list[dict[int, float]]] = {}
+        for source_id, edges in navigation_edges.items():
+            source_actions: list[dict[int, float]] = []
+            for edge in edges:
+                if self._scene_navigation_edge_risk(edge, int(target_scene_id)) is None:
+                    continue
+                target_ids = [int(value) for value in edge.get("target_ids") or []]
+                if not target_ids:
+                    continue
+                shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
+                probabilities = self._scene_navigation_landing_probabilities(
+                    tree, shape, target_ids,
+                )
+                if probabilities:
+                    source_actions.append(probabilities)
+            if source_actions:
+                actions[int(source_id)] = source_actions
+        target = int(target_scene_id)
+        values: dict[int, float] = {target: 1.0}
+        for _iteration in range(200):
+            updated: dict[int, float] = {}
+            delta = 0.0
+            for source_id, source_actions in actions.items():
+                # The goal is absorbing: V(target) = 1 by definition, never the
+                # value of its own outgoing controls.
+                if source_id == target:
+                    continue
+                best = 0.0
+                for probabilities in source_actions:
+                    expected = 0.0
+                    for landing_id, probability in probabilities.items():
+                        expected += probability * values.get(int(landing_id), 0.0)
+                    if expected > best:
+                        best = expected
+                value = discount * best
+                updated[source_id] = value
+                delta = max(delta, abs(value - values.get(source_id, 0.0)))
+            updated[target] = 1.0
+            values = updated
+            if delta < 1e-9:
+                break
+        return values
+
+    _SCENE_NAVIGATION_CONFIDENCE_Z = 1.0
+
+    def _scene_navigation_landing_probabilities(
+        self,
+        tree: list[dict[str, Any]],
+        shape: dict[str, Any],
+        target_ids: list[int],
+        *,
+        confidence_z: float | None = None,
+    ) -> dict[int, float]:
+        """Diluted landings floored at a confidence lower bound.
+
+        The frequency table is evidence, not truth.  Two dilutions stack:
+
+        1. One pseudo-observation goes to an unspecified landing, so a single
+           hit is at most 50% likely instead of a certainty.  Rich evidence
+           barely moves (315/560 → 56.1%).
+        2. The remaining observation error is subtracted as a confidence lower
+           bound (normal approximation, z≈1), which is what makes a diffuse
+           control collapse on its own: a button that "returns wherever it came
+           from" has little evidence for any single destination.
+
+        Nothing here looks at control names or semantics.
+        """
+
+        z = (
+            float(confidence_z)
+            if confidence_z is not None
+            else float(self._SCENE_NAVIGATION_CONFIDENCE_Z)
+        )
+        return posterior_landing_probabilities(
+            self._scene_jump_target_counts(tree, shape),
+            target_ids,
+            confidence_z=z,
+        )
+
     def _scene_navigation_edge_progress_probability(
         self,
         tree: list[dict[str, Any]],
@@ -10942,6 +11049,7 @@ class BehaviorTreeExecutor(
         navigation_edges: dict[int, list[dict[str, Any]]] | None = None,
         distances_to_target: Mapping[int, int] | None = None,
         landing_probability_cache: dict[tuple[Any, ...], dict[int, float]] | None = None,
+        reachability_values: Mapping[int, float] | None = None,
     ) -> dict[str, Any] | None:
         source_id = int(edge.get("source_id") or 0)
         target_ids = []
@@ -10992,18 +11100,48 @@ class BehaviorTreeExecutor(
             distances_to_target=distances_to_target,
             landing_probability_cache=landing_probability_cache,
         )
-        if progress_probability <= 0:
-            return None
         landing_probabilities = landing_probability_cache[self._scene_jump_edge_key(edge)]
-        best_landing_id = max(
-            progress_landing_ids,
-            key=lambda landing_id: landing_probabilities.get(int(landing_id), 0.0),
-        )
+        expected_reachability = 0.0
+        if reachability_values is not None:
+            # Incremental (advantage) score: only landing mass that leaves this
+            # scene better off counts.  Walking into a page and straight back
+            # out, or a self-loop, contributes exactly zero, so the ranking
+            # separates real progress instead of sharing one baseline.
+            current_value = float(reachability_values.get(int(source_id), 0.0))
+            action_probabilities = self._scene_navigation_landing_probabilities(
+                tree, shape, target_ids,
+            )
+            for landing_id, probability in action_probabilities.items():
+                gain = float(reachability_values.get(int(landing_id), 0.0)) - current_value
+                if gain > 0:
+                    expected_reachability += float(probability) * gain
+            if expected_reachability <= 0:
+                return None
+        elif progress_probability <= 0:
+            return None
+        # The probability model ranks whole landing distributions, so the
+        # dominant landing need not be one the hop-distance model calls
+        # progress; fall back to the distribution's mode in that case.
+        if progress_landing_ids:
+            best_landing_id = max(
+                progress_landing_ids,
+                key=lambda landing_id: landing_probabilities.get(int(landing_id), 0.0),
+            )
+        else:
+            best_landing_id = max(
+                landing_probabilities,
+                key=lambda landing_id: landing_probabilities[int(landing_id)],
+            )
         source_distance = int(distances_to_target.get(source_id, 1))
         downstream_len = int(distances_to_target.get(best_landing_id, max(0, source_distance - 1)))
         direct = best_landing_id == int(target_scene_id)
         best_count = target_counts.get(best_landing_id, 0)
-        posterior_score = int(round(progress_probability * 1_000_000))
+        posterior_score = int(
+            round(
+                (expected_reachability if reachability_values is not None else progress_probability)
+                * 1_000_000
+            )
+        )
         self_count = target_counts.get(source_id, 0)
         wrong_target_count = max(
             (
@@ -11037,6 +11175,8 @@ class BehaviorTreeExecutor(
         if best_count:
             reason += f"，历史命中 {best_count} 次"
         reason += f"，单步进展权重 {progress_probability:.3%}"
+        if reachability_values is not None:
+            reason += f"，期望增益 {expected_reachability:.3%}"
         if self_count:
             reason += f"，自身落点 {self_count} 次"
         if exit_score:
@@ -11069,6 +11209,11 @@ class BehaviorTreeExecutor(
             navigation_edges,
             int(target_scene_id),
         )
+        reachability_values = self._scene_navigation_reachability_values(
+            tree,
+            navigation_edges,
+            int(target_scene_id),
+        )
         landing_probability_cache: dict[tuple[Any, ...], dict[int, float]] = {}
         for order, edge in enumerate(navigation_edges.get(int(current_scene_id), [])):
             # ``sceneJumpTarget`` is a live landing-frequency table.  Every
@@ -11089,6 +11234,7 @@ class BehaviorTreeExecutor(
                 navigation_edges=navigation_edges,
                 distances_to_target=distances_to_target,
                 landing_probability_cache=landing_probability_cache,
+                reachability_values=reachability_values,
             )
             if ranked is not None:
                 candidates.append(ranked)

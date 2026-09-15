@@ -563,6 +563,7 @@ export interface FanxiuInfoWindowSettings {
   show_scene_score: boolean;
   show_scene_identity_shapes: boolean;
   show_all_shapes: boolean;
+  show_magic_crystal: boolean;
 }
 
 export interface FanxiuInfoWindowControlStatus {

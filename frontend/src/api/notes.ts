@@ -68,6 +68,7 @@ export interface NoteNode {
   user_id?: number;
   title: string;
   content?: string;
+  format_type?: 'html' | 'markdown';
   version: number;
   weight: number;
   node_type?: string | null;

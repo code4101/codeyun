@@ -373,6 +373,13 @@
         @input="handleSourceHtmlInput"
         @blur="handleSourceHtmlEditBlur"
       ></div>
+      <MarkdownEditor
+        v-else-if="currentNote.format_type === 'markdown'"
+        :key="currentNote.id || 'new-md'"
+        v-model="currentNote.content"
+        :readOnly="effectiveReadonly"
+        @change="handleContentChange"
+      />
       <NoteEditor
         v-else
         :key="currentNote.id || 'new'"
@@ -416,6 +423,7 @@ import NodeSelector from './NodeSelector.vue';
 import NoteTypeSelector from './NoteTypeSelector.vue';
 import SortableOrderHandle from './SortableOrderHandle.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
+import MarkdownEditor from './MarkdownEditor.vue';
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate';
 import {
   applyEditableNoteSnapshot,
