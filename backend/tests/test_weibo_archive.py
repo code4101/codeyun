@@ -144,7 +144,8 @@ def test_render_weibo_entry_omits_repeated_identity_and_keeps_content_geometry()
 
     html = render_weibo_entry_html(post)
 
-    assert "max-width:640px" in html
+    # 版面宽度由阅读器决定，归档 HTML 不再自带 640px 定宽列。
+    assert "max-width:640px" not in html
     assert "武陵惟海老头子" not in html
     assert "avatar.jpg" not in html
     assert "来自 微博网页版" not in html

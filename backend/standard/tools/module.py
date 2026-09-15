@@ -7,6 +7,7 @@ from .ai_config import register as register_ai_config_standard_feature
 from .ai_git_commit import register as register_ai_git_commit_standard_feature
 from .ai_reduction import register as register_ai_reduction_standard_feature
 from .ai_wechat import register as register_ai_wechat_standard_feature
+from .codex_setup import register as register_codex_setup_standard_feature
 from .hardware_temperature import register as register_hardware_temperature_standard_feature
 from .music_tools import register as register_music_tools_standard_feature
 from .project_graph_runtime import register as register_project_graph_runtime_standard_feature
@@ -20,6 +21,7 @@ def register(app: FastAPI) -> None:
     register_ai_git_commit_standard_feature(app)
     register_ai_reduction_standard_feature(app)
     register_ai_wechat_standard_feature(app)
+    register_codex_setup_standard_feature(app)
     register_hardware_temperature_standard_feature(app)
     register_music_tools_standard_feature(app)
     register_project_graph_runtime_standard_feature(app)

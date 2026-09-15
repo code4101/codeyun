@@ -75,6 +75,22 @@ class CodexDispatchStatus:
         return asdict(self)
 
 
+def _windows_codex_fallbacks() -> tuple[Path, ...]:
+    """Return the native Codex binaries the desktop client installs under LOCALAPPDATA."""
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return ()
+    bin_dir = Path(local_app_data) / "OpenAI" / "Codex" / "bin"
+    if not bin_dir.is_dir():
+        return ()
+    candidates = [bin_dir / "codex.exe"]
+    versioned = [path for path in bin_dir.glob("*/codex.exe") if path.is_file()]
+    versioned.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    candidates.extend(versioned)
+    return tuple(candidates)
+
+
 def resolve_codex_executable() -> str:
     """Return a directly executable Codex CLI binary, avoiding shell shims."""
 
@@ -83,6 +99,10 @@ def resolve_codex_executable() -> str:
         resolved = shutil.which(candidate)
         if resolved and (os.name != "nt" or Path(resolved).suffix.lower() == ".exe"):
             return resolved
+    if os.name == "nt":
+        for fallback in _windows_codex_fallbacks():
+            if fallback.is_file():
+                return str(fallback)
     raise FileNotFoundError("未找到可直接启动的 Codex CLI")
 
 

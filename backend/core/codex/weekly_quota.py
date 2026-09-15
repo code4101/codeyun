@@ -75,6 +75,252 @@ def parse_codex_rate_limits_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+CODEX_CHATGPT_AUTH_OVERRIDE: tuple[tuple[str, str], ...] = (("preferred_auth_method", '"chatgpt"'),)
+
+
+def _window_label(minutes: Any) -> str:
+    try:
+        value = int(minutes or 0)
+    except (TypeError, ValueError):
+        return ""
+    if value <= 0:
+        return ""
+    if value % 10080 == 0:
+        return "每周" if value == 10080 else f"{value // 10080} 周"
+    if value % 1440 == 0:
+        return "每天" if value == 1440 else f"{value // 1440} 天"
+    if value % 60 == 0:
+        return f"{value // 60} 小时"
+    return f"{value} 分钟"
+
+
+def _reset_at_iso(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        return (
+            dt.datetime.fromtimestamp(int(value), tz=dt.timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+        )
+    except (OSError, OverflowError, TypeError, ValueError):
+        return ""
+
+
+def parse_codex_rate_limit_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return every rate-limit bucket (general + per-model) with its windows."""
+
+    by_id = payload.get("rateLimitsByLimitId") if isinstance(payload, dict) else None
+    if not isinstance(by_id, dict) or not by_id:
+        single = payload.get("rateLimits") if isinstance(payload, dict) else None
+        by_id = {"codex": single} if isinstance(single, dict) else {}
+
+    groups: list[dict[str, Any]] = []
+    for limit_id, snapshot in by_id.items():
+        if not isinstance(snapshot, dict):
+            continue
+        name = str(snapshot.get("limitName") or "").strip()
+        if not name:
+            name = "通用使用限额" if str(limit_id) == "codex" else str(limit_id)
+        windows: list[dict[str, Any]] = []
+        for key in ("primary", "secondary"):
+            window = snapshot.get(key)
+            if not isinstance(window, dict):
+                continue
+            try:
+                used_percent = int(window.get("usedPercent"))
+            except (TypeError, ValueError):
+                continue
+            minutes = int(window.get("windowDurationMins") or 0)
+            windows.append(
+                {
+                    "label": _window_label(minutes),
+                    "remaining_percent": max(0, min(100, 100 - used_percent)),
+                    "reset_at": _reset_at_iso(window.get("resetsAt")),
+                    "window_minutes": minutes,
+                }
+            )
+        windows.sort(key=lambda item: item["window_minutes"])
+        groups.append({"id": str(limit_id), "name": name, "windows": windows})
+
+    groups.sort(key=lambda item: 0 if item["id"] == "codex" else 1)
+    return groups
+
+
+def read_codex_quota_groups(*, timeout_seconds: float = 25.0) -> list[dict[str, Any]]:
+    """Read the ChatGPT/Codex account quota buckets, regardless of active provider."""
+
+    payload = read_codex_rate_limits(
+        timeout_seconds=timeout_seconds,
+        config_overrides=CODEX_CHATGPT_AUTH_OVERRIDE,
+    )
+    return parse_codex_rate_limit_groups(payload)
+
+
+def _to_utc(value: dt.datetime) -> dt.datetime:
+    if value.tzinfo is None:
+        value = value.astimezone()
+    return value.astimezone(dt.timezone.utc)
+
+
+def _floor_to_local_day(value: dt.datetime, local_tz: dt.tzinfo) -> dt.datetime:
+    return value.astimezone(local_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _ceil_to_local_day(value: dt.datetime, local_tz: dt.tzinfo) -> dt.datetime:
+    floored = _floor_to_local_day(value, local_tz)
+    if value.astimezone(local_tz) == floored:
+        return floored
+    return floored + dt.timedelta(days=1)
+
+
+def _parse_history_timestamp(item: dict[str, Any]) -> dt.datetime | None:
+    for key in ("observed_at", "date"):
+        raw = str(item.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            return _to_utc(dt.datetime.fromisoformat(raw))
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_iso_timestamp(raw: Any) -> dt.datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return _to_utc(dt.datetime.fromisoformat(text))
+    except ValueError:
+        return None
+
+
+def _general_quota_window(groups: list[dict[str, Any]]) -> dict[str, Any] | None:
+    general = next((item for item in groups if isinstance(item, dict) and item.get("id") == "codex"), None)
+    if general is None and groups:
+        general = groups[0]
+    if not isinstance(general, dict):
+        return None
+    windows = [item for item in general.get("windows") or [] if isinstance(item, dict)]
+    return max(windows, key=lambda item: int(item.get("window_minutes") or 0), default=None)
+
+
+def build_codex_general_quota_window(
+    groups: list[dict[str, Any]],
+    snapshots: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Plot the general quota across its current window (reset minus window length).
+
+    The time axis is rounded outward to local midnight so points recorded at 00:00
+    land on day boundaries; the history is still filtered to the real quota window.
+    """
+
+    general = next((item for item in groups if isinstance(item, dict) and item.get("id") == "codex"), None)
+    if general is None and groups:
+        general = groups[0]
+    weekly = _general_quota_window(groups)
+    if not isinstance(general, dict) or not weekly:
+        return {"name": "", "window_start": "", "window_end": "", "reset_at": "", "remaining_percent": None, "points": []}
+
+    end = _parse_iso_timestamp(weekly.get("reset_at"))
+    minutes = int(weekly.get("window_minutes") or 0)
+    raw_start = end - dt.timedelta(minutes=minutes) if end and minutes else None
+
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    start = _floor_to_local_day(raw_start, local_tz) if raw_start else None
+    axis_end = _ceil_to_local_day(end, local_tz) if end else None
+
+    points: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        moment = _parse_history_timestamp(snapshot)
+        if moment is None:
+            continue
+        if raw_start and end and not (raw_start <= moment <= end):
+            continue
+        try:
+            remaining = int(snapshot.get("remaining_percent"))
+        except (TypeError, ValueError):
+            continue
+        points.append({"at": moment.isoformat(), "remaining_percent": max(0, min(100, remaining))})
+
+    points.sort(key=lambda item: item["at"])
+    return {
+        "name": str(general.get("name") or ""),
+        "window_start": start.isoformat() if start else "",
+        "window_end": axis_end.isoformat() if axis_end else "",
+        "reset_at": end.isoformat() if end else "",
+        "remaining_percent": weekly.get("remaining_percent"),
+        "points": points,
+    }
+
+
+def get_codex_quota_snapshot_path() -> Path:
+    return get_settings().data_dir / "codex" / "quota_snapshot.json"
+
+
+def save_codex_quota_snapshot(
+    groups: list[dict[str, Any]],
+    observed_at: dt.datetime,
+    *,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    resolved_path = path or get_codex_quota_snapshot_path()
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "observed_at": observed_at.replace(microsecond=0).isoformat(),
+        "groups": groups,
+    }
+    temp_path = resolved_path.with_suffix(f"{resolved_path.suffix}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, resolved_path)
+    return payload
+
+
+def load_codex_quota_snapshot(*, path: Path | None = None) -> dict[str, Any]:
+    resolved_path = path or get_codex_quota_snapshot_path()
+    if not resolved_path.exists():
+        return {"observed_at": "", "groups": []}
+    try:
+        payload = json.loads(resolved_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"observed_at": "", "groups": []}
+    groups = payload.get("groups") if isinstance(payload, dict) else []
+    return {
+        "observed_at": str(payload.get("observed_at") or "") if isinstance(payload, dict) else "",
+        "groups": [item for item in groups if isinstance(item, dict)] if isinstance(groups, list) else [],
+    }
+
+
+def record_codex_general_quota(groups: list[dict[str, Any]], *, now: dt.datetime | None = None) -> bool:
+    weekly = _general_quota_window(groups)
+    if not weekly:
+        return False
+    try:
+        remaining = int(weekly.get("remaining_percent"))
+    except (TypeError, ValueError):
+        return False
+    record_codex_weekly_quota_snapshot(
+        remaining_percent=remaining,
+        observed_at=now or dt.datetime.now(),
+        reset_at=str(weekly.get("reset_at") or ""),
+    )
+    return True
+
+
+def collect_codex_quota_snapshot(*, now: dt.datetime | None = None) -> dict[str, Any]:
+    """Read the live quota buckets once and persist them as the latest snapshot."""
+
+    groups = read_codex_quota_groups()
+    observed_at = (now or dt.datetime.now()).replace(microsecond=0)
+    save_codex_quota_snapshot(groups, observed_at)
+    record_codex_general_quota(groups, now=observed_at)
+    return {"observed_at": observed_at.isoformat(), "groups": groups}
+
+
 def get_codex_weekly_quota_history_path() -> Path:
     return get_settings().data_dir / "codex" / "weekly_quota_history.json"
 

@@ -3,6 +3,7 @@ import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 import aiChatPage from './ai-chat'
 import aiConfigPage from './ai-config'
 import aiGitCommitPage from './ai-git-commit'
+import aiPortalPage from './ai-portal'
 import aiReductionPage from './ai-reduction'
 import aiWechatPage from './ai-wechat'
 import colorToolsPage from './color-tools'
@@ -10,6 +11,7 @@ import imageBrowserPage from './image-browser'
 import musicToolsPage from './music-tools'
 import openScoreStudyPage from './open-score-study'
 import passwordGeneratorPage from './password-generator'
+import resetCodexPage from './reset-codex'
 import webOutlinePage from './web-outline'
 
 const pages: AppPageDefinition[] = [
@@ -20,6 +22,8 @@ const pages: AppPageDefinition[] = [
   openScoreStudyPage,
   webOutlinePage,
   aiConfigPage,
+  aiPortalPage,
+  resetCodexPage,
   aiChatPage,
   aiReductionPage,
   aiGitCommitPage,

@@ -698,10 +698,12 @@ def _render_x_entry(post: XPost) -> str:
             f'<div lang="zh-CN" style="font-size:14px;line-height:22px;">{main_text_zh}</div>'
             f"{quote_translation_html}</div>"
         )
+    # 版面宽度归阅读器（--reader-reading-max-width）：归档 HTML 只声明占满可用宽度，
+    # 不再自带 640px 定宽列，否则收栏后正文无法利用腾出的版面。
     return (
         f'<figure class="x-entry" id="x-{html.escape(post.id, quote=True)}" '
         'data-book-page-atomic="true" '
-        'style="box-sizing:border-box;width:100%;max-width:640px;margin:0 auto;'
+        'style="box-sizing:border-box;width:100%;margin:0 auto;'
         'padding:18px 0 22px;border-bottom:1px solid #e5e7eb;color:#333;">'
         '<div style="display:flex;justify-content:space-between;gap:12px;'
         'font-size:13px;line-height:18px;color:#939393;">'
@@ -734,8 +736,8 @@ def build_x_book_document(
         heading = f"{month}（{len(month_posts)}则）"
         articles.append(
             f'<article data-article-id="{anchor}" '
-            'style="box-sizing:border-box;width:100%;max-width:680px;margin:0 auto 34px;">'
-            f'<h1 id="{anchor}" style="max-width:640px;margin:0 auto 18px;'
+            'style="box-sizing:border-box;width:100%;margin:0 auto 34px;">'
+            f'<h1 id="{anchor}" style="margin:0 auto 18px;'
             f'font-size:24px;line-height:1.35;color:#1f2937;">{heading}</h1>'
             + "".join(_render_x_entry(post) for post in month_posts)
             + "</article>"

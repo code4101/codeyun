@@ -1170,7 +1170,8 @@ class BackgroundTaskRunner:
                 print(f"Background task {task_key} failed; next run {next_run}: {exc}")
                 return Status.FAILURE
             if not escalation_threshold:
-                raise
+                print(f"Background task {task_key} failed: {exc}")
+                return Status.FAILURE
             failure_state = _background_task_failure_state(ctx.runner, task_key, create=True)
             failure_count = int(failure_state.get("consecutive_failures") or 0) + 1
             failure_state["consecutive_failures"] = failure_count
@@ -1188,7 +1189,8 @@ class BackgroundTaskRunner:
             )
             failure_state["recent_failures"] = recent_failures[-escalation_threshold:]
             if failure_count < escalation_threshold:
-                raise
+                print(f"Background task {task_key} failed (attempt {failure_count}/{escalation_threshold}): {exc}")
+                return Status.FAILURE
             request = _build_background_task_escalation_request(
                 spec=spec,
                 failure_state=failure_state,
@@ -1199,7 +1201,8 @@ class BackgroundTaskRunner:
             except Exception as dispatch_exc:
                 failure_state["status"] = "dispatch_failed"
                 failure_state["dispatch_error"] = f"{type(dispatch_exc).__name__}: {dispatch_exc}"
-                raise
+                print(f"Background task {task_key} escalation failed: {dispatch_exc}")
+                return Status.FAILURE
             failure_state["status"] = "agent_running"
             failure_state["dispatch"] = dispatch.model_dump()
             failure_state.pop("dispatch_error", None)

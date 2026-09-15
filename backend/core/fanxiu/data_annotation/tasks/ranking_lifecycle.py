@@ -728,6 +728,45 @@ def execute_magic_invasion_initialization_rnd_cell(runner, ctx, payload, stop_ev
     ))
 
 
+def execute_magic_invasion_active_rnd_cell(runner, ctx, payload, stop_event):
+    """Run the unique current Magic occurrence's 3x500 exploration compound once."""
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_compound import (
+        execute_magic_invasion_compound_checkpoint,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("魔道正式运行研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "magic-invasion"
+        and occurrence.start_at <= now <= occurrence.end_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"魔道正式运行研发无法唯一定位当前开放实例：matches={len(matches)}"
+        )
+    return (yield from execute_magic_invasion_compound_checkpoint(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        occurrence=matches[0],
+    ))
+
+
 def execute_beast_abyss_rank_refresh_rnd_cell(runner, ctx, payload, stop_event):
     """Refresh the current Beast Abyss rank tabs without challenge or exchange."""
 
@@ -815,6 +854,7 @@ __all__ = [
     "execute_beast_abyss_initialization_rnd_cell",
     "execute_beast_abyss_lifecycle_rnd_cell",
     "execute_magic_invasion_initialization_rnd_cell",
+    "execute_magic_invasion_active_rnd_cell",
     "execute_beast_abyss_exchange_tail_rnd_cell",
     "execute_beast_abyss_rank_refresh_rnd_cell",
     "execute_ranking_lifecycle_job",

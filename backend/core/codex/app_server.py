@@ -71,20 +71,21 @@ def read_codex_rate_limits(
     timeout_seconds: float = 25.0,
     executable: str | None = None,
     popen_factory: Callable[..., subprocess.Popen[str]] = popen_service,
+    config_overrides: tuple[tuple[str, str], ...] = (),
 ) -> dict[str, Any]:
     """Read the authenticated account rate-limit snapshot through Codex app-server.
 
     This uses Codex's public JSON-RPC surface and does not submit a model request.
-    The child is always bounded and stopped after the single read.
+    The child is always bounded and stopped after the single read.  ``config_overrides``
+    become ``-c key=value`` flags for this child only, so the ChatGPT account quota can
+    be read even while ``config.toml`` points at another provider.
     """
 
     timeout = max(1.0, float(timeout_seconds))
-    command = [
-        executable or resolve_codex_executable(),
-        "app-server",
-        "--listen",
-        "stdio://",
-    ]
+    command = [executable or resolve_codex_executable()]
+    for key, value in config_overrides:
+        command.extend(["-c", f"{key}={value}"])
+    command.extend(["app-server", "--listen", "stdio://"])
     process = popen_factory(
         command,
         stdin=subprocess.PIPE,

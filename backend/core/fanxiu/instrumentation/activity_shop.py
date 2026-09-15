@@ -1039,19 +1039,6 @@ def collect_activity_shop_runtime(
     sort_order_by_id: dict[int, int] = {}
     currencies: set[int] = set()
     for goods_id, config_rows in selected.items():
-        signatures = {
-            (
-                int(row[4]),
-                int(row[5] or 1),
-                int(row[_ROW_PRICE] or 0),
-                int(row[_ROW_CURRENCY] or 0),
-            )
-            for row in config_rows
-        }
-        if len(signatures) != 1:
-            raise FanxiuActivityShopCollectionError(
-                f"活动商品 {goods_id} 的当前配置内容不一致"
-            )
         primary = config_rows[0]
         limits = [
             int(row[_ROW_LIMIT_TIMES] if row[_ROW_LIMIT_TIMES] is not None else -1)

@@ -19,7 +19,13 @@ import {
   type LibraryAnnotation,
 } from '@/api/libraryAnnotations'
 import ReaderThemeControl from './ReaderThemeControl.vue'
+import ReaderColumnHandle from './ReaderColumnHandle.vue'
 import { libraryReaderThemeClass } from './readerTheme'
+import {
+  readerOutlineVisible,
+  readerTocVisible,
+  toggleReaderPanel,
+} from './readerPanels'
 
 import {
   fetchLocalSkillBookCatalog,
@@ -133,11 +139,22 @@ const currentBookPage = computed(() => {
   const boundedOffset = Math.min(chapter.character_count - 1, Math.max(0, currentCharacterOffset.value))
   return Math.floor((chapter.book_character_start + boundedOffset) / capacity) + 1
 })
+const READER_TOC_COLUMN_WIDTH = 260
+const READER_OUTLINE_COLUMN_WIDTH = 220
+const SKILL_PAGE_BASE_WIDTH = 760
+
+/** 收起的栏把宽度还给正文，避免收栏只留下一片空白背景（栏宽与 CSS 栅格轨道同源）。 */
+const readerPanelFreedWidth = computed(() => (
+  (readerTocVisible.value ? 0 : READER_TOC_COLUMN_WIDTH)
+  + (readerOutlineVisible.value ? 0 : READER_OUTLINE_COLUMN_WIDTH)
+))
 const documentPaperStyle = computed(() => {
   const widthMillimeters = catalog.value?.page_width_mm ?? 210
   const heightMillimeters = catalog.value?.page_height_mm ?? 297
+  const pageWidth = Math.round(SKILL_PAGE_BASE_WIDTH * widthMillimeters / 210)
   return {
-    '--skill-page-width': `${Math.round(760 * widthMillimeters / 210)}px`,
+    '--skill-page-width': `${pageWidth}px`,
+    '--skill-reading-max-width': `${pageWidth + readerPanelFreedWidth.value}px`,
     '--skill-page-aspect-ratio': `${widthMillimeters} / ${heightMillimeters}`,
   }
 })
@@ -731,8 +748,18 @@ onBeforeUnmount(() => {
       </div>
     </template>
 
-    <div class="skill-book-reader">
-      <aside class="skill-book-toc" aria-label="目录">
+    <div
+      class="skill-book-reader"
+      :style="{
+        '--reader-toc-width': `${READER_TOC_COLUMN_WIDTH}px`,
+        '--reader-outline-width': `${READER_OUTLINE_COLUMN_WIDTH}px`,
+      }"
+      :class="{
+        'is-toc-hidden': !readerTocVisible,
+        'is-outline-hidden': !readerOutlineVisible,
+      }"
+    >
+      <aside v-show="readerTocVisible" class="skill-book-toc" aria-label="目录">
         <el-input v-model="searchText" clearable placeholder="搜索目录" />
         <div v-if="catalogLoading && !catalog" class="skill-book-status">正在读取目录…</div>
         <div v-else-if="errorMessage && !catalog" class="skill-book-status is-error">
@@ -867,9 +894,24 @@ onBeforeUnmount(() => {
             @annotation-delete="handleAnnotationDelete"
           />
         </div>
+
+        <!-- 折叠手柄贴在正文栏两侧的分割线上，悬浮或聚焦时才出现 -->
+        <ReaderColumnHandle
+          side="left"
+          label="目录"
+          :collapsed="!readerTocVisible"
+          @toggle="toggleReaderPanel('toc')"
+        />
+        <ReaderColumnHandle
+          side="right"
+          label="大纲"
+          :collapsed="!readerOutlineVisible"
+          @toggle="toggleReaderPanel('outline')"
+        />
       </main>
 
       <RichTextOutlineNav
+        v-show="readerOutlineVisible"
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="currentDocument?.title"
@@ -909,14 +951,31 @@ onBeforeUnmount(() => {
 }
 
 .skill-book-reader {
+  --reader-gutter: 20px;
   display: grid;
-  grid-template-columns: 260px minmax(520px, 1fr) 220px;
+  grid-template-columns: var(--reader-toc-width, 260px) minmax(520px, 1fr) var(--reader-outline-width, 220px);
   height: calc(100dvh - 128px);
   min-height: 420px;
   border: 1px solid var(--reader-border);
   color: var(--reader-text);
   background: var(--reader-content);
   overflow: hidden;
+}
+
+/* 宽屏：左右栏可独立收起，收起后把轨道让给正文，正文同时解除 520px 最小宽度。
+   窄屏（<=980px）由下方行布局接管，这里不再参与列轨道计算。 */
+@media (min-width: 981px) {
+  .skill-book-reader.is-outline-hidden {
+    grid-template-columns: var(--reader-toc-width, 260px) minmax(0, 1fr);
+  }
+
+  .skill-book-reader.is-toc-hidden {
+    grid-template-columns: minmax(0, 1fr) var(--reader-outline-width, 220px);
+  }
+
+  .skill-book-reader.is-toc-hidden.is-outline-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .skill-book-toc {
@@ -1041,6 +1100,7 @@ onBeforeUnmount(() => {
 }
 
 .skill-book-content {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1100,14 +1160,15 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   flex: 1;
   min-height: 0;
-  margin: 0;
+  /* 两侧留出手柄窄带：手柄永远落在正文滚动视口之外，不遮挡滚动条。 */
+  margin: 0 var(--reader-gutter, 20px);
   padding: 22px clamp(22px, 5vw, 64px) 48px;
   overflow: auto;
   background: var(--reader-content);
 }
 
 .skill-book-document :deep(.rich-text-document-reader) {
-  width: min(100%, var(--skill-page-width));
+  width: min(100%, var(--skill-reading-max-width, var(--skill-page-width)));
   min-height: 100%;
   aspect-ratio: var(--skill-page-aspect-ratio);
   margin: 0 auto;
@@ -1135,6 +1196,18 @@ onBeforeUnmount(() => {
   .skill-book-reader {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(120px, 28%) minmax(0, 1fr) minmax(100px, 20%);
+  }
+
+  .skill-book-reader.is-outline-hidden {
+    grid-template-rows: minmax(120px, 34%) minmax(0, 1fr);
+  }
+
+  .skill-book-reader.is-toc-hidden {
+    grid-template-rows: minmax(0, 1fr) minmax(100px, 20%);
+  }
+
+  .skill-book-reader.is-toc-hidden.is-outline-hidden {
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .skill-book-toc {

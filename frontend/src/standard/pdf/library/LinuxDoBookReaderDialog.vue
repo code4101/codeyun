@@ -33,7 +33,13 @@ import {
   type RichTextFootnoteDefinition,
 } from './richTextFootnotes'
 import ReaderThemeControl from './ReaderThemeControl.vue'
+import ReaderColumnHandle from './ReaderColumnHandle.vue'
 import { libraryReaderThemeClass } from './readerTheme'
+import {
+  readerOutlineVisible,
+  readerTocVisible,
+  toggleReaderPanel,
+} from './readerPanels'
 import {
   createLibraryAnnotation,
   deleteLibraryAnnotation,
@@ -126,6 +132,18 @@ const MAX_READER_FONT_SIZE = 24
 const READER_PAGE_MAX_WIDTH = 820
 const READER_PAGE_SIDE_PADDING = 24
 const READER_PAGE_COLUMN_GAP = 40
+const READER_TOC_COLUMN_WIDTH = 290
+const READER_OUTLINE_COLUMN_WIDTH = 220
+
+/**
+ * 正文最大排版宽度：基础值保证默认行宽可读；左右栏收起后，把腾出来的栏宽
+ * 还给正文，否则收栏只会留下一片空白背景（栏的宽度与 CSS 栅格轨道同源）。
+ */
+const readerReadingMaxWidth = computed(() => (
+  READER_PAGE_MAX_WIDTH
+  + (readerTocVisible.value ? 0 : READER_TOC_COLUMN_WIDTH)
+  + (readerOutlineVisible.value ? 0 : READER_OUTLINE_COLUMN_WIDTH)
+))
 
 interface ReaderDialogSize {
   width: number
@@ -506,7 +524,7 @@ function applyPageGeometry() {
   if (!viewport) return
   const width = Math.max(
     280,
-    Math.min(READER_PAGE_MAX_WIDTH, viewport.clientWidth - READER_PAGE_SIDE_PADDING * 2),
+    Math.min(readerReadingMaxWidth.value, viewport.clientWidth - READER_PAGE_SIDE_PADDING * 2),
   )
   readerPageWidth.value = width
   readerPageHeight.value = Math.max(240, viewport.clientHeight - 56)
@@ -1390,11 +1408,17 @@ onBeforeUnmount(() => {
 
     <div
       class="book-reader"
+      :style="{
+        '--reader-toc-width': `${READER_TOC_COLUMN_WIDTH}px`,
+        '--reader-outline-width': `${READER_OUTLINE_COLUMN_WIDTH}px`,
+      }"
       :class="{
         'has-page-outline': isArticleBook,
+        'is-toc-hidden': !readerTocVisible,
+        'is-outline-hidden': !readerOutlineVisible,
       }"
     >
-      <aside class="book-toc" aria-label="目录">
+      <aside v-show="readerTocVisible" class="book-toc" aria-label="目录">
         <el-input
           v-model="searchText"
           clearable
@@ -1483,6 +1507,7 @@ onBeforeUnmount(() => {
             '--reader-page-height': `${readerPageHeight}px`,
             '--reader-page-inset': `${readerPageInset}px`,
             '--reader-page-column-gap': `${READER_PAGE_COLUMN_GAP}px`,
+            '--reader-reading-max-width': `${readerReadingMaxWidth}px`,
           }"
           @scroll.passive="handleScroll"
         >
@@ -1532,10 +1557,26 @@ onBeforeUnmount(() => {
           </span>
           <button type="button" :disabled="!hasNextPage" @click="navigatePage(1)">下一页</button>
         </footer>
+
+        <!-- 折叠手柄贴在正文栏两侧的分割线上，悬浮或聚焦时才出现 -->
+        <ReaderColumnHandle
+          side="left"
+          label="目录"
+          :collapsed="!readerTocVisible"
+          @toggle="toggleReaderPanel('toc')"
+        />
+        <ReaderColumnHandle
+          v-if="isArticleBook"
+          side="right"
+          label="大纲"
+          :collapsed="!readerOutlineVisible"
+          @toggle="toggleReaderPanel('outline')"
+        />
       </main>
 
       <RichTextOutlineNav
         v-if="isArticleBook"
+        v-show="readerOutlineVisible"
         :items="documentOutline"
         :active-id="activeHeadingId"
         :document-title="activeArticleTitle"
@@ -1583,8 +1624,16 @@ onBeforeUnmount(() => {
 :global(.linux-do-book-dialog::after) { position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px; background: repeating-linear-gradient(135deg, transparent 0 3px, #aeb8c4 3px 4px); content: ''; pointer-events: none; }
 :global(.linux-do-book-dialog .el-dialog__header) { flex: 0 0 auto; }
 :global(.linux-do-book-dialog .el-dialog__body) { flex: 1; min-height: 0; overflow: hidden; }
-.book-reader { display: grid; grid-template-columns: 290px minmax(0, 1fr); height: 100%; min-height: 0; border: 1px solid var(--reader-border); background: var(--reader-content); color: var(--reader-text); overflow: hidden; }
-.book-reader.has-page-outline { grid-template-columns: 290px minmax(520px, 1fr) 220px; }
+.book-reader { --reader-gutter: 20px; display: grid; grid-template-columns: var(--reader-toc-width, 290px) minmax(0, 1fr); height: 100%; min-height: 0; border: 1px solid var(--reader-border); background: var(--reader-content); color: var(--reader-text); overflow: hidden; }
+.book-reader.has-page-outline { grid-template-columns: var(--reader-toc-width, 290px) minmax(520px, 1fr) var(--reader-outline-width, 220px); }
+/* 宽屏：左右栏可独立收起，收起后把轨道让给正文，正文同时解除 520px 最小宽度。
+   窄屏（<=980px）由下方行布局接管，这里不再参与列轨道计算。 */
+@media (min-width: 981px) {
+  .book-reader.is-outline-hidden.has-page-outline { grid-template-columns: var(--reader-toc-width, 290px) minmax(0, 1fr); }
+  .book-reader.is-toc-hidden { grid-template-columns: minmax(0, 1fr); }
+  .book-reader.is-toc-hidden.has-page-outline { grid-template-columns: minmax(0, 1fr) var(--reader-outline-width, 220px); }
+  .book-reader.is-toc-hidden.is-outline-hidden { grid-template-columns: minmax(0, 1fr); }
+}
 .book-toc { display: flex; flex-direction: column; min-height: 0; padding: 12px; border-right: 1px solid var(--reader-border); background: var(--reader-panel); overflow: hidden; }
 .book-toc-list { flex: 1; min-height: 0; margin-top: 10px; overflow: auto; }
 .book-toc-item { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35em; width: 100%; min-height: 32px; align-items: baseline; border: 0; border-radius: 4px; background: transparent; padding: 6px 8px 6px calc(8px + var(--toc-depth) * 13px); color: var(--reader-text); font-size: 13px; line-height: 20px; text-align: left; cursor: pointer; }
@@ -1605,10 +1654,11 @@ onBeforeUnmount(() => {
 .book-document :deep(mark.book-search-hit) { border-radius: 2px; background: var(--reader-mark); color: inherit; }
 .book-document :deep(mark.book-search-hit:focus) { outline: 2px solid #e6a23c; outline-offset: 2px; }
 .book-search-empty { padding: 24px 8px; color: var(--reader-muted); font-size: 13px; text-align: center; }
-.book-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.book-content { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .book-toolbar { display: flex; min-height: 50px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 18px; border-bottom: 1px solid var(--reader-border); color: var(--reader-muted); font-size: 12px; }
 .html-book-toolbar { justify-content: flex-end; }
-.book-document { position: relative; flex: 1; min-height: 0; padding: 28px 24px 64px; background: var(--reader-content); overflow: auto; }
+/* 两侧留出手柄窄带：手柄永远落在正文滚动视口之外，不遮挡滚动条。 */
+.book-document { position: relative; flex: 1; min-height: 0; margin: 0 var(--reader-gutter, 20px); padding: 28px 24px 64px; background: var(--reader-content); overflow: auto; }
 .book-document.is-paginated { padding: 28px 0; overflow: hidden; }
 .reader-standard-layer { display: contents; }
 .book-page-controls { display: flex; flex: 0 0 48px; align-items: center; justify-content: center; gap: 18px; border-top: 1px solid var(--reader-border); background: var(--reader-surface); }
@@ -1620,7 +1670,7 @@ onBeforeUnmount(() => {
 .inline-editing-layer { display: contents; }
 .ebook-source-editor { box-sizing: border-box; width: 100%; height: 100%; resize: none; border: 0; outline: 0; background: var(--reader-content); padding: 24px 28px; color: var(--reader-text); font: 14px/1.7 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; tab-size: 2; }
 .book-document :deep(.rich-text-document-reader) {
-  width: min(100%, 820px);
+  width: min(100%, var(--reader-reading-max-width, 820px));
   min-height: 100%;
   margin: 0 auto;
   padding-bottom: 36px;
@@ -1654,6 +1704,13 @@ onBeforeUnmount(() => {
 .book-document :deep(.selected-reply) { margin-top: 28px; padding-top: 4px; }
 .book-document :deep(.x-entry) { border-bottom: 2px solid color-mix(in srgb, var(--reader-text) 28%, transparent) !important; }
 .book-document :deep(.x-translation) { border-top-color: color-mix(in srgb, var(--reader-text) 12%, transparent) !important; }
+/* 归档书（X / 微博）正文块自带 640/680px 定宽列，存量书籍无法再生，
+   这里把版面宽度收回到阅读器：正文宽度只由栏布局与 --reader-reading-max-width 决定。 */
+.book-document :deep(.x-entry),
+.book-document :deep(.weibo-entry),
+.book-document :deep(article[data-article-id]),
+.book-document :deep(article[data-article-id] > h1),
+.book-document :deep(article[data-article-id] > h2) { max-width: none !important; }
 .book-document :deep(.discussion-turn) { margin: 12px 0 18px; }
 .book-document :deep(.discussion-speaker) { margin-bottom: 6px; color: var(--reader-text); font-size: 13px; }
 .book-document :deep(.discussion-turn.is-question .discussion-speaker) { color: var(--reader-muted); }
@@ -1671,6 +1728,10 @@ onBeforeUnmount(() => {
   .book-reader,
   .book-reader.has-page-outline { grid-template-columns: 1fr; grid-template-rows: minmax(140px, 28%) minmax(0, 1fr) minmax(100px, 20%); }
   .book-reader:not(.has-page-outline) { grid-template-rows: minmax(140px, 34%) minmax(0, 1fr); }
+  .book-reader.is-outline-hidden.has-page-outline { grid-template-rows: minmax(140px, 34%) minmax(0, 1fr); }
+  .book-reader.is-toc-hidden { grid-template-rows: minmax(0, 1fr); }
+  .book-reader.is-toc-hidden.has-page-outline { grid-template-rows: minmax(0, 1fr) minmax(100px, 20%); }
+  .book-reader.is-toc-hidden.is-outline-hidden { grid-template-rows: minmax(0, 1fr); }
   .book-toc { border-right: 0; border-bottom: 1px solid #e4e9ef; }
   .book-reader :deep(.rich-text-outline) { border-top: 1px solid #e4e9ef; border-left: 0; }
 }

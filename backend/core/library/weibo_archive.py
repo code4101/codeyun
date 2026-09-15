@@ -361,9 +361,11 @@ def render_weibo_entry_html(post: WeiboPost) -> str:
     else:
         content = f'{original_text}<div style="margin-top:8px;">{media}</div>' if media else original_text
 
+    # 版面宽度归阅读器（--reader-reading-max-width）：归档 HTML 只声明占满可用宽度，
+    # 不再自带 640px 定宽列，否则收栏后正文无法利用腾出的版面。
     return (
         f'<section class="weibo-entry" id="weibo-{escape(post.id, quote=True)}" '
-        'style="box-sizing:border-box;width:100%;max-width:640px;margin:0 auto 10px;'
+        'style="box-sizing:border-box;width:100%;margin:0 auto 10px;'
         'overflow:hidden;border:1px solid #eef0f2;border-radius:4px;background:#fff;color:#333;">'
         '<div style="padding:14px 18px;">'
         f'{entry_meta}'
@@ -644,14 +646,14 @@ def build_yearly_book_payload(
         for month, month_posts in months.items():
             month_number = int(month.split("-", 1)[1])
             month_sections.append(
-                f'<h2 id="month-{month}" style="max-width:640px;margin:26px auto 12px;'
+                f'<h2 id="month-{month}" style="margin:26px auto 12px;'
                 f'font-size:19px;line-height:1.4;color:#374151;">{month_number}月（{len(month_posts)}则）</h2>'
                 + "".join(render_weibo_entry_html(post) for post in month_posts)
             )
         articles.append(
             f'<article data-article-id="{anchor}" '
-            'style="box-sizing:border-box;width:100%;max-width:680px;margin:0 auto 34px;">'
-            f'<h1 id="{anchor}" style="max-width:640px;margin:0 auto 18px;'
+            'style="box-sizing:border-box;width:100%;margin:0 auto 34px;">'
+            f'<h1 id="{anchor}" style="margin:0 auto 18px;'
             f'font-size:26px;line-height:1.35;color:#1f2937;">{heading}</h1>'
             + "".join(month_sections)
             + "</article>"
