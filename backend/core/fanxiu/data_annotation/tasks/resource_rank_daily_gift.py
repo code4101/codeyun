@@ -50,6 +50,7 @@ class ResourceRankGiftAdapter:
     page_scene_ids: tuple[int, ...]
     intro_scene_id: int | None = None
     gift_shape_scene_id: int | None = None
+    schedule_entry: str = "calendar"
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,15 @@ class ResourceRankGiftListAction:
 # the complete leading-prefix/re-entry policy and ChargeMgr idempotency validation
 # stay shared and deliberately cannot be customized per family.
 RESOURCE_RANK_GIFT_ADAPTERS = (
+    ResourceRankGiftAdapter(
+        key="shequn-lingchong",
+        label="社团灵宠",
+        schedule_pattern=r"社团灵宠",
+        activity_ids=(2043501, 4043501, 8043501, 16043501),
+        page_scene_ids=(745,),
+        intro_scene_id=744,
+        schedule_entry="card",
+    ),
     ResourceRankGiftAdapter(
         key="lingzhuang-huadao",
         label="灵装化道",
@@ -378,6 +388,26 @@ def _enter_adapter_from_schedule(
 ):
     """Enter the active occurrence's exact #66 start-date calendar cell."""
 
+    if adapter.schedule_entry == "card":
+        from backend.core.fanxiu.data_annotation.schedule_cards import (
+            inspect_schedule_cards, select_schedule_card,
+        )
+        state = yield from inspect_schedule_cards(context)
+        candidates = [row for row in state["runtime"]["items"]
+                      if row["activity_id"] == activity_id
+                      and row["start_time"] <= now.timestamp()*1000 <= row["end_time"]]
+        if len(candidates) != 1:
+            raise RuntimeError(f"{adapter.label} 当前有效卡片实例不唯一：{candidates}")
+        target = candidates[0]
+        if state["current"]["task"]["key"] != target["key"]:
+            yield from select_schedule_card(context, target["key"])
+        context.click_shape(66, "活动卡片/前往")
+        targets = [*adapter.page_scene_ids]
+        if adapter.intro_scene_id is not None:
+            targets.insert(0, adapter.intro_scene_id)
+        return (yield from context.wait_scene(targets, wait=30,
+                                              label=f"等待{adapter.label}卡片落点"))
+
     entities = runtime_activity_entities_for_date(
         get_cached_fanxiu_activity_runtime_schedule(),
         adapter.schedule_pattern,
@@ -463,7 +493,7 @@ def open_resource_rank_activity_page(
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
-    if scene not in adapter.page_scene_ids:
+    if scene not in adapter.page_scene_ids and scene != adapter.intro_scene_id:
         if scene != 66:
             result = context.go_scene(66)
             if hasattr(result, "send"):

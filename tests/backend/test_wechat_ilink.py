@@ -612,3 +612,63 @@ def test_wechat_ilink_send_image_uploads_cdn_and_sends_image(monkeypatch, isolat
     assert len(posts) == 3
     assert b'"type":2' in posts[2][2]
     assert b"download-param" in posts[2][2]
+
+
+def test_wechat_ilink_send_text_fails_closed_on_business_error(monkeypatch, isolated_wechat_store):
+    """微信机器人接口 HTTP 200 但 ret != 0 时必须失败关闭。
+
+    真实案例：回复会话窗口失效时 sendmessage 返回
+    ``{"ret": -2, "errmsg": "prepare failed"}``；只校验 HTTP 状态会把未送达上报成成功。
+    """
+    wechat_ilink.save_account(
+        account_id="bot@example",
+        token="plain-token",
+        user_id="bot-user",
+        base_url="https://ilink.example.com",
+    )
+
+    def fake_post(url, headers=None, data=None, timeout=None):
+        if url.endswith("/ilink/bot/sendmessage"):
+            return FakeResponse({"ret": -2, "errmsg": "prepare failed"})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(wechat_ilink.requests, "post", fake_post)
+
+    with pytest.raises(wechat_ilink.WechatIlinkError) as excinfo:
+        wechat_ilink.send_text_message("bot@example", to_user_id="friend-1", text="你好")
+
+    message = str(excinfo.value)
+    assert "sendmessage" in message
+    assert "ret=-2" in message
+    assert "prepare failed" in message
+
+
+def test_wechat_ilink_send_image_fails_closed_on_upload_business_error(monkeypatch, isolated_wechat_store):
+    """取上传地址阶段业务失败时不能继续上传，更不能上报发送成功。"""
+    wechat_ilink.save_account(
+        account_id="bot@example",
+        token="plain-token",
+        user_id="bot-user",
+        base_url="https://ilink.example.com",
+    )
+    posts = []
+
+    def fake_post(url, headers=None, data=None, timeout=None):
+        posts.append(url)
+        if url.endswith("/ilink/bot/getuploadurl"):
+            return FakeResponse({"ret": -2, "errmsg": "prepare failed"})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(wechat_ilink.requests, "post", fake_post)
+
+    with pytest.raises(wechat_ilink.WechatIlinkError) as excinfo:
+        wechat_ilink.send_image_message(
+            "bot@example",
+            to_user_id="friend-1",
+            image_bytes=b"\x89PNG\r\n\x1a\nx",
+            filename="x.png",
+            timeout_seconds=1,
+        )
+
+    assert "getuploadurl" in str(excinfo.value)
+    assert posts == ["https://ilink.example.com/ilink/bot/getuploadurl"]

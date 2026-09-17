@@ -11,6 +11,14 @@ from backend.core.fanxiu.runtime_gui.text import normalize_ocr_name
 
 _UI_OWNERSHIP_SUFFIXES = ("已认主", "已拥有", "已激活")
 
+# 实测几何（2026-09-16，#519 兑换宝阁第二屏起）：商品行标注框高 160、行距 180，
+# 而“所需：<价格>”固定渲染在名称下方约 58px，其数字行因此可能落在标注框下缘
+# 之外 1~37px（装备玄铁宝匣 D100 即价格行 663~698 对行框 508~668）。按严格包含
+# 判定价格会把“名字在框内、价格在框外”的正常行判成不存在，形成假阴性。
+# 价格因此按行框下缘放宽 PRICE_ROW_TOLERANCE_RATIO 个行高再判定；名称仍严格包含，
+# 保证“名称→行”的归属不变，容差远小于行距也不会跨到相邻行。
+PRICE_ROW_TOLERANCE_RATIO = 0.25
+
 
 def _normalize_product_name(value: Any) -> str:
     normalized = normalize_ocr_name(value)
@@ -59,6 +67,20 @@ def _contained(line: Mapping[str, Any], box: Mapping[str, Any]) -> bool:
         and top <= line_top
         and line_bottom <= bottom
     )
+
+
+def _price_belongs_to_row(line: Mapping[str, Any], box: Mapping[str, Any]) -> bool:
+    """价格行按行框下缘容差判定归属；名称仍用严格包含。
+
+    价格数字行允许压在标注框下缘之外（见 ``PRICE_ROW_TOLERANCE_RATIO``），
+    但上缘不得高于行框顶部、左右仍在行框内，避免跨行误取相邻商品的价格。
+    """
+
+    line_left, line_top, line_right, _line_bottom = _line_bounds(line)
+    left, top, right, bottom = _bounds(box)
+    if not (left <= line_left and line_right <= right):
+        return False
+    return top <= line_top <= bottom + (bottom - top) * PRICE_ROW_TOLERANCE_RATIO
 
 
 def resolve_exchange_shop_item(
@@ -115,7 +137,7 @@ def resolve_exchange_shop_item(
                 price_left, price_top, price_right, _ = _line_bounds(price_line)
                 if (
                     price is not None
-                    and _contained(price_line, row_box)
+                    and _price_belongs_to_row(price_line, row_box)
                     and price_top > name_bottom
                     and (price_left + price_right) / 2 <= row_midpoint
                 ):

@@ -86,6 +86,7 @@ YUANDING_GIFT_TIME = time(5, 0)
 # Only resource ranks with a real activity page, shared #605 landing and
 # ChargeMgr idempotency proof may receive this side-effectful checkpoint.
 RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
+    "shequn-lingchong",
     "dandao-wending",
     "lingzhuang-huadao",
     "yaochi-flower-festival",
@@ -94,6 +95,8 @@ RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
 RANKING_CAPABILITY_STATUS = {
     "beast-abyss": "implemented_exchange_tail_active_still_rnd",
     "tiandi-yiju": "implemented_active_and_idempotent_exchange_tail",
+    # 日程发现与实例化已接入；实时社团榜、任务和资源采集仍待研发。
+    "shequn-lingchong": "observed_unhandled",
 }
 
 # Production Scheduler allowlist.  Checkpoint definitions outside this list
@@ -269,6 +272,9 @@ def ranking_activity_identities() -> tuple[RankingActivityIdentity, ...]:
             1042001, 1042901, 2042901, 4042901, 1042911,
             8042901, 16042901, 32042901,
         ),
+        # 社团灵宠只有跨服父活动进入世界线日程；其唯一 follow
+        # 指向社团榜，不得套用灵宠竞武的个人榜/位面榜双榜身份。
+        "shequn-lingchong": (2043501, 4043501, 8043501, 16043501),
         "lianti-faxiang": (
             1041701, 1043001, 2043001, 4043001, 1043011,
             8043001, 16043001, 32043001,

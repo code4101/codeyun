@@ -51,7 +51,7 @@
       OpenCode 代理未运行，请先在「集群 / 运行」里启动 opencode-proxy 服务。
     </p>
 
-    <section class="quota">
+    <section ref="codexSection" class="quota">
       <div class="quota-head">
         <a class="quota-title" :href="CODEX_USAGE_URL" target="_blank" rel="noopener noreferrer">Codex 账号额度</a>
       </div>
@@ -79,25 +79,7 @@
       <QuotaLineChart v-if="chartData" :data="chartData" />
     </section>
 
-    <section class="quota">
-      <div class="quota-head">
-        <a class="quota-title" :href="DEEPSEEK_PLATFORM_URL" target="_blank" rel="noopener noreferrer">DeepSeek 余额</a>
-      </div>
-      <div v-if="deepseek.balances.length" class="quota-rows">
-        <div v-for="item in deepseek.balances" :key="item.currency" class="quota-row">
-          <span class="quota-name">总余额{{ item.currency ? `（${item.currency}）` : '' }}</span>
-          <span class="quota-values">
-            <span class="quota-value">¥{{ item.total_balance }}</span>
-          </span>
-        </div>
-      </div>
-      <p v-else class="quota-empty">{{ deepseek.error || '未找到可用的 DeepSeek API Key' }}</p>
-      <p v-if="deepseek.balances.length && deepseek.error" class="quota-stale">最近一次余额读取失败：{{ deepseek.error }}</p>
-
-      <QuotaLineChart v-if="deepseekChartData" :data="deepseekChartData" />
-    </section>
-
-    <section class="quota">
+    <section ref="opencodeSection" class="quota">
       <div class="quota-head">
         <a class="quota-title" :href="OPENCODE_GO_URL" target="_blank" rel="noopener noreferrer">OpenCode Go</a>
       </div>
@@ -123,11 +105,29 @@
 
       <QuotaLineChart v-if="opencodeChartData" :data="opencodeChartData" />
     </section>
+
+    <section ref="deepseekSection" class="quota">
+      <div class="quota-head">
+        <a class="quota-title" :href="DEEPSEEK_PLATFORM_URL" target="_blank" rel="noopener noreferrer">DeepSeek 余额</a>
+      </div>
+      <div v-if="deepseek.balances.length" class="quota-rows">
+        <div v-for="item in deepseek.balances" :key="item.currency" class="quota-row">
+          <span class="quota-name">总余额{{ item.currency ? `（${item.currency}）` : '' }}</span>
+          <span class="quota-values">
+            <span class="quota-value">¥{{ item.total_balance }}</span>
+          </span>
+        </div>
+      </div>
+      <p v-else class="quota-empty">{{ deepseek.error || '未找到可用的 DeepSeek API Key' }}</p>
+      <p v-if="deepseek.balances.length && deepseek.error" class="quota-stale">最近一次余额读取失败：{{ deepseek.error }}</p>
+
+      <QuotaLineChart v-if="deepseekChartData" :data="deepseekChartData" />
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import QuotaLineChart from './QuotaLineChart.vue'
@@ -283,6 +283,26 @@ function syncSelection() {
     selectedProvider.value = status.value.provider
   }
 }
+
+const codexSection = ref<HTMLElement | null>(null)
+const opencodeSection = ref<HTMLElement | null>(null)
+const deepseekSection = ref<HTMLElement | null>(null)
+
+// Keep the picker and the quota charts in sync: the sections follow the picker
+// order, and choosing a provider scrolls its section into view.
+const SECTION_BY_PROVIDER: Record<string, () => HTMLElement | null> = {
+  openai: () => codexSection.value,
+  opencode: () => opencodeSection.value,
+  deepseek: () => deepseekSection.value,
+}
+
+watch(selectedProvider, async (value) => {
+  if (!value) {
+    return
+  }
+  await nextTick()
+  SECTION_BY_PROVIDER[value]?.()?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+})
 
 function applyQuota(quota: CodexQuotaResponse) {
   quotaGroups.value = quota.groups ?? []

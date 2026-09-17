@@ -14,6 +14,7 @@ from backend.core.fanxiu.data_annotation.maintenance import (
     GAME_STARTUP_TIMEOUT_SECONDS,
     FanxiuMaintenanceDetected,
     clear_maintenance_gate,
+    is_maintenance_scene_id,
     maintenance_check_time_text,
     infer_game_startup_scene,
     open_maintenance_gate,
@@ -190,6 +191,7 @@ class MaintenanceTaskMixin:
         # actionable startup states. Probe them in place before considering a
         # restart. The cover control can look disabled while still accepting
         # input, so only action -> formal successor proves availability.
+        restart_client_for_maintenance_page = False
         if scene_id in {14, 18, 415, LOGIN_MAINTENANCE_PROMPT_SCENE_ID}:
             for _ in range(8):
                 self._raise_if_stopped(stop_event)
@@ -218,22 +220,32 @@ class MaintenanceTaskMixin:
                         break
 
             if not self._maintenance_scene_proves_available(scene_id):
-                next_time = self._defer_maintenance_recovery(
-                    scene_id=scene_id,
-                    evidence={
-                        "stage": "lightweight_enter_game_probe",
-                        "scene_id": scene_id,
-                        "attempts": probe_attempts if scene_id in {18, None} else 0,
-                        "duration_seconds": probe_duration,
-                        "ocr": context.ocr_text(frame)[:160],
-                    },
+                # 维护/停更提示是客户端侧的服务不可用事实：轻点画面无法证明服务
+                # 恢复，只有让客户端真正重新登录一次才算复查。停在维护页时落到
+                # 下面的“完整重启 MuMu”路径重拉游戏，而不是无限期顺延。
+                restart_client_for_maintenance_page = bool(
+                    payload.get("restart_on_maintenance_page", True)
+                ) and is_maintenance_scene_id(scene_id)
+                if not restart_client_for_maintenance_page:
+                    next_time = self._defer_maintenance_recovery(
+                        scene_id=scene_id,
+                        evidence={
+                            "stage": "lightweight_enter_game_probe",
+                            "scene_id": scene_id,
+                            "attempts": probe_attempts if scene_id in {18, None} else 0,
+                            "duration_seconds": probe_duration,
+                            "ocr": context.ocr_text(frame)[:160],
+                        },
+                    )
+                    return {
+                        "result": "success",
+                        "message": f"轻量点击未观察到正式登录后场景；不重启模拟器，{next_time} 再试",
+                    }
+                self._log(
+                    "warning",
+                    f"维护复查：轻量点击后仍停在维护页 #{scene_id}，完整重启 MuMu 让客户端重新登录",
                 )
-                return {
-                    "result": "success",
-                    "message": f"轻量点击未观察到正式登录后场景；不重启模拟器，{next_time} 再试",
-                }
-
-            if scene_id != 34:
+            elif scene_id != 34:
                 mark_mumu_device_startup_ready(reason="maintenance_startup_page_seen")
                 clear_maintenance_gate(
                     self._maintenance_world_facts_path(),
@@ -245,21 +257,24 @@ class MaintenanceTaskMixin:
                     "result": "success",
                     "message": "维护已结束；实际点击已进入登录后场景并将“登录”排到队首",
                 }
-
-            clear_maintenance_gate(
-                self._maintenance_world_facts_path(),
-                evidence={"stage": "recovered", "scene_id": 34},
-            )
-            self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
-            context.set_completion_message("维护结束，轻量点击已进入 #34 世界；普通作业恢复调度")
-            self._log("success", "维护恢复：轻量点击已确认进入 #34 世界，解除维护门闩")
-            return {"result": "success", "message": "维护结束，已进入 #34 世界"}
+            else:
+                clear_maintenance_gate(
+                    self._maintenance_world_facts_path(),
+                    evidence={"stage": "recovered", "scene_id": 34},
+                )
+                self._persist_scheduler_task_next_time(MAINTENANCE_RECOVERY_TASK_ID, None)
+                context.set_completion_message("维护结束，轻量点击已进入 #34 世界；普通作业恢复调度")
+                self._log("success", "维护恢复：轻量点击已确认进入 #34 世界，解除维护门闩")
+                return {"result": "success", "message": "维护结束，已进入 #34 世界"}
 
         health = mumu_device_health_check(
             vmindex=str(payload.get("vmindex") or "1"),
             force=True,
         )
-        if str(health.get("status") or "") == "healthy":
+        # A healthy emulator parked on the maintenance page is exactly the case
+        # that needs a client restart: the device is fine, the game session is
+        # not. Only screens we cannot interpret keep the old "healthy" shortcut.
+        if str(health.get("status") or "") == "healthy" and not restart_client_for_maintenance_page:
             next_time = self._defer_maintenance_recovery(
                 scene_id=scene_id,
                 evidence={
@@ -352,7 +367,7 @@ class MaintenanceTaskMixin:
                 scene_id=scene_id,
                 evidence={"stage": "post_restart", "scene_id": scene_id, "ocr": context.ocr_text(frame)[:160]},
             )
-            return {"result": "success", "message": f"维护页 #415 仍在，休眠至 {next_time}"}
+            return {"result": "success", "message": f"维护页 #{scene_id} 仍在，休眠至 {next_time}"}
 
         # #18's tiny service label is only a weak hint. Use the user's robust
         # behavioral proof: click Enter every five seconds for half a minute.

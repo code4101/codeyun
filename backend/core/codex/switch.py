@@ -35,6 +35,12 @@ from backend.core.runtime.opencode_proxy_runtime import get_opencode_proxy_base_
 OPENCODE_GO_PROVIDER_ID = "opencode_go"
 OPENCODE_GO_SESSION = "codeyun-opencode-proxy"
 
+# Codex auto-compacts at ``context_window * effective_context_window_percent``.
+# Codex's token estimate can drift from the upstream tokenizer, and a busy
+# tool-using turn can append a lot before the next compaction check, so keep more
+# headroom than the Codex default of 95% to avoid overrunning the hard cap.
+OPENCODE_CONTEXT_WINDOW_PERCENT = 80
+
 # Fallback model list when the local proxy is not reachable.
 _FALLBACK_OPENCODE_MODELS = (
     "gpt-5.6-luna", "grok-4.6", "grok-4.5", "muse-spark-1.3-contributor", "muse-spark-1.2-contributor",
@@ -63,6 +69,12 @@ _TOP_LEVEL_DROP = {"model", "model_provider", "model_catalog_json", "model_reaso
 PROVIDERS: tuple[dict[str, Any], ...] = (
     {"id": OPENAI_PROVIDER_ID, "label": "OpenAI", "default_model": "", "models": []},
     {
+        "id": "opencode",
+        "label": "OpenCode Go",
+        "default_model": DEFAULT_OPENCODE_MODEL,
+        "models": [{"id": model_id, "label": model_id} for model_id in _FALLBACK_OPENCODE_MODELS],
+    },
+    {
         "id": DEEPSEEK_PROVIDER_ID,
         "label": "DeepSeek",
         "default_model": DEFAULT_DEEPSEEK_MODEL,
@@ -70,12 +82,6 @@ PROVIDERS: tuple[dict[str, Any], ...] = (
             {"id": FLASH_MODE, "label": "DeepSeek Flash"},
             {"id": PRO_MODE, "label": "DeepSeek V4 Pro"},
         ],
-    },
-    {
-        "id": "opencode",
-        "label": "OpenCode Go",
-        "default_model": DEFAULT_OPENCODE_MODEL,
-        "models": [{"id": model_id, "label": model_id} for model_id in _FALLBACK_OPENCODE_MODELS],
     },
 )
 
@@ -259,6 +265,7 @@ def build_opencode_catalog(codex_home: Path, models: list[dict[str, str]]) -> Pa
         if isinstance(context, int) and context > 0:
             entry["context_window"] = context
             entry["max_context_window"] = context
+        entry["effective_context_window_percent"] = OPENCODE_CONTEXT_WINDOW_PERCENT
         entries.append(entry)
     if not entries:
         return None
@@ -421,26 +428,123 @@ def _catalog_reasoning_efforts(catalog_path: Path | None) -> list[str]:
 
 
 CODEX_BACKUP_DIRNAME = "backup-codeyun"
+CODEX_BASELINE_FILENAME = "base-config.toml"
+_LEGACY_BACKUP_FILENAME = "config.toml"
+_DEEPSEEK_BACKUP_DIRNAME = "backup-deepseek"
+OPENCODE_CATALOG_FILENAME = "opencode_models.json"
 
 
-def _snapshot_before_opencode(codex_home: Path, config_path: Path) -> None:
-    """Keep the pre-opencode config so OpenAI can be restored without the DeepSeek backup."""
+def _baseline_path(codex_home: Path) -> Path | None:
+    backup_dir = codex_home / CODEX_BACKUP_DIRNAME
+    for name in (CODEX_BASELINE_FILENAME, _LEGACY_BACKUP_FILENAME):
+        candidate = backup_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
 
-    if (codex_home / "backup-deepseek").is_dir():
-        return
-    backup_config = codex_home / CODEX_BACKUP_DIRNAME / "config.toml"
-    if backup_config.is_file() or not config_path.is_file():
-        return
-    backup_config.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(config_path, backup_config)
+
+def ensure_baseline_snapshot(codex_home: Path, config_path: Path) -> bool:
+    """Persist the pristine pre-CodeYun config once, before any provider change.
+
+    Switching back to OpenAI must land on the original config, never on one a
+    DeepSeek or opencode switch left behind, so this snapshot is written only when
+    it does not exist yet and is never overwritten afterwards.
+    """
+
+    backup_dir = codex_home / CODEX_BACKUP_DIRNAME
+    baseline = backup_dir / CODEX_BASELINE_FILENAME
+    if baseline.is_file():
+        return False
+    # Migrate a snapshot kept by the previous (pre-opencode only) mechanism.
+    source = _baseline_path(codex_home) or (config_path if config_path.is_file() else None)
+    if source is None:
+        return False
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, baseline)
+    return True
+
+
+def _collect_tables(lines: list[str], prefix: str) -> dict[str, list[str]]:
+    """Collect ``[prefix*]`` table blocks (header + body), trailing blanks trimmed."""
+
+    tables: dict[str, list[str]] = {}
+    name: str | None = None
+    body: list[str] = []
+    for line in lines:
+        header = _HEADER_RE.match(line)
+        if header:
+            if name is not None:
+                tables[name] = body
+            table = header.group(1).strip().strip('"').strip("'")
+            name = table if table.startswith(prefix) else None
+            body = [line] if name is not None else []
+            continue
+        if name is not None:
+            body.append(line)
+    if name is not None:
+        tables[name] = body
+    for value in tables.values():
+        while value and not value[-1].strip():
+            value.pop()
+    return tables
+
+
+def _opencode_provider_table() -> list[str]:
+    return [
+        f"[model_providers.{OPENCODE_GO_PROVIDER_ID}]",
+        'name = "OpenCode Go (proxy)"',
+        f'base_url = "{get_opencode_proxy_base_url()}/v1"',
+        'wire_api = "responses"',
+        'experimental_bearer_token = "opencode-proxy"',
+    ]
 
 
 def restore_codeyun_backup(codex_home: Path) -> bool:
-    backup_config = codex_home / CODEX_BACKUP_DIRNAME / "config.toml"
-    if not backup_config.is_file():
+    baseline = _baseline_path(codex_home)
+    if baseline is None:
         return False
-    shutil.copyfile(backup_config, codex_home / "config.toml")
-    shutil.rmtree(codex_home / CODEX_BACKUP_DIRNAME, ignore_errors=True)
+    config_path = codex_home / "config.toml"
+    lines = _read_config_lines(baseline)
+    if config_path.is_file():
+        # Existing threads store the provider they were created with; Codex refuses
+        # to open a thread whose provider is missing ("Model provider ... not
+        # found").  Keep such provider blocks so old opencode/deepseek threads
+        # still load, while the active model/provider comes from the baseline.
+        baseline_tables = {name.lower() for name in _collect_tables(lines, "model_providers.")}
+        extra = [
+            body
+            for name, body in _collect_tables(_read_config_lines(config_path), "model_providers.").items()
+            if name.lower() not in baseline_tables
+        ]
+        if extra:
+            lines = [*lines, ""]
+            for body in extra:
+                lines.extend(body)
+    # The proxy provider is CodeYun-managed and carries no secret, so keep it
+    # defined even when the live config no longer has it; without it Codex cannot
+    # open any thread that was created on the opencode provider.
+    if not any(name.lower() == f"model_providers.{OPENCODE_GO_PROVIDER_ID}" for name in _collect_tables(lines, "model_providers.")):
+        lines = [*lines, "", *_opencode_provider_table()]
+    _write_config_lines(config_path, lines)
+    # Drop the generated opencode catalog so no stale model list is left behind.
+    (codex_home / OPENCODE_CATALOG_FILENAME).unlink(missing_ok=True)
+    return True
+
+
+def ensure_opencode_provider_defined(config_path: Path) -> bool:
+    """Re-add the CodeYun-managed opencode provider block if it went missing.
+
+    Threads created on the opencode provider carry ``model_provider = "opencode_go"``
+    and Codex refuses to open them once the block is gone.
+    """
+
+    lines = _read_config_lines(config_path)
+    if not lines:
+        return False
+    tables = {name.lower() for name in _collect_tables(lines, "model_providers.")}
+    if f"model_providers.{OPENCODE_GO_PROVIDER_ID}" in tables:
+        return False
+    _write_config_lines(config_path, [*lines, "", *_opencode_provider_table()])
     return True
 
 
@@ -452,7 +556,7 @@ def switch_to_opencode(config_path: Path, model: str) -> None:
     if not read_opencode_go_key():
         raise CodexSwitchError("未找到 OpenCode Go 凭证，无法切换")
 
-    _snapshot_before_opencode(config_path.parent, config_path)
+    ensure_baseline_snapshot(config_path.parent, config_path)
     catalog_path = build_opencode_catalog(config_path.parent, discover_opencode_models())
     lines = _strip_for_opencode(_read_config_lines(config_path))
     lines.insert(0, f"model = {json.dumps(model)}")
@@ -502,7 +606,12 @@ def switch_codex(
             chosen_model = DEFAULT_DEEPSEEK_MODEL
         if chosen_model not in {FLASH_MODE, PRO_MODE}:
             raise CodexSwitchError(f"DeepSeek 不支持该模型：{chosen_model}")
-        ensure_deepseek_provider(resolve_codex_home() / "config.toml")
+        codex_home = resolve_codex_home()
+        config_path = codex_home / "config.toml"
+        # Snapshot before ``ensure_deepseek_provider`` rewrites the provider, so
+        # the pristine config survives and OpenAI can be restored from it.
+        ensure_baseline_snapshot(codex_home, config_path)
+        ensure_deepseek_provider(config_path)
         return switch_codex_mode(
             PRO_MODE if chosen_model == PRO_MODE else FLASH_MODE,
             api_key=api_key,

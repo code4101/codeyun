@@ -5114,6 +5114,42 @@ def test_sheet_detail_only_lists_accessible_parent_workbooks(client, session):
     assert shared_parent_payload["workbook_items"] == [{"id": 2, "title": "私有工作簿"}]
 
 
+def test_generated_attendance_sheet_keeps_unreadable_parent_course_workbook(session):
+    owner = _create_user(session, username="attendance-course-workbook-owner")
+    workbook = WorkbookDocument(
+        numeric_id=47,
+        title="修道班12期2阶",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    sheet = SheetDocument(
+        numeric_id=61957,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20260712-xiudaoban-12-stage2",
+        sheet_key="attendance",
+        title="考勤表",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={"schema_version": 1, "columns": ["姓名"], "rows": [["杨艳"]]},
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.commit()
+    session.refresh(workbook)
+    session.refresh(sheet)
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+    session.commit()
+
+    workbook_items, parent_workbook_id = note_sheets_api._get_sheet_workbook_context(session, sheet, None)
+
+    assert note_sheets_api.is_generated_attendance_sheet(sheet) is True
+    assert parent_workbook_id == 47
+    assert [item.model_dump() for item in workbook_items] == [{"id": 47, "title": "修道班12期2阶"}]
+
+
 def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(client, session, monkeypatch):
     owner = _create_user(session, username="note-sheet-public-status-owner")
     sheet = SheetDocument(

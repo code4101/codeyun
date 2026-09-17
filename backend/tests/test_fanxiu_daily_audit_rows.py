@@ -43,3 +43,27 @@ def test_partial_row_cannot_claim_identity_before_complete_observation():
     )
     assert len(rows) == 1
     assert rows[0]["row_complete"] is True
+
+
+def test_daily_audit_maps_daily_window_titles_to_scheduler_tasks():
+    parser = Parser()
+    cases = {
+        "参与宗门灵泉 0/1": "legacy-daily-lingquan",
+        "参与宗门镇邪 0/1": "daily-zhenxie",
+        "参与论道1小时 0/6": "daily-lundao-seat",
+        "参与奇袭魔界 0/1": "legacy-daily-mojie-raid",
+        "完成一次玄荒古域 2/3": "daily-xuanhuang",
+        "完成一次魔狱封阵 0/1": "moyu-challenge",
+    }
+    for text, task_id in cases.items():
+        identity = parser._daily_audit_task_identity(text)
+        assert identity is not None, text
+        assert identity["task_id"] == task_id
+
+
+def test_daily_audit_leaves_weekly_titles_unmapped():
+    parser = Parser()
+    # 周常条目随周重置，混入日常映射会产生跨周假告警，保持未映射。
+    assert parser._daily_audit_task_identity("参与击败圣祖 0/1") is None
+    assert parser._daily_audit_task_identity("接受韩立指导 0/2") is None
+    assert parser._daily_audit_task_identity("联盟灵脉争夺1小时 0/3") is None

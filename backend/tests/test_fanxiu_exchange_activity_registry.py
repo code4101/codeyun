@@ -85,7 +85,8 @@ def test_public_exchange_activity_types_are_uniquely_registered() -> None:
         if spec.family == "resource_rank"
     } == {
         "lingzhuang-huadao", "yaochi-flower-festival", "yuanding-sansheng",
-        "lingchong-jingwu", "lianti-faxiang", "dandao-wending", "xiling-zhengwu",
+        "lingchong-jingwu", "shequn-lingchong", "lianti-faxiang",
+        "dandao-wending", "xiling-zhengwu",
     }
     with pytest.raises(ValueError, match="重复"):
         build_exchange_activity_registry(
@@ -240,6 +241,16 @@ def test_rank_activity_id_bindings_resolve_authoritative_ids() -> None:
     assert {scope: item.runtime_rank_activity_id for scope, item in identities.items()} == {
         "personal": 90101, "alliance": 90102
     }
+    shequn_identities = resolve_registered_occurrence_rank_identities(
+        activity_type="shequn-lingchong",
+        game_activity_id=4043501,
+        cross_count=4,
+        activity_follow=(43502,),
+    )
+    assert {
+        scope: item.runtime_rank_activity_id
+        for scope, item in shequn_identities.items()
+    } == {"alliance": 43502}
     identities = resolve_registered_occurrence_rank_identities(
         activity_type="tiandi-yiju", game_activity_id=8090004, cross_count=8
     )

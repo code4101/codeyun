@@ -33,6 +33,27 @@ class XianzangTaskCompletionResult:
     final_page: XianzangPageResult
 
 
+def xianzang_task_claimable(tokens: Sequence[dict[str, Any]]) -> bool:
+    """Whether the #450 task frame exposes a real claim affordance.
+
+    The task page has no dedicated claim Shape; a claimable row shows a
+    「领取」 control while pending rows only show progress.  Clicking the shared
+    progress region when nothing is claimable navigates to the task target
+    (for example 游历), so this gate decides whether claiming may start at all.
+    """
+
+    compact = re.sub(
+        r"\s+",
+        "",
+        "".join(
+            str(token.get("text") or "")
+            for token in tokens
+            if isinstance(token, dict)
+        ),
+    )
+    return "领取" in compact
+
+
 def parse_xianzang_task_progress(
     tokens: Sequence[dict[str, Any]],
 ) -> XianzangTaskProgress | None:
@@ -98,6 +119,18 @@ def complete_xianzang_tasks(
         return re.sub(r"\s+", "", str(text or "")).strip() or "<empty>"
 
     frame = context.cur_frame(update=True)
+    # #450 只有「进度」区域，没有可领取按钮；首行通常是进行中的任务
+    # （如「炼宝试炼二：游历20次」）。此时点击首行进度会被游戏当作
+    # “前往任务目标”而跳转到其它页面（例如打开游历 #228），属于误点。
+    # 只有画面确实出现「领取」时才进入领取循环，否则直接视为已收敛。
+    if not xianzang_task_claimable(context.full_frame_ocr_tokens(frame)):
+        final_page = yield from open_xianzang_tab(context, "蓬莱仙藏")
+        return XianzangTaskCompletionResult(
+            clicked_count=0,
+            stop_reason="no_claimable",
+            last_progress=None,
+            final_page=final_page,
+        )
     observer = observe(frame)
     unchanged = 0
     while unchanged < confirmations:

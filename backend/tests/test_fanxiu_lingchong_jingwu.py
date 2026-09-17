@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from backend.core.fanxiu.activity import lingchong_jingwu
+from backend.core.fanxiu.activity import lingchong_jingwu, pet_resource_receipts
 from backend.models import FanxiuExchangeActivity, FanxiuPacketBusinessRecord, FanxiuPacketDecodedRecord
 
 
@@ -554,3 +554,156 @@ def test_rank_fact_must_belong_to_selected_activity_period() -> None:
             {"captured_at": "2026-08-20T00:27:11+08:00"},
             label="个人榜",
         )
+
+
+def _fake_activity_tasks(*, entries, finished, captured_at="2026-09-16T15:36:43+08:00"):
+    def snapshots(domains=None, *, include_activity_tasks=False, **_kwargs):
+        return {"ok": True, "captured_at": captured_at, "task_entries": list(entries),
+                "finished_task_ids": list(finished)}
+
+    return snapshots
+
+
+_LADDER_TARGETS = (50, 100, 200, 300, 400, 500, 700, 1000,
+                   1500, 2000, 3000, 4000, 5000, 6000)
+
+
+def _tier_configs(activity_id: int = 4043501, *, sorts=None, targets=_LADDER_TARGETS) -> list[dict]:
+    sorts = sorts or list(range(1, len(targets) + 1))
+    return [
+        {"id": activity_id * 100 + 54 + index, "activityId": activity_id,
+         "sort": sorts[index], "name_plain": f"提升资质{index + 1}",
+         "finishCondition": [f"PetTalent|{target}"], "reward": []}
+        for index, target in enumerate(targets)
+    ]
+
+
+def _tier_entries(configs: list[dict], *, finished_ids=()) -> list[dict]:
+    return [
+        {"taskId": row["id"], "status": 3, "turn": 0, "rewardTime": 0,
+         "progressList": [{"finish": False, "progress": 0, "target": int(row["finishCondition"][0].split("|")[1])}]}
+        for row in configs if row["id"] not in set(finished_ids)
+    ]
+
+
+def test_milestones_require_the_exact_14_tier_ladder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    configs = _tier_configs()
+    highest_id = configs[-1]["id"]
+    _write_rows(tmp_path, "ActiveTask", configs)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.daily_task_rewards.read_activity_task_reward_snapshots",
+        _fake_activity_tasks(entries=_tier_entries(configs, finished_ids=[highest_id]),
+                             finished=[highest_id]),
+    )
+
+    snapshot = lingchong_jingwu.read_lingchong_task_milestones(4043501, export_root=tmp_path)
+
+    assert snapshot["ok"] is True and snapshot["complete"] is True
+    assert snapshot["target"] == 6000 and snapshot["goal_finished"] is True
+    assert len(snapshot["milestones"]) == 14
+    claimed = next(row for row in snapshot["milestones"] if row["task_id"] == highest_id)
+    assert claimed["progress"] == 6000 and claimed["finished"] is True
+
+
+def test_milestones_reject_partial_or_mixed_ladders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    short = _tier_configs(targets=_LADDER_TARGETS[:12])
+    _write_rows(tmp_path, "ActiveTask", short)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.daily_task_rewards.read_activity_task_reward_snapshots",
+        _fake_activity_tasks(entries=_tier_entries(short), finished=[]),
+    )
+    partial = lingchong_jingwu.read_lingchong_task_milestones(4043501, export_root=tmp_path)
+    assert partial["ok"] is False and partial["milestones"] == []
+    assert "档数不是" in partial["reason"]
+
+    mixed_sorts = [1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    mixed = _tier_configs(sorts=mixed_sorts)
+    _write_rows(tmp_path, "ActiveTask", mixed)
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.daily_task_rewards.read_activity_task_reward_snapshots",
+        _fake_activity_tasks(entries=_tier_entries(mixed), finished=[]),
+    )
+    mixed_result = lingchong_jingwu.read_lingchong_task_milestones(4043501, export_root=tmp_path)
+    assert mixed_result["ok"] is False and mixed_result["milestones"] == []
+    assert "sort" in mixed_result["reason"]
+
+
+def test_milestones_without_runtime_rows_are_not_reported_as_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _write_rows(tmp_path, "ActiveTask", _tier_configs())
+    monkeypatch.setattr(
+        "backend.core.fanxiu.instrumentation.daily_task_rewards.read_activity_task_reward_snapshots",
+        _fake_activity_tasks(entries=[], finished=[]),
+    )
+
+    snapshot = lingchong_jingwu.read_lingchong_task_milestones(4043501, export_root=tmp_path)
+
+    assert snapshot["ok"] is False
+    assert snapshot["milestones"] == []
+
+
+def test_resource_progress_requires_complete_ladder(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.core.fanxiu.data_annotation.tasks import pet_resource_use
+
+    monkeypatch.setattr(
+        pet_resource_use, "read_lingchong_task_milestones",
+        lambda activity_id, **kwargs: {"ok": True, "complete": False,
+                                       "milestones": [{"target": 50, "order": 1,
+                                                       "task_id": 404350165, "progress": 0,
+                                                       "finished": False}]},
+    )
+    with pytest.raises(RuntimeError, match="14档未完整加载"):
+        pet_resource_use.read_pet_resource_progress(4043501)
+
+
+def test_seed_usage_is_scoped_to_the_event_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(pet_resource_receipts, "fanxiu_data_annotation_dir", lambda: tmp_path)
+    folder = tmp_path / "pet-resource-receipts"
+    folder.mkdir()
+    (folder / "4043501-2026-09-14.json").write_text(
+        json.dumps([{"action_id": "old", "status": "verified", "item_id": 8022009, "quantity": 30}]),
+        encoding="utf-8",
+    )
+    (folder / "4043501-2026-09-15.json").write_text(
+        json.dumps([{"action_id": "a", "status": "verified", "item_id": 8022009, "quantity": 30}]),
+        encoding="utf-8",
+    )
+    (folder / "4043501-2026-09-16.json").write_text(
+        json.dumps([
+            {"action_id": "b", "status": "submitted", "item_id": 8022009, "quantity": 1},
+            {"action_id": "c", "status": "rank_sample", "item_id": 8022009, "quantity": 1},
+            {"action_id": "d", "status": "verified", "item_id": 8022002, "quantity": 5},
+        ]),
+        encoding="utf-8",
+    )
+
+    in_window = pet_resource_receipts.read_pet_seed_usage(
+        4043501, item_id=8022009, start_date="2026-09-15", end_date="2026-09-17",
+    )
+    assert in_window == 31
+    assert pet_resource_receipts.read_pet_seed_usage(
+        4043501, item_id=8022009, start_date="2026-09-16", end_date="2026-09-17",
+    ) == 1
+    rows = pet_resource_receipts.read_pet_resource_receipts_range(
+        4043501, start_date="2026-09-15", end_date="2026-09-17",
+    )
+    assert {row["action_id"] for row in rows} == {"a", "b", "c", "d"}
+    with pytest.raises(TypeError):
+        pet_resource_receipts.read_pet_seed_usage(4043501, item_id=8022009)
+
+    (folder / "4043501-2026-09-18.json").write_text("{not json", encoding="utf-8")
+    assert pet_resource_receipts.read_pet_seed_usage(
+        4043501, item_id=8022009, start_date="2026-09-16", end_date="2026-09-17",
+    ) == 1
+    with pytest.raises(ValueError, match="无法读取灵兽资源回执"):
+        pet_resource_receipts.read_pet_seed_usage(
+            4043501, item_id=8022009, start_date="2026-09-16", end_date="2026-09-18",
+        )
+

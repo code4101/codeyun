@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
+from uuid import uuid4
 
 from filelock import FileLock
 from pyxllib.autogui import image_number as parse_image_number
@@ -708,6 +709,52 @@ def update_data_annotation_asset_tree(
             before_write()
         write_data_annotation_json(path, normalized_tree)
         return _read_asset_tree_unlocked(path)
+
+
+def upsert_data_annotation_shape(
+    *, scene_id: int, shape_path: str, fields: dict[str, Any],
+    entry_id: str | None = None,
+) -> FanxiuDataAnnotationAssetTreeSnapshot:
+    """Atomically patch/create a named Shape; own IDs and resolve its parent.
+
+    Geometry uses the asset schema (normalized x/y/w/h). Existing
+    fields and children are preserved. Intermediate parents must exist.
+    """
+    parts = [part.strip() for part in shape_path.split('/') if part.strip()]
+    if not parts or {'id', 'children', 'title'} & fields.keys():
+        raise ValueError('需提供形状路径；id/title/children 由接口管理')
+
+    def update(tree: list[dict[str, Any]]) -> bool:
+        node_id = resolve_data_annotation_scene_node_id(tree, scene_id)
+        def find(nodes):
+            for node in nodes:
+                if node.get('id') == node_id:
+                    return node
+                result = find(node.get('children') or [])
+                if result is not None:
+                    return result
+            return None
+        scene = find(tree)
+        siblings = scene.setdefault('shapes', [])
+        for index, title in enumerate(parts):
+            matches = [item for item in siblings if item.get('title') == title]
+            if len(matches) > 1:
+                raise ValueError(f'形状路径不唯一：{shape_path}')
+            if not matches:
+                if index != len(parts) - 1:
+                    raise ValueError(f'父形状不存在：{title}')
+                item = {'id': f'shape-{uuid4()}', 'kind': 'shape', 'title': title, **fields}
+                siblings.append(item)
+                return True
+            item = matches[0]
+            if index == len(parts) - 1:
+                changed = any(item.get(key) != value for key, value in fields.items())
+                item.update(fields)
+                return changed
+            siblings = item.setdefault('children', [])
+        return False
+
+    return update_data_annotation_asset_tree(data_annotation_asset_tree_path(entry_id), update)
 
 
 def save_data_annotation_asset_tree_bundle(

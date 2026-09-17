@@ -25,6 +25,7 @@ from backend.core.codex.switch import (
     CodexSwitchError,
     detect_provider,
     discover_opencode_models,
+    ensure_opencode_provider_defined,
     restore_codeyun_backup,
     switch_codex,
 )
@@ -32,6 +33,7 @@ from backend.core.runtime.opencode_proxy_runtime import get_opencode_proxy_statu
 from backend.core.codex.weekly_quota import (
     build_codex_general_quota_window,
     collect_codex_quota_snapshot,
+    describe_codex_quota_error,
     list_codex_weekly_quota_snapshots,
     load_codex_quota_snapshot,
 )
@@ -333,9 +335,10 @@ def refresh_codex_quota(
         # Keep showing the last successful reading instead of blanking the panel
         # when a refresh fails (e.g. the Codex account is logged out).
         cached = load_codex_quota_snapshot()
+        message = describe_codex_quota_error(exc)
         if cached["groups"]:
-            return _quota_response(cached["groups"], cached["observed_at"], error=str(exc))
-        return CodexQuotaResponse(error=str(exc))
+            return _quota_response(cached["groups"], cached["observed_at"], error=message)
+        return CodexQuotaResponse(error=message)
     return _quota_response(snapshot["groups"], snapshot["observed_at"])
 
 
@@ -496,6 +499,9 @@ def switch_codex_setup(
     before_model = str(before.get("model") or "")
 
     if provider == OPENAI_PROVIDER_ID and before_provider == OPENAI_PROVIDER_ID and not before["deepseek_configured"]:
+        # Nothing to switch, but still repair the CodeYun-managed provider block so
+        # threads created on the opencode provider can be opened again.
+        ensure_opencode_provider_defined(resolve_codex_home() / "config.toml")
         return CodexSetupSwitchResponse(
             ok=True,
             provider=provider,
@@ -519,10 +525,13 @@ def switch_codex_setup(
     try:
         snapshot = stop_codex_processes()
         if provider == OPENAI_PROVIDER_ID:
-            if before["backup_exists"]:
-                result = switch_codex(OPENAI_PROVIDER_ID)
-            elif restore_codeyun_backup(codex_home):
+            # Prefer CodeYun's pristine baseline so the result is the original
+            # config, not whatever the official DeepSeek script happened to back
+            # up (it can hold a DeepSeek/opencode config).
+            if restore_codeyun_backup(codex_home):
                 result = {"mode": GPT_MODE, "output": "", "status": read_codex_status()}
+            elif before["backup_exists"]:
+                result = switch_codex(OPENAI_PROVIDER_ID)
             else:
                 raise CodexSwitchError("未找到备份，无法还原 OpenAI 默认配置")
         elif provider == DEEPSEEK_PROVIDER:

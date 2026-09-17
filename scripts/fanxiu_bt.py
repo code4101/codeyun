@@ -506,7 +506,17 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
     global_human_blocking_items = [*blocking_items]
     human_blocking_items = [*global_human_blocking_items, *execution_annotation_blockers]
+    now_dt = datetime.now()
     audit_updated_at = float(daily_audit.get("updated_at") or 0) if daily_audit else 0.0
+    audit_updated_dt = datetime.fromtimestamp(audit_updated_at) if audit_updated_at else None
+    audit_age_seconds = (
+        max(0.0, (now_dt - audit_updated_dt).total_seconds())
+        if audit_updated_dt is not None
+        else None
+    )
+    # 日常页复核快照只在采集当天有效。跨天后继续沿用会把历史“未映射/未完成”
+    # 当成当前事实，制造长期假告警并掩盖当日真实丢失，因此过期快照不参与判级。
+    audit_stale = audit_updated_dt is not None and audit_updated_dt.date() != now_dt.date()
     visual_incomplete_rows = []
     for item in (daily_audit.get("mapped_incomplete") or []):
         if not isinstance(item, dict):
@@ -531,12 +541,35 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         for task in (scheduler.get("scheduled_tasks") or [])
         if isinstance(task, dict) and str(task.get("id") or "") in visual_incomplete_ids
     ]
+    if audit_stale:
+        # 过期快照不作为当前事实参与判级。
+        visual_incomplete_rows = []
+        visual_incomplete_ids = set()
+        visual_incomplete_tasks = []
     visual_unmapped_incomplete = [
         item
         for item in (daily_audit.get("unmapped_incomplete") or [])
         if isinstance(item, dict)
-    ]
-    now_dt = datetime.now()
+    ] if not audit_stale else []
+    # 窗口类作业错过窗口后会以 no-op “未执行游戏操作” 正常结束（不代表业务
+    # 成功）。当日出现这种结论就说明该作业今天没有真正完成，必须显式暴露。
+    missed_window_tasks: list[dict[str, Any]] = []
+    today_prefix = now_dt.strftime("%Y-%m-%d")
+    for task_id, task in scheduled_by_id.items():
+        if not isinstance(task, dict):
+            continue
+        message = str(task.get("last_message") or "")
+        if "未执行游戏操作" not in message:
+            continue
+        if not str(task.get("last_run_at") or "").startswith(today_prefix):
+            continue
+        missed_window_tasks.append({
+            "id": task_id,
+            "label": str(task.get("label") or task_id),
+            "last_run_at": task.get("last_run_at"),
+            "next_time": task.get("next_time"),
+            "message": message,
+        })
     critical_failed_tasks: list[dict[str, Any]] = []
     critical_task_ids = {"mail-selective-claim"}
     for task_id in critical_task_ids:
@@ -616,10 +649,22 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
     elif critical_failed_tasks:
         labels = "、".join(str(item.get("label") or item.get("id")) for item in critical_failed_tasks)
         action_required.append(f"关键作业今日失败或残留：{labels}；需要立即诊断日志、清理运行残留并按公开入口监督重跑或 observe-only 验证")
+    elif missed_window_tasks:
+        labels = "、".join(str(item.get("label") or item.get("id")) for item in missed_window_tasks)
+        action_required.append(
+            f"窗口作业今日未执行（错过窗口后 no-op）：{labels}；"
+            "检查 Scheduler 是否在窗口开启时按时派发 Cell，避免同类窗口再次错过"
+        )
     elif visual_incomplete_tasks or visual_unmapped_incomplete:
         action_required.append("日常页复核发现任务次数未满；已映射任务应重新到期执行，未映射任务需要补 Scheduler 能力或映射规则")
     elif not due_tasks:
         action_required.append("当前没有到期任务")
+    if audit_stale and audit_updated_dt is not None:
+        action_required.append(
+            "日常页复核快照已过期（"
+            f"{audit_updated_dt.strftime('%Y-%m-%d %H:%M:%S')}），"
+            "请在调度空闲时运行 `fanxiu_bt.py task daily_audit` 刷新"
+        )
 
     kernel = report.get("kernel") if isinstance(report.get("kernel"), dict) else {}
     entry_id = str(kernel.get("entry_id") or DEFAULT_FANXIU_ENTRY_ID)
@@ -655,6 +700,10 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         severity = "attention"
         labels = "、".join(str(item.get("label") or item.get("id")) for item in critical_failed_tasks)
         summary = f"关键作业失败或残留：{labels}"
+    elif missed_window_tasks:
+        severity = "attention"
+        labels = "、".join(str(item.get("label") or item.get("id")) for item in missed_window_tasks)
+        summary = f"{len(missed_window_tasks)} 个窗口作业今日未执行（错过窗口）：{labels}"
     elif visual_incomplete_tasks or visual_unmapped_incomplete:
         severity = "attention"
         summary = (
@@ -686,6 +735,14 @@ def _build_maintenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         "visual_incomplete_ids": [str(item.get("id") or "") for item in visual_incomplete_tasks],
         "visual_unmapped_incomplete_count": len(visual_unmapped_incomplete),
         "visual_unmapped_incomplete": visual_unmapped_incomplete,
+        "missed_window_count": len(missed_window_tasks),
+        "missed_window_ids": [str(item.get("id") or "") for item in missed_window_tasks],
+        "missed_window_tasks": missed_window_tasks,
+        "daily_audit_stale": bool(audit_stale),
+        "daily_audit_age_seconds": audit_age_seconds,
+        "daily_audit_updated_at": (
+            audit_updated_dt.strftime("%Y-%m-%d %H:%M:%S") if audit_updated_dt else None
+        ),
         "action_required": action_required,
         "annotation_targets": annotation_targets,
         "retry_condition": (
@@ -803,6 +860,9 @@ def _doctor_watch_event(report: dict[str, Any], *, iteration: int) -> dict[str, 
         "visual_incomplete_count": maintenance.get("visual_incomplete_count") or 0,
         "visual_incomplete_ids": maintenance.get("visual_incomplete_ids") or [],
         "visual_unmapped_incomplete_count": maintenance.get("visual_unmapped_incomplete_count") or 0,
+        "missed_window_count": maintenance.get("missed_window_count") or 0,
+        "missed_window_ids": maintenance.get("missed_window_ids") or [],
+        "daily_audit_stale": bool(maintenance.get("daily_audit_stale")),
         "automation_safe": bool(maintenance.get("automation_safe")),
         "needs_human_annotation": bool(maintenance.get("needs_human_annotation")),
         "blocked_by": maintenance.get("blocked_by") or [],
@@ -1740,6 +1800,20 @@ def main() -> int:
     go_scene.add_argument("scene_id")
     _add_task_run_options(go_scene)
 
+    plan_scene = subparsers.add_parser(
+        "plan-scene",
+        help="只读规划到目标场景的下一步候选（不操作游戏、不启动设备）",
+    )
+    plan_scene.add_argument("--from-scene", required=True, help="起始场景编号，例如 34 或 #34")
+    plan_scene.add_argument("--scene", dest="target_scene", required=True, help="目标场景编号，例如 483")
+    plan_scene.add_argument("--limit", type=int, default=3, help="返回的候选动作数量，默认 3")
+    plan_scene.add_argument(
+        "--max-downstream-steps",
+        type=int,
+        default=16,
+        help="下游示意路径最大步数，默认 16",
+    )
+
     mail_check = subparsers.add_parser("mail-check", help="运行邮件_选择性领取")
     _add_task_run_options(mail_check)
 
@@ -1837,6 +1911,36 @@ def main() -> int:
     subparsers.add_parser("clear-logs", help="清空本地 Kernel 调度器日志")
 
     args = parser.parse_args()
+    if args.command == "plan-scene":
+        from backend.core.fanxiu.data_annotation.navigation_planning import (
+            load_asset_tree_snapshot,
+            plan_scene_navigation,
+        )
+
+        asset_tree_path, snapshot = load_asset_tree_snapshot(str(args.entry_id))
+        if not snapshot.exists or not snapshot.tree:
+            print(json.dumps(
+                {
+                    "status": "assets_unavailable",
+                    "asset_tree_path": str(asset_tree_path),
+                    "asset_revision": snapshot.revision,
+                },
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ))
+            return 2
+        result = plan_scene_navigation(
+            snapshot.tree,
+            parse_data_annotation_scene_id(args.from_scene),
+            parse_data_annotation_scene_id(args.target_scene),
+            limit=args.limit,
+            max_downstream_steps=args.max_downstream_steps,
+        )
+        result["asset_tree_path"] = str(asset_tree_path)
+        result["asset_revision"] = snapshot.revision
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0 if str(result.get("status") or "") in {"ok", "already_at_target"} else 1
     if args.command == "status":
         status = fanxiu_kernel_scheduler_status()
         if args.raw:

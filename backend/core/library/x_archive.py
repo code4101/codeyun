@@ -486,6 +486,114 @@ def crawl_x_profile(
     return sorted(posts.values(), key=lambda post: (post.created_ts, post.id), reverse=True)
 
 
+def parse_x_public_profile(data: bytes, *, handle: str) -> list[XPost]:
+    """Read X's logged-out server-rendered articles, excluding nested quotes.
+
+    A login/error page must fail explicitly. Snowflake timestamps avoid relative
+    dates; scoped article selectors keep quote text and engagement counts out of
+    the author's text. Truncated bodies are rejected rather than archived as full.
+    """
+    soup = BeautifulSoup(data, "html.parser")
+    posts = []
+    for article in soup.select("article"):
+        if article.find_parent("article") is not None:
+            continue
+        links = [a for a in article.select('a[href*="/status/"]')
+                 if a.find_parent("article") is article]
+        match = next((m for a in links if (m := re.fullmatch(
+            rf"(?:https://x\.com)?/{re.escape(handle)}/status/(\d+)",
+            str(a.get("href") or ""), re.I))), None)
+        if match is None:
+            continue
+        bodies = [node for node in article.select('div[dir="auto"]')
+                  if node.find_parent("article") is article]
+        if len(bodies) != 1 or any(str(c).startswith("line-clamp-") for c in bodies[0].get("class", [])):
+            raise RuntimeError("X 原站消息正文缺失或被截断。")
+        body = bodies[0]
+        for br in body.select("br"):
+            br.replace_with("\n")
+        quote_article = article.select_one("article")
+        quoted_author = quoted_text = ""
+        if quote_article is not None:
+            quote_body = quote_article.select_one('div[dir="auto"]')
+            if quote_body is None or any(str(c).startswith("line-clamp-") for c in quote_body.get("class", [])):
+                raise RuntimeError("X 原站引用正文被截断，需要完整消息来源。")
+            author_links = [a.get_text(strip=True) for a in quote_article.select('a[href]')
+                            if re.fullmatch(r"(?:https://x\.com)?/[\w]+", str(a.get("href")))]
+            quoted_author = " ".join(dict.fromkeys(t for t in author_links if t))
+            quoted_text = quote_body.get_text("", strip=False).strip()
+        post_id = match.group(1)
+        created = datetime.fromtimestamp(((int(post_id) >> 22) + 1288834974657) / 1000, timezone.utc).astimezone(DISPLAY_TIMEZONE)
+        posts.append(XPost(
+            id=post_id, handle=handle, url=X_PROFILE_URL_TEMPLATE.format(handle=handle) + "/status/" + post_id,
+            created_at=created.strftime("%Y-%m-%d %H:%M"), created_ts=created.timestamp(),
+            text=body.get_text("", strip=False).strip(), quoted_author=quoted_author, quoted_text=quoted_text,
+            images=list(dict.fromkeys(str(img["src"]) for img in article.select('img[src]')
+                                      if str(img["src"]).startswith("https://pbs.twimg.com/media/"))),
+        ))
+    if not posts:
+        raise RuntimeError("X 原站未返回可读取的公开消息，不能判定为没有更新。")
+    return sorted(posts, key=lambda post: (post.created_ts, post.id), reverse=True)
+
+
+def crawl_x_public_profile(*, handle: str, since: datetime, known_ids: set[str]) -> list[XPost]:
+    """Incremental public X reader; overlap is required to claim full coverage.
+
+    The logged-out page is a bounded preview, not a historical pagination API.
+    Existing articles are removed before parsing so abbreviated quote previews
+    cannot overwrite previously archived complete text and translations.
+    """
+    request = Request(X_PROFILE_URL_TEMPLATE.format(handle=quote(handle, safe="")),
+                      headers={"User-Agent": RSS_USER_AGENT, "Accept": "text/html"})
+    with urlopen(request, timeout=30) as response:
+        soup = BeautifulSoup(response.read(), "html.parser")
+    overlap = False
+    # An old pinned post is not evidence that we reached the last checkpoint.
+    checkpoint = max(known_ids, key=int) if known_ids else None
+    remaining = 0
+    for article in [a for a in soup.select("article") if a.find_parent("article") is None]:
+        link = next((a for a in article.select('a[href*="/status/"]')
+                     if a.find_parent("article") is article and re.fullmatch(
+                         rf"(?:https://x\.com)?/{re.escape(handle)}/status/\d+", str(a.get("href") or ""), re.I)), None)
+        if link is None:
+            continue
+        post_id = str(link["href"]).rsplit("/", 1)[-1]
+        if post_id in known_ids:
+            overlap = overlap or post_id == checkpoint
+            article.decompose()
+        else:
+            remaining += 1
+    if overlap and not remaining:
+        return []
+    # Quote cards deliberately abbreviate text. Resolve only new quotes via
+    # their public permalinks before accepting them as complete archived text.
+    for article in soup.select("article article"):
+        body = article.select_one('div[dir="auto"]')
+        if body is None or not any(str(c).startswith("line-clamp-") for c in body.get("class", [])):
+            continue
+        link = next((a for a in article.select('a[href]') if re.fullmatch(
+            r"(?:https://x\.com)?/[\w]+/status/\d+", str(a.get("href") or ""))), None)
+        if link is None:
+            raise RuntimeError("X 引用消息缺少原文链接。")
+        path = urlsplit(str(link["href"])).path
+        with urlopen(Request("https://x.com" + path, headers={"User-Agent": RSS_USER_AGENT}), timeout=30) as response:
+            detail = BeautifulSoup(response.read(), "html.parser")
+        full_body = next((node for item in detail.select("article")
+                          if item.find_parent("article") is None
+                          and any(urlsplit(str(a.get("href"))).path == path for a in item.select('a[href]'))
+                          for node in item.select('div[dir="auto"]')
+                          if node.find_parent("article") is item), None)
+        if full_body is None:
+            raise RuntimeError("X 引用原文页面未返回正文。")
+        body.replace_with(full_body.extract())
+    posts = parse_x_public_profile(str(soup).encode("utf-8"), handle=handle)
+    threshold = since.timestamp()
+    recent = [post for post in posts if post.created_ts >= threshold]
+    if not overlap and min(post.created_ts for post in posts) > threshold:
+        raise XArchivePartialFetchError(recent, RuntimeError("X 原站公开预览未覆盖到已有归档；历史消息可能缺失。"))
+    return recent
+
+
 TRANSLATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -882,7 +990,7 @@ def sync_x_archive(
     author: str = TIBO_X_ARCHIVE_AUTHOR,
     lookback_days: int = TIBO_X_ARCHIVE_LOOKBACK_DAYS,
     now: datetime | None = None,
-    crawler: Callable[..., list[XPost]] = crawl_x_profile,
+    crawler: Callable[..., list[XPost]] | None = None,
     translator: Callable[..., dict[str, tuple[str, str]]] = translate_x_posts_online,
 ) -> XArchiveResult:
     handle = handle.strip().lstrip("@").lower()
@@ -891,10 +999,9 @@ def sync_x_archive(
     existing_ids = store.existing_ids(handle)
     fetch_warning = ""
     try:
-        fetched = crawler(
-            handle=handle,
-            since=current - timedelta(days=max(1, int(lookback_days))),
-        )
+        since = current - timedelta(days=max(1, int(lookback_days)))
+        fetched = (crawler(handle=handle, since=since) if crawler is not None else
+                   crawl_x_public_profile(handle=handle, since=since, known_ids=existing_ids))
     except XArchivePartialFetchError as exc:
         fetched = exc.posts
         fetch_warning = str(exc)

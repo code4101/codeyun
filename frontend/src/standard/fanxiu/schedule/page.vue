@@ -24,6 +24,7 @@ type ResourceActivityType =
   | 'yaochi-flower-festival'
   | 'yuanding-sansheng'
   | 'lingchong-jingwu'
+  | 'shequn-lingchong'
   | 'lianti-faxiang'
   | 'dandao-wending'
   | 'peakrace'
@@ -42,6 +43,7 @@ const resourceTypes = new Set<ResourceActivityType>([
   'yaochi-flower-festival',
   'yuanding-sansheng',
   'lingchong-jingwu',
+  'shequn-lingchong',
   'lianti-faxiang',
   'dandao-wending',
   'peakrace',
@@ -95,23 +97,19 @@ onMounted(async () => {
       <section class="ranking-section">
         <h3>玩法榜</h3>
         <TopActivityPage
-          v-if="gameplayType"
           embedded
           :initial-activity-type="gameplayType"
           :initial-snapshot="gameplaySnapshot"
         />
-        <div v-else class="empty-state">今日无玩法榜</div>
       </section>
 
       <section class="ranking-section">
         <h3>资源榜</h3>
         <ResourceRankingPage
-          v-if="resourceType"
           embedded
           :initial-activity-type="resourceType"
           :initial-snapshot="schedule.resource_rank.snapshot ?? null"
         />
-        <div v-else class="empty-state">今日暂无已接入的资源榜</div>
       </section>
     </template>
   </main>
@@ -143,7 +141,6 @@ onMounted(async () => {
   border-top: 1px solid var(--el-border-color-lighter);
 }
 
-.empty-state,
 .page-error {
   padding: 22px 0;
   color: var(--el-text-color-secondary);

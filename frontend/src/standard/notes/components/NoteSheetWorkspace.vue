@@ -181,6 +181,7 @@ const ATTENDANCE_WJX_SEQUENCE_HEADER = '序号'
 const ATTENDANCE_WJX_AI_HEADER = 'AI初判'
 const ATTENDANCE_WJX_SIGNAL_HEADERS = ['提交时间', '课程', '修正需求', '处理状态']
 const ATTENDANCE_COMPLETED_ROW_BACKGROUND = '#f2f2f2'
+const ATTENDANCE_QUALIFIED_BACKGROUND = '#80FF80'
 const STUDENT_LOOKUP_SEQUENCE_HEADER = '序号'
 const STUDENT_LOOKUP_GROUP_HEADER = '分组'
 const STUDENT_LOOKUP_COURSE_HEADER = '课程'
@@ -15494,9 +15495,18 @@ function syncSheetOverlayScrollFromMaster() {
   }
 
   const { scrollLeft, scrollTop } = masterHolder
+  const masterClientWidth = masterHolder.clientWidth
   const masterClientHeight = masterHolder.clientHeight
   sheetFrame.querySelectorAll<HTMLElement>('.ht_clone_top .wtHolder, .ht_clone_bottom .wtHolder')
     .forEach((holder) => {
+      // The master holder can be narrower by the vertical scrollbar width.
+      // Give horizontal overlays the same viewport before copying scrollLeft;
+      // otherwise their smaller max scroll offset leaves frozen rows shifted
+      // near the right edge of wide sheets.
+      if (masterClientWidth > 0 && holder.clientWidth !== masterClientWidth) {
+        holder.style.width = `${masterClientWidth}px`
+        holder.style.maxWidth = `${masterClientWidth}px`
+      }
       if (holder.scrollLeft !== scrollLeft) {
         holder.scrollLeft = scrollLeft
       }
@@ -26840,6 +26850,11 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
     backgroundColor = accentStyle.backgroundColor
   }
 
+  const conditionalBackgroundColor = getConditionalCellBackgroundColor(renderColumn, renderedText)
+  if (conditionalBackgroundColor) {
+    backgroundColor = conditionalBackgroundColor
+  }
+
   if (cellStyle?.background_color) {
     backgroundColor = cellStyle.background_color
   }
@@ -28134,6 +28149,14 @@ function getCellAccentStyle(rowIndex: number, columnIndex: number) {
   return cellAccentStyleMap.value.get(`${rowIndex}:${columnIndex}`) ?? null
 }
 
+function getConditionalCellBackgroundColor(columnIndex: number, renderedText: string) {
+  const header = normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim()
+  if (header === '考试资格' && renderedText.trim() === '是') {
+    return ATTENDANCE_QUALIFIED_BACKGROUND
+  }
+  return ''
+}
+
 function isAttendanceSummarySheetPluginEnabled() {
   return props.sheetId === ATTENDANCE_SUMMARY_SHEET_ID
     && (props.workbookId == null || props.workbookId === ATTENDANCE_SUMMARY_WORKBOOK_ID)
@@ -28515,6 +28538,11 @@ function handleAfterRenderer(
     const accentStyle = getCellAccentStyle(dataRow, renderColumn)
     if (accentStyle) {
       backgroundColor = accentStyle.backgroundColor
+    }
+
+    const conditionalBackgroundColor = getConditionalCellBackgroundColor(renderColumn, renderedText)
+    if (conditionalBackgroundColor) {
+      backgroundColor = conditionalBackgroundColor
     }
 
     if (cellStyle?.background_color) {

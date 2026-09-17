@@ -215,3 +215,40 @@ def test_responses_to_messages_groups_parallel_tool_calls_into_one_message():
     results = messages[1]["content"]
     assert [block["type"] for block in results] == ["tool_result", "tool_result"]
     assert [block["tool_use_id"] for block in results] == ["call_a", "call_b"]
+
+
+_IMAGE_TOOL_OUTPUT = [{"type": "input_image", "image_url": "data:image/png;base64,AAAA", "detail": "high"}]
+
+
+def test_responses_to_chat_keeps_image_tool_output_as_image_part():
+    body = {
+        "model": "deepseek-flash",
+        "input": [
+            {"type": "function_call", "call_id": "call_img", "name": "view_image", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_img", "output": _IMAGE_TOOL_OUTPUT},
+        ],
+    }
+
+    tool_message = opencode_proxy.responses_to_chat(body)["messages"][1]
+
+    assert tool_message["role"] == "tool"
+    content = tool_message["content"]
+    assert isinstance(content, list)
+    assert content == [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
+
+
+def test_responses_to_messages_keeps_image_tool_output_as_image_block():
+    body = {
+        "model": "claude-x",
+        "input": [
+            {"type": "function_call", "call_id": "call_img", "name": "view_image", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_img", "output": _IMAGE_TOOL_OUTPUT},
+        ],
+    }
+
+    result = opencode_proxy.responses_to_messages(body)["messages"][1]["content"][0]
+
+    assert result["type"] == "tool_result"
+    assert result["content"] == [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+    ]

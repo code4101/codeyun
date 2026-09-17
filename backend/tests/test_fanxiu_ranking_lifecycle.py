@@ -46,6 +46,10 @@ def test_tiandi_yiju_capability_status_matches_production_assembly() -> None:
     )
 
 
+def test_shequn_lingchong_only_registers_the_occurrence_before_collection() -> None:
+    assert RANKING_CAPABILITY_STATUS["shequn-lingchong"] == "observed_unhandled"
+
+
 def test_production_due_includes_only_promoted_magic_initialization() -> None:
     magic = RankingOccurrence(
         activity_type="magic-invasion",
@@ -97,6 +101,9 @@ RESOURCE_RANK_ACTIVITY_ID_CASES = (
     *((value, "lingchong-jingwu") for value in (
         1042001, 1042901, 2042901, 4042901, 1042911,
         8042901, 16042901, 32042901,
+    )),
+    *((value, "shequn-lingchong") for value in (
+        2043501, 4043501, 8043501, 16043501,
     )),
     *((value, "lianti-faxiang") for value in (
         1041701, 1043001, 2043001, 4043001, 1043011,
@@ -612,6 +619,11 @@ def test_free_gift_checkpoint_is_limited_to_activities_with_a_proven_adapter() -
         item.checkpoint_kind for item in lingzhuang
     }
     assert RESOURCE_FREE_GIFT_KIND in {item.checkpoint_kind for item in yaochi}
+    lingchong = checkpoints_for_occurrence(
+        occurrence("shequn-lingchong", 4043501),
+        business_day=datetime(2026, 8, 26, tzinfo=TZ).date(),
+    )
+    assert RESOURCE_FREE_GIFT_KIND in {item.checkpoint_kind for item in lingchong}
 
 
 def test_exchange_tail_is_never_replayed_after_panel_close() -> None:

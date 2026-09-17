@@ -39,6 +39,7 @@ PUBLIC_EXCHANGE_ACTIVITY_TYPES = (
     "yaochi-flower-festival",
     "yuanding-sansheng",
     "lingchong-jingwu",
+    "shequn-lingchong",
     "lianti-faxiang",
     "dandao-wending",
     "xiling-zhengwu",
@@ -337,6 +338,14 @@ class LingchongJingwuActivityAdapter:
             session,
             collect_lingchong_jingwu_resource_snapshot(activity_id=activity_id),
         )
+
+
+class ShequnLingchongActivityAdapter:
+    """社团灵宠先接入资源榜生命周期；实时榜单采集另行实现。"""
+
+    def collect_activity(self, session: Session, *, activity_id: str) -> Any:
+        del session, activity_id
+        raise ValueError("社团灵宠 Runtime 榜单采集尚未实现")
 
 
 class LiantiFaxiangActivityAdapter:
@@ -832,6 +841,26 @@ LINGCHONG_JINGWU_SPEC = ExchangeActivitySpec(
 )
 
 
+SHEQUN_LINGCHONG_SPEC = ExchangeActivitySpec(
+    activity_type="shequn-lingchong",
+    family="resource_rank",
+    label="社团灵宠",
+    worldline_vo_types=("CrossRankActivityVO",),
+    currency_type=0,
+    currency_name="灵兽资质积分",
+    rank_scopes=(
+        _rank_scope(
+            "alliance", label="社团榜", role="primary", subject="team",
+            reward_tiers_enabled=True, required=True, vo_type=TEAM_RANK_VO,
+            binding=RankActivityIdBinding(source="activity_follow", follow_index=0),
+        ),
+    ),
+    shop=None,
+    page=_resource_page(("alliance",)),
+    adapter=ShequnLingchongActivityAdapter(),
+)
+
+
 LIANTI_FAXIANG_SPEC = ExchangeActivitySpec(
     activity_type="lianti-faxiang",
     family="resource_rank",
@@ -903,6 +932,7 @@ EXCHANGE_ACTIVITY_SPECS = build_exchange_activity_registry(
         YAOCHI_FLOWER_FESTIVAL_SPEC,
         YUANDING_SANSHENG_SPEC,
         LINGCHONG_JINGWU_SPEC,
+        SHEQUN_LINGCHONG_SPEC,
         LIANTI_FAXIANG_SPEC,
         DANDAO_WENDING_SPEC,
         XILING_ZHENGWU_SPEC,

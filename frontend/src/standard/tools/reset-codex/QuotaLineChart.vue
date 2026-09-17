@@ -45,6 +45,9 @@ function buildOption(data: LineChartData | null) {
     return null
   }
   const unit = data.unit ?? '%'
+  // Only annotate Mondays on short windows; long spans use a coarser axis
+  // interval where the weekday would just add noise.
+  const showWeekday = end - start < 14 * 24 * 60 * 60 * 1000
 
   const points = data.points
     .map((point) => ({ time: new Date(point.at).getTime(), value: point.value }))
@@ -98,9 +101,13 @@ function buildOption(data: LineChartData | null) {
         showMinLabel: true,
         showMaxLabel: true,
         hideOverlap: true,
+        rich: {
+          week: { color: '#475569', fontSize: 9, fontWeight: 'bold' },
+        },
         formatter: (value: number) => {
           const date = new Date(value)
-          return `${date.getMonth() + 1}/${date.getDate()}`
+          const label = `${date.getMonth() + 1}/${date.getDate()}`
+          return showWeekday && date.getDay() === 1 ? `{week|${label}周一}` : label
         },
       },
       axisLine: { lineStyle: { color: '#e2e8f0' } },
@@ -123,6 +130,7 @@ function buildOption(data: LineChartData | null) {
         type: 'line',
         showSymbol: false,
         smooth: false,
+        itemStyle: { color: '#22c55e' },
         lineStyle: { color: '#22c55e', width: 2 },
         areaStyle: { color: 'rgba(34,197,94,0.08)' },
         data: points.map((point) => [point.time, point.value]),
@@ -134,6 +142,9 @@ function buildOption(data: LineChartData | null) {
         itemStyle: { color: '#22c55e' },
         data: dotData,
         silent: true,
+        // The dots mirror the line's daily points; keep them out of the axis
+        // tooltip so it does not list the same value twice.
+        tooltip: { show: false },
       },
     ],
   }

@@ -15,6 +15,9 @@ LINGQUAN_TRIGGER_TIME = dt_time(20, 30)
 LINGQUAN_QUESTION_START_TIME = dt_time(20, 33)
 LINGQUAN_QUESTION_CUTOFF = dt_time(20, 41)
 LINGQUAN_EXIT_TIME = dt_time(20, 43)
+# 单次离场落点重识别等待上限，避免窄期望集合把一次 wait_scene 拖满整段
+# deadline；外层循环仍以总 deadline 反复重试。
+LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS = 10.0
 
 
 class _LingquanWindowExpired(RuntimeError):
@@ -383,7 +386,7 @@ class LingquanTaskMixin:
                     [34,
                     388,
                     186],
-                    wait=remaining,
+                    wait=min(LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, max(1.0, remaining)),
                     label="日常_灵泉：重新识别多层离场上下文",
                 )
                 scene_id = self._view_id(waited)
@@ -399,7 +402,7 @@ class LingquanTaskMixin:
                     [34,
                     388,
                     186],
-                    wait=remaining,
+                    wait=min(LINGQUAN_LEAVE_REDISCOVER_WAIT_SECONDS, max(1.0, remaining)),
                     label="日常_灵泉：点击离开后重新识别落点",
                 )
                 scene_id = self._view_id(landed)

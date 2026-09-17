@@ -59,7 +59,10 @@ from backend.core.attendance.progress_style import (
     parse_threshold_refund_rules,
 )
 from backend.core.access.feature_access_guard import ensure_feature_access
-from backend.core.notes.sheet_access import ensure_attendance_sheet_anonymous_viewer
+from backend.core.notes.sheet_access import (
+    ensure_attendance_sheet_anonymous_viewer,
+    is_generated_attendance_sheet,
+)
 from backend.core.notes import sheet_inline_links as note_sheet_inline_links
 from backend.core.settings import get_settings
 from backend.core.jobs.local_runtime import request_local_job_cancel, submit_local_job
@@ -17162,7 +17165,13 @@ def _get_sheet_workbook_context(
                 current_user,
             ).capabilities.can_read
             workbook_readable_cache[workbook_key] = can_read_workbook
-        if not can_read_workbook or numeric_workbook_id in seen_workbook_ids:
+        if numeric_workbook_id in seen_workbook_ids:
+            continue
+        # Generated attendance sheets are intentionally public (anonymous
+        # viewer). Their parent course workbook title is intrinsic course
+        # metadata for the sheet, so it must stay available even when the
+        # viewer has no read access to the workbook itself.
+        if not can_read_workbook and not is_generated_attendance_sheet(document):
             continue
         seen_workbook_ids.add(numeric_workbook_id)
         workbook_items.append(WorkbookRefItem(id=numeric_workbook_id, title=linked_workbook.title))

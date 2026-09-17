@@ -9792,6 +9792,12 @@ const findFirstShapeByAssetSearch = (shapes: DataAnnotationShape[], needle: stri
 };
 
 const assetNodeMatchesSearchText = (node: DataAnnotationAssetNode, needle: string) => {
+  // 纯数字查询按场景编号精确匹配："6" 等价于 "#0006"，不再做子串匹配，
+  // 避免搜索 "66" 命中 #663/#661 之类的前后缀。
+  if (/^\d+$/.test(needle)) {
+    if (node.type === 'image' && assetNumericImageId(node) === Number(needle)) return true;
+    return node.title.trim().toLowerCase().includes(needle);
+  }
   const texts = [
     node.title,
     node.filename,

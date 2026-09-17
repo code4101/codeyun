@@ -710,11 +710,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=TIBO_X_ARCHIVE_TASK_KEY,
         title="Tibo X 消息摘录",
         category="图书馆",
-        description="每小时增量抓取 @thsottiaux 的公开 X 消息，翻译成中文后更新图书馆动态摘录；首次回溯最近 30 天，书内始终按时间倒序展示。",
+        description="每小时从 X 原站公开主页增量采集 @thsottiaux 的消息，翻译后更新图书馆摘录；公开预览未覆盖已有归档时明确标记缺口，书内按时间倒序展示。",
         schedule_label="每小时检查",
         retry_label="失败后 10 分钟重试",
         action=enqueue_tibo_x_archive_job,
-        manual_warning="会访问 XCancel 公开时间线；在线翻译失败时使用本机 AI 翻译，按消息 ID 去重更新专用摘录书。",
+        manual_warning="会访问 X 原站公开主页；在线翻译失败时使用本机 AI 翻译，按消息 ID 去重更新专用摘录书。",
         default_visible=False,
     ),
     BackgroundTaskSpec(
@@ -1171,7 +1171,9 @@ class BackgroundTaskRunner:
                 return Status.FAILURE
             if not escalation_threshold:
                 print(f"Background task {task_key} failed: {exc}")
-                return Status.FAILURE
+                # Retry handles exceptions, not Status.FAILURE. Swallowing the
+                # exception leaves DynamicTime due and dispatches on every tick.
+                raise
             failure_state = _background_task_failure_state(ctx.runner, task_key, create=True)
             failure_count = int(failure_state.get("consecutive_failures") or 0) + 1
             failure_state["consecutive_failures"] = failure_count
@@ -1190,7 +1192,7 @@ class BackgroundTaskRunner:
             failure_state["recent_failures"] = recent_failures[-escalation_threshold:]
             if failure_count < escalation_threshold:
                 print(f"Background task {task_key} failed (attempt {failure_count}/{escalation_threshold}): {exc}")
-                return Status.FAILURE
+                raise
             request = _build_background_task_escalation_request(
                 spec=spec,
                 failure_state=failure_state,
@@ -1202,7 +1204,7 @@ class BackgroundTaskRunner:
                 failure_state["status"] = "dispatch_failed"
                 failure_state["dispatch_error"] = f"{type(dispatch_exc).__name__}: {dispatch_exc}"
                 print(f"Background task {task_key} escalation failed: {dispatch_exc}")
-                return Status.FAILURE
+                raise
             failure_state["status"] = "agent_running"
             failure_state["dispatch"] = dispatch.model_dump()
             failure_state.pop("dispatch_error", None)

@@ -36,6 +36,24 @@ class CodexWeeklyQuotaLoginRequired(CodexWeeklyQuotaError):
     pass
 
 
+def describe_codex_quota_error(error: BaseException) -> str:
+    """Turn a raw app-server failure into an actionable Chinese message.
+
+    ``account/rateLimits/read`` can only answer with the ChatGPT account, so a
+    missing (or config-disabled) ChatGPT login is the single most common failure.
+    Say what to do instead of surfacing the English protocol error verbatim.
+    """
+
+    text = str(error or "").strip()
+    if "authentication required" in text.lower() or "chatgpt login is disabled" in text.lower():
+        return (
+            '本机 Codex 未登录 ChatGPT 账号（config.toml 被官方脚本写成 API key 强制登录时也如此）：'
+            '请执行 codex login -c forced_login_method="chatgpt" 重新登录后刷新'
+            f"（原始错误：{text}）"
+        )
+    return text
+
+
 def parse_codex_rate_limits_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     """Extract the longest (weekly) rate-limit window from app-server output."""
 
@@ -83,7 +101,16 @@ def parse_codex_rate_limits_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-CODEX_CHATGPT_AUTH_OVERRIDE: tuple[tuple[str, str], ...] = (("preferred_auth_method", '"chatgpt"'),)
+# Reading the ChatGPT account quota must not depend on which provider ``config.toml``
+# currently points at.  The official DeepSeek setup script writes both
+# ``preferred_auth_method = "apikey"`` and ``forced_login_method = "api"``, and the
+# latter alone makes Codex ignore a perfectly valid ChatGPT ``auth.json``: it then
+# answers ``account/rateLimits/read`` with "codex account authentication required".
+# Override both keys for the child process so the read always uses the ChatGPT login.
+CODEX_CHATGPT_AUTH_OVERRIDE: tuple[tuple[str, str], ...] = (
+    ("preferred_auth_method", '"chatgpt"'),
+    ("forced_login_method", '"chatgpt"'),
+)
 
 
 def _window_label(minutes: Any) -> str:

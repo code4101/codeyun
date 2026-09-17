@@ -606,3 +606,91 @@ def test_watch_due_batch_failed_immediate_retry_does_not_starve_later_job(monkey
 
     assert dispatched == ["daily-mozu", "boss"]
     assert report["auto_run_due"]["run_count"] == 2
+
+
+def test_maintenance_summary_flags_today_missed_window_noop():
+    from datetime import datetime
+
+    report = _report()
+    report["scheduler"]["due_tasks"] = []
+    today = datetime.now().strftime("%Y-%m-%d")
+    report["scheduler"]["scheduled_tasks"] = [
+        {
+            "id": "daily-lingquan",
+            "label": "日常_灵泉",
+            "last_result": "success",
+            "last_run_at": f"{today} 21:15:29",
+            "next_time": "2026-09-17 20:30:00",
+            "last_message": "日常_灵泉：当前不在 20:30:00-20:40:59 入场/答题窗口，未执行游戏操作",
+        }
+    ]
+
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+
+    assert maintenance["missed_window_count"] == 1
+    assert maintenance["missed_window_ids"] == ["daily-lingquan"]
+    assert maintenance["severity"] == "attention"
+    assert "日常_灵泉" in maintenance["summary"]
+
+
+def test_maintenance_summary_ignores_yesterday_missed_window():
+    from datetime import datetime, timedelta
+
+    report = _report()
+    report["scheduler"]["due_tasks"] = []
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    report["scheduler"]["scheduled_tasks"] = [
+        {
+            "id": "daily-lingquan",
+            "label": "日常_灵泉",
+            "last_result": "success",
+            "last_run_at": f"{yesterday} 21:15:29",
+            "next_time": "2026-09-16 20:30:00",
+            "last_message": "日常_灵泉：当前不在 20:30:00-20:40:59 入场/答题窗口，未执行游戏操作",
+        }
+    ]
+
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+
+    assert maintenance["missed_window_count"] == 0
+
+
+def test_maintenance_summary_ignores_stale_daily_audit_snapshot():
+    from datetime import datetime, timedelta
+
+    report = _report()
+    report["scheduler"]["due_tasks"] = []
+    report["scheduler"]["daily_audit"] = {
+        "updated_at": (datetime.now() - timedelta(days=3)).timestamp(),
+        "mapped_incomplete": [{"task_id": "daily-boss", "title": "击败首领"}],
+        "unmapped_incomplete": [{"task_id": "", "title": "参与宗门祈福"}],
+    }
+    report["scheduler"]["scheduled_tasks"] = [
+        {"id": "daily-boss", "label": "日常_首领", "last_result": "success"},
+    ]
+
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+
+    assert maintenance["daily_audit_stale"] is True
+    assert maintenance["visual_incomplete_count"] == 0
+    assert maintenance["visual_unmapped_incomplete_count"] == 0
+    assert maintenance["severity"] == "ok"
+    assert any("复核快照已过期" in item for item in maintenance["action_required"])
+
+
+def test_maintenance_summary_uses_fresh_daily_audit_snapshot():
+    from datetime import datetime
+
+    report = _report()
+    report["scheduler"]["due_tasks"] = []
+    report["scheduler"]["daily_audit"] = {
+        "updated_at": datetime.now().timestamp(),
+        "mapped_incomplete": [],
+        "unmapped_incomplete": [{"task_id": "", "title": "参与宗门祈福"}],
+    }
+
+    maintenance = fanxiu_bt._build_maintenance_summary(report)
+
+    assert maintenance["daily_audit_stale"] is False
+    assert maintenance["visual_unmapped_incomplete_count"] == 1
+    assert maintenance["severity"] == "attention"

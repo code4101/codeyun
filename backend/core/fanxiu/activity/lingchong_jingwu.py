@@ -31,6 +31,9 @@ LINGCHONG_JINGWU_PARENT_ACTIVITY_ID = 8042901
 LINGCHONG_JINGWU_PERSONAL_RANK_ID = 42905
 LINGCHONG_JINGWU_PLANE_RANK_ID = 42906
 TALENT_PILL_ITEM_ID = 9070095
+# 本期灵兽资质任务为固定 14 档（用户明确的统一业务规则）。按运行事实的
+# sort 1..14 唯一序列与有效递增目标校验，缺失或混入多套历史梯度都必须失败。
+PET_TALENT_LADDER_SIZE = 14
 _PET_TALENT_CONDITION = re.compile(r"PetTalent\|(\d+)")
 
 
@@ -215,43 +218,136 @@ def _reward_item_count(rewards: list[str], item_id: int) -> int:
     return total
 
 
-def read_lingchong_task_milestones(activity_id: int) -> dict[str, Any]:
-    """读取普通或巅峰灵宠活动已加载的任务档次，不触发领取。
+def _pet_talent_target(config: dict[str, Any]) -> int:
+    for condition in config.get("finishCondition") or []:
+        match = _PET_TALENT_CONDITION.fullmatch(str(condition or ""))
+        if match is not None:
+            return int(match.group(1))
+    return 0
 
-    保留缺失任务 ID，避免将部分缓存误报为完整梯度。
+
+def _observed_pet_talent_entries(
+    task_entries: list[dict[str, Any]],
+    *,
+    config_by_id: dict[int, dict[str, Any]],
+    finished_task_ids: list[int],
+) -> list[dict[str, Any]]:
+    """Normalize the Runtime-observed ladder for this exact instance.
+
+    Only tasks that exist in this activity's static PetTalent config are
+    accepted. A claimed task may be represented only in ``finishTasks``; its
+    progress is reconstructed from the static target instead of being assumed
+    to be 0. Unobserved static IDs are never treated as present or zero.
+    """
+    observed: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for raw in task_entries:
+        task_id = int(raw.get("taskId") or raw.get("task_id") or 0)
+        if task_id <= 0 or task_id in seen:
+            raise ValueError(f"本期资质任务 ID 缺失或重复：{task_id}")
+        if task_id not in config_by_id:
+            raise ValueError(f"本期资质任务缺少静态配置：{task_id}")
+        seen.add(task_id)
+        observed.append(dict(raw))
+    for finished_id in finished_task_ids:
+        task_id = int(finished_id)
+        if task_id in seen or task_id not in config_by_id:
+            continue
+        target = _pet_talent_target(config_by_id[task_id])
+        if target <= 0:
+            raise ValueError(f"本期资质任务缺少目标条件：{task_id}")
+        observed.append({
+            "taskId": task_id,
+            "status": 5,
+            "turn": 0,
+            "rewardTime": 0,
+            "progressList": [{"progress": target, "target": target, "finish": True}],
+        })
+        seen.add(task_id)
+    return observed
+
+
+def _validate_pet_talent_ladder(milestones: list[LingchongJingwuTaskMilestone]) -> str | None:
+    """Return a failure reason unless the exact 14-tier ladder is present.
+
+    Observing one tier is never enough: the sort values must be the unique
+    1..14 sequence and targets must be valid and strictly increasing. A
+    missing tier or a mix of two retained ladders fails closed.
+    """
+    if len(milestones) != PET_TALENT_LADDER_SIZE:
+        return f"本期资质任务档数不是 {PET_TALENT_LADDER_SIZE}：{len(milestones)}"
+    sorts = sorted(row.order for row in milestones)
+    if sorts != list(range(1, PET_TALENT_LADDER_SIZE + 1)):
+        return f"本期资质任务 sort 不是 1..{PET_TALENT_LADDER_SIZE} 唯一序列：{sorts}"
+    targets = [row.target for row in milestones]
+    if (any(target <= 0 for target in targets)
+            or len(set(targets)) != len(targets)
+            or targets != sorted(targets)):
+        return f"本期资质任务目标档无效或重复：{targets}"
+    return None
+
+
+def read_lingchong_task_milestones(
+    activity_id: int, *, export_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """读取本期已加载的资质任务档次，不触发领取。
+
+    The Runtime-loaded task IDs are this instance's ladder. Static ActiveTask
+    config retains several historical ladders for the same parent activity, so
+    requiring every static ID is a false negative; an unseen ID is never
+    assumed to be 0. Claimed tiers may exist only in ``finishTasks`` and are
+    reconstructed from their static target. The exact 14-tier shape is
+    validated before any target is returned.
     """
     from backend.core.fanxiu.instrumentation.daily_task_rewards import (
         TaskRewardDomainSpec, build_activity_task_reward_snapshot,
-        read_task_reward_spec_fast_snapshot,
+        read_activity_task_reward_snapshots,
     )
 
-    configs = [r for r in _load_config_rows(resolve_fanxiu_export_root(), "ActiveTask")
-               if int(r.get("activityId") or 0) == activity_id
+    configs = [r for r in _load_config_rows(resolve_fanxiu_export_root(export_root), "ActiveTask")
+               if int(r.get("activityId") or 0) == int(activity_id)
                and any(_PET_TALENT_CONDITION.fullmatch(str(c)) for c in r.get("finishCondition", []))]
-    ids = {int(r["id"]) for r in configs}
-    ordered_ids = tuple(int(r["id"]) for r in sorted(configs, key=lambda r: (r.get("sort", 0), r["id"])))
-    spec = TaskRewardDomainSpec(key=f"lingchong_{activity_id}", label="灵兽资质任务",
-                               activity_id=activity_id, task_ids=ordered_ids,
-                               condition_key="PetTalent", thresholds=tuple(range(1, len(ids) + 1)))
-    shared = read_task_reward_spec_fast_snapshot(spec, include_task_entries=True)
+    config_by_id = {int(r["id"]): r for r in configs}
+    if not config_by_id:
+        return {"ok": False, "complete": False, "milestones": [],
+                "reason": f"活动 {int(activity_id)} 没有本期资质任务静态配置"}
+    shared = read_activity_task_reward_snapshots(domains=(), include_activity_tasks=True)
     if not shared.get("ok"):
-        return {"ok": False, "complete": False, "reason": shared.get("reason"), "milestones": []}
-    entries = [r for r in shared.get("task_entries", []) if int(r.get("taskId") or r.get("task_id") or 0) in ids]
-    loaded = {int(r.get("taskId") or r.get("task_id")) for r in entries}
-    finished = ids.intersection(shared.get("finished_task_ids", []))
-    missing = sorted(ids - loaded - finished)
-    milestones = load_lingchong_jingwu_task_milestones(entries, parent_activity_id=activity_id) if entries else []
-    rewards = build_activity_task_reward_snapshot(
-        spec=spec,
-        task_entries=entries, finished_task_ids=sorted(finished),
+        return {"ok": False, "complete": False, "milestones": [],
+                "reason": shared.get("reason") or "QuestMgr 活动任务不可读"}
+    entries = [dict(r) for r in shared.get("task_entries") or []
+               if int(r.get("taskId") or r.get("task_id") or 0) in config_by_id]
+    finished = [int(t) for t in shared.get("finished_task_ids") or [] if int(t) in config_by_id]
+    try:
+        observed = _observed_pet_talent_entries(
+            entries, config_by_id=config_by_id, finished_task_ids=finished,
+        )
+        milestones = load_lingchong_jingwu_task_milestones(
+            observed, parent_activity_id=int(activity_id), export_root=export_root,
+        )
+    except ValueError as exc:
+        return {"ok": False, "complete": False, "milestones": [], "reason": str(exc)}
+    if not milestones:
+        return {"ok": False, "complete": False, "milestones": [],
+                "reason": "QuestMgr 尚未加载本期资质任务"}
+    ladder_error = _validate_pet_talent_ladder(milestones)
+    if ladder_error is not None:
+        return {"ok": False, "complete": False, "milestones": [], "reason": ladder_error}
+    ordered_ids = tuple(m.task_id for m in milestones)
+    spec = TaskRewardDomainSpec(
+        key=f"lingchong_{int(activity_id)}", label="灵兽资质任务",
+        activity_id=int(activity_id), task_ids=ordered_ids,
+        condition_key="PetTalent", thresholds=tuple(range(1, len(ordered_ids) + 1)),
     )
-    # Retained alternate ladders may yield a conservative incomplete result;
-    # do not authorize claims by dropping unseen static IDs.
-    if not ids:
-        rewards.update(complete=False, authorized_claim_task_ids=[])
-    return {"ok": True, "complete": bool(ids) and not missing and rewards["complete"],
-            "activity_id": activity_id, "milestones": [r.model_dump() for r in milestones],
-            "finished_task_ids": sorted(finished), "missing_task_ids": missing,
+    rewards = build_activity_task_reward_snapshot(
+        spec=spec, task_entries=observed, finished_task_ids=sorted(set(finished)),
+    )
+    highest = max(milestones, key=lambda row: (row.target, row.order, row.task_id))
+    return {"ok": True, "complete": bool(rewards["complete"]),
+            "activity_id": int(activity_id), "milestones": [r.model_dump() for r in milestones],
+            "finished_task_ids": sorted(set(finished)), "missing_task_ids": [],
+            "target": highest.target, "progress": highest.progress,
+            "goal_finished": bool(highest.finished), "task_ids": list(ordered_ids),
             "reward_state": rewards, "captured_at": shared.get("captured_at")}
 
 
@@ -286,12 +382,7 @@ def load_lingchong_jingwu_task_milestones(
         config = rows_by_id.get(task_id)
         if config is None:
             raise ValueError(f"灵宠竞武本期任务缺少静态配置：{task_id}")
-        target = 0
-        for condition in config.get("finishCondition") or []:
-            match = _PET_TALENT_CONDITION.fullmatch(str(condition or ""))
-            if match is not None:
-                target = int(match.group(1))
-                break
+        target = _pet_talent_target(config)
         progress_rows = observed.get("progressList") or observed.get("progress_list") or []
         if isinstance(progress_rows, dict):
             progress_rows = progress_rows.get("items") or []
@@ -358,7 +449,9 @@ def load_lingchong_jingwu_resource_definitions(
                 "aptitude_gain_by_pet_type": gains,
             }
         )
-    # Reverse of PetModel.GetPetUpItemList: quality descending, num ascending.
+    # Quality ascending (low to high, verified against current Item rows),
+    # then num descending. Callers that need an explicit selection order must
+    # still sort via pet_resource_planning.order_pet_resources_low_to_high.
     definitions.sort(key=lambda row: (row["quality"], -row["sort_order"]))
     if not definitions:
         raise ValueError("没有找到可计算资质增量的饲灵丸配置")

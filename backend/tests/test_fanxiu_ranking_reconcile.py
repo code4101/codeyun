@@ -3,7 +3,7 @@ from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.core.fanxiu.activity import ranking_reconcile
 from backend.core.fanxiu.activity.ranking_lifecycle import RankingOccurrence
@@ -50,6 +50,72 @@ def test_schedule_registration_is_idempotent_without_enabling_gameplay():
             discover_ranking_occurrences(schedule), now=now, production_only=True,
         ) if checkpoint.activity_type == "xutian-palace"
     ]
+
+
+def test_shequn_lingchong_schedule_materializes_as_resource_rank():
+    from datetime import timedelta, timezone
+    from backend.core.fanxiu.activity.ranking_lifecycle import discover_ranking_occurrences
+    from backend.core.fanxiu.activity.schedule_page import load_fanxiu_schedule_ranking_snapshot
+
+    tz = timezone(timedelta(hours=8))
+    now = datetime(2026, 9, 16, 6, tzinfo=tz)
+
+    def stamp(day: int, hour: int, minute: int = 0) -> int:
+        return int(datetime(2026, 9, day, hour, minute, tzinfo=tz).timestamp() * 1000)
+
+    schedule = {
+        "available": True,
+        "complete": True,
+        "captured_at": now.isoformat(),
+        "items": [{
+            "id": 4043501400036,
+            "activityId": 4043501,
+            "activityType": 12,
+            "baseId": 43500,
+            "serverCount": 4,
+            "startTime": stamp(16, 5, 0),
+            "endTime": stamp(17, 22),
+            "prepareEndTime": stamp(16, 5),
+            "closePanelTime": stamp(17, 23, 58),
+        }],
+    }
+
+    occurrences = discover_ranking_occurrences(schedule, family="resource_rank")
+    assert [(item.activity_type, item.activity_id) for item in occurrences] == [
+        ("shequn-lingchong", 4043501),
+    ]
+
+    with _session() as session:
+        activity_ids = ranking_reconcile.sync_ranking_schedule(
+            session, schedule, now=now, family="resource_rank"
+        )
+        assert ranking_reconcile.sync_ranking_schedule(
+            session, schedule, now=now, family="resource_rank"
+        ) == activity_ids
+        assert len(session.exec(
+            select(FanxiuExchangeActivity).where(
+                FanxiuExchangeActivity.activity_type == "shequn-lingchong"
+            )
+        ).all()) == 1
+        activity = session.get(FanxiuExchangeActivity, activity_ids[0])
+        assert activity is not None
+        assert activity.activity_type == "shequn-lingchong"
+        assert activity.family == "resource_rank"
+        assert activity.game_rank_activity_id == 43502
+        assert activity.evidence["rank_scope_identities"] == {
+            "alliance": {
+                "runtime_rank_activity_id": 43502,
+                "reward_activity_id": 43502,
+            },
+        }
+        today = load_fanxiu_schedule_ranking_snapshot(
+            session, business_date=now.date()
+        )
+        tomorrow = load_fanxiu_schedule_ranking_snapshot(
+            session, business_date=(now + timedelta(days=1)).date()
+        )
+        assert today.resource_rank.activity_type == "shequn-lingchong"
+        assert tomorrow.resource_rank.activity_type == "shequn-lingchong"
 
 
 def _session() -> Session:

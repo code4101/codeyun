@@ -31,6 +31,80 @@ TIMELINE_SAMPLE = '''<div class="timeline">
 </div><div class="show-more"><a href="?cursor=opaque">Load more</a></div></div>'''.encode()
 
 
+X_PUBLIC_SAMPLE = b'''<article>
+<a href="/thsottiaux/status/2099922755655479624">12h</a>
+<div dir="auto">New post<br>Second line.</div>
+<img src="https://pbs.twimg.com/media/test?format=webp">
+<button>100 likes</button>
+</article><article>
+<a href="/thsottiaux/status/2099393115241300166">Sep 14</a>
+<div dir="auto">Archived post</div>
+<article><a href="/someone/status/2098639827084480864">Quote</a>
+<div dir="auto" class="line-clamp-5">Truncated quote</div></article>
+</article>'''
+
+
+def test_public_x_incremental_preserves_existing_complete_quotes(monkeypatch):
+    from io import BytesIO
+    from backend.core.library import x_archive
+
+    monkeypatch.setattr(x_archive, "urlopen", lambda *a, **k: BytesIO(X_PUBLIC_SAMPLE))
+    posts = x_archive.crawl_x_public_profile(
+        handle="thsottiaux", since=datetime(2026, 9, 1, tzinfo=DISPLAY_TIMEZONE),
+        known_ids={"2099393115241300166"},
+    )
+    assert len(posts) == 1
+    assert posts[0].id == "2099922755655479624"
+    assert posts[0].text == "New post\nSecond line."
+    assert posts[0].images == ["https://pbs.twimg.com/media/test?format=webp"]
+    assert x_archive.crawl_x_public_profile(
+        handle="thsottiaux", since=datetime(2026, 9, 1, tzinfo=DISPLAY_TIMEZONE),
+        known_ids={"2099393115241300166", "2099922755655479624"},
+    ) == []
+
+
+def test_public_x_preview_gap_publishes_posts_with_warning(monkeypatch):
+    from io import BytesIO
+    from backend.core.library import x_archive
+
+    sample = X_PUBLIC_SAMPLE.split(b"</article>")[0] + b"</article>"
+    monkeypatch.setattr(x_archive, "urlopen", lambda *a, **k: BytesIO(sample))
+    with pytest.raises(XArchivePartialFetchError) as error:
+        x_archive.crawl_x_public_profile(
+            handle="thsottiaux", since=datetime(2026, 9, 1, tzinfo=DISPLAY_TIMEZONE), known_ids=set(),
+        )
+    assert error.value.posts[0].id == "2099922755655479624"
+
+
+def test_public_x_expands_new_quote_from_public_permalink(monkeypatch):
+    from io import BytesIO
+    from backend.core.library import x_archive
+
+    urls = []
+    def fetch(request, **kwargs):
+        urls.append(request.full_url)
+        if len(urls) == 1:
+            return BytesIO(X_PUBLIC_SAMPLE)
+        return BytesIO(b'''<article><a href="/someone/status/2098639827084480864">date</a>
+            <div dir="auto">Complete quoted message.</div></article>''')
+
+    monkeypatch.setattr(x_archive, "urlopen", fetch)
+    posts = x_archive.crawl_x_public_profile(
+        handle="thsottiaux", since=datetime(2026, 9, 1, tzinfo=DISPLAY_TIMEZONE),
+        known_ids={"2099922755655479624"},
+    )
+    assert posts[0].quoted_text == "Complete quoted message."
+    assert urls[1] == "https://x.com/someone/status/2098639827084480864"
+
+
+@pytest.mark.parametrize("data", [b"<html>Log in</html>", X_PUBLIC_SAMPLE])
+def test_public_x_rejects_login_and_truncated_quotes(data):
+    from backend.core.library.x_archive import parse_x_public_profile
+
+    with pytest.raises(RuntimeError):
+        parse_x_public_profile(data, handle="thsottiaux")
+
+
 def test_parse_public_timeline_preserves_content_quote_and_media() -> None:
     posts = parse_nitter_timeline(TIMELINE_SAMPLE, handle="thsottiaux")
     assert len(posts) == 1

@@ -144,6 +144,22 @@ def _chat_content(content: Any) -> Any:
     return "".join(part["text"] for part in parts if part.get("type") == "text")
 
 
+def _tool_content(output: Any) -> Any:
+    """Convert a Responses ``function_call_output`` into Chat Completions content.
+
+    ``view_image`` returns a list of content parts whose ``input_image`` holds a
+    multi-MB base64 data URL.  ``json.dumps``-ing that list turns the image into
+    millions of text tokens and overruns the model context, so images are
+    forwarded as ``image_url`` parts and text parts collapse to a string.
+    """
+
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        return _chat_content(output)
+    return json.dumps(output, ensure_ascii=False)
+
+
 def _reasoning_text(item: dict[str, Any]) -> str:
     """Collect a Responses ``reasoning`` item's text for ``reasoning_content``."""
 
@@ -226,7 +242,7 @@ def responses_to_chat(body: dict[str, Any], *, stream: bool = False) -> dict[str
                 messages.append({
                     "role": "tool",
                     "tool_call_id": item.get("call_id") or "",
-                    "content": output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
+                    "content": _tool_content(output),
                 })
     flush_assistant()
 
@@ -347,6 +363,14 @@ def _messages_content(content: Any) -> Any:
     return "".join(block["text"] for block in blocks if block.get("type") == "text")
 
 
+def _messages_tool_content(output: Any) -> Any:
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        return _messages_content(output)
+    return json.dumps(output, ensure_ascii=False)
+
+
 def responses_to_messages(body: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     system_extra: list[str] = []
@@ -420,7 +444,7 @@ def responses_to_messages(body: dict[str, Any]) -> dict[str, Any]:
                 pending_tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": item.get("call_id") or "",
-                    "content": output if isinstance(output, str) else json.dumps(output, ensure_ascii=False),
+                    "content": _messages_tool_content(output),
                 })
     flush_assistant()
     flush_tool_results()

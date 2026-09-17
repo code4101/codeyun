@@ -11,8 +11,13 @@ from typing import Any
 from backend.core.fanxiu.activity.lingchong_jingwu import (
     collect_lingchong_jingwu_resource_snapshot, read_lingchong_task_milestones,
 )
-from backend.core.fanxiu.activity.pet_resource_planning import plan_pet_resource_batch
-from backend.core.fanxiu.activity.pet_resource_receipts import record_pet_resource_receipt, read_pet_resource_receipts
+from backend.core.fanxiu.activity.pet_resource_planning import (
+    order_pet_resources_low_to_high, plan_initialization_batch,
+)
+from backend.core.fanxiu.activity.pet_resource_receipts import (
+    read_pet_resource_receipts_range, read_pet_seed_usage, record_pet_resource_receipt,
+    select_pet_resource_task_samples,
+)
 from backend.core.fanxiu.instrumentation.pet_aptitude import read_pet_aptitude_runtime
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
 from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
@@ -21,15 +26,31 @@ from backend.core.fanxiu.data_annotation.tasks.pet_aptitude_navigation import (
 )
 
 
-def read_pet_resource_progress(activity_id: int, target: int = 6000) -> dict:
+SEED_ITEM_ID = 8022009
+SEED_ITEM_NAME = "兽神饲灵丸"
+SEED_ALLOWANCE = 30
+
+
+def _applicable_gain(pet: dict, gains: dict[int, int]) -> int:
+    return sum(int(gain) for gift_id, gain in gains.items()
+               if pet["gift_remaining"].get(int(gift_id), 0) > 0)
+
+
+def read_pet_resource_progress(activity_id: int, target: int | None = None) -> dict:
     snapshot = read_lingchong_task_milestones(activity_id)
-    if not snapshot.get("complete"):
-        raise RuntimeError("灵兽任务进度未完整加载")
-    rows = [r for r in snapshot["milestones"] if r["target"] == target]
-    if len(rows) != 1:
-        raise RuntimeError("当前任务阶梯没有唯一的目标档")
-    return {"progress": rows[0]["progress"], "target": target,
-            "complete": rows[0]["finished"], "task_id": rows[0]["task_id"]}
+    if not snapshot.get("ok") or not snapshot.get("complete") or not snapshot.get("milestones"):
+        raise RuntimeError(f"本期灵兽资质14档未完整加载：{snapshot.get('reason') or 'unknown'}")
+    rows = snapshot["milestones"]
+    if target is None:
+        row = max(rows, key=lambda item: (item["target"], item["order"], item["task_id"]))
+    else:
+        matches = [item for item in rows if item["target"] == int(target)]
+        if len(matches) != 1:
+            raise RuntimeError("当前任务阶梯没有唯一的目标档")
+        row = matches[0]
+    return {"progress": row["progress"], "target": row["target"],
+            "complete": row["finished"] or row["progress"] >= row["target"],
+            "task_id": row["task_id"]}
 
 
 def enter_peakrace_pet_resources(context: Any, *, pet_name: str):
@@ -165,56 +186,90 @@ def use_pet_resource_batch(context: Any, *, activity_id: int, pet_id: int,
 
 
 def initialize_pet_resources(context: Any, *, activity_id: int, pet_id: int,
-                             seed_already_used: bool = False, max_batches: int = 1):
-    """Current aptitude page -> 30 beast pills once -> task progress >=6000.
+                             start_date: str, end_date: str, max_batches: int = 1):
+    """Advance the current ladder with one explicit batch per call.
 
-    ``seed_already_used`` requires an existing verified receipt for this
-    occurrence. Partial task progress alone is not proof of that seed batch.
-    The default call uses one batch, including the seed. Further calls resume
-    from verified receipts and freshly observed task progress.
+    ``start_date``/``end_date`` bound this event instance; the activity ID
+    alone is not an instance, so the seed budget and any unresolved receipt
+    inside that window (including cross-day ones) are authoritative. A
+    resource with no valid sample for this instance/pet probes with exactly one
+    unit; with a measured per-unit task gain the mid-section batches about 50%
+    of the estimated remainder and the last <=3 units go one at a time. The
+    seed 兽神饲灵丸 uses the same feedback, is capped at 30 per instance and by
+    stock, and stops immediately once the ladder's highest target is reached;
+    only then is the gap filled lowest-quality usable resource first. Samples
+    are recovered from this instance's verified receipts on every call and are
+    never mixed across resources or pets, and an aptitude delta is never used
+    as a task sample. A failed or unresolved batch is never retried here.
     """
     if isinstance(max_batches, bool) or not isinstance(max_batches, int) or max_batches < 1:
         raise ValueError("初始化批数必须为正整数")
     receipts = []
     occurrence = datetime.now().astimezone().date().isoformat()
-    history = read_pet_resource_receipts(activity_id, occurrence)
+    history = read_pet_resource_receipts_range(
+        activity_id, start_date=start_date, end_date=end_date,
+    )
     if any(r.get("status") == "submitted" for r in history):
         raise RuntimeError("上一批使用结果尚未核实")
     if any(r.get("status") == "rank_observation_pending" for r in history):
         raise RuntimeError("上一批排名积分尚未核实")
-    verified = [r for r in history if r.get("status") == "verified" and r.get("pet_id") == pet_id]
-    seed_verified = any(r.get("item_id") == 8022009 and r.get("quantity") == 30 for r in verified)
-    if seed_already_used and not seed_verified:
-        raise RuntimeError("缺少本期30个兽神的已核实记录")
-    seed_already_used = seed_verified
-    samples = {r["item_id"]: r["aptitude_delta"] / r["base_total"] for r in verified
-               if r.get("base_total") and r.get("aptitude_delta", 0) > 0 and r["item_id"] != 8022009}
-    progress = read_pet_resource_progress(activity_id)
-    if progress["complete"]:
-        return {"status": "complete", "progress": progress, "receipts": receipts}
-    if not seed_already_used:
-        receipt = yield from use_pet_resource_batch(context, activity_id=activity_id, pet_id=pet_id,
-                                                    item_id=8022009, item_name="兽神饲灵丸", quantity=30, base_gain=100)
-        receipts.append(receipt)
-    for _ in range(max_batches - len(receipts)):
+    samples = select_pet_resource_task_samples(
+        activity_id, pet_id=pet_id, start_date=start_date, end_date=end_date,
+    )
+    seed_used = read_pet_seed_usage(activity_id, item_id=SEED_ITEM_ID,
+                                    start_date=start_date, end_date=end_date)
+    resources = collect_lingchong_jingwu_resource_snapshot(activity_id=str(activity_id))
+    inventory = {item.item_id: int(item.count) for item in resources.items}
+    items_by_id = {item.item_id: item for item in resources.items}
+    for _ in range(max_batches):
         progress = read_pet_resource_progress(activity_id)
         if progress["complete"]:
-            return {"status": "complete", "progress": progress, "receipts": receipts}
+            return {"status": "complete", "progress": progress, "receipts": receipts,
+                    "seed_used": seed_used}
+        gap = progress["target"] - progress["progress"]
         pet = read_pet_aptitude_runtime(expected_pet_id=pet_id)["target"]
-        resources = collect_lingchong_jingwu_resource_snapshot(activity_id=str(activity_id))
-        options = [(item, sum(gain for gift, gain in item.aptitude_gain_by_gift_id.items()
-                              if pet["gift_remaining"].get(gift, 0) > 0)) for item in resources.items if item.count]
-        options = [(item, gain) for item, gain in options if gain > 0]
-        if not options:
-            return {"status": "resource_exhausted", "progress": progress, "receipts": receipts}
-        item, base_gain = options[0]
-        plan = plan_pet_resource_batch(gap=6000-progress["progress"], base_gain=base_gain,
-                                       available=item.count, measured_multiplier=samples.get(item.item_id))
-        receipt = yield from use_pet_resource_batch(context, activity_id=activity_id, pet_id=pet_id,
-                                                    item_id=item.item_id, item_name=item.name, quantity=plan["quantity"], base_gain=base_gain)
-        receipt["base_total"] = base_gain * plan["quantity"]
-        samples[item.item_id] = receipt["aptitude_delta"] / receipt["base_total"]
+        seed_item = items_by_id.get(SEED_ITEM_ID)
+        seed_option = None
+        if seed_item is not None and inventory.get(SEED_ITEM_ID, 0) > 0:
+            seed_gain = _applicable_gain(pet, seed_item.aptitude_gain_by_gift_id)
+            if seed_gain > 0:
+                seed_option = {"resource_id": SEED_ITEM_ID, "base_gain": seed_gain,
+                               "available": inventory.get(SEED_ITEM_ID, 0)}
+        supplement_options = []
+        for item in order_pet_resources_low_to_high(resources.items):
+            if item.item_id == SEED_ITEM_ID:
+                continue
+            count = inventory.get(item.item_id, 0)
+            if count <= 0:
+                continue
+            base_gain = _applicable_gain(pet, item.aptitude_gain_by_gift_id)
+            if base_gain <= 0:
+                continue
+            supplement_options.append({"resource_id": item.item_id, "base_gain": base_gain,
+                                       "available": count})
+        plan = plan_initialization_batch(gap=gap, seed_option=seed_option,
+                                         supplement_options=supplement_options,
+                                         seed_used=seed_used, samples=samples)
+        if plan["quantity"] <= 0 or plan["resource_id"] is None:
+            return {"status": "resource_exhausted", "progress": progress, "receipts": receipts,
+                    "seed_used": seed_used}
+        item = items_by_id[plan["resource_id"]]
+        receipt = yield from use_pet_resource_batch(
+            context, activity_id=activity_id, pet_id=pet_id, item_id=item.item_id,
+            item_name=item.name, quantity=plan["quantity"], base_gain=plan["base_gain"],
+        )
         receipts.append(receipt)
+        if item.item_id == SEED_ITEM_ID:
+            seed_used += int(receipt.get("quantity") or plan["quantity"])
+        inventory[item.item_id] = int(receipt.get("inventory_after")
+                                      if receipt.get("inventory_after") is not None
+                                      else max(0, inventory.get(item.item_id, 0) - plan["quantity"]))
+        quantity = int(receipt.get("quantity") or plan["quantity"])
+        before_task, after_task = receipt.get("task_before"), receipt.get("task_after")
+        if quantity > 0 and before_task is not None and after_task is not None:
+            measured = (int(after_task) - int(before_task)) / quantity
+            if measured > 0:
+                samples[item.item_id] = measured
     progress = read_pet_resource_progress(activity_id)
     return {"status": "complete" if progress["complete"] else "batch_limit",
-            "progress": progress, "receipts": receipts}
+            "progress": progress, "receipts": receipts, "seed_used": seed_used}

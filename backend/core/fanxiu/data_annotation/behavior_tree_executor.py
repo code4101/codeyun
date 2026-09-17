@@ -38,6 +38,7 @@ from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition as _data_annotation_task_cell_definition,
 )
 from backend.core.fanxiu.data_annotation.default_jobs import register_fanxiu_default_jobs
+from backend.core.fanxiu.data_annotation.maintenance import is_maintenance_scene_id
 from backend.core.fanxiu.data_annotation.behavior_tree_container import BehaviorTreeContainer as _BehaviorTreeContainer
 from backend.core.fanxiu.data_annotation.recognition_candidates import (
     default_recognition_candidate_ids,
@@ -722,6 +723,16 @@ class BehaviorTreeContext(AutomationContext):
         def handle_popup(recognition: _SceneGraphRecognition, frame: str) -> bool:
             """弹窗归属与命中层无关；全局兜底命中也必须执行同一处理动作。"""
             scene_id = recognition.scene_id
+            if is_maintenance_scene_id(scene_id):
+                # 维护/停更页落在“弹窗”分组但没有可点击出口：它是要锁定的全局
+                # 不可用事实，不能退化成“弹窗缺少动作”的资产报修。
+                self.runner._raise_game_maintenance(
+                    scene_id=int(scene_id),
+                    evidence={
+                        "stage": "maintenance_popup",
+                        "recognized_scene_id": int(scene_id),
+                    },
+                )
             if scene_id not in popup_by_scene_id:
                 return False
             if (scene_id in business_id_set
@@ -765,12 +776,12 @@ class BehaviorTreeContext(AutomationContext):
                     )
             layer0_scene_id = layer0_recognition.scene_id
 
-            if layer0_scene_id == 546:
+            if is_maintenance_scene_id(layer0_scene_id):
                 self.runner._raise_game_maintenance(
-                    scene_id=546,
+                    scene_id=int(layer0_scene_id),
                     evidence={
                         "stage": "maintenance_scene",
-                        "recognized_scene_id": 546,
+                        "recognized_scene_id": int(layer0_scene_id),
                     },
                 )
             # One graph result, one owner. Leave confirmations have a single
@@ -11050,6 +11061,7 @@ class BehaviorTreeExecutor(
         distances_to_target: Mapping[int, int] | None = None,
         landing_probability_cache: dict[tuple[Any, ...], dict[int, float]] | None = None,
         reachability_values: Mapping[int, float] | None = None,
+        log_rejections: bool = True,
     ) -> dict[str, Any] | None:
         source_id = int(edge.get("source_id") or 0)
         target_ids = []
@@ -11069,20 +11081,22 @@ class BehaviorTreeExecutor(
             and "前往" in _sanitize_ocr_text(shape_title)
             and shape.get("allowReturnViaForward") is not True
         ):
-            self._log(
-                "detail",
-                f"场景移动：回 #34 时拒绝把 #{source_id}「{shape_title}」作为返回动作",
-            )
+            if log_rejections:
+                self._log(
+                    "detail",
+                    f"场景移动：回 #34 时拒绝把 #{source_id}「{shape_title}」作为返回动作",
+                )
             return None
         if (
             current_edge_risk == 0
             and self._scene_navigation_shape_risk(shape) >= 100
             and _sanitize_ocr_text(shape_title) == "领取奖励"
         ):
-            self._log(
-                "detail",
-                f"场景移动：精确奖励收尾 #{source_id}，允许点击「{shape_title}」回到已声明落点",
-            )
+            if log_rejections:
+                self._log(
+                    "detail",
+                    f"场景移动：精确奖励收尾 #{source_id}，允许点击「{shape_title}」回到已声明落点",
+                )
         if current_edge_risk is None:
             return None
         target_counts = self._scene_jump_target_counts(tree, shape)
@@ -11192,16 +11206,34 @@ class BehaviorTreeExecutor(
             "landing_id": best_landing_id,
             "downstream_len": downstream_len,
             "weight": progress_probability,
+            # Evidence kept explicit so the read-only planner can report the
+            # single-step posterior, the sampling weight and the value-iteration
+            # advantage separately.  The live selector only reads ``weight``.
+            "progress_probability": progress_probability,
+            "expected_reachability": (
+                expected_reachability if reachability_values is not None else None
+            ),
+            "landing_probabilities": dict(landing_probabilities),
+            "target_counts": dict(target_counts),
+            "declared_target_ids": list(target_ids),
         }
 
-    def _select_scene_next_edge(
+    def _scene_next_edge_candidates(
         self,
         tree: list[dict[str, Any]],
         current_scene_id: int,
         target_scene_id: int,
         *,
         failed_edge_keys: set[tuple[Any, ...]] | None = None,
-    ) -> dict[str, Any] | None:
+        read_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Shared provider: rank every safe next edge out of one scene.
+
+        This is the single ranking implementation.  The live ``go_scene``
+        selector samples from the returned list; the read-only planner reports
+        it.  ``read_only`` only suppresses diagnostic logging so inspection
+        never mutates runner status; candidate scores are unaffected.
+        """
         failed_edge_keys = failed_edge_keys or set()
         candidates: list[dict[str, Any]] = []
         navigation_edges = self._scene_jump_edges(tree)
@@ -11235,17 +11267,269 @@ class BehaviorTreeExecutor(
                 distances_to_target=distances_to_target,
                 landing_probability_cache=landing_probability_cache,
                 reachability_values=reachability_values,
+                log_rejections=not read_only,
             )
             if ranked is not None:
                 candidates.append(ranked)
+        candidates.sort(key=lambda item: item["score"], reverse=True)
+        return candidates
+
+    def _select_scene_next_edge(
+        self,
+        tree: list[dict[str, Any]],
+        current_scene_id: int,
+        target_scene_id: int,
+        *,
+        failed_edge_keys: set[tuple[Any, ...]] | None = None,
+    ) -> dict[str, Any] | None:
+        candidates = self._scene_next_edge_candidates(
+            tree,
+            current_scene_id,
+            target_scene_id,
+            failed_edge_keys=failed_edge_keys,
+        )
         if not candidates:
             return None
-        candidates.sort(key=lambda item: item["score"], reverse=True)
+        # Unchanged live behaviour: every ranked candidate is sampled by its own
+        # probability weight, not a first-best shortcut.  Keep it that way so a
+        # dominant-but-uncertain action can still be explored.
         return self._navigation_random.choices(
             candidates,
             weights=[max(1e-12, float(item.get("weight") or 0.0)) for item in candidates],
             k=1,
         )[0]
+
+    def plan_scene_navigation(
+        self,
+        tree: list[dict[str, Any]],
+        source_scene_id: int,
+        target_scene_id: int,
+        *,
+        limit: int = 3,
+        max_downstream_steps: int = 16,
+    ) -> dict[str, Any]:
+        """Read-only dynamic next-step candidate planning for one scene pair.
+
+        Contract: report the same ranked candidates the live selector samples
+        from, enriched with single-step landing posteriors and an illustrative
+        downstream route.  The numbers are deliberately separate and none is a
+        calibrated full-path success rate:
+
+        * ``landing_probabilities`` — single-step posterior of the annotated
+          ``sceneJumpTarget`` frequency table (diluted; declared-only landings
+          stay at zero).
+        * ``single_step_progress_probability`` — summed posterior of landings
+          this planner counts as progress; this is the live sampling ``weight``.
+        * ``discounted_reachability_gain`` — value-iteration advantage, a
+          planning score rather than a probability.
+        * ``selection_probability`` — the candidate's share of the sampling
+          weights, i.e. exactly what the live ``random.choices`` uses across
+          candidates.
+
+        It never samples, never writes runner/scheduler/asset state and never
+        touches a device or Kernel.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        if (
+            isinstance(max_downstream_steps, bool)
+            or not isinstance(max_downstream_steps, int)
+            or max_downstream_steps < 0
+        ):
+            raise ValueError("max_downstream_steps must be a nonnegative integer")
+        tree = self._resolved_asset_tree(tree)
+        images = self._index_images(tree)
+        source = int(source_scene_id)
+        target = int(target_scene_id)
+        result: dict[str, Any] = {
+            "status": "ok",
+            "planning": "dynamic_next_step_candidates",
+            "read_only": True,
+            "source_scene_id": source,
+            "target_scene_id": target,
+            "limit": int(limit),
+            "candidate_count": 0,
+            "returned_count": 0,
+            "candidates": [],
+            "contract": (
+                "下一步候选排序；landing_probabilities 为单步落点后验，"
+                "single_step_progress_probability 为单步进展权重，"
+                "discounted_reachability_gain 为规划增益，"
+                "selection_probability 为执行采样权重占比；"
+                "均非标定全路径成功率"
+            ),
+        }
+        if source not in images:
+            return {**result, "status": "unknown_source_scene"}
+        if target not in images:
+            return {**result, "status": "unknown_target_scene"}
+        if source == target:
+            return {**result, "status": "already_at_target"}
+        navigation_edges = self._scene_jump_edges(tree)
+        distances_to_target = self._scene_navigation_distances_to_target(
+            navigation_edges,
+            target,
+        )
+        if source not in distances_to_target:
+            return {**result, "status": "no_path"}
+        candidates = self._scene_next_edge_candidates(tree, source, target, read_only=True)
+        if not candidates:
+            return {**result, "status": "no_path"}
+        weights = [max(1e-12, float(item.get("weight") or 0.0)) for item in candidates]
+        total_weight = float(sum(weights))
+        payloads = [
+            self._navigation_candidate_payload(
+                item,
+                target_scene_id=target,
+                selection_probability=(weight / total_weight if total_weight > 0 else 0.0),
+                tree=tree,
+                navigation_edges=navigation_edges,
+                distances_to_target=distances_to_target,
+                max_downstream_steps=max_downstream_steps,
+            )
+            for item, weight in zip(candidates[: int(limit)], weights[: int(limit)])
+        ]
+        return {
+            **result,
+            "candidate_count": len(candidates),
+            "returned_count": len(payloads),
+            "candidates": payloads,
+        }
+
+    def _navigation_candidate_payload(
+        self,
+        ranked: dict[str, Any],
+        *,
+        target_scene_id: int,
+        selection_probability: float,
+        tree: list[dict[str, Any]],
+        navigation_edges: dict[int, list[dict[str, Any]]],
+        distances_to_target: Mapping[int, int],
+        max_downstream_steps: int,
+    ) -> dict[str, Any]:
+        edge = ranked.get("edge") if isinstance(ranked.get("edge"), dict) else {}
+        shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
+        landing_probabilities = {
+            int(scene_id): float(probability)
+            for scene_id, probability in (ranked.get("landing_probabilities") or {}).items()
+        }
+        landing_counts = {
+            int(scene_id): int(count)
+            for scene_id, count in (ranked.get("target_counts") or {}).items()
+        }
+        expected_landing = ranked.get("landing_id")
+        expected_landing_id = int(expected_landing) if expected_landing is not None else None
+        return {
+            "source_scene_id": int(edge.get("source_id") or 0),
+            "action_shape_id": str(shape.get("id") or ""),
+            "action_title": str(shape.get("title") or ""),
+            "dynamic_confirm_edge": bool(edge.get("_dynamic_confirm_edge")),
+            "declared_target_ids": [
+                int(value) for value in ranked.get("declared_target_ids") or []
+            ],
+            "expected_landing_id": expected_landing_id,
+            "expected_landing_probability": (
+                landing_probabilities.get(expected_landing_id)
+                if expected_landing_id is not None
+                else None
+            ),
+            "landing_probabilities": landing_probabilities,
+            "landing_observed_counts": landing_counts,
+            "single_step_progress_probability": float(
+                ranked.get("progress_probability") or 0.0
+            ),
+            "discounted_reachability_gain": (
+                None
+                if ranked.get("expected_reachability") is None
+                else float(ranked["expected_reachability"])
+            ),
+            "selection_probability": float(selection_probability),
+            "score": [int(value) for value in ranked.get("score") or ()],
+            "reason": str(ranked.get("reason") or ""),
+            "downstream": self._navigation_downstream_path(
+                tree,
+                start_scene_id=expected_landing_id,
+                target_scene_id=int(target_scene_id),
+                distances_to_target=distances_to_target,
+                max_steps=max_downstream_steps,
+            ),
+        }
+
+    def _navigation_downstream_path(
+        self,
+        tree: list[dict[str, Any]],
+        *,
+        start_scene_id: int | None,
+        target_scene_id: int,
+        distances_to_target: Mapping[int, int],
+        max_steps: int,
+    ) -> dict[str, Any]:
+        """Illustrative continuation that follows this planner's best candidate.
+
+        Every step takes the top-ranked candidate from the shared provider.  A
+        missing route, a revisited scene or the step cap truncates the sketch
+        explicitly.  This is a schematic, never a new topology search or a
+        probability product.
+        """
+        target = int(target_scene_id)
+        sketch: dict[str, Any] = {
+            "status": "start",
+            "start_scene_id": None if start_scene_id is None else int(start_scene_id),
+            "target_scene_id": target,
+            "steps": [],
+        }
+        if start_scene_id is None:
+            sketch["status"] = "no_expected_landing"
+            return sketch
+        current = int(start_scene_id)
+        if current == target:
+            sketch["status"] = "reached"
+            return sketch
+        visited = {current}
+        steps = 0
+        while steps < int(max_steps):
+            if current not in distances_to_target:
+                sketch["status"] = "no_path"
+                return sketch
+            candidates = self._scene_next_edge_candidates(
+                tree, current, target, read_only=True,
+            )
+            if not candidates:
+                sketch["status"] = "no_path"
+                return sketch
+            best = candidates[0]
+            landing = best.get("landing_id")
+            best_edge = best.get("edge") if isinstance(best.get("edge"), dict) else {}
+            best_shape = best_edge.get("shape") if isinstance(best_edge.get("shape"), dict) else {}
+            sketch["steps"].append({
+                "from_scene_id": current,
+                "action_title": str(best_shape.get("title") or ""),
+                "to_scene_id": None if landing is None else int(landing),
+                "single_step_progress_probability": float(
+                    best.get("progress_probability") or 0.0
+                ),
+                "discounted_reachability_gain": (
+                    None
+                    if best.get("expected_reachability") is None
+                    else float(best["expected_reachability"])
+                ),
+            })
+            steps += 1
+            if landing is None:
+                sketch["status"] = "no_expected_landing"
+                return sketch
+            landing = int(landing)
+            if landing == target:
+                sketch["status"] = "reached"
+                return sketch
+            if landing in visited:
+                sketch["status"] = "cycle"
+                return sketch
+            visited.add(landing)
+            current = landing
+        sketch["status"] = "depth_limit"
+        return sketch
+
 
     def _scene_navigation_exploration_priority(self, shape: dict[str, Any]) -> int:
         """Rank bounded navigation actions when the static graph has no route.

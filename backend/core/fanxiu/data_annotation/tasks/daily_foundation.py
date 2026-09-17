@@ -294,6 +294,14 @@ _DAILY_AUDIT_TASK_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("daily_yaozu", "legacy-daily-yaozu", r"妖族袭城|妖族"),
     ("daily_dongtian", "legacy-daily-dongtian", r"九曜\s*玄墨|玄墨|採炁|采炁"),
     ("daily_xianshi", "legacy-daily-xianshi", r"仙市"),
+    # 以下为日常页里长期存在、但此前未映射的日常条目。只映射每日重置且
+    # 每日运行的作业；周常条目（圣祖、韩立等）不在此映射，避免跨周误判。
+    ("daily_lingquan", "legacy-daily-lingquan", r"宗门灵泉|灵泉"),
+    ("daily_zhenxie", "daily-zhenxie", r"宗门镇邪|镇邪"),
+    ("daily_lundao", "daily-lundao-seat", r"参与论道|论道"),
+    ("daily_mojie_raid", "legacy-daily-mojie-raid", r"奇袭魔界"),
+    ("daily_xuanhuang", "daily-xuanhuang", r"玄荒古域|玄荒"),
+    ("moyu_challenge", "moyu-challenge", r"魔狱封阵|完成一次魔狱"),
 )
 
 _DAILY_AUDIT_COMPLETION_MIN_TOTAL: dict[str, int] = {

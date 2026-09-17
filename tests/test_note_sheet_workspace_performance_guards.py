@@ -76,6 +76,48 @@ def test_hidden_columns_do_not_fall_back_to_handsontable_default_width():
     assert "TD.classList.add('sheet-hidden-column-cell')" in source
 
 
+def test_frozen_row_overlay_uses_master_viewport_width_before_scroll_sync():
+    source = _workspace_source()
+    start = source.index("function syncSheetOverlayScrollFromMaster()")
+    end = source.index("\nfunction scheduleSheetOverlayScrollSyncFromMaster()", start)
+    body = source[start:end]
+
+    assert "const masterClientWidth = masterHolder.clientWidth" in body
+    assert "holder.style.width = `${masterClientWidth}px`" in body
+    assert "holder.style.maxWidth = `${masterClientWidth}px`" in body
+    assert body.index("holder.style.width") < body.index("holder.scrollLeft = scrollLeft")
+
+
+def test_exam_qualification_yes_uses_dynamic_green_background():
+    source = _workspace_source()
+
+    assert "const ATTENDANCE_QUALIFIED_BACKGROUND = '#80FF80'" in source
+
+    helper_start = source.index("function getConditionalCellBackgroundColor(")
+    helper_end = source.index("\nfunction isAttendanceSummarySheetPluginEnabled()", helper_start)
+    helper_body = source[helper_start:helper_end]
+
+    assert "const header = normalizeCellValue(columnHeaders.value[columnIndex] ?? '').trim()" in helper_body
+    assert "if (header === '考试资格' && renderedText.trim() === '是')" in helper_body
+    assert "return ATTENDANCE_QUALIFIED_BACKGROUND" in helper_body
+    assert helper_body.index("return ATTENDANCE_QUALIFIED_BACKGROUND") < helper_body.index("return ''")
+
+    # The green background must be resolved dynamically in both cell rendering
+    # paths (the Handsontable renderer and the row-detail value resolver) and
+    # never written back as a persisted per-cell style.
+    assert source.count("getConditionalCellBackgroundColor(renderColumn, renderedText)") == 2
+
+    for start_marker, end_marker in (
+        ("function getResolvedCellValueStyle(", "\nfunction buildRowDetail"),
+        ("function handleAfterRenderer(", "\nfunction getExcelColumnLabel"),
+    ):
+        body = source[source.index(start_marker):source.index(end_marker, source.index(start_marker))]
+        conditional_index = body.index("getConditionalCellBackgroundColor(renderColumn, renderedText)")
+        # An explicit per-cell background_color must still override the dynamic
+        # conditional color, so the style lookup has to come afterwards.
+        assert conditional_index < body.index("if (cellStyle?.background_color)", conditional_index)
+
+
 def test_note_sheet_workspace_uses_filtered_query_on_first_filtered_page_load():
     source = _workspace_source()
     start = source.index("async function fetchNoteSheetForCurrentView(")

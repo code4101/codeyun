@@ -229,6 +229,21 @@ def _parse_json_response(response: requests.Response, label: str) -> dict[str, A
     return payload
 
 
+def _require_bot_ok(payload: dict[str, Any], label: str) -> dict[str, Any]:
+    """Bot API can fail inside an HTTP 200 body; surface it instead of reporting success.
+
+    Real case: `ilink/bot/sendmessage` returns `{"ret": -2, "errmsg": "prepare failed"}`
+    with HTTP 200 while the reply session is closed, and reporting that as a successful
+    send hides the failure from every caller.
+    """
+    ret = payload.get("ret")
+    errcode = payload.get("errcode")
+    if ret in (0, None) and not errcode:
+        return payload
+    detail = str(payload.get("errmsg") or payload.get("err_msg") or "").strip()
+    raise WechatIlinkError(f"{label} 业务失败：ret={ret} errcode={errcode} errmsg={detail}")
+
+
 def _get_json(base_url: str, endpoint: str, *, label: str, timeout_seconds: float | None = None) -> dict[str, Any]:
     try:
         response = requests.get(
@@ -464,6 +479,7 @@ def _upload_image_to_cdn(
         label="getuploadurl",
         timeout_seconds=max(1.0, timeout_seconds),
     )
+    _require_bot_ok(upload_response, "getuploadurl")
     upload_full_url = str(upload_response.get("upload_full_url") or "").strip()
     upload_param = str(upload_response.get("upload_param") or "").strip()
     if not upload_full_url and not upload_param:
@@ -1759,7 +1775,8 @@ def _send_message_items(
             "msg": message_payload,
             "base_info": _build_base_info(),
         }
-        _post_json(
+        # 业务失败必须显式抛出，否则调用方会把"未送达"当成功。
+        send_response = _post_json(
             _normalize_base_url(str(account.get("base_url") or "")),
             "ilink/bot/sendmessage",
             payload,
@@ -1767,6 +1784,7 @@ def _send_message_items(
             label="sendmessage",
             timeout_seconds=max(1.0, timeout_seconds),
         )
+        _require_bot_ok(send_response, "sendmessage")
     account["updated_at"] = _now()
     _write_store(store)
     return {

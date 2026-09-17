@@ -12,6 +12,7 @@ const LingzhuangHuadaoPage = defineAsyncComponent(() => import('../lingzhuang-hu
 const YaochiFlowerFestivalPage = defineAsyncComponent(() => import('../yaochi-flower-festival/page.vue'))
 const YuandingSanshengPage = defineAsyncComponent(() => import('../yuanding-sansheng/page.vue'))
 const LingchongJingwuPage = defineAsyncComponent(() => import('../lingchong-jingwu/page.vue'))
+const ShequnLingchongPage = defineAsyncComponent(() => import('../shequn-lingchong/page.vue'))
 const LiantiFaxiangPage = defineAsyncComponent(() => import('../lianti-faxiang/page.vue'))
 const DandaoWendingPage = defineAsyncComponent(() => import('../dandao-wending/page.vue'))
 const XilingZhengwuPage = defineAsyncComponent(() => import('../xiling-zhengwu/page.vue'))
@@ -22,6 +23,7 @@ type ResourceActivityType =
   | 'yaochi-flower-festival'
   | 'yuanding-sansheng'
   | 'lingchong-jingwu'
+  | 'shequn-lingchong'
   | 'lianti-faxiang'
   | 'dandao-wending'
   | 'peakrace'
@@ -42,6 +44,7 @@ const activityOptions: { label: string; value: ResourceActivityType }[] = [
   { label: '瑶池花会', value: 'yaochi-flower-festival' },
   { label: '缘定三生', value: 'yuanding-sansheng' },
   { label: LINGCHONG_JINGWU_OFFICIAL_NAME, value: 'lingchong-jingwu' },
+  { label: '社团灵宠', value: 'shequn-lingchong' },
   { label: LIANTI_FAXIANG_OFFICIAL_NAME, value: 'lianti-faxiang' },
   { label: DANDAO_WENDING_OFFICIAL_NAME, value: 'dandao-wending' },
   { label: '天道巅峰', value: 'peakrace' },
@@ -89,6 +92,7 @@ const selectedPage = computed(() => ({
   'yaochi-flower-festival': YaochiFlowerFestivalPage,
   'yuanding-sansheng': YuandingSanshengPage,
   'lingchong-jingwu': LingchongJingwuPage,
+  'shequn-lingchong': ShequnLingchongPage,
   'lianti-faxiang': LiantiFaxiangPage,
   'dandao-wending': DandaoWendingPage,
   'peakrace': PeakraceTotal,

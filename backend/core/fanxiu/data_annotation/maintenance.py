@@ -16,6 +16,10 @@ MAINTENANCE_RECOVERY_TASK_ID = "system-maintenance-recovery"
 MAINTENANCE_RECOVERY_TASK_TYPE = "maintenance_recovery"
 MAINTENANCE_SCENE_ID = 415
 LOGIN_MAINTENANCE_PROMPT_SCENE_ID = 546
+# 维护/停更页是身份-only 的全局中断：识别到就锁定维护门闩，绝不寻找可点击出口。
+# #415（弹窗/停更）与 #546（登录维护提示）描述同一个“服务不可用”事实，
+# 必须一起参与识别层的维护判定，否则会退化成“缺少弹窗动作”的资产报修。
+MAINTENANCE_SCENE_IDS = frozenset({MAINTENANCE_SCENE_ID, LOGIN_MAINTENANCE_PROMPT_SCENE_ID})
 MAINTENANCE_REASON = "game_maintenance"
 MAINTENANCE_CHECK_INTERVAL_MINUTES = 5
 MAINTENANCE_PROBE_INTERVAL_SECONDS = 5.0
@@ -31,6 +35,15 @@ class FanxiuMaintenanceDetected(RuntimeError):
         super().__init__(message)
         self.detail = message
         self.evidence = dict(evidence or {})
+
+
+def is_maintenance_scene_id(scene_id: Any) -> bool:
+    """Return whether a recognized scene id is a maintenance-only page."""
+
+    try:
+        return int(scene_id) in MAINTENANCE_SCENE_IDS
+    except (TypeError, ValueError):
+        return False
 
 
 def infer_game_startup_scene(scene_id: int | None, text: Any) -> int | None:

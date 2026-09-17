@@ -23,6 +23,100 @@ def read_pet_resource_receipts(activity_id: int, occurrence: str) -> list[dict]:
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
 
 
+def _event_occurrence_paths(activity_id: int, *, start_date: str, end_date: str) -> list:
+    if activity_id <= 0:
+        raise ValueError("Expected a positive activity ID")
+    for value in (start_date, end_date):
+        if (not isinstance(value, str) or len(value) != 10
+                or any(c not in "0123456789-" for c in value)):
+            raise ValueError("Event bounds must be YYYY-MM-DD dates")
+    if start_date > end_date:
+        raise ValueError("Event start date must not be after its end date")
+    folder = fanxiu_data_annotation_dir() / "pet-resource-receipts"
+    if not folder.is_dir():
+        return []
+    prefix = f"{int(activity_id)}-"
+    paths = []
+    for path in sorted(folder.glob(f"{prefix}*.json")):
+        occurrence = path.stem[len(prefix):]
+        if len(occurrence) != 10:
+            continue
+        if start_date <= occurrence <= end_date:
+            paths.append(path)
+    return paths
+
+
+def read_pet_resource_receipts_range(activity_id: int, *, start_date: str,
+                                     end_date: str) -> list[dict]:
+    """Read every receipt whose date is inside this event instance's window.
+
+    The activity ID alone is not an instance: previous periods reuse it. The
+    explicit start/end bound this instance and still include cross-day receipts
+    (including unresolved ones) inside the window.
+    """
+    rows: list[dict] = []
+    for path in _event_occurrence_paths(activity_id, start_date=start_date, end_date=end_date):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"无法读取灵兽资源回执：{path.name}") from exc
+        if not isinstance(data, list):
+            raise ValueError(f"灵兽资源回执格式无效：{path.name}")
+        rows.extend(row for row in data if isinstance(row, dict))
+    return rows
+
+
+def read_pet_seed_usage(activity_id: int, *, item_id: int, start_date: str,
+                        end_date: str) -> int:
+    """Sum a seed item's submitted units inside this event instance's window.
+
+    Only dates within the explicit instance window count, so a previous period
+    reusing the activity ID cannot exhaust the budget. Only ``submitted`` /
+    ``verified`` actions count; observation placeholders and rank samples are
+    calibration rows, not new consumption. An unreadable ledger fails closed.
+    """
+    if item_id <= 0:
+        raise ValueError("Expected a positive seed item ID")
+    total = 0
+    for row in read_pet_resource_receipts_range(
+        activity_id, start_date=start_date, end_date=end_date,
+    ):
+        if int(row.get("item_id") or 0) != int(item_id):
+            continue
+        if row.get("status") in {"submitted", "verified"}:
+            total += max(0, int(row.get("quantity") or 0))
+    return total
+
+
+def select_pet_resource_task_samples(activity_id: int, *, pet_id: int, start_date: str,
+                                     end_date: str) -> dict[int, float]:
+    """Per-unit task gain keyed by resource, from verified same-pet receipts.
+
+    Only the real task delta over the submitted quantity is used; aptitude
+    deltas are a different metric and are never substituted. Different
+    resources and different pets stay separate keys, so a sample can never
+    leak across resources. Reading the whole event window recovers samples
+    across calls instead of forgetting them each initialization.
+    """
+    if pet_id <= 0:
+        raise ValueError("Expected a positive pet ID")
+    samples: dict[int, float] = {}
+    for row in read_pet_resource_receipts_range(
+        activity_id, start_date=start_date, end_date=end_date,
+    ):
+        if row.get("status") != "verified" or int(row.get("pet_id") or 0) != int(pet_id):
+            continue
+        resource_id = int(row.get("item_id") or 0)
+        quantity = int(row.get("quantity") or 0)
+        before, after = row.get("task_before"), row.get("task_after")
+        if resource_id <= 0 or quantity <= 0 or before is None or after is None:
+            continue
+        gain = (int(after) - int(before)) / quantity
+        if gain > 0:
+            samples[resource_id] = gain
+    return samples
+
+
 def record_pet_resource_receipt(activity_id: int, occurrence: str, receipt: dict,
                                  *, action_id: str | None = None) -> str:
     path = _path(activity_id, occurrence)

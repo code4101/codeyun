@@ -70,6 +70,42 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
+    path: '/tools/length-scale',
+    redirect: '/tools/units',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/tools/time-scale',
+    redirect: '/tools/units',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/tools/mass-scale',
+    redirect: '/tools/units',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/tools/area-scale',
+    redirect: '/tools/units',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/tools/volume-scale',
+    redirect: '/tools/units',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/tools/speed-scale',
+    redirect: '/tools/units',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
     path: '/tools/labelme-lite',
     redirect: '/cluster/labelme',
     requiresAuth: true,

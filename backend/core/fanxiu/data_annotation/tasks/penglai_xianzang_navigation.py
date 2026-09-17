@@ -131,7 +131,9 @@ def enter_xianzang(
     context: Any,
     *,
     source_scene_id: int = 34,
-    timeout_seconds: float = 20.0,
+    # 入口转场在识别轮询下常需 >20s：原 20s 会在已进入 #447 后仍报
+    # “等待蓬莱仙藏页面超时”。放宽到 40s，仍受外层 60s 可用性预算约束。
+    timeout_seconds: float = 40.0,
     poll_seconds: float = 0.25,
     availability_timeout_seconds: float = 60.0,
     availability_poll_seconds: float = 1.0,

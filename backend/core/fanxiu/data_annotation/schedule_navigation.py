@@ -25,7 +25,7 @@ ACTIVITY_CARD_SHAPE = "活动卡片"
 ACTIVITY_CARD_FORWARD_SHAPE = "活动卡片/前往"
 
 
-def _activity_card_indicator_points(
+def activity_card_indicator_points(
     context: Any,
     frame_data_url: str,
 ) -> tuple[tuple[float, float], ...]:
@@ -39,9 +39,7 @@ def _activity_card_indicator_points(
             np.frombuffer(base64.b64decode(encoded), dtype=np.uint8),
             cv2.IMREAD_COLOR,
         )
-        card_shape = context.shape(SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE)
-        view = card_shape.parent_view
-        box = context.runner._box(card_shape.raw, view.raw)
+        box = context.shape_box(SCHEDULE_SCENE_ID, ACTIVITY_CARD_SHAPE)
     except Exception:
         return ()
     if image is None:
@@ -101,6 +99,23 @@ def _activity_card_indicator_points(
     if any(abs(gap - median_gap) > max(4.0, median_gap * 0.35) for gap in gaps):
         return ()
     return tuple(pager_row)
+
+
+def activity_card_selected_indicator(context: Any, frame_data_url: str) -> int | None:
+    """Locate the orange selected dot; position is GUI evidence, not task ID."""
+    points = activity_card_indicator_points(context, frame_data_url)
+    if not points:
+        return None
+    image = cv2.imdecode(np.frombuffer(base64.b64decode(frame_data_url.split(',', 1)[1]),
+                                     dtype=np.uint8), cv2.IMREAD_COLOR)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    selected = []
+    for index, (x, y) in enumerate(points):
+        roi = hsv[max(0, int(y)-5):int(y)+6, max(0, int(x)-5):int(x)+6]
+        orange = (roi[:, :, 0] < 30) & (roi[:, :, 1] > 150) & (roi[:, :, 2] > 170)
+        if np.count_nonzero(orange) >= 12:
+            selected.append(index)
+    return selected[0] if len(selected) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -923,7 +938,7 @@ def select_schedule_activity(
 
         found = None
         runtime_name_only_candidates: list[tuple[float, float, Mapping[str, Any]]] = []
-        indicator_points = _activity_card_indicator_points(context, frame)
+        indicator_points = activity_card_indicator_points(context, frame)
         for x, y in indicator_points:
             context.click_frame_point(SCHEDULE_SCENE_ID, x, y)
             yield from context.wait_action_settle(settle_seconds)

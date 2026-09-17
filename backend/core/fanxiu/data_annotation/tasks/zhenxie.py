@@ -11,6 +11,19 @@ from backend.core.fanxiu.data_annotation.schedule_navigation import (
 
 
 _ZHENXIE_PARTICIPATION_SECONDS = 30.0
+# 单次落点重识别等待上限。窄期望集合（#34/#85/#186）不能凭剩余 deadline
+# 把一次 wait_scene 拖满整段预算——这之前造成过 133s 的单步卡顿；外层循环
+# 仍以总 deadline 反复重试。
+_ZHENXIE_LEAVE_REDISCOVER_WAIT_SECONDS = 10.0
+
+
+def zhenxie_landing_wait_seconds(deadline: float, now: float) -> float:
+    """Bound one landing re-identification wait to a small fixed budget."""
+
+    return min(
+        _ZHENXIE_LEAVE_REDISCOVER_WAIT_SECONDS,
+        max(1.0, float(deadline) - float(now)),
+    )
 
 
 class ZhenxieTaskMixin:
@@ -159,7 +172,7 @@ class ZhenxieTaskMixin:
                     [34,
                     85,
                     186],
-                    wait=max(1.0, deadline - time.monotonic()),
+                    wait=zhenxie_landing_wait_seconds(deadline, time.monotonic()),
                     label="日常_镇邪：点击离开后重新识别多层落点",
                 )
                 current = self._zhenxie_scene_id(landed)
@@ -176,7 +189,7 @@ class ZhenxieTaskMixin:
                     [34,
                     85,
                     186],
-                    wait=max(1.0, deadline - time.monotonic()),
+                    wait=zhenxie_landing_wait_seconds(deadline, time.monotonic()),
                     label="日常_镇邪：重新识别多层离场上下文",
                 )
                 current = self._zhenxie_scene_id(landed)

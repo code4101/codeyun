@@ -157,6 +157,8 @@ def test_api_status_reports_key_availability(tmp_path, monkeypatch):
 
 
 def test_api_switch_openai_is_noop_when_already_default(tmp_path, monkeypatch):
+    import tomllib
+
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\n')
     monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
@@ -170,6 +172,111 @@ def test_api_switch_openai_is_noop_when_already_default(tmp_path, monkeypatch):
     assert response.ok is True
     assert response.changed is False
     assert response.notice == ""
+    # The no-op still repairs the opencode provider block so old threads open.
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert data["model_providers"]["opencode_go"]["wire_api"] == "responses"
+
+
+def test_ensure_baseline_snapshot_is_write_once(tmp_path):
+    _write_config(tmp_path, 'model = "gpt-6-astra"\n')
+
+    assert codex_switch.ensure_baseline_snapshot(tmp_path, tmp_path / "config.toml") is True
+    baseline = tmp_path / "backup-codeyun" / codex_switch.CODEX_BASELINE_FILENAME
+    assert baseline.read_text(encoding="utf-8") == 'model = "gpt-6-astra"\n'
+
+    _write_config(tmp_path, 'model = "deepseek-flash"\nmodel_provider = "deepseek"\n')
+    assert codex_switch.ensure_baseline_snapshot(tmp_path, tmp_path / "config.toml") is False
+    assert baseline.read_text(encoding="utf-8") == 'model = "gpt-6-astra"\n'
+
+
+def test_restore_codeyun_backup_restores_baseline_and_drops_catalog(tmp_path):
+    import tomllib
+
+    baseline = 'model = "gpt-6-astra"\n'
+    baseline_dir = tmp_path / "backup-codeyun"
+    baseline_dir.mkdir()
+    (baseline_dir / codex_switch.CODEX_BASELINE_FILENAME).write_text(baseline, encoding="utf-8")
+    _write_config(tmp_path, 'model = "deepseek-flash"\nmodel_provider = "opencode_go"\n')
+    (tmp_path / "opencode_models.json").write_text("{}", encoding="utf-8")
+
+    assert codex_switch.restore_codeyun_backup(tmp_path) is True
+
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert data["model"] == "gpt-6-astra"
+    assert "model_provider" not in data
+    assert not (tmp_path / "opencode_models.json").exists()
+    # The baseline is kept so OpenAI can be restored again later.
+    assert (baseline_dir / codex_switch.CODEX_BASELINE_FILENAME).is_file()
+
+
+def test_restore_codeyun_backup_keeps_thread_provider_blocks(tmp_path):
+    import tomllib
+
+    baseline_dir = tmp_path / "backup-codeyun"
+    baseline_dir.mkdir()
+    (baseline_dir / codex_switch.CODEX_BASELINE_FILENAME).write_text('model = "gpt-6-astra"\n', encoding="utf-8")
+    _write_config(
+        tmp_path,
+        'model = "deepseek-flash"\n'
+        'model_provider = "deepseek"\n\n'
+        "[model_providers.deepseek]\n"
+        'base_url = "https://api.deepseek.com/"\n\n'
+        "[model_providers.opencode_go]\n"
+        'base_url = "http://127.0.0.1:8787/v1"\n',
+    )
+
+    assert codex_switch.restore_codeyun_backup(tmp_path) is True
+
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert data["model"] == "gpt-6-astra"
+    assert "model_provider" not in data
+    assert data["model_providers"]["deepseek"]["base_url"] == "https://api.deepseek.com/"
+    assert data["model_providers"]["opencode_go"]["base_url"] == "http://127.0.0.1:8787/v1"
+
+
+def test_api_switch_openai_prefers_baseline_over_deepseek_backup(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    baseline = 'model = "gpt-6-astra"\n'
+    (tmp_path / "backup-deepseek").mkdir()
+    (tmp_path / "backup-codeyun").mkdir()
+    (tmp_path / "backup-codeyun" / codex_switch.CODEX_BASELINE_FILENAME).write_text(baseline, encoding="utf-8")
+    _write_config(
+        tmp_path,
+        'model = "deepseek-flash"\n'
+        'model_provider = "opencode_go"\n'
+        'model_catalog_json = "C:/Users/x/.codex/opencode_models.json"\n\n'
+        "[model_providers.opencode_go]\n"
+        'name = "OpenCode Go (proxy)"\n'
+        'base_url = "http://127.0.0.1:8787/v1"\n',
+    )
+    (tmp_path / "opencode_models.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        codex_setup_api,
+        "stop_codex_processes",
+        lambda: {"was_app_running": False, "app_exe": "", "stopped": []},
+    )
+    monkeypatch.setattr(codex_setup_api, "start_codex_app", lambda snapshot: False)
+    monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+
+    response = codex_setup_api.switch_codex_setup(
+        codex_setup_api.CodexSetupSwitchRequest(provider="openai"),
+        current_user=None,
+        session=None,
+    )
+
+    import tomllib
+
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    # Top level is the pristine baseline...
+    assert data["model"] == "gpt-6-astra"
+    assert "model_provider" not in data
+    assert "model_catalog_json" not in data
+    # ...but the provider block stays so threads created against it still open.
+    assert data["model_providers"]["opencode_go"]["base_url"] == "http://127.0.0.1:8787/v1"
+    assert not (tmp_path / "opencode_models.json").exists()
+    assert response.status.model == "gpt-6-astra"
+    assert response.provider == "openai"
+    assert response.changed is True
 
 
 def test_api_switch_deepseek_requires_key(tmp_path, monkeypatch):
@@ -357,6 +464,37 @@ def test_read_codex_quota_groups_forces_chatgpt_auth(monkeypatch):
 
     assert captured["config_overrides"] == weekly_quota.CODEX_CHATGPT_AUTH_OVERRIDE
     assert groups[0]["windows"][0]["remaining_percent"] == 14
+
+
+def test_chatgpt_auth_override_beats_forced_api_login():
+    """The DeepSeek setup script forces API-key login, which hides the ChatGPT account.
+
+    Both keys have to be overridden for the child app-server, otherwise
+    ``account/rateLimits/read`` answers "authentication required" even when a valid
+    ChatGPT ``auth.json`` exists.
+    """
+
+    overrides = dict(weekly_quota.CODEX_CHATGPT_AUTH_OVERRIDE)
+
+    assert overrides["preferred_auth_method"] == '"chatgpt"'
+    assert overrides["forced_login_method"] == '"chatgpt"'
+
+
+def test_quota_error_message_explains_missing_chatgpt_login():
+    error = CodexAppServerError(
+        "Codex app-server account/rateLimits/read 失败：codex account authentication required to read rate limits"
+    )
+
+    message = weekly_quota.describe_codex_quota_error(error)
+
+    assert "codex login" in message
+    assert "未登录 ChatGPT" in message
+
+
+def test_quota_error_message_keeps_unrelated_failures_verbatim():
+    error = CodexAppServerError("Codex app-server initialize 超时")
+
+    assert weekly_quota.describe_codex_quota_error(error) == "Codex app-server initialize 超时"
 
 
 def test_build_general_quota_window_defaults_to_seven_days():
@@ -593,6 +731,7 @@ def test_build_opencode_catalog_clones_codex_template(tmp_path, monkeypatch):
     assert [item["slug"] for item in data["models"]] == ["grok-4.6", "kimi-k3"]
     assert data["models"][0]["display_name"] == "grok-4.6"
     assert data["models"][0]["context_window"] == 272000
+    assert data["models"][0]["effective_context_window_percent"] == codex_switch.OPENCODE_CONTEXT_WINDOW_PERCENT
 
 
 def test_build_opencode_catalog_uses_model_reasoning_metadata(tmp_path, monkeypatch):

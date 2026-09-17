@@ -54,6 +54,11 @@ def prepare_pet_pill_quantity(context: Any, *, item_id: int, quantity: int,
 
     initial_snapshot 可复用刚打开该弹窗的回执，其间不得操作或切换页面。
     返回值是最终 Runtime 核对结果，可供紧接着的使用动作直接消费。
+
+    ``数量`` 框 (900x1600 下约 397,840,104,45) 会渲染当前橙色数量数字；
+    Runtime ``useNum`` 仍是权威值并用于提交前最终核对。误差阈值设为公共
+    控制的有限默认 30：仅小尾差直接按钮精调，较大差值仍走比例粗调，绝不
+    把按钮预算放大到库存量级。
     """
     from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
     from backend.core.fanxiu.data_annotation.tasks.integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count
@@ -64,6 +69,24 @@ def prepare_pet_pill_quantity(context: Any, *, item_id: int, quantity: int,
             raise RuntimeError("当前不是道具使用弹窗")
     def read_count():
         return read_item_batch_use_dialog_snapshot(expected_item_id=item_id)
+
+    def read_fast_count():
+        """Prefer the local quantity-box OCR (verified equal to Runtime 41).
+
+        The ``数量`` box renders the current number, so closed-loop feedback can
+        avoid a full Runtime dialog scan per step; the submit-time final check
+        still uses the authoritative Runtime reader.
+        """
+        try:
+            values, _text = context.ocr_numbers_in_shapes(
+                PET_PILL_DIALOG_SCENE_ID, ["数量"], crop=True,
+                max_attempts=1, retry_interval=0.0)
+            unique = sorted({int(value) for value in values if int(value) > 0})
+            if len(unique) == 1:
+                return unique[0]
+        except Exception:
+            pass
+        return read_count()["current"]
     before = dict(initial_snapshot) if initial_snapshot is not None else read_count()
     if before.get("item_id") != item_id:
         raise RuntimeError("初始使用弹窗道具身份不符")
@@ -73,10 +96,13 @@ def prepare_pet_pill_quantity(context: Any, *, item_id: int, quantity: int,
                                 count_decrease="减少", count_increase="增加",
                                 count_slider_thumb="滑块游标", count_slider_track="滑条",
                                 count_slider_left_anchor="滑轨左端", count_slider_right_anchor="滑轨右端")
+    # 有限尾差阈值 30（非库存）：|目标-当前|<=30 直接公共按钮精调，
+    # 更大差值仍由公共比例粗调处理；按钮预算保持默认 30。
     control = yield from set_verified_integer_slider_count(context, assets, quantity,
-                                                maximum=before["slider_maximum"], max_adjustments=10,
+                                                maximum=before["slider_maximum"], max_adjustments=30,
                                                 count_label="灵兽资质丹数量",
-                                                initial_count=before["current"], runtime_count_reader=None)
+                                                initial_count=before["current"],
+                                                runtime_count_reader=read_fast_count)
     # already_exact performs no GUI action; the fresh initial snapshot is
     # still the final fact. Only an actual adjustment needs another read.
     after = before if control.get("phase") == "already_exact" else read_count()

@@ -35,7 +35,12 @@ from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 MAGIC_SHOP_SCENE = 519
 MAGIC_ENDED_HOME_SCENE = 522
 COMMON_SHOP_DIALOG_SCENE = 566
-SHOP_TRAVERSAL_RATIO = 0.65
+# #519 兑换宝阁商品列表的拖拽实测（2026-09-16 现场取证）：
+# ``duration=0.12, ratio=0.65`` 的快滑在这个滚动容器上不产生位移，
+# 会把"到底"判定变成假阴性——只看到第一屏就误报商品不存在；
+# 实测 ``duration=0.8, ratio=0.9`` 才能稳定换页，令第二屏商品被识别。
+SHOP_TRAVERSAL_RATIO = 0.9
+SHOP_TRAVERSAL_DURATION_SECONDS = 0.8
 
 
 def _compact(value: Any) -> str:
@@ -94,11 +99,19 @@ def wait_magic_invasion_exchange_shop_ready(
     """Wait for the shop by business text when the strict View scores 82%."""
 
     last_visible = ""
+    started = time.monotonic()
     for _attempt in range(max(1, int(attempts))):
         lines = _group_ocr_tokens(context.full_frame_ocr_tokens(update=True))
         visible = [_compact(line.get("text")) for line in lines]
         last_visible = " | ".join(text for text in visible if text)
         if _exchange_shop_business_ready(lines):
+            # 一次调用只记一行：尝试次数与总耗时决定“慢的是游戏过场还是
+            # 我们的轮询节奏”，后续优化必须先看这条真实数据。
+            context.runner._log(
+                "detail",
+                f"{label}：宝阁就绪等待 {_attempt + 1} 次尝试，"
+                f"{time.monotonic() - started:.1f}s",
+            )
             return True
         yield from context.wait_action_settle(1.0)
     if not fail_if_missing:
@@ -281,7 +294,7 @@ def _open_verified_shop_product(
             "商品列表",
             direction="up",
             ratio=SHOP_TRAVERSAL_RATIO,
-            duration=0.12,
+            duration=SHOP_TRAVERSAL_DURATION_SECONDS,
             unchanged_confirmations=2,
         )
         if not changed:
@@ -290,6 +303,7 @@ def _open_verified_shop_product(
         raise RuntimeError("魔道_兑换收尾：商品列表在有界次数内未能归顶")
 
     last_error = ""
+    page_changes = 0
     for scroll_index in range(max(0, int(max_scrolls)) + 1):
         # The shop title/wallet become ready before its rows finish rerendering
         # after a purchase.  Re-sample the same viewport before scrolling so a
@@ -376,13 +390,17 @@ def _open_verified_shop_product(
             "商品列表",
             direction="down",
             ratio=SHOP_TRAVERSAL_RATIO,
-            duration=0.12,
+            duration=SHOP_TRAVERSAL_DURATION_SECONDS,
             unchanged_confirmations=2,
         )
         if not changed:
             break
+        page_changes += 1
+    # 换页次数是本轮遍历的实际证据：0 次说明列表没有位移，
+    # 此时"未找到"不能当作"商品不存在"，两者必须能被区分。
     raise RuntimeError(
-        f"魔道_兑换收尾：有界滚动后未找到商品 {name}({unit_price})：{last_error}"
+        f"魔道_兑换收尾：有界滚动后未找到商品 {name}({unit_price})："
+        f"换页 {page_changes} 次，{last_error}"
     )
 
 
