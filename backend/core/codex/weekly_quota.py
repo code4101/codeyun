@@ -19,6 +19,9 @@ CODEX_USAGE_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage"
 CODEX_WEEKLY_QUOTA_SOURCE = f"codex_app_server:{CODEX_RATE_LIMITS_METHOD}"
 CODEX_WEEKLY_QUOTA_HISTORY_VERSION = 2
 DEFAULT_GENERAL_QUOTA_WINDOW_DAYS = 7
+# Show the current reset period plus the one before it, so the chart carries the
+# previous cycle's burn rhythm for comparison instead of a single period.
+GENERAL_QUOTA_WINDOW_PERIODS = 2
 QUOTA_HISTORY_DEDUP_MINUTES = 10
 
 
@@ -241,15 +244,130 @@ def _general_quota_window(groups: list[dict[str, Any]]) -> dict[str, Any] | None
     return max(windows, key=lambda item: int(item.get("window_minutes") or 0), default=None)
 
 
+def _expand_reset_breaks(points: list[dict[str, Any]], period: dt.timedelta) -> list[dict[str, Any]]:
+    """Split the polyline where a quota reset falls between two samples.
+
+    History is sampled sparsely, so a raw series slopes from the last pre-reset
+    reading up to the post-reset one and lands the jump in the middle of the gap.
+    Each snapshot carries the reset time of its own period, so when that value
+    changes, close the old segment at the earlier of its scheduled reset and the
+    new cycle's start: hold the old reading until then and open from 100%.
+
+    The new period does not start at the old reset: the next timer only begins on
+    first use after the reset, so its start is the new ``reset_at`` minus one
+    ``period`` (both come from the API).  That start is usually a little later
+    than the old reset, but can be earlier after an unscheduled reset. The null
+    break keeps separate cycles from being connected.
+    """
+
+    expanded: list[dict[str, Any]] = []
+    previous_reset = ""
+    previous_value: int | None = None
+    for item in points:
+        reset_at = str(item.get("reset_at") or "")
+        item_at = str(item.get("at") or "")
+        last_at = str(expanded[-1].get("at") or "") if expanded else ""
+        previous_moment = _parse_iso_timestamp(previous_reset)
+        new_reset = _parse_iso_timestamp(reset_at)
+        new_start = new_reset - period if new_reset is not None else None
+        last_moment = _parse_iso_timestamp(last_at)
+        item_moment = _parse_iso_timestamp(item_at)
+        # An early reset opens a new cycle before the old scheduled end. Use the
+        # new cycle's own start, not the now-obsolete old deadline, as the break.
+        close_at = previous_reset
+        if (
+            new_start is not None and previous_moment is not None
+            and last_moment is not None and item_moment is not None
+            and last_moment < new_start <= item_moment
+            and new_start < previous_moment
+        ):
+            close_at = new_start.isoformat()
+        # A real reset moved the marker to a new period and happened between the
+        # previous sample and this one; a bare drift of the timestamp (a second or
+        # two) or a marker outside that span is not a reset.
+        if (
+            previous_reset
+            and reset_at
+            and reset_at != previous_reset
+            and previous_value is not None
+            and last_at < close_at <= item_at
+        ):
+            # Close the old period at the reset instant, break the line, then open
+            # the new period at its own start (100%). The break (null) keeps the
+            # two periods as separate polylines instead of drawing a vertical
+            # connector across the idle gap.
+            expanded.append({"at": close_at, "remaining_percent": previous_value})
+            expanded.append({"at": close_at, "remaining_percent": None})
+            close_moment = _parse_iso_timestamp(close_at)
+            open_at = (
+                new_start.isoformat()
+                if new_start is not None and close_moment is not None and new_start > close_moment
+                else close_at
+            )
+            expanded.append({"at": open_at, "remaining_percent": 100})
+        expanded.append(item)
+        try:
+            previous_value = int(item.get("remaining_percent"))
+        except (TypeError, ValueError):
+            previous_value = None
+        if reset_at:
+            previous_reset = reset_at
+    return expanded
+
+
+def _build_reset_periods(
+    points: list[dict[str, Any]],
+    end: dt.datetime | None,
+    period: dt.timedelta,
+    span: dt.timedelta,
+) -> list[dict[str, str]]:
+    """Distinct reset cycles in the display range as ``{start_at, reset_at}``.
+
+    A cycle's ``start_at`` is its own ``reset_at`` minus one ``period`` (the
+    first-use trigger), so the previous cycle's end and the current cycle's start
+    stay separate instead of being collapsed into one timestamp.
+    """
+
+    if end is None:
+        return []
+    moments: list[dt.datetime] = []
+    seen: set[str] = set()
+    for item in points:
+        moment = _parse_iso_timestamp(item.get("reset_at"))
+        if moment is None or moment > end or moment <= end - span:
+            continue
+        key = moment.isoformat()
+        if key in seen:
+            continue
+        seen.add(key)
+        moments.append(moment)
+    if end.isoformat() not in seen:
+        moments.append(end)
+    moments.sort()
+    moments = moments[-GENERAL_QUOTA_WINDOW_PERIODS:]
+    return [
+        {"start_at": (moment - period).isoformat(), "reset_at": moment.isoformat()}
+        for moment in moments
+    ]
+
+
 def build_codex_general_quota_window(
     groups: list[dict[str, Any]],
     snapshots: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Plot the general quota for the current reset window (default: last 7 days).
+    """Plot the general quota for the current reset window and the previous one.
 
-    All history stays persisted; the chart only shows ``[reset - window, reset]``.
-    The time axis is rounded outward to local midnight so the daily 00:00 snapshots
-    land on day boundaries, while ``reset_at`` stays precise to the minute.
+    All history stays persisted; the chart only shows ``[reset - span, reset]`` where
+    ``span`` is ``GENERAL_QUOTA_WINDOW_PERIODS`` reset periods, so the previous
+    cycle's burn rhythm stays visible next to the current one.  The time axis is
+    rounded outward to local midnight so the daily 00:00 snapshots land on day
+    boundaries, while ``reset_at`` stays precise to the minute.
+
+    ``period_minutes`` is the reset period itself (7 days for the weekly limit).
+    ``periods`` lists each reset cycle individually as ``{start_at, reset_at}``:
+    the timer only starts on first use after a reset, so a period's ``start_at`` is
+    its own ``reset_at`` minus one period and is *not* the previous period's reset.
+    The client draws one even-burn reference line per period from that pair.
     """
 
     general = next((item for item in groups if isinstance(item, dict) and item.get("id") == "codex"), None)
@@ -268,15 +386,18 @@ def build_codex_general_quota_window(
             remaining = int(snapshot.get("remaining_percent"))
         except (TypeError, ValueError):
             continue
-        history_points.append({"at": moment.isoformat(), "remaining_percent": max(0, min(100, remaining))})
+        history_points.append({
+            "at": moment.isoformat(),
+            "remaining_percent": max(0, min(100, remaining)),
+            "reset_at": str(snapshot.get("reset_at") or "").strip(),
+        })
     history_points.sort(key=lambda item: item["at"])
 
     weekly_minutes = int(weekly.get("window_minutes") or 0) if weekly else 0
-    span = (
-        dt.timedelta(minutes=weekly_minutes)
-        if weekly_minutes
-        else dt.timedelta(days=DEFAULT_GENERAL_QUOTA_WINDOW_DAYS)
+    period = dt.timedelta(
+        minutes=weekly_minutes or DEFAULT_GENERAL_QUOTA_WINDOW_DAYS * 24 * 60
     )
+    span = period * GENERAL_QUOTA_WINDOW_PERIODS
 
     end = _parse_iso_timestamp(weekly.get("reset_at")) if weekly else None
     if end is None:
@@ -291,6 +412,8 @@ def build_codex_general_quota_window(
     if end is None and history_points:
         end = dt.datetime.fromisoformat(history_points[-1]["at"])
 
+    periods = _build_reset_periods(history_points, end, period, span)
+
     raw_start = end - span if end else None
     local_tz = dt.datetime.now().astimezone().tzinfo
     start = _floor_to_local_day(raw_start, local_tz) if raw_start else None
@@ -301,6 +424,7 @@ def build_codex_general_quota_window(
         for item in history_points
         if raw_start is None or end is None or raw_start <= dt.datetime.fromisoformat(item["at"]) <= end
     ]
+    points = _expand_reset_breaks(points, period)
 
     name = str(general.get("name") or "") if isinstance(general, dict) else ""
     if not name:
@@ -317,6 +441,8 @@ def build_codex_general_quota_window(
         "window_start": start.isoformat() if start else "",
         "window_end": axis_end.isoformat() if axis_end else "",
         "reset_at": end.isoformat() if end else "",
+        "period_minutes": int(period.total_seconds() // 60),
+        "periods": periods,
         "remaining_percent": remaining,
         "points": points,
     }

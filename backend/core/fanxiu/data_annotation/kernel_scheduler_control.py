@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 import time
@@ -92,6 +93,14 @@ from backend.core.fanxiu.data_annotation.state import (
 )
 from backend.core.services.launcher import popen_python_script_service
 from backend.core.temp_paths import codeyun_temp_root
+
+
+class SchedulerJobProgressConflict(RuntimeError):
+    """Raised when a stage write no longer owns the Job's current attempt."""
+
+
+_AGGREGATE_PROGRESS_PAYLOAD_KEY = "aggregate_progress"
+_AGGREGATE_PROGRESS_STATUSES = ("complete", "failed")
 
 
 def _canonical_task_type(task_type: str) -> str:
@@ -404,7 +413,7 @@ def read_scheduler_tasks(
 
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
     raw = read_data_annotation_json(path, None)
-    raw, _consolidated = consolidate_arena_scheduler_instances(raw)
+    raw, _consolidated = consolidate_arena_scheduler_instances(raw, now=now)
     # Repair may enrich facts while deriving a projection. Give it a private
     # copy so a read cannot mutate an object returned by a cache/test double.
     facts = deepcopy(read_world_facts(world_facts_path))
@@ -427,13 +436,24 @@ def maintain_scheduler_tasks(
     """Repair and persist Scheduler catalogue state from an authorized writer."""
 
     path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
-    raw = read_data_annotation_json(path, None)
+    # Migrations move child histories/checkpoints and may set an initial trigger.
+    # Commit them against the latest file under the same lock as attempts and
+    # stage receipts. A later configuration merge deliberately preserves
+    # payload/next_time, so passing migration changes only to that merge would
+    # silently discard them while deleting the old child jobs.
+    with FileLock(str(path.with_name(f"{path.name}.lock")), timeout=30):
+        original_raw = read_data_annotation_json(path, None)
+        raw, consolidated = consolidate_arena_scheduler_instances(original_raw, now=now)
+        if consolidated:
+            write_data_annotation_json(
+                path.with_name(f"{path.stem}.previous-config{path.suffix}"), original_raw,
+            )
+            write_data_annotation_json(path, raw)
     raw_ids_before_consolidation = {
         str(item.get("id") or "")
-        for item in (raw if isinstance(raw, list) else [])
+        for item in (original_raw if isinstance(original_raw, list) else [])
         if isinstance(item, dict) and str(item.get("id") or "")
     }
-    raw, consolidated = consolidate_arena_scheduler_instances(raw)
     raw_ids_after_consolidation = {
         str(item.get("id") or "")
         for item in (raw if isinstance(raw, list) else [])
@@ -642,6 +662,151 @@ def write_scheduler_tasks(
             payload = preserve_kernel_scheduler_execution_state(payload, existing)
         write_data_annotation_json(path, payload)
     return True
+
+
+def _task_aggregate_progress(task: dict[str, Any]) -> dict[str, Any]:
+    payload = task.get("payload")
+    progress = payload.get(_AGGREGATE_PROGRESS_PAYLOAD_KEY) if isinstance(payload, dict) else None
+    return progress if isinstance(progress, dict) else {}
+
+
+def read_scheduler_job_progress(
+    task_id: str,
+    cycle_key: str,
+    *,
+    scheduler_state_path: Path | None = None,
+) -> dict[str, Any]:
+    """Return one Job cycle's durable stage records without side effects.
+
+    The result is the ``stage_id -> {stage_version, status, result, updated_at}``
+    mapping persisted at ``task.payload.aggregate_progress[cycle_key]``.  Cycles
+    stay isolated by ``cycle_key``.  A missing Job, cycle or record yields an
+    empty mapping; a read never repairs, migrates or writes Scheduler state.
+    """
+
+    task_key = str(task_id or "").strip()
+    cycle = str(cycle_key or "").strip()
+    if not task_key:
+        raise ValueError("task_id 不能为空")
+    if not cycle:
+        raise ValueError("cycle_key 不能为空")
+
+    path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
+    tasks = read_data_annotation_json(path, [])
+    if not isinstance(tasks, list):
+        return {}
+    task = next(
+        (
+            item
+            for item in tasks
+            if isinstance(item, dict) and str(item.get("id") or "") == task_key
+        ),
+        None,
+    )
+    if task is None:
+        return {}
+    records = _task_aggregate_progress(task).get(cycle)
+    return deepcopy(records) if isinstance(records, dict) else {}
+
+
+def record_scheduler_job_stage(
+    task_id: str,
+    cycle_key: str,
+    stage_id: str,
+    *,
+    stage_version: str,
+    status: str,
+    result: Any = None,
+    expected_attempt_id: str,
+    scheduler_state_path: Path | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Narrow-write one durable aggregate stage checkpoint for the live attempt.
+
+    The checkpoint is stored at
+    ``task.payload.aggregate_progress[cycle_key][stage_id]`` so cycles stay
+    isolated and stages are addressed by a stable id.  Only the named stage is
+    replaced; every sibling payload key and every other task field is carried
+    over from the latest on-disk snapshot while holding the shared Scheduler
+    lock.  A write is refused unless ``expected_attempt_id`` still matches the
+    Job's current ``attempt_id``, so a superseded attempt cannot own a later
+    cycle.  Jobs are never created here, and no generator, scene cursor or step
+    execution memory is stored.
+    """
+
+    task_key = str(task_id or "").strip()
+    cycle = str(cycle_key or "").strip()
+    stage_key = str(stage_id or "").strip()
+    version = str(stage_version or "").strip()
+    stage_status = str(status or "").strip().lower()
+    expected_attempt = str(expected_attempt_id or "").strip()
+
+    if not task_key:
+        raise ValueError("task_id 不能为空")
+    if not cycle:
+        raise ValueError("cycle_key 不能为空")
+    if not stage_key:
+        raise ValueError("stage_id 不能为空")
+    if not version:
+        raise ValueError("stage_version 不能为空")
+    if stage_status not in _AGGREGATE_PROGRESS_STATUSES:
+        raise ValueError("status 只能是 complete 或 failed")
+    if not expected_attempt:
+        raise ValueError("expected_attempt_id 不能为空")
+    if stage_status == "complete" and result is None:
+        raise ValueError("complete 阶段必须携带 result")
+    try:
+        json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("result 必须可 JSON 序列化") from exc
+
+    record = {
+        "stage_version": version,
+        "status": stage_status,
+        "result": deepcopy(result),
+        "updated_at": (now or datetime.now()).isoformat(timespec="seconds"),
+    }
+
+    path = scheduler_state_path or fanxiu_kernel_scheduler_state_path()
+    lock_path = path.with_name(f"{path.name}.lock")
+    with FileLock(str(lock_path), timeout=30):
+        tasks = read_data_annotation_json(path, [])
+        if not isinstance(tasks, list):
+            tasks = []
+        index = next(
+            (
+                position
+                for position, item in enumerate(tasks)
+                if isinstance(item, dict) and str(item.get("id") or "") == task_key
+            ),
+            None,
+        )
+        if index is None:
+            raise LookupError(f"任务不存在：{task_key}")
+        task = tasks[index]
+        current_attempt = str(task.get("attempt_id") or "").strip()
+        if current_attempt != expected_attempt:
+            raise SchedulerJobProgressConflict(
+                f"attempt 已变更，拒绝旧 attempt 写入：期望 {expected_attempt}，"
+                f"当前 {current_attempt or '空'}"
+            )
+
+        payload = task.get("payload")
+        payload = dict(payload) if isinstance(payload, dict) else {}
+        progress = payload.get(_AGGREGATE_PROGRESS_PAYLOAD_KEY)
+        progress = dict(progress) if isinstance(progress, dict) else {}
+        cycle_records = progress.get(cycle)
+        cycle_records = dict(cycle_records) if isinstance(cycle_records, dict) else {}
+        cycle_records[stage_key] = record
+        progress[cycle] = cycle_records
+        payload[_AGGREGATE_PROGRESS_PAYLOAD_KEY] = progress
+
+        updated_task = dict(task)
+        updated_task["payload"] = payload
+        tasks = [*tasks[:index], updated_task, *tasks[index + 1 :]]
+        write_data_annotation_json(path, tasks)
+
+    return deepcopy(record)
 
 
 def set_scheduler_task_next_time(

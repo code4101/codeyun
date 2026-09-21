@@ -157,6 +157,136 @@ def _tiandi_occurrence(activity_id: int, cross_count: int) -> RankingOccurrence:
     )
 
 
+def _yuanding_occurrence() -> RankingOccurrence:
+    timezone = datetime.now().astimezone().tzinfo
+    assert timezone is not None
+    return RankingOccurrence(
+        activity_type="yuanding-sansheng",
+        family="resource_rank",
+        runtime_id="yuanding-8090001",
+        activity_id=8090001,
+        start_at=datetime(2026, 9, 21, 5, 53, tzinfo=timezone),
+        end_at=datetime(2026, 9, 21, 22, tzinfo=timezone),
+        prepare_at=datetime(2026, 9, 21, 5, tzinfo=timezone),
+        close_at=datetime(2026, 9, 22, 23, 59, 59, tzinfo=timezone),
+        cross_count=1,
+    )
+
+
+def _stub_static_reconcile(monkeypatch, *, reward_tiers_for_scope) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "_activity_definition_index",
+        lambda: {700014: {"id": 700014, "follow": [7000114, 7000214]}},
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "materialize_registered_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "collect_registered_exchange_activity",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            shop_refresh_status="updated",
+            shop_refresh_reason="",
+        ),
+    )
+
+    def list_rankings(_session, *, ranking_scope, **_kwargs):
+        return SimpleNamespace(
+            reward_tiers=reward_tiers_for_scope(ranking_scope),
+            loaded_entry_count=0,
+            declared_rank_count=0,
+            complete=False,
+        )
+
+    monkeypatch.setattr(ranking_reconcile, "list_exchange_rankings", list_rankings)
+
+
+def test_reconcile_does_not_block_when_required_scope_disables_reward_tiers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "_activity_definition_index",
+        lambda: {8090001: {"id": 8090001, "follow": [45105, 45107]}},
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "materialize_registered_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "collect_registered_exchange_activity",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            shop_refresh_status="updated",
+            shop_refresh_reason="",
+        ),
+    )
+    monkeypatch.setattr(
+        ranking_reconcile,
+        "list_exchange_rankings",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            reward_tiers=[],
+            loaded_entry_count=0,
+            declared_rank_count=0,
+            complete=False,
+        ),
+    )
+
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _yuanding_occurrence(),
+            captured_at="2026-09-21T05:53:00+08:00",
+        )
+
+    assert result["status"] == "retained"
+    assert result["facts"]["reward_tier_count"] == 0
+    assert "榜单奖励档次本次未加载" not in result["message"]
+
+
+def test_reconcile_blocks_when_optional_tiers_mask_missing_required_scope(
+    monkeypatch,
+) -> None:
+    _stub_static_reconcile(
+        monkeypatch,
+        reward_tiers_for_scope=lambda scope: [] if scope == "personal" else [object()],
+    )
+
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _magic_occurrence(cross_count=8),
+            captured_at="2026-08-21T00:30:00+08:00",
+        )
+
+    assert result["status"] == "blocked"
+    assert result["facts"]["reward_tier_count"] == 1
+    assert "榜单奖励档次本次未加载" in result["message"]
+
+
+def test_reconcile_does_not_block_when_optional_scope_has_no_tiers(
+    monkeypatch,
+) -> None:
+    _stub_static_reconcile(
+        monkeypatch,
+        reward_tiers_for_scope=lambda scope: [object()] if scope == "personal" else [],
+    )
+
+    with _session() as session:
+        result = ranking_reconcile.reconcile_ranking_occurrence(
+            session,
+            _magic_occurrence(cross_count=8),
+            captured_at="2026-08-21T00:30:00+08:00",
+        )
+
+    assert result["status"] == "completed"
+    assert "榜单奖励档次本次未加载" not in result["message"]
+
+
 def test_seed_materializes_tiandi_phase_specific_rank_and_shop_contracts() -> None:
     with _session() as session:
         server = ranking_reconcile.seed_ranking_occurrence(

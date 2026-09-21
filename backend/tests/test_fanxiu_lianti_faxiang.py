@@ -10,6 +10,7 @@ from backend.core.fanxiu.activity.exchange_activity_registry import (
     get_exchange_activity_spec,
     load_registered_resource_ranking_resources,
     load_registered_resource_ranking_tasks,
+    resolve_registered_occurrence_rank_identities,
 )
 from backend.models import FanxiuExchangeActivity, FanxiuPacketDecodedRecord
 
@@ -65,7 +66,33 @@ def test_registry_declares_same_server_lianti_resource_ranking() -> None:
     assert spec.page.page_kind == "resource-ranking"
     assert spec.page.ranking_scopes == ("personal",)
     assert spec.shop is None
-    assert spec.rank_scopes[0].activity_id.fixed_id == 1043011
+    binding = spec.rank_scopes[0].runtime_rank_activity_id
+    assert binding.source == "activity_self_or_follow"
+    assert binding.follow_index == 0
+    assert binding.fixed_id is None
+
+
+@pytest.mark.parametrize("activity_id, cross_count, follow, expected", [
+    (1043011, 1, (), 1043011),
+    (8043001, 8, (43005, 43006), 43005),
+])
+def test_lianti_occurrence_rank_ids_follow_actual_activity_config(
+    activity_id: int,
+    cross_count: int,
+    follow: tuple[int, ...],
+    expected: int,
+) -> None:
+    """Same-server preliminaries own the scope; cross-server use follow[0]."""
+
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type="lianti-faxiang",
+        game_activity_id=activity_id,
+        cross_count=cross_count,
+        activity_follow=follow,
+    )
+    assert list(identities) == ["personal"]
+    assert identities["personal"].runtime_rank_activity_id == expected
+    assert identities["personal"].reward_activity_id == expected
 
 
 def test_task_projection_requires_exact_quest_entry_ids(tmp_path: Path) -> None:

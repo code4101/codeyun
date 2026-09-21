@@ -13,6 +13,9 @@ import json
 import pytest
 
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.scene_navigation import (
+    posterior_landing_probabilities,
+)
 
 
 def _semantics_tree() -> list[dict]:
@@ -217,3 +220,147 @@ def test_plan_rejects_invalid_limit():
     runner = create_behavior_tree_executor()
     with pytest.raises(ValueError):
         runner.plan_scene_navigation(_semantics_tree(), 34, 483, limit=0)
+
+
+def test_posterior_declared_prior_without_observations_is_positive():
+    # Declared-only landing: total declared mass alpha=1 over one destination,
+    # one alpha reserved for the unknown.  The prior, not a count, gives 0.5.
+    probabilities = posterior_landing_probabilities({}, [630])
+    assert probabilities == {630: pytest.approx(0.5)}
+
+
+def test_posterior_each_declared_destination_gets_one_effective_count():
+    probabilities = posterior_landing_probabilities({}, [1, 2, 3])
+    assert sum(probabilities.values()) == pytest.approx(3 / 4)
+    for scene_id in (1, 2, 3):
+        assert probabilities[scene_id] == pytest.approx(1 / 4)
+
+
+def test_posterior_declared_prior_ignores_observation_error_discount():
+    # confidence_z discounts observation error; a prior has no observation and
+    # must not be collapsed back to zero just because several landings tie.
+    probabilities = posterior_landing_probabilities({}, [1, 2], confidence_z=1.0)
+    assert all(value > 0 for value in probabilities.values())
+    assert sum(probabilities.values()) == pytest.approx(2 / 3)
+
+
+def test_posterior_with_observations_keeps_count_posterior():
+    probabilities = posterior_landing_probabilities({35: 165}, [35, 36])
+    assert probabilities[35] == pytest.approx(165 / 167)
+    assert probabilities[36] == pytest.approx(1 / 167)
+
+
+def test_posterior_observed_landing_elsewhere_preserves_declared_prior():
+    probabilities = posterior_landing_probabilities({69: 451}, [69, 20])
+    assert probabilities[69] > 0
+    assert probabilities[20] == pytest.approx(1 / 453)
+
+
+def test_posterior_without_declared_or_observation_is_empty():
+    assert posterior_landing_probabilities({}, []) == {}
+
+
+def test_posterior_does_not_mutate_inputs():
+    observed = {630: 0}
+    declared = [630, 631]
+    observed_before = dict(observed)
+    declared_before = list(declared)
+    posterior_landing_probabilities(observed, declared)
+    assert observed == observed_before
+    assert declared == declared_before
+
+
+def _declared_only_direct_edge_tree() -> list[dict]:
+    """A brand-new direct edge #34 -> #630 with no landing history at all."""
+
+    return [
+        {
+            "type": "image",
+            "id": 34,
+            "title": "世界",
+            "shapes": [
+                {"id": "daily", "title": "旧日程", "sceneJumpTarget": "35(10)"},
+                {"id": "xianyan", "title": "仙园游宴", "sceneJumpTarget": "630"},
+            ],
+        },
+        {
+            "type": "image",
+            "id": 35,
+            "title": "日程",
+            "shapes": [
+                {"id": "to630", "title": "去仙园", "sceneJumpTarget": "630(5)"}
+            ],
+        },
+        {"type": "image", "id": 630, "title": "仙园游宴场景", "shapes": []},
+    ]
+
+
+def test_plan_selects_declared_only_direct_edge():
+    runner = create_behavior_tree_executor()
+    tree = _declared_only_direct_edge_tree()
+
+    result = runner.plan_scene_navigation(tree, 34, 630, limit=3, max_downstream_steps=2)
+
+    assert result["status"] == "ok"
+    titles = [item["action_title"] for item in result["candidates"]]
+    assert "仙园游宴" in titles
+    direct = next(item for item in result["candidates"] if item["action_title"] == "仙园游宴")
+    assert direct["declared_target_ids"] == [630]
+    assert direct["expected_landing_id"] == 630
+    assert direct["single_step_progress_probability"] > 0
+    assert direct["selection_probability"] > 0
+    assert result["candidates"][0]["action_title"] == "仙园游宴"
+
+
+def test_posterior_generator_input_matches_list_with_observations():
+    observed = {35: 165}
+    declared = [35, 36]
+    from_list = posterior_landing_probabilities(observed, declared)
+    # A one-shot generator must be materialized once, not exhausted before the
+    # observation branch re-reads it.
+    from_generator = posterior_landing_probabilities(observed, iter(declared))
+    assert from_generator == from_list
+    assert from_generator[35] == pytest.approx(165 / 167)
+    assert from_generator[36] == pytest.approx(1 / 167)
+
+
+def test_posterior_generator_input_matches_list_without_observations():
+    declared = [1, 2, 3]
+    from_list = posterior_landing_probabilities({}, declared)
+    from_generator = posterior_landing_probabilities({}, (value for value in declared))
+    assert from_generator == from_list
+    assert sum(from_generator.values()) == pytest.approx(3 / 4)
+
+
+def test_select_next_edge_unreachable_source_returns_none_without_keyerror():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {
+            "type": "image",
+            "id": 34,
+            "title": "世界",
+            "shapes": [{"title": "日常", "sceneJumpTarget": "69(451)"}],
+        },
+        {
+            "type": "image",
+            "id": 69,
+            "title": "日常",
+            "shapes": [{"title": "退出", "sceneJumpTarget": "34(52)"}],
+        },
+        {"type": "image", "id": 20, "title": "绿瓶", "shapes": []},
+    ]
+
+    # #20 has no inbound edge, so #69 cannot reach it.  The live selector must
+    # return None instead of raising while reading the missing posterior.
+    assert runner._select_scene_next_edge(tree, 69, 20) is None
+
+
+@pytest.mark.parametrize("confidence_z", [0.0, 1.0, 2.0])
+def test_shengzu_unobserved_declared_destination_remains_reachable(confidence_z):
+    observed = {338: 4, 661: 2, 385: 0}
+    probabilities = posterior_landing_probabilities(
+        observed, [338, 661, 385], confidence_z=confidence_z,
+    )
+    assert probabilities[385] == pytest.approx(1 / 8)
+    assert observed == {338: 4, 661: 2, 385: 0}
+    assert sum(probabilities.values()) <= 1.0

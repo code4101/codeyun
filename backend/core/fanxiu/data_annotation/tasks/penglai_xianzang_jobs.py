@@ -188,9 +188,11 @@ def _unavailable_result(
     task_id: str,
     task_label: str,
     reason: str,
+    schedule: bool = True,
 ) -> dict[str, Any]:
     _record_availability(available=False, reason=reason)
-    runner._persist_scheduler_task_next_time(task_id, None)
+    if schedule:
+        runner._persist_scheduler_task_next_time(task_id, None)
     message = f"{task_label}：未发现活动，已清空 next_time，等待活动_每日清单同步再次触发"
     runner._log("skip", message)
     return {
@@ -211,12 +213,15 @@ def _execute_xianzang_standard_job(
     workflow: Callable[[Any, Any, dict[str, Any]], dict[str, Any]],
     resume_optional_page: bool = False,
     resume_draw_result_page: bool = False,
+    schedule: bool = True,
 ) -> dict[str, Any]:
     """Run the common enter/work/return/schedule lifecycle.
 
     Activity absence is the only normal skip.  All other failures propagate so
     the Scheduler can apply its normal retry policy.  In particular, next_time
     is not advanced until #447[返回] has been clicked and #34 verified.
+    ``schedule=False`` is set by the theme-collection aggregation, which owns
+    the canonical Job's trigger and must never write this retired id.
     """
 
     context = _behavior_tree_context(runner, ctx, stop_event)
@@ -261,6 +266,7 @@ def _execute_xianzang_standard_job(
             task_id=spec.task_id,
             task_label=spec.task_label,
             reason=str(exc),
+            schedule=schedule,
         )
 
     _record_availability(available=True, reason="已进入 #447")
@@ -274,7 +280,8 @@ def _execute_xianzang_standard_job(
             f"scene={final_scene}, score={float(final_score):.1f}"
         )
 
-    runner._persist_scheduler_task_next_time(spec.task_id, None)
+    if schedule:
+        runner._persist_scheduler_task_next_time(spec.task_id, None)
     message = (
         f"{spec.task_label}：{spec.completion_summary}，已清空 next_time，"
         "等待活动_每日清单同步再次触发"
@@ -332,7 +339,7 @@ def execute_xianzang_config_job(
     payload: dict[str, Any],
     stop_event: threading.Event,
 ) -> dict[str, Any]:
-    del payload
+    schedule = bool(payload.get("schedule", True))
     return (yield from _execute_xianzang_standard_job(
         runner,
         ctx,
@@ -345,6 +352,7 @@ def execute_xianzang_config_job(
         workflow=_run_xianzang_config_workflow,
         resume_optional_page=True,
         resume_draw_result_page=True,
+        schedule=schedule,
     ))
 
 
@@ -354,7 +362,7 @@ def execute_xianzang_lottery_job(
     payload: dict[str, Any],
     stop_event: threading.Event,
 ) -> dict[str, Any]:
-    del payload
+    schedule = bool(payload.get("schedule", True))
     return (yield from _execute_xianzang_standard_job(
         runner,
         ctx,
@@ -366,6 +374,7 @@ def execute_xianzang_lottery_job(
         ),
         workflow=_run_xianzang_lottery_workflow,
         resume_draw_result_page=True,
+        schedule=schedule,
     ))
 
 

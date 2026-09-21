@@ -79,13 +79,13 @@ def _verify_quick_options_read_only() -> dict[str, Any]:
     validation = validate_runtime_evidence(snapshot, max_age_seconds=5.0)
     if not validation.ok:
         raise RuntimeError(
-            "储物袋_操作：#526 严格只读设置快照缺失、过期或进程身份不完整，"
+            "储物袋快捷操作：#526 严格只读设置快照缺失、过期或进程身份不完整，"
             f"拒绝执行（{validation.reason}）"
         )
     values = snapshot.get("values") or {}
     if values != EXPECTED_QUICK_SETTING_VALUES:
         raise RuntimeError(
-            "储物袋_操作：快捷设置不符合 Use=ON/OpenBox=OFF/FenJie=ON/Merge=ON，"
+            "储物袋快捷操作：快捷设置不符合 Use=ON/OpenBox=OFF/FenJie=ON/Merge=ON，"
             f"observed={values}"
         )
     return snapshot
@@ -104,7 +104,7 @@ def _wait_quick_operation_panel(context: Any, *, timeout: float):
     deadline = time.perf_counter() + timeout
     last_frame: str | None = None
     while time.perf_counter() < deadline:
-        _wait_scene_match = yield from context.wait_scene((QUICK_OPERATION_SCENE,), label='储物袋_操作：识别快捷操作面板', wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene((QUICK_OPERATION_SCENE,), label='储物袋快捷操作：识别快捷操作面板', wait=5.0, required=False)
         (scene_id, _score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -123,7 +123,7 @@ def _wait_quick_operation_panel(context: Any, *, timeout: float):
         else ""
     )
     raise TimeoutError(
-        "储物袋_操作：等待快捷操作面板超时；"
+        "储物袋快捷操作：等待快捷操作面板超时；"
         f"未命中 #526 或四项完整面板契约，last_ocr={last_text!r}"
     )
 
@@ -138,7 +138,7 @@ def _observe_known_scene(
     """Observe only; unknown/toast-obscured frames never trigger a click."""
 
     while time.monotonic() < deadline:
-        _wait_scene_match = yield from context.wait_scene(list(scene_ids), label='储物袋_操作：识别动作后场景', wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene(list(scene_ids), label='储物袋快捷操作：识别动作后场景', wait=5.0, required=False)
         (scene_id, _score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -158,7 +158,7 @@ def _observe_known_scene(
             return int(scene_id), frame
         yield from context.wait_action_settle(0.25)
     raise TimeoutError(
-        f"储物袋_操作：等待已知场景 {scene_ids} 超时；unknown 期间未执行点击"
+        f"储物袋快捷操作：等待已知场景 {scene_ids} 超时；unknown 期间未执行点击"
     )
 
 
@@ -174,7 +174,7 @@ def _finish_reward_chain(context: Any, *, deadline: float):
     stable_scene: int | None = None
     continued_reward = False
     while time.monotonic() < deadline:
-        _wait_scene_match = yield from context.wait_scene((USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE), label='储物袋_操作：识别奖励链', wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene((USE_RESULT_SCENE, REWARD_SCENE, DANYAO_REWARD_SCENE, STORAGE_BAG_SCENE, QUICK_OPERATION_SCENE), label='储物袋快捷操作：识别奖励链', wait=5.0, required=False)
         (landed, _score, frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -225,11 +225,11 @@ def _finish_reward_chain(context: Any, *, deadline: float):
         yield from context.wait_action_settle(0.25)
     else:
         raise TimeoutError(
-            "储物袋_操作：奖励链未在截止时间内收敛到稳定储物袋或无奖励固定点"
+            "储物袋快捷操作：奖励链未在截止时间内收敛到稳定储物袋或无奖励固定点"
         )
 
 
-def execute_storage_bag_operation_task(
+def execute_storage_bag_quick_operation_task(
     runner: Any,
     ctx: dict[str, Any],
     payload: dict[str, Any],
@@ -257,7 +257,7 @@ def execute_storage_bag_operation_task(
     yield from context.wait_scene(
         [STORAGE_BAG_SCENE],
         wait=10.0,
-        label="储物袋_操作：等待储物袋主页",
+        label="储物袋快捷操作：等待储物袋主页",
     )
 
     completed_rounds = 0
@@ -300,7 +300,7 @@ def execute_storage_bag_operation_task(
                         accept_empty_toast=False,
                 )
                 if landed != QUICK_OPERATION_SCENE:
-                    raise RuntimeError("储物袋_操作：空列表提示后未恢复 #526")
+                    raise RuntimeError("储物袋快捷操作：空列表提示后未恢复 #526")
             yield from context.wait_click(
                 QUICK_OPERATION_SCENE,
                 "外部顶部空白",
@@ -309,13 +309,13 @@ def execute_storage_bag_operation_task(
             yield from context.wait_scene(
                 [STORAGE_BAG_SCENE],
                 wait=8.0,
-                label="储物袋_操作：关闭快捷操作面板",
+                label="储物袋快捷操作：关闭快捷操作面板",
             )
             yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
             yield from context.wait_scene(
                 [WORLD_SCENE],
                 wait=10.0,
-                label="储物袋_操作：返回世界",
+                label="储物袋快捷操作：返回世界",
             )
             return {
                 "ok": True,
@@ -330,8 +330,18 @@ def execute_storage_bag_operation_task(
         completed_rounds += 1
 
     raise RuntimeError(
-        f"储物袋_操作：已执行 {completed_rounds} 轮快捷操作仍未取得空列表或稳定终态，停止"
+        f"储物袋快捷操作：已执行 {completed_rounds} 轮快捷操作仍未取得空列表或稳定终态，停止"
     )
+
+
+def execute_storage_bag_operation_task(runner, ctx, payload, stop_event):
+    """独立储物袋任务：按已配置的物品选择执行定位、开箱等精确操作。
+
+    原生快捷操作由资源_每日处理调用独立入口，不与本任务互相调用。
+    """
+    from .storage_bag_auto_claim_execution import execute_storage_bag_auto_claim_task
+
+    return (yield from execute_storage_bag_auto_claim_task(runner, ctx, payload, stop_event))
 
 
 __all__ = [
@@ -339,5 +349,6 @@ __all__ = [
     "STANDARD_JOB_ID",
     "TASK_TYPE",
     "execute_storage_bag_operation_task",
+    "execute_storage_bag_quick_operation_task",
     "next_storage_bag_operation_at",
 ]

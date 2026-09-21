@@ -778,3 +778,115 @@ def test_recognition_graph_reuses_static_pair_relations(monkeypatch):
     assert [(edge["s"], edge["x"]) for edge in first] == [(201, 202)]
     assert second == first
     assert calls == [(201, 202), (202, 201)]
+
+
+def test_scene_identity_ocr_falls_back_to_overlapping_paddle_line() -> None:
+    runner = create_behavior_tree_executor()
+    frame = "frame-clipped-identity"
+    shape = {
+        "id": "shape-yunmeng-current",
+        "title": "当前论剑玉",
+        "isSceneIdentity": True,
+        "sceneIdentityRole": "required",
+        "imageMatchRole": "off",
+        "ocrMatchRole": "required",
+        "ocrEnabled": True,
+        "ocrText": "当前拥有[:：]?论剑玉",
+        "ocrMatchMode": "regex",
+        "floating": False,
+        "x": 0.2732,
+        "y": 0.121688,
+        "w": 0.361333,
+        "h": 0.03225,
+    }
+    image = {"id": "img-559", "width": 900, "height": 1600, "shapes": [shape]}
+    # A tight identity ROI clips the leading “当”; the token stream therefore
+    # aggregates a fragment, while Paddle's authoritative line keeps it whole.
+    tokens = [
+        {
+            "text": character,
+            "x": 255.0 + index * 36.0,
+            "y": 203.0,
+            "w": 36.0,
+            "h": 36.0,
+            "parent_line_id": "line-2",
+        }
+        for index, character in enumerate("前拥有论剑玉：")
+    ]
+    lines = [
+        {
+            "line_id": "line-2",
+            "text": "当前拥有论剑玉：",
+            "x": 222.0,
+            "y": 203.0,
+            "w": 272.0,
+            "h": 36.0,
+        }
+    ]
+    ctx = {
+        "_ocr_tokens_cache": {
+            "version": 4,
+            "frame": frame,
+            "tokens": tokens,
+            "lines": lines,
+        }
+    }
+
+    result = runner._shape_cached_frame_ocr_match(ctx, image, shape, frame)
+
+    assert result["matched"] is True
+    assert result["reason"] == "cached_frame_ocr_line"
+    assert result["ocr_text"] == "当前拥有论剑玉："
+
+
+def test_scene_identity_ocr_tolerates_annotation_drift_to_nearest_line() -> None:
+    runner = create_behavior_tree_executor()
+    frame = "frame-drift-identity"
+    # A real #567 frame annotated “效果说明” at y=816 while the text rendered at
+    # 791..823: token overlap 0.22 (< 0.30) selected nothing, so the required
+    # identity failed even though the authoritative line was right there.
+    shape = {
+        "id": "shape-law-effect",
+        "title": "效果说明",
+        "isSceneIdentity": True,
+        "sceneIdentityRole": "required",
+        "imageMatchRole": "off",
+        "ocrMatchRole": "required",
+        "ocrEnabled": True,
+        "ocrText": "效果\\s*说明",
+        "ocrMatchMode": "regex",
+        "floating": False,
+        "x": 126 / 900,
+        "y": 816 / 1600,
+        "w": 144 / 900,
+        "h": 56 / 1600,
+    }
+    image = {"id": "img-567", "width": 900, "height": 1600, "shapes": [shape]}
+    tokens = [
+        {
+            "text": character,
+            "x": 133.0 + index * 33.0,
+            "y": 791.0,
+            "w": 30.0,
+            "h": 32.0,
+            "parent_line_id": "line-1",
+        }
+        for index, character in enumerate("效果说明")
+    ]
+    lines = [
+        {"line_id": "line-1", "text": "效果说明", "x": 133.0, "y": 791.0, "w": 131.0, "h": 32.0}
+    ]
+    ctx = {
+        "_ocr_tokens_cache": {
+            "version": 4,
+            "frame": frame,
+            "tokens": tokens,
+            "lines": lines,
+        }
+    }
+
+    result = runner._shape_cached_frame_ocr_match(ctx, image, shape, frame)
+
+    assert result["matched"] is True
+    assert result["reason"] == "cached_frame_ocr_line"
+    assert result["ocr_text"] == "效果说明"

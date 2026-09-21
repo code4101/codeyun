@@ -198,7 +198,7 @@ def test_langyage_excludes_immortal_art_tab_even_when_catalog_calls_it_gongfa():
     ) == []
 
 
-def test_both_jobs_are_single_standard_tuesday_0010_instances():
+def test_both_exchanges_are_internal_weekly_components():
     register_fanxiu_default_jobs()
     tasks = default_kernel_scheduler_tasks(datetime(2026, 8, 8, 12, 0, 0))
     expected = {
@@ -207,13 +207,11 @@ def test_both_jobs_are_single_standard_tuesday_0010_instances():
     }
     for task_id, (task_type, dispatch_order) in expected.items():
         matches = [task for task in tasks if task["id"] == task_id]
-        assert len(matches) == 1
-        task = matches[0]
-        assert task["task_type"] == task_type
-        assert task["next_time"] == "2026-08-11 00:10:00"
-        assert task["dispatch_order"] == dispatch_order
+        assert matches == []
         definition = get_fanxiu_data_annotation_task_cell_definition(task_type)
-        assert definition is not None and definition.scheduler_supported is True
+        assert definition is not None and definition.scheduler_supported is False
+        from backend.core.fanxiu.data_annotation.tasks.resource_daily_contract import RESOURCE_DAILY_STAGES
+        assert next(s for s in RESOURCE_DAILY_STAGES if s.task_id == task_id).weekly
 
 
 def _finish(generator):

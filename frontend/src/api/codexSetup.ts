@@ -54,7 +54,14 @@ export interface CodexQuotaGroup {
 
 export interface CodexQuotaPoint {
   at: string
-  remaining_percent: number
+  /** None marks a reset break; the chart must not connect across it. */
+  remaining_percent: number | null
+}
+
+export interface CodexQuotaPeriod {
+  /** First-use trigger that starts this cycle; equals reset_at minus one period. */
+  start_at: string
+  reset_at: string
 }
 
 export interface CodexQuotaWindowHistory {
@@ -62,6 +69,10 @@ export interface CodexQuotaWindowHistory {
   window_start: string
   window_end: string
   reset_at: string
+  /** Reset period in minutes; 0 when the window has no reset concept. */
+  period_minutes: number
+  /** Each reset cycle's own start/reset pair; the previous cycle's end is not the next start. */
+  periods: CodexQuotaPeriod[]
   remaining_percent: number | null
   points: CodexQuotaPoint[]
 }

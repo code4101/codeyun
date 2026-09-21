@@ -2184,7 +2184,7 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert by_id["legacy-daily-assistant"]["task_type"] == "daily_assistant"
     assert by_id["legacy-daily-assistant"]["trigger_description"] == "每日"
     assert "legacy-daily-gongfeng" not in by_id
-    assert by_id["legacy-daily-xianshi"]["task_type"] == "daily_xianshi"
+    assert "legacy-daily-xianshi" not in by_id
     assert by_id["xianshi-weekly-resources"]["task_type"] == "xianshi_weekly_resources"
     assert by_id["xianshi-weekly-resources"]["trigger_description"] == "每周"
     assert "legacy-daily-xianmeng" not in by_id
@@ -2194,9 +2194,9 @@ def test_data_annotation_runner_repairs_scheduler_tasks_before_selecting_due(tmp
     assert by_id["resource-ranking"]["task_type"] == "resource_ranking"
     assert by_id["resource-ranking"]["label"] == "资源榜"
     assert by_id["resource-ranking"]["trigger_description"] == "动态"
-    assert by_id["legacy-daily-vip"]["task_type"] == "daily_vip"
-    assert by_id["legacy-daily-vip"]["label"] == "日常_vip"
-    assert by_id["legacy-daily-vip"]["trigger_description"] == "每日"
+    assert "legacy-daily-vip" not in by_id
+    assert by_id["resource-auto-use"]["label"] == "资源_每日处理"
+    assert by_id["resource-auto-use"]["trigger_description"] == "每日"
     assert by_id["legacy-daily-dongtian"]["label"] == "洞天_领取"
     assert by_id["legacy-daily-dongtian-clear"]["label"] == "洞天_行动力"
     assert by_id["legacy-daily-lingmai-clear"]["label"] == "灵脉_清体力"

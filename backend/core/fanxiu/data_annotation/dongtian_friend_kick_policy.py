@@ -216,6 +216,43 @@ def select_dongtian_friend_swap_candidates(
     )
 
 
+def validate_dongtian_friend_swap_postcondition(
+    snapshot: Mapping[str, Any], *, team_id: int, friend_role_id: int,
+    target_mine_id: int, target_quality: int, target_seat_id: int,
+    staging_mine_id: int, staging_quality: int, staging_seat_id: int,
+) -> dict[str, Any]:
+    """Prove BOTH sides of a swap from a fresh complete Runtime snapshot.
+
+    2026-09-21 real-game validation: team 2 moved from Fudi master 42/2 to
+    Dongtian attendant 8/10; the original friend moved to master 42/2.
+    A GUI return, successful request, or our team alone being seated is not
+    completion. The displaced friend must retain the exact staged seat,
+    and neither player may have another team at the same destination mine.
+    This function only checks supplied facts; callers own their freshness.
+    """
+    if snapshot.get("available") is not True or snapshot.get("seating_summary_complete") is not True:
+        return {"ok": False, "reason": "runtime_incomplete"}
+    own_role = _positive_int(snapshot.get("own_role_id"))
+    if not own_role or not _positive_int(friend_role_id) or own_role == friend_role_id or target_mine_id == staging_mine_id:
+        return {"ok": False, "reason": "invalid_swap_identity"}
+    team = next((t for t in snapshot.get("teams", []) if t.get("id") == team_id), {})
+    if (team.get("complete") is not True or team.get("state") != 2
+            or team.get("mine_id") != target_mine_id or team.get("seat_index") != target_seat_id):
+        return {"ok": False, "reason": "own_team_not_at_target"}
+    for mine_id, quality, seat_id, role in (
+        (target_mine_id, target_quality, target_seat_id, own_role),
+        (staging_mine_id, staging_quality, staging_seat_id, friend_role_id),
+    ):
+        mine = next((m for m in snapshot.get("mines", []) if m.get("id") == mine_id), {})
+        seats = mine.get("seats") or []
+        if mine.get("seats_complete") is not True or not seats or any(s.get("complete") is not True for s in seats):
+            return {"ok": False, "reason": "mine_seats_incomplete", "mine_id": mine_id}
+        matching = [s for s in seats if s.get("guarder_type") == 2 and s.get("guarder_role_id") == role]
+        if len(matching) != 1 or matching[0].get("quality") != quality or matching[0].get("id") != seat_id:
+            return {"ok": False, "reason": "player_not_at_exact_destination", "mine_id": mine_id, "role_id": role}
+    return {"ok": True, "status": "both_players_seated", "team_id": team_id, "friend_role_id": friend_role_id}
+
+
 __all__ = [
     "DongtianFriendKickPolicyDecision",
     "DongtianFriendMineSelection",
@@ -224,4 +261,5 @@ __all__ = [
     "TEAM3_SAFE_RATIO_NUMERATOR",
     "evaluate_dongtian_friend_xianlv_policy",
     "select_dongtian_friend_swap_candidates",
+    "validate_dongtian_friend_swap_postcondition",
 ]

@@ -1387,10 +1387,19 @@ def mumu_device_health_check(*, vmindex: str = "1", force: bool = False) -> dict
 
     try:
         info = _mumu_adb_health_info(str(vmindex or "1"))
-        if info is None:
+        adb_observed = info is not None
+        if not adb_observed:
             info = _mumu_manager_player_info(str(vmindex or "1"))
         status = _mumu_device_health_status_from_info(info)
         error = ""
+        if status == "healthy" and not adb_observed:
+            # MuMuManager lifecycle flags prove the Android container booted,
+            # not that its ADB endpoint is reachable.  Without a successful ADB
+            # socket observation a "start_finished" container must be treated as
+            # broken so ensure_mumu_device_healthy/startup grace own recovery
+            # instead of the false "healthy" shortcut skipping it.
+            status = "broken"
+            error = "Android已启动但ADB端点不可达"
     except Exception as exc:
         info = {}
         status = "suspect"

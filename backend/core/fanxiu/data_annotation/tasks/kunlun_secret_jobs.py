@@ -191,12 +191,13 @@ def execute_kunlun_config_job(
     payload: dict[str, Any],
     stop_event: threading.Event,
 ) -> dict[str, Any]:
-    del payload
+    schedule = bool(payload.get("schedule", True))
     context = _behavior_tree_context(runner, ctx, stop_event)
     try:
         yield from enter_kunlun(context)
     except KunlunActivityUnavailable as exc:
-        runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
+        if schedule:
+            runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
         message = (
             "昆仑秘藏_配置：未发现活动，已清空 next_time，"
             "等待活动_每日清单同步再次触发"
@@ -214,7 +215,8 @@ def execute_kunlun_config_job(
     final_scene, final_score = yield from leave_kunlun(context)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError("昆仑秘藏_配置收尾未可靠回到 #34")
-    runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
+    if schedule:
+        runner._persist_scheduler_task_next_time(KUNLUN_CONFIG_TASK_ID, None)
     message = (
         "昆仑秘藏_配置：任务、商店、自选、首奖抽取与返回流程已闭环，"
         "已清空 next_time，等待活动_每日清单同步再次触发"
@@ -235,12 +237,13 @@ def execute_kunlun_lottery_job(
     payload: dict[str, Any],
     stop_event: threading.Event,
 ) -> dict[str, Any]:
-    del payload
+    schedule = bool(payload.get("schedule", True))
     context = _behavior_tree_context(runner, ctx, stop_event)
     try:
         yield from enter_kunlun(context)
     except KunlunActivityUnavailable as exc:
-        runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
+        if schedule:
+            runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
         message = (
             "昆仑秘藏_抽奖：未发现活动，已清空 next_time，"
             "等待活动_每日清单同步再次触发"
@@ -259,7 +262,8 @@ def execute_kunlun_lottery_job(
     final_scene, final_score = yield from leave_kunlun(context)
     if int(final_scene) != 34 or float(final_score) < 90.0:
         raise RuntimeError("昆仑秘藏_抽奖收尾未可靠回到 #34")
-    runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
+    if schedule:
+        runner._persist_scheduler_task_next_time(KUNLUN_LOTTERY_TASK_ID, None)
     message = (
         "昆仑秘藏_抽奖：晚间任务与首奖续抽已处理，已清空 next_time，"
         "等待活动_每日清单同步再次触发"

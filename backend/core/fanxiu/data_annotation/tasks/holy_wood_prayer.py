@@ -12,14 +12,24 @@ import re
 import threading
 import time
 from collections.abc import Mapping
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from backend.core.fanxiu.activity.lottery_strategy import (
+    LotteryGoal,
+    LotteryPolicy,
+    LotteryRemainderMode,
+)
+from backend.core.fanxiu.activity.theme_lottery_policy import (
+    ThemeLotteryPhase,
+    ThemeLotteryTicket,
+    TicketRetainability,
+    resolve_theme_lottery_phase,
+    resolve_theme_lottery_policy,
+)
 from backend.core.fanxiu.data_annotation.tasks.activity_store import (
     _read_stable_store_scan,
-)
-from backend.core.fanxiu.data_annotation.tasks.lingxiao_xianhui import (
-    read_lingxiao_gui_ticket_draws_from_tokens,
 )
 from backend.core.fanxiu.instrumentation.activity_gift import (
     read_activity_gift_runtime_snapshot,
@@ -33,6 +43,7 @@ from backend.core.fanxiu.instrumentation.bothdraw_toggle import (
     read_bothdraw_ten_draw_runtime,
 )
 from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+from backend.core.fanxiu.instrumentation.runtime_memory import FanxiuRuntimeMemoryError
 from backend.core.fanxiu.instrumentation.xianyuan_banquet import (
     select_spirit_stone_store_offers,
 )
@@ -49,6 +60,14 @@ HOLY_WOOD_PRAYER_TASK_SCENE_ID = 648
 HOLY_WOOD_KNOWN_SCENES = (644, 645, 646, 647, 648)
 HOLY_WOOD_APPROVED_OFFERS = {3040201: 488, 3040202: 988}
 HOLY_WOOD_DEFAULT_SPEND_BUDGET = 2952
+# Both prayer-ticket items are user-confirmed non-retainable: this period's
+# tickets must be consumed before the period ends, so the draw goal is always
+# ``exhaust_all`` (a grand prize never stops the run).  The evidence is recorded
+# here once instead of being re-guessed per call.
+HOLY_WOOD_TICKET_ITEM_IDS = (40010, 40025)
+HOLY_WOOD_TICKET_RETAINABILITY: TicketRetainability = "non_retainable"
+HOLY_WOOD_TICKET_EVIDENCE = "用户确认圣木祈愿券不可跨期留存，本期必须用尽"
+HOLY_WOOD_NORMAL_BATCH_SIZE = 10
 
 
 def parse_holy_wood_ticket_draws(text: str, *, cost_per_draw: int) -> int | None:
@@ -163,6 +182,34 @@ def _close_result(context: Any, *, timeout: float = 30.0, max_clicks: int = 4) -
 
 
 def _open_tab(context: Any, scene_id: int, shape_title: str) -> int:
+    """Open one Holy Wood tab, reusing an already-proven target page.
+
+    A single-step caller may already be standing on the requested tab.  Detect
+    that first and return directly instead of normalizing back to main and
+    replaying the entrance, which keeps the existing tab and costs no action.
+    """
+
+    _pre_match = yield from context.wait_scene(
+        list(HOLY_WOOD_KNOWN_SCENES),
+        wait=5.0,
+        required=False,
+        label="圣木祈愿：识别当前页面",
+    )
+    (current, score, _pre_frame) = (
+        (_pre_match.scene_id, _pre_match.score, _pre_match.frame_data_url)
+        if _pre_match is not None else (None, 0.0, context.frame_data_url or "")
+    )
+    current_scene = int(current or 0)
+    confident = float(score or 0.0) >= 80.0
+    if confident and scene_id == HOLY_WOOD_MAIN_SCENE_ID and current_scene == HOLY_WOOD_MAIN_SCENE_ID:
+        return HOLY_WOOD_MAIN_SCENE_ID
+    if confident and scene_id == HOLY_WOOD_STORE_SCENE_ID and current_scene == HOLY_WOOD_STORE_SCENE_ID:
+        return HOLY_WOOD_STORE_SCENE_ID
+    if confident and scene_id == HOLY_WOOD_TASK_SCENE_ID and current_scene in {
+        HOLY_WOOD_TASK_SCENE_ID,
+        HOLY_WOOD_PRAYER_TASK_SCENE_ID,
+    }:
+        return current_scene
     yield from _open_main(context)
     if scene_id == HOLY_WOOD_MAIN_SCENE_ID:
         return HOLY_WOOD_MAIN_SCENE_ID
@@ -190,14 +237,29 @@ def _open_tab(context: Any, scene_id: int, shape_title: str) -> int:
     return int(scene_id)
 
 
-def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, Any]:
-    """Claim all currently claimable QuestMgr rows with per-task readback."""
+def claim_holy_wood_tasks(
+    context: Any,
+    *,
+    max_clicks: int = 20,
+    return_to_main: bool = True,
+    strict_limit: bool = True,
+) -> dict[str, Any]:
+    """Claim all currently claimable QuestMgr rows with per-task readback.
 
-    snapshot = read_bothdraw_task_runtime()
+    The defaults preserve the historical Job semantics: at the safety click
+    limit raise, and normalize back to the main page when done.  A single-step
+    caller may pass ``return_to_main=False, strict_limit=False`` to receive the
+    actions confirmed so far with ``stop_reason="step_limit"`` and a
+    ``remaining_count`` instead of failing, and to leave the current tab
+    untouched; such a step never fabricates an ``all_claimed`` result.
+    """
+
+    snapshot = read_bothdraw_task_runtime(expected_activity_id=HOLY_WOOD_ACTIVITY_ID)
     if not snapshot.get("complete"):
         raise RuntimeError(str(snapshot.get("reason") or "圣木祈愿任务状态不完整"))
     if not list(snapshot.get("claimable") or []):
-        yield from _open_main(context)
+        if return_to_main:
+            yield from _open_main(context)
         return {"clicked_count": 0, "stop_reason": "all_claimed"}
     task_scene_id = yield from _open_tab(context, HOLY_WOOD_TASK_SCENE_ID, "活动任务")
     if all(str(row.get("name") or "").startswith("圣木祈愿") for row in snapshot.get("claimable") or []):
@@ -227,7 +289,16 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
         if not claimable:
             break
         if len(clicked) >= max(1, int(max_clicks)):
-            raise RuntimeError("圣木祈愿任务领取超过安全上限")
+            if strict_limit:
+                raise RuntimeError("圣木祈愿任务领取超过安全上限")
+            if return_to_main:
+                yield from _open_main(context)
+            return {
+                "clicked_count": len(clicked),
+                "claimed_task_ids": clicked,
+                "stop_reason": "step_limit",
+                "remaining_count": len(claimable),
+            }
         task_id = int(claimable[0].get("task_id") or 0)
         _wait_scene_match = yield from context.wait_scene([task_scene_id], wait=5.0, required=False)
         (scene, score, frame) = (
@@ -238,7 +309,7 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
             raise RuntimeError("圣木祈愿任务点击前页面身份无效")
         context.click_shape(task_scene_id, "进度", frame_data_url=frame)
         yield from context.wait_action_settle(0.8)
-        snapshot = read_bothdraw_task_runtime()
+        snapshot = read_bothdraw_task_runtime(expected_activity_id=HOLY_WOOD_ACTIVITY_ID)
         confirmed = next(
             (
                 row
@@ -250,7 +321,8 @@ def claim_holy_wood_tasks(context: Any, *, max_clicks: int = 20) -> dict[str, An
         if not snapshot.get("complete") or not confirmed or confirmed.get("state") != "claimed":
             raise RuntimeError(f"圣木祈愿任务 {task_id} 点击后未确认已领取")
         clicked.append(task_id)
-    yield from _open_main(context)
+    if return_to_main:
+        yield from _open_main(context)
     return {"clicked_count": len(clicked), "claimed_task_ids": clicked, "stop_reason": "all_claimed"}
 
 
@@ -259,8 +331,18 @@ def buy_holy_wood_spirit_stone_packs(
     *,
     spend_budget: int = HOLY_WOOD_DEFAULT_SPEND_BUDGET,
     max_clicks: int = 8,
+    return_to_main: bool = True,
+    strict_limit: bool = True,
 ) -> dict[str, Any]:
-    """Buy only approved virtual-currency packs and verify each ledger delta."""
+    """Buy only approved virtual-currency packs and verify each ledger delta.
+
+    The defaults preserve the historical Job semantics: at the safety click
+    limit raise, and normalize back to the main page when done.  A single-step
+    caller may pass ``return_to_main=False, strict_limit=False`` to receive the
+    purchases confirmed so far with ``stop_reason="step_limit"`` instead of
+    failing, and to leave the current store tab untouched.  Every individual
+    purchase is still validated against its exact ledger and wallet delta.
+    """
 
     yield from _open_tab(context, HOLY_WOOD_STORE_SCENE_ID, "活动商店")
     spent = 0
@@ -294,7 +376,8 @@ def buy_holy_wood_spirit_stone_packs(
             == int(row["unit_cost"])
         ]
         if not selected:
-            yield from _open_main(context)
+            if return_to_main:
+                yield from _open_main(context)
             return {"purchased_offer_ids": purchased, "spent": spent, "stop_reason": "all_approved_packs_bought"}
         target = selected[0]
         offer_id, unit_cost = int(target["offer_id"]), int(target["unit_cost"])
@@ -323,30 +406,56 @@ def buy_holy_wood_spirit_stone_packs(
         )
         spent += unit_cost
         purchased.append(offer_id)
-    raise RuntimeError("圣木祈愿商店购买超过安全点击上限")
+    if strict_limit:
+        raise RuntimeError("圣木祈愿商店购买超过安全点击上限")
+    if return_to_main:
+        yield from _open_main(context)
+    return {
+        "purchased_offer_ids": purchased,
+        "spent": spent,
+        "stop_reason": "step_limit",
+    }
 
 
 def _visible_ticket_draws(context: Any, *, cost_per_draw: int) -> int:
-    deadline = time.monotonic() + 8.0
     last_text = ""
+    balances: dict[str, int] = {}
+    for title, item_id in (("绑定", 40025), ("非绑定", 40010)):
+        try:
+            wallet = read_wallet_currency_snapshot(item_id)
+            balances[title] = int(wallet["exchange_currency"]) // int(cost_per_draw)
+        except FanxiuRuntimeMemoryError:
+            # Unloaded currency is not zero. Only that counter falls back to
+            # the current GUI; naturally loaded wallet values are authoritative.
+            pass
+    if len(balances) == 2:
+        return sum(balances.values())
+    # Runtime 恢复可能慢于 OCR 窗口；回退预算从真正开始识别时计算。
+    deadline = time.monotonic() + 8.0
     while time.monotonic() < deadline:
         frame = context.cur_frame(update=True)
-        tokens = context.ocr_tokens_in_shapes(
-            HOLY_WOOD_MAIN_SCENE_ID,
-            ("祈愿券计数",),
-            frame_data_url=frame,
-            padding=0,
-        )
-        draws = read_lingxiao_gui_ticket_draws_from_tokens(
-            list(tokens), cost_per_draw=cost_per_draw
-        )
-        last_text = "".join(str(token.get("text") or "") for token in tokens)
-        if draws is None:
-            draws = parse_holy_wood_ticket_draws(
-                last_text, cost_per_draw=cost_per_draw
+        counts: list[int] = []
+        texts: list[str] = []
+        # Full-frame OCR omits the small bound 1/1. Read each semantic
+        # counter separately, and require both rather than treating omission
+        # as zero. Cropping also excludes the neighboring ticket icons.
+        for title in ("绑定", "非绑定"):
+            if title in balances:
+                counts.append(balances[title])
+                texts.append(f"{title}:runtime={balances[title]}")
+                continue
+            tokens = context.ocr_tokens_in_shapes(
+                HOLY_WOOD_MAIN_SCENE_ID, (title,), frame_data_url=frame,
+                padding=4, crop=True,
             )
-        if draws is not None:
-            return draws
+            text = "".join(str(token.get("text") or "") for token in tokens)
+            texts.append(text)
+            count = parse_holy_wood_ticket_draws(text, cost_per_draw=cost_per_draw)
+            if count is not None:
+                counts.append(count)
+        last_text = " | ".join(texts)
+        if len(counts) == 2:
+            return sum(counts)
         time.sleep(0.25)
     raise RuntimeError(f"圣木祈愿券计数无法形成安全分数：{last_text!r}")
 
@@ -377,7 +486,9 @@ def claim_holy_wood_cumulative_rewards(context: Any) -> dict[str, Any]:
     claimed: list[int] = []
     while True:
         before = read_bothdraw_cumulative_rewards_runtime(
-            include_selected_big_reward=False, visible_slot_count=4
+            include_selected_big_reward=False,
+            visible_slot_count=4,
+            expected_activity_id=HOLY_WOOD_ACTIVITY_ID,
         )
         if not before.get("complete"):
             raise RuntimeError(str(before.get("reason") or "圣木祈愿累计奖励不完整"))
@@ -399,7 +510,9 @@ def claim_holy_wood_cumulative_rewards(context: Any) -> dict[str, Any]:
         deadline = time.monotonic() + 12.0
         while time.monotonic() < deadline:
             after = read_bothdraw_cumulative_rewards_runtime(
-                include_selected_big_reward=False, visible_slot_count=4
+                include_selected_big_reward=False,
+                visible_slot_count=4,
+                expected_activity_id=HOLY_WOOD_ACTIVITY_ID,
             )
             after_ids = {int(value) for value in after.get("claimed_ids") or []}
             target_id = int(target.get("id") or 0)
@@ -415,28 +528,95 @@ def claim_holy_wood_cumulative_rewards(context: Any) -> dict[str, Any]:
             raise RuntimeError("圣木祈愿累计奖励点击后未进入已领取账本")
 
 
-def draw_all_holy_wood_tickets(context: Any, *, max_rounds: int = 64) -> dict[str, Any]:
-    """Consume all visible prayer tickets without buying draw currency."""
+def resolve_holy_wood_lottery_phase(
+    *,
+    final_day: date,
+    now: datetime,
+) -> ThemeLotteryPhase:
+    """Resolve this period's Holy Wood draw phase from explicit clock inputs.
 
+    Both ticket items (40010/40025) carry the user-confirmed
+    ``non_retainable`` evidence, so the resolved goal is ``exhaust_all`` and the
+    sub-ten remainder is ``defer`` until the final-day 21:00 tail, after which
+    it becomes ``single``.  ``final_day`` and a timezone-aware ``now`` are
+    required arguments: this helper never reads the clock and never hardcodes a
+    period date, so the caller must pass the real current activity end date.
+    """
+
+    tickets = tuple(
+        ThemeLotteryTicket(
+            item_id=int(item_id),
+            label="圣木祈愿券",
+            retainability=HOLY_WOOD_TICKET_RETAINABILITY,
+            detail=HOLY_WOOD_TICKET_EVIDENCE,
+        )
+        for item_id in HOLY_WOOD_TICKET_ITEM_IDS
+    )
+    resolution = resolve_theme_lottery_policy(tickets)
+    return resolve_theme_lottery_phase(resolution, final_day=final_day, now=now)
+
+
+def draw_all_holy_wood_tickets(
+    context: Any,
+    *,
+    max_rounds: int = 64,
+    remainder_mode: LotteryRemainderMode = "defer",
+    strict_limit: bool = True,
+) -> dict[str, Any]:
+    """Consume all visible prayer tickets without buying draw currency.
+
+    The non-retainable tickets use an ``exhaust_all`` goal, so a grand prize
+    never stops the run.  ``remainder_mode`` defaults to ``defer``: a shortfall
+    below a full ten is kept for the final-day tail instead of being spent on
+    draws; pass ``remainder_mode="single"`` only to authorize the final tail.
+    The shared policy calls that mode "single", but this GUI caps its ten-draw
+    action to the available tickets, so even a short tail uses one ten-draw click.
+    ``strict_limit=False`` returns ``stop_reason="step_limit"``
+    at ``max_rounds`` so one Cell can process one bounded batch.
+    """
+
+    policy = LotteryPolicy(
+        goal=LotteryGoal("exhaust_all"),
+        remainder_mode=remainder_mode,
+    )
+    policy.validate()
+    normal_batch_size = int(policy.normal_batch_size)
     yield from _open_main(context)
     draws: list[int] = []
     cumulative_claimed: list[int] = []
     for _round in range(max(1, int(max_rounds))):
-        before = read_bothdraw_basic_runtime()
+        before = read_bothdraw_basic_runtime(expected_activity_id=HOLY_WOOD_ACTIVITY_ID)
         if not before.get("complete") or int(before.get("activity_id") or 0) != HOLY_WOOD_ACTIVITY_ID:
             raise RuntimeError(str(before.get("reason") or "圣木祈愿抽奖运行态不完整"))
         available = _visible_ticket_draws(context, cost_per_draw=int(before["cost_per_draw"]))
         if available <= 0:
             claim = claim_holy_wood_cumulative_rewards(context)
             cumulative_claimed.extend(claim["claimed_reward_ids"])
+            if claim["claimed_reward_ids"]:
+                continue
             return {
                 "draw_batches": draws,
                 "draw_count": sum(draws),
                 "claimed_reward_ids": cumulative_claimed,
                 "stop_reason": "no_prayer_tickets",
             }
-        batch = 10 if available >= 10 else 1
-        _set_ten_draw(context, enabled=batch == 10, activity_id=HOLY_WOOD_ACTIVITY_ID)
+        if available < normal_batch_size and policy.remainder_mode == "defer":
+            claim = claim_holy_wood_cumulative_rewards(context)
+            cumulative_claimed.extend(claim["claimed_reward_ids"])
+            # Milestones may return tickets. Re-observe after any claim before
+            # deciding that fewer than ten remain; 6 + 5 must draw again.
+            if claim["claimed_reward_ids"]:
+                continue
+            return {
+                "draw_batches": draws,
+                "draw_count": sum(draws),
+                "claimed_reward_ids": cumulative_claimed,
+                "stop_reason": "terminal_remainder_deferred",
+                "deferred_remainder": {"remaining_draws": int(available)},
+            }
+        # 实测余 3 张、保持十连，一次点击累计 +3；无需关闭十连逐张清尾。
+        batch = min(normal_batch_size, available)
+        _set_ten_draw(context, enabled=True, activity_id=HOLY_WOOD_ACTIVITY_ID)
         context.click_shape(
             HOLY_WOOD_MAIN_SCENE_ID,
             "寻宝",
@@ -444,7 +624,7 @@ def draw_all_holy_wood_tickets(context: Any, *, max_rounds: int = 64) -> dict[st
         )
         deadline = time.monotonic() + 25.0
         while time.monotonic() < deadline:
-            after = read_bothdraw_basic_runtime()
+            after = read_bothdraw_basic_runtime(expected_activity_id=HOLY_WOOD_ACTIVITY_ID)
             if after.get("complete") and int(after.get("x") or 0) == int(before.get("x") or 0) + batch:
                 break
             time.sleep(0.25)
@@ -455,7 +635,14 @@ def draw_all_holy_wood_tickets(context: Any, *, max_rounds: int = 64) -> dict[st
         draws.append(batch)
         claim = claim_holy_wood_cumulative_rewards(context)
         cumulative_claimed.extend(claim["claimed_reward_ids"])
-    raise RuntimeError("圣木祈愿抽取超过安全轮数")
+    if strict_limit:
+        raise RuntimeError("圣木祈愿抽取超过安全轮数")
+    return {
+        "draw_batches": draws,
+        "draw_count": sum(draws),
+        "claimed_reward_ids": cumulative_claimed,
+        "stop_reason": "step_limit",
+    }
 
 
 def execute_holy_wood_prayer_task(
@@ -470,13 +657,15 @@ def execute_holy_wood_prayer_task(
     if not isinstance(asset_tree_path, Path):
         raise RuntimeError("圣木祈愿作业缺少资产树路径")
     context = runner._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
-    # A Job attempt owns no business cursor from an earlier Cell.  Even when
-    # the live frame is one of the Holy Wood pages, normalize through the
-    # stable world hub and replay the idempotent workflow from its real entry.
-    yield from context.go_scene(34)
-    yield from context.go_scene(630)
-    yield from context.wait_click(630, "圣木祈愿", timeout=10.0, label="圣木祈愿：打开主页")
-    yield from context.wait_scene([HOLY_WOOD_MAIN_SCENE_ID], wait=20.0, label="圣木祈愿：确认主页")
+    # 从当前真实页面重算整轮，不用旧 cursor，也不为幂等性绕回世界页。
+    landing = yield from context.wait_scene(
+        [*HOLY_WOOD_KNOWN_SCENES, 630, 34], wait=5, required=False,
+        label="圣木祈愿：确认整轮起点",
+    )
+    if landing is None or landing.scene_id not in HOLY_WOOD_KNOWN_SCENES:
+        yield from context.go_scene(630)
+        yield from context.wait_click(630, "圣木祈愿", timeout=10.0, label="圣木祈愿：打开主页")
+        yield from context.wait_scene([HOLY_WOOD_MAIN_SCENE_ID], wait=20.0, label="圣木祈愿：确认主页")
     yield from _open_main(context)
     task_rounds: list[dict[str, Any]] = []
     store: dict[str, Any] | None = None
@@ -493,7 +682,8 @@ def execute_holy_wood_prayer_task(
                 ),
             )
         draw = yield from draw_all_holy_wood_tickets(
-            context, max_rounds=int(payload.get("max_draw_rounds", 64))
+            context, max_rounds=int(payload.get("max_draw_rounds", 64)),
+            remainder_mode=payload.get("remainder_mode", "defer"),
         )
         task_rounds.append(tasks)
         draw_rounds.append(draw)
@@ -534,10 +724,14 @@ __all__ = [
     "HOLY_WOOD_DEFAULT_SPEND_BUDGET",
     "HOLY_WOOD_TASK_ID",
     "HOLY_WOOD_TASK_TYPE",
+    "HOLY_WOOD_TICKET_EVIDENCE",
+    "HOLY_WOOD_TICKET_ITEM_IDS",
+    "HOLY_WOOD_TICKET_RETAINABILITY",
     "buy_holy_wood_spirit_stone_packs",
     "claim_holy_wood_tasks",
     "draw_all_holy_wood_tickets",
     "execute_holy_wood_prayer_task",
     "parse_holy_wood_ticket_draws",
+    "resolve_holy_wood_lottery_phase",
     "validate_holy_wood_store_increment",
 ]

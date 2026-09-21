@@ -21,6 +21,75 @@ from backend.core.fanxiu.runtime_gui.text import (
 )
 
 
+def upscaled_ocr_fragments(
+    context: Any,
+    frame_data_url: str,
+    *,
+    scale: float = 2.0,
+) -> tuple[dict[str, Any], ...]:
+    """OCR a storage-bag frame at an upscale factor to recover small counts.
+
+    The per-cell stack counts are tiny white digits that the native detector
+    routinely misses (a real 2026-09-19 #525 frame returned only a stray ``9``
+    for the whole grid), which starves the quantity-based row alignment.  A 2x
+    pass recovers ``1/1``/``3``/``79``/``21``/``6`` while the boxes are scaled
+    back so every caller keeps native-frame coordinates.
+
+    This deliberately calls the raw frame OCR instead of
+    :meth:`BehaviorTreeContext.ocr_fragments`: that public entry re-recognizes
+    the scene and enforces the canonical reference canvas, so an upscaled frame
+    is rejected with ``采样尺寸必须对应等比例归一后的完整参考画布``.  The
+    quantity/grid callers filter rows by geometry anyway.  Any decode/OCR
+    failure falls back to the native ``context.ocr_fragments`` pass.
+    """
+
+    runner = getattr(context, "runner", None)
+    if (
+        scale <= 1.0
+        or not isinstance(frame_data_url, str)
+        or "," not in frame_data_url
+        or not hasattr(runner, "_ocr_frame")
+    ):
+        return tuple(context.ocr_fragments(frame_data_url))
+
+    import base64
+    import io
+
+    from PIL import Image
+
+    try:
+        _header, encoded = frame_data_url.split(",", 1)
+        image = Image.open(io.BytesIO(base64.b64decode(encoded))).convert("RGB")
+    except Exception:
+        return tuple(context.ocr_fragments(frame_data_url))
+    upscaled = image.resize(
+        (int(round(image.width * scale)), int(round(image.height * scale))),
+        Image.LANCZOS,
+    )
+    buffer = io.BytesIO()
+    upscaled.save(buffer, format="PNG")
+    upscaled_url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+    result = runner._ocr_frame(upscaled_url, options={"return_word_box": True})
+    raw_fragments = result.get("lines") or result.get("tokens") or []
+    scaled: list[dict[str, Any]] = []
+    for fragment in raw_fragments:
+        item = dict(fragment)
+        for key in ("x", "y", "w", "h", "width", "height"):
+            value = item.get(key)
+            if value is None:
+                continue
+            try:
+                item[key] = float(value) / float(scale)
+            except (TypeError, ValueError):
+                continue
+        if str(item.get("text") or "").strip():
+            scaled.append(item)
+    if not scaled:
+        return tuple(context.ocr_fragments(frame_data_url))
+    return tuple(scaled)
+
+
 @dataclass(frozen=True)
 class StorageBagVisibleCell:
     """One fully reachable grid cell in the current scroll viewport."""
@@ -725,6 +794,7 @@ __all__ = [
     "prepare_storage_bag_target_by_name",
     "quantity_observations_from_ocr",
     "register_storage_bag_viewport_from_quantity_ocr",
+    "upscaled_ocr_fragments",
     "verify_storage_bag_item_detail",
     "visible_storage_bag_cells",
 ]

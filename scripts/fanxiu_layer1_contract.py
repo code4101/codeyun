@@ -34,13 +34,18 @@ SCENE_DESTINATIONS: dict[tuple[str, ...], tuple[int, ...]] = {
     ("日常", "仙府", "仙侣居"): (619, 621, 622, 623),
     ("日常", "仙侣历练"): (620,),
     ("日程", "资源榜", "炼丹"): (624, 625, 626, 627, 628, 629),
-    ("日程", "仙宴"): (630, 631, 642, 643, 649, 650, 659, 660),
-    ("活动", "圣木祈愿"): (644, 645, 646, 647, 648),
+    # 630 is the shared 仙园游宴 entry, not a 园中仙宴 page.
+    ("日程", "主题集", "仙园游宴"): (630,),
+    ("日程", "主题集", "仙园游宴", "圣木祈愿"): (644, 645, 646, 647, 648),
+    ("日程", "主题集", "仙园游宴", "园中仙宴"): (
+        422, 423, 651, 652, 653, 631, 642, 643, 649, 650, 659, 660,
+    ),
 }
 NEW_FOLDER_IDS = {
     ("日常", "仙府", "仙侣居"): "folder-xianlvju-layer2-20260825",
     ("日程", "资源榜", "炼丹"): "folder-resource-rank-alchemy-20260825",
-    ("活动", "圣木祈愿"): "folder-holy-wood-prayer-20260825",
+    ("日程", "主题集", "仙园游宴", "园中仙宴"): "folder-garden-banquet-20260825",
+    ("日程", "主题集", "仙园游宴", "圣木祈愿"): "folder-holy-wood-prayer-20260825",
 }
 FOLLOW_UP_SCENES: dict[int, str] = {}
 
@@ -58,6 +63,19 @@ def _scene_id(node: dict[str, Any]) -> int | None:
         return None
     value = image_number(node)
     return int(value) if value is not None else None
+
+
+def _child_sort_key(node: dict[str, Any]) -> tuple[int, int, str]:
+    """Deterministic sibling order so refactoring stays idempotent.
+
+    Real pages can put shared-entry scenes next to module subfolders; a plain
+    append makes a second pass reorder them.
+    """
+
+    scene_id = _scene_id(node)
+    if scene_id is not None:
+        return (0, scene_id, "")
+    return (1, 0, str(node.get("title") or ""))
 
 
 def _find_folder(tree: list[dict[str, Any]], path: tuple[str, ...]) -> dict[str, Any] | None:
@@ -206,6 +224,12 @@ def refactor_layer1_tree(tree: list[dict[str, Any]]) -> tuple[list[dict[str, Any
             node = _remove_scene(result, scene_id)
             node["layer"] = 2
             children.append(node)
+
+    for path in SCENE_DESTINATIONS:
+        folder = _find_folder(result, path)
+        children = folder.get("children") if folder is not None else None
+        if isinstance(children, list):
+            children.sort(key=_child_sort_key)
 
     current = {_scene_id(node): node for node in _walk(result) if _scene_id(node) is not None}
     _shape(current[340], "返回")["sceneJumpTarget"] = _without_jump_target(

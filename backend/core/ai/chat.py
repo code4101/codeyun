@@ -43,7 +43,6 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 DEEPSEEK_TIMEOUT_SECONDS = 120.0
 DEEPSEEK_MODELS = (
     "deepseek-v4-flash",
-    "deepseek-v4-pro",
     "deepseek-chat",
     "deepseek-reasoner",
 )
@@ -1321,6 +1320,13 @@ def _ensure_provider_can_handle_messages(
             raise OllamaClientError(f"{provider.label} 当前版本不支持图片输入")
 
 
+def normalize_deepseek_model(model: str | None) -> str | None:
+    """Keep legacy Pro selections within the project's Flash cost ceiling."""
+    if (model or "").strip().lower() == "deepseek-v4-pro":
+        return DEEPSEEK_DEFAULT_MODEL
+    return model
+
+
 def chat_with_provider(
     *,
     provider_id: str | None = None,
@@ -1343,6 +1349,7 @@ def chat_with_provider(
     if not provider.configured:
         raise OllamaClientError(_get_unconfigured_provider_message(provider))
 
+    model = normalize_deepseek_model(model or provider.default_model)
     _ensure_provider_can_handle_messages(provider, messages)
 
     if provider.kind == "ollama":
@@ -1402,6 +1409,7 @@ def stream_chat_with_provider(
     if not provider.configured:
         raise OllamaClientError(_get_unconfigured_provider_message(provider))
 
+    model = normalize_deepseek_model(model or provider.default_model)
     _ensure_provider_can_handle_messages(provider, messages)
 
     if provider.kind == "ollama":

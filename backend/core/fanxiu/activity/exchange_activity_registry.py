@@ -872,7 +872,12 @@ LIANTI_FAXIANG_SPEC = ExchangeActivitySpec(
         _rank_scope(
             "personal", label="个人榜", role="primary", subject="role",
             reward_tiers_enabled=True, required=True, vo_type=PERSONAL_RANK_VO,
-            binding=RankActivityIdBinding(source="fixed", fixed_id=1043011),
+            # Same-server preliminaries declare no follow and own the bound
+            # scope (self); cross-server occurrences reference their child
+            # rank ids, personal first (43005).  Never hard-code the prelim.
+            binding=RankActivityIdBinding(
+                source="activity_self_or_follow", follow_index=0,
+            ),
         ),
     ),
     shop=None,

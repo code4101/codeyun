@@ -548,3 +548,90 @@ def test_next_scene_number_counts_business_prefixed_runtime_scene_ids(
     )
 
     assert storage.next_data_annotation_image_filename("entry-a") == "0581.png"
+
+
+def test_theme_collection_schedule_nesting_is_a_valid_container_hierarchy():
+    validate_data_annotation_task_directories([
+        {
+            "id": "schedule",
+            "type": "folder",
+            "title": "日程",
+            "folderRole": "business-root",
+            "children": [
+                {
+                    "id": "gameplay-rank",
+                    "type": "folder",
+                    "title": "玩法榜",
+                    "folderRole": "task-family",
+                    "children": [],
+                },
+                {
+                    "id": "resource-rank",
+                    "type": "folder",
+                    "title": "资源榜",
+                    "folderRole": "task-family",
+                    "children": [],
+                },
+                {
+                    "id": "theme-collection",
+                    "type": "folder",
+                    "title": "主题集",
+                    "folderRole": "task-family",
+                    "children": [
+                        {
+                            "id": "xianyuan-banquet",
+                            "type": "folder",
+                            "title": "仙园游宴",
+                            "folderRole": "task-family",
+                            "children": [
+                                _task_folder("holy-wood-prayer", "圣木祈愿", 644),
+                                _task_folder("garden-banquet", "园中仙宴", 630),
+                                {
+                                    "id": "visit-xianzun",
+                                    "type": "folder",
+                                    "title": "寻访仙尊",
+                                    "folderRole": "task",
+                                    "children": [],
+                                },
+                            ],
+                        },
+                        _task_family("tianhe-xianhui", "天河仙会"),
+                        _task_family("lingxiao-xianhui", "凌霄仙会"),
+                        _task_family("penglai-xianzang", "蓬莱仙藏"),
+                        _task_family("kunlun-secret", "昆仑秘藏"),
+                        _task_family("wanbao-zhenbao", "万宝臻宝"),
+                        _task_family("wanxiang-baoge", "万象宝阁"),
+                    ],
+                },
+            ],
+        }
+    ])
+
+
+def _task_family(node_id: str, title: str) -> dict:
+    return {
+        "id": node_id,
+        "type": "folder",
+        "title": title,
+        "folderRole": "task-family",
+        "children": [],
+    }
+
+
+def _task_folder(node_id: str, title: str, scene_id: int) -> dict:
+    return {
+        "id": node_id,
+        "type": "folder",
+        "title": title,
+        "folderRole": "task",
+        "children": [
+            {
+                "id": f"scene-{scene_id}",
+                "type": "image",
+                "title": title,
+                "filename": f"{scene_id:04d}.png",
+                "shapes": [],
+            }
+        ],
+    }
+

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from backend.core.fanxiu.activity.lottery_strategy import decide_lottery_action
 from backend.core.fanxiu.data_annotation.default_jobs import (
     register_fanxiu_default_jobs,
 )
@@ -13,10 +15,14 @@ from backend.core.fanxiu.data_annotation.jobs import (
 from backend.core.fanxiu.data_annotation.tasks.holy_wood_prayer import (
     HOLY_WOOD_DEFAULT_SPEND_BUDGET,
     HOLY_WOOD_TASK_TYPE,
-    execute_holy_wood_prayer_task,
     parse_holy_wood_ticket_draws,
+    resolve_holy_wood_lottery_phase,
     validate_holy_wood_store_increment,
 )
+
+
+TZ = ZoneInfo("Asia/Shanghai")
+FINAL_DAY = date(2026, 9, 3)
 
 
 def _snapshot(first: int, second: int) -> dict:
@@ -65,35 +71,68 @@ def test_store_increment_requires_one_offer_and_exact_wallet_delta() -> None:
         )
 
 
-def test_holy_wood_prayer_is_one_manual_standard_job() -> None:
+def test_holy_wood_prayer_is_internalized_ai_component() -> None:
     register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition(HOLY_WOOD_TASK_TYPE)
     assert definition is not None
-    assert definition.standard_job is True
-    assert definition.standard_job_id == "holy-wood-prayer"
-    assert definition.standard_job_description == "手动"
-    assert definition.standard_job_payload == {
-        "spend_budget": HOLY_WOOD_DEFAULT_SPEND_BUDGET,
-        "max_task_clicks": 20,
-        "max_draw_rounds": 64,
-    }
+    # 圣木祈愿 is now executed by the canonical theme-collection Job; it keeps
+    # its Cell for debugging but is no longer a standalone Scheduler Job.
+    assert definition.scheduler_supported is False
+    assert definition.standard_job is False
+
+    theme = get_fanxiu_data_annotation_task_cell_definition("theme_collection")
+    assert theme is not None
+    assert theme.standard_job is True
+    assert theme.standard_job_id == "theme-collection"
 
 
-def test_holy_wood_public_job_first_normalizes_to_world() -> None:
-    class Runtime:
-        def go_scene(self, target):
-            yield ("go_scene", target)
-
-    class Runner:
-        @staticmethod
-        def _behavior_tree_context(*_args, **_kwargs):
-            return Runtime()
-
-    generator = execute_holy_wood_prayer_task(
-        Runner(),
-        {"asset_tree_path": Path("asset-tree.json")},
-        {},
-        type("StopEvent", (), {"is_set": lambda self: False})(),
+def test_holy_wood_policy_keeps_drawing_ten_after_grand_prize() -> None:
+    phase = resolve_holy_wood_lottery_phase(
+        final_day=FINAL_DAY,
+        now=datetime(2026, 9, 1, 12, 0, tzinfo=TZ),
     )
-    assert next(generator) == ("go_scene", 34)
-    generator.close()
+    assert phase.status == "ready"
+    assert phase.policy is not None
+    assert phase.policy.goal.kind == "exhaust_all"
+
+    decision = decide_lottery_action(
+        {"complete": True, "available_draws": 16, "progress": 20, "hit_count": 1},
+        policy=phase.policy,
+    )
+
+    assert decision.action == "draw"
+    assert decision.draw_mode == "ten_draw"
+
+
+def test_holy_wood_six_tickets_defer_before_final_day_tail() -> None:
+    phase = resolve_holy_wood_lottery_phase(
+        final_day=FINAL_DAY,
+        now=datetime(2026, 9, 3, 20, 59, tzinfo=TZ),
+    )
+    assert phase.remainder_mode == "defer"
+    assert phase.policy is not None
+
+    decision = decide_lottery_action(
+        {"complete": True, "available_draws": 6, "progress": 20, "hit_count": 1},
+        policy=phase.policy,
+    )
+
+    assert decision.action == "stop"
+    assert decision.stop_reason == "terminal_remainder_deferred"
+
+
+def test_holy_wood_six_tickets_clear_single_after_final_day_tail() -> None:
+    phase = resolve_holy_wood_lottery_phase(
+        final_day=FINAL_DAY,
+        now=datetime(2026, 9, 3, 21, 0, tzinfo=TZ),
+    )
+    assert phase.remainder_mode == "single"
+    assert phase.policy is not None
+
+    decision = decide_lottery_action(
+        {"complete": True, "available_draws": 6, "progress": 20, "hit_count": 1},
+        policy=phase.policy,
+    )
+
+    assert decision.action == "draw"
+    assert decision.draw_mode == "single_draw"

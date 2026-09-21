@@ -34,7 +34,7 @@ def test_read_scheduler_tasks_projects_repairs_without_persisting(monkeypatch, t
     monkeypatch.setattr(
         kernel_scheduler_control,
         "consolidate_arena_scheduler_instances",
-        lambda raw: (raw, True),
+        lambda raw, **kwargs: (raw, True),
     )
 
     def fake_repair(raw, _defaults, facts, **_kwargs):
@@ -72,7 +72,7 @@ def test_maintain_scheduler_tasks_persists_repairs_and_configuration_backup(monk
     monkeypatch.setattr(
         kernel_scheduler_control,
         "consolidate_arena_scheduler_instances",
-        lambda raw: (raw, False),
+        lambda raw, **kwargs: (raw, False),
     )
 
     def fake_repair(_raw, _defaults, facts, **_kwargs):

@@ -18224,6 +18224,195 @@ def _attendance_export_filename(workbook: WorkbookDocument | None, document: She
     return f"{safe_title}{suffix}.xlsx"
 
 
+
+# 线上表格的表头/备注行样式写在前端 CSS（sheet-grid-header-cell /
+# sheet-grid-note-header-cell）里，文档本身只存颜色，所以导出必须按同样的
+# 规则补齐字体、粗细和对齐，否则 Excel 会退回默认的宋体左下角排版。
+SHEET_EXPORT_FONT_NAME = "Microsoft YaHei"
+SHEET_EXPORT_MONOSPACE_FONT_NAME = "Consolas"
+SHEET_EXPORT_DEFAULT_FONT_SIZE = 10.5  # 正文 14px
+SHEET_EXPORT_NOTE_FONT_SIZE = 9  # 备注行 12px
+SHEET_EXPORT_PIXELS_PER_POINT = 0.75
+SHEET_EXPORT_NOTE_TEXT_COLOR = "5F6368"
+SHEET_EXPORT_NOTE_BACKGROUND_COLOR = "F2F2F2"
+SHEET_EXPORT_LINK_TEXT_COLOR = "0563C1"
+SHEET_EXPORT_QUALIFIED_HEADER = "考试资格"
+SHEET_EXPORT_QUALIFIED_VALUE = "是"
+SHEET_EXPORT_QUALIFIED_BACKGROUND_COLOR = "80FF80"
+# 线上行高来自前端布局：表头三行固定，数据行按单行高度算，多行内容由布局再撑高。
+SHEET_EXPORT_HEADER_ROW_HEIGHTS_PX = {"group": 32, "field": 36, "note": 92}
+SHEET_EXPORT_TABLE_LINE_HEIGHT_PX = 20
+SHEET_EXPORT_CELL_VERTICAL_PADDING_PX = 4
+SHEET_EXPORT_CELL_HORIZONTAL_PADDING_PX = 8
+SHEET_EXPORT_CELL_BORDER_WIDTH_PX = 1
+SHEET_EXPORT_DEFAULT_COLUMN_WIDTH_PX = 88
+SHEET_EXPORT_DEFAULT_COLUMN_FONT_SIZE_PX = 13
+SHEET_EXPORT_HORIZONTAL_ALIGNMENTS = {"left", "center", "right", "justify"}
+SHEET_EXPORT_VERTICAL_ALIGNMENTS = {
+    "top": "top",
+    "middle": "center",
+    "center": "center",
+    "bottom": "bottom",
+    "justify": "justify",
+}
+
+
+def _sheet_export_row_role(row_index: int, *, field_row_index: int, data_start_row: int) -> str:
+    """Classify one grid row the way the online sheet does.
+
+    ``group``/``field`` rows render bold and centered, the note row renders as
+    smaller grey text, and everything from ``data_start_row`` on is data.
+    """
+    if row_index < 0 or row_index >= data_start_row:
+        return "data"
+    if row_index == field_row_index:
+        return "field"
+    if row_index > field_row_index:
+        return "note"
+    return "group"
+
+
+def _sheet_export_font_name(value: Any) -> str:
+    """Map the document's font tokens to real font names (``default`` is not a font)."""
+    if _normalize_sheet_text(value) == "monospace":
+        return SHEET_EXPORT_MONOSPACE_FONT_NAME
+    return SHEET_EXPORT_FONT_NAME
+
+
+def _sheet_export_conditional_background(header: str, text_value: str) -> str | None:
+    """Mirror the sheet's own 考试资格 highlight (前端 getConditionalCellBackgroundColor)."""
+    if _normalize_sheet_text(header) == SHEET_EXPORT_QUALIFIED_HEADER and text_value == SHEET_EXPORT_QUALIFIED_VALUE:
+        return SHEET_EXPORT_QUALIFIED_BACKGROUND_COLOR
+    return None
+
+
+def _sheet_export_font_size(value: Any, *, is_note_row: bool) -> float:
+    """Cell font sizes are stored in CSS pixels while Excel works in points."""
+    if isinstance(value, int | float) and float(value) > 0:
+        return float(value) * SHEET_EXPORT_PIXELS_PER_POINT
+    return SHEET_EXPORT_NOTE_FONT_SIZE if is_note_row else SHEET_EXPORT_DEFAULT_FONT_SIZE
+
+
+def _sheet_export_column_wraps(config: dict[str, Any]) -> bool:
+    """Only columns explicitly set to ``wrap`` wrap text.
+
+    The online sheet defaults every column to ``single_line`` (nowrap + ellipsis),
+    so an unconfigured column must not wrap in the export either.
+    """
+    return _normalize_sheet_text(config.get("display_mode")) == "wrap"
+
+
+def _sheet_export_cell_wrap_text(role: str, config: dict[str, Any]) -> bool:
+    """Mirror the online cell meta: field names are nowrap, notes and wrap columns wrap."""
+    if role == "field":
+        return False
+    if role in {"group", "note"}:
+        return True
+    return _sheet_export_column_wraps(config)
+
+
+def _sheet_export_text_width_px(text: str, glyph_px: float) -> float:
+    """Estimate rendered width: full-width glyphs take a glyph, half-width ~60%.
+
+    The online layout measures text with a canvas; this estimate only has to be
+    conservative enough to decide whether a cell still fits on one line.
+    """
+    width = 0.0
+    for char in text:
+        width += glyph_px if unicodedata.east_asian_width(char) in {"W", "F", "A"} else glyph_px * 0.6
+    return width
+
+
+def _sheet_export_wrapped_line_count(text: str, available_px: float, glyph_px: float) -> int:
+    """Estimated line count for one cell, never below one line."""
+    lines = 0
+    for segment in text.split("\n"):
+        width = _sheet_export_text_width_px(segment, glyph_px)
+        lines += max(1, ceil(width / max(available_px, 1.0)))
+    return max(lines, 1)
+
+
+def _sheet_export_data_row_height_px(
+    row: list[Any],
+    *,
+    columns: list[str],
+    document_json: dict[str, Any],
+) -> float:
+    """Return the row height in pixels, following the online layout rules.
+
+    The online sheet sizes every row itself (single line height, or the wrapped
+    line count), so the export does the same instead of mixing explicit and
+    auto-fitted heights. The width estimate is deliberately generous: a slightly
+    taller row beats a clipped one.
+    """
+    configs = document_json.get("column_configs")
+    configs = configs if isinstance(configs, dict) else {}
+    widths = document_json.get("column_widths")
+    widths = widths if isinstance(widths, list) else []
+    content_height = SHEET_EXPORT_TABLE_LINE_HEIGHT_PX
+
+    for index, header in enumerate(columns):
+        config = configs.get(header)
+        config = config if isinstance(config, dict) else {}
+        font_size = config.get("font_size")
+        resolved_font = (
+            float(font_size)
+            if isinstance(font_size, int | float) and float(font_size) > 0
+            else SHEET_EXPORT_DEFAULT_COLUMN_FONT_SIZE_PX
+        )
+        if resolved_font == SHEET_EXPORT_DEFAULT_COLUMN_FONT_SIZE_PX:
+            line_height = SHEET_EXPORT_TABLE_LINE_HEIGHT_PX
+        else:
+            line_height = ceil(resolved_font * 1.45)
+        content_height = max(content_height, line_height)
+
+        text = _normalize_sheet_text(_extract_cell_value(row[index] if index < len(row) else ""))
+        if not text or not _sheet_export_column_wraps(config):
+            continue
+        glyph_px = 14.0 if resolved_font == SHEET_EXPORT_DEFAULT_COLUMN_FONT_SIZE_PX else resolved_font
+        width = widths[index] if index < len(widths) else None
+        width = float(width) if isinstance(width, int | float) and float(width) > 0 else SHEET_EXPORT_DEFAULT_COLUMN_WIDTH_PX
+        available = max(width - SHEET_EXPORT_CELL_HORIZONTAL_PADDING_PX * 2, 12.0)
+        content_height = max(content_height, _sheet_export_wrapped_line_count(text, available, glyph_px) * line_height)
+
+    return content_height + SHEET_EXPORT_CELL_VERTICAL_PADDING_PX * 2 + SHEET_EXPORT_CELL_BORDER_WIDTH_PX
+
+
+def _sheet_export_row_heights(
+    rows: list[Any],
+    *,
+    columns: list[str],
+    document_json: dict[str, Any],
+) -> dict[int, float]:
+    """Row heights in points, mirroring the online sheet layout."""
+    field_row_index = int(document_json.get("field_row_index") or 0)
+    data_start_row = _normalize_document_data_start_row(document_json)
+    manual_heights = document_json.get("row_heights")
+    manual_heights = manual_heights if isinstance(manual_heights, list) else []
+
+    heights: dict[int, float] = {}
+    for grid_row_index, raw_row in enumerate(rows):
+        manual = manual_heights[grid_row_index] if grid_row_index < len(manual_heights) else None
+        if isinstance(manual, int | float) and float(manual) > 0:
+            heights[grid_row_index + 1] = float(manual) * SHEET_EXPORT_PIXELS_PER_POINT
+            continue
+        role = _sheet_export_row_role(
+            grid_row_index,
+            field_row_index=field_row_index,
+            data_start_row=data_start_row,
+        )
+        if role in SHEET_EXPORT_HEADER_ROW_HEIGHTS_PX:
+            heights[grid_row_index + 1] = SHEET_EXPORT_HEADER_ROW_HEIGHTS_PX[role] * SHEET_EXPORT_PIXELS_PER_POINT
+            continue
+        height_px = _sheet_export_data_row_height_px(
+            _normalize_sheet_row(raw_row, len(columns)),
+            columns=columns,
+            document_json=document_json,
+        )
+        heights[grid_row_index + 1] = height_px * SHEET_EXPORT_PIXELS_PER_POINT
+    return heights
+
+
 def _sheet_export_color(value: Any) -> str | None:
     text = _normalize_sheet_text(value).lstrip("#")
     if re.fullmatch(r"[0-9A-Fa-f]{6}", text):
@@ -18236,6 +18425,7 @@ def _populate_sheet_export_worksheet(
     table: NoteSheetTableResponse,
     *,
     document_json: dict[str, Any],
+    text_columns: set[str] | None = None,
 ) -> None:
     try:
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -18252,8 +18442,19 @@ def _populate_sheet_export_worksheet(
     safe_sheet_title = re.sub(r"[\\/*?:\[\]]+", "_", _normalize_sheet_text(table.title)).strip() or "表格"
     worksheet.title = safe_sheet_title[:31]
     cell_meta = normalized.get("cell_meta") if isinstance(normalized.get("cell_meta"), dict) else {}
+    column_configs = normalized.get("column_configs") if isinstance(normalized.get("column_configs"), dict) else {}
+
+    field_row_index = int(normalized.get("field_row_index") or table.field_row_index or 0)
+    data_start_row = _normalize_document_data_start_row(normalized)
 
     for row_index, row in enumerate(rows, start=1):
+        role = _sheet_export_row_role(
+            row_index - 1,
+            field_row_index=field_row_index,
+            data_start_row=data_start_row,
+        )
+        is_header_row = role in {"group", "field"}
+        is_note_row = role == "note"
         normalized_row = _normalize_sheet_row(row, column_count)
         for column_index, value in enumerate(normalized_row, start=1):
             meta = cell_meta.get(f"{row_index - 1}:{column_index - 1}")
@@ -18263,33 +18464,53 @@ def _populate_sheet_export_worksheet(
             if _normalize_sheet_text(action.get("type") or action.get("name")) == NOTE_SHEET_CELL_ACTION_SHEET_EXPORT:
                 value = ""
             cell = worksheet.cell(row=row_index, column=column_index, value=_normalize_attendance_export_cell(value))
+            if text_columns and column_index <= len(table.columns) and table.columns[column_index - 1] in text_columns:
+                cell.number_format = "@"
+            header = table.columns[column_index - 1] if column_index <= len(table.columns) else ""
+            column_config = column_configs.get(header)
+            column_config = column_config if isinstance(column_config, dict) else {}
             text_value = _normalize_sheet_text(value)
             link_url = _inline_cell_link_url(value)
-            if link_url or text_value.startswith(("http://", "https://")):
+            is_link = bool(link_url or text_value.startswith(("http://", "https://")))
+            if is_link:
                 cell.hyperlink = link_url or text_value
                 cell.style = "Hyperlink"
 
             style = meta.get("style")
-            if not isinstance(style, dict):
-                continue
+            style = style if isinstance(style, dict) else {}
             text_color = _sheet_export_color(style.get("text_color"))
             background_color = _sheet_export_color(style.get("background_color"))
+            if background_color is None:
+                background_color = _sheet_export_conditional_background(
+                    header,
+                    text_value,
+                )
             cell.font = Font(
-                name=_normalize_sheet_text(style.get("font_family")) or None,
-                size=float(style["font_size"]) if isinstance(style.get("font_size"), int | float) else None,
-                bold=bool(style.get("bold")),
-                italic=bool(style.get("italic")),
-                underline="single" if style.get("underline") else None,
-                color=text_color,
+                name=_sheet_export_font_name(style.get("font_family")),
+                size=_sheet_export_font_size(style.get("font_size"), is_note_row=is_note_row),
+                bold=bool(style.get("bold")) or is_header_row,
+                italic=bool(style.get("italic")) or None,
+                underline="single" if style.get("underline") or is_link else None,
+                color=(
+                    text_color
+                    or (SHEET_EXPORT_LINK_TEXT_COLOR if is_link else None)
+                    or (SHEET_EXPORT_NOTE_TEXT_COLOR if is_note_row else None)
+                ),
             )
             if background_color:
                 cell.fill = PatternFill(fill_type="solid", fgColor=background_color)
-            horizontal = _normalize_sheet_text(style.get("text_align")) or None
-            vertical = _normalize_sheet_text(style.get("vertical_align")) or None
+            elif is_note_row:
+                cell.fill = PatternFill(fill_type="solid", fgColor=SHEET_EXPORT_NOTE_BACKGROUND_COLOR)
+            horizontal = _normalize_sheet_text(style.get("text_align"))
+            if horizontal not in SHEET_EXPORT_HORIZONTAL_ALIGNMENTS:
+                horizontal = "center" if is_header_row or is_note_row else None
+            vertical = SHEET_EXPORT_VERTICAL_ALIGNMENTS.get(_normalize_sheet_text(style.get("vertical_align")))
+            if vertical is None:
+                vertical = "center" if is_header_row or is_note_row else "top"
             cell.alignment = Alignment(
-                horizontal=horizontal if horizontal in {"left", "center", "right", "justify"} else None,
-                vertical=vertical if vertical in {"top", "center", "bottom", "justify"} else None,
-                wrap_text=True,
+                horizontal=horizontal,
+                vertical=vertical,
+                wrap_text=_sheet_export_cell_wrap_text(role, column_config),
             )
 
     for merged in _normalize_sheet_merged_cells(
@@ -18309,17 +18530,19 @@ def _populate_sheet_export_worksheet(
         for column_index, width in enumerate(source_widths[:column_count], start=1):
             if isinstance(width, int | float) and width > 0:
                 worksheet.column_dimensions[get_column_letter(column_index)].width = min(max(float(width) / 7, 4), 80)
-    source_heights = normalized.get("row_heights")
-    if isinstance(source_heights, list):
-        for row_index, height in enumerate(source_heights[:len(rows)], start=1):
-            if isinstance(height, int | float) and height > 0:
-                worksheet.row_dimensions[row_index].height = float(height) * 0.75
+    for row_number, height in _sheet_export_row_heights(
+        rows,
+        columns=table.columns,
+        document_json=normalized,
+    ).items():
+        worksheet.row_dimensions[row_number].height = height
 
 
 def _build_sheet_export_workbook_bytes(
     table: NoteSheetTableResponse,
     *,
     document_json: dict[str, Any],
+    text_columns: set[str] | None = None,
 ) -> bytes:
     try:
         from openpyxl import Workbook
@@ -18331,6 +18554,7 @@ def _build_sheet_export_workbook_bytes(
         workbook.active,
         table,
         document_json=document_json,
+        text_columns=text_columns,
     )
 
     stream = io.BytesIO()
@@ -18362,11 +18586,382 @@ def _build_workbook_export_bytes(
 
 
 def _sheet_export_filename(workbook: WorkbookDocument | None, document: SheetDocument) -> str:
+    """Return the download name for a single-sheet export.
+
+    The default file name is the workbook title when the sheet belongs to one:
+    the ``.xlsx`` package is conceptually the workbook, while the sheet name
+    stays inside the file as the worksheet tab title.
+    """
     workbook_title = _normalize_sheet_text(workbook.title if workbook is not None else "")
-    sheet_title = _normalize_sheet_text(document.title) or "表格"
-    base_title = f"{workbook_title}_{sheet_title}" if workbook_title and workbook_title != sheet_title else sheet_title
+    sheet_title = _normalize_sheet_text(document.title)
+    base_title = workbook_title or sheet_title or "表格"
     safe_title = re.sub(r'[\\/:*?"<>|]+', "_", base_title).strip() or "表格"
     return f"{safe_title}.xlsx"
+
+
+ATTENDANCE_EXPORT_PHONE_HEADER = "手机号"
+ATTENDANCE_EXPORT_PHONE_ANCHOR_HEADER = "昵称"
+
+
+def _is_attendance_export_sheet(document: SheetDocument) -> bool:
+    """考勤表 owns course attendance data, so its export carries its own rules."""
+    return (
+        _normalize_sheet_text(document.sheet_key) == "attendance"
+        or _normalize_sheet_text(document.title) == "考勤表"
+    )
+
+
+def _attendance_export_hidden_headers(columns: list[str], document_json: dict[str, Any]) -> set[str]:
+    """Headers the sheet itself hides.
+
+    考勤表 keeps the 促学金 finance fields (视频应返款/已返款/…) hidden: they are
+    internal bookkeeping, so the exported file must not carry them either.
+    """
+    configs = document_json.get("column_configs")
+    configs = configs if isinstance(configs, dict) else {}
+    hidden: set[str] = set()
+    for header in columns:
+        config = configs.get(header)
+        if isinstance(config, dict) and bool(config.get("hidden")):
+            hidden.add(header)
+    return hidden
+
+
+def _attendance_export_column_order(
+    columns: list[str],
+    document_json: dict[str, Any],
+    *,
+    with_phone: bool,
+) -> tuple[list[int], int | None]:
+    """Plan the 考勤表 export columns.
+
+    Returns the source column indexes in export order plus the position of the
+    derived 手机号 column. The derived column uses ``-1`` as its placeholder
+    index and is inserted directly after 昵称, i.e. at the right edge of 用户信息.
+    """
+    hidden = _attendance_export_hidden_headers(columns, document_json)
+    ordered = [index for index, header in enumerate(columns) if header not in hidden]
+    kept_headers = [columns[index] for index in ordered]
+    if not with_phone or ATTENDANCE_EXPORT_PHONE_HEADER in kept_headers:
+        return ordered, None
+    anchor = _get_column_index(kept_headers, ATTENDANCE_EXPORT_PHONE_ANCHOR_HEADER)
+    insert_at = anchor + 1 if anchor >= 0 else len(ordered)
+    ordered.insert(insert_at, -1)
+    return ordered, insert_at
+
+
+def _attendance_export_column_map(ordered: list[int]) -> dict[int, int]:
+    return {old_index: new_index for new_index, old_index in enumerate(ordered) if old_index >= 0}
+
+
+def _attendance_export_column_runs(
+    column_map: dict[int, int],
+    start: int,
+    span: int,
+    *,
+    derived_column: int | None = None,
+) -> list[tuple[int, int]]:
+    """Map one source column range onto consecutive exported column runs.
+
+    ``derived_column`` (the inserted 手机号 column) joins the run that touches it,
+    so the 用户信息 group keeps covering its new rightmost field.
+    """
+    mapped = sorted(column_map[index] for index in range(start, start + span) if index in column_map)
+    runs: list[tuple[int, int]] = []
+    for new_index in mapped:
+        if runs and new_index == runs[-1][0] + runs[-1][1]:
+            runs[-1] = (runs[-1][0], runs[-1][1] + 1)
+        else:
+            runs.append((new_index, 1))
+    if derived_column is not None:
+        for position, (run_start, run_span) in enumerate(runs):
+            if run_start + run_span == derived_column:
+                runs[position] = (run_start, run_span + 1)
+    return runs
+
+
+def _attendance_export_cell_coordinates(key: Any) -> tuple[int, int] | None:
+    row_text, separator, column_text = str(key).partition(":")
+    if not separator:
+        return None
+    try:
+        return int(row_text), int(column_text)
+    except ValueError:
+        return None
+
+
+def _attendance_export_insert_group_cell(cells: list[dict[str, Any]], position: int) -> None:
+    """Insert the derived 手机号 column into a header-group row as an empty cell.
+
+    ``header_groups`` is a per-column label row (the visual span lives in
+    ``merged_cells``), so the new column only needs its own empty label cell.
+    """
+    cursor = 0
+    for index, cell in enumerate(cells):
+        try:
+            span = max(int(cell.get("colspan") or 1), 1)
+        except (TypeError, ValueError):
+            span = 1
+        if cursor + span == position:
+            cells.insert(index + 1, {"label": "", "colspan": 1})
+            return
+        if cursor < position < cursor + span:
+            leading = position - cursor
+            cells[index] = {**cell, "colspan": leading}
+            cells.insert(index + 1, {"label": "", "colspan": 1})
+            trailing = span - leading - 1
+            if trailing > 0:
+                cells.insert(index + 2, {**cell, "label": "", "colspan": trailing})
+            return
+        cursor += span
+    cells.append({"label": "", "colspan": 1})
+
+
+def _attendance_export_grid_rows(
+    grid_rows: list[Any],
+    *,
+    columns: list[str],
+    ordered: list[int],
+    phone_map: dict[str, str] | None,
+    field_row_index: int,
+    data_start_index: int,
+) -> list[list[Any]]:
+    """Rebuild rows for the 考勤表 export order and fill the derived 手机号 column."""
+    student_index = _get_column_index(columns, "学号")
+
+    def phone_value(row: list[Any]) -> str:
+        if phone_map is None or student_index < 0:
+            return ""
+        student_id = _normalize_sheet_text(_extract_cell_value(row[student_index]))
+        return phone_map.get(student_id, "")
+
+    next_rows: list[list[Any]] = []
+    for row_index, raw_row in enumerate(grid_rows):
+        row = _normalize_sheet_row(raw_row, len(columns))
+        if row_index == field_row_index:
+            derived: Any = ATTENDANCE_EXPORT_PHONE_HEADER
+        elif row_index >= data_start_index:
+            derived = phone_value(row)
+        else:
+            derived = ""
+        next_rows.append([derived if old_index < 0 else row[old_index] for old_index in ordered])
+    return next_rows
+
+
+def _customize_attendance_export(
+    table: NoteSheetTableResponse,
+    document_json: dict[str, Any],
+    *,
+    phone_map: dict[str, str] | None = None,
+) -> tuple[NoteSheetTableResponse, dict[str, Any]]:
+    """Inherit the generic sheet export and apply the 考勤表-specific rules.
+
+    A 考勤表 export differs from a generic sheet export in two ways:
+
+    - columns the sheet hides (its 促学金 finance fields) are dropped;
+    - a ``手机号`` column joins the right edge of 用户信息, filled from the
+      workbook 报名表 by 学号.
+
+    ``phone_map`` is ``None`` when the caller may not read the 报名表; the export
+    then keeps the sheet columns untouched instead of leaking phone numbers.
+    """
+    columns = list(table.columns)
+    if not columns:
+        return table, document_json
+
+    ordered, phone_index = _attendance_export_column_order(
+        columns,
+        document_json,
+        with_phone=phone_map is not None,
+    )
+    next_columns = [
+        ATTENDANCE_EXPORT_PHONE_HEADER if old_index < 0 else columns[old_index]
+        for old_index in ordered
+    ]
+    if next_columns == columns:
+        return table, document_json
+
+    column_map = _attendance_export_column_map(ordered)
+    field_row_index = int(document_json.get("field_row_index") or table.field_row_index or 0)
+    # ``data_start_row`` is a zero-based grid index; the note row sits just above it.
+    data_start_index = _normalize_document_data_start_row(document_json)
+    source_grid = table.grid_rows or [
+        columns,
+        *[[item.get(header, "") for header in columns] for item in table.rows],
+    ]
+    grid_rows = _attendance_export_grid_rows(
+        source_grid,
+        columns=columns,
+        ordered=ordered,
+        phone_map=phone_map,
+        field_row_index=field_row_index,
+        data_start_index=data_start_index,
+    )
+    next_document = dict(document_json)
+    next_document["columns"] = next_columns
+    next_document["grid_rows"] = grid_rows
+
+    source_rows = document_json.get("rows")
+    if isinstance(source_rows, list):
+        next_document["rows"] = _attendance_export_grid_rows(
+            source_rows,
+            columns=columns,
+            ordered=ordered,
+            phone_map=phone_map,
+            field_row_index=-1,
+            data_start_index=0,
+        )
+
+    anchor_index = _get_column_index(columns, ATTENDANCE_EXPORT_PHONE_ANCHOR_HEADER)
+    row_count = max(len(grid_rows), 1)
+
+    source_ids = document_json.get("column_ids")
+    if isinstance(source_ids, list) and len(source_ids) == len(columns):
+        anchor_id = source_ids[anchor_index] if 0 <= anchor_index < len(source_ids) else ""
+        next_ids: list[Any] = []
+        for old_index in ordered:
+            if old_index >= 0:
+                next_ids.append(source_ids[old_index])
+            elif anchor_id:
+                next_ids.append(f"{anchor_id}_phone")
+            else:
+                next_ids.append(_new_sheet_column_id())
+        next_document["column_ids"] = next_ids
+
+    source_widths = document_json.get("column_widths")
+    if isinstance(source_widths, list):
+        anchor_width = source_widths[anchor_index] if 0 <= anchor_index < len(source_widths) else None
+        next_widths: list[Any] = []
+        for old_index in ordered:
+            if old_index < 0:
+                next_widths.append(anchor_width or 118)
+            else:
+                next_widths.append(source_widths[old_index] if old_index < len(source_widths) else None)
+        next_document["column_widths"] = next_widths
+
+    source_configs = document_json.get("column_configs")
+    if isinstance(source_configs, dict) and source_configs:
+        next_configs: dict[str, Any] = {}
+        for old_index, new_index in column_map.items():
+            config = source_configs.get(columns[old_index])
+            next_configs[next_columns[new_index]] = deepcopy(config) if isinstance(config, dict) else {}
+        if phone_index is not None:
+            anchor_config = source_configs.get(columns[anchor_index]) if anchor_index >= 0 else None
+            phone_config = deepcopy(anchor_config) if isinstance(anchor_config, dict) else {}
+            phone_config.pop("hidden", None)
+            next_configs[ATTENDANCE_EXPORT_PHONE_HEADER] = phone_config
+        next_document["column_configs"] = next_configs
+
+    source_meta = document_json.get("cell_meta")
+    if isinstance(source_meta, dict):
+        next_meta: dict[str, Any] = {}
+        anchor_meta_by_row: dict[int, Any] = {}
+        for key, value in source_meta.items():
+            coordinates = _attendance_export_cell_coordinates(key)
+            if coordinates is None:
+                continue
+            source_row, source_column = coordinates
+            if source_column == anchor_index:
+                anchor_meta_by_row[source_row] = value
+            if source_column in column_map:
+                next_meta[f"{source_row}:{column_map[source_column]}"] = value
+        if phone_index is not None:
+            for source_row, value in anchor_meta_by_row.items():
+                next_meta.setdefault(f"{source_row}:{phone_index}", deepcopy(value))
+        next_document["cell_meta"] = next_meta
+
+    source_merged = document_json.get("merged_cells")
+    if isinstance(source_merged, list):
+        next_merged: list[dict[str, Any]] = []
+        for item in source_merged:
+            merged = _normalize_sheet_merged_cell(item, row_count=row_count, column_count=len(columns))
+            if merged is None:
+                continue
+            for new_column, new_span in _attendance_export_column_runs(
+                column_map,
+                merged["col"],
+                merged["colspan"],
+                derived_column=phone_index,
+            ):
+                next_merged.append({
+                    "row": merged["row"],
+                    "col": new_column,
+                    "rowspan": merged["rowspan"],
+                    "colspan": new_span,
+                })
+        next_document["merged_cells"] = next_merged
+
+    source_groups = document_json.get("header_groups")
+    if isinstance(source_groups, list):
+        next_groups: list[list[dict[str, Any]]] = []
+        for group_row in source_groups:
+            if not isinstance(group_row, list):
+                continue
+            cursor = 0
+            next_group_row: list[dict[str, Any]] = []
+            for cell in group_row:
+                if not isinstance(cell, dict):
+                    cursor += 1
+                    continue
+                try:
+                    span = max(int(cell.get("colspan") or 1), 1)
+                except (TypeError, ValueError):
+                    span = 1
+                for position, (_new_column, new_span) in enumerate(
+                    _attendance_export_column_runs(column_map, cursor, span)
+                ):
+                    next_group_row.append({
+                        **cell,
+                        "label": cell.get("label") if position == 0 else "",
+                        "colspan": new_span,
+                    })
+                cursor += span
+            if phone_index is not None:
+                _attendance_export_insert_group_cell(next_group_row, phone_index)
+            next_groups.append(next_group_row)
+        next_document["header_groups"] = next_groups
+
+    data_rows = _attendance_export_grid_rows(
+        [[item.get(header, "") for header in columns] for item in table.rows],
+        columns=columns,
+        ordered=ordered,
+        phone_map=phone_map,
+        field_row_index=-1,
+        data_start_index=0,
+    )
+    next_table = table.model_copy(update={
+        "columns": next_columns,
+        "rows": [dict(zip(next_columns, row)) for row in data_rows],
+        "grid_rows": grid_rows,
+    })
+    return next_table, next_document
+
+
+def _resolve_attendance_export_phone_map(
+    session: Session,
+    current_user: User | None,
+    workbook: WorkbookDocument | None,
+) -> dict[str, str] | None:
+    """Read 手机号 from the workbook 报名表, but only for callers allowed to read it."""
+    if workbook is None:
+        return None
+    registration_document = _get_workbook_sheet_by_key_or_title(
+        session,
+        workbook,
+        sheet_key="registration",
+        title="报名表",
+    )
+    if registration_document is None:
+        return None
+    registration_access = _resolve_sheet_resource_access(
+        session,
+        registration_document,
+        current_user,
+        workbook=workbook,
+    )
+    if not registration_access.capabilities.can_read:
+        return None
+    return _build_registration_phone_map(registration_document)
 
 
 def _workbook_export_filename(workbook: WorkbookDocument) -> str:
@@ -19433,6 +20028,47 @@ def _replace_independent_attendance_summary_document(
     return authoritative_result
 
 
+def _persist_attendance_summary_mutation(
+    session: Session,
+    document: SheetDocument,
+    independent_source: dict[str, Any] | None,
+    next_document: dict[str, Any],
+    *,
+    sheet_id: int,
+    workbook_id: int | None,
+    current_user: User | None,
+) -> dict[str, Any]:
+    """把考勤汇总表的改动写回真正拥有这张表的数据源。
+
+    考勤汇总表的权威数据在考勤库，CodeYun 侧的行只是历史外壳。判定必须只留
+    一处：一旦 ``_bind_independent_attendance_document`` 绑定成功，就只能写回
+    考勤库；写外壳会让改动落进一份页面根本不读的旧副本，版本号也会和前端看到
+    的版本错开。
+    """
+
+    if independent_source is None:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id if current_user is not None else None
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        _broadcast_sheet_resource_update(document)
+        return _normalize_document_json(dict(document.document_json or {}))
+
+    # 先结束 CodeYun 侧事务，避免两侧数据库写锁互相等待。
+    session.commit()
+    result = _replace_independent_attendance_summary_document(
+        document,
+        independent_source,
+        next_document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
+    return _normalize_document_json(dict(result.get("document_json") or {}))
+
+
 def _patch_independent_attendance_document(
     document: SheetDocument,
     source: dict[str, Any],
@@ -19806,11 +20442,23 @@ def export_note_sheet(
             value_mode="text",
             defined_names=_defined_names_for_formula(session, document, workbook),
         )
+    # Standalone sheet pages open without workbook_id; resolving the owning
+    # workbook keeps both the download name and the 报名表 lookup identical to the
+    # workbook view.
+    export_workbook = _resolve_workbook_for_sheet(session, document, workbook)
+    document_json = dict(document.document_json or {})
+    text_columns: set[str] = set()
+    if _is_attendance_export_sheet(document):
+        phone_map = _resolve_attendance_export_phone_map(session, current_user, export_workbook)
+        table, document_json = _customize_attendance_export(table, document_json, phone_map=phone_map)
+        if phone_map is not None:
+            text_columns.add(ATTENDANCE_EXPORT_PHONE_HEADER)
     raw_bytes = _build_sheet_export_workbook_bytes(
         table,
-        document_json=dict(document.document_json or {}),
+        document_json=document_json,
+        text_columns=text_columns,
     )
-    filename = _sheet_export_filename(workbook, document)
+    filename = _sheet_export_filename(export_workbook, document)
     return StreamingResponse(
         io.BytesIO(raw_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -21428,25 +22076,15 @@ def generate_attendance_summary_next_month_templates(
     )
 
     if current_document != next_document:
-        if independent_attendance is not None:
-            session.commit()
-            result = _replace_independent_attendance_summary_document(
-                document,
-                independent_attendance,
-                next_document,
-                sheet_id=sheet_id,
-                workbook_id=workbook_id,
-            )
-            next_document = _normalize_document_json(dict(result["document_json"] or {}))
-        else:
-            document.document_json = next_document
-            document.version = max(int(document.version or 1), 1) + 1
-            document.updated_by_user_id = current_user.id
-            document.updated_at = time.time()
-            session.add(document)
-            session.commit()
-            session.refresh(document)
-            _broadcast_sheet_resource_update(document)
+        next_document = _persist_attendance_summary_mutation(
+            session,
+            document,
+            independent_attendance,
+            next_document,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+            current_user=current_user,
+        )
     else:
         next_document = current_document
 
@@ -21513,25 +22151,15 @@ def generate_attendance_summary_course_template(
     )
 
     if current_document != next_document:
-        if independent_attendance is not None:
-            session.commit()
-            result = _replace_independent_attendance_summary_document(
-                document,
-                independent_attendance,
-                next_document,
-                sheet_id=sheet_id,
-                workbook_id=workbook_id,
-            )
-            next_document = _normalize_document_json(dict(result["document_json"] or {}))
-        else:
-            document.document_json = next_document
-            document.version = max(int(document.version or 1), 1) + 1
-            document.updated_by_user_id = current_user.id
-            document.updated_at = time.time()
-            session.add(document)
-            session.commit()
-            session.refresh(document)
-            _broadcast_sheet_resource_update(document)
+        next_document = _persist_attendance_summary_mutation(
+            session,
+            document,
+            independent_attendance,
+            next_document,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+            current_user=current_user,
+        )
     else:
         next_document = current_document
 
@@ -21567,6 +22195,11 @@ def repair_attendance_summary_cell_meta(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -21577,14 +22210,15 @@ def repair_attendance_summary_cell_meta(
     next_document, repaired = _repair_attendance_summary_cell_meta(current_document)
 
     if repaired:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        _broadcast_sheet_resource_update(document)
+        next_document = _persist_attendance_summary_mutation(
+            session,
+            document,
+            independent_attendance,
+            next_document,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+            current_user=current_user,
+        )
     else:
         next_document = current_document
 
@@ -21618,6 +22252,11 @@ def list_attendance_summary_course_script_statuses(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -21647,6 +22286,11 @@ def generate_attendance_summary_course_script(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -21671,6 +22315,11 @@ def organize_attendance_summary_course_scripts(
         current_user,
         sheet_id,
         required_role="editor",
+        workbook_id=workbook_id,
+    )
+    _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
         workbook_id=workbook_id,
     )
     if current_user is None:
@@ -21700,6 +22349,11 @@ def update_attendance_summary_link_counts(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -21715,14 +22369,15 @@ def update_attendance_summary_link_counts(
     )
 
     if current_document != next_document:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        _broadcast_sheet_resource_update(document)
+        next_document = _persist_attendance_summary_mutation(
+            session,
+            document,
+            independent_attendance,
+            next_document,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+            current_user=current_user,
+        )
     else:
         next_document = current_document
 
@@ -21757,6 +22412,11 @@ def set_attendance_summary_row_completed(
         required_role="editor",
         workbook_id=workbook_id,
     )
+    independent_attendance = _bind_independent_attendance_document(
+        document,
+        sheet_id=sheet_id,
+        workbook_id=workbook_id,
+    )
     if current_user is None:
         raise HTTPException(status_code=403, detail="没有该资源权限")
     if not _is_attendance_summary_document(session, document):
@@ -21775,14 +22435,15 @@ def set_attendance_summary_row_completed(
     )
 
     if current_document != next_document:
-        document.document_json = next_document
-        document.version = max(int(document.version or 1), 1) + 1
-        document.updated_by_user_id = current_user.id
-        document.updated_at = time.time()
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        _broadcast_sheet_resource_update(document)
+        next_document = _persist_attendance_summary_mutation(
+            session,
+            document,
+            independent_attendance,
+            next_document,
+            sheet_id=sheet_id,
+            workbook_id=workbook_id,
+            current_user=current_user,
+        )
     else:
         next_document = current_document
 

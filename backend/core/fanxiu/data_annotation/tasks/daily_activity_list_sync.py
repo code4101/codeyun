@@ -19,13 +19,7 @@ from backend.core.fanxiu.activity.daily_activity_discovery import (
     DEFAULT_TIMEZONE,
     read_daily_activity_discovery_plan,
 )
-from backend.core.fanxiu.activity.daily_activity_job_registry import (
-    build_authorized_daily_activity_job_schedule,
-)
-from backend.core.fanxiu.activity.ranking_lifecycle import (
-    RETIRED_GAMEPLAY_RANKING_TASK_IDS,
-    RETIRED_RESOURCE_RANKING_TASK_IDS,
-)
+from backend.core.fanxiu.activity.theme_collection import THEME_COLLECTION_TASK_ID
 from backend.core.fanxiu.activity.daily_activity_sync import (
     synchronize_daily_activity_plan,
 )
@@ -233,8 +227,12 @@ def run_daily_activity_list_sync_flow(
         if not isinstance(persisted, dict):
             raise RuntimeError("活动_每日清单同步：正式同步返回结构无效")
         _require_sync_result(persisted, persist=True)
-        job_schedule = build_authorized_daily_activity_job_schedule(
-            plan,
+        from backend.core.fanxiu.data_annotation.tasks.theme_collection import (
+            read_theme_collection_plan,
+        )
+
+        theme_plan = read_theme_collection_plan(
+            plan=plan,
             now=datetime.now(ZoneInfo(timezone_name)),
             timezone_name=timezone_name,
         )
@@ -246,7 +244,9 @@ def run_daily_activity_list_sync_flow(
             "noop_count": int(persisted.get("noop_count") or 0),
             "review_count": int(persisted.get("review_count") or 0),
             "reviews": list(persisted.get("reviews") or []),
-            "job_schedule": job_schedule,
+            # The single canonical aggregation plan.  It is now the only
+            # authority allowed to move a theme Job trigger.
+            "theme_plan": theme_plan,
             "current_scene": 34,
         }
     except (InterruptedError, GeneratorExit):
@@ -299,19 +299,15 @@ def run_daily_activity_list_sync_flow(
             if wanxiang_opens_on_date(period, plan["target_date"], timezone_name):
                 result["wanxiang_baoge"] = yield from run_wanxiang_baoge_flow(context)
 
-    desired_next_times = result["job_schedule"]["desired_next_times"]
-    retired_writes = sorted(
-        set(desired_next_times).intersection(
-            RETIRED_GAMEPLAY_RANKING_TASK_IDS | RETIRED_RESOURCE_RANKING_TASK_IDS
-        )
-    )
-    if retired_writes:
-        raise RuntimeError(
-            "活动_每日清单同步不得改写榜单内部子任务 next_time："
-            + ", ".join(retired_writes)
-        )
-    for task_id, next_time in desired_next_times.items():
-        context.set_job_next_time(task_id, next_time)
+    theme_plan = result["theme_plan"]
+    # The daily synchronizer only triggers the aggregation.  It writes the one
+    # canonical theme-collection trigger and never a retired first-level id; an
+    # incomplete theme plan schedules a bounded retry instead of clearing it.
+    theme_next_time = (
+        theme_plan.get("next_time") if theme_plan.get("plan_ready") else None
+    ) or theme_plan.get("retry_at")
+    if theme_plan.get("plan_ready") or theme_next_time:
+        context.set_job_next_time(THEME_COLLECTION_TASK_ID, theme_next_time)
     context.set_next_time(
         next_daily_activity_list_sync_time(current).strftime("%Y-%m-%d %H:%M:%S")
     )
@@ -319,7 +315,8 @@ def run_daily_activity_list_sync_flow(
         "活动_每日清单同步完成："
         f"新增 {result['created_count']}，已存在 {result['noop_count']}，"
         f"待复核 {result['review_count']}，"
-        f"活动作业 {len(result['job_schedule']['decisions'])} 项"
+        f"主题集计划 {'就绪' if theme_plan.get('plan_ready') else '待重试'}"
+        f"（{len(theme_plan.get('occurrences') or [])} 个实例）"
     )
     if "wanxiang_baoge" in result:
         review = result["wanxiang_baoge"]

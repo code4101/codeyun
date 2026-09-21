@@ -1010,6 +1010,7 @@ type SheetViewSettings = {
   column_note_display?: ColumnNoteDisplayMode
   height_mode?: SheetHeightMode
   mobile_default_view?: SheetMobileDefaultView
+  frozen_row_count?: number
   frozen_column_count?: number
   pagination?: {
     enabled?: boolean
@@ -2639,10 +2640,14 @@ const pageWorkingRowCount = computed(() => trimTrailingBlankRows(
   rows.value.map((row) => normalizeRow(row, columnHeaders.value)),
 ).length)
 const paginationEnabled = computed(() => sheetViewSettings.value.pagination.enabled)
-const fixedColumnsStart = computed(() => normalizeFrozenColumnCount(
+const sheetColumnFreezeFits = ref(false)
+const sheetRowFreezeFits = ref(false)
+let sheetFreezeMeasurementFrame: number | null = null
+const configuredFrozenColumns = computed(() => normalizeFrozenColumnCount(
   sheetViewSettings.value.frozen_column_count,
   columnHeaders.value.length,
 ))
+const fixedColumnsStart = computed(() => sheetColumnFreezeFits.value ? configuredFrozenColumns.value : 0)
 const effectivePaginationEnabled = computed(() => (
   paginationEnabled.value && (pageCount.value > 1 || totalRowCount.value > pageSize.value)
 ))
@@ -3961,6 +3966,15 @@ const sheetGridRows = computed<SheetRow[]>(() => {
   ]
 })
 
+const configuredFrozenRows = computed(() => Math.min(
+  Math.max(
+    sheetHeaderRowCount.value,
+    normalizeFrozenRowCount(sheetViewSettings.value.frozen_row_count, sheetGridRows.value.length),
+  ),
+  sheetGridRows.value.length,
+))
+const fixedRowsTop = computed(() => sheetRowFreezeFits.value ? configuredFrozenRows.value : 0)
+
 const sheetHotGridRows = computed<SheetRow[]>(() => {
   if (rowMarkerColumnCount.value <= 0) {
     return sheetGridRows.value
@@ -5164,24 +5178,6 @@ const contextMenu = {
         ],
       },
     },
-    hsep_freeze_pane: {
-      name: '---------',
-      hidden: () => !shouldShowFreezePaneContextMenuGroup(),
-    },
-    freeze_pane_here: {
-      name: '在此处冻结窗口',
-      hidden: () => !canFreezePaneAtSelection(),
-      callback: () => {
-        freezePanesAtSelectedColumn()
-      },
-    },
-    unfreeze_pane: {
-      name: '取消冻结窗口',
-      hidden: () => !canUnfreezePanesFromSelection(),
-      callback: () => {
-        setFrozenColumnCount(0)
-      },
-    },
     column_settings: {
       name: '设置字段',
       hidden: () => !hasColumnSettingsContextSelection() || !canEditConfig.value,
@@ -5267,6 +5263,22 @@ const contextMenu = {
       hidden: () => !canEditConfig.value,
       submenu: {
         items: [
+          {
+            key: 'sheet_advanced:freeze_pane',
+            name: '在此处冻结窗口',
+            hidden: () => !canFreezePaneAtSelection(),
+            callback: () => {
+              freezePanesAtSelectedCell()
+            },
+          },
+          {
+            key: 'sheet_advanced:unfreeze_pane',
+            name: '取消冻结窗口',
+            hidden: () => !canUnfreezePanesFromSelection(),
+            callback: () => {
+              unfreezePanes()
+            },
+          },
           {
             key: 'sheet_advanced:hide_empty_columns',
             name: '隐藏空列',
@@ -6025,6 +6037,10 @@ function isAttendanceRefundedColumn(columnIndex: number) {
 }
 
 function getSelectedAttendanceRefundedColumnIndex() {
+  if (!getSelectionRowBounds()) {
+    return null
+  }
+
   const selection = normalizeHotSelectionRange(getHotInstance()?.getSelectedLast())
   if (!selection) {
     return null
@@ -9560,6 +9576,7 @@ function createDefaultSheetViewSettings(heightMode: SheetHeightMode = DEFAULT_SH
     column_note_display: 'none',
     height_mode: heightMode,
     mobile_default_view: 'sheet',
+    frozen_row_count: 0,
     frozen_column_count: 0,
     pagination: {
       enabled: false,
@@ -9634,6 +9651,17 @@ function normalizeFrozenColumnCount(value: unknown, columnCount = Number.MAX_SAF
   return Math.min(Math.max(Math.floor(numeric), 0), maxColumnCount)
 }
 
+function normalizeFrozenRowCount(value: unknown, rowCount = Number.MAX_SAFE_INTEGER) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return 0
+  }
+  const maxRowCount = Number.isFinite(rowCount)
+    ? Math.max(0, Math.floor(rowCount))
+    : Number.MAX_SAFE_INTEGER
+  return Math.min(Math.max(Math.floor(numeric), 0), maxRowCount)
+}
+
 function normalizeSheetViewSettings(
   source: unknown,
   columnCount = Number.MAX_SAFE_INTEGER,
@@ -9656,6 +9684,7 @@ function normalizeSheetViewSettings(
     column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display, defaults.column_note_display),
     height_mode: normalizeSheetHeightMode(record.height_mode, defaultHeightMode),
     mobile_default_view: normalizeSheetMobileDefaultView(record.mobile_default_view),
+    frozen_row_count: normalizeFrozenRowCount(record.frozen_row_count),
     frozen_column_count: normalizeFrozenColumnCount(record.frozen_column_count, columnCount),
     pagination: (() => {
       const pagination = record.pagination
@@ -14864,7 +14893,7 @@ function getRowMarkerSelectionAnchor(gridRow: number, extendSelection: boolean) 
 
 function selectRowFromMarker(gridRow: number, extendSelection = false) {
   const hot = getHotInstance()
-  if (!hot || gridRow < sheetHeaderRowCount.value) {
+  if (!hot || gridRow < 0) {
     return false
   }
 
@@ -15418,6 +15447,7 @@ async function prepareSheetHotViewportBeforeMount(reason = 'beforeHotMount') {
 }
 
 function handleWindowResize() {
+  scheduleSheetFreezeMeasurement()
   if (isSheetDocumentHidden()) {
     return
   }
@@ -15547,6 +15577,7 @@ function refreshSheetOverlayAlignment() {
   const walkontable = view?._wt
   const overlays = walkontable?.wtOverlays
   try {
+    hot.render()
     syncSheetOverlayScrollFromMaster()
     view?.adjustElementsSize?.()
     overlays?.syncScrollPositions?.()
@@ -15554,7 +15585,6 @@ function refreshSheetOverlayAlignment() {
     overlays?.adjustElementsSize?.()
     overlays?.refresh?.(true)
     overlays?.refreshAll?.()
-    walkontable?.draw?.(true)
     walkontable?.selectionManager?.refreshAllBorderHandleStyles?.()
     syncSheetOverlayScrollFromMaster()
     scheduleSheetOverlayScrollSyncFromMaster()
@@ -15592,6 +15622,45 @@ function shouldRealignOverlayForSelection(row: number, column: number) {
   return !!merge && (merge.rowspan > 1 || merge.colspan > 1)
 }
 
+function scheduleSheetFreezeMeasurement() {
+  if (typeof window === 'undefined' || sheetFreezeMeasurementFrame != null) return
+  sheetFreezeMeasurementFrame = window.requestAnimationFrame(() => {
+    sheetFreezeMeasurementFrame = null
+    const frame = sheetFrameRef.value
+    const holder = frame?.querySelector<HTMLElement>('.ht_master .wtHolder')
+    const hot = getHotInstance()
+    if (!frame || !holder || !hot || isSheetDocumentHidden()) return
+
+    const bounds = holder.getBoundingClientRect()
+    const viewport = window.visualViewport
+    const viewportLeft = viewport?.offsetLeft ?? 0
+    const viewportTop = viewport?.offsetTop ?? 0
+    const width = Math.max(0, Math.min(bounds.left + holder.clientWidth, viewportLeft + (viewport?.width ?? window.innerWidth)) - Math.max(bounds.left, viewportLeft))
+    const height = Math.max(0, Math.min(bounds.top + holder.clientHeight, viewportTop + (viewport?.height ?? window.innerHeight)) - Math.max(bounds.top, viewportTop))
+    if (width <= 0 || height <= 0) return
+
+    const hiddenColumns = hotHiddenColumnIndexSet.value
+    let frozenWidth = rowMarkerColumnCount.value > 0 ? rowMarkerColumnWidth.value : 0
+    for (let column = 0; column < configuredFrozenColumns.value; column += 1) {
+      const hotColumn = toHotColumnIndex(column)
+      if (!hiddenColumns.has(hotColumn)) {
+        frozenWidth += hot.getColWidth(hotColumn)
+      }
+    }
+
+    const hiddenRows = new Set(sheetFilterHiddenRows.value)
+    const header = holder.querySelector('thead')
+    let frozenHeight = header instanceof HTMLElement ? header.offsetHeight : 0
+    for (let row = 0; row < configuredFrozenRows.value; row += 1) {
+      if (!hiddenRows.has(row)) {
+        frozenHeight += hot.getRowHeight(row) ?? sheetHotRenderRowHeightResolver.value(row)
+      }
+    }
+    sheetColumnFreezeFits.value = frozenWidth <= width / 2
+    sheetRowFreezeFits.value = frozenHeight <= height / 2
+  })
+}
+
 function bindSheetLayoutObserver() {
   sheetLayoutObserver?.disconnect()
   sheetLayoutObserver = null
@@ -15606,12 +15675,14 @@ function bindSheetLayoutObserver() {
   }
 
   sheetLayoutObserver = new ResizeObserver(() => {
+    scheduleSheetFreezeMeasurement()
     if (isSheetDocumentHidden()) {
       return
     }
     void updateSheetViewportHeight('layoutResizeObserver')
   })
   sheetLayoutObserver.observe(scrollContainer)
+  if (sheetFrameRef.value) sheetLayoutObserver.observe(sheetFrameRef.value)
 }
 
 function syncRowsFromGrid() {
@@ -15646,7 +15717,7 @@ function refreshGridStructure() {
     colHeaders: sheetColumnHeaders.value,
     colWidths: [...sheetHotColumnWidths.value],
     rowHeaders: false,
-    fixedRowsTop: sheetHeaderRowCount.value,
+    fixedRowsTop: fixedRowsTop.value,
     fixedColumnsStart: fixedHotColumnsStart.value,
     hiddenColumns: {
       columns: [...hotHiddenColumnIndexes.value],
@@ -16344,7 +16415,7 @@ function handleBeforeColumnMove(
     updateHotSettingsWithMergeReset(hot, {
       colHeaders: sheetColumnHeaders.value,
       colWidths: [...sheetHotColumnWidths.value],
-      fixedRowsTop: sheetHeaderRowCount.value,
+      fixedRowsTop: fixedRowsTop.value,
       fixedColumnsStart: fixedHotColumnsStart.value,
       mergeCells: sheetHotRenderMergeCells.value,
     })
@@ -17497,6 +17568,7 @@ function areSheetViewSettingsEqual(left: SheetViewSettings, right: SheetViewSett
     && normalizedLeft.column_note_display === normalizedRight.column_note_display
     && normalizedLeft.height_mode === normalizedRight.height_mode
     && normalizedLeft.mobile_default_view === normalizedRight.mobile_default_view
+    && normalizedLeft.frozen_row_count === normalizedRight.frozen_row_count
     && normalizedLeft.frozen_column_count === normalizedRight.frozen_column_count
     && normalizedLeft.pagination.enabled === normalizedRight.pagination.enabled
     && normalizedLeft.pagination.page_size === normalizedRight.pagination.page_size
@@ -21950,63 +22022,87 @@ function getSingleSelectedColumnIndex() {
   return bounds.start
 }
 
-function getSingleFreezePaneTargetColumnIndex() {
-  const selectedColumn = getSingleSelectedColumnIndex()
-  if (selectedColumn != null) {
-    return selectedColumn
-  }
-  return getSelectedColumnHeaderCellIndex()
+function hasFreezePaneContextSelection() {
+  return hasColumnHeaderSelection() || !!getSingleSelectedSheetCell() || !!selectedSheetHeaderCell.value
 }
 
-function hasFreezePaneContextSelection() {
-  return hasColumnHeaderSelection() || !!selectedSheetHeaderCell.value
+function getFreezePaneTarget() {
+  const selectedColumn = getSingleSelectedColumnIndex() ?? getSelectedColumnHeaderCellIndex()
+  if (selectedColumn != null) {
+    return {
+      rowCount: normalizeFrozenRowCount(sheetViewSettings.value.frozen_row_count),
+      columnCount: selectedColumn + 1,
+    }
+  }
+
+  const selectedCell = getSingleSelectedSheetCell()
+  if (!selectedCell) {
+    return null
+  }
+
+  return {
+    rowCount: selectedCell.row,
+    columnCount: selectedCell.column,
+  }
 }
 
 function canFreezePaneAtSelection() {
-  return canEditConfig.value && getSingleFreezePaneTargetColumnIndex() != null
+  return canEditConfig.value && !!getFreezePaneTarget()
 }
 
 function canUnfreezePanesFromSelection() {
-  return canEditConfig.value && fixedColumnsStart.value > 0 && hasFreezePaneContextSelection()
+  return canEditConfig.value
+    && (configuredFrozenColumns.value > 0 || configuredFrozenRows.value > sheetHeaderRowCount.value)
+    && hasFreezePaneContextSelection()
 }
 
-function shouldShowFreezePaneContextMenuGroup() {
-  return canFreezePaneAtSelection() || canUnfreezePanesFromSelection()
-}
-
-function setFrozenColumnCount(columnCount: number) {
+function setFrozenPaneCounts(rowCount: number, columnCount: number) {
   if (!ensureCanEditConfig()) {
     return
   }
 
-  const nextCount = normalizeFrozenColumnCount(columnCount, columnHeaders.value.length)
-  const currentCount = fixedColumnsStart.value
-  if (nextCount === currentCount && sheetViewSettings.value.frozen_column_count === nextCount) {
+  const nextRowCount = normalizeFrozenRowCount(rowCount, sheetGridRows.value.length)
+  const nextColumnCount = normalizeFrozenColumnCount(columnCount, columnHeaders.value.length)
+  const currentRowCount = normalizeFrozenRowCount(sheetViewSettings.value.frozen_row_count)
+  const currentColumnCount = configuredFrozenColumns.value
+  if (
+    nextRowCount === currentRowCount
+    && nextColumnCount === currentColumnCount
+    && sheetViewSettings.value.frozen_row_count === nextRowCount
+    && sheetViewSettings.value.frozen_column_count === nextColumnCount
+  ) {
     return
   }
 
   const undoEntry = createLocalUndoEntry('freeze-pane')
   sheetViewSettings.value = normalizeSheetViewSettings({
     ...sheetViewSettings.value,
-    frozen_column_count: nextCount,
+    frozen_row_count: nextRowCount,
+    frozen_column_count: nextColumnCount,
   }, columnHeaders.value.length)
   refreshGridStructure()
   pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
 
-  if (nextCount > 0) {
-    ElMessage.success(`已冻结到 ${getColumnMarkerLabel(nextCount - 1)} 列`)
+  if (nextRowCount > 0 || nextColumnCount > 0) {
+    const rowLabel = nextRowCount > 0 ? `第 ${nextRowCount} 行` : '无行'
+    const columnLabel = nextColumnCount > 0 ? `${getColumnMarkerLabel(nextColumnCount - 1)} 列` : '无列'
+    ElMessage.success(`已冻结到 ${rowLabel}、${columnLabel}`)
   } else {
-    ElMessage.success('已取消冻结窗口')
+    ElMessage.success('已取消自定义冻结窗口')
   }
 }
 
-function freezePanesAtSelectedColumn() {
-  const columnIndex = getSingleFreezePaneTargetColumnIndex()
-  if (columnIndex == null) {
+function freezePanesAtSelectedCell() {
+  const target = getFreezePaneTarget()
+  if (!target) {
     return
   }
-  setFrozenColumnCount(columnIndex + 1)
+  setFrozenPaneCounts(target.rowCount, target.columnCount)
+}
+
+function unfreezePanes() {
+  setFrozenPaneCounts(0, 0)
 }
 
 function isFreezeColumnBoundary(columnIndex: number) {
@@ -22014,7 +22110,7 @@ function isFreezeColumnBoundary(columnIndex: number) {
 }
 
 function isFreezeRowBoundary(rowIndex: number) {
-  return sheetHeaderRowCount.value > 0 && rowIndex === sheetHeaderRowCount.value - 1
+  return fixedRowsTop.value > 0 && rowIndex === fixedRowsTop.value - 1
 }
 
 function applyFreezePaneBoundaryClasses(element: HTMLElement, rowIndex: number, columnIndex: number) {
@@ -28296,6 +28392,7 @@ function handleBeforeRender(isForced: boolean) {
 }
 
 function handleAfterRender(isForced: boolean) {
+  scheduleSheetFreezeMeasurement()
   scheduleInlineEditorCellStyleSync()
   updateRichTextContentEditorPosition()
   if (!sheetPerfLoggingEnabled.value) {
@@ -29026,6 +29123,26 @@ watch(
   { deep: true },
 )
 
+watch([fixedColumnsStart, fixedRowsTop], () => {
+  scheduleSheetOverlayAlignment()
+}, { flush: 'post' })
+
+watch([
+  configuredFrozenColumns,
+  configuredFrozenRows,
+  sheetHotColumnWidths,
+  sheetFilterHiddenRows,
+  hotHiddenColumnIndexes,
+  rowHeightLayoutState,
+], () => {
+  scheduleSheetFreezeMeasurement()
+}, { flush: 'post' })
+
+watch(sheetFrameRef, () => {
+  bindSheetLayoutObserver()
+  scheduleSheetFreezeMeasurement()
+}, { flush: 'post' })
+
 onMounted(() => {
   markBootPerf('note-sheet-workspace.mounted', {
     sheetId: props.sheetId ?? null,
@@ -29034,9 +29151,11 @@ onMounted(() => {
     hasInlineDocument: hasInlineDocument.value,
   })
   installSheetPerfLogger()
+  scheduleSheetFreezeMeasurement()
   touchContextMenuFallbackEnabled.value = shouldEnableTouchContextMenuFallback()
   bindSheetLayoutObserver()
   window.addEventListener('resize', handleWindowResize)
+  window.visualViewport?.addEventListener('resize', handleWindowResize)
   window.addEventListener('scroll', handleWindowScroll, true)
   window.addEventListener('mousedown', handleGlobalMouseDown)
   document.addEventListener('visibilitychange', handleSheetVisibilityChange)
@@ -29063,6 +29182,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (sheetFreezeMeasurementFrame != null) {
+    window.cancelAnimationFrame(sheetFreezeMeasurementFrame)
+    sheetFreezeMeasurementFrame = null
+  }
   closeSheetResourceSocket()
   closeRichTextContentEditor({ save: true })
   clearSheetRenderEnhancementFrame()
@@ -29087,6 +29210,7 @@ onBeforeUnmount(() => {
   clearFormulaReferencePointerDownReset()
   studentLookupFeedbackHistoryRequestId += 1
   window.removeEventListener('resize', handleWindowResize)
+  window.visualViewport?.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('scroll', handleWindowScroll, true)
   window.removeEventListener('mousedown', handleGlobalMouseDown)
   document.removeEventListener('visibilitychange', handleSheetVisibilityChange)
@@ -29410,7 +29534,7 @@ defineExpose({
       :class="{
         'is-empty': !shouldRenderSheetContent,
         'has-frozen-columns': fixedColumnsStart > 0,
-        'has-frozen-rows': sheetHeaderRowCount > 0,
+        'has-frozen-rows': fixedRowsTop > 0,
       }"
       @contextmenu.capture="openSheetContextMenuAt"
     >
@@ -29424,7 +29548,7 @@ defineExpose({
         :col-headers="sheetColumnHeaders"
         :col-widths="sheetHotColumnWidths"
         :row-headers="false"
-        :fixed-rows-top="sheetHeaderRowCount"
+        :fixed-rows-top="fixedRowsTop"
         :fixed-columns-start="fixedHotColumnsStart"
         :merge-cells="sheetHotRenderMergeCells"
         :hidden-columns="sheetHotHiddenColumnsSettings"

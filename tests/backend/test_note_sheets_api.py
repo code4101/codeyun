@@ -4793,6 +4793,297 @@ def test_note_sheet_attendance_export_inserts_registration_phone_after_nickname(
         _clear_user_override()
 
 
+def _attendance_export_document_json() -> dict:
+    columns = ["分组", "学号", "姓名", "昵称", "考试资格", "视频应返款", "已返款", "共修打卡-持诵门"]
+    return {
+        "schema_version": 1,
+        "columns": columns,
+        "field_row_index": 1,
+        "data_start_row": 3,
+        "header_groups": [[
+            {"label": "用户信息", "colspan": 1},
+            {"label": "", "colspan": 1},
+            {"label": "", "colspan": 1},
+            {"label": "", "colspan": 1},
+            {"label": "课程结果", "colspan": 1},
+            {"label": "", "colspan": 1},
+            {"label": "", "colspan": 1},
+            {"label": "打卡数据", "colspan": 1},
+        ]],
+        "merged_cells": [
+            {"row": 0, "col": 0, "rowspan": 1, "colspan": 4},
+            {"row": 0, "col": 5, "rowspan": 1, "colspan": 2},
+        ],
+        "column_configs": {
+            "视频应返款": {"hidden": True, "value_type": "number"},
+            "已返款": {"hidden": True, "value_type": "number"},
+        },
+        "column_widths": [88, 88, 88, 124, 88, 99, 99, 99],
+        "cell_meta": {
+            "0:0": {"style": {"background_color": "#5B8FC9", "text_color": "#000000"}},
+            "0:3": {"style": {"background_color": "#5B8FC9", "text_color": "#000000"}},
+            "1:3": {"style": {"background_color": "#D9EAF7", "text_color": "#000000"}},
+        },
+        "grid_rows": [
+            ["用户信息", "", "", "", "课程结果", "", "", "打卡数据"],
+            columns,
+            ["", "", "", "", "完成全部课程", "", "", "累计打卡次数"],
+            ["1组", "1_01", "张三", "三三", "是", 700, 0, 12],
+            ["1组", "1_02", "李四", "四四", "否", 700, 0, 8],
+        ],
+        "rows": [
+            ["1组", "1_01", "张三", "三三", "是", 700, 0, 12],
+            ["1组", "1_02", "李四", "四四", "否", 700, 0, 8],
+        ],
+    }
+
+
+def test_note_sheet_export_matches_online_row_heights(client, session):
+    """行高与换行都按线上布局：字段名 nowrap、数据列默认单行、只有 wrap 列撑高。"""
+    owner = _create_user(session, username="sheet-export-row-height-owner")
+    sheet = SheetDocument(
+        numeric_id=9370,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="progress",
+        title="课程进度",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "columns": ["课程", "人数", "说明"],
+            "field_row_index": 0,
+            "data_start_row": 2,
+            "column_configs": {"说明": {"display_mode": "wrap"}},
+            "grid_rows": [
+                ["课程", "人数", "说明"],
+                ["累计开课情况", "", ""],
+                ["念住闯关四十八期", 20, "短"],
+                ["念住", 18, "这是一段足够长的说明文字用来触发折行"],
+            ],
+            "rows": [
+                ["念住闯关四十八期", 20, "短"],
+                ["念住", 18, "这是一段足够长的说明文字用来触发折行"],
+            ],
+        },
+    )
+    session.add(sheet)
+    session.add(ResourceAccessGrant(
+        resource_type="sheet",
+        resource_id=str(sheet.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    response = client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export")
+
+    assert response.status_code == 200
+    worksheet = load_workbook(io.BytesIO(response.content), data_only=True).active
+    assert worksheet.row_dimensions[1].height == 27.0  # 字段行 36px
+    assert worksheet.row_dimensions[2].height == 69.0  # 备注行 92px
+    assert worksheet.row_dimensions[3].height == 21.75  # 数据行 29px
+    assert worksheet.row_dimensions[4].height > 21.75  # wrap 列折行后抬升
+    assert worksheet.row_dimensions[4].height > worksheet.row_dimensions[3].height
+    # 线上字段名是 nowrap + 省略号，单行列也不换行，只有 wrap 列换行。
+    assert not worksheet["A1"].alignment.wrap_text
+    assert worksheet["A2"].alignment.wrap_text is True
+    assert not worksheet["A3"].alignment.wrap_text
+    assert worksheet["C3"].alignment.wrap_text is True
+
+
+def test_note_sheet_export_matches_online_header_formatting(client, session):
+    """通用导出同样要补齐线上表头字体/加粗/居中，否则 Excel 会退回默认宋体左下角。"""
+    owner = _create_user(session, username="sheet-export-header-format-owner")
+    sheet = SheetDocument(
+        numeric_id=9360,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="progress",
+        title="进度表",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "columns": ["课程", "人数"],
+            "field_row_index": 0,
+            "data_start_row": 1,
+            "grid_rows": [["课程", "人数"], ["念住", 20]],
+            "rows": [["念住", 20]],
+            "cell_meta": {"0:0": {"style": {"background_color": "#D9E1F2", "text_color": "#000000"}}},
+        },
+    )
+    session.add(sheet)
+    session.add(ResourceAccessGrant(
+        resource_type="sheet",
+        resource_id=str(sheet.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    response = client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export")
+
+    assert response.status_code == 200
+    worksheet = load_workbook(io.BytesIO(response.content), data_only=True).active
+    assert [worksheet.cell(1, column).value for column in (1, 2)] == ["课程", "人数"]
+    for column in (1, 2):
+        header = worksheet.cell(1, column)
+        assert header.font.name == "Microsoft YaHei"
+        assert header.font.size == 10.5
+        assert header.font.bold is True
+        assert (header.alignment.horizontal, header.alignment.vertical) == ("center", "center")
+    assert worksheet["A2"].font.bold is False
+    assert worksheet["A2"].alignment.vertical == "top"
+
+
+def test_attendance_sheet_export_drops_hidden_finance_and_adds_registration_phone(client, session):
+    """考勤表另存为.xlsx 继承通用导出：去掉隐藏的促学金字段，并在用户信息右侧补手机号。"""
+    user = _create_user(session, username="attendance-sheet-export-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_id = client.post(
+            "/api/note-sheets/workbooks",
+            json={"title": "修道班7期5阶"},
+        ).json()["id"]
+        registration_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["序号", "姓名", "微信昵称", "手机号"],
+                    "rows": [
+                        ["1_01", "张三", "三三", "13800138000"],
+                        ["1_02", "李四", "四四", "13900139000"],
+                    ],
+                },
+            },
+        )
+        assert registration_response.status_code == 200
+        attendance_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "考勤表",
+                "workbook_id": workbook_id,
+                "document_json": _attendance_export_document_json(),
+            },
+        )
+        assert attendance_response.status_code == 200
+        attendance_id = attendance_response.json()["id"]
+
+        response = client.get(f"/api/note-sheets/sheets/{attendance_id}/export")
+
+        assert response.status_code == 200
+        worksheet = load_workbook(io.BytesIO(response.content), data_only=True).active
+        assert [worksheet.cell(2, column).value for column in range(1, 8)] == [
+            "分组",
+            "学号",
+            "姓名",
+            "昵称",
+            "手机号",
+            "考试资格",
+            "共修打卡-持诵门",
+        ]
+        assert [worksheet.cell(4, column).value for column in range(1, 8)] == [
+            "1组",
+            "1_01",
+            "张三",
+            "三三",
+            "13800138000",
+            "是",
+            12,
+        ]
+        assert [worksheet.cell(5, column).value for column in range(1, 8)] == [
+            "1组",
+            "1_02",
+            "李四",
+            "四四",
+            "13900139000",
+            "否",
+            8,
+        ]
+        assert worksheet.max_column == 7
+        assert worksheet.cell(2, 5).number_format == "@"
+        assert ["A1:E1"] == [str(item) for item in worksheet.merged_cells.ranges]
+        assert worksheet["A1"].value == "用户信息"
+        assert worksheet["E2"].value == "手机号"
+
+        # 线上表头样式来自前端 CSS，导出必须补上字体、加粗和居中。
+        group_header = worksheet["A1"]
+        assert group_header.font.name == "Microsoft YaHei"
+        assert group_header.font.size == 10.5
+        assert group_header.font.bold is True
+        assert (group_header.alignment.horizontal, group_header.alignment.vertical) == ("center", "center")
+        phone_header = worksheet["E2"]
+        assert phone_header.font.bold is True
+        assert (phone_header.alignment.horizontal, phone_header.alignment.vertical) == ("center", "center")
+        note_cell = worksheet["E3"]
+        assert note_cell.font.size == 9
+        assert note_cell.font.color.rgb.endswith("5F6368")
+        assert (note_cell.alignment.horizontal, note_cell.alignment.vertical) == ("center", "center")
+        # 线上字段名与数据列默认单行，导出不能擅自打开自动换行。
+        assert not worksheet["B2"].alignment.wrap_text
+        assert not worksheet["C4"].alignment.wrap_text
+        assert note_cell.alignment.wrap_text is True
+        data_cell = worksheet["A4"]
+        assert data_cell.font.bold is False
+        assert (data_cell.alignment.horizontal, data_cell.alignment.vertical) == (None, "top")
+        # 考试资格=是 的高亮在线上由前端条件着色，导出同样要补上。
+        assert worksheet["F4"].value == "是"
+        assert worksheet["F4"].fill.fgColor.rgb.endswith("80FF80")
+        assert worksheet["F5"].value == "否"
+        assert not worksheet["F5"].fill.fgColor.rgb.endswith("80FF80")
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_sheet_export_without_registration_skips_only_hidden_finance(client, session):
+    """没有报名表时不补手机号，隐藏的促学金字段仍然不导出。"""
+    user = _create_user(session, username="attendance-sheet-export-no-registration")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_id = client.post(
+            "/api/note-sheets/workbooks",
+            json={"title": "觉观7期1阶"},
+        ).json()["id"]
+        attendance_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "考勤表",
+                "workbook_id": workbook_id,
+                "document_json": _attendance_export_document_json(),
+            },
+        )
+        assert attendance_response.status_code == 200
+        attendance_id = attendance_response.json()["id"]
+
+        response = client.get(f"/api/note-sheets/sheets/{attendance_id}/export")
+
+        assert response.status_code == 200
+        worksheet = load_workbook(io.BytesIO(response.content), data_only=True).active
+        assert [worksheet.cell(2, column).value for column in range(1, 7)] == [
+            "分组",
+            "学号",
+            "姓名",
+            "昵称",
+            "考试资格",
+            "共修打卡-持诵门",
+        ]
+        assert worksheet.max_column == 6
+    finally:
+        _clear_user_override()
+
+
 def test_note_sheet_registration_user_match_can_disable_browser_fallback(client, session, monkeypatch):
     user = _create_user(session, username="note-sheet-user-match-db-only-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
@@ -6877,6 +7168,64 @@ def test_note_sheet_export_allows_anonymous_viewer_and_exports_current_grid(clie
     assert client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export").status_code == 403
 
 
+def test_note_sheet_export_names_file_after_workbook_not_worksheet(client, session):
+    """另存为.xlsx 默认文件名取工作簿名，工作表名留在 xlsx 内部 tab 上。"""
+    owner = _create_user(session, username="sheet-export-workbook-name-owner")
+    workbook_document = WorkbookDocument(
+        numeric_id=9350,
+        title="念住闯关48期",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    sheet = SheetDocument(
+        numeric_id=9351,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="attendance",
+        title="考勤表",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "columns": ["学号", "姓名"],
+            "data_start_row": 1,
+            "grid_rows": [["学号", "姓名"], ["1_01", "苏桂华"]],
+            "rows": [["1_01", "苏桂华"]],
+        },
+    )
+    session.add(workbook_document)
+    session.add(sheet)
+    session.flush()
+    session.add(WorkbookSheetLink(workbook_id=workbook_document.id, sheet_id=sheet.id, order_index=10))
+    session.add(ResourceAccessGrant(
+        resource_type="workbook",
+        resource_id=str(workbook_document.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    # 独立 /sheet/<id> 页面不带 workbook_id，也要按工作簿名下载。
+    standalone_response = client.get(f"/api/note-sheets/sheets/{sheet.numeric_id}/export")
+    assert standalone_response.status_code == 200
+    standalone_filename = unquote(standalone_response.headers["content-disposition"])
+    assert "念住闯关48期.xlsx" in standalone_filename
+    assert "考勤表" not in standalone_filename
+
+    workbook_response = client.get(
+        f"/api/note-sheets/sheets/{sheet.numeric_id}/export",
+        params={"workbook_id": workbook_document.numeric_id},
+    )
+    assert workbook_response.status_code == 200
+    assert "念住闯关48期.xlsx" in unquote(workbook_response.headers["content-disposition"])
+
+    exported = load_workbook(io.BytesIO(standalone_response.content), data_only=True)
+    assert exported.sheetnames == ["考勤表"]
+
+
 def test_workbook_export_preserves_sheet_order_and_exports_all_readable_sheets(client, session):
     owner = _create_user(session, username="workbook-export-owner")
     workbook_document = WorkbookDocument(
@@ -7021,6 +7370,112 @@ def test_attendance_summary_next_month_templates_can_skip_monthly_course_type(cl
         assert not any(row[0] == "梵呗初阶" and row[2] == "20260709梵呗初阶" for row in rows)
     finally:
         _clear_user_override()
+
+
+def test_course_template_clone_inherits_resource_grants(client, session, monkeypatch):
+    """新课工作簿继承上一届模板时，workbook 和 sheet 两级权限必须一起继承。"""
+    # 结构化注册在真实运行时用全局 engine 再查一次工作簿；测试库里不存在该连接，
+    # 这里只屏蔽这一步，权限继承发生在克隆写入阶段，仍然走真实代码。
+    monkeypatch.setattr(
+        "backend.core.attendance.workbook_registry.register_attendance_workbook_sheets",
+        lambda **_kwargs: [],
+    )
+    owner = _create_user(session, username="course-template-grant-owner")
+    editor = _create_user(session, username="course-template-grant-editor")
+    source_owner_key = "20260714-xiudaoban-13-stage1"
+
+    source_workbook = WorkbookDocument(
+        numeric_id=9600,
+        title="修道班13期1阶",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    session.add(source_workbook)
+    session.flush()
+
+    sheet_specs = [
+        ("attendance", "考勤表", ["学号", "姓名"], [["1", "甲"]]),
+        ("registration", "报名表", ["序号", "姓名"], [["1", "甲"]]),
+        ("video_config", "视频配置", ["lesson_id", "lesson_name"], [[1, "第01课"]]),
+        ("video_data", "视频数据", ["用户ID", "lesson_id"], [["u1", 1]]),
+        ("clockin_config", "打卡配置", ["clockin_id", "name"], [[1, "打卡数"]]),
+        ("clockin_data", "打卡数据", ["用户ID", "clockin_id"], [["u1", 1]]),
+        ("attendance_corrections", "考勤补正规则", ["序号", "说明"], [["1", "示例"]]),
+    ]
+    documents: dict[str, SheetDocument] = {}
+    for order_index, (sheet_key, title, columns, rows) in enumerate(sheet_specs):
+        document = SheetDocument(
+            numeric_id=9601 + order_index,
+            scope="notes",
+            owner_type="course_workbook",
+            owner_key=source_owner_key,
+            sheet_key=sheet_key,
+            title=title,
+            owner_user_id=owner.id,
+            created_by_user_id=owner.id,
+            updated_by_user_id=owner.id,
+            document_json={
+                "columns": columns,
+                "rows": rows,
+                "grid_rows": [columns, *rows],
+                "data_start_row": 1,
+                "field_row_index": 0,
+            },
+        )
+        session.add(document)
+        session.flush()
+        documents[sheet_key] = document
+        session.add(WorkbookSheetLink(
+            workbook_id=source_workbook.id,
+            sheet_id=document.id,
+            order_index=order_index,
+        ))
+    session.add(ResourceAccessGrant(
+        resource_type="workbook",
+        resource_id=str(source_workbook.numeric_id),
+        subject_key=f"user:{editor.id}",
+        subject_type="user",
+        subject_user_id=editor.id,
+        role="editor",
+    ))
+    session.add(ResourceAccessGrant(
+        resource_type="sheet",
+        resource_id=str(documents["attendance"].numeric_id),
+        subject_key=f"user:{editor.id}",
+        subject_type="user",
+        subject_user_id=editor.id,
+        role="editor",
+    ))
+    session.commit()
+
+    cloned = note_sheets_api._clone_attendance_course_template_workbook(
+        session,
+        source_workbook_id=source_workbook.numeric_id,
+        title="修道班13期2阶",
+        owner_key="20260920-xiudaoban-13-stage2",
+        owner_user_id=owner.id,
+    )
+
+    assert cloned is not None
+    new_workbook, new_attendance = cloned
+    assert int(new_workbook.numeric_id) != int(source_workbook.numeric_id)
+
+    workbook_grants = session.exec(
+        select(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == "workbook")
+        .where(ResourceAccessGrant.resource_id == str(new_workbook.numeric_id))
+    ).all()
+    assert {(grant.subject_key, grant.role) for grant in workbook_grants} == {(f"user:{editor.id}", "editor")}
+
+    attendance_grants = session.exec(
+        select(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == "sheet")
+        .where(ResourceAccessGrant.resource_id == str(new_attendance.numeric_id))
+    ).all()
+    roles = {grant.subject_key: grant.role for grant in attendance_grants}
+    assert roles.get(f"user:{editor.id}") == "editor"
+    assert roles.get("anonymous") == "viewer"
 
 
 def test_attendance_summary_next_month_templates_materialize_local_course_workbook(client, session, monkeypatch):

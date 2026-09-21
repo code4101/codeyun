@@ -6,25 +6,9 @@
     </div>
 
     <div class="picker">
-      <el-popover
-        v-model:visible="noticeVisible"
-        placement="bottom-start"
-        :width="360"
-        trigger="manual"
-        popper-class="scope-notice-popper"
-      >
-        <template #reference>
-          <button class="apply" type="button" :disabled="switching || !canApply" @click="applySwitch">
-            {{ applyLabel }}
-          </button>
-        </template>
-        <div class="scope-notice">
-          <span class="scope-notice-text">{{ scopeNotice }}</span>
-          <button class="scope-notice-close" type="button" @click="noticeVisible = false">
-            知道了
-          </button>
-        </div>
-      </el-popover>
+      <button class="apply" type="button" :disabled="switching || !canApply" @click="applySwitch">
+        {{ applyLabel }}
+      </button>
       <select v-model="selectedProvider" :disabled="switching">
         <option v-for="provider in providers" :key="provider.id" :value="provider.id">
           {{ provider.label }}
@@ -54,6 +38,11 @@
     <section ref="codexSection" class="quota">
       <div class="quota-head">
         <a class="quota-title" :href="CODEX_USAGE_URL" target="_blank" rel="noopener noreferrer">Codex 账号额度</a>
+        <span
+          v-if="quotaGroups.length && quotaError"
+          class="quota-badge"
+          :title="`最近一次余额读取失败：${quotaError}`"
+        >!</span>
       </div>
 
       <div v-if="quotaGroups.length" class="quota-rows">
@@ -74,7 +63,6 @@
         </div>
       </div>
       <p v-else class="quota-empty">{{ quotaError || '点击「刷新」读取实时额度' }}</p>
-      <p v-if="quotaGroups.length && quotaError" class="quota-stale">最近一次余额读取失败：{{ quotaError }}</p>
 
       <QuotaLineChart v-if="chartData" :data="chartData" />
     </section>
@@ -82,6 +70,11 @@
     <section ref="opencodeSection" class="quota">
       <div class="quota-head">
         <a class="quota-title" :href="OPENCODE_GO_URL" target="_blank" rel="noopener noreferrer">OpenCode Go</a>
+        <span
+          v-if="opencode.windows.length && opencode.error"
+          class="quota-badge"
+          :title="`最近一次余额读取失败：${opencode.error}`"
+        >!</span>
       </div>
       <div v-if="opencode.windows.length" class="quota-rows">
         <div class="quota-row">
@@ -101,7 +94,6 @@
         </div>
       </div>
       <p v-else class="quota-empty">{{ opencode.error || '未找到 OpenCode Go 凭证' }}</p>
-      <p v-if="opencode.windows.length && opencode.error" class="quota-stale">最近一次余额读取失败：{{ opencode.error }}</p>
 
       <QuotaLineChart v-if="opencodeChartData" :data="opencodeChartData" />
     </section>
@@ -109,6 +101,11 @@
     <section ref="deepseekSection" class="quota">
       <div class="quota-head">
         <a class="quota-title" :href="DEEPSEEK_PLATFORM_URL" target="_blank" rel="noopener noreferrer">DeepSeek 余额</a>
+        <span
+          v-if="deepseek.balances.length && deepseek.error"
+          class="quota-badge"
+          :title="`最近一次余额读取失败：${deepseek.error}`"
+        >!</span>
       </div>
       <div v-if="deepseek.balances.length" class="quota-rows">
         <div v-for="item in deepseek.balances" :key="item.currency" class="quota-row">
@@ -119,7 +116,6 @@
         </div>
       </div>
       <p v-else class="quota-empty">{{ deepseek.error || '未找到可用的 DeepSeek API Key' }}</p>
-      <p v-if="deepseek.balances.length && deepseek.error" class="quota-stale">最近一次余额读取失败：{{ deepseek.error }}</p>
 
       <QuotaLineChart v-if="deepseekChartData" :data="deepseekChartData" />
     </section>
@@ -127,11 +123,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import QuotaLineChart from './QuotaLineChart.vue'
-import type { LineChartData } from './chartTypes'
+import type { LineChartData, LineChartPace } from './chartTypes'
 
 import {
   fetchCodexQuota,
@@ -172,9 +168,6 @@ const FALLBACK_PROVIDERS: CodexProviderInfo[] = [
 const status = ref<CodexSetupStatus | null>(null)
 const switching = ref(false)
 const selectedProvider = ref('openai')
-const scopeNotice = ref('')
-const noticeVisible = ref(false)
-let noticeTimer: ReturnType<typeof setTimeout> | null = null
 const quotaGroups = ref<CodexQuotaGroup[]>([])
 const generalWindow = ref<CodexQuotaResponse['general_window']>(null)
 const observedAt = ref('')
@@ -222,7 +215,56 @@ function percentWindowToChart(window: CodexQuotaWindowHistory | null): LineChart
     resetAt: window.reset_at || undefined,
     unit: '%',
     max: 100,
+    paces: buildPaces(window),
   }
+}
+
+function formatPeriod(minutes: number) {
+  if (minutes % 1440 === 0) {
+    return `${minutes / 1440} 天`
+  }
+  if (minutes % 60 === 0) {
+    return `${minutes / 60} 小时`
+  }
+  return `${minutes} 分钟`
+}
+
+// Each reset cycle has its own start and reset, and the timer only starts on
+// first use after a reset, so the previous cycle's end is never the next cycle's
+// start. Build one even-burn reference line per cycle from the backend periods.
+function buildPaces(window: CodexQuotaWindowHistory): LineChartPace[] {
+  const periodMinutes = Number(window.period_minutes || 0)
+  if (periodMinutes <= 0) {
+    return []
+  }
+  const label = `理论匀速消耗：${formatPeriod(periodMinutes)} 100% → 0%`
+  const periods = window.periods ?? []
+  if (periods.length) {
+    return periods
+      .filter((item) => item.start_at && item.reset_at)
+      .map((item) => ({
+        startAt: item.start_at,
+        endAt: item.reset_at,
+        startValue: 100,
+        endValue: 0,
+        label,
+      }))
+  }
+  // Older snapshots predate `periods`; fall back to a single cycle.
+  if (!window.reset_at) {
+    return []
+  }
+  const end = new Date(window.reset_at).getTime()
+  if (!Number.isFinite(end)) {
+    return []
+  }
+  return [{
+    startAt: new Date(end - periodMinutes * 60_000).toISOString(),
+    endAt: window.reset_at,
+    startValue: 100,
+    endValue: 0,
+    label,
+  }]
 }
 
 function balanceWindowToChart(window: BalanceWindow | null): LineChartData | null {
@@ -235,6 +277,7 @@ function balanceWindowToChart(window: BalanceWindow | null): LineChartData | nul
     windowEnd: window.window_end,
     unit: '¥',
     max: null,
+    paces: [],
   }
 }
 
@@ -399,24 +442,18 @@ async function applySwitch() {
     syncSelection()
     ElMessage.success(result.message)
     if (result.notice) {
-      showScopeNotice(result.notice)
+      ElMessage({
+        message: result.notice,
+        type: 'warning',
+        duration: 10000,
+        showClose: true,
+      })
     }
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
     switching.value = false
   }
-}
-
-function showScopeNotice(text: string) {
-  scopeNotice.value = text
-  noticeVisible.value = true
-  if (noticeTimer) {
-    clearTimeout(noticeTimer)
-  }
-  noticeTimer = setTimeout(() => {
-    noticeVisible.value = false
-  }, 12000)
 }
 
 function isStale(value: string) {
@@ -449,12 +486,6 @@ async function autoRefreshStale() {
 onMounted(async () => {
   await Promise.allSettled([loadStatus(), loadQuota(), loadOpencode(), loadDeepseek()])
   void autoRefreshStale()
-})
-
-onBeforeUnmount(() => {
-  if (noticeTimer) {
-    clearTimeout(noticeTimer)
-  }
 })
 </script>
 
@@ -700,11 +731,19 @@ h1 {
   line-height: 1.6;
 }
 
-.quota-stale {
-  margin: 8px 0 0;
-  color: #b45309;
+.quota-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #fff;
   font-size: 11px;
-  line-height: 1.6;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
 }
 
 .chart {
@@ -741,33 +780,5 @@ h1 {
 
 .chart-reset-label {
   fill: #94a3b8;
-}
-
-.scope-notice {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.scope-notice-text {
-  color: #475569;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.scope-notice-close {
-  align-self: flex-end;
-  padding: 4px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #fff;
-  color: #475569;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.scope-notice-close:hover {
-  border-color: #cbd5e1;
-  color: #1e293b;
 }
 </style>

@@ -28,6 +28,9 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     TIANDI_YIJU_ACTIVE_KIND,
     XUTIAN_ACTIVE_KIND,
     XIANMENG_ACTIVE_KIND,
+    YUNMENG_ACTIVE_KIND,
+    YUNMENG_CHALLENGE_EVENING_KIND,
+    YUNMENG_CHALLENGE_KIND,
     YUANDING_GIFT_KIND,
     RankingFamily,
     discover_ranking_occurrences,
@@ -38,6 +41,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle_store import (
     completed_ranking_checkpoint_keys,
     ensure_ranking_lifecycle_checkpoint_table,
     ranking_checkpoint_retry_times,
+    list_ranking_checkpoint_rows,
     record_ranking_checkpoint_result,
 )
 from backend.core.fanxiu.activity.ranking_reconcile import reconcile_ranking_occurrence, sync_ranking_schedule
@@ -145,6 +149,54 @@ def _execute_beast_abyss_checkpoint(
     ))
 
 
+def _execute_yunmeng_challenge_checkpoint(
+    runner,
+    ctx,
+    payload,
+    stop_event,
+    *,
+    occurrence,
+    captured_at,
+    required_fact_watermark,
+):
+    from backend.core.fanxiu.data_annotation.tasks.yunmeng_challenge import (
+        execute_yunmeng_challenge_checkpoint,
+    )
+
+    return (yield from execute_yunmeng_challenge_checkpoint(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        occurrence=occurrence,
+        captured_at=captured_at,
+        required_fact_watermark=required_fact_watermark,
+    ))
+
+
+def _execute_yunmeng_active_checkpoint(
+    runner,
+    ctx,
+    stop_event,
+    *,
+    occurrence,
+    captured_at,
+    required_fact_watermark,
+):
+    from backend.core.fanxiu.data_annotation.tasks.yunmeng_active import (
+        execute_yunmeng_open_collection_checkpoint,
+    )
+
+    return (yield from execute_yunmeng_open_collection_checkpoint(
+        runner,
+        ctx,
+        stop_event,
+        occurrence=occurrence,
+        captured_at=captured_at,
+        required_fact_watermark=required_fact_watermark,
+    ))
+
+
 def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
     if occurrence.activity_type == "beast-abyss":
         from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
@@ -209,6 +261,9 @@ def _execute_xianmeng_checkpoint(runner, ctx, payload, stop_event, *, occurrence
         "daily_end_time": "22:00",
     })
     result = yield from runner._execute_daily_xianmeng_task(ctx, stop_event, options)
+    if options.get("_xianmeng_day_complete_reason"):
+        return {"status": "completed", "reason": "all_opponents_defeated",
+                "message": options["_xianmeng_day_complete_reason"]}
     retry_at = _parse_retry_at(options.get("_xianmeng_next_time"))
     if retry_at is not None:
         return {
@@ -334,6 +389,35 @@ def _execute_family_job(
             for checkpoint in planned_due
             if checkpoint not in deferred_exchange_tails
         )
+        # An active Xianmeng retry must never silently become a zero-action
+        # pass that sleeps until tomorrow. Keep its durable obligation visible
+        # if discovery/planning admission stops producing its checkpoint.
+        planned_keys = {checkpoint.key for checkpoint in planned_due}
+        checkpoint_rows = list_ranking_checkpoint_rows(session, instance_keys=by_instance)
+        for row in checkpoint_rows:
+            occurrence = by_instance.get(row.instance_key)
+            if (
+                row.checkpoint_kind == XIANMENG_ACTIVE_KIND
+                and row.status == "pending"
+                and occurrence is not None
+                and occurrence.start_at <= now <= occurrence.end_at
+                and row.business_date == now.astimezone(occurrence.start_at.tzinfo).date().isoformat()
+                and (row.instance_key, row.checkpoint_kind, row.business_date) not in planned_keys
+            ):
+                raise RuntimeError(
+                    "仙盟仍有当前活动的待复查义务，但规划未包含该 checkpoint；"
+                    "保留待办，禁止把零动作写成明日再运行"
+                )
+        # A lawful pending business outcome remains an obligation, but its
+        # future retry time must prevent re-entering the game on another
+        # checkpoint's wakeup or an idempotent formal scheduling replay.
+        waiting_keys = {
+            (row.instance_key, row.checkpoint_kind, row.business_date)
+            for row in checkpoint_rows
+            if row.status == "pending" and row.retry_at
+            and (retry := _parse_retry_at(row.retry_at)) is not None and retry > now
+        }
+        due = tuple(checkpoint for checkpoint in due if checkpoint.key not in waiting_keys)
 
     # Only a normal business outcome may advance next_time. Technical failures
     # propagate to the Scheduler, which owns engineering retries and AI stops.
@@ -391,6 +475,39 @@ def _execute_family_job(
                         required_fact_watermark=checkpoint.due_at,
                     )
                 else:
+                    if occurrence.activity_type == "lianti-faxiang":
+                        # Runtime 只在客户端打开过榜单页后才加载本期个人榜；
+                        # 每日对账前显式加载一次，失败不掩盖既有事实。
+                        from backend.core.fanxiu.activity.ranking_reconcile import (
+                            seed_ranking_occurrence,
+                        )
+                        from backend.core.fanxiu.data_annotation.tasks.lianti_faxiang import (
+                            refresh_lianti_faxiang_rank_page,
+                        )
+
+                        with Session(engine) as session:
+                            seeded = seed_ranking_occurrence(
+                                session,
+                                occurrence,
+                                captured_at=now.isoformat(timespec="seconds"),
+                            )
+                            rank_activity_id = int(seeded.game_rank_activity_id or 0)
+                            session.commit()
+                        if rank_activity_id <= 0:
+                            raise RuntimeError(
+                                "炼体法相每日对账：所选实例缺少个人榜绑定身份"
+                            )
+                        context = runner._behavior_tree_context(
+                            ctx,
+                            ctx.get("asset_tree_path"),
+                            stop_event=stop_event,
+                        )
+                        yield from refresh_lianti_faxiang_rank_page(
+                            context,
+                            occurrence=occurrence,
+                            now=now,
+                            rank_activity_id=rank_activity_id,
+                        )
                     with Session(engine) as session:
                         result = reconcile_ranking_occurrence(
                             session,
@@ -448,6 +565,28 @@ def _execute_family_job(
             elif checkpoint.checkpoint_kind == TIANDI_YIJU_ACTIVE_KIND:
                 result = yield from _execute_tiandi_yiju_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind == YUNMENG_ACTIVE_KIND:
+                result = yield from _execute_yunmeng_active_checkpoint(
+                    runner,
+                    ctx,
+                    stop_event,
+                    occurrence=occurrence,
+                    captured_at=now,
+                    required_fact_watermark=checkpoint.due_at,
+                )
+            elif checkpoint.checkpoint_kind in {
+                YUNMENG_CHALLENGE_KIND,
+                YUNMENG_CHALLENGE_EVENING_KIND,
+            }:
+                result = yield from _execute_yunmeng_challenge_checkpoint(
+                    runner,
+                    ctx,
+                    payload,
+                    stop_event,
+                    occurrence=occurrence,
+                    captured_at=now,
+                    required_fact_watermark=checkpoint.due_at,
                 )
             else:
                 result = yield from _execute_resource_checkpoint(
@@ -725,6 +864,101 @@ def execute_magic_invasion_initialization_rnd_cell(runner, ctx, payload, stop_ev
             second=0,
             microsecond=0,
         ),
+    ))
+
+
+def complete_xianmeng_defeated_day_from_runtime() -> dict[str, Any]:
+    """Reconcile today's no-opponent terminal from fresh facts, without GUI.
+
+    R&D can finalize this proven terminal while staying on the battlefield.
+    The ordinary executor uses the same eligibility predicate. Only this
+    occurrence's current-day checkpoint is completed; siblings stay untouched.
+    """
+    from backend.db import engine
+    from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
+    from backend.core.fanxiu.activity.ranking_lifecycle import checkpoints_for_occurrence
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import set_scheduler_task_next_time
+    from backend.core.fanxiu.data_annotation import behavior_tree_executor
+    from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
+
+    now = job_now().astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    if not (schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("仙盟日程不完整，不能结算当日")
+    occurrences = tuple(o for o in discover_ranking_occurrences(schedule) if o.family == "gameplay_rank")
+    active = [o for o in occurrences if o.activity_type == "xianmeng-competition"
+              and o.start_at <= now <= o.end_at]
+    if len(active) != 1:
+        raise RuntimeError("当前仙盟活动不唯一，不能结算当日")
+    snapshot = DailyResourceTaskMixin().read_xianmeng_attackable_targets()
+    plan = snapshot["fallback_plan"]
+    if not plan["all_opponents_defeated"]:
+        return {"status": "pending", "message": "尚未证明所有非友军积分归零，未改动完成状态"}
+    occurrence = active[0]
+    day = now.astimezone(occurrence.start_at.tzinfo).date()
+    checkpoint = next(c for c in checkpoints_for_occurrence(occurrence, business_day=day)
+                      if c.checkpoint_kind == XIANMENG_ACTIVE_KIND)
+    result = {"status": "completed", "reason": "all_opponents_defeated",
+              "message": "所有非友军阵柱积分为0，当日无对手；今日完成，不再复查体力"}
+    ensure_ranking_lifecycle_checkpoint_table(engine)
+    with Session(engine) as session:
+        completed = completed_ranking_checkpoint_keys(session, family="gameplay_rank")
+        already_completed = checkpoint.key in completed
+        if not already_completed:
+            record_ranking_checkpoint_result(session, checkpoint, status="completed",
+                message=result["message"], result=result,
+                evidence={"opponents": plan["opponents"], "captured_at": snapshot.get("captured_at")},
+                completed_at=now)
+        completed = completed_ranking_checkpoint_keys(session, family="gameplay_rank")
+        next_time = next_ranking_lifecycle_time(occurrences, now=now, completed_keys=completed,
+            retry_times=ranking_checkpoint_retry_times(session, family="gameplay_rank"), production_only=True)
+    set_scheduler_task_next_time(RANKING_LIFECYCLE_TASK_ID, next_time)
+    return {**result, "business_date": day.isoformat(), "already_completed": already_completed,
+            "parent_next_time": next_time.isoformat()}
+
+
+def execute_xianmeng_active_rnd_cell(runner, ctx, payload, stop_event):
+    """Explicitly run the unique current 仙盟 gameplay occurrence once (R&D).
+
+    Reads a complete fresh Runtime schedule, selects the only currently open
+    ``xianmeng-competition`` ``gameplay_rank`` occurrence, and delegates to the
+    existing ``_execute_xianmeng_checkpoint``.  That executor performs the real
+    仙盟 challenge actions; it does not advance the parent gameplay ranking
+    checkpoint. It preserves the existing executor's stamina, cooldown and
+    bounded-round outcomes, including any ``pending`` retry time. Allowlists are not
+    changed; this thin entry exists only for explicit live R&D acceptance.
+    """
+
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        read_fanxiu_activity_runtime_schedule,
+    )
+
+    now = job_now()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    schedule = read_fanxiu_activity_runtime_schedule(
+        allow_discovery=True,
+        force_refresh=True,
+    )
+    if not bool(schedule.get("available") and schedule.get("complete")):
+        raise RuntimeError("仙盟正式运行研发：Runtime 日程不可用或不完整")
+    matches = tuple(
+        occurrence
+        for occurrence in discover_ranking_occurrences(schedule)
+        if occurrence.family == "gameplay_rank"
+        and occurrence.activity_type == "xianmeng-competition"
+        and occurrence.start_at <= now <= occurrence.end_at
+    )
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"仙盟正式运行研发无法唯一定位当前开放实例：matches={len(matches)}"
+        )
+    return (yield from _execute_xianmeng_checkpoint(
+        runner,
+        ctx,
+        payload,
+        stop_event,
+        occurrence=matches[0],
     ))
 
 

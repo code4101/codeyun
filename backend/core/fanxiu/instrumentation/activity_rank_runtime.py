@@ -88,7 +88,13 @@ def loaded_activity_rank_ids(
     )
 
 
-def _ranking_row(reader: LuaJitReader, value: Any) -> dict[str, Any] | None:
+def project_ranking_row(reader: LuaJitReader, value: Any) -> dict[str, Any] | None:
+    """Project one standard rankVO table into the shared row shape.
+
+    Shared by the manager-backed reader and the live UI rank-panel reader so
+    both sources describe the same rows without a second projection contract.
+    """
+
     fields = reader.fields(value)
     rank = as_int(fields.get("rank"))
     score = as_int(fields.get("score"))
@@ -126,6 +132,10 @@ def _ranking_row(reader: LuaJitReader, value: Any) -> dict[str, Any] | None:
         ),
         "club_name": str(fields.get("clubName") or ""),
     }
+
+
+def _ranking_row(reader: LuaJitReader, value: Any) -> dict[str, Any] | None:
+    return project_ranking_row(reader, value)
 
 
 def read_activity_rank_snapshot(

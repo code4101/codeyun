@@ -115,9 +115,16 @@ def _snapshot(
     strength = as_int(data.get("strength"))
     maximum_seconds = as_int(data.get("maxLunDaoTime"))
     self_seat = self_seat_facts(reader, data)
-    self_profile = self_profile_from_seat(self_seat)
-    if not self_profile.get("available"):
-        self_profile = read_role_profile_from_memory(memory)
+    seat_profile = self_profile_from_seat(self_seat)
+    # The seat owner is an admission-time snapshot: equipping a law while
+    # seated does not refresh it. Current combat facts belong to RoleMgr.
+    current_profile = read_role_profile_from_memory(memory)
+    if not current_profile.get("available"):
+        self_profile = current_profile
+    elif seat_profile.get("available") and seat_profile.get("role_id") != current_profile.get("role_id"):
+        raise FanxiuRuntimeMemoryError("论道座位角色与当前 RoleMgr 身份不一致")
+    else:
+        self_profile = {**seat_profile, **current_profile}
     daluo_roster = room_roster_facts(
         reader,
         data,

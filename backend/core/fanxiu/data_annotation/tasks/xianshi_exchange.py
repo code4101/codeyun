@@ -243,10 +243,14 @@ class XianshiExchangeTaskMixin:
         now: datetime | None = None,
     ) -> str:
         next_time = next_business_time(("00:05",), now=now, weekdays=(MONDAY,))
-        self._persist_scheduler_task_next_time(
-            str(payload.get("__scheduler_task_id") or default_task_id),
-            next_time,
-        )
+        if bool(payload.get("schedule", True)):
+            self._persist_scheduler_task_next_time(
+                str(payload.get("__scheduler_task_id") or default_task_id),
+                next_time,
+            )
+        # Under aggregation the parent Job owns the single schedule write; the
+        # exchange still returns its business next_time without touching the
+        # retired first-level id.
         return next_time
 
     def _open_xianshi_exchange_home(self, context: Any, home_scene: int, menu_shape: str, *, label: str):

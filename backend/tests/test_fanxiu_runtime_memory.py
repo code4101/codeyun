@@ -1305,7 +1305,10 @@ def test_redpacket_snapshot_unknown_survivor_fails_semantics_closed(monkeypatch)
             return list(value), len(value)
 
         def dictionary_fields(self, value):
-            return dict(value)
+            wrapper = self.fields(value)
+            if "_dt_" in wrapper:
+                return {}
+            return dict(wrapper)
 
         def long(self, _value):
             return None
@@ -1317,8 +1320,8 @@ def test_redpacket_snapshot_unknown_survivor_fails_semantics_closed(monkeypatch)
         "_HasOverdueUidDic": {},
         "_BeLimitRedBagIdDic": {},
         "_ReceiveRedBagList": [],
-        "_idIndependentMap": {},
-        "_eventMap": {},
+        "_idIndependentMap": {"_dt_": LuaRef("table", 0x2000)},
+        "_eventMap": {"_dt_": LuaRef("table", 0x3000)},
         "_MainUiRedBagShowList": [],
     }
     monkeypatch.setattr(
@@ -1552,7 +1555,10 @@ def test_redpacket_snapshot_keeps_definitive_exclusions_as_structural_facts(
             return list(value or []), len(value or [])
 
         def dictionary_fields(self, value):
-            return dict(value or {})
+            wrapper = self.fields(value)
+            if "_dt_" in wrapper:
+                return {}
+            return dict(wrapper)
 
         def long(self, _value):
             return None
@@ -1568,8 +1574,8 @@ def test_redpacket_snapshot_keeps_definitive_exclusions_as_structural_facts(
         "_HasOverdueUidDic": {2: True},
         "_BeLimitRedBagIdDic": {},
         "_ReceiveRedBagList": [],
-        "_idIndependentMap": {},
-        "_eventMap": {},
+        "_idIndependentMap": {"_dt_": LuaRef("table", 0x2000)},
+        "_eventMap": {"_dt_": LuaRef("table", 0x3000)},
         "_MainUiRedBagShowList": [],
     }
     monkeypatch.setattr(
@@ -1610,7 +1616,10 @@ def test_redpacket_snapshot_exposes_receive_queue_transition_as_incomplete_posit
             return list(value or []), len(value or [])
 
         def dictionary_fields(self, value):
-            return dict(value or {})
+            wrapper = self.fields(value)
+            if "_dt_" in wrapper:
+                return {}
+            return dict(wrapper)
 
         def long(self, _value):
             return None
@@ -1622,8 +1631,8 @@ def test_redpacket_snapshot_exposes_receive_queue_transition_as_incomplete_posit
         "_HasOverdueUidDic": {},
         "_BeLimitRedBagIdDic": {},
         "_ReceiveRedBagList": [{"uid": 88}],
-        "_idIndependentMap": {},
-        "_eventMap": {},
+        "_idIndependentMap": {"_dt_": LuaRef("table", 0x2000)},
+        "_eventMap": {"_dt_": LuaRef("table", 0x3000)},
         "_MainUiRedBagShowList": [],
     }
     monkeypatch.setattr(

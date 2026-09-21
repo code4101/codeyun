@@ -371,3 +371,90 @@ def test_final_ranking_step_refreshes_both_tabs_before_storing(monkeypatch) -> N
         ("settle", 1.0),
         ("store", "activity-1"),
     ]
+
+class _FakeRankingSession:
+    def __init__(self, activity, rows):
+        self._activity = activity
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def flush(self):
+        return None
+
+    def commit(self):
+        return None
+
+    def get(self, _model, _activity_id):
+        return self._activity
+
+    def exec(self, _query):
+        rows = self._rows
+
+        class _Result:
+            def all(self):
+                return rows
+
+        return _Result()
+
+
+def test_store_yunmeng_final_rankings_reads_scopes_from_orm_evidence(monkeypatch) -> None:
+    activity = SimpleNamespace(
+        evidence={"current_related_ranking_scopes": ["personal", "plane"]},
+        captured_at="2026-09-19T10:00:00+08:00",
+    )
+    rows = [
+        SimpleNamespace(ranking_scope="personal"),
+        SimpleNamespace(ranking_scope="plane"),
+    ]
+
+    monkeypatch.setattr(
+        "sqlmodel.Session",
+        lambda _engine: _FakeRankingSession(activity, rows),
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.activity.yunmeng_exchange."
+        "collect_and_store_yunmeng_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = yunmeng_tail.store_yunmeng_final_rankings("activity-1")
+
+    assert result == {
+        "activity_id": "activity-1",
+        "personal_count": 1,
+        "plane_count": 1,
+        "captured_at": "2026-09-19T10:00:00+08:00",
+    }
+
+
+def test_store_yunmeng_final_rankings_rejects_retained_plane_scope(monkeypatch) -> None:
+    activity = SimpleNamespace(
+        evidence={"current_related_ranking_scopes": ["personal"]},
+        captured_at="2026-09-19T10:00:00+08:00",
+    )
+    rows = [
+        SimpleNamespace(ranking_scope="personal"),
+        SimpleNamespace(ranking_scope="plane"),
+    ]
+
+    monkeypatch.setattr(
+        "sqlmodel.Session",
+        lambda _engine: _FakeRankingSession(activity, rows),
+    )
+    monkeypatch.setattr(
+        "backend.core.fanxiu.activity.yunmeng_exchange."
+        "collect_and_store_yunmeng_exchange_activity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    try:
+        yunmeng_tail.store_yunmeng_final_rankings("activity-1")
+    except RuntimeError as exc:
+        assert "最终位面榜" in str(exc)
+    else:
+        raise AssertionError("expected retained plane scope to fail closed")

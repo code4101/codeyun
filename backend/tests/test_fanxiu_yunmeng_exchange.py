@@ -13,6 +13,9 @@ from backend.core.fanxiu.activity.exchange_event import (
 from backend.core.fanxiu.activity.yunmeng_exchange import (
     _period_from_item,
 )
+from backend.core.fanxiu.data_annotation.tasks.yunmeng_challenge import (
+    _estimate_challenge_attempt_budget,
+)
 
 
 def _session() -> Session:
@@ -75,6 +78,71 @@ def _payload(
             }
         },
     }
+
+
+class _BudgetDetail:
+    def __init__(
+        self,
+        *,
+        current_currency: int,
+        cumulative_currency: int,
+        target_total_tokens: int,
+        target_remaining_tokens: int,
+    ) -> None:
+        self.current_currency = current_currency
+        self.cumulative_currency = cumulative_currency
+        self.exchange_plan = {
+            "target_budgets": {
+                "收尾道具": {
+                    "target_total_tokens": target_total_tokens,
+                    "target_remaining_tokens": target_remaining_tokens,
+                }
+            }
+        }
+
+
+def test_yunmeng_challenge_budget_skips_when_gap_is_zero() -> None:
+    detail = _BudgetDetail(
+        current_currency=2_141_834,
+        cumulative_currency=2_141_834,
+        target_total_tokens=2_060_500,
+        target_remaining_tokens=2_060_500,
+    )
+
+    budget = _estimate_challenge_attempt_budget(detail, [])
+
+    assert budget is not None
+    assert budget.required_new_currency == 0
+    assert budget.attempt_budget is None
+
+
+def test_yunmeng_challenge_budget_caps_needed_attempts_at_105_percent() -> None:
+    detail = _BudgetDetail(
+        current_currency=1000,
+        cumulative_currency=1000,
+        target_total_tokens=20000,
+        target_remaining_tokens=20000,
+    )
+    batches = [
+        {
+            "requested_challenges": 100,
+            "currency_before": 1000,
+            "currency_after": 6000,
+        },
+        {
+            "requested_challenges": 200,
+            "currency_before": 6000,
+            "currency_after": 11000,
+        },
+    ]
+
+    budget = _estimate_challenge_attempt_budget(detail, batches)
+
+    # Latest adjacent yield = 5000 / 200 = 25 per attempt; gap 19000 needs 760,
+    # capped at ceil(760 * 1.05) = 798.
+    assert budget is not None
+    assert budget.required_new_currency == 19000
+    assert budget.attempt_budget == 798
 
 
 def test_yunmeng_period_uses_runtime_identity_and_real_activity_id() -> None:

@@ -1074,7 +1074,9 @@ def execute_lingxiao_xianhui_job(
     # production duty.  A stale Scheduler dispatch must therefore clear its
     # own trigger rather than silently recreate the next check after the user
     # cancelled it.  Re-arming requires a future explicit product decision.
-    scheduler_dispatched = bool(payload.get("__scheduler_task_id"))
+    scheduler_dispatched = bool(payload.get("__scheduler_task_id")) and bool(
+        payload.get("schedule", True)
+    )
     if scheduler_dispatched:
         runner._persist_scheduler_task_next_time(task_id, None)
     cumulative = snapshot.get("cumulative")

@@ -117,6 +117,7 @@ class WeChatChatBookStartRequest(BaseModel):
 class WeChatSendTextRequest(BaseModel):
     recipient: str = Field(min_length=1, max_length=200)
     text: str = Field(min_length=1, max_length=10000)
+    sender_account_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 def _settings_wechat_db_storage_path() -> Path:
@@ -148,10 +149,10 @@ def _settings_wechat_db_storage_path_for_device(device_root: Path) -> Path:
     device_root_path = device_root / "wechat_db" / "decrypted" / "db_storage"
     if device_root_path.exists():
         return device_root_path
-    if (device_root / "wechat_legacy").exists() or (device_root / "tim_legacy").exists() or _is_tim_account_root(device_root):
-        return device_root / "wechat_db" / "decrypted" / "db_storage"
     if device_root.resolve() == get_settings().data_dir.resolve():
         return default_path
+    if (device_root / "wechat_legacy").exists() or (device_root / "tim_legacy").exists() or _is_tim_account_root(device_root):
+        return device_root / "wechat_db" / "decrypted" / "db_storage"
     if not default_path.exists():
         return device_root_path
     return default_path
@@ -840,6 +841,9 @@ def _wechat_default_current_device_root(roots: list[Path]) -> Path | None:
     if not roots:
         return None
     settings = get_settings()
+    # 已配置的微信归档优先于扫描到的官方目录，避免默认落到 TIM 等旁路数据。
+    if _settings_wechat_db_storage_path().exists():
+        return settings.data_dir
     try:
         if settings.data_dir.exists() and any(
             (
@@ -870,11 +874,14 @@ def _wechat_default_current_device_root(roots: list[Path]) -> Path | None:
 
 
 def _wechat_device_roots() -> list[Path]:
+    from pyxllib.autogui.wechat_accounts import list_account_archive_roots
+
     official_roots = _wechat_official_device_roots()
     roots = list(_extra_wechat_device_roots())
     roots.extend(_wechat_fallback_device_roots())
     roots.extend(official_roots)
     roots.extend(_tim_official_device_roots())
+    roots.extend(list_account_archive_roots())
 
     current_root = _wechat_default_current_device_root(roots)
     deduped: list[Path] = []
@@ -1250,7 +1257,9 @@ def sync_wechat_db_from_live(
     if _resolve_remote_wechat_device(device_id, session, current_user):
         raise HTTPException(status_code=400, detail="只能同步当前节点正在运行的微信数据")
     device_root = _resolve_wechat_device_root(device_id)
-    if not _is_current_device_root(device_root) and not _is_tim_account_root(device_root):
+    from pyxllib.autogui.wechat_accounts import list_account_archive_roots
+
+    if not _is_current_device_root(device_root) and not _is_tim_account_root(device_root) and device_root not in list_account_archive_roots():
         raise HTTPException(status_code=400, detail="只能同步本机正在运行的微信数据")
     storage = _choose_wechat_storage_for_device(device_root)
     try:
@@ -1259,13 +1268,22 @@ def sync_wechat_db_from_live(
         raise HTTPException(status_code=502, detail=f"微信数据库同步失败：{exc}") from exc
 
 
+@router.get("/live-accounts")
+def get_wechat_live_accounts():
+    """只读枚举进程账号及默认发信号；不触发消息发送。"""
+    from pyxllib.autogui.weixin4_instrumentation import DEFAULT_SENDER_ACCOUNT_ID, list_live_accounts
+
+    return {"default_sender_account_id": DEFAULT_SENDER_ACCOUNT_ID, "accounts": list_live_accounts()}
+
+
 @router.post("/send-text")
 def send_wechat_text(payload: WeChatSendTextRequest):
     """Send plain text through the version-pinned process API; never use GUI fallback."""
     try:
         from pyxllib.autogui.weixin4_instrumentation import send_text
 
-        return send_text(payload.recipient, payload.text)
+        kwargs = {"sender_account_id": payload.sender_account_id} if payload.sender_account_id else {}
+        return send_text(payload.recipient, payload.text, **kwargs)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"微信 API 发送失败（已禁止 GUI 回退）：{exc}") from exc
 

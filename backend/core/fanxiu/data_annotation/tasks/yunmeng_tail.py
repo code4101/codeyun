@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Final Yunmeng ranking refresh and Runtime-aligned exchange redemption."""
 
-from datetime import date, datetime
+from datetime import date
 from typing import Any
 
 from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
@@ -45,15 +45,21 @@ def store_yunmeng_final_rankings(activity_id: str) -> dict[str, Any]:
         collect_and_store_yunmeng_exchange_activity,
     )
     from backend.db import engine
-    from backend.models import FanxiuExchangeRanking
+    from backend.models import FanxiuExchangeActivity, FanxiuExchangeRanking
 
     with Session(engine) as session:
-        detail = collect_and_store_yunmeng_exchange_activity(
+        collect_and_store_yunmeng_exchange_activity(
             session,
             activity_id=activity_id,
             collect_runtime_shop=False,
         )
         session.flush()
+        # ``collect_and_store_yunmeng_exchange_activity`` returns the public
+        # Pydantic detail (no ``evidence``); the freshness scopes live on the
+        # persisted ORM row that the same call just wrote.
+        activity = session.get(FanxiuExchangeActivity, activity_id)
+        if activity is None:
+            raise RuntimeError("云梦_收尾：最终榜单更新后找不到活动实例")
         rows = session.exec(
             select(FanxiuExchangeRanking).where(
                 FanxiuExchangeRanking.activity_id == activity_id
@@ -63,7 +69,7 @@ def store_yunmeng_final_rankings(activity_id: str) -> dict[str, Any]:
             scope: sum(row.ranking_scope == scope for row in rows)
             for scope in ("personal", "plane")
         }
-        evidence = dict(detail.evidence or {})
+        evidence = dict(activity.evidence or {})
         current_related = {
             str(value)
             for value in evidence.get("current_related_ranking_scopes") or []
@@ -77,7 +83,7 @@ def store_yunmeng_final_rankings(activity_id: str) -> dict[str, Any]:
             "activity_id": activity_id,
             "personal_count": counts["personal"],
             "plane_count": counts["plane"],
-            "captured_at": str(detail.captured_at or ""),
+            "captured_at": str(activity.captured_at or ""),
         }
 
 
@@ -111,10 +117,15 @@ def execute_yunmeng_tail_job(
     from backend.core.fanxiu.activity.yunmeng_exchange import (
         collect_and_store_yunmeng_exchange_activity,
     )
-    from backend.core.fanxiu.data_annotation.schedule_navigation import (
-        select_schedule_activity,
+    from backend.core.fanxiu.activity.yunmeng_exchange import (
+        read_yunmeng_currency_snapshot,
     )
-    from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
+        _open_verified_shop_product,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.yunmeng_active import (
+        enter_yunmeng_activity_home,
+    )
 
     label = "云梦_收尾"
     scheduler_task_id = str(
@@ -164,18 +175,7 @@ def execute_yunmeng_tail_job(
         yield from context.wait_action_settle(1.0)
 
     # Always normalize through the world anchor before selecting the dated occurrence.
-    yield from context.go_scene(34)
-    yield from context.go_scene(66)
-    anchor = datetime.now().astimezone().replace(
-        year=end_date.year, month=end_date.month, day=end_date.day, hour=12, minute=0, second=0
-    )
-    yield from select_schedule_activity(
-        context,
-        r"云梦试剑",
-        enter=True,
-        require_runtime_alignment=True,
-        now=anchor,
-    )
+    yield from enter_yunmeng_activity_home(context, target_date=end_date)
     yield from context.wait_scene_or_ocr(
         YUNMENG_HOME_SCENE,
         lambda text: "云梦试剑" in text and "挑战次数" in text,
@@ -207,7 +207,7 @@ def execute_yunmeng_tail_job(
             collect_runtime_shop=True,
         )
         session.commit()
-    wallet = read_wallet_currency_snapshot(19, allow_discovery=False)
+    wallet = read_yunmeng_currency_snapshot(allow_discovery=False)
     expected_wallet = int(wallet["exchange_currency"])
     if int(detail.current_currency) != expected_wallet:
         raise RuntimeError(
@@ -227,24 +227,24 @@ def execute_yunmeng_tail_job(
     }
     reserved_tokens = int(planning["reserved_tokens"])
 
-    # Entering the shop produces its first physical window.  Traverse only
-    # downward from there; do not repeatedly drag to a guessed "top".
+    # A completed purchase can remove or reorder GUI rows, and Runtime
+    # ``source_order`` does not pin the visible row contract.  Locate every
+    # target by live name+unit-price row alignment through the shared shop
+    # driver before clicking; never trust a precomputed slot.
+    remaining_scroll_budget = len(detail.shop_items) + 5
     for action in actions:
         if stop_event.is_set():
             raise InterruptedError()
-        for _ in range(action.scroll_rows):
-            context.drag_frame_point(
-                YUNMENG_SHOP_SCENE, 450, 900, 450, 810, duration_ms=800
-            )
-            yield from context.wait_action_settle(0.25)
-
-        context.click_shape_center(YUNMENG_SHOP_SCENE, f"商品行{action.slot}")
-        yield from context.wait_scene([566], wait=15.0, label=f"{label}：等待商品详情")
-        _detail_matches(
+        yield from _open_verified_shop_product(
             context,
-            expected_name=action.name,
-            expected_price=action.unit_price,
+            name=action.name,
+            unit_price=action.unit_price,
+            max_scrolls=remaining_scroll_budget,
+            shop_scene=YUNMENG_SHOP_SCENE,
+            label=label,
         )
+        # The shared quantity control re-reads the dialog Runtime proof (exact
+        # quantity, unit price and owned currency); no OCR total is trusted.
         yield from set_verified_common_shop_quantity(
             context,
             action.quantity,
@@ -303,7 +303,7 @@ def execute_yunmeng_tail_job(
             raise RuntimeError(
                 f"{label}：{purchase.name} 最终 Runtime 购买数 {actual_count} != {expected_count}"
             )
-    final_wallet = read_wallet_currency_snapshot(19, allow_discovery=False)
+    final_wallet = read_yunmeng_currency_snapshot(allow_discovery=False)
     if (
         int(final_detail.current_currency) != expected_wallet
         or int(final_wallet["exchange_currency"]) != expected_wallet

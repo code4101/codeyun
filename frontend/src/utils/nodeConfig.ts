@@ -1,3 +1,4 @@
+import { resolveNodeProgressStyle } from '@/utils/nodeProgressStyle';
 import { fetchNoteCategoryPalette, updateNoteCategoryPalette } from '@/api/noteTypes';
 import { fromHex, getReadableTextColor, mixWeightedColors, toHex } from '@/utils/colorMath';
 import {
@@ -605,10 +606,6 @@ export const getNodeDisplayStyleFromTheme = (
 ) => {
   const status = NODE_STATUSES[normalizeNodeStatusId(statusStr)] || NODE_STATUSES.idea;
   const foregroundColor = getReadableTextColor(fromHex(type.baseColor));
-  const clampedProgress = typeof completionProgress === 'number' && Number.isFinite(completionProgress)
-    ? Math.min(1, Math.max(0, completionProgress))
-    : null;
-
   const style = {
     ...createBaseNodeVisualStyle(type, status),
     backgroundImage: 'none',
@@ -617,23 +614,7 @@ export const getNodeDisplayStyleFromTheme = (
     partialFillRatio: null as number | null,
   };
 
-  switch (status.id) {
-    case 'done':
-      if (clampedProgress !== null && clampedProgress < 1) {
-        const pct = `${(clampedProgress * 100).toFixed(2)}%`;
-        style.backgroundColor = '#FFFFFF';
-        style.backgroundImage = `linear-gradient(to right, ${type.baseColor} 0%, ${type.baseColor} ${pct}, #FFFFFF ${pct}, #FFFFFF 100%)`;
-        style.color = '#111827';
-        style.fillTextColor = foregroundColor;
-        style.emptyTextColor = '#111827';
-        style.partialFillRatio = clampedProgress;
-      } else {
-        style.backgroundColor = type.baseColor;
-        style.backgroundImage = 'none';
-        style.color = foregroundColor;
-      }
-      break;
-  }
+  Object.assign(style, resolveNodeProgressStyle(status.id, completionProgress, type.baseColor, foregroundColor));
 
   return style;
 };

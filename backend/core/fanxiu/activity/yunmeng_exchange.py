@@ -33,15 +33,41 @@ YUNMENG_CURRENCY_TYPE = 19
 YUNMENG_CURRENCY_NAME = "论剑玉"
 
 
-def _runtime_currency_snapshot() -> dict[str, Any]:
+def read_yunmeng_currency_snapshot(*, allow_discovery: bool) -> dict[str, Any]:
+    """读取云梦论剑玉，按客户端零语义处理"余额为 0 时省略币种条目"。
+
+    WalletData.GetCurrencyByType 在余额恰为 0 时返回 0，且游戏会省略该币种的
+    WalletVO；此时严格读取会报"尚未同步到 Runtime"，让整条兑换预算链永远无法
+    就绪。只有在钱包模型本身已初始化、且失败原因确实是该币种条目缺失时，才退到
+    显式零语义，并把这次假设写进 evidence 供审计；进程/地址缓存失效等其它错误
+    仍然照原样抛出。
+    """
+
+    from backend.core.fanxiu.instrumentation.runtime_memory import (
+        FanxiuRuntimeMemoryError,
+    )
     from backend.core.fanxiu.instrumentation.wallet import (
         read_wallet_currency_snapshot,
     )
 
-    return read_wallet_currency_snapshot(
-        YUNMENG_CURRENCY_TYPE,
-        allow_discovery=True,
-    )
+    try:
+        return read_wallet_currency_snapshot(
+            YUNMENG_CURRENCY_TYPE,
+            allow_discovery=allow_discovery,
+        )
+    except FanxiuRuntimeMemoryError as exc:
+        message = str(exc)
+        if f"兑币类型 {YUNMENG_CURRENCY_TYPE} " not in message:
+            raise
+        snapshot = read_wallet_currency_snapshot(
+            YUNMENG_CURRENCY_TYPE,
+            allow_discovery=allow_discovery,
+            missing_as_zero=True,
+        )
+        evidence = dict(snapshot.get("evidence") or {})
+        evidence["zero_balance_currency_absent"] = True
+        evidence["strict_read_error"] = message
+        return {**snapshot, "evidence": evidence}
 
 
 def _period_from_item(
@@ -231,13 +257,69 @@ def collect_and_store_yunmeng_exchange_activity(
         )
 
         try:
-            currency = _runtime_currency_snapshot()
+            currency = read_yunmeng_currency_snapshot(allow_discovery=True)
             store_runtime_currency_fact(session, currency)
             currency_status = "updated"
             currency_reason = ""
             currency_runtime_evidence = dict(currency.get("evidence") or {})
         except (FanxiuRuntimeMemoryError, ValueError) as exc:
             currency_reason = str(exc)
+
+    rank_runtime_status: dict[str, Any] = {}
+    if collect_runtime_shop:
+        # 云梦榜单事实长期只依赖抓包链路，页面开过也未必入库。已加载的活动榜
+        # Runtime 投影是同一事实的只读来源，且与兑换宝阁共用一次页面窗口，因此
+        # 在这里按标准事实通道落库，缺失时如实记录而不是伪造。
+        from backend.core.fanxiu.activity.standard_observation import (
+            store_runtime_activity_rank_fact,
+        )
+        from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
+            prepare_activity_rank_runtime,
+            read_activity_rank_runtime_snapshot,
+        )
+
+        occurrence_runtime_id = str(existing.runtime_id if existing is not None else "")
+        rank_targets = [
+            (scope.scope, int(rank_id)) for scope, rank_id in resolved_scopes
+        ]
+        runtime_ranks = {
+            rank_id: read_activity_rank_runtime_snapshot(rank_id)
+            for _scope, rank_id in rank_targets
+        }
+        missing_rank_ids = [
+            rank_id
+            for _scope, rank_id in rank_targets
+            if not runtime_ranks[rank_id].get("ok")
+            and runtime_ranks[rank_id].get("error_code")
+            in {"process_cache_miss", "root_cache_miss"}
+        ]
+        if missing_rank_ids:
+            recovery = prepare_activity_rank_runtime(missing_rank_ids)
+            if recovery.get("ok"):
+                for rank_id in missing_rank_ids:
+                    runtime_ranks[rank_id] = read_activity_rank_runtime_snapshot(
+                        rank_id
+                    )
+            else:
+                rank_runtime_status["recovery_error"] = str(
+                    recovery.get("reason") or "云梦试剑榜单 Runtime 恢复失败"
+                )
+        if occurrence_runtime_id:
+            for scope, rank_id in rank_targets:
+                runtime_rank = runtime_ranks[rank_id]
+                if not runtime_rank.get("ok") or not runtime_rank.get("complete"):
+                    rank_runtime_status[scope] = str(
+                        runtime_rank.get("reason") or "云梦试剑榜单尚未加载"
+                    )
+                    continue
+                store_runtime_activity_rank_fact(
+                    session,
+                    runtime_rank,
+                    occurrence_runtime_id=occurrence_runtime_id,
+                )
+                rank_runtime_status[scope] = "updated"
+        else:
+            rank_runtime_status["recovery_error"] = "云梦试剑实例缺少 runtime_id，无法绑定榜单事实"
 
     observation = collect_standard_activity_observation(
         session,
@@ -320,6 +402,7 @@ def collect_and_store_yunmeng_exchange_activity(
         },
         current_related_ranking_scopes=sorted(ranking_merge.current_related_scopes),
         retained_related_ranking_scopes=sorted(ranking_merge.retained_related_scopes),
+        rank_runtime=rank_runtime_status,
         refresh_status=refresh_status,
     )
     if currency_runtime_evidence:
@@ -355,6 +438,116 @@ def collect_and_store_yunmeng_exchange_activity(
     )
 
 
+def collect_and_store_yunmeng_shop_snapshot(
+    session: Session,
+    *,
+    activity_id: str,
+) -> Any:
+    """Refresh only the Yunmeng shop and wallet facts of one exact occurrence.
+
+    兑换宝阁与钱包是同一次「页面已打开」窗口里的只读事实，榜单事实来自另一条
+    协议链路，因此这里既不读取榜单，也不能用榜单缺失否证商店数据。调用方必须
+    已经确认运行态兑换页处于打开状态；本函数只负责把已加载的商店投影与钱包投影
+    写回该实例，并在证据里如实记录刷新状态。
+    """
+
+    from backend.core.fanxiu.activity.exchange_event import (
+        upsert_exchange_activity_snapshot,
+    )
+    from backend.core.fanxiu.activity.runtime_schedule import (
+        refresh_cached_fanxiu_activity_runtime_schedule,
+    )
+    from backend.core.fanxiu.activity.standard_observation import (
+        store_runtime_currency_fact,
+    )
+
+    existing = session.get(FanxiuExchangeActivity, activity_id)
+    if existing is None or existing.activity_type != YUNMENG_ACTIVITY_TYPE:
+        raise ValueError("云梦试剑活动实例不存在")
+    if (
+        not existing.instance_key
+        or not existing.runtime_id
+        or existing.game_activity_id is None
+    ):
+        raise ValueError("云梦宝阁采集要求精确的已登记活动实例")
+    refresh_cached_fanxiu_activity_runtime_schedule(allow_discovery=True)
+    period = _runtime_period(
+        session,
+        cross_count=int(existing.cross_count),
+        target_date=date.fromisoformat(str(existing.end_date)),
+    )
+    if (
+        str(existing.start_date) != str(period["start_date"])
+        or str(existing.end_date) != str(period["end_date"])
+        or int(existing.cross_count) != int(period["cross_count"])
+        or int(existing.game_activity_id) != int(period["game_activity_id"])
+    ):
+        raise ValueError("云梦宝阁实例与当前运行时周期不一致")
+
+    shop = _shop_snapshot(cross_count=int(existing.cross_count))
+    if not list(shop.get("items") or []):
+        raise ValueError("云梦试剑兑换宝阁运行态快照没有商品，拒绝覆盖已保存清单")
+    captured_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    currency_status = "retained"
+    currency_reason = "只读商店采集未请求运行态钱包"
+    current_currency = int(existing.current_currency)
+    cumulative_currency = int(existing.cumulative_currency)
+    currency_captured_at = ""
+    try:
+        wallet = read_yunmeng_currency_snapshot(allow_discovery=True)
+        store_runtime_currency_fact(session, wallet)
+        currency_status = "updated"
+        currency_reason = ""
+        current_currency = int(wallet["exchange_currency"])
+        cumulative_currency = int(wallet["cumulative_currency"])
+        currency_captured_at = captured_at
+    except (ValueError, RuntimeError) as exc:
+        currency_reason = str(exc)
+
+    evidence = dict(existing.evidence or {})
+    refresh_status = dict(evidence.get("refresh_status") or {})
+    refresh_status.update({
+        "currency": currency_status,
+        "currency_reason": currency_reason,
+        "currency_stale": currency_status != "updated",
+        "currency_captured_at": currency_captured_at,
+        "shop": "updated",
+        "shop_reason": "",
+        "shop_had_persisted_snapshot": True,
+    })
+    evidence.update({
+        "shop": dict(shop.get("evidence") or {}),
+        "shop_snapshot_captured_at": captured_at,
+        "refresh_status": refresh_status,
+    })
+    payload: dict[str, Any] = {
+        "activity_type": YUNMENG_ACTIVITY_TYPE,
+        "instance_key": str(existing.instance_key),
+        "family": existing.family,
+        "runtime_id": str(existing.runtime_id),
+        "game_activity_id": int(existing.game_activity_id),
+        "cross_count": int(existing.cross_count),
+        "start_date": str(existing.start_date),
+        "end_date": str(existing.end_date),
+        "game_shop_base_id": YUNMENG_SHOP_BASE_ID,
+        "currency_type": YUNMENG_CURRENCY_TYPE,
+        "currency_name": YUNMENG_CURRENCY_NAME,
+        "current_currency": current_currency,
+        "cumulative_currency": cumulative_currency,
+        "evidence": evidence,
+        "instance_data": dict(existing.instance_data or {}),
+        "shop_items": list(shop["items"]),
+        "expected_shop_item_count": int(shop["active_shop_item_count"]),
+    }
+    persisted_id = upsert_exchange_activity_snapshot(session, payload)
+    if str(persisted_id) != str(activity_id):
+        raise RuntimeError("云梦宝阁写入切换了目标实例")
+    persisted = session.get(FanxiuExchangeActivity, activity_id)
+    if persisted is None:
+        raise RuntimeError("云梦宝阁写入后无法回读实例")
+    return persisted
+
+
 def ensure_yunmeng_exchange_activity(session: Session) -> None:
     from backend.core.fanxiu.activity.standard_observation import (
         ActivityObservationUnavailable,
@@ -387,5 +580,7 @@ __all__ = [
     "YUNMENG_SHOP_BASE_ID",
     "YUNMENG_WORLDLINE_VO",
     "collect_and_store_yunmeng_exchange_activity",
+    "collect_and_store_yunmeng_shop_snapshot",
     "ensure_yunmeng_exchange_activity",
+    "read_yunmeng_currency_snapshot",
 ]

@@ -42,6 +42,17 @@ def _write_config(home, body: str) -> None:
     (home / "config.toml").write_text(body, encoding="utf-8")
 
 
+def _write_global_state(home, recent: list[dict[str, object]]) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".codex-global-state.json").write_text(
+        json.dumps(
+            {"electron-persisted-atom-state": {"composer-recent-model-configurations-v1": recent}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_read_status_defaults_to_gpt_without_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     _write_config(tmp_path, 'model = "gpt-6-astra"\nmodel_reasoning_effort = "low"\n')
@@ -156,12 +167,31 @@ def test_api_status_reports_key_availability(tmp_path, monkeypatch):
     ]
 
 
-def test_api_switch_openai_is_noop_when_already_default(tmp_path, monkeypatch):
+def test_api_switch_openai_cleans_config_and_syncs_app_model(tmp_path, monkeypatch):
     import tomllib
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    _write_config(tmp_path, 'model = "gpt-6-astra"\n')
+    _write_config(
+        tmp_path,
+        'model = "gpt-6-astra"\n\n'
+        "[model_providers.opencode_go]\n"
+        'base_url = "http://127.0.0.1:8787/v1"\n',
+    )
+    _write_global_state(
+        tmp_path,
+        [
+            {"model": "deepseek-flash", "reasoningEffort": "high", "serviceTier": None},
+            {"model": "gpt-5.6-luna", "reasoningEffort": "medium", "serviceTier": None},
+        ],
+    )
+    (tmp_path / "models.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(codex_setup_api, "_resolve_deepseek_key", lambda session: "")
+    monkeypatch.setattr(
+        codex_setup_api,
+        "stop_codex_processes",
+        lambda: {"was_app_running": True, "app_exe": "C:/ChatGPT.exe", "stopped": []},
+    )
+    monkeypatch.setattr(codex_setup_api, "start_codex_app", lambda snapshot: True)
 
     response = codex_setup_api.switch_codex_setup(
         codex_setup_api.CodexSetupSwitchRequest(provider="openai"),
@@ -171,10 +201,16 @@ def test_api_switch_openai_is_noop_when_already_default(tmp_path, monkeypatch):
 
     assert response.ok is True
     assert response.changed is False
-    assert response.notice == ""
-    # The no-op still repairs the opencode provider block so old threads open.
+    assert response.notice == codex_setup_api.OPENAI_RESET_NOTICE
+    # The provider block and the stale DeepSeek catalog are gone, so nothing can
+    # route new threads to the local proxy...
     data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
-    assert data["model_providers"]["opencode_go"]["wire_api"] == "responses"
+    assert "model_providers" not in data
+    assert not (tmp_path / "models.json").exists()
+    # ...and new threads default to the restored OpenAI model.
+    state = json.loads((tmp_path / ".codex-global-state.json").read_text(encoding="utf-8"))
+    recent = state["electron-persisted-atom-state"]["composer-recent-model-configurations-v1"]
+    assert recent[-1]["model"] == "gpt-6-astra"
 
 
 def test_ensure_baseline_snapshot_is_write_once(tmp_path):
@@ -198,18 +234,76 @@ def test_restore_codeyun_backup_restores_baseline_and_drops_catalog(tmp_path):
     (baseline_dir / codex_switch.CODEX_BASELINE_FILENAME).write_text(baseline, encoding="utf-8")
     _write_config(tmp_path, 'model = "deepseek-flash"\nmodel_provider = "opencode_go"\n')
     (tmp_path / "opencode_models.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "models.json").write_text("{}", encoding="utf-8")
 
     assert codex_switch.restore_codeyun_backup(tmp_path) is True
 
     data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
     assert data["model"] == "gpt-6-astra"
     assert "model_provider" not in data
+    assert "model_providers" not in data
+    # Both generated catalogs are gone: the baseline referenced neither.
     assert not (tmp_path / "opencode_models.json").exists()
+    assert not (tmp_path / "models.json").exists()
     # The baseline is kept so OpenAI can be restored again later.
     assert (baseline_dir / codex_switch.CODEX_BASELINE_FILENAME).is_file()
 
 
-def test_restore_codeyun_backup_keeps_thread_provider_blocks(tmp_path):
+def test_restore_codeyun_backup_keeps_catalog_declared_by_baseline(tmp_path):
+    import tomllib
+
+    baseline_dir = tmp_path / "backup-codeyun"
+    baseline_dir.mkdir()
+    (baseline_dir / codex_switch.CODEX_BASELINE_FILENAME).write_text(
+        'model = "gpt-6-astra"\nmodel_catalog_json = "C:/x/models.json"\n', encoding="utf-8"
+    )
+    _write_config(tmp_path, 'model = "deepseek-flash"\nmodel_provider = "deepseek"\n')
+    (tmp_path / "models.json").write_text("{}", encoding="utf-8")
+
+    assert codex_switch.restore_codeyun_backup(tmp_path) is True
+
+    data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+    assert data["model_catalog_json"] == "C:/x/models.json"
+    assert (tmp_path / "models.json").is_file()
+
+
+def test_set_current_model_promotes_target_to_newest(tmp_path):
+    from backend.core.codex import app_state
+
+    _write_global_state(
+        tmp_path,
+        [
+            {"model": "gpt-6-astra", "reasoningEffort": "medium", "serviceTier": None},
+            {"model": "gpt-5.6-luna", "reasoningEffort": "medium", "serviceTier": None},
+        ],
+    )
+
+    assert app_state.set_current_model(tmp_path, "gpt-6-astra") is True
+
+    state = json.loads((tmp_path / ".codex-global-state.json").read_text(encoding="utf-8"))
+    recent = state["electron-persisted-atom-state"]["composer-recent-model-configurations-v1"]
+    assert [item["model"] for item in recent] == ["gpt-5.6-luna", "gpt-6-astra"]
+    assert recent[-1]["reasoningEffort"] == "medium"
+
+
+def test_set_current_model_is_noop_when_already_newest(tmp_path):
+    from backend.core.codex import app_state
+
+    _write_global_state(tmp_path, [{"model": "gpt-6-astra", "reasoningEffort": "low", "serviceTier": None}])
+
+    assert app_state.set_current_model(tmp_path, "gpt-6-astra") is False
+
+
+def test_set_current_model_ignores_missing_or_malformed_state(tmp_path):
+    from backend.core.codex import app_state
+
+    assert app_state.set_current_model(tmp_path, "gpt-6-astra") is False
+
+    (tmp_path / ".codex-global-state.json").write_text("not json", encoding="utf-8")
+    assert app_state.set_current_model(tmp_path, "gpt-6-astra") is False
+
+
+def test_restore_codeyun_backup_drops_managed_provider_blocks(tmp_path):
     import tomllib
 
     baseline_dir = tmp_path / "backup-codeyun"
@@ -230,8 +324,9 @@ def test_restore_codeyun_backup_keeps_thread_provider_blocks(tmp_path):
     data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
     assert data["model"] == "gpt-6-astra"
     assert "model_provider" not in data
-    assert data["model_providers"]["deepseek"]["base_url"] == "https://api.deepseek.com/"
-    assert data["model_providers"]["opencode_go"]["base_url"] == "http://127.0.0.1:8787/v1"
+    # Neither managed provider survives, so no new thread can be created against
+    # the local proxy.
+    assert "model_providers" not in data
 
 
 def test_api_switch_openai_prefers_baseline_over_deepseek_backup(tmp_path, monkeypatch):
@@ -271,8 +366,9 @@ def test_api_switch_openai_prefers_baseline_over_deepseek_backup(tmp_path, monke
     assert data["model"] == "gpt-6-astra"
     assert "model_provider" not in data
     assert "model_catalog_json" not in data
-    # ...but the provider block stays so threads created against it still open.
-    assert data["model_providers"]["opencode_go"]["base_url"] == "http://127.0.0.1:8787/v1"
+    # ...and the managed provider block is gone, so the desktop app cannot route
+    # new threads through the local proxy.
+    assert "model_providers" not in data
     assert not (tmp_path / "opencode_models.json").exists()
     assert response.status.model == "gpt-6-astra"
     assert response.provider == "openai"
@@ -497,7 +593,7 @@ def test_quota_error_message_keeps_unrelated_failures_verbatim():
     assert weekly_quota.describe_codex_quota_error(error) == "Codex app-server initialize 超时"
 
 
-def test_build_general_quota_window_defaults_to_seven_days():
+def test_build_general_quota_window_covers_two_periods():
     groups = weekly_quota.parse_codex_rate_limit_groups(_SAMPLE_RATE_LIMITS)
     snapshots = [
         {"date": "2026-09-10", "observed_at": "2026-09-10T00:00:00", "remaining_percent": 90},
@@ -512,10 +608,11 @@ def test_build_general_quota_window_defaults_to_seven_days():
     end = dt.datetime.fromisoformat(window["window_end"])
     assert (start.hour, start.minute, start.second) == (0, 0, 0)
     assert (end.hour, end.minute, end.second) == (0, 0, 0)
-    assert start <= dt.datetime(2026, 9, 12, 8, 9, 41, tzinfo=dt.timezone.utc)
+    assert start <= dt.datetime(2026, 9, 5, 8, 9, 41, tzinfo=dt.timezone.utc)
     assert end >= dt.datetime(2026, 9, 19, 8, 9, 41, tzinfo=dt.timezone.utc)
+    assert window["period_minutes"] == 7 * 24 * 60
     assert window["remaining_percent"] == 14
-    assert [item["remaining_percent"] for item in window["points"]] == [60]
+    assert [item["remaining_percent"] for item in window["points"]] == [90, 60]
 
 
 def test_api_quota_returns_empty_prompt_before_collection(monkeypatch):
@@ -546,6 +643,7 @@ def test_api_quota_serves_stored_snapshot(monkeypatch):
     assert response.observed_at == "2026-09-15T00:00:00"
     assert response.general_window is not None
     assert response.general_window.remaining_percent == 14
+    assert response.general_window.period_minutes == 7 * 24 * 60
 
 
 def test_build_general_quota_window_without_live_snapshot():
@@ -570,6 +668,93 @@ def test_build_general_quota_window_without_live_snapshot():
     assert window["reset_at"] == "2026-09-19T08:09:41+00:00"
     assert window["remaining_percent"] == 14
     assert [item["remaining_percent"] for item in window["points"]] == [30, 14]
+
+
+def test_build_general_quota_window_breaks_line_at_reset_time():
+    snapshots = [
+        {
+            "date": "2026-09-11",
+            "observed_at": "2026-09-11T00:00:00+00:00",
+            "remaining_percent": 5,
+            "reset_at": "2026-09-12T00:00:00+00:00",
+        },
+        {
+            "date": "2026-09-13",
+            "observed_at": "2026-09-13T00:00:00+00:00",
+            "remaining_percent": 100,
+            "reset_at": "2026-09-19T00:00:00+00:00",
+        },
+    ]
+
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+
+    assert [(item["at"], item["remaining_percent"]) for item in window["points"]] == [
+        ("2026-09-11T00:00:00+00:00", 5),
+        ("2026-09-12T00:00:00+00:00", 5),
+        ("2026-09-12T00:00:00+00:00", None),
+        ("2026-09-12T00:00:00+00:00", 100),
+        ("2026-09-13T00:00:00+00:00", 100),
+    ]
+
+
+def test_build_general_quota_window_separates_reset_end_from_next_start():
+    """A cycle's end is not the next cycle's start: the next starts on first use."""
+
+    snapshots = [
+        {
+            "date": "2026-09-11",
+            "observed_at": "2026-09-11T00:00:00+00:00",
+            "remaining_percent": 5,
+            "reset_at": "2026-09-12T00:00:00+00:00",
+        },
+        {
+            "date": "2026-09-13",
+            "observed_at": "2026-09-13T00:00:00+00:00",
+            "remaining_percent": 100,
+            "reset_at": "2026-09-19T18:00:00+00:00",
+        },
+    ]
+
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+
+    # The old cycle closes at 09-12 00:00, but the new one only opens one period
+    # before its own reset (09-12 18:00); the idle gap stays out of the line.
+    assert [(item["at"], item["remaining_percent"]) for item in window["points"]] == [
+        ("2026-09-11T00:00:00+00:00", 5),
+        ("2026-09-12T00:00:00+00:00", 5),
+        ("2026-09-12T00:00:00+00:00", None),
+        ("2026-09-12T18:00:00+00:00", 100),
+        ("2026-09-13T00:00:00+00:00", 100),
+    ]
+    # Each cycle carries its own start/reset pair for its reference line.
+    assert window["periods"] == [
+        {"start_at": "2026-09-05T00:00:00+00:00", "reset_at": "2026-09-12T00:00:00+00:00"},
+        {"start_at": "2026-09-12T18:00:00+00:00", "reset_at": "2026-09-19T18:00:00+00:00"},
+    ]
+
+
+@pytest.mark.parametrize("remaining", [100, 30])
+def test_build_general_quota_window_breaks_at_early_reset(remaining):
+    """A new cycle can replace the old one before its scheduled deadline."""
+    snapshots = [
+        {"date": "2026-09-21", "observed_at": "2026-09-21T00:00:00+00:00",
+         "remaining_percent": 54, "reset_at": "2026-09-27T00:00:00+00:00"},
+        {"date": "2026-09-22", "observed_at": "2026-09-22T01:00:00+00:00",
+         "remaining_percent": remaining, "reset_at": "2026-09-29T00:00:00+00:00"},
+    ]
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+    assert [(p["at"], p["remaining_percent"]) for p in window["points"]] == [
+        ("2026-09-21T00:00:00+00:00", 54),
+        ("2026-09-22T00:00:00+00:00", 54),
+        ("2026-09-22T00:00:00+00:00", None),
+        ("2026-09-22T00:00:00+00:00", 100),
+        ("2026-09-22T01:00:00+00:00", remaining),
+    ]
+    # Preserve the original deadline: the renderer clips, never re-slopes it.
+    assert window["periods"] == [
+        {"start_at": "2026-09-20T00:00:00+00:00", "reset_at": "2026-09-27T00:00:00+00:00"},
+        {"start_at": "2026-09-22T00:00:00+00:00", "reset_at": "2026-09-29T00:00:00+00:00"},
+    ]
 
 
 def test_api_quota_serves_history_without_snapshot(monkeypatch):
@@ -916,6 +1101,7 @@ def test_build_opencode_monthly_window_filters_history():
     window = opencode_usage.build_opencode_monthly_window(payload, snapshots)
 
     assert window["reset_at"] == "2026-10-14T14:57:19+00:00"
+    assert window["period_minutes"] == 30 * 24 * 60
     assert window["remaining_percent"] == 50
     assert [item["remaining_percent"] for item in window["points"]] == [70, 50]
 

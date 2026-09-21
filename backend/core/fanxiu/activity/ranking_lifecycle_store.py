@@ -10,7 +10,10 @@ from sqlalchemy import update
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
-from backend.core.fanxiu.activity.ranking_lifecycle import RankingCheckpoint
+from backend.core.fanxiu.activity.ranking_lifecycle import (
+    RankingCheckpoint,
+    RankingOccurrence,
+)
 from backend.models import FanxiuRankingLifecycleCheckpoint
 
 
@@ -129,14 +132,25 @@ def reopen_failed_ranking_checkpoint(
     instance_key: str,
     checkpoint_kind: str,
     business_date: str,
+    occurrence: "RankingOccurrence | None" = None,
+    now: datetime | None = None,
 ) -> FanxiuRankingLifecycleCheckpoint:
-    """Reopen one legacy technical failure without recording a new attempt.
+    """Reopen one technical failure without recording a new attempt.
 
-    Only unavailable rows carrying the old retry-budget/error marker qualify.
-    Completed, retained and genuine business-unavailable outcomes are protected.
-    The caller still owns scheduling the family Job; this function never touches
-    the Scheduler or game. Attempt history, result and evidence remain intact.
+    Two paths qualify:
+
+    * the legacy retry-budget/error marker (unchanged); and
+    * an ``activity_out_of_effective_dates`` terminal that the caller proves is
+      still open by passing the real Runtime ``occurrence`` and ``now``.  The
+      occurrence must match this row's ``instance_key``/``runtime_id``/
+      ``activity_id`` and satisfy ``start_at <= now <= close_at``.
+
+    Completed, retained and genuine business-unavailable outcomes are
+    protected.  The caller still owns scheduling the family Job; this function
+    never touches the Scheduler or game.  Attempt history, result and evidence
+    remain intact, and the update stays a compare-and-swap on ``updated_at``.
     """
+
     row = session.exec(
         select(FanxiuRankingLifecycleCheckpoint).where(
             FanxiuRankingLifecycleCheckpoint.instance_key == instance_key,
@@ -150,7 +164,15 @@ def reopen_failed_ranking_checkpoint(
     legacy_failure = bool(result.get("error_type")) or (
         result.get("terminal_reason") == "implicit_retry_budget_exhausted"
     )
-    if row.status != "unavailable" or not legacy_failure:
+    if legacy_failure:
+        qualifies = row.status == "unavailable"
+    else:
+        qualifies = (
+            row.status == "unavailable"
+            and result.get("terminal_reason") == "activity_out_of_effective_dates"
+            and _occurrence_proves_open(row, occurrence=occurrence, now=now)
+        )
+    if not qualifies:
         raise ValueError("Only legacy technical-unavailable checkpoints can be reopened")
     changed = session.exec(
         update(FanxiuRankingLifecycleCheckpoint)
@@ -168,6 +190,25 @@ def reopen_failed_ranking_checkpoint(
     session.commit()
     session.refresh(row)
     return row
+
+
+def _occurrence_proves_open(
+    row: FanxiuRankingLifecycleCheckpoint,
+    *,
+    occurrence: "RankingOccurrence | None",
+    now: datetime | None,
+) -> bool:
+    """Whether the supplied Runtime occurrence proves this row is still open."""
+
+    if occurrence is None or now is None or now.tzinfo is None:
+        return False
+    if (
+        str(occurrence.instance_key) != str(row.instance_key)
+        or str(occurrence.runtime_id) != str(row.runtime_id)
+        or int(occurrence.activity_id) != int(row.activity_id)
+    ):
+        return False
+    return occurrence.start_at <= now <= occurrence.close_at
 
 
 def ranking_checkpoint_evidence(

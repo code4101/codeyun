@@ -58,7 +58,7 @@ def _tree() -> list[dict]:
             node_269,
             node_340,
         ),
-        _folder("日程", _folder("资源榜"), _folder("仙宴")),
+        _folder("日程", _folder("资源榜"), _folder("主题集", _folder("仙园游宴"))),
         _folder("活动"),
     ]
 

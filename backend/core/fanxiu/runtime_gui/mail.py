@@ -268,6 +268,72 @@ def _runtime_time_key(item: Mapping[str, Any]) -> str:
     return digits[:12] if len(digits) >= 12 else digits
 
 
+_TIME_RELATION_RANK = {"mismatch": 0, "weak": 1, "conflict": 2, "exact": 3}
+
+
+def mail_runtime_time_key(item: Mapping[str, Any]) -> str:
+    """Public alias of the authoritative Runtime time key.
+
+    ``_runtime_time_key`` already normalizes millisecond/second epochs to a
+    twelve digit ``YYYYMMDDHHMM`` string.  Callers must compare that string in
+    full instead of truncating it to the last four ``HHMM`` digits, which would
+    silently ignore the calendar date.
+    """
+
+    return _runtime_time_key(item)
+
+
+def mail_time_relation(candidate: Any, expected: Any) -> str:
+    """Classify one OCR clock reading against one Runtime time key.
+
+    A complete date (``YYYYMMDDHHMM``, at least twelve digits) is compared in
+    full.  When both sides carry a complete date and disagree the result is
+    ``conflict``: callers must reject the match and never degrade to the shared
+    ``HHMM`` tail.  Only when at least one side genuinely lacks the date may the
+    shared suffix support a restricted ``weak`` match, which by itself can never
+    establish a full-date identity.
+    """
+
+    candidate_digits = _time_digits(candidate)
+    expected_digits = _time_digits(expected)
+    if not candidate_digits or not expected_digits:
+        return "mismatch"
+    if len(candidate_digits) >= 12 and len(expected_digits) >= 12:
+        return (
+            "exact"
+            if candidate_digits[:12] == expected_digits[:12]
+            else "conflict"
+        )
+    width = min(len(candidate_digits), len(expected_digits), 12)
+    if width >= 4 and candidate_digits[-width:] == expected_digits[-width:]:
+        return "weak"
+    return "mismatch"
+
+
+def best_mail_time_relation(candidates: Iterable[Any], expected: Any) -> str:
+    """Aggregate OCR clock candidates for one row.
+
+    ``exact`` outranks ``conflict`` so one clean full-date reading still wins,
+    but a full-date ``conflict`` outranks a date-less ``weak`` reading: an OCR
+    that also saw a contradicting date must not validate the row.
+    """
+
+    best = "mismatch"
+    for candidate in candidates:
+        relation = mail_time_relation(candidate, expected)
+        if _TIME_RELATION_RANK[relation] > _TIME_RELATION_RANK[best]:
+            best = relation
+    return best
+
+
+def mail_time_is_match(relation: str, *, allow_weak: bool = True) -> bool:
+    """Return whether ``relation`` may be used as a positive time match."""
+
+    if relation == "exact":
+        return True
+    return bool(allow_weak) and relation == "weak"
+
+
 def _ordered_runtime_items(items: Iterable[Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in items:
@@ -409,6 +475,12 @@ def _best_similarity(
         normalized = _time_digits(candidate) if time_value else _clean_text(candidate)
         if not normalized:
             continue
+        if time_value:
+            relation = mail_time_relation(candidate, expected)
+            if relation == "conflict":
+                # Both sides carry a complete date that disagrees.  Never
+                # reward a coincident HHMM tail or let fuzzy similarity hide it.
+                continue
         ratio = SequenceMatcher(None, normalized, normalized_expected).ratio()
         if normalized in normalized_expected or normalized_expected in normalized:
             ratio = max(
@@ -416,11 +488,9 @@ def _best_similarity(
                 min(len(normalized), len(normalized_expected))
                 / max(len(normalized), len(normalized_expected)),
             )
-        if (
-            time_value
-            and len(normalized) >= 4
-            and normalized[-4:] == normalized_expected[-4:]
-        ):
+        if time_value and relation == "exact":
+            ratio = max(ratio, 1.0)
+        elif time_value and relation == "weak":
             ratio = max(ratio, 0.72)
         best = max(best, ratio)
     return best
@@ -435,23 +505,15 @@ def _observation_evidence(
     title_score = _best_similarity(
         observation.title_candidates, str(item.get("title") or "")
     )
+    runtime_time_key = _runtime_time_key(item)
     time_score = _best_similarity(
-        observation.time_candidates, _runtime_time_key(item), time_value=True
+        observation.time_candidates, runtime_time_key, time_value=True
     )
-    expected_time_digits = _time_digits(_runtime_time_key(item))
-    time_exact = any(
-        bool(candidate_digits)
-        and (
-            candidate_digits == expected_time_digits
-            or (
-                len(candidate_digits) >= 4
-                and len(expected_time_digits) >= 4
-                and candidate_digits[-4:] == expected_time_digits[-4:]
-            )
-        )
-        for candidate in observation.time_candidates
-        if (candidate_digits := _time_digits(candidate))
+    time_relation = best_mail_time_relation(
+        observation.time_candidates, runtime_time_key
     )
+    time_exact = time_relation == "exact"
+    date_conflict = time_relation == "conflict"
     if observation.title_candidates and observation.time_candidates:
         combined = 0.68 * title_score + 0.32 * time_score
     elif observation.title_candidates:
@@ -461,8 +523,11 @@ def _observation_evidence(
     else:
         combined = 0.0
     combined *= max(0.0, min(1.0, float(observation.reliability)))
+    # A complete-date conflict vetoes the row even when the title is a strong
+    # match: the visible mail cannot be the runtime item whose date differs.
     anchor = (
         observation.trusted
+        and not date_conflict
         and combined >= 0.62
         and (title_score >= 0.68 or time_score >= 0.92)
     )
@@ -473,6 +538,7 @@ def _observation_evidence(
     # wrong internal mail.
     exact = bool(
         observation.trusted
+        and not date_conflict
         and title_score >= 0.94
         and (
             (
@@ -493,6 +559,7 @@ def _observation_evidence(
         "title": str(item.get("title") or ""),
         "title_score": round(title_score, 4),
         "time_score": round(time_score, 4),
+        "time_relation": time_relation,
         "time_exact": time_exact,
         "combined_score": round(combined, 4),
         "anchor": anchor,
@@ -797,11 +864,15 @@ __all__ = [
     "MailWindowAlignment",
     "MailWindowGeometry",
     "align_mail_window",
+    "best_mail_time_relation",
     "build_mail_visual_observations",
     "detect_stale_mail_snapshot",
     "diagnose_mail_window",
+    "mail_runtime_time_key",
     "mail_snapshot_fingerprint",
     "mail_snapshot_structure_fingerprint",
+    "mail_time_is_match",
+    "mail_time_relation",
     "mail_window_geometry_from_asset",
     "stable_complete_mail_snapshots",
 ]

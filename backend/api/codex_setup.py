@@ -11,6 +11,7 @@ from sqlmodel import Session
 from backend.core.access.auth import get_optional_current_user_from_token
 from backend.core.codex.app_processes import start_codex_app, stop_codex_processes
 from backend.core.codex.app_server import CodexAppServerError
+from backend.core.codex.app_state import set_current_model
 from backend.core.codex.official_setup import (
     GPT_MODE,
     PROVIDER_ID,
@@ -23,9 +24,10 @@ from backend.core.codex.switch import (
     PROVIDERS as CODEX_SETUP_PROVIDERS,
     OPENAI_PROVIDER_ID,
     CodexSwitchError,
+    cleanup_generated_catalogs,
     detect_provider,
     discover_opencode_models,
-    ensure_opencode_provider_defined,
+    drop_managed_provider_blocks,
     restore_codeyun_backup,
     switch_codex,
 )
@@ -66,6 +68,14 @@ DEEPSEEK_PROVIDER = "deepseek"
 SESSION_SCOPE_NOTICE = (
     "切换只改本机默认配置：已存在的 Codex 会话会沿用它们各自的模型设置，"
     "需要在 Codex 内逐个重新选择模型才会走新的 provider。"
+)
+
+# Restoring OpenAI drops the DeepSeek/opencode provider blocks so new threads can
+# never fall back to the local proxy.  Codex threads are pinned to the provider
+# they were created with, so threads from those providers stop working.
+OPENAI_RESET_NOTICE = (
+    "已还原为 OpenAI 默认配置：之前用 DeepSeek / OpenCode 建立的会话会失去对应供应商，"
+    "无法继续使用，请新建会话。"
 )
 
 
@@ -114,7 +124,15 @@ class CodexQuotaGroup(BaseModel):
 
 class CodexQuotaPoint(BaseModel):
     at: str
-    remaining_percent: int
+    # None marks a reset break: the chart must not connect the periods across it.
+    remaining_percent: Optional[int] = None
+
+
+class CodexQuotaPeriod(BaseModel):
+    # One reset cycle: the timer starts on first use after a reset, so ``start_at``
+    # is ``reset_at`` minus one period and is distinct from the previous reset.
+    start_at: str = ""
+    reset_at: str = ""
 
 
 class CodexQuotaWindowHistory(BaseModel):
@@ -122,6 +140,10 @@ class CodexQuotaWindowHistory(BaseModel):
     window_start: str = ""
     window_end: str = ""
     reset_at: str = ""
+    # Reset period of the window (minutes); the client draws the even-burn
+    # reference line across one period. 0 means the window has no reset concept.
+    period_minutes: int = 0
+    periods: list[CodexQuotaPeriod] = Field(default_factory=list)
     remaining_percent: Optional[int] = None
     points: list[CodexQuotaPoint] = Field(default_factory=list)
 
@@ -498,19 +520,6 @@ def switch_codex_setup(
     before_provider = detect_provider(str(before.get("model_provider") or ""))
     before_model = str(before.get("model") or "")
 
-    if provider == OPENAI_PROVIDER_ID and before_provider == OPENAI_PROVIDER_ID and not before["deepseek_configured"]:
-        # Nothing to switch, but still repair the CodeYun-managed provider block so
-        # threads created on the opencode provider can be opened again.
-        ensure_opencode_provider_defined(resolve_codex_home() / "config.toml")
-        return CodexSetupSwitchResponse(
-            ok=True,
-            provider=provider,
-            model=before_model,
-            changed=False,
-            message="当前已经是 OpenAI 默认配置",
-            status=_build_status(session),
-        )
-
     api_key = ""
     if provider == DEEPSEEK_PROVIDER:
         api_key = str(payload.api_key or "").strip() or _resolve_deepseek_key(session)
@@ -532,6 +541,13 @@ def switch_codex_setup(
                 result = {"mode": GPT_MODE, "output": "", "status": read_codex_status()}
             elif before["backup_exists"]:
                 result = switch_codex(OPENAI_PROVIDER_ID)
+            elif before_provider == OPENAI_PROVIDER_ID:
+                # No snapshot yet and already on OpenAI: drop any leftover
+                # provider blocks and generated catalogs so nothing can route
+                # new threads to the local proxy.
+                drop_managed_provider_blocks(codex_home / "config.toml")
+                cleanup_generated_catalogs(codex_home)
+                result = {"mode": GPT_MODE, "output": "", "status": read_codex_status()}
             else:
                 raise CodexSwitchError("未找到备份，无法还原 OpenAI 默认配置")
         elif provider == DEEPSEEK_PROVIDER:
@@ -545,9 +561,14 @@ def switch_codex_setup(
         start_codex_app(snapshot)
         raise
 
+    after = result.get("status") if isinstance(result, dict) else None
+    target_model = str((after or {}).get("model") or model or "").strip()
+    if target_model:
+        # The desktop app defaults new threads to its own persisted model choice,
+        # so move it onto the provider we just wrote while the app is stopped.
+        set_current_model(codex_home, target_model)
     restarted = start_codex_app(snapshot)
     closed_count = len(snapshot.get("stopped") or [])
-    after = result.get("status") if isinstance(result, dict) else None
     new_status = _build_status(session, after if isinstance(after, dict) else None)
     changed = new_status.provider != before_provider or new_status.model != before_model
     return CodexSetupSwitchResponse(
@@ -563,7 +584,7 @@ def switch_codex_setup(
             app_was_running=bool(snapshot.get("was_app_running")),
         ),
         output=str(result.get("output") or ""),
-        notice=SESSION_SCOPE_NOTICE if changed else "",
+        notice=OPENAI_RESET_NOTICE if provider == OPENAI_PROVIDER_ID else (SESSION_SCOPE_NOTICE if changed else ""),
         closed_process_count=closed_count,
         restarted_app=restarted,
         status=new_status,

@@ -20,7 +20,12 @@ from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 from backend.core.fanxiu.evidence_retention import prune_fanxiu_evidence
 from backend.core.temp_paths import codeyun_temp_root
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
-from backend.core.fanxiu.data_annotation.ocr_spatial import find_text_matches
+from backend.core.fanxiu.data_annotation.ocr_spatial import (
+    find_fuzzy_text_matches,
+    find_text_matches,
+    select_fuzzy_text_match,
+    select_text_match,
+)
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
 from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
@@ -1779,7 +1784,7 @@ class DailyResourceTaskMixin:
                     self._log(
                         "success",
                         "日常_仙盟：攻击阶段初始化完成，"
-                        f"OCR 剩余体力 {remaining_attack_count}，三连={triple_attack_enabled}",
+                        f"Runtime 剩余体力 {remaining_attack_count}，三连={triple_attack_enabled}",
                     )
                     next_triple_probe_after = self._daily_xianmeng_next_triple_probe_after(
                         getattr(self, "_daily_xianmeng_last_option_snapshot", {}),
@@ -1807,7 +1812,19 @@ class DailyResourceTaskMixin:
                             "日常_仙盟：Runtime 确认积分达到三连阈值，已切换并复验三连",
                         )
 
-                if remaining_attack_count is not None and remaining_attack_count <= 0:
+                minimum_batch = 3 if self._daily_xianmeng_should_preserve_tail_before_triple_disable() else 1
+                if remaining_attack_count is not None and remaining_attack_count < minimum_batch:
+                        # Local hot-loop bookkeeping is only an estimate. A
+                        # toast or overlay can hide the attack control without
+                        # consuming stamina; completion needs authoritative data.
+                        count_snapshot = self._read_daily_xianmeng_count_snapshot()
+                        actual_count = count_snapshot.get("attack_count")
+                        if not count_snapshot.get("ok") or not count_snapshot.get("complete") or not isinstance(actual_count, int):
+                            raise RuntimeError("日常_仙盟：清扫终点无法核实体力，保留现场")
+                        if actual_count >= minimum_batch:
+                            remaining_attack_count = actual_count
+                            self._log("warning", f"日常_仙盟：Runtime 校正仍余 {actual_count} 体力，继续清扫")
+                            continue
                         yield from self._return_daily_xianmeng_to_cover(context)
                         claimed = yield from self._claim_daily_xianmeng_task_rewards(
                             context,
@@ -1834,7 +1851,7 @@ class DailyResourceTaskMixin:
                         yield from self._return_daily_xianmeng_to_world(context)
                         self._record_daily_xianmeng_done(
                             payload,
-                            message="任务已无可领且攻击次数为 0，已返回 #34",
+                            message=f"任务已无可领且 Runtime 攻击体力 {actual_count} 小于本阶段阈值 {minimum_batch}，已返回 #34",
                         )
                         return "success"
 
@@ -1844,10 +1861,9 @@ class DailyResourceTaskMixin:
                     and remaining_attack_count is not None
                     and 0 < remaining_attack_count < required_attempts
                 ):
-                    # Triple is worth more than three single attacks while it is
-                    # still enabled.  Keep 1-2 stamina untouched until the
-                    # triple-disable cutoff, then clear the remainder with
-                    # single attacks.
+                    # Before the autonomous sweep retain the triple tail;
+                    # afterwards switch to singles when the full Task owns
+                    # clearing the final 1-2 stamina.
                     if self._daily_xianmeng_should_preserve_tail_before_triple_disable():
                         next_time = self._daily_xianmeng_event_tail_next_time(payload)
                         if next_time:
@@ -1885,17 +1901,20 @@ class DailyResourceTaskMixin:
                         if "免战" in str(immunity_text or ""):
                             yield from self._record_daily_xianmeng_immunity_cd(context, payload)
                             return "skipped"
-                        yield from self._return_daily_xianmeng_to_world(context)
-                        self._schedule_daily_xianmeng_retry(
-                            payload,
-                            seconds=int(payload.get("attack_unconfirmed_retry_seconds") or 60),
-                            message="攻击按钮连续三次未离开当前状态，本轮未计作成功攻击",
+                        raise RuntimeError(
+                            "日常_仙盟：攻击按钮连续三次未推进，结果未确认；"
+                            "保留现场，不退出世界、不安排业务重试"
                         )
-                        return "skipped"
                     self._log("warning", f"日常_仙盟：攻击按钮未触发状态迁移，重试 {swallowed_clicks}/3")
                     scene_id = 293
                     continue
                 swallowed_clicks = 0
+                # Disappearance alone is not battle evidence: toasts and global
+                # overlays can cover the control. Require a real result before
+                # recording a consumed round, never accept #293 here.
+                scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(
+                    context, payload, accept_attack=False,
+                )
                 attacks += 1
                 if remaining_attack_count is not None:
                     remaining_attack_count = max(0, remaining_attack_count - required_attempts)
@@ -1904,13 +1923,9 @@ class DailyResourceTaskMixin:
                 if attacks == 1 or attacks % 10 == 0 or remaining_attack_count == 0:
                     self._log(
                         "success",
-                        "日常_仙盟：攻击已触发状态迁移，"
+                        "日常_仙盟：已确认攻击结果，"
                         f"完成 {attacks} 轮，按本地计数剩余 {remaining_attack_count}",
                     )
-                scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(
-                    context,
-                    payload,
-                )
                 continue
 
             scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(context, payload)
@@ -1918,7 +1933,11 @@ class DailyResourceTaskMixin:
     def _wait_daily_xianmeng_attack_departure(self, context: Any, payload: dict[str, Any]):
         """Confirm an attack from the attack control disappearing, not a guessed next popup."""
 
-        timeout = float(payload.get("attack_departure_timeout_seconds") or 4.0)
+        # The victory animation can keep the old attack ROI visually intact
+        # for more than four seconds even though the server has accepted the
+        # attack. Keep this cheaper shape probe, but cover the observed
+        # animation window before declaring a swallowed click.
+        timeout = float(payload.get("attack_departure_timeout_seconds") or 8.0)
         threshold = float(payload.get("fast_attack_shape_threshold") or self.overlay_threshold)
         start = time.monotonic()
         while True:
@@ -1934,27 +1953,13 @@ class DailyResourceTaskMixin:
 
     def _read_daily_xianmeng_attack_count_once(self, context: Any, payload: dict[str, Any]):
         """Read the attack count once per attack stage; never per battle."""
-
-        for attempt in range(3):
-            self._raise_if_stopped(context.stop_event or threading.Event())
-            self._clear_tick_frame(context.ctx)
-            yield BehaviorTreeStatus.RUNNING
-            numbers, text = context.ocr_numbers_in_shapes(
-                293,
-                ("次数",),
-                padding=int(payload.get("attack_count_ocr_padding") or 20),
-                crop=True,
-                max_attempts=1,
-            )
-            if numbers and int(numbers[0]) >= 0:
-                return int(numbers[0])
-            self._log("warning", f"日常_仙盟：攻击次数 OCR 第 {attempt + 1}/3 次未命中：{text[:80]}")
-            yield from context.wait_action_settle(0.4)
+        yield from ()  # Preserve the generator API without issuing a GUI action.
+        # The GUI also displays clone_count beside attack_count. OCR numeric
+        # order is not resource identity; use the typed Runtime field first.
         snapshot = self._read_daily_xianmeng_count_snapshot()
         if snapshot.get("ok") and snapshot.get("complete") and isinstance(snapshot.get("attack_count"), int):
-            self._log("warning", "日常_仙盟：攻击次数 OCR 未命中，仅在阶段入口降级读取一次 Runtime")
             return int(snapshot["attack_count"])
-        raise RuntimeError("日常_仙盟：攻击阶段无法读取剩余体力，拒绝盲目循环")
+        raise RuntimeError("日常_仙盟：Runtime 无法确认攻击体力，保留现场，不用相邻分身次数代替")
 
     @staticmethod
     def _parse_daily_xianmeng_personal_scores(text: str) -> list[int]:
@@ -1979,6 +1984,7 @@ class DailyResourceTaskMixin:
         timeout = float(payload.get("fast_attack_scene_timeout_seconds") or 20.0)
         threshold = float(payload.get("fast_attack_shape_threshold") or self.overlay_threshold)
         start = time.monotonic()
+        layered_probe_done = False
         while True:
             self._raise_if_stopped(context.stop_event or threading.Event())
             self._clear_tick_frame(context.ctx)
@@ -2006,6 +2012,24 @@ class DailyResourceTaskMixin:
                 return 295
             if accept_attack and elapsed >= max(0.0, float(attack_min_elapsed)) and scores[293] >= threshold:
                 return 293
+            # Some multi-battle reports are valid #294 scenes but use a
+            # different report body/button skin, so the two cheap ROIs above
+            # both score 0%. Pay for one complete layered recognition only
+            # after the normal animation window; this keeps the hot path cheap
+            # while accepting the observed report variant.
+            if not layered_probe_done and elapsed >= 6.0:
+                layered_probe_done = True
+                layered = yield from context.wait_scene(
+                    [294, 295, 293],
+                    wait=0.0,
+                    required=False,
+                    label="日常_仙盟：轻量战报变体复核",
+                )
+                layered_scene = int(getattr(layered, "scene_id", 0) or 0) if layered is not None else 0
+                if accept_results and layered_scene in {294, 295}:
+                    return layered_scene
+                if accept_attack and layered_scene == 293:
+                    return 293
             if elapsed >= timeout:
                 raise TimeoutError(
                     "日常_仙盟：轻量攻击循环等待超时，"
@@ -2048,7 +2072,9 @@ class DailyResourceTaskMixin:
 
         #66 is used only as the 900x1600 coordinate canvas after leaving that
         page. Business decisions (command target and cooldown) never come from
-        this OCR helper.
+        this OCR helper.  Every branch locates the label through full-frame OCR
+        tokens plus the public ocr_spatial match/select contract; the declared
+        shape token view can clearly show a label (e.g. 「跳转」) yet miss it.
         """
 
         deadline = time.monotonic() + max(0.1, float(timeout))
@@ -2056,30 +2082,40 @@ class DailyResourceTaskMixin:
         while True:
             self._raise_if_stopped(context.stop_event or threading.Event())
             try:
-                if max_center_y is not None:
-                    if fuzzy:
-                        raise ValueError("OCR 空间约束暂不支持模糊匹配")
-                    frame = context.cur_frame(update=True)
+                frame = context.cur_frame(update=True)
+                tokens = context.full_frame_ocr_tokens(frame)
+                if fuzzy:
                     matches = [
                         item
-                        for item in find_text_matches(context.ocr_tokens(frame), text)
-                        if item.y + item.h / 2 <= float(max_center_y)
-                    ]
-                    if len(matches) != 1:
-                        raise RuntimeError(
-                            f"上方活动列表内「{text}」命中数为 {len(matches)}，拒绝点击"
+                        for item in find_fuzzy_text_matches(
+                            tokens,
+                            text,
+                            min_score=72.0,
                         )
-                    match = matches[0]
-                    context.click_frame_point(66, *match.point())
-                else:
-                    match = context.click_ocr_text(
-                        66,
+                        if max_center_y is None
+                        or item.y + item.h / 2 <= float(max_center_y)
+                    ]
+                    match = select_fuzzy_text_match(
+                        matches,
                         text,
-                        match_mode="fuzzy" if fuzzy else "exact",
-                        min_similarity=72.0 if fuzzy else 100.0,
+                        occurrence=occurrence,
                         ambiguity_margin=8.0,
+                    )
+                else:
+                    matches = [
+                        item
+                        for item in find_text_matches(tokens, text)
+                        if max_center_y is None
+                        or item.y + item.h / 2 <= float(max_center_y)
+                    ]
+                    match = select_text_match(
+                        matches,
+                        text,
                         occurrence=occurrence,
                     )
+                if match is None:
+                    raise RuntimeError(f"「{text}」未唯一匹配，拒绝点击")
+                context.click_frame_point(66, *match.point())
                 self._log("action", f"日常_仙盟：点击「{text}」")
                 return match
             except RuntimeError as exc:
@@ -2286,6 +2322,20 @@ class DailyResourceTaskMixin:
 
     def _return_daily_xianmeng_to_world(self, context: Any):
         self._log("action", "日常_仙盟：返回世界 #34")
+        # Each return click must prove its real successor scene before the next
+        # step; a hard ``scene_id = <next>`` assignment is not arrival evidence.
+        # The routes below are exactly the pre-existing paths (317 still reuses
+        # #293「返回」).  No new navigation is introduced here.
+        route: dict[int, tuple[int, str, tuple[int, ...]]] = {
+            294: (294, "确定", (293,)),
+            295: (295, "关闭", (293,)),
+            293: (293, "返回", (475,)),
+            317: (293, "返回", (475,)),
+            471: (471, "返回", (475,)),
+            474: (474, "返回", (473,)),
+            473: (473, "返回", (34,)),
+            475: (475, "离开", (34,)),
+        }
         scene_id = 0
         if isinstance(getattr(context, "ctx", None), dict):
             try:
@@ -2294,37 +2344,44 @@ class DailyResourceTaskMixin:
                 )
             except TimeoutError:
                 scene_id = 0
-        if scene_id == 294:
-            context.click_shape_center(294, "确定")
+        for _step in range(len(route) + 1):
+            if int(scene_id) == 34:
+                break
+            step = route.get(int(scene_id))
+            if step is None:
+                break
+            click_scene, shape, successors = step
+            if int(scene_id) == 475:
+                # Click 「离开」 only once the collapsed menu is really present:
+                # wait_click proves the #475 pre-click scene, then #34 is
+                # strictly re-verified.  A bare settle+click fired too early and
+                # the UI had not collapsed yet.
+                yield from context.wait_click(
+                    click_scene,
+                    shape,
+                    timeout=8.0,
+                )
+            else:
+                context.click_shape_center(click_scene, shape)
             yield from context.wait_action_settle(0.8)
-            scene_id = 293
-        if scene_id == 295:
-            context.click_shape_center(295, "关闭")
-            yield from context.wait_action_settle(0.8)
-            scene_id = 293
-        if scene_id in (293, 317):
-            context.click_shape_center(293, "返回")
-            yield from context.wait_action_settle(1.0)
-            scene_id = 475
-        if scene_id == 471:
-            context.click_shape_center(471, "返回")
-            yield from context.wait_action_settle(1.0)
-            yield from self._wait_daily_xianmeng_exact_view(context, 475, timeout=8.0)
-            scene_id = 475
-        if scene_id == 474:
-            context.click_shape_center(474, "返回")
-            yield from context.wait_action_settle(0.8)
-            scene_id = 473
-        if scene_id == 473:
-            context.click_shape_center(473, "返回")
-            yield from context.wait_action_settle(1.0)
-            scene_id = 34
-        if scene_id == 475:
-            context.click_shape_center(475, "离开")
-            yield from context.wait_action_settle(0.8)
-            yield from self._wait_daily_xianmeng_exact_view(context, 34, timeout=30.0)
+            successor_timeout = 30.0 if 34 in successors else 8.0
+            try:
+                scene_id = yield from self._wait_daily_xianmeng_exact_view(
+                    context, *successors, timeout=successor_timeout
+                )
+            except TimeoutError as exc:
+                # Preserve the real failure scene (the helper reports its last
+                # observation) and stop here; never fall through to navigation
+                # on a guessed successor.
+                self._log(
+                    "warning",
+                    f"日常_仙盟：点击 #{click_scene}「{shape}」后未确认后继场景，{exc}",
+                )
+                raise
         yield from context.go_scene(34)
-        yield from context.wait_scene([34], wait=30.0, label="日常_仙盟：确认返回世界 #34")
+        # Strict world acceptance: an exact #34 observation, never a global
+        # fallback accepted by a plain wait_scene.
+        yield from self._wait_daily_xianmeng_exact_view(context, 34, timeout=30.0)
         return "success"
 
     def _return_daily_xianmeng_to_cover(self, context: Any):
@@ -2456,6 +2513,31 @@ class DailyResourceTaskMixin:
             self._log("skip", f"日常_仙盟：{message}，下次 {next_time}")
         return next_time
 
+    def read_xianmeng_attackable_targets(self) -> dict[str, Any]:
+        """Read current camp eligibility without navigation, clicks or scheduling.
+
+        Uses the same eligibility calculation as the production executor, so a
+        short R&D cell can inspect zero-point/friendly exclusions in place.
+        The caller must first load the battlefield through normal GUI entry.
+        """
+        snapshot = self._read_daily_xianmeng_command_target_snapshot()
+        if not snapshot.get("ok") or not snapshot.get("complete"):
+            raise RuntimeError("仙盟阵营事实未完整加载，不能当作无目标")
+        fallback = self._daily_xianmeng_fallback_candidates(snapshot)
+        eligible_ids = {int(row["id"]) for row in fallback["candidates"]}
+        skipped = []
+        for row in snapshot.get("camps", []):
+            if int(row["id"]) in eligible_ids:
+                continue
+            hp = row.get("pillar_cur_hp")
+            reason = (
+                "阵柱积分为0，无法攻击" if isinstance(hp, (int, float)) and hp <= 0
+                else "积分事实不完整" if not isinstance(hp, (int, float))
+                else "本服或友军，禁止攻击"
+            )
+            skipped.append({"id": row["id"], "name": row["name"], "reason": reason})
+        return {**snapshot, "fallback_plan": fallback, "skipped_targets": skipped}
+
     def _wait_daily_xianmeng_command_target(
         self,
         context: Any,
@@ -2464,22 +2546,38 @@ class DailyResourceTaskMixin:
         self._raise_if_stopped(context.stop_event or threading.Event())
         yield BehaviorTreeStatus.RUNNING
         try:
-            snapshot = self._read_daily_xianmeng_command_target_snapshot()
+            snapshot = self.read_xianmeng_attackable_targets()
         except Exception as exc:
             snapshot = {"ok": False, "complete": False, "reason": str(exc)}
+        if not snapshot.get("ok") or not snapshot.get("complete"):
+            raise RuntimeError(
+                "日常_仙盟：指挥/阵营事实未完整加载，不能当作没有指挥目标："
+                f"{snapshot.get('reason') or 'incomplete Runtime snapshot'}"
+            )
+        if snapshot["fallback_plan"]["all_opponents_defeated"]:
+            payload["_xianmeng_day_complete_reason"] = "所有非友军阵柱积分为0，当日无对手"
+            payload["_xianmeng_next_time"] = None
+            self._log("success", "日常_仙盟：当日无对手，今日完成；不再复查体力")
+            return None
         target = snapshot.get("target")
+        eligible_ids = {int(row["id"]) for row in snapshot["fallback_plan"]["candidates"]}
         if (
             snapshot.get("ok")
             and snapshot.get("complete")
             and int(snapshot.get("command_count") or 0) == 1
             and isinstance(target, dict)
             and int(target.get("id") or 0) > 0
+            and int(target.get("id") or 0) in eligible_ids
             and str(target.get("name") or "").strip()
         ):
             current_hp = target.get("pillar_cur_hp")
-            if not isinstance(current_hp, (int, float)) or float(current_hp) > 0:
+            if (
+                not isinstance(current_hp, (int, float))
+                or float(current_hp) > 0
+            ):
                 self._daily_xianmeng_target_selection = {
                     "mode": "command",
+                    "camp_count": int(snapshot.get("camp_count") or 0),
                     "target": target,
                     "candidates": [target],
                 }
@@ -2502,7 +2600,7 @@ class DailyResourceTaskMixin:
                 "skip",
                 f"日常_仙盟：指挥目标 {target['name']} 的阵柱已被打碎，等待新指挥目标",
             )
-        fallback = self._daily_xianmeng_fallback_candidates(snapshot)
+        fallback = snapshot["fallback_plan"]
         excluded = set(getattr(self, "_daily_xianmeng_excluded_target_ids", set()))
         candidates = [
             item
@@ -2510,18 +2608,20 @@ class DailyResourceTaskMixin:
             if int(item.get("id") or 0) not in excluded
         ]
         sweep_allowed = self._daily_xianmeng_stamina_sweep_allowed()
+        sweep_start_text = self._daily_xianmeng_autonomous_sweep_start_text()
         fallback_allowed = bool(fallback.get("own_pillar_destroyed")) or sweep_allowed
         if fallback_allowed and candidates:
             target = candidates[0]
             self._daily_xianmeng_target_selection = {
                 "mode": "non-friendly-fallback",
+                "camp_count": int(snapshot.get("camp_count") or 0),
                 "target": target,
                 "candidates": candidates,
             }
             reason = (
                 "我方柱子已爆且无法再设置指挥目标"
                 if fallback.get("own_pillar_destroyed")
-                else "已进入 21:10 后体力清扫且当前没有唯一指挥目标"
+                else f"已进入 {sweep_start_text} 后体力清扫且当前没有唯一指挥目标"
             )
             self._log(
                 "action",
@@ -2545,45 +2645,59 @@ class DailyResourceTaskMixin:
             + (
                 "已允许自主选敌但当前没有可攻击的非友军；等待下次同步"
                 if fallback_allowed
-                else "21:10 前保持等待大师兄设置目标"
+                else f"{sweep_start_text} 前保持等待大师兄设置目标"
             ),
         )
         return None
 
     @staticmethod
-    def _daily_xianmeng_stamina_sweep_allowed() -> bool:
-        """Allow autonomous target selection from the first stamina sweep onward."""
+    def _daily_xianmeng_stamina_sweep_allowed(now: datetime | None = None) -> bool:
+        """Allow autonomous target selection from the configured sweep start."""
 
         from backend.core.fanxiu.activity.daily_activity_job_registry import (
-            XIANMENG_STAMINA_SWEEPS,
+            XIANMENG_AUTONOMOUS_SWEEP_START,
         )
 
-        current = job_now()
-        first_sweep = min(XIANMENG_STAMINA_SWEEPS)
-        return (current.hour, current.minute) >= first_sweep
+        current = now or job_now()
+        return (current.hour, current.minute) >= XIANMENG_AUTONOMOUS_SWEEP_START
+
+    @staticmethod
+    def _daily_xianmeng_autonomous_sweep_start_text() -> str:
+        """Format the autonomous sweep start clock from its single constant."""
+
+        from backend.core.fanxiu.activity.daily_activity_job_registry import (
+            XIANMENG_AUTONOMOUS_SWEEP_START,
+        )
+
+        hour, minute = XIANMENG_AUTONOMOUS_SWEEP_START
+        return f"{hour:02d}:{minute:02d}"
 
     @staticmethod
     def _daily_xianmeng_should_preserve_tail_before_triple_disable(
         now: datetime | None = None,
     ) -> bool:
-        """Keep sub-three stamina before triple attacks are disabled at 21:30."""
-
-        from backend.core.fanxiu.activity.daily_activity_job_registry import (
-            XIANMENG_TRIPLE_DISABLE_AT,
-        )
-
+        """Daytime uses batches >=3; the authorized 21:50 tail drains singles."""
         current = now or job_now()
-        return (current.hour, current.minute) < XIANMENG_TRIPLE_DISABLE_AT
+        return (current.hour, current.minute) < (21, 50)
 
     @staticmethod
-    def _daily_xianmeng_fallback_candidates(snapshot: dict[str, Any]) -> dict[str, Any]:
-        """Build the non-friendly fallback queue from authoritative Runtime facts."""
+    def _daily_xianmeng_fallback_candidates(
+        snapshot: dict[str, Any], *, now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Rank non-friendly camps: no CD first, unshielded before shielded.
+
+        Pillar damage alone does not mean attackable: an almost-destroyed camp
+        can still have several minutes of immunity. A live shield lowers rank
+        but does not make the camp ineligible. The focused UI immunity check
+        remains the final authority before spending stamina.
+        """
 
         from backend.core.fanxiu.catalog.server_relations import (
             classify_fanxiu_target_relation,
         )
 
         camps = snapshot.get("camps") if isinstance(snapshot.get("camps"), list) else []
+        current_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
         rows: list[dict[str, Any]] = []
         own_rows: list[dict[str, Any]] = []
         prepared: list[dict[str, Any]] = []
@@ -2621,10 +2735,33 @@ class DailyResourceTaskMixin:
             max_hp = row.get("pillar_max_hp")
             if not isinstance(cur_hp, (int, float)) or not isinstance(max_hp, (int, float)):
                 continue
+            # A visible button and an advancing client input timer do not prove
+            # this camp remains attackable. Live zero-pillar probes dispatched
+            # clicks but produced neither results nor stamina consumption.
             if float(max_hp) <= 0 or float(cur_hp) <= 0:
                 continue
+            protect_end_time = row.get("protect_end_time")
+            if isinstance(protect_end_time, (int, float)) and protect_end_time > current_ms:
+                continue
+            row["shielded"] = (
+                row.get("has_super_mirror_hp_protect") is True
+                or row.get("has_xiaoyan_mirror") is True
+            )
             row["pillar_ratio"] = max(0.0, min(1.0, float(cur_hp) / float(max_hp)))
             rows.append(row)
+
+        opponents = [row for row in prepared
+                     if row["relation"].get("camp") == "non_friendly"
+                     and int(row.get("id") or 0) not in battlefield_ally_ids]
+        all_opponents_defeated = bool(
+            own_rows and opponents
+            and len(prepared) == len(camps) == int(snapshot.get("camp_count") or 0)
+            and all(row["relation"].get("camp") in {"friendly", "non_friendly"} for row in prepared)
+            and all(isinstance(row.get("pillar_cur_hp"), (int, float))
+                    and row["pillar_cur_hp"] == 0
+                    and isinstance(row.get("pillar_max_hp"), (int, float))
+                    and row["pillar_max_hp"] > 0 for row in opponents)
+        )
 
         own_pillar_destroyed = any(
             isinstance(row.get("pillar_cur_hp"), (int, float))
@@ -2633,12 +2770,15 @@ class DailyResourceTaskMixin:
         )
         rows.sort(
             key=lambda row: (
-                float(row["pillar_ratio"]),
+                bool(row["shielded"]),
                 float(row["pillar_cur_hp"]),
+                float(row["pillar_ratio"]),
                 int(row.get("id") or 0),
             )
         )
         return {
+            "all_opponents_defeated": all_opponents_defeated,
+            "opponents": opponents,
             "own_pillar_destroyed": own_pillar_destroyed,
             "own_camps": own_rows,
             "battlefield_ally_ids": sorted(battlefield_ally_ids),
@@ -2677,40 +2817,42 @@ class DailyResourceTaskMixin:
             # consuming the battlefield resource.
             yield from self._claim_daily_xianmeng_task_rewards(context, payload)
             entry_attempts = max(1, int(payload.get("battlefield_entry_attempts") or 3))
-            cover_reentries_left = max(
-                0,
-                int(payload.get("battlefield_cover_reentries") or 1),
-            )
             for entry_attempt in range(1, entry_attempts + 1):
                 context.click_shape_center(473, "前往战场")
                 yield from context.wait_action_settle(
                     float(payload.get("entry_settle_seconds") or 2.0)
                 )
+                # #475 is the real battlefield page and this is a load-timing
+                # wait, not a new navigation route: a global fallback (#34) can
+                # appear during the ~60s loading window and must not be read as
+                # arrival.  Only a fresh exact #475 succeeds; a bounded probe
+                # timeout is treated as "cover never departed" and re-verified
+                # below before any bounded retry.
                 try:
                     current_scene = yield from self._wait_daily_xianmeng_exact_view(
                         context,
                         475,
-                        34,
-                        timeout=float(payload.get("battlefield_entry_probe_timeout") or 8.0),
+                        timeout=float(payload.get("battlefield_entry_probe_timeout") or 90.0),
                     )
                 except TimeoutError:
-                    # Exclude #473 from the successor wait: recognizing the
-                    # unchanged cover immediately would race the asynchronous
-                    # EnterScene callback and turn one click into repeated
-                    # clicks.  A timeout is the only evidence that the cover
-                    # never departed during the bounded probe.
-                    current_scene = 473
+                    current_scene = None
                 if current_scene == 475:
                     break
-                if current_scene == 34 and cover_reentries_left > 0:
-                    cover_reentries_left -= 1
-                    self._log(
-                        "warning",
-                        "日常_仙盟：前往战场后活动页已关闭但落回 #34，"
-                        "按正式入口有界重进一次",
+                # Fresh observation only: never assume the cover or blindly click
+                # again.  Confirm #473 is currently visible; any other scene is a
+                # preserved failure state.
+                try:
+                    reentered = yield from self._wait_daily_xianmeng_exact_view(
+                        context,
+                        473,
+                        timeout=float(payload.get("battlefield_cover_recheck_timeout") or 5.0),
                     )
-                    current_scene = yield from self._enter_daily_xianmeng_cover(context)
-                    continue
+                except TimeoutError as exc:
+                    raise TimeoutError(
+                        "日常_仙盟：前往战场后未出现 #475，且未确认仍在封面 #473，"
+                        "保留现场"
+                    ) from exc
+                current_scene = reentered
                 self._log(
                     "warning",
                     f"日常_仙盟：前往战场点击未生效，仍在 #473，重试 {entry_attempt}/{entry_attempts}",
@@ -2730,10 +2872,16 @@ class DailyResourceTaskMixin:
         target = yield from self._wait_daily_xianmeng_command_target(context, payload)
         if target is None:
             yield from self._return_daily_xianmeng_to_world(context)
+            if payload.get("_xianmeng_day_complete_reason"):
+                return None
             self._schedule_daily_xianmeng_retry(
                 payload,
                 seconds=int(payload.get("no_command_retry_seconds") or 1800),
-                message="未等到唯一指挥目标，已返回 #34",
+                message=(
+                    f"{self._daily_xianmeng_autonomous_sweep_start_text()} 后自主清扫：当前没有可攻击的非友军阵柱，体力未清空，已返回 #34 待复查"
+                    if self._daily_xianmeng_stamina_sweep_allowed()
+                    else "未等到唯一指挥目标，已返回 #34"
+                ),
             )
             return None
 
@@ -2742,7 +2890,13 @@ class DailyResourceTaskMixin:
         target_slot = int(target.get("slot") or 0)
         if target_slot not in range(1, 9):
             raise RuntimeError(f"日常_仙盟：动态目标 {target_name} 缺少有效阵营槽位")
-        context.click_shape_center(471, f"阵营槽位{target_slot}")
+        camp_count = int(self._daily_xianmeng_target_selection.get("camp_count") or 0)
+        # Client GetCurMatchType selects a different CampPosition table for
+        # <=6 camps. A runtime list index alone does not identify a GUI point.
+        if not 1 <= camp_count <= 8 or target_slot > camp_count:
+            raise RuntimeError(f"日常_仙盟：无法对齐阵营布局 count={camp_count}, slot={target_slot}")
+        slot_shape = f"六阵营槽位{target_slot}" if camp_count <= 6 else f"阵营槽位{target_slot}"
+        context.click_shape_center(471, slot_shape)
         self._log(
             "action",
             f"日常_仙盟：按动态 slot={target_slot} 选择 {target_name}({target_id})",
@@ -2753,14 +2907,16 @@ class DailyResourceTaskMixin:
         yield from self._click_daily_xianmeng_ocr(context, "跳转", timeout=10.0)
         self._log("success", f"日常_仙盟：目标详情已打开并跳转 {target_name}({target_id})")
         yield from context.wait_action_settle(float(payload.get("jump_settle_seconds") or 2.0))
-        return (
-            yield from self._wait_daily_xianmeng_exact_view(
-                context,
-                317,
-                293,
-                timeout=30.0,
-            )
+        attack_scene = yield from self._wait_daily_xianmeng_exact_view(
+            context, 317, 293, timeout=30.0,
         )
+        focused = self._read_daily_xianmeng_command_target_snapshot()
+        if not focused.get("complete") or int(focused.get("focus_camp_id") or 0) != target_id:
+            raise RuntimeError(
+                f"日常_仙盟：跳转目标不一致，期望 {target_id}，"
+                f"实际 {focused.get('focus_camp_id')}，停止攻击"
+            )
+        return attack_scene
 
     def _read_daily_xianmeng_attack_options_snapshot(self) -> dict[str, Any]:
         from backend.core.fanxiu.instrumentation.landcontend import (
@@ -2812,14 +2968,10 @@ class DailyResourceTaskMixin:
         *,
         now: datetime | None = None,
     ) -> tuple[bool, int | None]:
-        """Force a weak-score sweep only after 13:00 when stamina exceeds 60.
+        """After autonomous sweep starts, spend stamina on weak-score targets.
 
-        The report is a target-quality sample, not proof that the attack itself
-        failed.  Before the afternoon overflow boundary, the Job keeps the
-        existing twenty-minute defer behavior so teammates can remove the
-        target's protection.  Only an authoritative, complete Runtime count
-        may enable the forced batch path; an incomplete snapshot preserves the
-        defensive defer behavior.
+        A complete Runtime count is still required: a low score is a quality
+        signal, not an attack failure, and must not strand usable stamina.
         """
 
         remaining = snapshot.get("attack_count")
@@ -2830,7 +2982,10 @@ class DailyResourceTaskMixin:
         ):
             return False, None
         current = now or job_now()
-        return current.hour >= 13 and remaining > 60, remaining
+        from backend.core.fanxiu.activity.daily_activity_job_registry import (
+            XIANMENG_AUTONOMOUS_SWEEP_START,
+        )
+        return (current.hour, current.minute) >= XIANMENG_AUTONOMOUS_SWEEP_START and remaining > 0, remaining
 
     @staticmethod
     def _daily_xianmeng_attempts_exhausted(numbers: list[int]) -> bool:
@@ -2938,9 +3093,15 @@ class DailyResourceTaskMixin:
         return False
 
     def _record_daily_xianmeng_done(self, payload: dict[str, Any], *, message: str) -> str | None:
-        next_time = self._daily_xianmeng_event_tail_next_time(payload)
+        from backend.core.fanxiu.activity.daily_activity_job_registry import next_xianmeng_stamina_review
+
+        current = job_now()
+        tail = self._daily_xianmeng_event_tail_next_time(payload)
+        tail_at = datetime.fromisoformat(tail).replace(tzinfo=current.tzinfo) if tail else None
+        review_at = next_xianmeng_stamina_review(current, tail_at=tail_at)
+        next_time = review_at.strftime("%Y-%m-%d %H:%M:%S") if review_at else None
         payload["_xianmeng_next_time"] = next_time
-        suffix = f"，活动尾程下次 {next_time}" if next_time else "，未安排后续触发"
+        suffix = f"，体力复查下次 {next_time}" if next_time else "，未安排后续触发"
         self._log("success", f"日常_仙盟：{message}{suffix}")
         return next_time
 
@@ -3012,13 +3173,42 @@ class DailyResourceTaskMixin:
         return next_time
 
     def _wait_daily_xianmeng_exact_view(self, context: Any, *scene_ids: int, timeout: float) -> int:
-        expected = "/".join(f"#{int(scene_id)}" for scene_id in scene_ids)
-        landing = yield from context.wait_scene(
-            scene_ids,
-            wait=float(timeout),
-            label=f"日常_仙盟：等待 {expected}",
+        """Bounded fresh-frame wait that only accepts an exact target scene.
+
+        A global Layer-2 fallback (for example #34) is not proof of arrival: the
+        real target may still be loading.  Keep observing until the monotonic
+        deadline; any non-target observation is ignored after a short settle,
+        and the deadline raises ``TimeoutError`` instead of returning the
+        fallback or a fixed coordinate.
+        """
+
+        targets = tuple(int(scene_id) for scene_id in scene_ids)
+        expected = "/".join(f"#{scene_id}" for scene_id in targets)
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        last_actual: int | None = None
+        while time.monotonic() < deadline:
+            self._raise_if_stopped(context.stop_event or threading.Event())
+            context.clear_frame()
+            yield BehaviorTreeStatus.RUNNING
+            landing = yield from context.wait_scene(
+                targets,
+                wait=max(0.5, min(5.0, deadline - time.monotonic())),
+                required=False,
+                label=f"日常_仙盟：等待 {expected}",
+            )
+            if landing is None:
+                continue
+            actual = int(landing.scene_id)
+            last_actual = actual
+            if actual in targets:
+                return actual
+            # Global fallback scene (e.g. #34) during a 60s page load: not an
+            # arrival.  Settle briefly and keep observing the target set.
+            yield from context.wait_action_settle(0.5)
+        raise TimeoutError(
+            f"日常_仙盟：期待 {expected}，到 {float(timeout):g}s 仍未出现"
+            f"（最后识别 #{last_actual if last_actual is not None else 'unknown'}）"
         )
-        return int(getattr(landing, "id", landing))
 
     def _return_daily_vip_to_world(
         self,

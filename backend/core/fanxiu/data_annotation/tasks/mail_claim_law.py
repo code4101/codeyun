@@ -28,6 +28,7 @@ from backend.core.fanxiu.runtime_gui import (
     plan_storage_bag_item_click,
     plan_storage_bag_scroll,
     register_storage_bag_viewport_from_quantity_ocr,
+    upscaled_ocr_fragments,
     verify_storage_bag_item_detail,
     visible_storage_bag_cells,
     quantity_observations_from_ocr,
@@ -205,6 +206,75 @@ def law_detail_title_texts(
     )
 
 
+def finish_law_activation(context: Any, transition_timeout: float = 12.0):
+    """Finish the post-``使用`` law flow and verify every scene landing.
+
+    A normal law lands directly on the ``#177`` reward popup.  A 天姿 law
+    instead opens ``#751`` first-companion selection, then ``#752`` companion
+    detail with a ``缔结天契`` action, then ``#753`` success, and finally
+    ``#177``.  The only accepted evidence is the scene id returned by the
+    layered ``wait_scene``.  A missing or unexpected landing raises; no action
+    is ever repeated at a guessed coordinate.
+    """
+
+    timeout = max(6.0, float(transition_timeout))
+
+    def require(match: Any, expected: tuple[int, ...], stage: str) -> int:
+        scene_id = int(getattr(match, "scene_id", 0) or 0)
+        if scene_id not in expected:
+            expected_text = "/".join(f"#{item}" for item in expected)
+            raise RuntimeError(
+                f"邮件_领法则：{stage} 落点错误：期望 {expected_text}，实际 #{scene_id or 'unknown'}"
+            )
+        return scene_id
+
+    match = yield from context.wait_scene(
+        [177, 751, 752, 753],
+        wait=timeout,
+        label="邮件_领法则：等待使用结果",
+    )
+    scene_id = require(match, (177, 751, 752, 753), "使用后")
+
+    if scene_id == 751:
+        yield from context.wait_click(
+            751, "第一位仙缘", timeout=8.0, label="邮件_领法则：选择第一位仙缘"
+        )
+        match = yield from context.wait_scene(
+            [752], wait=timeout, label="邮件_领法则：等待人物详情"
+        )
+        scene_id = require(match, (752,), "选择仙缘后")
+
+    if scene_id == 752:
+        yield from context.wait_click(
+            752, "缔结天契", timeout=8.0, label="邮件_领法则：缔结天契"
+        )
+        match = yield from context.wait_scene(
+            [753], wait=timeout, label="邮件_领法则：等待结契成功"
+        )
+        scene_id = require(match, (753,), "缔结天契后")
+
+    if scene_id == 753:
+        yield from context.wait_click(
+            753, "继续", timeout=8.0, label="邮件_领法则：确认结契成功"
+        )
+        match = yield from context.wait_scene(
+            [177], wait=timeout, label="邮件_领法则：等待领取结果"
+        )
+        scene_id = require(match, (177,), "结契成功后")
+
+    yield from context.wait_click(
+        177, "继续", timeout=8.0, label="邮件_领法则：关闭领取结果"
+    )
+    match = yield from context.wait_scene(
+        [34, 525], wait=timeout, label="邮件_领法则：等待返回世界或储物袋"
+    )
+    scene_id = require(match, (34, 525), "关闭领取结果后")
+    if scene_id == 525:
+        yield from context.go_scene(34)
+    match = yield from context.wait_scene([34], wait=timeout, label="邮件_领法则：确认世界闭环")
+    return require(match, (34,), "法则收尾")
+
+
 class MailClaimLawTaskMixin:
     def _remembered_law(self) -> dict[str, Any] | None:
         facts = read_data_annotation_world_facts(fanxiu_data_annotation_world_facts_path())
@@ -291,15 +361,26 @@ class MailClaimLawTaskMixin:
         snapshot = read_backpack_ui_snapshot()
         if not snapshot.get("complete"):
             raise RuntimeError(f"邮件_领法则：储物袋 Runtime 未完整加载：{snapshot.get('reason')}")
-        reference = context.ocr_fragments(context.cur_frame(update=True))
+        # The per-cell stack counts are tiny white digits the native detector
+        # misses; OCR them at 2x so the Runtime sequence has usable soft
+        # anchors.  The alignment itself stays Runtime->GUI geometry.
+        reference = upscaled_ocr_fragments(context, context.cur_frame(update=True))
         window = view.get_shape("窗口")
         if window is None:
             raise RuntimeError("邮件_领法则：缺少 #525 窗口标注")
-        for _ in range(40):
+        geometry_retries = 0
+        for scroll_index in range(40):
             frame = context.cur_frame(update=True)
-            fragments = context.ocr_fragments(frame)
+            fragments = upscaled_ocr_fragments(context, frame)
             viewport = register_storage_bag_viewport_from_quantity_ocr(reference, fragments, grid=grid)
             if not viewport.aligned:
+                # A transient mid-animation frame can still starve the
+                # calibration; re-baseline the reference a bounded number of
+                # times before failing closed.
+                if scroll_index < 3:
+                    reference = fragments
+                    yield from context.wait_action_settle(0.8)
+                    continue
                 raise RuntimeError(f"邮件_领法则：当前格行定位失败：{viewport.reason}")
             cells = visible_storage_bag_cells(grid, viewport)
             plan = plan_storage_bag_item_click(snapshot, target_base_id=base_id, cells=cells, observations=quantity_observations_from_ocr(cells, fragments))
@@ -310,18 +391,27 @@ class MailClaimLawTaskMixin:
                 if pre_use is None:
                     raise RuntimeError("邮件_领法则：使用前未读取到目标法则的动态 end_time")
                 yield from context.wait_click(567, "使用", timeout=8.0, label="邮件_领法则：使用已核验法则")
-                yield from context.wait_scene([177], wait=12.0, label="邮件_领法则：等待领取结果")
-                yield from context.wait_click(177, "继续", timeout=8.0, label="邮件_领法则：关闭领取结果")
-                yield from context.go_scene(34)
-                yield from self._open_storage_bag(context)
-                return {"snapshot": read_backpack_ui_snapshot(), "activated": pre_use}
-            if plan.status != "target_not_visible" or plan.viewport_runtime_start is None:
+                # 普通法则直接落到 #177；天姿法则走 #751→#752→#753→#177。
+                # 每个落点都由 finish_law_activation 严格核对，缺失或错误即抛错。
+                yield from finish_law_activation(context, transition_timeout=12.0)
+                return {"activated": pre_use}
+            if plan.status == "target_not_visible" and plan.viewport_runtime_start is not None:
+                directive = plan_storage_bag_scroll(target_runtime_index=int(plan.runtime_index or -1), viewport_runtime_start=plan.viewport_runtime_start, visible_cell_count=len(cells))
+                if directive.direction == "none":
+                    raise RuntimeError("邮件_领法则：目标应可见但未生成点击计划")
+                context.drag_shape_content(window, direction=directive.direction, ratio=0.60 if directive.mode == "coarse" else 0.28, duration=0.55)
+                yield from context.wait_action_settle(1.0)
+                continue
+            # The count OCR is a soft anchor: a clustered frame can leave only
+            # one or two usable observations.  Sweep the list a little to expose
+            # more distinct counts before failing closed, instead of dying on
+            # the first ambiguous frame.
+            geometry_retries += 1
+            if geometry_retries > 8:
                 raise RuntimeError(f"邮件_领法则：储物袋 Runtime-GUI 对齐失败：{plan.reason}")
-            directive = plan_storage_bag_scroll(target_runtime_index=int(plan.runtime_index or -1), viewport_runtime_start=plan.viewport_runtime_start, visible_cell_count=len(cells))
-            if directive.direction == "none":
-                raise RuntimeError("邮件_领法则：目标应可见但未生成点击计划")
-            context.drag_shape_content(window, direction=directive.direction, ratio=0.60 if directive.mode == "coarse" else 0.28, duration=0.55)
-            yield from context.wait_action_settle(1.0)
+            direction = "down" if geometry_retries % 2 else "up"
+            context.drag_shape_content(window, direction=direction, ratio=0.30, duration=0.5)
+            yield from context.wait_action_settle(0.8)
         raise RuntimeError("邮件_领法则：储物袋滚动 40 次仍未定位目标")
 
     def _execute_mail_claim_law_task(self, ctx: dict[str, Any], stop_event: Any, payload: dict[str, Any] | None = None):

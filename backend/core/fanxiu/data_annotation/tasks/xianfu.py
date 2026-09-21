@@ -190,7 +190,7 @@ class XianfuTaskMixin:
                     self._set_status_locked("running", "仙府_寻访仙侣：切换绝品仙侣", phase="xianfu_visit_open_juepin", current_scene=173)
                     self._log_locked("action", "仙府_寻访仙侣：点击 #173「绝品仙侣」")
                 shape.click(context)
-                yield from self._wait_xianfu_visit_juepin(context, timeout=18.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
+                yield from self._wait_xianfu_visit_juepin(context, timeout=60.0, label="仙府_寻访仙侣：等待绝品仙侣 #174")
 
         image174 = ctx.get("images", {}).get(174)
         if not isinstance(image174, dict):
@@ -313,7 +313,7 @@ class XianfuTaskMixin:
                     self._log("warning", "仙府_寻访仙侣：关闭后仍停在继续寻访弹窗，重试关闭")
                     continue
             break
-        yield from self._wait_xianfu_visit_juepin(context, timeout=18.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
+        yield from self._wait_xianfu_visit_juepin(context, timeout=60.0, label="仙府_寻访仙侣：关闭弹窗后回到 #174")
         return "success"
 
     def _xianfu_visit_text_is_juepin(self, text: str) -> bool:
@@ -325,14 +325,14 @@ class XianfuTaskMixin:
         return "继续寻访" in normalized and "关闭" in normalized
 
     def _wait_xianfu_visit_juepin(self, context: BehaviorTreeContext, *, timeout: float, label: str):
-        return (yield from context.wait_any(
-            {
-                "scene": context.scene_visible(174),
-                "text": context.ocr_matches(self._xianfu_visit_text_is_juepin, label=f"{label} OCR"),
-            },
-            timeout=timeout,
-            label=label,
-        ))
+        match = yield from context.wait_scene([174], wait=timeout, label=label)
+        scene_id = getattr(match, "scene_id", getattr(match, "id", None))
+        if scene_id != 174:
+            raise RuntimeError(
+                f"{label}：实际识别为 #{scene_id}，未落到绝品仙侣 #174；"
+                "禁止以全局兜底识别结果按成功处理"
+            )
+        return match
 
     def _return_xianfu_visit_partner_to_world(self, context: BehaviorTreeContext):
         with self._lock:

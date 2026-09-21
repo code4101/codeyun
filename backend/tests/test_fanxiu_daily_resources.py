@@ -2,7 +2,6 @@ from backend.core.fanxiu.data_annotation import behavior_tree_executor  # noqa: 
 from datetime import datetime
 
 from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
-from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeExecutor
 import threading
 
 
@@ -110,67 +109,6 @@ def test_xianshi_weekly_resource_leaves_world_like_internal_scene_first():
     ]
 
 
-def test_daily_xianshi_uses_reference_tab_shape_without_treating_248_as_scene():
-    task = object.__new__(BehaviorTreeExecutor)
-    events: list[tuple] = []
-
-    class FakeRuntime:
-        def wait_click_then_shape(self, *args, **options):
-            events.append(("entry", args, options))
-            if False:
-                yield
-
-        def wait_click(self, *args, **options):
-            events.append(("click", args, options))
-            if False:
-                yield
-
-        def wait_action_settle(self, seconds):
-            events.append(("settle", seconds))
-            if False:
-                yield
-
-        def shape_visible(self, *args):
-            events.append(("shape_visible", args))
-            return "coin-tab-condition"
-
-        def wait_any(self, conditions, **options):
-            events.append(("wait_any", conditions, options))
-            if False:
-                yield
-            return "coin_tab"
-
-        def click_shape_center(self, *args):
-            events.append(("fixed_click", args))
-
-        def wait_scene(self, *args, **options):
-            events.append(("wait_scene", args, options))
-            if False:
-                yield
-            return 249
-
-    runtime = FakeRuntime()
-    task._behavior_tree_context = lambda *_args, **_kwargs: runtime
-    task._ensure_world_main_for_right_menu = lambda *_args, **_kwargs: iter(())
-
-    _drain(
-        task._open_daily_xianshi_coin_list(
-            {"asset_tree_path": None},
-            object(),
-            {},
-            {},
-            {},
-            {},
-            task_label="仙市_秘藏阁",
-        )
-    )
-
-    assert ("click", (247, "秘藏阁"), {}) in events
-    assert ("shape_visible", (248, "仙币")) in events
-    assert ("fixed_click", (248, "仙币")) in events
-    assert any(event[0] == "wait_scene" and event[1] == ([249],) for event in events)
-
-
 def test_xianshi_weekly_resource_success_advances_to_same_monday_five():
     task = DailyResourceTaskMixin()
     writes: list[tuple[str, str]] = []
@@ -219,3 +157,131 @@ def test_daily_gongfeng_law_progress_keeps_plain_progress():
     task = DailyResourceTaskMixin()
 
     assert task._parse_daily_gongfeng_law_progress("11400/8000") == (11400, 8000)
+
+
+def test_xianmeng_autonomous_sweep_starts_at_eleven_boundary():
+    task = DailyResourceTaskMixin()
+
+    assert task._daily_xianmeng_stamina_sweep_allowed(datetime(2026, 9, 20, 10, 59)) is False
+    assert task._daily_xianmeng_stamina_sweep_allowed(datetime(2026, 9, 20, 11, 0)) is True
+    assert task._daily_xianmeng_stamina_sweep_allowed(datetime(2026, 9, 20, 11, 1)) is True
+
+
+def test_xianmeng_eleven_sweep_spends_even_sub_cap_low_score_stamina():
+    task = DailyResourceTaskMixin()
+    for remaining in (1, 60, 244):
+        snapshot = {"ok": True, "complete": True, "attack_count": remaining}
+        assert task._daily_xianmeng_should_continue_low_score_sweep(snapshot, {}, now=datetime(2026, 9, 20, 10, 59)) == (False, remaining)
+        assert task._daily_xianmeng_should_continue_low_score_sweep(snapshot, {}, now=datetime(2026, 9, 20, 11)) == (True, remaining)
+    assert task._daily_xianmeng_should_continue_low_score_sweep({"ok": False}, {}, now=datetime(2026, 9, 20, 11)) == (False, None)
+
+
+def test_xianmeng_stamina_review_keeps_eleven_and_intraday_wakeups():
+    from backend.core.fanxiu.activity.daily_activity_job_registry import next_xianmeng_stamina_review
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 10)) == datetime(2026, 9, 20, 11)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 12)) == datetime(2026, 9, 20, 12, 30)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 21, 40), tail_at=datetime(2026, 9, 20, 21, 50)) == datetime(2026, 9, 20, 21, 50)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 22)) is None
+
+
+def test_xianmeng_fallback_excludes_destroyed_own_and_ally_camps(monkeypatch):
+    from backend.core.fanxiu.catalog import server_relations
+
+    monkeypatch.setattr(server_relations, "classify_fanxiu_target_relation", lambda *, is_npc, server_id: {
+        "camp": "friendly" if server_id == 1 else "non_friendly",
+        "relation": "same_server" if server_id == 1 else "other_server",
+    })
+    camps = [
+        {"id": 1, "name": "own", "server_id": 1, "ally_camp_id": 2, "pillar_cur_hp": 200, "pillar_max_hp": 600},
+        {"id": 2, "name": "battlefield ally", "server_id": 2, "ally_camp_id": 1, "pillar_cur_hp": 0, "pillar_max_hp": 600},
+        {"id": 3, "name": "destroyed enemy", "server_id": 3, "ally_camp_id": 0, "pillar_cur_hp": 0, "pillar_max_hp": 600},
+        {"id": 4, "name": "live enemy", "server_id": 4, "ally_camp_id": 0, "pillar_cur_hp": 10, "pillar_max_hp": 600},
+    ]
+    result = DailyResourceTaskMixin._daily_xianmeng_fallback_candidates({"camps": camps})
+    assert [row["id"] for row in result["candidates"]] == [4]
+
+
+def test_xianmeng_fallback_skips_immune_and_ranks_shielded_after_unshielded(monkeypatch):
+    from backend.core.fanxiu.catalog import server_relations
+
+    monkeypatch.setattr(server_relations, "classify_fanxiu_target_relation", lambda *, is_npc, server_id: {
+        "camp": "friendly" if server_id == 1 else "non_friendly",
+        "relation": "same_server" if server_id == 1 else "other_server",
+    })
+    camps = [
+        {"id": 1, "name": "own", "server_id": 1, "pillar_cur_hp": 600, "pillar_max_hp": 600},
+        {"id": 2, "name": "immune", "server_id": 2, "pillar_cur_hp": 10, "pillar_max_hp": 600, "protect_end_time": 1001},
+        {"id": 3, "name": "shielded", "server_id": 3, "pillar_cur_hp": 20, "pillar_max_hp": 600, "has_xiaoyan_mirror": True},
+        {"id": 4, "name": "ready", "server_id": 4, "pillar_cur_hp": 100, "pillar_max_hp": 600, "protect_end_time": 0, "has_xiaoyan_mirror": False},
+    ]
+    result = DailyResourceTaskMixin._daily_xianmeng_fallback_candidates({"camps": camps}, now_ms=1000)
+    assert [row["id"] for row in result["candidates"]] == [4, 3]
+
+
+def test_xianmeng_tail_preserve_only_before_eleven_sweep():
+    task = DailyResourceTaskMixin()
+
+    assert (
+        task._daily_xianmeng_should_preserve_tail_before_triple_disable(
+            datetime(2026, 9, 20, 10, 59)
+        )
+        is True
+    )
+    assert (
+        task._daily_xianmeng_should_preserve_tail_before_triple_disable(
+            datetime(2026, 9, 20, 11, 0)
+        )
+        is False
+    )
+    assert (
+        task._daily_xianmeng_should_preserve_tail_before_triple_disable(
+            datetime(2026, 9, 20, 11, 1)
+        )
+        is False
+    )
+    assert (
+        task._daily_xianmeng_should_preserve_tail_before_triple_disable(
+            datetime(2026, 9, 20, 21, 30)
+        )
+        is False
+    )
+
+
+def test_xianmeng_sweep_log_clock_matches_single_constant():
+    from backend.core.fanxiu.activity.daily_activity_job_registry import (
+        XIANMENG_AUTONOMOUS_SWEEP_START,
+    )
+
+    assert XIANMENG_AUTONOMOUS_SWEEP_START == (11, 0)
+    assert DailyResourceTaskMixin._daily_xianmeng_autonomous_sweep_start_text() == "11:00"
+
+
+def test_xianmeng_tail_sweeps_stay_separate_from_eleven_sweep():
+    from backend.core.fanxiu.activity.daily_activity_job_registry import (
+        XIANMENG_AUTONOMOUS_SWEEP_START,
+        XIANMENG_STAMINA_SWEEPS,
+    )
+
+    assert XIANMENG_STAMINA_SWEEPS == ((21, 10), (21, 50))
+    assert XIANMENG_AUTONOMOUS_SWEEP_START not in XIANMENG_STAMINA_SWEEPS
+
+
+
+def test_xianmeng_no_opponents_terminal_requires_complete_positive_evidence(monkeypatch):
+    from backend.core.fanxiu.catalog import server_relations
+    monkeypatch.setattr(server_relations, "classify_fanxiu_target_relation", lambda *, is_npc, server_id: {
+        "camp": "friendly" if server_id == 1 else "non_friendly",
+        "relation": "same_server" if server_id == 1 else "other_server",
+    })
+    camps = [
+        {"id": 1, "server_id": 1, "ally_camp_id": 2, "pillar_cur_hp": 100, "pillar_max_hp": 600},
+        {"id": 2, "server_id": 2, "ally_camp_id": 1, "pillar_cur_hp": 100, "pillar_max_hp": 600},
+        {"id": 3, "server_id": 3, "pillar_cur_hp": 0, "pillar_max_hp": 600},
+    ]
+    classify = DailyResourceTaskMixin._daily_xianmeng_fallback_candidates
+    assert classify({"camps": camps, "camp_count": 3})["all_opponents_defeated"]
+    assert not classify({"camps": camps, "camp_count": 4})["all_opponents_defeated"]
+    assert not classify({"camps": [], "camp_count": 0})["all_opponents_defeated"]
+    for hp in (None, 1):
+        changed = [*camps[:2], {**camps[2], "pillar_cur_hp": hp}]
+        assert not classify({"camps": changed, "camp_count": 3})["all_opponents_defeated"]

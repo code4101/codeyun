@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 from sqlmodel import Session, col, select
 
 from backend.core.fanxiu.activity.exchange_event import (
-    is_exchange_activity_active,
+    exchange_activity_close_panel_at,
+    exchange_activity_lifecycle_phase,
     list_exchange_activity_snapshot,
     replace_exchange_rankings,
     upsert_exchange_activity_snapshot,
@@ -121,6 +122,7 @@ def ensure_lianti_faxiang_activity(session: Session) -> str:
         "cross_count": 1,
         "start_date": _event_date(worldline, "startTime"),
         "end_date": _event_date(worldline, "endTime"),
+        "game_activity_id": LIANTI_FAXIANG_ACTIVITY_ID,
         "game_rank_activity_id": LIANTI_FAXIANG_ACTIVITY_ID,
         "currency_name": "炼体积分",
         "captured_at": record.captured_at,
@@ -349,27 +351,297 @@ def load_lianti_faxiang_resource_snapshot(
     )
 
 
+def _lianti_declared_personal_rank_id(activity: FanxiuExchangeActivity) -> int:
+    """Resolve one selected instance's bound personal rank ID from the spec.
+
+    Same-server preliminaries declare no ``follow`` and own the bound scope, so
+    their activity id is the rank id.  Cross-server occurrences reference their
+    child rank ids (personal first, for example ``43005``).  The historical
+    same-server preliminary id is never used as a fallback.
+    """
+
+    from backend.core.fanxiu.activity.exchange_activity_registry import (
+        resolve_registered_occurrence_rank_identities,
+    )
+
+    evidence = dict(activity.evidence or {})
+    game_activity_id = int(
+        activity.game_activity_id or evidence.get("game_activity_id") or 0
+    )
+    if game_activity_id <= 0:
+        raise ValueError("炼体法相所选实例缺少 game_activity_id，无法校验个人榜绑定")
+    follow = next(
+        (
+            tuple(int(value) for value in (row.get("follow") or ()))
+            for row in _load_config_rows(resolve_fanxiu_export_root(), "Activity")
+            if int(row.get("id") or 0) == game_activity_id
+        ),
+        None,
+    )
+    if follow is None:
+        raise ValueError(f"炼体法相活动 {game_activity_id} 缺少静态 follow 声明")
+    identities = resolve_registered_occurrence_rank_identities(
+        activity_type=LIANTI_FAXIANG_ACTIVITY_TYPE,
+        game_activity_id=game_activity_id,
+        cross_count=int(activity.cross_count or 1),
+        activity_follow=follow,
+    )
+    personal = identities.get("personal")
+    if personal is None or int(personal.runtime_rank_activity_id) <= 0:
+        raise ValueError("炼体法相缺少个人榜绑定身份")
+    return int(personal.runtime_rank_activity_id)
+
+
+def _lianti_personal_rank_activity_id(activity: FanxiuExchangeActivity) -> int:
+    """Return the selected instance's personal rank ID or fail explicitly."""
+
+    bound = _lianti_declared_personal_rank_id(activity)
+    selected = int(activity.game_rank_activity_id or 0)
+    if selected <= 0:
+        raise ValueError("炼体法相所选实例缺少个人榜身份")
+    if selected != bound:
+        raise ValueError(
+            "炼体法相个人榜绑定身份与所选实例不一致："
+            f"绑定={bound}，实例={selected}"
+        )
+    evidence = dict(activity.evidence or {})
+    scope = dict(
+        dict(evidence.get("rank_scope_identities") or {}).get("personal") or {}
+    )
+    scope_id = int(scope.get("runtime_rank_activity_id") or 0)
+    if scope_id and scope_id != bound:
+        raise ValueError(
+            "炼体法相个人榜场景身份与绑定不一致："
+            f"scope={scope_id}，绑定={bound}"
+        )
+    return bound
+
+
+def _lianti_rank_snapshot_is_complete(snapshot: dict[str, Any]) -> bool:
+    """Whether one Runtime read covers the full personal rank, not one page.
+
+    A paged board can report ``complete`` for the current page while
+    ``rank_list_size`` is the whole population: the first page carries 1..50
+    (declared 50) and scrolling replaces the Runtime list with 51..60
+    (declared 10).  Persisting either page would overwrite the saved full fact
+    with a fragment, so require the total to be positive and every count
+    (declared/loaded/row count) to equal it, with a duplicate-free contiguous
+    1..total rank set.
+    """
+
+    total = int(snapshot.get("rank_list_size") or 0)
+    if total <= 0:
+        return False
+    rows = [item for item in snapshot.get("rankings") or [] if isinstance(item, dict)]
+    if (
+        int(snapshot.get("declared_rank_count") or 0) != total
+        or int(snapshot.get("loaded_rank_count") or 0) != total
+        or len(rows) != total
+    ):
+        return False
+    ranks = [int(item.get("rank") or 0) for item in rows]
+    return sorted(ranks) == list(range(1, total + 1))
+
+
+def _refresh_lianti_faxiang_rank_runtime_facts(
+    session: Session,
+    activity: FanxiuExchangeActivity,
+    *,
+    rank_activity_id: int,
+) -> str:
+    """Refresh the personal-rank fact from the client's loaded leaderboard.
+
+    Returns ``updated`` when a fresh, complete Runtime snapshot replaced the
+    persisted fact, and ``retained`` when the board is not loaded, cannot be
+    read, or only a partial page is loaded, so the caller keeps the previous
+    fact and its existing completeness checks.  A partial page never
+    masquerades as ``updated``.
+    """
+
+    from backend.core.fanxiu.activity.standard_observation import (
+        store_runtime_activity_rank_fact,
+    )
+    from backend.core.fanxiu.instrumentation.activity_rank_runtime import (
+        prepare_activity_rank_runtime,
+        read_activity_rank_runtime_snapshot,
+    )
+
+    evidence = dict(activity.evidence or {})
+    occurrence_runtime_id = str(
+        evidence.get("runtime_id") or evidence.get("instance_key") or ""
+    ).strip()
+    if not occurrence_runtime_id or int(rank_activity_id) <= 0:
+        return "retained"
+    snapshot = read_activity_rank_runtime_snapshot(int(rank_activity_id))
+    if (
+        not snapshot.get("ok")
+        and str(snapshot.get("error_code") or "")
+        in {"process_cache_miss", "root_cache_miss"}
+    ):
+        recovery = prepare_activity_rank_runtime([int(rank_activity_id)])
+        if bool(recovery.get("ok")):
+            snapshot = read_activity_rank_runtime_snapshot(int(rank_activity_id))
+    if not snapshot.get("ok") or not snapshot.get("complete"):
+        return "retained"
+    if not _lianti_rank_snapshot_is_complete(snapshot):
+        return "retained"
+    store_runtime_activity_rank_fact(
+        session,
+        snapshot,
+        occurrence_runtime_id=occurrence_runtime_id,
+    )
+    return "updated"
+
+
+def _lianti_personal_rank_fact_for_projection(fact: dict[str, Any]) -> dict[str, Any]:
+    """Adapt one personal-rank fact to 灵宠竞武's shared row projection.
+
+    炼体法相没有独立投影，直接复用灵宠竞武的个人榜几何校验（申报数量、
+    行数、名次连续）。但那套投影还把 ``rank_vo_type`` 当作“只接受封包采集”
+    的来源门禁；炼体法相今天的榜事实可能只存在于客户端已加载的 Lua 榜对象
+    里，没有任何封包覆盖新周期。这里的榜 ID 本身已经固定了榜作用域，因此
+    在来源明确时把 VO 标记归一化，其余完整性与连续性校验保持原样。
+    """
+
+    vo_type = str(fact.get("rank_vo_type") or "")
+    if vo_type in {"", "ActivityRankPersonalVO"}:
+        return fact
+    if vo_type != "runtime_memory_activity_rank":
+        raise ValueError(f"炼体法相个人榜 VO 类型不匹配：{vo_type}")
+    normalized = dict(fact)
+    normalized["rank_vo_type"] = "ActivityRankPersonalVO"
+    return normalized
+
+
+def _parse_fact_captured_at(value: str) -> datetime | None:
+    """Parse a fact timestamp into an aware datetime, else ``None``.
+
+    ``None`` means "no exact timestamp"; callers decide whether that is a
+    legacy fallback (non-runtime packet facts) or a hard failure (Runtime
+    facts must be exact).
+    """
+
+    try:
+        parsed = datetime.fromisoformat(value.replace(" ", "T", 1))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def _validate_lianti_fact_binding(
+    fact: dict[str, Any],
+    *,
+    activity: FanxiuExchangeActivity,
+    phase: str,
+) -> None:
+    """Enforce exact-occurrence Runtime binding and the real capture window.
+
+    A Runtime fact must carry the same ``occurrence_runtime_id`` as this
+    occurrence.  A settlement read must itself be a Runtime fact, so a stale
+    non-runtime packet fact can never authorize a post-end collection.  The
+    capture timestamp is checked against the real window
+    ``start_at..close_panel_at`` (not merely the calendar end date).  Only a
+    legacy fact without a parseable timestamp falls back to the date range.
+    """
+
+    captured_date = str(fact.get("captured_at") or "")[:10]
+    if not captured_date:
+        raise ValueError("炼体法相个人榜事实不属于所选活动周期")
+    captured_at = _parse_fact_captured_at(str(fact.get("captured_at") or ""))
+    fact_runtime_id = str(
+        (fact.get("evidence") or {}).get("occurrence_runtime_id") or ""
+    ).strip()
+    occurrence_runtime_id = str(
+        (activity.evidence or {}).get("runtime_id") or ""
+    ).strip()
+    is_runtime_fact = (
+        str(fact.get("rank_vo_type") or "") == "runtime_memory_activity_rank"
+    )
+    if is_runtime_fact and (
+        not occurrence_runtime_id or fact_runtime_id != occurrence_runtime_id
+    ):
+        raise ValueError("炼体法相个人榜 Runtime 事实未绑定所选活动实例")
+    if phase == "settlement" and not is_runtime_fact:
+        raise ValueError("炼体法相结算期新采集必须来自绑定 Runtime 事实")
+    if is_runtime_fact and captured_at is None:
+        # A Runtime fact must carry a parseable exact timestamp; falling back to
+        # a whole-day comparison could accept a fact captured outside the real
+        # panel window.  Legacy non-runtime packet facts keep the date fallback.
+        raise ValueError("炼体法相个人榜 Runtime 事实缺少可解析的采集时刻")
+    if captured_at is not None:
+        start_boundary = datetime.fromisoformat(activity.start_at)
+        if start_boundary.tzinfo is None:
+            start_boundary = start_boundary.astimezone()
+        close_boundary = exchange_activity_close_panel_at(activity)
+        fact_moment = captured_at.astimezone(start_boundary.tzinfo)
+        if not start_boundary <= fact_moment <= close_boundary:
+            raise ValueError("炼体法相个人榜事实不属于所选活动周期")
+    elif not activity.start_date <= captured_date <= activity.end_date:
+        raise ValueError("炼体法相个人榜事实不属于所选活动周期")
+
+
 def collect_and_store_lianti_faxiang_activity(
     session: Session,
     *,
     activity_id: str | None = None,
     today: date | None = None,
+    now: datetime | None = None,
 ) -> Any:
-    current_id = ensure_lianti_faxiang_activity(session)
-    selected_id = activity_id or current_id
+    if activity_id:
+        # A caller that already resolved one exact occurrence owns its identity.
+        # Do not materialize the legacy same-server preliminary over it.
+        selected_id = activity_id
+    else:
+        selected_id = ensure_lianti_faxiang_activity(session)
     activity = session.get(FanxiuExchangeActivity, selected_id)
     if activity is None or activity.activity_type != LIANTI_FAXIANG_ACTIVITY_TYPE:
         raise ValueError("炼体法相活动不存在")
-    if not is_exchange_activity_active(activity, today=today):
+    # A settled-but-still-open panel (settlement) must remain collectable so the
+    # final personal rank can be read before the panel closes.  ``today`` keeps
+    # the legacy whole-day compatibility for callers without an exact clock;
+    # ``now`` enforces the exact-moment upper bound.
+    if now is not None:
+        phase = exchange_activity_lifecycle_phase(activity, at=now)
+    else:
+        phase = exchange_activity_lifecycle_phase(activity, today=today)
+    if phase not in {"active", "settlement"}:
         raise ValueError("炼体法相活动不在有效日期内")
-    fact = read_activity_rank_fact(session, LIANTI_FAXIANG_ACTIVITY_ID)
-    captured_date = str(fact.get("captured_at") or "")[:10]
-    if not captured_date or not activity.start_date <= captured_date <= activity.end_date:
-        raise ValueError("炼体法相个人榜事实不属于所选活动周期")
-    rows = project_lingchong_jingwu_rank_rows(fact, scope="personal")
+    # The selected occurrence's bound personal scope must be proven before any
+    # Runtime read.  A missing or mismatched identity is an explicit failure,
+    # never a silent fallback to the same-server preliminary id.
+    rank_activity_id = _lianti_personal_rank_activity_id(activity)
+    # 炼体法相没有自己的封包采集阶段：只有游戏内榜单页被打开过，客户端才会
+    # 把榜对象加载进运行态。缺了这一步，对账永远读到跨周期的旧事实（例如
+    # 2026-08-14 的快照），日期校验必然失败并每十分钟重试一次。这里与瑶池
+    # 花会保持同一种“机会式刷新”：榜没加载就保留旧事实，由完整性检查如实
+    # 报告，而不是让适配器抛出不存在的错误。
+    rank_runtime_refresh = _refresh_lianti_faxiang_rank_runtime_facts(
+        session, activity, rank_activity_id=rank_activity_id,
+    )
+    fact = read_activity_rank_fact(session, rank_activity_id)
+    _validate_lianti_fact_binding(fact, activity=activity, phase=phase)
+    try:
+        rows = project_lingchong_jingwu_rank_rows(
+            _lianti_personal_rank_fact_for_projection(fact),
+            scope="personal",
+        )
+    except ValueError as exc:
+        # The shared geometry projection names its original 灵宠竞武 owner.
+        # Surface it as the current 炼体法相 bound rank so diagnostics identify
+        # the real instance instead of a reused function's label.
+        raise ValueError(
+            f"炼体法相个人榜（rank {rank_activity_id}）校验失败：{exc}"
+        ) from exc
     activity.captured_at = str(fact["captured_at"])
     activity.source_kind = "standard_runtime_facts"
     evidence = dict(activity.evidence or {})
+    evidence["rank_runtime_refresh"] = rank_runtime_refresh
+    evidence["rank_fact_provenance"] = {
+        "rank_vo_type": str(fact.get("rank_vo_type") or ""),
+        "protocol": str(fact.get("protocol") or ""),
+    }
     evidence["rank_scope_completeness"] = {
         "personal": {
             "declared": int(fact.get("rank_list_size") or 0),

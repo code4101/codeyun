@@ -459,3 +459,99 @@ def test_active_component_traversal_fails_closed_on_child_list_memory_fault():
         active_ui_component_objects(context)
 
     assert exc.value.code == "runtime_incomplete"
+
+
+class _TabPanelReader:
+    def __init__(self, *, fields, numeric):
+        self._fields = fields
+        self._numeric = numeric
+        self.numeric_reads: list[tuple[int, frozenset[int]]] = []
+
+    def hashed_string_field(self, address, *, expected_name=None, **_kwargs):
+        return self._fields.get((address, expected_name))
+
+    def interned_string_field(self, address, name, **_kwargs):
+        return None
+
+    def metatable_index_string_field(self, address, name, **_kwargs):
+        return None
+
+    def numeric_fields(self, address, keys):
+        self.numeric_reads.append((address, frozenset(keys)))
+        available = self._numeric.get(address, {})
+        return {key: available[key] for key in keys if key in available}
+
+
+def _tab_panel_context(*, fields, numeric):
+    names = (
+        "tabPanelGroup",
+        "curTabIndex",
+        "panelShowComps",
+        "count",
+        "_dt_",
+        "m_panel",
+    )
+    binding = replace(
+        _binding(),
+        key_addresses={name: 0x1000 + index for index, name in enumerate(names)},
+    )
+    return UiRuntimeContext(
+        memory=object(),
+        reader=_TabPanelReader(fields=fields, numeric=numeric),
+        binding=binding,
+        timings={},
+        cache_mode="test",
+    )
+
+
+def _tab_panel_fields(*, current_index=2, count=3, storage=_ref(0x400)):
+    tab_group, panels = _ref(0x200), _ref(0x300)
+    fields = {
+        (0x100, "tabPanelGroup"): tab_group,
+        (tab_group.address, "curTabIndex"): current_index,
+        (tab_group.address, "panelShowComps"): panels,
+        (panels.address, "count"): count,
+        (panels.address, "_dt_"): storage,
+        (0x600, "m_panel"): _ref(0x700),
+    }
+    return fields
+
+
+def test_selected_tab_panel_reads_only_selected_numeric_hash_slot():
+    # A lazily loaded CList can keep only its selected slot in numeric storage;
+    # missing earlier slots must not prevent reading that component.
+    component = _ref(0x600)
+    fields = _tab_panel_fields()
+    context = _tab_panel_context(
+        fields=fields,
+        numeric={0x400: {3: component}},
+    )
+
+    assert ui_runtime_context.read_ui_selected_tab_panel(context, 0x100) == (0x700, 2)
+    assert context.reader.numeric_reads == [(0x400, frozenset({3}))]
+
+
+def test_selected_tab_panel_returns_none_when_selected_slot_is_missing():
+    context = _tab_panel_context(
+        fields=_tab_panel_fields(),
+        numeric={0x400: {1: _ref(0x601), 2: _ref(0x602)}},
+    )
+
+    assert ui_runtime_context.read_ui_selected_tab_panel(context, 0x100) is None
+
+
+@pytest.mark.parametrize("current_index,count", [(3, 3), (5, 3), (16, 17)])
+def test_selected_tab_panel_returns_none_outside_declared_count_bound(current_index, count):
+    context = _tab_panel_context(
+        fields=_tab_panel_fields(current_index=current_index, count=count),
+        numeric={0x400: {}},
+    )
+
+    assert ui_runtime_context.read_ui_selected_tab_panel(context, 0x100) is None
+    assert context.reader.numeric_reads == []
+
+
+def test_selected_tab_panel_returns_none_without_tab_group():
+    context = _tab_panel_context(fields={}, numeric={})
+
+    assert ui_runtime_context.read_ui_selected_tab_panel(context, 0x100) is None

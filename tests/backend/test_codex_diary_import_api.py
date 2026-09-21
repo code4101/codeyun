@@ -1,4 +1,6 @@
 import re
+import json
+import pytest
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -268,7 +270,7 @@ def test_collect_remote_entry_daily_summary_source_uses_long_codex_timeouts(sess
                 "timestamp": "2026-05-03T01:10:00+00:00",
                 "role": "assistant",
                 "phase": "final_answer",
-                "text": "周日 Codex 日记来源已整理。",
+                "text": "周日 Codex 日记来源已整理。" * 50 + "最终核验：仍有一项未完成。",
             },
         ],
     }
@@ -305,6 +307,8 @@ def test_collect_remote_entry_daily_summary_source_uses_long_codex_timeouts(sess
     ]
     assert source["turn_count"] == 1
     assert source["turn_records"][0]["thread_title"] == "周日 Codex 日记"
+    assert source["turn_records"][0]["assistant_result_full"].endswith("最终核验：仍有一项未完成。")
+    assert len(source["turn_records"][0]["assistant_result"]) <= 320
 
 
 def _wait_for_import_run(client, run_id: str) -> dict:
@@ -420,8 +424,11 @@ def test_codex_diary_ai_draft_retries_failed_batch_by_splitting(session: Session
     assert [block["title"] for block in drafted] == [f"草案 block-{index}" for index in range(4)]
 
 
-def test_codex_diary_ai_draft_failure_uses_rule_fallback(session: Session, auth_user, monkeypatch):
+def test_codex_diary_ai_draft_failure_does_not_publish_chat_excerpt(session: Session, auth_user, monkeypatch):
+    attempts = []
+
     def failing_draft(source, blocks, *, current_user, session):
+        attempts.append(1)
         raise ValueError("Codex CLI 调用失败：in `service_tier`")
 
     monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", failing_draft)
@@ -438,17 +445,15 @@ def test_codex_diary_ai_draft_failure_uses_rule_fallback(session: Session, auth_
         }
     ]
 
-    drafted = _draft_codex_diary_blocks_in_batches(
-        {"date": "2026-06-01", "timezone": ZoneInfo("Asia/Shanghai")},
-        blocks,
-        current_user=auth_user,
-        session=session,
-    )
-
-    assert len(drafted) == 1
-    assert drafted[0]["title"]
-    assert drafted[0]["summary_items"] == ["已定位并修复导入失败路径"]
-    assert drafted[0]["lifecycle_stage"] == "done"
+    with pytest.raises(ValueError, match="service_tier"):
+        _draft_codex_diary_blocks_in_batches(
+            {"date": "2026-06-01", "timezone": ZoneInfo("Asia/Shanghai")},
+            blocks,
+            current_user=auth_user,
+            session=session,
+        )
+    assert "summary_items" not in blocks[0]
+    assert len(attempts) == 2
 
 
 def test_codex_diary_ai_json_allows_trailing_commas():
@@ -457,6 +462,155 @@ def test_codex_diary_ai_json_allows_trailing_commas():
     )
 
     assert payload["blocks"][0]["title"] == "邮件标识场景标注"
+
+
+def test_diary_synthesis_reads_middle_turns_and_full_answer_end(session, auth_user, monkeypatch):
+    from backend.api import notes
+
+    records = [
+        {"thread_id": f"thread-{i}", "assistant_result": f"事项 {i}"}
+        for i in range(32)
+    ]
+    records[16]["assistant_result_full"] = "检查过程。" * 1500 + "最终结论：问题未解决，仍需排查。"
+    calls = []
+
+    def fake_chat(**kwargs):
+        payload = json.loads(kwargs["messages"][0]["content"])
+        calls.append(payload)
+        return {"content": json.dumps({"blocks": [
+            {"block_key": block["block_key"], "title": "故障排查", "summary_items": [
+                "故障已定位到数据读取环节，问题未解决，仍需排查。"
+            ], "lifecycle_stage": "doing"}
+            for block in payload["blocks"]
+        ]})}
+
+    monkeypatch.setattr(notes, "chat_with_provider", fake_chat)
+    monkeypatch.setattr(notes, "resolve_ai_app_runtime_config", lambda **kwargs: {
+        "provider": "test", "base_url": "", "api_key": "", "model": "test", "extra_providers": [],
+    })
+    block = {"block_key": "day", "records": records, "category_label": "凡修"}
+    result = notes._draft_codex_diary_blocks_with_ai({}, [block], current_user=auth_user, session=session)[0]
+    partials = [call for call in calls if call["rules"]["synthesis_stage"] == "事项证据提炼"]
+    read_records = [record for call in partials for block in call["blocks"] for record in block["records"]]
+    assert {record["thread_id"] for record in read_records} == {f"thread-{i}" for i in range(32)}
+    assert "".join(record["assistant_result"] for record in read_records if record["thread_id"] == "thread-16") == records[16]["assistant_result_full"]
+    assert calls[-1]["rules"]["synthesis_stage"] == "当天要点汇总"
+    assert "故障已定位" in calls[-1]["blocks"][0]["records"][0]["assistant_result"]
+    assert result["records"] is records
+    assert result["lifecycle_stage"] == "doing"
+
+
+def test_diary_keyword_does_not_inject_fabricated_achievement(session, auth_user, monkeypatch):
+    from backend.api import notes
+
+    monkeypatch.setattr(notes, "resolve_ai_app_runtime_config", lambda **kwargs: {
+        "provider": "test", "base_url": "", "api_key": "", "model": "test", "extra_providers": [],
+    })
+    monkeypatch.setattr(notes, "chat_with_provider", lambda **kwargs: {"content": json.dumps({"blocks": [{
+        "block_key": "day", "title": "活动状态检查", "summary_items": ["云梦兑换宝阁为空，尚未完成兑换。"],
+    }]})})
+    block = {"block_key": "day", "category_label": "凡修", "records": [{"assistant_result": "云梦兑换宝阁为空"}]}
+    result = notes._draft_codex_diary_blocks_with_ai({}, [block], current_user=auth_user, session=session)[0]
+    assert result["summary_items"] == ["云梦兑换宝阁为空，尚未完成兑换"]
+    assert result["lifecycle_stage"] == "doing"
+
+
+def test_diary_failed_synthesis_preserves_existing_notes(session, engine, auth_user, monkeypatch):
+    from backend.api import notes
+
+    entries = _create_device_entries(session, auth_user.id)
+    run, entry_specs, root_identity, _ = _create_codex_diary_import_run_record(
+        session, current_user=auth_user, diary_date_text="2026-06-01",
+        entry_ids=[entry.entry_id for entry in entries],
+    )
+    old_note = NoteNode(id="previous-diary", user_id=auth_user.id, title="原日记", content="原正文")
+    session.add(old_note)
+    run.replace_existing = True
+    run.duplicate_note_ids = [old_note.id]
+    session.add(run)
+    session.commit()
+    monkeypatch.setattr(notes, "_collect_codex_diary_source", lambda *args, **kwargs: {"turn_records": [{"assistant_result": "我跑了"}]})
+    monkeypatch.setattr(notes, "_build_codex_diary_blocks", lambda *args, **kwargs: [{"block_key": "day", "records": []}])
+    monkeypatch.setattr(notes, "resolve_ai_app_runtime_config", lambda **kwargs: {})
+
+    def fail(*args, **kwargs):
+        raise ValueError("summary provider unavailable")
+
+    monkeypatch.setattr(notes, "_draft_codex_diary_blocks_with_ai", fail)
+    _run_codex_diary_import_worker(
+        engine, run_id=run.id, user_id=auth_user.id, entry_specs=entry_specs, root_identity=root_identity,
+    )
+    session.expire_all()
+    failed = session.get(CodexDiaryImportRun, run.id)
+    assert failed.status == "failed"
+    assert "summary provider unavailable" in failed.error_message
+    assert failed.created_note_count == 0
+    preserved = session.get(NoteNode, old_note.id)
+    assert not preserved.deleted_at
+    assert preserved.content == "原正文"
+
+
+def test_diary_metadata_recovery_uses_saved_values_and_keeps_new_prose(session, auth_user):
+    from backend.api.notes import restore_codex_diary_run_metadata
+
+    old = NoteNode(id="old-accounting", user_id=auth_user.id, primary_category="general",
+                   title="旧标题", start_at=1234, lifecycle_stage="done", deleted_at=10,
+                   content="<ol><li>旧正文</li></ol><p><strong>来源</strong>：mf；2 轮；约 42 分钟；09:00 - 10:00</p>",
+                   custom_fields=[["__completion_progress_expr", "string", "42/90"],
+                                  ["__codex_diary_worklog", "json", {"duration_seconds": 2520, "start_at": 1234, "end_at": 3754}]])
+    new = NoteNode(id="new-accounting", user_id=auth_user.id, primary_category="general",
+                   title="新标题", start_at=5678, lifecycle_stage="doing",
+                   content="<ol><li>新总结</li></ol><p><strong>来源</strong>：mf；2 轮；约 99 分钟；09:00 - 23:00</p>",
+                   custom_fields=[["__completion_progress_expr", "string", "99/99"]])
+    source = CodexDiaryImportRun(user_id=auth_user.id, diary_date="2026-09-18", scope_key="same", created_note_ids=[old.id])
+    target = CodexDiaryImportRun(user_id=auth_user.id, diary_date="2026-09-18", scope_key="same", created_note_ids=[new.id])
+    session.add_all([old, new, source, target])
+    session.commit()
+    restore_codex_diary_run_metadata(source.id, target.id, current_user=auth_user, session=session)
+    session.refresh(new)
+    assert new.title == "新标题" and "新总结" in new.content and "旧正文" not in new.content
+    assert "42 分钟" in new.content and "99 分钟" not in new.content
+    assert new.start_at == 1234 and new.lifecycle_stage == "done"
+    assert get_completion_progress_expr(new.custom_fields) == "42/90"
+    assert {field[0]: field[1:] for field in new.custom_fields} == {field[0]: field[1:] for field in old.custom_fields}
+    target.diary_date = "2026-09-19"
+    session.add(target)
+    session.commit()
+    with pytest.raises(ValueError, match="同一天"):
+        restore_codex_diary_run_metadata(source.id, target.id, current_user=auth_user, session=session)
+
+
+def test_diary_source_clips_overnight_turn_and_excludes_next_day_answers(session, auth_user):
+    from backend.core.codex.sessions import collect_cached_codex_daily_summary_source
+    from backend.models import CodexTextCacheRoot, CodexTextCacheThread, CodexTextCacheTurn, CodexTextCacheMessage
+
+    start = _ts(2026, 9, 18, 0, 0)
+    end = _ts(2026, 9, 19, 0, 0)
+    session.add(CodexTextCacheRoot(root_key="overnight", root_dir="remote"))
+    session.add(CodexTextCacheThread(root_key="overnight", thread_id="t", title="跨日任务"))
+    session.add(CodexTextCacheTurn(root_key="overnight", thread_id="t", turn_index=1,
+                                 user_seq=1, assistant_seq=4, start_at=start-1200, end_at=end+3600))
+    for seq, stamp, role, text in [
+        (1, "2026-09-17T23:40:00+08:00", "user", "处理任务"),
+        (2, "2026-09-18T22:00:00+08:00", "assistant", "当天仍待处理"),
+        (3, "2026-09-19T00:00:00+08:00", "assistant", "次日零点结果"),
+        (4, "2026-09-19T01:00:00+08:00", "assistant", "次日最终完成"),
+    ]:
+        session.add(CodexTextCacheMessage(root_key="overnight", thread_id="t", seq=seq,
+                                         timestamp=stamp, role=role, phase="final_answer", text=text))
+    session.add(CodexTextCacheThread(root_key="overnight", thread_id="approval", title="The following is the Codex agent history whose request action you are assessing."))
+    session.add(CodexTextCacheTurn(root_key="overnight", thread_id="approval", turn_index=1,
+                                 user_seq=1, assistant_seq=2, start_at=start+10, end_at=start+20))
+    session.commit()
+    result = collect_cached_codex_daily_summary_source("overnight", "2026-09-18", user_id=auth_user.id, session=session)
+    assert result["turn_count"] == 1
+    record = result["turn_records"][0]
+    assert record["start_at"] == start and record["end_at"] == end
+    assert record["duration_seconds"] == 86400
+    assert record["assistant_result_full"] == "当天仍待处理"
+    assert result["threads"][0]["start_at"] == start
+    assert result["threads"][0]["end_at"] == end
+    assert result["assistant_message_count"] == 1
 
 
 def test_codex_diary_import_worker_heartbeats_while_drafting(session: Session, engine, auth_user, monkeypatch):
@@ -632,7 +786,7 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     assert completed.source_turn_count == 2
     assert completed.created_note_count == 1
     assert all(str(note_id).isdigit() for note_id in completed.created_note_ids)
-    assert completed.result_json["draft_generator"] == "category-bucket-json-v1"
+    assert completed.result_json["draft_generator"] == "category-evidence-json-v2"
     assert completed.result_json["draft_provider"] == "codex-cli"
     assert completed.result_json["draft_model"] == "gpt-5.3-codex-spark"
     assert len(captured_entry_specs[0]) == 2
@@ -877,16 +1031,16 @@ def test_codex_diary_import_duplicate_requires_confirmation(
     assert confirmed_response.status_code == 200
     confirmed_completed = _wait_for_import_run(client, confirmed_response.json()["id"])
     assert confirmed_completed["created_note_count"] == 1
-    assert confirmed_completed["created_note_ids"] != first_completed["created_note_ids"]
+    assert confirmed_completed["created_note_ids"] == first_completed["created_note_ids"]
     assert confirmed_completed["duplicate_note_ids"] == first_completed["created_note_ids"]
     session.expire_all()
     first_notes = _notes_by_public_ids(session, first_completed["created_note_ids"])
     confirmed_notes = _notes_by_public_ids(session, confirmed_completed["created_note_ids"])
-    assert len(first_notes) == 1 and first_notes[0].deleted_at
+    assert len(first_notes) == 1 and not first_notes[0].deleted_at
     assert len(confirmed_notes) == 1 and not confirmed_notes[0].deleted_at
 
 
-def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
+def test_codex_diary_replace_existing_preserves_accounting_and_note_identity(
     client,
     session: Session,
     auth_user,
@@ -962,6 +1116,15 @@ def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
             "end_at": start_at + 30 * 60,
         },
     )
+    old_fanxiu_note.custom_fields = [
+        field for field in old_fanxiu_note.custom_fields if field[0] != "__completion_progress_expr"
+    ] + [["__completion_progress_expr", "string", "3/17"]]
+    old_fanxiu_note.lifecycle_stage = "doing"
+    old_fanxiu_note.weight = 8
+    old_fanxiu_note.private_level = 2
+    session.add(old_fanxiu_note)
+    preserved_fields = list(old_fanxiu_note.custom_fields)
+    preserved_start = old_fanxiu_note.start_at
     old_run.status = "completed"
     old_run.stage = "completed"
     old_run.created_note_ids = [_note_public_id for _note_public_id in [str(old_codeyun_note.numeric_id), str(old_fanxiu_note.numeric_id)]]
@@ -1014,6 +1177,8 @@ def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
             "邮件清理链路继续收敛。",
         ]
         blocks[0]["lifecycle_stage"] = "done"
+        # A changed classification must not create a second time-accounting bucket.
+        blocks.append({**blocks[0], "category_key": "new-category", "block_key": "new-category"})
         return blocks
 
     monkeypatch.setattr("backend.api.notes._collect_codex_diary_source", fake_collect_source)
@@ -1030,15 +1195,23 @@ def test_codex_diary_replace_existing_rebuilds_day_category_blocks(
     assert completed["replace_existing"] is True
     assert completed["created_note_count"] == 1
     assert completed["duplicate_note_ids"] == [old_codeyun_note.numeric_id, old_fanxiu_note.numeric_id]
-    assert completed["result"]["replaced_note_count"] == 2
+    assert completed["result"]["replaced_note_count"] == 1
 
     session.expire_all()
     old_notes = _notes_by_public_ids(session, completed["duplicate_note_ids"])
     assert len(old_notes) == 2
-    assert all(note.deleted_at and note.deleted_at > 0 for note in old_notes)
+    assert all(not note.deleted_at for note in old_notes)
 
     new_notes = _notes_by_public_ids(session, completed["created_note_ids"])
     assert len(new_notes) == 1
+    assert new_notes[0].id == old_fanxiu_note.id
+    assert new_notes[0].custom_fields == preserved_fields
+    assert new_notes[0].start_at == preserved_start
+    assert new_notes[0].lifecycle_stage == "doing"
+    assert new_notes[0].weight == 8
+    assert new_notes[0].private_level == 2
+    assert "约 20 分钟" in new_notes[0].content
+    assert completed["result"]["blocks"][0]["duration_seconds"] == 1200
     assert new_notes[0].title == "凡修任务闭环整理"
     assert new_notes[0].primary_category == "legacy_color_67c23a"
     assert new_notes[0].note_categories == [{"key": "legacy_color_67c23a", "weight": 100}]
@@ -2651,3 +2824,11 @@ def test_codex_diary_body_html_does_not_duplicate_ordered_list_numbering():
 
     repaired_html = _repair_codex_diary_body_number_prefixes("<ol><li><code>1. 1. 更新 codeyun/.gitignore</code></li></ol>")
     assert repaired_html == "<ol><li><code>更新 codeyun/.gitignore</code></li></ol>"
+
+
+def test_diary_request_envelopes_do_not_swallow_real_work():
+    from backend.core.codex.sessions import _clean_daily_summary_text
+    text = "<recommended_plugins>plugin list</recommended_plugins>\n# AGENTS.md instructions\n<INSTRUCTIONS>project rules</INSTRUCTIONS>\n<environment_context>cwd</environment_context>\n请修复表格导出。"
+    assert _clean_daily_summary_text(text) == "请修复表格导出。"
+    assert _clean_daily_summary_text("# Files mentioned by the user:\nreference\n## My request:\n修复冻结窗口") == "修复冻结窗口"
+    assert _clean_daily_summary_text("<environment_context>cwd</environment_context>") == ""

@@ -21,7 +21,10 @@ from backend.core.fanxiu.mail.runtime_store import (
 )
 from backend.core.fanxiu.runtime_gui.mail import (
     align_mail_window,
+    best_mail_time_relation,
     build_mail_visual_observations,
+    mail_runtime_time_key,
+    mail_time_is_match,
     mail_window_geometry_from_asset,
 )
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
@@ -502,22 +505,9 @@ class MailTaskMixin:
                 ),
                 default=0.0,
             )
-            expected_time = re.sub(
-                r"\D+",
-                "",
-                str(
-                    runtime_item.get("create_time_text")
-                    or runtime_item.get("create_time")
-                    or runtime_item.get("create_time_ms")
-                    or ""
-                ),
-            )
-            time_matched = any(
-                len(candidate_digits) >= 4
-                and len(expected_time) >= 4
-                and candidate_digits[-4:] == expected_time[-4:]
-                for candidate in observation.time_candidates
-                if (candidate_digits := re.sub(r"\D+", "", candidate))
+            expected_time = mail_runtime_time_key(runtime_item)
+            time_matched = mail_time_is_match(
+                best_mail_time_relation(observation.time_candidates, expected_time)
             )
             runtime_title_unknown = expected_title.startswith("未知邮件类型")
             if not runtime_title_unknown and title_score >= 0.68:
@@ -588,14 +578,15 @@ class MailTaskMixin:
                 )
                 if items:
                     title = str(items[0].get("title") or "")
-                    stamp = re.sub(r"\D+", "", str(items[0].get("create_time_text") or ""))
+                    stamp = mail_runtime_time_key(items[0])
                     unique_title = bool(title) and sum(str(x.get("title") or "") == title for x in items) == 1
                     observations = [
                         replace(o, trusted=True, reliability=1.0)
                         if o.slot_index == 0 and unique_title
                         and any(ocr_name_similarity(title, candidate) >= 0.99 for candidate in o.title_candidates)
-                        and len(stamp) >= 4
-                        and any(re.sub(r"\D+", "", candidate)[-4:] == stamp[-4:] for candidate in o.time_candidates)
+                        and mail_time_is_match(
+                            best_mail_time_relation(o.time_candidates, stamp)
+                        )
                         else o for o in observations
                     ]
                 alignment = align_mail_window(
@@ -634,22 +625,11 @@ class MailTaskMixin:
                         ),
                         default=0.0,
                     )
-                    expected_time = re.sub(
-                        r"\D+",
-                        "",
-                        str(
-                            runtime_item.get("create_time_text")
-                            or runtime_item.get("create_time")
-                            or runtime_item.get("create_time_ms")
-                            or ""
-                        ),
-                    )
-                    time_matched = any(
-                        len(candidate_digits) >= 4
-                        and len(expected_time) >= 4
-                        and candidate_digits[-4:] == expected_time[-4:]
-                        for candidate in observation.time_candidates
-                        if (candidate_digits := re.sub(r"\D+", "", candidate))
+                    expected_time = mail_runtime_time_key(runtime_item)
+                    time_matched = mail_time_is_match(
+                        best_mail_time_relation(
+                            observation.time_candidates, expected_time
+                        )
                     )
                     runtime_title_unknown = expected_title.startswith("未知邮件类型")
                     if time_matched and (title_score >= 0.68 or runtime_title_unknown):

@@ -289,6 +289,47 @@ def _write_config_lines(config_path: Path, lines: list[str]) -> None:
     os.replace(temporary, config_path)
 
 
+def _has_top_level_key(lines: list[str], key: str) -> bool:
+    """Whether ``key`` appears before the first table (i.e. is a global key)."""
+
+    for line in lines:
+        if _HEADER_RE.match(line):
+            return False
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name = stripped.split("=", 1)[0].strip().strip('"').strip("'")
+        if name == key:
+            return True
+    return False
+
+
+_MANAGED_PROVIDER_IDS = (OPENCODE_GO_PROVIDER_ID, DEEPSEEK_PROVIDER_ID)
+
+
+def _drop_managed_providers(lines: list[str]) -> list[str]:
+    """Drop the CodeYun/DeepSeek provider tables so nothing can route to them."""
+
+    out: list[str] = []
+    skip = False
+    for line in lines:
+        header = _HEADER_RE.match(line)
+        if header:
+            name = header.group(1).strip().strip('"').strip("'")
+            skip = any(
+                name == f"model_providers.{provider_id}" or name.startswith(f"model_providers.{provider_id}.")
+                for provider_id in _MANAGED_PROVIDER_IDS
+            )
+            if not skip:
+                out.append(line)
+            continue
+        if not skip:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
 def _strip_for_opencode(lines: list[str]) -> list[str]:
     out: list[str] = []
     seen_table = False
@@ -432,6 +473,7 @@ CODEX_BASELINE_FILENAME = "base-config.toml"
 _LEGACY_BACKUP_FILENAME = "config.toml"
 _DEEPSEEK_BACKUP_DIRNAME = "backup-deepseek"
 OPENCODE_CATALOG_FILENAME = "opencode_models.json"
+DEEPSEEK_CATALOG_FILENAME = "models.json"
 
 
 def _baseline_path(codex_home: Path) -> Path | None:
@@ -464,31 +506,6 @@ def ensure_baseline_snapshot(codex_home: Path, config_path: Path) -> bool:
     return True
 
 
-def _collect_tables(lines: list[str], prefix: str) -> dict[str, list[str]]:
-    """Collect ``[prefix*]`` table blocks (header + body), trailing blanks trimmed."""
-
-    tables: dict[str, list[str]] = {}
-    name: str | None = None
-    body: list[str] = []
-    for line in lines:
-        header = _HEADER_RE.match(line)
-        if header:
-            if name is not None:
-                tables[name] = body
-            table = header.group(1).strip().strip('"').strip("'")
-            name = table if table.startswith(prefix) else None
-            body = [line] if name is not None else []
-            continue
-        if name is not None:
-            body.append(line)
-    if name is not None:
-        tables[name] = body
-    for value in tables.values():
-        while value and not value[-1].strip():
-            value.pop()
-    return tables
-
-
 def _opencode_provider_table() -> list[str]:
     return [
         f"[model_providers.{OPENCODE_GO_PROVIDER_ID}]",
@@ -504,47 +521,49 @@ def restore_codeyun_backup(codex_home: Path) -> bool:
     if baseline is None:
         return False
     config_path = codex_home / "config.toml"
-    lines = _read_config_lines(baseline)
-    if config_path.is_file():
-        # Existing threads store the provider they were created with; Codex refuses
-        # to open a thread whose provider is missing ("Model provider ... not
-        # found").  Keep such provider blocks so old opencode/deepseek threads
-        # still load, while the active model/provider comes from the baseline.
-        baseline_tables = {name.lower() for name in _collect_tables(lines, "model_providers.")}
-        extra = [
-            body
-            for name, body in _collect_tables(_read_config_lines(config_path), "model_providers.").items()
-            if name.lower() not in baseline_tables
-        ]
-        if extra:
-            lines = [*lines, ""]
-            for body in extra:
-                lines.extend(body)
-    # The proxy provider is CodeYun-managed and carries no secret, so keep it
-    # defined even when the live config no longer has it; without it Codex cannot
-    # open any thread that was created on the opencode provider.
-    if not any(name.lower() == f"model_providers.{OPENCODE_GO_PROVIDER_ID}" for name in _collect_tables(lines, "model_providers.")):
-        lines = [*lines, "", *_opencode_provider_table()]
+    # Write exactly the pristine baseline.  Switching back to OpenAI must leave no
+    # CodeYun/DeepSeek provider block behind, otherwise the Codex desktop app can
+    # still route new threads through the local opencode proxy.  Threads that were
+    # created on those providers simply stop working, which is the accepted
+    # trade-off for a clean official configuration.
+    lines = _drop_managed_providers(_read_config_lines(baseline))
     _write_config_lines(config_path, lines)
-    # Drop the generated opencode catalog so no stale model list is left behind.
-    (codex_home / OPENCODE_CATALOG_FILENAME).unlink(missing_ok=True)
+    cleanup_generated_catalogs(codex_home)
     return True
 
 
-def ensure_opencode_provider_defined(config_path: Path) -> bool:
-    """Re-add the CodeYun-managed opencode provider block if it went missing.
+def cleanup_generated_catalogs(codex_home: Path) -> None:
+    """Remove CodeYun/DeepSeek-generated model catalogs when the config drops them.
 
-    Threads created on the opencode provider carry ``model_provider = "opencode_go"``
-    and Codex refuses to open them once the block is gone.
+    The opencode catalog is always CodeYun-managed.  The DeepSeek ``models.json``
+    is only kept when the active config still points at it through
+    ``model_catalog_json`` (the DeepSeek provider does; the pristine baseline does
+    not).
+    """
+
+    (codex_home / OPENCODE_CATALOG_FILENAME).unlink(missing_ok=True)
+    config_path = codex_home / "config.toml"
+    if not config_path.is_file():
+        return
+    if not _has_top_level_key(_read_config_lines(config_path), "model_catalog_json"):
+        (codex_home / DEEPSEEK_CATALOG_FILENAME).unlink(missing_ok=True)
+
+
+def drop_managed_provider_blocks(config_path: Path) -> bool:
+    """Remove CodeYun/DeepSeek provider tables from the active config.
+
+    Used when there is no baseline snapshot to restore from: the global defaults
+    may already be OpenAI, but a leftover provider block would still let the
+    desktop app route new threads to the local proxy.
     """
 
     lines = _read_config_lines(config_path)
     if not lines:
         return False
-    tables = {name.lower() for name in _collect_tables(lines, "model_providers.")}
-    if f"model_providers.{OPENCODE_GO_PROVIDER_ID}" in tables:
+    stripped = _drop_managed_providers(lines)
+    if stripped == lines:
         return False
-    _write_config_lines(config_path, [*lines, "", *_opencode_provider_table()])
+    _write_config_lines(config_path, stripped)
     return True
 
 
@@ -563,16 +582,7 @@ def switch_to_opencode(config_path: Path, model: str) -> None:
     lines.insert(1, f'model_provider = "{OPENCODE_GO_PROVIDER_ID}"')
     if catalog_path is not None:
         lines.insert(2, f"model_catalog_json = {json.dumps(catalog_path.as_posix())}")
-    lines.extend(
-        [
-            "",
-            f"[model_providers.{OPENCODE_GO_PROVIDER_ID}]",
-            'name = "OpenCode Go (proxy)"',
-            f'base_url = "{get_opencode_proxy_base_url()}/v1"',
-            'wire_api = "responses"',
-            'experimental_bearer_token = "opencode-proxy"',
-        ]
-    )
+    lines.extend(["", *_opencode_provider_table()])
     ensure_enabled_reasoning_efforts(lines, _catalog_reasoning_efforts(catalog_path))
     _write_config_lines(config_path, lines)
 

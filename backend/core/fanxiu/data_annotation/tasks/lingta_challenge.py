@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
+from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 from backend.core.fanxiu.data_annotation.popup_guard import (
     FanxiuEmulatorRestartRequired,
 )
@@ -1086,6 +1087,20 @@ class LingtaChallengeTaskMixin:
                             "detail",
                             f"灵塔_挑战：#548 胜利页确认本轮至少通过 {max_chain_pass_count} 层",
                         )
+                except SceneClickMismatch as exc:
+                    # The pre-click guard recognized a different scene (for
+                    # example #85 already in the next battle) because the
+                    # countdown page advanced on its own before the optional
+                    # acceleration click.  No input was sent; this is
+                    # equivalent to the timeout branch: abandon the click and
+                    # keep observing the automatic chain rather than failing
+                    # the whole task.
+                    if int(exc.expected_scene_id) != LINGTA_ORDINARY_RESULT_SCENE_ID:
+                        raise
+                    self._log(
+                        "detail",
+                        "灵塔_挑战：#548 倒计时页已自行跳转，未点击，重新识别整帧继续观察",
+                    )
                 except RuntimeError as exc:
                     message = str(exc)
                     if "wait_click #548" not in message or "超时" not in message:

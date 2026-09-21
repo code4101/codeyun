@@ -22,6 +22,19 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
 )
 
 
+def read_dongtian_place_catalog() -> dict[str, Any]:
+    """Read the canonical place ID/name/geometry table; no game or memory IO.
+
+    ``people`` gates visibility by alliance size; ``special_mines`` denotes
+    a separate panel, not a missing main-map point. Runtime owns which IDs
+    are currently visible. Coordinates describe map geometry, never current
+    screen coordinates or click permission. Return copies of cached rows.
+    """
+    configs, revision = _mines_place_static_config()
+    return {"source": "MinesPlace", "config_sha256": revision,
+            "places": [{**row, "pos": list(row["pos"])} for row in configs.values()]}
+
+
 _MINES_MANAGER_ALIASES = (
     (
         "XianLvMinesMgr",

@@ -408,7 +408,7 @@ class PrayerDailyResourceTaskMixin:
         message: str,
     ) -> dict[str, Any]:
         scheduler_task_id = str(payload.get("__scheduler_task_id") or "").strip()
-        if scheduler_task_id:
+        if scheduler_task_id and bool(payload.get("schedule", True)):
             next_time = next_business_time(("00:00",))
             self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
             message = f"{message}，下次 {next_time}"
@@ -535,8 +535,19 @@ class PrayerDailyResourceTaskMixin:
                 if prayer_new_round_confirm_visible(items):
                     if new_round_confirmed:
                         raise RuntimeError("祈愿_每日资源：确认开启新一轮后弹窗仍未关闭")
+                    # The rollover overlay covers every #455 identity anchor, so
+                    # a scene-guarded wait_click treats this verified popup as an
+                    # empty scene, pre-dismisses it, and then waits for a confirm
+                    # button its own guard already consumed.  The statement +
+                    # unique "确认" check above is this frame's authority; click
+                    # that exact box directly instead of re-entering the guard.
+                    confirm = exact_ocr_fragment(items, "确认")
+                    if confirm is None:
+                        raise RuntimeError(
+                            "祈愿_每日资源：新一轮弹窗文案已确认，但未定位唯一“确认”按钮"
+                        )
                     self._log("action", "祈愿_每日资源：本轮奖励已领完，确认开启新一轮奖励任务")
-                    yield from context.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
+                    _click_fragment_center(context, PRAYER_MAIN_SCENE_ID, confirm)
                     yield from context.wait_action_settle(0.8)
                     new_round_confirmed = True
                     continue
@@ -617,8 +628,18 @@ class PrayerDailyResourceTaskMixin:
             # obscured scene identity.
             overlay_fragments = _prayer_task_fragments(context, current_frame)
         if current_scene is None and prayer_new_round_confirm_visible(overlay_fragments):
+            # Same occlusion/guard race as the in-task branch: the verified
+            # overlay hides #455, so a scene-guarded wait_click would dismiss
+            # the real popup as a blank scene before consuming its button.  The
+            # predicate already validated the statement and a unique "确认" in
+            # this frame; click that exact box, then recover the page.
+            confirm = exact_ocr_fragment(overlay_fragments, "确认")
+            if confirm is None:
+                raise RuntimeError(
+                    "祈愿_每日资源：入口识别到新一轮弹窗文案，但未定位唯一“确认”按钮"
+                )
             self._log("action", "祈愿_每日资源：任务入口检测到新一轮确认弹窗，先恢复 #455")
-            yield from context.wait_click(PRAYER_MAIN_SCENE_ID, "新一轮确认")
+            _click_fragment_center(context, PRAYER_MAIN_SCENE_ID, confirm)
             yield from context.wait_scene(
                 [PRAYER_MAIN_SCENE_ID],
                 wait=page_timeout,

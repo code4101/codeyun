@@ -37,6 +37,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
 from backend.models import (
     FanxiuExchangeActivity,
+    FanxiuExchangeActivityObservation,
     FanxiuExchangeRanking,
     FanxiuExchangeShopItem,
 )
@@ -224,7 +225,69 @@ def seed_ranking_occurrence(
     activity = session.get(FanxiuExchangeActivity, activity_id)
     if activity is None:
         raise RuntimeError("榜单 occurrence 入库后无法回读")
+    _retire_factless_duplicate_rows(session, activity, occurrence)
     return activity
+
+
+def _retire_factless_duplicate_rows(
+    session: Session,
+    activity: FanxiuExchangeActivity,
+    occurrence: RankingOccurrence,
+) -> None:
+    """Collapse same-occurrence rows left behind by game Runtime id churn.
+
+    同一次活动（同类型、同跨服、同起止日）在游戏客户端重建过 Runtime 对象之后，
+    两套发现源会各建一条记录，而页面默认选中的未必是真正采集到事实的那条。
+    只有能证明自己完全没有事实（无商店、无榜单、无观测、无货币快照）的重复记录
+    才允许在这里废弃；任何带事实的记录一律保留，交由人来决定如何合并。
+    """
+
+    rows = session.exec(
+        select(FanxiuExchangeActivity).where(
+            FanxiuExchangeActivity.activity_type == occurrence.activity_type,
+            FanxiuExchangeActivity.cross_count == occurrence.cross_count,
+            FanxiuExchangeActivity.start_date
+            == occurrence.start_at.date().isoformat(),
+            FanxiuExchangeActivity.end_date == occurrence.end_at.date().isoformat(),
+        )
+    ).all()
+    retired = False
+    for row in rows:
+        if row.id == activity.id or row.instance_key == occurrence.instance_key:
+            continue
+        if int(row.current_currency or 0) or int(row.cumulative_currency or 0):
+            continue
+        shop_exists = session.exec(
+            select(FanxiuExchangeShopItem.id)
+            .where(FanxiuExchangeShopItem.activity_id == row.id)
+            .limit(1)
+        ).first()
+        ranking_exists = session.exec(
+            select(FanxiuExchangeRanking.id)
+            .where(FanxiuExchangeRanking.activity_id == row.id)
+            .limit(1)
+        ).first()
+        observation_exists = session.exec(
+            select(FanxiuExchangeActivityObservation.id)
+            .where(FanxiuExchangeActivityObservation.activity_id == row.id)
+            .limit(1)
+        ).first()
+        if shop_exists or ranking_exists or observation_exists:
+            continue
+        evidence = dict(row.evidence or {})
+        refresh_status = dict(evidence.get("refresh_status") or {})
+        if (
+            evidence.get("shop_snapshot_captured_at")
+            or refresh_status.get("shop") == "updated"
+            or refresh_status.get("currency") == "updated"
+        ):
+            continue
+        session.delete(row)
+        retired = True
+    if retired:
+        # 调用方（榜单 Job）在同一 session 里只做读取，删除必须由提供方自己提交，
+        # 否则重复档案会在 session 关闭时被回滚。
+        session.commit()
 
 
 def sync_ranking_schedule(
@@ -433,7 +496,21 @@ def reconcile_ranking_occurrence(
             "兑换宝阁本次未刷新"
             + (f"：{shop_refresh_reason}" if shop_refresh_reason else "")
         )
-    if any(scope.required for scope in spec.rank_scopes) and reward_tier_total <= 0:
+    # A scope that intentionally disables reward tiers has no static tier
+    # projection by contract, so its zero count is a legal terminal state and
+    # must not block.  Only required scopes that do declare tiers are gated, and
+    # each is checked on its own projection so an optional scope's tiers can
+    # never mask a required scope that stayed empty.
+    required_reward_tier_missing = any(
+        scope.required
+        and scope.reward_tiers_enabled
+        and int(
+            (scope_results.get(scope.scope) or {}).get("reward_tier_count") or 0
+        )
+        <= 0
+        for scope in spec.rank_scopes
+    )
+    if required_reward_tier_missing:
         required_fact_errors.append("榜单奖励档次本次未加载")
     now = datetime.fromisoformat(captured_at)
     snapshot_kind = _ranking_snapshot_kind(now, occurrence)

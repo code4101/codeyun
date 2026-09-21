@@ -345,7 +345,7 @@ def execute_storage_bag_auto_claim_task(
     yield from context.wait_scene(
         [STORAGE_BAG_SCENE],
         wait=10.0,
-        label="资源_自动使用/储物袋勾选：等待储物袋主页",
+        label="储物袋_操作/勾选物品：等待储物袋主页",
     )
 
     before = dict(snapshot_reader())
@@ -414,7 +414,7 @@ def execute_storage_bag_auto_claim_task(
     yield from context.wait_scene(
         [WORLD_SCENE],
         wait=10.0,
-        label="资源_自动使用/储物袋勾选：返回世界",
+        label="储物袋_操作/勾选物品：返回世界",
     )
     return {
         "ok": True,

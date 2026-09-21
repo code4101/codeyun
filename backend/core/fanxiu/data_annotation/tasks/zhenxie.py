@@ -50,6 +50,38 @@ class ZhenxieTaskMixin:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _zhenxie_scene_shape_titles(context: Any, scene_id: int) -> set[str]:
+        """列出该场景资产里的 Shape 标题，用于“这个入口是否在此页存在”。"""
+
+        try:
+            view = context.view(scene_id)
+        except Exception:
+            return set()
+        raw = getattr(view, "raw", None)
+        if not isinstance(raw, dict):
+            return set()
+        return {
+            str(shape.get("title") or "")
+            for shape in (raw.get("shapes") or [])
+            if isinstance(shape, dict)
+        }
+
+    @staticmethod
+    def _zhenxie_shape_visible(context: Any, scene_id: int, title: str, frame: str) -> bool:
+        """探测某个 Shape 当前是否可见。
+
+        shape_matches 在“本场景没有该标注”或“该标注没有图像/OCR 条件”时会抛错；
+        这里是在做入口/状态的存在性探测，这两种情况都等价于“当前不可用”，
+        不能让异常越过探测语义（实测 #63 只有无条件『前往』，异常会导致
+        『前往』回退分支永远走不到，作业从封面页启动就必然失败）。
+        """
+
+        try:
+            return context.shape_matches(scene_id, title, frame_data_url=frame) is not None
+        except RuntimeError:
+            return False
+
     def _enter_daily_zhenxie(self, context: Any):
         """Enter the event from any valid timed-event landing scene."""
 
@@ -83,12 +115,16 @@ class ZhenxieTaskMixin:
 
         if current == 63:
             frame = context.cur_frame(update=True)
-            if context.shape_matches(63, "参加宗门镇邪", frame_data_url=frame) is not None:
+            # #63 是活动封面页，页内入口是资产事实（历史上 #63 只有『前往』，
+            # 且它没有图像/OCR 条件，不能当视觉门卫）。页身份已由场景识别确认，
+            # 因此按本页实际存在的入口选择，而不是先做视觉匹配。
+            titles = self._zhenxie_scene_shape_titles(context, 63)
+            if "参加宗门镇邪" in titles:
                 schedule_shape = "参加宗门镇邪"
-            elif context.shape_matches(63, "前往", frame_data_url=frame) is not None:
+            elif "前往" in titles:
                 schedule_shape = "前往"
             else:
-                raise RuntimeError("日常_镇邪：#63 未识别到“参加宗门镇邪/前往”入口")
+                raise RuntimeError("日常_镇邪：#63 资产里没有“参加宗门镇邪/前往”入口")
             yield from context.wait_click(63, schedule_shape)
             yield from context.wait_action_settle(1.0)
             current = self._zhenxie_scene_id(
@@ -102,13 +138,13 @@ class ZhenxieTaskMixin:
             )
         if current == 271:
             frame = context.cur_frame(update=True)
-            if context.shape_matches(271, "参加宗门镇邪", frame_data_url=frame) is not None:
+            if self._zhenxie_shape_visible(context, 271, "参加宗门镇邪", frame):
                 participation_shape = "参加宗门镇邪"
-            elif context.shape_matches(271, "前往", frame_data_url=frame) is not None:
+            elif self._zhenxie_shape_visible(context, 271, "前往", frame):
                 participation_shape = "前往"
-            elif context.shape_matches(271, "参加", frame_data_url=frame) is not None:
+            elif self._zhenxie_shape_visible(context, 271, "参加", frame):
                 participation_shape = "参加"
-            elif context.shape_matches(271, "参战效果", frame_data_url=frame) is not None:
+            elif self._zhenxie_shape_visible(context, 271, "参战效果", frame):
                 return
             else:
                 raise RuntimeError("日常_镇邪：#271 既无参加入口，也无已参战效果证据")
@@ -127,11 +163,11 @@ class ZhenxieTaskMixin:
             if current == 271:
                 frame = context.cur_frame(update=True)
                 if any(
-                    context.shape_matches(271, title, frame_data_url=frame) is not None
+                    self._zhenxie_shape_visible(context, 271, title, frame)
                     for title in ("参加宗门镇邪", "前往", "参加")
                 ):
                     raise RuntimeError("日常_镇邪：#271 参加按钮仍可见，未确认参战")
-                if context.shape_matches(271, "参战效果", frame_data_url=frame) is None:
+                if not self._zhenxie_shape_visible(context, 271, "参战效果", frame):
                     raise RuntimeError("日常_镇邪：#271 参加后未识别到参战效果")
                 return
         if current == 272:

@@ -12,6 +12,10 @@ from typing import Any, Iterable
 from backend.core.fanxiu.catalog.item import load_fanxiu_item_catalog
 from backend.core.fanxiu.catalog.lua_config import parse_fanxiu_generated_lua_config
 from backend.core.fanxiu.catalog.resources import resolve_fanxiu_export_root
+from backend.core.fanxiu.instrumentation.daily_task_rewards import (
+    TaskRewardDomainSpec,
+    read_task_reward_spec_fast_snapshot,
+)
 from backend.core.fanxiu.instrumentation.redbag_runtime_loader import _lua_addresses
 from backend.core.fanxiu.instrumentation.runtime_memory import (
     FanxiuRuntimeMemoryError,
@@ -33,7 +37,6 @@ _BOTHDRAW_METHODS = frozenset({"Inst_get", "GetBothInfo", "OpenOptionSelectView"
 _REVENUE_METHODS = frozenset({"Inst_get", "GetRevenueDataInfo", "RevenueDataInfo"})
 _QUEST_METHODS = frozenset({"LuaQuestMgr", "Inst_get", "GetTaskState"})
 _DEFAULT_CUMULATIVE_REWARD_VISIBLE_SLOT_COUNT = 4
-_ACTIVITY_TASK_TYPE = 3
 _TASK_STATUS_RECEIVING = 3
 _TASK_STATUS_CLAIMABLE = 4
 _TASK_STATUS_CLAIMED = 5
@@ -102,6 +105,81 @@ def _quest_data_fields(reader: LuaJitReader, root_address: int) -> dict[Any, Any
 def _dictionary_item(reader: LuaJitReader, value: Any, key: int) -> Any:
     items = _dictionary_items(reader, value)
     return items.get(key) or items.get(float(key))
+
+
+def _strict_activity_id(value: Any) -> int | None:
+    """Return a positive integer identity only for an exact integer key.
+
+    ``30402.0`` and ``"30402"`` are legitimate normalizations of the integer
+    key; ``30402.5``, ``NaN``, ``inf``, ``True`` and arbitrary objects are not
+    an activity identity and must never collapse onto 30402.
+    """
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            parsed = int(text)
+            return parsed if parsed > 0 else None
+    return None
+
+
+def select_bothdraw_activity(
+    info_items: dict[Any, Any],
+    expected_activity_id: int | None = None,
+) -> tuple[int, Any]:
+    """Select one ``_BothInfoMap`` entry, optionally by exact activity id.
+
+    Callers that know the target activity (for example 圣木祈愿 30402) must pass
+    ``expected_activity_id``: several Bothdraw activities can share the manager
+    at once, so the legacy global ``len == 1`` requirement is not a business
+    fact.  Omitting the id keeps the old fail-closed singleton contract.
+
+    Keys are matched by their exact integer value: ``30402.0`` and ``"30402"``
+    are accepted, while ``30402.5``, ``NaN``, ``inf``, ``bool`` and arbitrary
+    objects are never treated as 30402.  Passing an id never falls back to the
+    first row: a missing key or two raw keys collapsing to the same id is an
+    explicit failure.  The manager must already have loaded this activity's
+    ``BothInfoMap``; this selector never forces game-side loading.
+    """
+
+    if expected_activity_id is None:
+        if len(info_items) != 1:
+            raise FanxiuRuntimeMemoryError(
+                f"BothdrawMgr 当前活动实例不唯一：{sorted(str(key) for key in info_items)}"
+            )
+        raw_key = next(iter(info_items))
+        normalized = _strict_activity_id(raw_key)
+        if normalized is None:
+            raise FanxiuRuntimeMemoryError(
+                f"BothdrawMgr 活动键不是精确正整数身份：{raw_key!r}"
+            )
+        return normalized, info_items[raw_key]
+    expected = _strict_activity_id(expected_activity_id)
+    if expected is None:
+        raise ValueError("expected_activity_id 必须为精确正整数")
+    matches: list[Any] = []
+    for raw_key, value in info_items.items():
+        if _strict_activity_id(raw_key) == expected:
+            matches.append(value)
+    if not matches:
+        raise FanxiuRuntimeMemoryError(
+            f"BothdrawMgr 未加载活动 {expected} 实例："
+            f"{sorted(str(key) for key in info_items)}"
+        )
+    if len(matches) > 1:
+        raise FanxiuRuntimeMemoryError(
+            f"BothdrawMgr 活动 {expected} 键身份冲突：匹配 {len(matches)} 项"
+        )
+    return expected, matches[0]
 
 
 def build_bothdraw_task_snapshot(
@@ -248,9 +326,22 @@ def build_bothdraw_cumulative_rewards(
     }
 
 
-def _current_library_ids(reader: LuaJitReader, data: dict[Any, Any]) -> tuple[int, ...]:
+def _current_library_ids(
+    reader: LuaJitReader,
+    data: dict[Any, Any],
+    *,
+    expected_activity_id: int | None = None,
+) -> tuple[int, ...]:
+    if expected_activity_id is None:
+        infos = _dictionary_values(reader, data.get("_BothInfoMap"))
+    else:
+        _activity_id, info = select_bothdraw_activity(
+            _dictionary_items(reader, data.get("_BothInfoMap")),
+            expected_activity_id,
+        )
+        infos = [info]
     candidates: list[tuple[int, ...]] = []
-    for info in _dictionary_values(reader, data.get("_BothInfoMap")):
+    for info in infos:
         for optional in _list_values(reader, _fields(reader, info).get("optionalVOs")):
             values = tuple(
                 int(value)
@@ -686,14 +777,36 @@ def read_bothdraw_optional_reward_runtime() -> dict[str, Any]:
         }
 
 
-def read_bothdraw_task_runtime() -> dict[str, Any]:
-    """Read current Penglai task definitions and authoritative claim states."""
+def read_bothdraw_task_runtime(
+    *,
+    expected_activity_id: int | None = None,
+) -> dict[str, Any]:
+    """Read current task definitions and authoritative claim states.
+
+    Pass ``expected_activity_id`` when several Bothdraw activities coexist so
+    the task snapshot is scoped to that exact activity; the target activity's
+    task page must already be loaded.  Omitting the id preserves the legacy
+    singleton contract.
+
+    Both manager roots use the shared resolver cache (process-identity bound)
+    and its ``validate`` callback; the active activity id and the current
+    Revenue config are still read live on every call, so a new activity period
+    can never reuse a cached task-id set.  Returns per-stage timings so the
+    fixed outer cost can be profiled without guessing.
+    """
 
     started_at = time.perf_counter()
+    stage_started = started_at
+    stage_timings: dict[str, float] = {}
     memory: MumuProcessMemory | None = None
     try:
         memory = MumuProcessMemory.discover_cached()
         state_address = int(_lua_addresses(memory)["state"], 16)
+        stage_timings["process_discovery_seconds"] = (
+            time.perf_counter() - stage_started
+        )
+
+        stage_started = time.perf_counter()
         bothdraw_root, bothdraw_cache_hit, _environment = resolve_lua_global_manager_root(
             memory,
             manager_key="bothdraw-optional-reward",
@@ -701,27 +814,33 @@ def read_bothdraw_task_runtime() -> dict[str, Any]:
             global_name="BothdrawMgr",
             required_methods=_BOTHDRAW_METHODS,
             validate=_bothdraw_data_fields,
-            force_refresh=True,
         )
         reader = LuaJitReader(memory)
-        info_items = _dictionary_items(
-            reader,
-            _bothdraw_data_fields(reader, bothdraw_root).get("_BothInfoMap"),
+        activity_id, _info = select_bothdraw_activity(
+            _dictionary_items(
+                reader,
+                _bothdraw_data_fields(reader, bothdraw_root).get("_BothInfoMap"),
+            ),
+            expected_activity_id,
         )
-        if len(info_items) != 1:
-            raise FanxiuRuntimeMemoryError(
-                f"BothdrawMgr 当前活动实例不唯一：{sorted(str(key) for key in info_items)}"
-            )
-        activity_id = int(next(iter(info_items)))
+        activity_id = int(activity_id)
+        stage_timings["bothdraw_root_resolution_seconds"] = (
+            time.perf_counter() - stage_started
+        )
 
+        stage_started = time.perf_counter()
         quest_root, quest_cache_hit = resolve_manager_root(
             memory,
             manager_key="quest-activity-tasks",
             marker=b"LuaQuestMgr",
             required_methods=_QUEST_METHODS,
             validate=_quest_data_fields,
-            force_refresh=True,
         )
+        stage_timings["quest_root_resolution_seconds"] = (
+            time.perf_counter() - stage_started
+        )
+
+        stage_started = time.perf_counter()
         reader = LuaJitReader(memory)
         quest_data = _quest_data_fields(reader, quest_root)
         raw_configs = _dictionary_item(
@@ -730,27 +849,51 @@ def read_bothdraw_task_runtime() -> dict[str, Any]:
             activity_id,
         )
         task_configs = [_fields(reader, item) for item in _list_values(reader, raw_configs)]
-        activity_tasks = _fields(
-            reader,
-            _dictionary_item(reader, quest_data.get("taskInfoMap"), _ACTIVITY_TASK_TYPE),
+        task_ids = tuple(
+            dict.fromkeys(
+                int(config.get("id") or 0)
+                for config in task_configs
+                if int(config.get("id") or 0) > 0
+            )
         )
-        if not activity_tasks:
-            raise FanxiuRuntimeMemoryError("QuestMgr 活动任务状态尚未加载")
-        task_entries = [
-            _fields(reader, item)
-            for item in _list_values(reader, activity_tasks.get("taskEntryVOs"))
-        ]
-        finished_task_ids = [
-            int(item)
-            for item in _list_values(reader, activity_tasks.get("finishTasks"))
-            if int(item or 0) > 0
-        ]
+        if not task_ids:
+            raise FanxiuRuntimeMemoryError(
+                f"QuestMgr 未提供活动 {activity_id} 的任务定义"
+            )
+        spec = TaskRewardDomainSpec(
+            key=f"bothdraw-task-{activity_id}",
+            label=f"BothdrawTask-{activity_id}",
+            activity_id=activity_id,
+            task_ids=task_ids,
+            condition_key="",
+            thresholds=(),
+        )
+        stage_timings["revenue_config_decode_seconds"] = (
+            time.perf_counter() - stage_started
+        )
+
+        stage_started = time.perf_counter()
+        fast = read_task_reward_spec_fast_snapshot(
+            spec,
+            include_task_entries=True,
+        )
+        stage_timings["fast_reader_seconds"] = time.perf_counter() - stage_started
+        if fast.get("ok") is not True or fast.get("complete") is not True:
+            raise FanxiuRuntimeMemoryError(
+                str(fast.get("reason") or "QuestMgr 活动任务状态不完整")
+            )
+
+        stage_started = time.perf_counter()
         snapshot = build_bothdraw_task_snapshot(
             activity_id=activity_id,
             task_configs=task_configs,
-            task_entries=task_entries,
-            finished_task_ids=finished_task_ids,
+            task_entries=fast.get("task_entries") or [],
+            finished_task_ids=fast.get("finished_task_ids") or [],
         )
+        stage_timings["snapshot_projection_seconds"] = (
+            time.perf_counter() - stage_started
+        )
+
         return {
             "ok": True,
             "available": True,
@@ -759,11 +902,15 @@ def read_bothdraw_task_runtime() -> dict[str, Any]:
             "captured_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             **snapshot,
             "elapsed_seconds": time.perf_counter() - started_at,
+            "stage_timings": stage_timings,
             "evidence": {
                 "pid": memory.pid,
                 "process_start_ticks": memory.process_start_ticks,
                 "bothdraw_root_cache_hit": bothdraw_cache_hit,
                 "quest_root_cache_hit": quest_cache_hit,
+                "quest_entry_source": "validated_slot_fast_reader",
+                "quest_fast_elapsed_seconds": fast.get("elapsed_seconds"),
+                "quest_fast_stage_timings": fast.get("stage_timings"),
             },
         }
     except Exception as exc:
@@ -774,6 +921,7 @@ def read_bothdraw_task_runtime() -> dict[str, Any]:
             "source": "runtime_memory",
             "reason": str(exc),
             "elapsed_seconds": time.perf_counter() - started_at,
+            "stage_timings": stage_timings,
             "evidence": {
                 "pid": memory.pid if memory is not None else None,
                 "process_start_ticks": memory.process_start_ticks if memory is not None else None,
@@ -782,7 +930,12 @@ def read_bothdraw_task_runtime() -> dict[str, Any]:
 
 
 def read_bothdraw_revenue_task_runtime(*, expected_activity_id: int) -> dict[str, Any]:
-    """Read an activity's own RevenueTask UI models, without stale config joins."""
+    """Read an activity's own RevenueTask UI models, without stale config joins.
+
+    The exact ``expected_activity_id`` scopes the snapshot when several
+    Bothdraw activities coexist; the target activity's RevenueTask page must
+    already be loaded, and a missing/ambiguous id fails closed.
+    """
 
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None
@@ -802,19 +955,14 @@ def read_bothdraw_revenue_task_runtime(*, expected_activity_id: int) -> dict[str
             force_refresh=True,
         )
         reader = LuaJitReader(memory)
-        info_items = _dictionary_items(
-            reader,
-            _bothdraw_data_fields(reader, bothdraw_root).get("_BothInfoMap"),
+        activity_id, _info = select_bothdraw_activity(
+            _dictionary_items(
+                reader,
+                _bothdraw_data_fields(reader, bothdraw_root).get("_BothInfoMap"),
+            ),
+            expected_activity_id,
         )
-        if len(info_items) != 1:
-            raise FanxiuRuntimeMemoryError(
-                f"BothdrawMgr 当前活动实例不唯一：{sorted(str(key) for key in info_items)}"
-            )
-        activity_id = int(next(iter(info_items)))
-        if activity_id != expected_activity_id:
-            raise FanxiuRuntimeMemoryError(
-                f"当前抽奖活动身份不匹配：expected={expected_activity_id}, actual={activity_id}"
-            )
+        activity_id = int(activity_id)
 
         quest_root, quest_cache_hit = resolve_manager_root(
             memory,
@@ -916,15 +1064,14 @@ def _lottery_snapshot(
     data: dict[Any, Any],
     *,
     reward_items: list[dict[str, Any]],
+    expected_activity_id: int | None = None,
 ) -> dict[str, Any]:
     """Build one current activity point from the already-loaded play VO."""
 
-    info_items = _dictionary_items(reader, data.get("_BothInfoMap"))
-    if len(info_items) != 1:
-        raise FanxiuRuntimeMemoryError(
-            f"BothdrawMgr 当前活动实例不唯一：{sorted(str(key) for key in info_items)}"
-        )
-    activity_id, info = next(iter(info_items.items()))
+    activity_id, info = select_bothdraw_activity(
+        _dictionary_items(reader, data.get("_BothInfoMap")),
+        expected_activity_id,
+    )
     fields = _fields(reader, info)
     optional_map = _dictionary_items(reader, fields.get("rewardOptionalMap"))
     big_count = _dictionary_items(reader, fields.get("bigCount"))
@@ -1115,10 +1262,14 @@ def derive_bothdraw_ordinary_draw_delta(
 def _reward_items_for_data(
     reader: LuaJitReader,
     data: dict[Any, Any],
+    *,
+    expected_activity_id: int | None = None,
 ) -> tuple[list[dict[str, Any]], str, str]:
     """Resolve the current optional library once for all Bothdraw snapshots."""
 
-    library_ids = _current_library_ids(reader, data)
+    library_ids = _current_library_ids(
+        reader, data, expected_activity_id=expected_activity_id
+    )
     export_root = resolve_fanxiu_export_root()
     catalog = load_fanxiu_item_catalog(export_root=export_root, rebuild_missing=False)
     runtime_rows = _runtime_optional_reward_rows(reader, data)
@@ -1171,7 +1322,10 @@ def read_bothdraw_lottery_runtime() -> dict[str, Any]:
         }
 
 
-def read_bothdraw_basic_runtime() -> dict[str, Any]:
+def read_bothdraw_basic_runtime(
+    *,
+    expected_activity_id: int | None = None,
+) -> dict[str, Any]:
     """Read a Bothdraw variant that has no optional-grand-prize rows.
 
     Some temporary activities share ``BothdrawMgr`` but only expose ordinary
@@ -1179,6 +1333,11 @@ def read_bothdraw_basic_runtime() -> dict[str, Any]:
     because it cannot create a selected-grand-prize probability sample.  This
     smaller projection deliberately keeps that invariant while still exposing
     the activity id, cumulative draw count and configured ticket cost.
+
+    Pass ``expected_activity_id`` when several Bothdraw activities coexist so
+    the snapshot is scoped to that exact activity; the target activity's page
+    must already be loaded.  Omitting the id preserves the legacy singleton
+    contract.
     """
 
     started_at = time.perf_counter()
@@ -1197,12 +1356,10 @@ def read_bothdraw_basic_runtime() -> dict[str, Any]:
         )
         reader = LuaJitReader(memory)
         data = _bothdraw_data_fields(reader, root)
-        info_items = _dictionary_items(reader, data.get("_BothInfoMap"))
-        if len(info_items) != 1:
-            raise FanxiuRuntimeMemoryError(
-                f"BothdrawMgr 当前活动实例不唯一：{sorted(str(key) for key in info_items)}"
-            )
-        activity_id, info = next(iter(info_items.items()))
+        activity_id, info = select_bothdraw_activity(
+            _dictionary_items(reader, data.get("_BothInfoMap")),
+            expected_activity_id,
+        )
         fields = _fields(reader, info)
         big_prize_items = _ordinary_big_prize_items(reader, fields)
         revenue_root, revenue_cache_hit, _environment = resolve_lua_global_manager_root(
@@ -1274,12 +1431,18 @@ def _read_bothdraw_cumulative_rewards_runtime_once(
     include_selected_big_reward: bool = True,
     visible_slot_count: int = _DEFAULT_CUMULATIVE_REWARD_VISIBLE_SLOT_COUNT,
     force_refresh_roots: bool = False,
+    expected_activity_id: int | None = None,
 ) -> dict[str, Any]:
     """Read exact cumulative-reward eligibility from loaded game models.
 
     ``include_selected_big_reward=False`` supports ordinary-pool Bothdraw
     variants: cumulative tiers and wallet facts remain authoritative even
     though a selected optional reward does not exist.
+
+    ``expected_activity_id`` scopes every revenue/library lookup to the exact
+    target activity so multiple coexisting Bothdraw instances cannot lend each
+    other's ladder.  Omitting it keeps the legacy singleton contract.  The
+    target activity's cumulative page must already be loaded.
     """
 
     started_at = time.perf_counter()
@@ -1302,20 +1465,25 @@ def _read_bothdraw_cumulative_rewards_runtime_once(
         )
         reader = LuaJitReader(memory)
         bothdraw_data = _bothdraw_data_fields(reader, bothdraw_root)
-        info_items = _dictionary_items(reader, bothdraw_data.get("_BothInfoMap"))
-        if len(info_items) != 1:
-            raise FanxiuRuntimeMemoryError(
-                f"BothdrawMgr 当前活动实例不唯一：{sorted(str(key) for key in info_items)}"
-            )
-        activity_id, play = next(iter(info_items.items()))
+        activity_id, play = select_bothdraw_activity(
+            _dictionary_items(reader, bothdraw_data.get("_BothInfoMap")),
+            expected_activity_id,
+        )
         activity_id = int(activity_id)
         play_fields = _fields(reader, play)
         progress = int(play_fields.get("progress") or 0)
         if include_selected_big_reward:
             reward_items, reward_mapping_source, catalog_path = _reward_items_for_data(
-                reader, bothdraw_data
+                reader,
+                bothdraw_data,
+                expected_activity_id=expected_activity_id,
             )
-            lottery = _lottery_snapshot(reader, bothdraw_data, reward_items=reward_items)
+            lottery = _lottery_snapshot(
+                reader,
+                bothdraw_data,
+                reward_items=reward_items,
+                expected_activity_id=expected_activity_id,
+            )
             if int(lottery.get("activity_id") or 0) != activity_id:
                 raise FanxiuRuntimeMemoryError("BothdrawMgr 抽奖与累计奖励活动实例不一致")
         else:
@@ -1447,8 +1615,14 @@ def read_bothdraw_cumulative_rewards_runtime(
     *,
     include_selected_big_reward: bool = True,
     visible_slot_count: int = _DEFAULT_CUMULATIVE_REWARD_VISIBLE_SLOT_COUNT,
+    expected_activity_id: int | None = None,
 ) -> dict[str, Any]:
     """Read one coherent snapshot, cold-rebinding once after a stale Lua node.
+
+    Pass ``expected_activity_id`` when several Bothdraw activities coexist; the
+    snapshot is then scoped to that exact activity rather than requiring a
+    global singleton.  The target activity's cumulative page must already be
+    loaded.  Omitting the id preserves the legacy singleton contract.
 
     Bothdraw/Revenue child tables can be replaced when the activity switches
     between task, store and main pages.  Raw LuaRef addresses never survive a
@@ -1459,6 +1633,11 @@ def read_bothdraw_cumulative_rewards_runtime(
     snapshot = _read_bothdraw_cumulative_rewards_runtime_once(
         include_selected_big_reward=include_selected_big_reward,
         visible_slot_count=visible_slot_count,
+        **(
+            {"expected_activity_id": expected_activity_id}
+            if expected_activity_id is not None
+            else {}
+        ),
     )
     if (
         not snapshot.get("complete")
@@ -1468,6 +1647,11 @@ def read_bothdraw_cumulative_rewards_runtime(
             include_selected_big_reward=include_selected_big_reward,
             visible_slot_count=visible_slot_count,
             force_refresh_roots=True,
+            **(
+                {"expected_activity_id": expected_activity_id}
+                if expected_activity_id is not None
+                else {}
+            ),
         )
     return snapshot
 
@@ -1486,4 +1670,5 @@ __all__ = [
     "read_bothdraw_task_runtime",
     "read_bothdraw_revenue_task_runtime",
     "read_kunlun_first_row_runtime",
+    "select_bothdraw_activity",
 ]

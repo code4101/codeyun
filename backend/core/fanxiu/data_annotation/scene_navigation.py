@@ -55,10 +55,9 @@ def _landing_evidence(
 ) -> tuple[dict[int, int], float]:
     """Return the per-landing evidence table and its diluted total.
 
-    The frequency table is evidence, not truth.  One pseudo-observation is
-    reserved for a still-unknown landing, so a single hit is at most 50% likely
-    while ample evidence barely moves (315/560 → 56.1%).  Declared-but-never-
-    observed landings stay at zero: an unproven destination earns no mass.
+    Declared destinations receive at least one effective observation. These
+    pseudo-counts are calculation-only; real observations are never changed.
+    ``alpha`` reserves mass for an unknown landing.
     """
 
     declared = {int(item) for item in declared_landing_ids}
@@ -69,8 +68,9 @@ def _landing_evidence(
     outcomes = declared | set(observed)
     if not outcomes:
         return {}, 0.0
-    table = {scene_id: observed.get(scene_id, 0) for scene_id in outcomes}
-    evidence = float(sum(observed.values())) + max(0.0, float(alpha))
+    table = {scene_id: max(1 if scene_id in declared else 0, observed.get(scene_id, 0))
+             for scene_id in outcomes}
+    evidence = float(sum(table.values())) + max(0.0, float(alpha))
     return table, evidence
 
 
@@ -105,18 +105,18 @@ def posterior_landing_probabilities(
     alpha: float = 1.0,
     confidence_z: float = 0.0,
 ) -> dict[int, float]:
-    """Return the diluted, optionally confidence-floored landing probabilities.
+    """Compute landing weights with a minimum effective count of one per declaration.
 
-    Omitted probability mass belongs to one still-unknown landing, which is
-    what keeps a single observation from looking like a proven route.  Passing
-    ``confidence_z > 0`` additionally subtracts each landing's observation
-    error (normal approximation), so diffuse controls — a return button that
-    lands wherever the caller came from — collapse without being classified or
-    special-cased by name.
+    Real positive counts remain unchanged; declared zero/missing counts receive
+    one calculation-only pseudo-count, including when other landings have been
+    observed. Unknown landings reserve ``alpha`` mass. Observation uncertainty
+    discounts only real observations, never the unobserved declaration prior.
+    Inputs and persisted jump frequencies are never mutated.
     """
 
+    declared_ids = list(dict.fromkeys(int(item) for item in declared_landing_ids))
     table, evidence = _landing_evidence(
-        observed_counts, declared_landing_ids, alpha,
+        observed_counts, declared_ids, alpha,
     )
     if evidence <= 0:
         return {}
@@ -127,7 +127,7 @@ def posterior_landing_probabilities(
         return probabilities
     z = float(confidence_z)
     return {
-        scene_id: max(
+        scene_id: probability if scene_id in declared_ids and observed_counts.get(scene_id, 0) <= 0 else max(
             0.0,
             probability
             - z * (max(0.0, probability * (1.0 - probability)) / evidence) ** 0.5,

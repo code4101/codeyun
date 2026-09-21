@@ -71,8 +71,12 @@ def run_basic_attribute_collection(
     def effects_map(effects):
         return {e['cleanse_id']: (e['value'], e['quality'], e['locked']) for e in effects}
 
-    def counts():
-        values, state = read_backpack_item_counts([_MATERIAL_ID], manager_key='spirit-artifact-basic')
+    def counts(*, force_refresh: bool = False):
+        values, state = read_backpack_item_counts(
+            [_MATERIAL_ID],
+            manager_key='spirit-artifact-basic',
+            force_refresh=force_refresh,
+        )
         if (state['pid'], state['process_start_ticks']) != target.process_identity:
             raise RuntimeError('普通洗炼资源观察进程改变')
         return values[_MATERIAL_ID]
@@ -184,15 +188,34 @@ def run_basic_attribute_collection(
                     time.sleep(.5)
                 locked = {k: v for k, v in effects_map(before['effects']).items() if v[2]}
                 pending = effects_map(after['pending_effects'])
-                # 次数增加与完整新候选证明本轮完成；不以库存刷新时序再判一次扣减。
-                verified = (len(pending) == len(before['effects'])
+                # candidate_verified only proves this roll produced a complete new
+                # candidate; it is deliberately not an inventory-deduction claim.
+                candidate_verified = (len(pending) == len(before['effects'])
                     and after['refine_num'] == before['refine_num'] + 1
                     and effects_map(after['effects']) == effects_map(before['effects'])
                     and all(pending.get(k) == v for k, v in locked.items()))
+                # Separate evidence: read the real 14000002 stock once after the
+                # confirmed action. A failed read is diagnostic only and never
+                # replays or compensates the action; it also never overrides the
+                # candidate gate below.
+                inventory_after = None
+                observed_inventory_delta = None
+                consumption_verified = False
+                inventory_verification_error = None
+                try:
+                    inventory_after = counts(force_refresh=True)
+                    observed_inventory_delta = int(owned) - int(inventory_after)
+                    consumption_verified = observed_inventory_delta == int(cost)
+                except Exception as inventory_error:
+                    inventory_verification_error = repr(inventory_error)
                 record('wash_result', roll_index=rolls+1, before=before, after=after,
                     cost=cost, inventory_before=owned,
-                    consumption_verified=verified)
-                if not verified:
+                    candidate_verified=candidate_verified,
+                    inventory_after=inventory_after,
+                    observed_inventory_delta=observed_inventory_delta,
+                    inventory_verification_error=inventory_verification_error,
+                    consumption_verified=consumption_verified)
+                if not candidate_verified:
                     raise RuntimeError('普通洗炼候选后置验证不符')
             except Exception as exc:
                 record('unverified_consumption', before=before, after=after,

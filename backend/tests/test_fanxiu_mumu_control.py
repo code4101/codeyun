@@ -1172,6 +1172,67 @@ def test_mumu_device_health_reports_starting_before_android_started(monkeypatch)
     assert result["status"] == "starting"
 
 
+def test_mumu_device_health_manager_started_but_adb_unreachable_is_broken(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    with mumu._MUMU_DEVICE_HEALTH_LOCK:
+        mumu._mumu_device_health_state["failure_count"] = 2
+    mumu._clear_mumu_adb_failure_cache()
+    mumu._set_mumu_adb_failure_cache("ADB 端口不可用：127.0.0.1:7555: timed out")
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", lambda vmindex="1": None)
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_manager_player_info",
+        lambda vmindex="1": {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "0.0.0.0",
+            "adb_port": 5555,
+            "pid": 76700,
+        },
+    )
+
+    result = mumu.mumu_device_health_check(force=True)
+
+    assert result["status"] == "broken"
+    assert result["last_error"] == "Android已启动但ADB端点不可达"
+    assert result["failure_count"] == 2
+    assert mumu._get_mumu_adb_failure_cache() is not None
+
+
+def test_mumu_device_health_adb_observation_clears_failure_state(monkeypatch):
+    mumu.reset_mumu_device_health_state()
+    with mumu._MUMU_DEVICE_HEALTH_LOCK:
+        mumu._mumu_device_health_state["failure_count"] = 3
+    mumu._clear_mumu_adb_failure_cache()
+    mumu._set_mumu_adb_failure_cache("ADB 端口不可用：127.0.0.1:7555: timed out")
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_adb_health_info",
+        lambda vmindex="1": {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": 7555,
+            "health_source": "adb_socket",
+        },
+    )
+    monkeypatch.setattr(
+        mumu,
+        "_mumu_manager_player_info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("healthy ADB must bypass MuMuManager")),
+    )
+
+    result = mumu.mumu_device_health_check(force=True)
+
+    assert result["status"] == "healthy"
+    assert result["failure_count"] == 0
+    assert mumu._get_mumu_adb_failure_cache() is None
+
+
 def test_mumu_manager_launch_uses_windows_task_scheduler_broker(monkeypatch):
     calls = []
     monkeypatch.setattr(mumu, "_mumu_manager_path", lambda: Path("MuMuManager.exe"))
@@ -1411,6 +1472,19 @@ def test_recover_mumu_device_does_not_cooldown_when_already_healthy(monkeypatch)
     monkeypatch.setattr(mumu, "_mumu_manager_control", lambda *args, **kwargs: controls.append((args, kwargs)) or {})
     monkeypatch.setattr(
         mumu,
+        "_mumu_adb_health_info",
+        lambda vmindex="1": {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": 7555,
+            "health_source": "adb_socket",
+        },
+    )
+    monkeypatch.setattr(
+        mumu,
         "_mumu_manager_player_info",
         lambda vmindex="1": {
             "index": str(vmindex),
@@ -1486,6 +1560,23 @@ def test_recover_mumu_device_allows_stopped_instance_after_short_cooldown(monkey
     controls = []
     lifecycle = []
     checks = {"count": 0}
+    adb_calls = {"count": 0}
+
+    def fake_adb_health_info(vmindex="1"):
+        adb_calls["count"] += 1
+        if adb_calls["count"] == 1:
+            return None
+        return {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": 7555,
+            "health_source": "adb_socket",
+        }
+
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", fake_adb_health_info)
 
     def fake_player_info(vmindex="1"):
         checks["count"] += 1
@@ -1571,6 +1662,19 @@ def test_force_restart_cleans_target_process_after_manager_shutdown(monkeypatch,
     checks = {"count": 0}
     controls = []
     cleaned = []
+
+    def fake_adb_health_info(vmindex="1"):
+        return {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": 7555,
+            "health_source": "adb_socket",
+        }
+
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", fake_adb_health_info)
 
     def fake_player_info(vmindex="1"):
         checks["count"] += 1
@@ -1667,6 +1771,23 @@ def test_recover_mumu_device_records_resolution_check(monkeypatch, tmp_path):
     monkeypatch.setenv(mumu.MUMU_DEVICE_AUTO_RECOVERY_ENV, "1")
     monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: tmp_path / "recovery_state.json")
     checks = {"count": 0}
+    adb_calls = {"count": 0}
+
+    def fake_adb_health_info(vmindex="1"):
+        adb_calls["count"] += 1
+        if adb_calls["count"] == 1:
+            return None
+        return {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": 7555,
+            "health_source": "adb_socket",
+        }
+
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", fake_adb_health_info)
 
     def fake_player_info(vmindex="1"):
         checks["count"] += 1
@@ -1717,6 +1838,23 @@ def test_recover_mumu_device_rejects_process_healthy_when_frame_stays_black(monk
     monkeypatch.setenv(mumu.MUMU_DEVICE_AUTO_RECOVERY_ENV, "1")
     monkeypatch.setattr(mumu, "_mumu_device_recovery_state_path", lambda: tmp_path / "recovery_state.json")
     checks = {"count": 0}
+    adb_calls = {"count": 0}
+
+    def fake_adb_health_info(vmindex="1"):
+        adb_calls["count"] += 1
+        if adb_calls["count"] == 1:
+            return None
+        return {
+            "index": str(vmindex),
+            "is_process_started": True,
+            "is_android_started": True,
+            "player_state": "start_finished",
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": 7555,
+            "health_source": "adb_socket",
+        }
+
+    monkeypatch.setattr(mumu, "_mumu_adb_health_info", fake_adb_health_info)
 
     def fake_player_info(vmindex="1"):
         checks["count"] += 1

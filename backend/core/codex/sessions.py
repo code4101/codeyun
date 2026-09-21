@@ -49,6 +49,7 @@ _CODEX_DAILY_SUMMARY_USER_TEXT_LIMIT = 320
 _CODEX_DAILY_SUMMARY_ASSISTANT_TEXT_LIMIT = 320
 _CODEX_DAILY_SUMMARY_PROCESS_TEXT_LIMIT = 180
 _CODEX_DAILY_SUMMARY_IGNORED_THREAD_PATTERNS = (
+    re.compile(r"^The following is the Codex agent history (?:whose request action|added since your last approval assessment)", re.IGNORECASE),
     re.compile(r"\bmemory\s+writing\s+agent\b", re.IGNORECASE),
     re.compile(r"\bcodex-cli-workspace\b", re.IGNORECASE),
     re.compile(r"通过\s+CodeYun\s+调用本机\s+Codex\s+CLI", re.IGNORECASE),
@@ -1646,7 +1647,7 @@ def _clean_daily_summary_text(text: str | None, *, limit: int | None = None) -> 
         return ""
 
     lines = normalized_text.split("\n")
-    request_heading_pattern = re.compile(r"^#+\s*My request for Codex:\s*(.*)$", re.IGNORECASE)
+    request_heading_pattern = re.compile(r"^#+\s*My request(?: for Codex)?:\s*(.*)$", re.IGNORECASE)
     request_line_index = next(
         (index for index, line in enumerate(lines) if request_heading_pattern.match(line.strip())),
         -1,
@@ -1658,6 +1659,13 @@ def _clean_daily_summary_text(text: str | None, *, limit: int | None = None) -> 
         remaining_text = "\n".join(lines[request_line_index + 1 :]).strip()
         preferred_text = "\n".join(part for part in (inline_text, remaining_text) if part).strip() or normalized_text
 
+    # Editor/runtime envelopes are context, not the user's business request.
+    # Remove only known wrappers; retain real text following them.
+    preferred_text = re.sub(
+        r"<(recommended_plugins|environment_context|codex_internal_context|in-app-browser-context)\b[^>]*>.*?</\1>",
+        " ", preferred_text, flags=re.DOTALL | re.IGNORECASE,
+    )
+    preferred_text = re.sub(r"# AGENTS\.md instructions\b.*?</INSTRUCTIONS>", " ", preferred_text, flags=re.DOTALL | re.IGNORECASE)
     cleaned_text = re.sub(r"<image>[\s\S]*?</image>", " ", preferred_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r"</?image>", " ", cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()
@@ -2010,6 +2018,10 @@ def _collect_codex_daily_summary_source_from_context(
             continue
 
         thread = _serialize_cached_thread_row(thread_row)
+        # A turn can remain open overnight. Daily reports own only its overlap
+        # with this local calendar day, never the later completion or answer.
+        start_at = max(float(turn_row.start_at), day_start_at)
+        end_at = min(float(turn_row.end_at), day_end_at)
         thread_messages = messages_by_thread.get(turn_row.thread_id, [])
         user_message = next((row for row in thread_messages if row.seq == turn_row.user_seq), None)
         assistant_messages = (
@@ -2017,6 +2029,11 @@ def _collect_codex_daily_summary_source_from_context(
                 row
                 for row in thread_messages
                 if row.seq > turn_row.user_seq and row.seq <= int(turn_row.assistant_seq)
+                and (
+                    day_start_at <= message_at < day_end_at
+                    if (message_at := _parse_timestamp_seconds(row.timestamp)) is not None
+                    else day_start_at <= turn_row.start_at and turn_row.end_at < day_end_at
+                )
             ]
             if turn_row.assistant_seq is not None
             else []
@@ -2061,14 +2078,22 @@ def _collect_codex_daily_summary_source_from_context(
                 "thread_title": thread_title,
                 "project_label": project_label,
                 "time_range": (
-                    f"{_format_local_summary_datetime(turn_row.start_at, timezone)}"
-                    f" ~ {_format_local_summary_datetime(turn_row.end_at, timezone)}"
+                    f"{_format_local_summary_datetime(start_at, timezone)}"
+                    f" ~ {_format_local_summary_datetime(end_at, timezone)}"
                 ),
                 "user_request": user_request or "未记录",
                 "assistant_result": assistant_result,
+                # Diary synthesis needs the conclusions after the compact preview.
+                "user_request_full": _clean_daily_summary_text(
+                    user_message.text if user_message is not None else turn_row.preview,
+                ),
+                "assistant_result_full": _clean_daily_summary_text(
+                    final_assistant_message.text if final_assistant_message is not None else "",
+                ),
                 "assistant_process": assistant_process,
-                "start_at": float(turn_row.start_at),
-                "end_at": float(turn_row.end_at),
+                "start_at": start_at,
+                "end_at": end_at,
+                "duration_seconds": end_at - start_at,
             }
         )
 
@@ -2080,8 +2105,8 @@ def _collect_codex_daily_summary_source_from_context(
                 "project_label": thread["project_label"],
                 "project_secondary_label": thread.get("project_secondary_label"),
                 "workspace_root": thread.get("workspace_root"),
-                "start_at": float(turn_row.start_at),
-                "end_at": float(turn_row.end_at),
+                "start_at": start_at,
+                "end_at": end_at,
                 "turn_count": 0,
                 "user_message_count": 0,
                 "assistant_message_count": 0,
@@ -2089,8 +2114,8 @@ def _collect_codex_daily_summary_source_from_context(
             }
             thread_aggregates[turn_row.thread_id] = aggregate
 
-        aggregate["start_at"] = min(float(aggregate["start_at"]), float(turn_row.start_at))
-        aggregate["end_at"] = max(float(aggregate["end_at"]), float(turn_row.end_at))
+        aggregate["start_at"] = min(float(aggregate["start_at"]), start_at)
+        aggregate["end_at"] = max(float(aggregate["end_at"]), end_at)
         aggregate["turn_count"] += 1
         aggregate["user_message_count"] += 1 if user_request else 0
         aggregate["assistant_message_count"] += len(assistant_messages)

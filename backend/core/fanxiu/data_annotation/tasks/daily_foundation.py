@@ -75,6 +75,14 @@ from backend.core.fanxiu.data_annotation.tasks.daily_boss_scan import (
     daily_boss_list_page_fingerprint as _daily_boss_list_page_fingerprint,
     daily_boss_scan_bound_reason as _daily_boss_scan_bound_reason,
 )
+from backend.core.fanxiu.data_annotation.tasks.daily_boss_cd_wait import (
+    DAILY_BOSS_CD_LEAD_SECONDS,
+    DAILY_BOSS_CD_MIN_RECHECK_SECONDS,
+    DAILY_BOSS_CD_UNREADABLE_TIMEOUT_SECONDS,
+    DAILY_BOSS_CD_WAIT_CAP_SECONDS,
+    daily_boss_cd_early_recheck_seconds,
+    daily_boss_cd_wait_decision,
+)
 from backend.core.fanxiu.data_annotation.tasks.xianyuan_reentry import (
     DAILY_XIANYUAN_REENTRY_REQUESTED,
     DAILY_XIANYUAN_SHARED_DEADLINE_KEY,
@@ -435,6 +443,15 @@ _DONGTIAN_PLACE_ANCHORS: tuple[str, ...] = tuple(
 )
 
 
+def _daily_boss_cd_seconds_from_text(text: Any) -> int | None:
+    """Parse a watched-boss refresh countdown from OCR text without guessing."""
+
+    seconds = _parse_daily_boss_cd_seconds_from_six_digits(text)
+    if seconds is None:
+        seconds = _parse_daily_boss_cd_seconds(text)
+    return seconds
+
+
 class DailyFoundationTaskMixin:
     @staticmethod
     def _daily_window_admission(
@@ -563,6 +580,49 @@ class DailyFoundationTaskMixin:
         return next_at.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
     def weekly_activity_flow(self, context: Any):
+        def read_reward_layout(frame: str):
+            """Read the #402 reward rail over bounded fresh frames.
+
+            页签切换、横向滚动和点击档位之后，奖励轨道都有自己的入场/惯性
+            动画：某一帧可能只渲染出部分档位标签，直接判定"标签不完整"会把
+            瞬态动画当成资产缺陷（2026-09-18 真实失败：只读到 [1200]）。
+            这里只对"标签不足"这类瞬态结果重取帧，越界、重复档位等结构性
+            异常仍然立即失败，保持原有的失败关闭语义。
+            """
+
+            transient_markers = (
+                "未识别到奖励轨道档位标签",
+                "档位标签不完整或顺序异常",
+            )
+            attempts = 4
+            last_error: RuntimeError | None = None
+            current_frame = frame
+            for attempt in range(attempts):
+                try:
+                    layout = weekly_activity_reward_layout_from_ocr(
+                        context.full_frame_ocr_tokens(current_frame),
+                        frame_width=900,
+                        frame_height=1600,
+                    )
+                    # 档位状态是在同一帧上按投影点取色的，必须把实际用于
+                    # 投影的那一帧一起交回调用方，避免用旧帧判色。
+                    return layout, current_frame
+                except RuntimeError as exc:
+                    if not any(marker in str(exc) for marker in transient_markers):
+                        raise
+                    last_error = exc
+                    if attempt + 1 >= attempts:
+                        break
+                    self._log(
+                        "detail",
+                        f"周常_活跃度：奖励轨道标签尚未渲染完整，重新取帧复核"
+                        f"（第 {attempt + 1} 次）",
+                    )
+                    yield from context.wait_action_settle(0.8)
+                    current_frame = context.cur_frame(update=True)
+            assert last_error is not None
+            raise last_error
+
         yield from context.go_scene(69)
         context.click_shape_center(69, "周常")
         yield from context.wait_action_settle(float(context.payload.get("weekly_tab_settle_seconds") or 1.5))
@@ -623,11 +683,7 @@ class DailyFoundationTaskMixin:
                 "current_scene": 34,
             }
 
-        reward_layout = weekly_activity_reward_layout_from_ocr(
-            context.full_frame_ocr_tokens(frame),
-            frame_width=900,
-            frame_height=1600,
-        )
+        reward_layout, frame = yield from read_reward_layout(frame)
         reward_states = detect_weekly_activity_reward_states(frame, reward_layout)
         runtime_snapshot = read_weekly_activity_runtime_snapshot()
         if runtime_snapshot.get("complete") is not True:
@@ -707,11 +763,7 @@ class DailyFoundationTaskMixin:
                 context.drag_frame_point(402, 760, 350, 260, 350, duration_ms=1000)
                 yield from context.wait_action_settle(0.8)
                 final_frame = yield from confirm_reward_scene(action_label="横向滚动")
-                reward_layout = weekly_activity_reward_layout_from_ocr(
-                    context.full_frame_ocr_tokens(final_frame),
-                    frame_width=900,
-                    frame_height=1600,
-                )
+                reward_layout, final_frame = yield from read_reward_layout(final_frame)
                 reward_states = detect_weekly_activity_reward_states(final_frame, reward_layout)
                 scroll_attempts += 1
                 if set(reward_states) == before_visible:
@@ -728,11 +780,7 @@ class DailyFoundationTaskMixin:
                 after_frame = yield from confirm_reward_scene(
                     action_label=f"点击 {milestone} 档",
                 )
-                after_layout = weekly_activity_reward_layout_from_ocr(
-                    context.full_frame_ocr_tokens(after_frame),
-                    frame_width=900,
-                    frame_height=1600,
-                )
+                after_layout, after_frame = yield from read_reward_layout(after_frame)
                 if milestone not in after_layout:
                     raise RuntimeError(f"周常_活跃度：点击 {milestone} 档后该档已离开可见轨道，无法复验")
                 after_states = detect_weekly_activity_reward_states(after_frame, after_layout)
@@ -1403,38 +1451,152 @@ class DailyFoundationTaskMixin:
         refresh_text = context.read_floating_item_field(item, "刷新时间", frame_data_url=frame_data_url, padding=12)
         if not re.search(r"刷新|时间", _sanitize_ocr_text(refresh_text)):
             return "ready"
-        timeout_seconds = float(payload.get("cd_ocr_timeout_seconds") or 30.0)
-        deadline = time.monotonic() + max(0.0, timeout_seconds)
+
+        lead_seconds = self._payload_int(
+            payload,
+            "daily_boss_cd_lead_seconds",
+            default=DAILY_BOSS_CD_LEAD_SECONDS,
+        )
+        wait_cap_seconds = max(
+            0.0,
+            min(DAILY_BOSS_CD_WAIT_CAP_SECONDS, float(
+                payload.get("daily_boss_cd_wait_cap_seconds")
+                or DAILY_BOSS_CD_WAIT_CAP_SECONDS
+            )),
+        )
+        unreadable_timeout_seconds = max(
+            0.0,
+            float(
+                payload.get("cd_ocr_timeout_seconds")
+                or DAILY_BOSS_CD_UNREADABLE_TIMEOUT_SECONDS
+            ),
+        )
+
         last_text = refresh_text
+        last_frame_has_content = True
+        initial_cd = _daily_boss_cd_seconds_from_text(last_text)
+        if initial_cd is not None and initial_cd > lead_seconds:
+            # A countdown still lies beyond the lead window: schedule the next
+            # check ``lead_seconds`` early so the follow-up run arrives inside
+            # the bounded in-list wait instead of naturally landing after the
+            # refresh.  Otherwise the caller keeps its return-to-world flow.
+            next_time = self._record_daily_boss_recheck_time(
+                payload,
+                seconds=daily_boss_cd_early_recheck_seconds(
+                    initial_cd,
+                    lead_seconds=lead_seconds,
+                ),
+            )
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"日常_首领：注视中首领处于刷新 CD，{last_text}，下次 {next_time}",
+                    phase="daily_boss_list_cd",
+                    current_scene=178,
+                )
+                self._log_locked("skip", self._status["message"])
+            return "skipped"
+
+        wait_started = time.monotonic()
+        unreadable_started = None if initial_cd is not None else wait_started
+        missing_streak = 0
         while True:
             self._raise_if_stopped(stop_event)
-            cd_seconds = _parse_daily_boss_cd_seconds_from_six_digits(last_text)
-            if cd_seconds is not None:
-                next_time = self._record_daily_boss_recheck_time(payload, seconds=cd_seconds + 10)
+            wait_elapsed = time.monotonic() - wait_started
+            unreadable_elapsed = (
+                None
+                if unreadable_started is None
+                else time.monotonic() - unreadable_started
+            )
+            identifier_present = bool(
+                re.search(r"刷新|时间", _sanitize_ocr_text(last_text))
+            )
+            parsed_cd = _daily_boss_cd_seconds_from_text(last_text)
+            if identifier_present:
+                missing_streak = 0
+                if parsed_cd is not None:
+                    unreadable_started = None
+                elif unreadable_started is None:
+                    unreadable_started = time.monotonic()
+            elif last_frame_has_content:
+                missing_streak += 1
+            else:
+                # A blank/failed OCR frame must never be mistaken for a real
+                # disappearance of the refresh field.
+                missing_streak = 0
+            action, seconds = daily_boss_cd_wait_decision(
+                refresh_identifier_present=identifier_present,
+                missing_refresh_streak=missing_streak,
+                cd_seconds=parsed_cd,
+                wait_elapsed_seconds=wait_elapsed,
+                unreadable_elapsed_seconds=unreadable_elapsed,
+                wait_cap_seconds=wait_cap_seconds,
+                unreadable_timeout_seconds=unreadable_timeout_seconds,
+                lead_seconds=lead_seconds,
+            )
+            if action == "ready":
                 with self._lock:
                     self._set_status_locked(
                         "running",
-                        f"日常_首领：注视中首领处于刷新 CD，{last_text}，下次 {next_time}",
-                        phase="daily_boss_list_cd",
+                        "日常_首领：注视中首领刷新标识已在列表内确认消失，继续挑战",
+                        phase="daily_boss_list_cd_ready",
+                        current_scene=178,
+                    )
+                    self._log_locked("success", self._status["message"])
+                return "ready"
+            if action in {"recheck_early", "recheck_unreadable", "recheck_floor"}:
+                next_time = self._record_daily_boss_recheck_time(
+                    payload,
+                    seconds=int(seconds or DAILY_BOSS_CD_MIN_RECHECK_SECONDS),
+                )
+                if action == "recheck_unreadable":
+                    message = (
+                        "日常_首领：注视中条目有刷新时间但 30 秒未读到 6 位 CD，"
+                        f"{last_text}，下次 {next_time}"
+                    )
+                    phase = "daily_boss_list_cd_unreadable"
+                elif action == "recheck_floor":
+                    message = (
+                        "日常_首领：列表内等待到达 "
+                        f"{int(wait_cap_seconds)} 秒且未读到刷新 CD，"
+                        f"{last_text}，下次 {next_time}"
+                    )
+                    phase = "daily_boss_list_cd"
+                else:
+                    message = (
+                        f"日常_首领：注视中首领仍在刷新 CD，{last_text}，下次 {next_time}"
+                    )
+                    phase = "daily_boss_list_cd"
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        message,
+                        phase=phase,
                         current_scene=178,
                     )
                     self._log_locked("skip", self._status["message"])
                 return "skipped"
-            if time.monotonic() >= deadline:
-                next_time = self._record_daily_boss_recheck_time(payload, seconds=1800)
-                with self._lock:
-                    self._set_status_locked(
-                        "running",
-                        f"日常_首领：注视中条目有刷新时间但 30 秒未读到 6 位 CD，{last_text}，下次 {next_time}",
-                        phase="daily_boss_list_cd_unreadable",
-                        current_scene=178,
-                    )
-                    self._log_locked("skip", self._status["message"])
-                return "skipped"
+            # Stay in the list, but never renew the absolute budget: the cap is
+            # anchored to ``wait_started``.  Read the same item from a freshly
+            # captured frame every round.
             yield BehaviorTreeStatus.RUNNING
-            if stop_event.wait(1.0):
-                self._raise_if_stopped(stop_event)
-            last_text = context.read_floating_item_field(item, "刷新时间", padding=12)
+            yield from context.wait_action_settle(2.5)
+            context.clear_frame()
+            match = yield from context.wait_scene(
+                [178], wait=5.0, label="日常_首领：列表内等待刷新"
+            )
+            if match.scene_id != 178:
+                raise RuntimeError("日常_首领：等待刷新时已离开首领列表，保留现场")
+            frame = match.frame_data_url or context.cur_frame(update=True)
+            last_text = context.read_floating_item_field(
+                item,
+                "刷新时间",
+                frame_data_url=frame,
+                padding=12,
+            )
+            last_frame_has_content = bool(frame) and bool(
+                re.sub(r"\s+", "", context.ocr_text(frame))
+            )
 
     def _wait_daily_boss_list(
         self,
@@ -1506,6 +1668,18 @@ class DailyFoundationTaskMixin:
                 )
                 self._log_locked("success", self._status["message"])
             yield from self._return_daily_boss_to_world(ctx, stop_event)
+            # Navigation status text ("等待场景") would otherwise overwrite the
+            # business conclusion.  Restore the terminal message after the
+            # successfully returned trip so the Scheduler last_message reports
+            # "次数用尽" instead of a scene wait.
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    f"日常_首领：今日奖励次数已用尽，下次 {next_time}",
+                    phase="daily_boss_no_reward_detail",
+                    current_scene=34,
+                )
+                self._log_locked("success", self._status["message"])
             return "success"
 
         cd_seconds = _parse_daily_boss_cd_seconds(detail_text)
@@ -1513,6 +1687,21 @@ class DailyFoundationTaskMixin:
             next_time = self._record_daily_boss_recheck_time(payload, seconds=max(60, cd_seconds))
             self._log("skip", f"日常_首领：首领详情仍在 CD，{cd_seconds}s 后复查，下次 {next_time}")
             yield from self._return_daily_boss_to_world(ctx, stop_event)
+            # Preserve this run's deferral semantics after the trip home.  The
+            # remaining count is taken from this frame only (unknown stays
+            # unknown); CD seconds and next_time describe a recheck, not a
+            # completion, and must survive the navigation status write.
+            remaining_text = "未知" if remaining is None else str(int(remaining))
+            with self._lock:
+                self._set_status_locked(
+                    "running",
+                    "日常_首领：首领仍在冷却，本次未完成，等待复查；"
+                    f"剩余奖励次数 {remaining_text}，冷却 {int(cd_seconds)}s，"
+                    f"下次复查 {next_time}",
+                    phase="daily_boss_cooldown",
+                    current_scene=34,
+                )
+                self._log_locked("skip", self._status["message"])
             return "skipped"
 
         view179 = context.get_view(179)
@@ -1567,11 +1756,20 @@ class DailyFoundationTaskMixin:
                 self._raise_if_stopped(stop_event)
             scene_id, score, frame, _text = yield from self._behavior_tree_context_scene_text(ctx, context, update=True)
             if scene_id == 181:
+                self._log(
+                    "detail",
+                    "首领结算判据：scene=181 场景终态直接判定本轮完成（来源=场景编号）",
+                )
                 return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
             if scene_id == 180:
                 saw_fighting = True
                 current_text = self._daily_boss_status_text_from_frame(ctx, frame)
                 if self._daily_boss_done_text(current_text):
+                    self._log(
+                        "detail",
+                        "首领结算判据："
+                        f"scene={scene_id} text={current_text[:300]}",
+                    )
                     return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
                 with self._lock:
                     self._set_status_locked(
@@ -1584,6 +1782,11 @@ class DailyFoundationTaskMixin:
                 continue
             current_text = self._daily_boss_status_text_from_frame(ctx, frame)
             if self._daily_boss_done_text(current_text):
+                self._log(
+                    "detail",
+                    "首领结算判据："
+                    f"scene={scene_id} text={current_text[:300]}",
+                )
                 return (yield from self._finish_daily_boss_round_after_done(ctx, context, stop_event, payload))
             probe_now = time.monotonic()
             runtime_snapshot = (
@@ -1599,6 +1802,10 @@ class DailyFoundationTaskMixin:
                     "日常_首领：战后只读 Runtime 探针 "
                     f"complete={runtime_snapshot.get('complete') is True} "
                     f"remaining={runtime_snapshot.get('reward_remaining')} "
+                    f"big_boss_reward_remaining={runtime_snapshot.get('big_boss_reward_remaining')} "
+                    f"kill_reward_remaining={runtime_snapshot.get('kill_reward_remaining')} "
+                    f"big_boss_dead={runtime_snapshot.get('big_boss_dead')} "
+                    f"normal_boss_alive_count={runtime_snapshot.get('normal_boss_alive_count')} "
                     f"elapsed={float(runtime_snapshot.get('elapsed_seconds') or 0.0):.2f}s",
                 )
             runtime_remaining = (
@@ -1655,6 +1862,17 @@ class DailyFoundationTaskMixin:
                     label="日常_首领",
                     repeat_risk="重复挑战",
                 )
+                # Same normal-cleanup overwrite as the done branch: restore this
+                # branch's verified runtime-delta message/phase, keeping the
+                # post-cleanup scene.
+                with self._lock:
+                    self._set_status_locked(
+                        "running",
+                        f"日常_首领：{source}，确认本轮已经结算；下次 {next_time}",
+                        phase="daily_boss_done_by_runtime_delta",
+                        current_scene=self._status.get("current_scene"),
+                    )
+                    self._log_locked(result if result == "success" else "skip", self._status["message"])
                 return result
             if self._daily_boss_combat_in_progress_text(current_text):
                 saw_fighting = True
@@ -1756,6 +1974,21 @@ class DailyFoundationTaskMixin:
             label="日常_首领",
             repeat_risk="重复挑战",
         )
+        # The trip home publishes transient navigation status ("读取场景及
+        # 文本/等待全局场景").  The safe-cleanup wrapper restores business status
+        # only when cleanup raises; after any normal cleanup it leaves that
+        # navigation text as the final last_message, hiding the verified
+        # conclusion.  Restore the already-computed done message, keeping the
+        # post-cleanup scene (the wrapper may have succeeded without reaching
+        # #34).
+        with self._lock:
+            self._set_status_locked(
+                "running",
+                f"日常_首领：本轮挑战已结束；{source}；下次 {next_time}",
+                phase="daily_boss_done",
+                current_scene=self._status.get("current_scene"),
+            )
+            self._log_locked(result, self._status["message"])
         return result
 
     def _leave_daily_boss_fighting_and_recheck_rewards(
@@ -8563,24 +8796,10 @@ class DailyFoundationTaskMixin:
                     scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
                         context, scene_id,
                     )
-        def require_seated_or_completed():
-            from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
-            facts = read_lundao_snapshot()
-            if not (facts.get("available") and facts.get("complete")
-                    and (facts.get("seated") is True or facts.get("completed") is True)):
-                raise RuntimeError("论道_座位：入座结果未成立，Runtime 未确认已入座或今日听道完成；保留现场")
-
         if scene_id in {53, 186, 69, 34}:
-            require_seated_or_completed()
+            self._require_daily_lundao_seated_or_completed()
         if scene_id == 52:
-            yield from context.wait_click_then_scene(52, "确认", wait_leave=True)
-            _wait_scene_match = yield from context.wait_scene([53, 69, 34, 85, 186, 52], wait=5.0, required=False)
-            (scene_id, score, frame_after) = (
-                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-            )
-            require_seated_or_completed()
-            text_after = context.ocr_text(frame_after)
+            scene_id, score, text_after = yield from self._confirm_daily_lundao_reward_scene(context)
             if self._daily_lundao_text_is_seated(text_after):
                 if scene_id == 53:
                     yield from self._leave_daily_lundao_seated_for_daily_entry(context, 53)
@@ -8798,6 +9017,30 @@ class DailyFoundationTaskMixin:
             f"#{scene_id if scene_id is not None else 'unknown'} {score:.0f}%"
         )
 
+    def _require_daily_lundao_seated_or_completed(self) -> None:
+        """Runtime 事实门禁：必须已入座或今日听道已完成，否则保留现场。"""
+        from backend.core.fanxiu.instrumentation.lundao import read_lundao_snapshot
+
+        facts = read_lundao_snapshot()
+        if not (facts.get("available") and facts.get("complete")
+                and (facts.get("seated") is True or facts.get("completed") is True)):
+            raise RuntimeError(
+                "论道_座位：入座结果未成立，Runtime 未确认已入座或今日听道完成；保留现场"
+            )
+
+    def _confirm_daily_lundao_reward_scene(self, context: Any):
+        """复用 #52 听道收益确认：点击「确认」后按 Runtime 事实门禁验收。"""
+        yield from context.wait_click_then_scene(52, "确认", wait_leave=True)
+        match = yield from context.wait_scene(
+            [53, 69, 34, 85, 186, 52], wait=5.0, required=False,
+        )
+        (scene_id, score, frame_after) = (
+            (match.scene_id, match.score, match.frame_data_url)
+            if match is not None else (None, 0.0, context.frame_data_url or "")
+        )
+        self._require_daily_lundao_seated_or_completed()
+        return scene_id, float(score or 0.0), context.ocr_text(frame_after)
+
     def _leave_daily_lundao_seated_for_daily_entry(self, context: Any, scene_id: int | None):
         from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 
@@ -8814,16 +9057,35 @@ class DailyFoundationTaskMixin:
                 ))
             except SceneClickMismatch:
                 # The server can confirm seated before the final character
-                # speech appears. The click guard prevents leaving through
-                # that speech; consume only a freshly identified dialogue.
-                match = yield from context.wait_scene([318, 303, 53], wait=5.0)
-                if match.scene_id not in {318, 303}:
+                # speech or the #52 reward confirmation appears. The click
+                # guard prevents leaving through those delayed frames; consume
+                # only a freshly identified dialogue or #52 confirmation and
+                # keep the original mismatch for every unknown scene.
+                match = yield from context.wait_scene([318, 303, 52], wait=5.0)
+                if match.scene_id == 52:
+                    landed = 52
+                elif match.scene_id in {318, 303}:
+                    result = yield from self._advance_daily_lundao_kick_dialogue(
+                        context, start_scene=match.scene_id,
+                    )
+                    landed = int(result['scene_id'])
+                else:
                     raise
-                result = yield from self._advance_daily_lundao_kick_dialogue(
-                    context, start_scene=match.scene_id,
+                if landed == 52:
+                    landed, _score, _text = yield from self._confirm_daily_lundao_reward_scene(context)
+                if landed == 53:
+                    continue
+                if landed in {69, 34}:
+                    return "success"
+                if landed == 186:
+                    yield from self._leave_shared_scene_186_to_world(
+                        context, label="论道_座位", include_lundao_scene=True,
+                    )
+                    return "success"
+                raise RuntimeError(
+                    f"论道_座位：延迟对白或 #52 确认后未回到正式闻道页，"
+                    f"当前 #{landed if landed is not None else 'unknown'}，保留现场"
                 )
-                if result['scene_id'] != 53:
-                    raise RuntimeError(f"论道_座位：延迟对白后未回到正式闻道页：#{result['scene_id']}")
         raise RuntimeError('论道_座位：离场前连续出现延迟对白，保留现场')
 
     def _advance_daily_lundao_seat_confirmation(
@@ -10358,7 +10620,8 @@ class DailyFoundationTaskMixin:
             reason = str(snapshot.get("reason") or "Runtime 洞天字段不完整")
             raise RuntimeError(f"洞天_行动力：Runtime 快照不可用，等待模型修复：{reason}")
 
-        place_by_id = {index + 1: name for index, name in enumerate(_DONGTIAN_PLACE_ANCHORS)}
+        # Runtime already joins the sparse MinesPlace ID to its canonical
+        # name. A screen-order index is not a mine ID (9 is followed by 19).
         enemies: list[str] = []
         union_summary: list[tuple[int, str, str]] = []
         for mine in mines:
@@ -10367,7 +10630,9 @@ class DailyFoundationTaskMixin:
             mine_id = int(mine.get("id") or 0)
             union_id = int(mine.get("cross_union_id") or 0)
             union_name = str(mine.get("cross_union_name") or "").strip()
-            place = place_by_id.get(mine_id, "")
+            place = str(mine.get("config_name") or mine.get("name") or "").strip()
+            if not place:
+                raise RuntimeError(f"洞天_行动力：地点 {mine_id} 缺少 Runtime 配置名称")
             union_summary.append((mine_id, place, union_name))
             if not place or (union_id <= 0 and not union_name):
                 continue
@@ -10402,9 +10667,11 @@ class DailyFoundationTaskMixin:
         payload: dict[str, Any],
     ):
         expected_place = self._daily_dongtian_normalize_place_name(clicked_place)
+        from backend.core.fanxiu.instrumentation.dongtian import read_dongtian_place_catalog
         if expected_place not in {
-            self._daily_dongtian_normalize_place_name(item)
-            for item in _DONGTIAN_PLACE_ANCHORS
+            self._daily_dongtian_normalize_place_name(item["name"])
+            for item in read_dongtian_place_catalog()["places"]
+            if item["special_mines"] == 0
         }:
             raise RuntimeError(f"洞天_行动力：Runtime 授权了未知地点 {clicked_place!r}")
         landing = yield from context.wait_scene(
@@ -10568,9 +10835,17 @@ class DailyFoundationTaskMixin:
         A search may start at any prior scroll offset.  It therefore walks to
         one boundary and, if necessary, reverses toward the other boundary.
         This low-level locator grants no seating authority.  OCR is used only
-        for an exact normalized place identity; #341 remains the independent
+        for a canonical place identity (unique OCR edits also require current
+        geometry support); #341 remains the independent
         post-click assertion performed by the caller.
         """
+        from backend.core.fanxiu.data_annotation.dongtian_place_geometry import (
+            dongtian_geometry_scroll_direction,
+            estimate_dongtian_target_center,
+            dongtian_label_positions,
+        )
+        from backend.core.fanxiu.instrumentation.dongtian import _mines_place_static_config
+
         view279 = context.view(279)
         window_shape = context.shape(279, "窗口")
         if window_shape is None:
@@ -10592,11 +10867,12 @@ class DailyFoundationTaskMixin:
             for item in place_names
             if self._daily_dongtian_normalize_place_name(item)
         }
-        known_places = {
-            self._daily_dongtian_normalize_place_name(item)
-            for item in _DONGTIAN_PLACE_ANCHORS
-        }
-        unknown = sorted(set(normalized_targets) - known_places)
+        place_configs, _config_hash = _mines_place_static_config()
+        place_positions = dongtian_label_positions(list(place_configs.values()))
+        # MinesPlace is the single source of actual locations. The historical
+        # OCR-anchor tuple omits legitimate sites such as 莲舟矶 and must not
+        # reject a Runtime-selected mine before the shared locator can run.
+        unknown = sorted(set(normalized_targets) - set(place_positions))
         if unknown:
             raise RuntimeError(f"{task_label}：调用方传入未知地点 {unknown}")
 
@@ -10604,6 +10880,8 @@ class DailyFoundationTaskMixin:
         if not directions or any(item not in {"up", "down"} for item in directions):
             raise ValueError(f"洞天地点滚动方向非法：{scroll_directions!r}")
 
+        last_geometry_y: float | None = None
+        unchanged_geometry_steps = 0
         for direction_index, direction in enumerate(directions):
             for scroll_index in range(max_scrolls + 1):
                 self._raise_if_stopped(stop_event)
@@ -10615,7 +10893,10 @@ class DailyFoundationTaskMixin:
                     if hasattr(context, "ocr_tokens_in_shapes")
                     else []
                 )
-                matches: list[tuple[float, float, str, dict[str, Any], float, float]] = []
+                matches: list[tuple[float, float, str, dict[str, Any], float, float, float, float]] = []
+                geometry_lines = [line for line in lines if not point_in_box(
+                    float(line.get("x") or 0) + float(line.get("w") or 0) / 2,
+                    float(line.get("y") or 0) + float(line.get("h") or 0) / 2, roster_box)]
                 for line in lines:
                     for normalized, original in normalized_targets.items():
                         location_box = self._daily_dongtian_location_box(line, tokens, normalized)
@@ -10624,51 +10905,40 @@ class DailyFoundationTaskMixin:
 
                         location_center_x = float(location_box.get("x") or 0) + float(location_box.get("w") or 0) * 0.5
                         location_center_y = float(location_box.get("y") or 0) + float(location_box.get("h") or 0) * 0.5
+                        if self._daily_dongtian_normalize_place_name(line.get("text")) != normalized:
+                            predicted = estimate_dongtian_target_center(normalized, geometry_lines, place_positions, self._daily_dongtian_normalize_place_name)
+                            if predicted is None or max(abs(predicted[0] - location_center_x), abs(predicted[1] - location_center_y)) > 35:
+                                continue
                         click_point = self._daily_dongtian_location_click_point(location_box, window_box)
                         if click_point is None:
-                            # A title can be only partly visible at the top of the
-                            # scroll viewport.  Its historical "100 px above"
-                            # card hot spot then falls into the fixed header (the
-                            # real 2026-08-24 failure opened #340 rules).  Keep
-                            # scrolling until the same exact title has a hot spot
-                            # inside the authoritative list viewport.
+                            # Partially clipped labels must be revealed before
+                            # clicking; building offsets are not click targets.
                             continue
                         click_x, click_y = click_point
                         if point_in_box(location_center_x, location_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
                             continue
-                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y))
+                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y, location_center_x, location_center_y))
                         break
                 if matches:
-                    _y, _x, place, line, click_x, click_y = min(matches, key=lambda item: (item[0], item[1]))
+                    _y, _x, place, line, click_x, click_y, location_center_x, location_center_y = min(matches, key=lambda item: (item[0], item[1]))
                     normalized_clicked = self._daily_dongtian_normalize_place_name(place)
                     if normalized_clicked not in normalized_targets or normalized_targets[normalized_clicked] != place:
                         raise RuntimeError(f"{task_label}：地点名称内部一致性校验失败：place={place!r}")
                     if click_x <= 0 or click_y <= 0:
                         raise RuntimeError(f"{task_label}：地点「{place}」 OCR 坐标无效，line={line}")
-                    # The visible place title itself is the stable native card
-                    # target.  The old locator clicked a derived point 100 px
-                    # above it; on the current #279 layout that point is only
-                    # decorative building art and can stay inert indefinitely.
-                    # Keep the historical upper-card points as fallbacks for
-                    # older layouts, but prefer the exact OCR title centre.
+                    # Real #279 navigation verifies the label centre. Never
+                    # probe nearby building art after a failed transition.
                     click_candidates = [(location_center_x, location_center_y)]
-                    if (click_x, click_y) not in click_candidates:
-                        click_candidates.append((click_x, click_y))
-                    location_width = float(line.get("w") or 0)
-                    fallback_x = click_x - min(40.0, max(18.0, location_width * 0.25))
-                    if (
-                        point_in_box(fallback_x, click_y, window_box)
-                        and not point_in_box(fallback_x, click_y, roster_box)
-                    ):
-                        click_candidates.append((fallback_x, click_y))
                     successor_wait_seconds = float(
                         context.payload.get("place_click_successor_wait_seconds") or 20.0
                     )
                     for attempt, (candidate_x, candidate_y) in enumerate(click_candidates, start=1):
+                        if point_in_box(candidate_x, candidate_y, roster_box):
+                            continue
                         self._log(
                             "click",
                             f"{task_label}：调用方目标地点「{place}」，"
-                            f"点击同一 OCR 地点上方热区=({candidate_x:.0f},{candidate_y:.0f})"
+                            f"点击可见地点名称=({candidate_x:.0f},{candidate_y:.0f})"
                             f"，尝试 {attempt}/{len(click_candidates)}",
                         )
                         context.click_frame_point(279, candidate_x, candidate_y)
@@ -10708,9 +10978,44 @@ class DailyFoundationTaskMixin:
                     raise RuntimeError(f"{task_label}：地点「{place}」点击重试后仍停在 #279")
                 if scroll_index >= max_scrolls:
                     break
-                direction_text = "向下" if direction == "down" else "向上"
-                self._log("action", f"{task_label}：当前窗口未找到地点，{direction_text}滚动 {scroll_index + 1}/{max_scrolls}")
-                changed = yield from context.scroll_shape_content(view279, window_shape, direction=direction)
+                # The fixed roster repeats occupied place names. Those are
+                # NOT map anchors: mixing them into the fit invalidates its
+                # residuals and previously degraded navigation to blind scans.
+                geometry_lines = [
+                    line for line in lines
+                    if not point_in_box(
+                        float(line.get("x") or 0) + float(line.get("w") or 0) / 2,
+                        float(line.get("y") or 0) + float(line.get("h") or 0) / 2,
+                        roster_box,
+                    )
+                ]
+                estimates = [
+                    estimate_dongtian_target_center(name, geometry_lines, place_positions, self._daily_dongtian_normalize_place_name)
+                    for name in normalized_targets.values()
+                ]
+                estimates = [point for point in estimates if point is not None]
+                scroll_direction = direction
+                if len(estimates) == 1:
+                    predicted_x, predicted_y = estimates[0]
+                    if last_geometry_y is not None and abs(predicted_y - last_geometry_y) < 18:
+                        unchanged_geometry_steps += 1
+                    else:
+                        unchanged_geometry_steps = 0
+                    if unchanged_geometry_steps >= 2:
+                        raise RuntimeError(f"{task_label}：地图连续滚动后目标几何位置未变化，停止盲滚")
+                    guided = dongtian_geometry_scroll_direction(estimates[0], window_box, roster_box)
+                    scroll_direction = guided or direction
+                    if unchanged_geometry_steps == 1:
+                        scroll_direction = "up" if scroll_direction == "down" else "down"
+                    last_geometry_y = predicted_y
+                    self._log(
+                        "detail",
+                        f"{task_label}：当前帧几何推断目标=({predicted_x:.0f},{predicted_y:.0f})，"
+                        f"OCR 未安全露出；只用于调整滚动，不授权点击",
+                    )
+                direction_text = "向下" if scroll_direction == "down" else "向上"
+                self._log("action", f"{task_label}：当前窗口未安全识别目标，{direction_text}小幅滚动 {scroll_index + 1}/{max_scrolls}")
+                changed = yield from context.scroll_shape_content(view279, window_shape, direction=scroll_direction, ratio=0.2)
                 if not changed:
                     break
             if direction_index + 1 < len(directions):
@@ -10769,26 +11074,28 @@ class DailyFoundationTaskMixin:
 
     @staticmethod
     def _daily_dongtian_normalize_place_name(value: Any) -> str:
-        text = _sanitize_ocr_text(value)
-        text = re.sub(r"^\[(?:洞天|福地)\]", "", text).strip()
-        return re.sub(r"\s+", "", text)
+        from backend.core.fanxiu.data_annotation.dongtian_place_geometry import normalize_dongtian_place_name
+        return normalize_dongtian_place_name(_sanitize_ocr_text(value))
 
     @staticmethod
     def _daily_dongtian_location_click_point(
         location_box: Mapping[str, Any],
         window_box: Mapping[str, Any],
     ) -> tuple[float, float] | None:
-        """Return the native card hot spot only when it remains in #279's list."""
+        """Use the verified title centre only for a fully visible map label."""
 
         center_x = float(location_box.get("x") or 0) + float(location_box.get("w") or 0) * 0.5
         center_y = float(location_box.get("y") or 0) + float(location_box.get("h") or 0) * 0.5
-        click_x = center_x + 1.5
-        click_y = center_y - 100.0
+        click_x = center_x
+        click_y = center_y
         left = float(window_box.get("x") or 0)
         top = float(window_box.get("y") or 0)
         right = left + float(window_box.get("w") or 0)
         bottom = top + float(window_box.get("h") or 0)
-        if not (left <= click_x <= right and top <= click_y <= bottom):
+        half_width = float(location_box.get("w") or 0) / 2
+        half_height = float(location_box.get("h") or 0) / 2
+        if not (left <= click_x - half_width and click_x + half_width <= right
+                and top <= click_y - half_height and click_y + half_height <= bottom):
             return None
         return click_x, click_y
 
@@ -10811,8 +11118,12 @@ class DailyFoundationTaskMixin:
             return None
 
         if compact_location != compact_target:
-            return None
-        matched_text = compact_target
+            from backend.core.fanxiu.data_annotation.dongtian_place_geometry import resolve_dongtian_ocr_name
+            from backend.core.fanxiu.instrumentation.dongtian import read_dongtian_place_catalog
+            names = [self._daily_dongtian_normalize_place_name(p["name"]) for p in read_dongtian_place_catalog()["places"]]
+            if resolve_dongtian_ocr_name(compact_location, names) != compact_target:
+                return None
+        matched_text = compact_location
 
         line_id = line.get("line_id")
         line_tokens = [token for token in tokens if line_id is not None and token.get("parent_line_id") == line_id]

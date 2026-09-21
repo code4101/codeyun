@@ -1605,7 +1605,18 @@ def _cross_region_manager_roots(
     """Resolve global manager tables whose string key and hash table are split."""
 
     strings = tuple(sorted(set(int(value) for value in string_addresses)))
-    regions = _nearby_lua_heap_regions(memory, strings)
+    # 2026-09 客户端更新后，部分管理器的类名串和它的哈希表被分到了相隔
+    # 150MB+ 的两个匿名堆区。实测：LuaActivetaskMgr 的类表落在距离类名串
+    # 151MB 的 region（按距离排序第 40 位、累计 257MB），原来的 128MB 半径
+    # 加 256MB 上限恰好把它排除，于是冷发现永远失败、根缓存永远写不上。
+    # 同 region 搜索命中时不会走到这里，所以放宽只影响真正需要跨区兜底的
+    # 管理器；命中后根地址照常写入缓存，后续读取仍走快路径。
+    regions = _nearby_lua_heap_regions(
+        memory,
+        strings,
+        radius=512 * 1024 * 1024,
+        max_total_bytes=512 * 1024 * 1024,
+    )
     if not strings or not regions:
         return
     payloads: dict[MemoryRegion, bytes] = {}

@@ -16,6 +16,7 @@ from backend.core.fanxiu.instrumentation.ui_runtime_context import (
     active_ui_component_objects,
     read_ui_runtime_snapshot,
     read_ui_object_field,
+    read_ui_selected_tab_panel as _current_tab_panel,
 )
 
 
@@ -116,34 +117,6 @@ def _is_bothdraw_panel(context: UiRuntimeContext, address: int) -> bool:
         and toggle is not None
         and isinstance(use_ten, bool)
     )
-
-
-def _current_tab_panel(
-    context: UiRuntimeContext, host_address: int
-) -> tuple[int, int] | None:
-    """Return a host's selected tab panel using its bounded CDictionary slot."""
-
-    tab_group = table_ref(read_ui_object_field(context, host_address, "tabPanelGroup"))
-    if tab_group is None:
-        return None
-    current_index = as_int(read_ui_object_field(context, tab_group.address, "curTabIndex"))
-    panels = table_ref(read_ui_object_field(context, tab_group.address, "panelShowComps"))
-    panel_count = as_int(read_ui_object_field(context, panels.address, "count")) if panels else None
-    storage = table_ref(read_ui_object_field(context, panels.address, "_dt_")) if panels else None
-    if (
-        current_index is None
-        or panel_count is None
-        or not 0 <= current_index < panel_count <= 16
-        or storage is None
-    ):
-        return None
-    values = context.reader.table(storage.address).get("array") or ()
-    slot = current_index + 1
-    if slot >= len(values):
-        return None
-    component = table_ref(values[slot])
-    panel = table_ref(read_ui_object_field(context, component.address, "m_panel")) if component else None
-    return (panel.address, current_index) if panel is not None else None
 
 
 def _active_bothdraw_panel(context: UiRuntimeContext) -> tuple[int, int | None]:

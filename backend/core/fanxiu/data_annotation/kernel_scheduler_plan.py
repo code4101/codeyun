@@ -329,6 +329,30 @@ def repair_kernel_scheduler_tasks(
             migrated_execution_state["next_time"] = current.strftime(
                 "%Y-%m-%d %H:%M:%S"
             )
+        if (
+            task_id != "ranking-lifecycle"
+            and "next_time" in raw_previous
+            and previous.get("next_time") is None
+            and str(previous.get("last_result") or "") == "error"
+        ):
+            # 2026-09-18：周常_活跃度 在失败重试期间被清空 next_time（前端
+            # “取消执行”/内核 set_trigger_time(None)），此后本周的复查全部跳过，
+            # 作业静默消失且没有任何告警——"取消一次执行"变成了"永久删除"。
+            # catalogue 的 initial_times 只在作业记录缺失时生效，所以这里给
+            # “失败后被清空”的周期性作业按目录锚点重新排队一次，并把原因写进
+            # last_message，让恢复动作可见。手动类作业没有目录锚点，不受影响。
+            catalogue_anchor = str(default.get("next_time") or "").strip()
+            if catalogue_anchor:
+                migrated_execution_state["next_time"] = catalogue_anchor
+                recovered_note = (
+                    f"下一次触发已按作业目录锚点恢复为 {catalogue_anchor}"
+                )
+                existing_message = str(previous.get("last_message") or "").strip()
+                migrated_execution_state["last_message"] = (
+                    f"{existing_message}｜{recovered_note}"
+                    if existing_message
+                    else recovered_note
+                )
         migrated_payload = {
             **default.get("payload", {}),
             **previous.get("payload", {}),

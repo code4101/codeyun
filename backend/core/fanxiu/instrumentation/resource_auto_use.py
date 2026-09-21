@@ -843,6 +843,20 @@ def _runtime_config_null_defaults(
     return {field: defaults[index] for field, index in indexes.items()}
 
 
+def read_runtime_config_defaults(
+    reader: LuaJitReader,
+    rows: Mapping[Any, Any],
+    indexes: Mapping[str, int],
+) -> dict[str, Any]:
+    """Read explicit defaults of loaded packed rows in the caller's snapshot.
+
+    Validates the shared metatable and captured column map; does not execute
+    the Lua closure or initialize configuration. Missing/ambiguous metadata
+    raises FanxiuRuntimeMemoryError rather than inventing zero defaults.
+    """
+    return _runtime_config_null_defaults(reader, rows, indexes)
+
+
 def _runtime_config_table(
     reader: LuaJitReader, db_root: int, table_name: str
 ) -> dict[Any, Any]:

@@ -105,6 +105,22 @@ def choose_dongtian_empty_follower_target(
     return None
 
 
+def choose_dongtian_ranked_empty_target(
+    snapshot: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Execute only a vacancy chosen by the SAME planner used by research.
+
+    An unresolved higher-priority defender is not evidence that its location
+    is unavailable. Never skip it to find an easier but inferior vacant mine.
+    Team-specific safety/yield preferences therefore cannot diverge here.
+    """
+    from backend.core.fanxiu.data_annotation.dongtian_seating_plan import plan_dongtian_next_team
+    decision = plan_dongtian_next_team(snapshot)
+    if decision.get("status") != "ready" or decision.get("action") != "occupy_empty":
+        return None
+    return {**decision, "mode": "occupy_empty"}
+
+
 def validate_dongtian_empty_follower_target(
     snapshot: Mapping[str, Any], target: Mapping[str, Any],
 ) -> bool:
@@ -132,7 +148,7 @@ def validate_dongtian_empty_follower_target(
     if len(mine["seats"]) != 1:
         return False
     exact["mines"] = [mine]
-    return choose_dongtian_empty_follower_target(exact) == dict(target)
+    return choose_dongtian_ranked_empty_target(exact) == dict(target)
 
 
 def classify_dongtian_team_seating(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -244,12 +260,11 @@ def execute_dongtian_seating_runtime_job(
     snapshot_reader: Callable[[], Mapping[str, Any]] = read_dongtian_snapshot,
     probe_reader: Callable[..., Mapping[str, Any]] = read_dongtian_seating_probe,
 ):
-    """Seat idle teams into independently proven empty follower seats.
+    """Seat idle teams only through independently proven empty-seat routes.
 
-    Occupied-seat replacement remains fail-closed for AI intervention.  Every
-    empty placement is authorized by a fresh targeted probe, uses the verified
-    Runtime seat projection, and is accepted only after Runtime reports the
-    expected team/mine/seat tuple.
+    Occupied-seat replacement and unverified explicit team selection remain
+    fail-closed for AI intervention. Every placement needs a fresh targeted
+    probe and the exact team/mine/seat Runtime postcondition.
     """
 
     task_id = str((payload or {}).get("__scheduler_task_id") or DONGTIAN_SEATING_TASK_ID)
@@ -288,11 +303,17 @@ def execute_dongtian_seating_runtime_job(
             )
             return "success"
 
-        target = choose_dongtian_empty_follower_target(snapshot)
+        target = choose_dongtian_ranked_empty_target(snapshot)
         if target is None:
             raise RuntimeError(
                 "洞天_上座：仍有空闲队伍，但本盟不同地点没有可证明的空侍从席；"
                 "需要 AI 检查守军详情后决定是否安全替换"
+            )
+        native_default_team_id = min(int(team_id) for team_id in state["idle_team_ids"])
+        if int(target["team_id"]) != native_default_team_id:
+            raise RuntimeError(
+                "洞天_上座：规划的最弱队与空席确认页默认队伍不同；"
+                "尚无经过实机验收的显式切队动作，拒绝误派队伍"
             )
         mine_id = int(target["mine_id"])
         all_mine_ids = {
@@ -325,7 +346,7 @@ def execute_dongtian_seating_runtime_job(
                 mine for mine in current.get("mines") or []
                 if isinstance(mine, Mapping) and mine.get("id") == mine_id
             ]
-            refreshed = choose_dongtian_empty_follower_target(local)
+            refreshed = choose_dongtian_ranked_empty_target(local)
             runner._log("info", f"洞天_上座：导航后重新选择空席，原目标={target}，当前同地点目标={refreshed}")
             if refreshed is None:
                 changed_places += 1
@@ -334,6 +355,12 @@ def execute_dongtian_seating_runtime_job(
                 snapshot = current
                 continue
             target = refreshed
+        if int(target["quality"]) == 1:
+            raise RuntimeError(
+                "洞天_上座：已按地图顺序优先选出空尊主席，"
+                "但当前福地尊主 #341->#342 的空席点击热区尚未实机验收；"
+                "拒绝退而占用下方侍从位"
+            )
         geometry = resolve_dongtian_fixed_seat(
             2,
             int(target["seat_id"]),

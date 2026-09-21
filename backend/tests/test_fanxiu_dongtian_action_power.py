@@ -495,8 +495,9 @@ def test_dongtian_place_locator_reverses_after_down_boundary_and_finds_target_up
         def ocr_tokens_in_shapes(self, *_args, **_kwargs):
             return []
 
-        def scroll_shape_content(self, _view, _shape, *, direction):
+        def scroll_shape_content(self, _view, _shape, *, direction, ratio=0.5):
             nonlocal moved_up
+            assert ratio == 0.2
             scrolls.append(direction)
             if direction == "up":
                 moved_up = True

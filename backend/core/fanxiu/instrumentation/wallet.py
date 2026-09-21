@@ -122,20 +122,24 @@ def wallet_currency_data(
 
 
 
-def read_wallet_currency_snapshot(
+def _read_wallet_currency_snapshot(
     currency_type: int,
     *,
-    allow_discovery: bool = False,
-    missing_as_zero: bool = False,
+    allow_discovery: bool,
+    missing_as_zero: bool,
+    refresh_process: bool = False,
 ) -> dict[str, Any]:
-    """Read a fresh currency snapshot without invoking Lua or network commands."""
+    """One wallet snapshot attempt; never reuses bytes across attempts."""
 
     started_at = time.perf_counter()
     phase_started_at = started_at
     phase_seconds: dict[str, float] = {}
+    # ``refresh_process`` exists only for the public wrapper's unmapped-mapping
+    # retry. It refreshes process identity/maps and never grants marker
+    # discovery beyond what the caller's ``allow_discovery`` already allowed.
     memory = (
         MumuProcessMemory.discover()
-        if allow_discovery
+        if allow_discovery or refresh_process
         else MumuProcessMemory.discover_cached(fallback_to_discovery=False)
     )
     phase_seconds["process_discovery"] = time.perf_counter() - phase_started_at
@@ -173,6 +177,13 @@ def read_wallet_currency_snapshot(
             ),
         )
     except FanxiuRuntimeMemoryError as exc:
+        if exc.code == "memory_address_unmapped":
+            # A loaded WalletMgr traversal read a WalletVO long through a
+            # mapping that this attempt's /proc/maps snapshot does not know.
+            # The constructor-marker fallback would re-scan those same stale
+            # maps and replace the first cause with root_cache_miss, so surface
+            # it for the wrapper's single fresh-process-maps retry.
+            raise
         # A resolved WalletMgr without this concrete WalletVO is an
         # authoritative not-loaded result. Re-scanning the same process for a
         # constructor marker cannot make the missing entry appear and turns a
@@ -230,3 +241,37 @@ def read_wallet_currency_snapshot(
             "wallet_root_resolver": resolver,
         },
     }
+
+
+def read_wallet_currency_snapshot(
+    currency_type: int,
+    *,
+    allow_discovery: bool = False,
+    missing_as_zero: bool = False,
+) -> dict[str, Any]:
+    """Read a fresh currency snapshot without invoking Lua or network commands.
+
+    A material action can allocate the WalletVO long in a mapping that was
+    created after the cached ``/proc/maps`` snapshot.  Only that explicit
+    ``memory_address_unmapped`` condition is retried, exactly once, with a
+    freshly discovered process map.  Every other failure propagates unchanged,
+    each attempt builds a new memory/reader without reusing bytes, and the
+    retry keeps the caller's ``allow_discovery`` so it never authorizes a
+    constructor-marker scan on its own.
+    """
+
+    try:
+        return _read_wallet_currency_snapshot(
+            currency_type,
+            allow_discovery=allow_discovery,
+            missing_as_zero=missing_as_zero,
+        )
+    except FanxiuRuntimeMemoryError as exc:
+        if exc.code != "memory_address_unmapped":
+            raise
+    return _read_wallet_currency_snapshot(
+        currency_type,
+        allow_discovery=allow_discovery,
+        missing_as_zero=missing_as_zero,
+        refresh_process=True,
+    )

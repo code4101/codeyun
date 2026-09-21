@@ -770,11 +770,12 @@ class DailyRedpacketTaskMixin:
         badge_template = badge_shape.box()
         logo_template = logo_shape.box()
         for scroll_index in range(max(0, int(max_scrolls)) + 1):
-            matched = context.shape_matches(332, badge_shape)
+            matched = context.shape_matches(332, badge_shape, require_unique=False)
+            selection_threshold = float((matched or {}).get("selection_threshold") or 80)
             candidates = [
                 item for item in (matched or {}).get("matches", [])
-                if float(item.get("similarity") or 0)
-                >= float((matched or {}).get("selection_threshold") or 80)
+                if float(item.get("crop_similarity") or item.get("similarity") or 0)
+                >= selection_threshold
             ]
             if candidates:
                 candidate = min(candidates, key=lambda item: float(item["box"]["y"]))
@@ -1092,15 +1093,23 @@ class DailyRedpacketTaskMixin:
                     wait=attempt_timeout,
                     label="日常_红包：等待开红包、已领完或已抢光状态",
                 )
-                break
             except TimeoutError:
-                _wait_scene_match = yield from context.wait_scene([30], wait=5.0, required=False)
-                (scene_id, _score, _frame) = (
-                    (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-                    if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
-                )
-                if scene_id != 30:
-                    return 0, False
+                current = None
+            else:
+                if int(current.id or 0) in {397, 399, 672}:
+                    break
+                # wait_scene 的 Layer 1/2 兜底会把列表外场景作为 SceneMatch 返回：
+                # 实测热区点击没生效时这里会带回仍停在的 #30。它不是开包结果，
+                # 直接交给领取循环会抛「领取循环意外停在 #30」并把 GUI 留在群聊，
+                # 所以按“本次点击未生效”处理，换下一个热区继续。
+                current = None
+            _wait_scene_match = yield from context.wait_scene([30], wait=5.0, required=False)
+            (scene_id, _score, _frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+            )
+            if scene_id != 30:
+                return 0, False
         if current is None:
             return 0, False
         if int(current.id or 0) == 672:

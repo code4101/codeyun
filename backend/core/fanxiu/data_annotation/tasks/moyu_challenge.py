@@ -238,13 +238,16 @@ class MoyuChallengeTaskMixin:
                 }
 
         if landing_id == 465:
-            yield from context.wait_click_then_scene(
-                465,
-                "继续",
-                401,
-                timeout=60.0,
+            # The evening settlement can return directly to world #34.
+            # Both successors are real terminal exits, not a reason to wait a
+            # minute for #401 or to repeat a completed challenge.
+            yield from context.wait_click(465, "继续")
+            landing = yield from context.wait_scene(
+                [401, 34],
+                wait=60.0,
                 label="魔狱_挑战：结算后返回 #401",
             )
+            landing_id = getattr(landing, "id", landing)
         snapshot = read_godsoul_boss_challenge_snapshot()
         return {
             "entered": True,
@@ -252,14 +255,14 @@ class MoyuChallengeTaskMixin:
             "completed": bool(
                 snapshot.get("settled")
                 or landing_id == 465
-                or (battle_entered and landing_id == 401)
+                or (battle_entered and landing_id in {401, 34})
             ),
             "message": (
                 "挑战已有响应并完成结算"
                 if (
                     snapshot.get("settled")
                     or landing_id == 465
-                    or (battle_entered and landing_id == 401)
+                    or (battle_entered and landing_id in {401, 34})
                 )
                 else "挑战已有响应，拒绝在本轮重复挑战"
             ),

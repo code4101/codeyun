@@ -45,6 +45,7 @@ from backend.core.fanxiu.runtime_gui.storage_bag_alignment import (
     prepare_storage_bag_target_by_name,
     quantity_observations_from_ocr,
     register_storage_bag_viewport_from_quantity_ocr,
+    upscaled_ocr_fragments,
     verify_storage_bag_item_detail,
     visible_storage_bag_cells,
 )
@@ -103,6 +104,7 @@ __all__ = [
     "sacred_exchange_quantity_observations",
     "quantity_observations_from_ocr",
     "register_storage_bag_viewport_from_quantity_ocr",
+    "upscaled_ocr_fragments",
     "rank_ocr_name_matches",
     "resolve_magic_invasion_bottom_tab",
     "resolve_exchange_shop_item",

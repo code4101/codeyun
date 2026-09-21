@@ -139,6 +139,18 @@ def test_responses_to_chat_asks_for_usage_only_when_streaming():
     assert opencode_proxy.responses_to_chat(body, stream=True)["stream_options"] == {"include_usage": True}
 
 
+_DEVELOPER_NOTICE = {
+    "type": "message",
+    "role": "developer",
+    "content": [
+        {
+            "type": "input_text",
+            "text": "<image_resize_notice>Image 1 of 1 was resized.</image_resize_notice>",
+        }
+    ],
+}
+
+
 _PARALLEL_TOOL_INPUT = [
     {
         "type": "message",
@@ -174,6 +186,67 @@ def test_responses_to_chat_groups_parallel_tool_calls_into_one_message():
     assert messages[2] == {"role": "tool", "tool_call_id": "call_b", "content": "B"}
 
 
+def test_responses_to_chat_keeps_tool_replies_together_across_developer_notice():
+    """Codex wedges an ``<image_resize_notice>`` between parallel view_image outputs.
+
+    Upstream answers that shape with ``invalid_request_error: An assistant message
+    with 'tool_calls' must be followed by tool messages responding to each
+    'tool_call_id'``, so the notice has to be replayed after the replies.
+    """
+
+    body = {
+        "model": "deepseek-flash",
+        "input": [
+            {"type": "function_call", "call_id": "call_a", "name": "view_image", "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_b", "name": "view_image", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_a", "output": "A"},
+            _DEVELOPER_NOTICE,
+            {"type": "function_call_output", "call_id": "call_b", "output": "B"},
+            _DEVELOPER_NOTICE,
+        ],
+    }
+
+    messages = opencode_proxy.responses_to_chat(body)["messages"]
+
+    assert [message["role"] for message in messages] == ["assistant", "tool", "tool", "system", "system"]
+    assert [message["tool_call_id"] for message in messages[1:3]] == ["call_a", "call_b"]
+    assert messages[0]["tool_calls"][0]["id"] == "call_a"
+
+
+def test_responses_to_chat_answers_tool_calls_that_never_returned():
+    """An interrupted turn must still answer every ``tool_call_id``."""
+
+    body = {
+        "model": "deepseek-flash",
+        "input": [
+            {"type": "function_call", "call_id": "call_a", "name": "exec_command", "arguments": "{}"},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "stop"}]},
+        ],
+    }
+
+    messages = opencode_proxy.responses_to_chat(body)["messages"]
+
+    assert [message["role"] for message in messages] == ["assistant", "tool", "user"]
+    assert messages[1]["tool_call_id"] == "call_a"
+    assert messages[1]["content"] == opencode_proxy._SYNTHETIC_TOOL_OUTPUT
+    assert messages[2]["content"] == "stop"
+
+
+def test_responses_to_chat_demotes_orphan_tool_message():
+    """A tool reply without a preceding call must not break the whole request."""
+
+    body = {
+        "model": "deepseek-flash",
+        "input": [{"type": "function_call_output", "call_id": "call_gone", "output": "stale output"}],
+    }
+
+    messages = opencode_proxy.responses_to_chat(body)["messages"]
+
+    assert [message["role"] for message in messages] == ["user"]
+    assert "call_gone" in messages[0]["content"]
+    assert "stale output" in messages[0]["content"]
+
+
 def test_responses_to_chat_passes_reasoning_content_back_to_deepseek():
     body = {
         "model": "deepseek-flash",
@@ -201,6 +274,27 @@ def test_responses_to_chat_passes_reasoning_content_back_to_deepseek():
     assert assistant["reasoning_content"] == "Let me check. Using search."
     assert assistant["content"] == "Checking."
     assert assistant["tool_calls"][0]["id"] == "call_a"
+
+
+def test_responses_to_messages_answers_tool_uses_that_never_returned():
+    """An interrupted turn must still produce a ``tool_result`` for every call."""
+
+    body = {
+        "model": "qwen3.8-flash",
+        "input": [
+            {"type": "function_call", "call_id": "call_a", "name": "exec_command", "arguments": "{}"},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "stop"}]},
+        ],
+    }
+
+    messages = opencode_proxy.responses_to_messages(body)["messages"]
+
+    assert [message["role"] for message in messages] == ["assistant", "user"]
+    user_blocks = messages[1]["content"]
+    assert user_blocks[0]["type"] == "tool_result"
+    assert user_blocks[0]["tool_use_id"] == "call_a"
+    assert user_blocks[0]["content"] == opencode_proxy._SYNTHETIC_TOOL_OUTPUT
+    assert user_blocks[1] == {"type": "text", "text": "stop"}
 
 
 def test_responses_to_messages_groups_parallel_tool_calls_into_one_message():

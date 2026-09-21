@@ -57,6 +57,12 @@ BEAST_ABYSS_AUTO_CLEAR_KIND = "beast_abyss_auto_clear_2045"
 BEAST_ABYSS_MANUAL_CLEAR_KIND = "beast_abyss_manual_clear_2150"
 XIANMENG_ACTIVE_KIND = "xianmeng_active_1000"
 TIANDI_YIJU_ACTIVE_KIND = "tiandi_yiju_active_1005"
+# 云梦在 10:00 才真正开启，00:10 的日常对账只能拿到日程身份；活动期间必须由
+# 一次真实的页面加载把兑换宝阁/钱包/榜单事实带进 Runtime，否则事实永远为空。
+YUNMENG_ACTIVE_KIND = "yunmeng_active_1005"
+# 云梦论剑玉来自挑战：开启后先按当日可用次数推一次，20:45 再用恢复出来的次数补一次。
+YUNMENG_CHALLENGE_KIND = "yunmeng_challenge_1010"
+YUNMENG_CHALLENGE_EVENING_KIND = "yunmeng_challenge_2045"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_tier12_0515"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
@@ -68,6 +74,9 @@ XIANYUAN_EXCHANGE_TAIL_TIME = time(0, 0)
 MAGIC_ACTIVE_TIME = time(19, 0)
 MAGIC_MAIL_TIME = time(12, 0)
 XUTIAN_ACTIVE_TIME = time(10, 0)
+YUNMENG_ACTIVE_TIME = time(10, 5)
+YUNMENG_CHALLENGE_TIME = time(10, 10)
+YUNMENG_CHALLENGE_EVENING_TIME = time(20, 45)
 BEAST_ABYSS_INITIALIZATION_TIME = time(10, 0)
 BEAST_ABYSS_FORMAL_TIME = time(10, 5)
 BEAST_ABYSS_AUTO_CLEAR_TIME = time(20, 45)
@@ -85,11 +94,16 @@ YUANDING_GIFT_TIME = time(5, 0)
 
 # Only resource ranks with a real activity page, shared #605 landing and
 # ChargeMgr idempotency proof may receive this side-effectful checkpoint.
+# lianti-faxiang enables the whole activity type, but only the 8-server
+# instance 8043001 has passed the real 754/755/#605 page acceptance; every
+# other variant stays unregistered in the gift adapter and is rejected
+# fail-closed by the occurrence-scoped filter.
 RESOURCE_FREE_GIFT_ACTIVITY_TYPES = frozenset({
     "shequn-lingchong",
     "dandao-wending",
     "lingzhuang-huadao",
     "yaochi-flower-festival",
+    "lianti-faxiang",
 })
 
 RANKING_CAPABILITY_STATUS = {
@@ -112,7 +126,15 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
     "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND}),
+    # 仙盟争霸只有 10:00 的正式挑战是已验收的生产动作；00:10 的日常对账在该活动
+    # 上是 no-op retained 标记，不纳入准入，避免每天多一次无动作唤醒。
+    "xianmeng-competition": frozenset({XIANMENG_ACTIVE_KIND}),
     "tiandi-yiju": frozenset({DAILY_RECONCILE_KIND, TIANDI_YIJU_ACTIVE_KIND}),
+    "yunmeng-trial": frozenset({
+        YUNMENG_ACTIVE_KIND,
+        YUNMENG_CHALLENGE_KIND,
+        YUNMENG_CHALLENGE_EVENING_KIND,
+    }),
 }
 
 
@@ -638,6 +660,45 @@ def checkpoints_for_occurrence(
                 due_at=tiandi_yiju_at,
             )
         )
+    yunmeng_active_at = _at(
+        business_day, YUNMENG_ACTIVE_TIME, occurrence.start_at.tzinfo
+    )
+    if (
+        occurrence.activity_type == "yunmeng-trial"
+        and occurrence.start_at <= yunmeng_active_at <= occurrence.end_at
+    ):
+        checkpoints.append(
+            RankingCheckpoint(
+                instance_key=occurrence.instance_key,
+                activity_type=occurrence.activity_type,
+                family=occurrence.family,
+                runtime_id=occurrence.runtime_id,
+                activity_id=occurrence.activity_id,
+                checkpoint_kind=YUNMENG_ACTIVE_KIND,
+                business_date=business_day.isoformat(),
+                due_at=yunmeng_active_at,
+            )
+        )
+    yunmeng_challenge_slots = (
+        (YUNMENG_CHALLENGE_KIND, YUNMENG_CHALLENGE_TIME),
+        (YUNMENG_CHALLENGE_EVENING_KIND, YUNMENG_CHALLENGE_EVENING_TIME),
+    )
+    if occurrence.activity_type == "yunmeng-trial":
+        for checkpoint_kind, checkpoint_time in yunmeng_challenge_slots:
+            due_at = _at(business_day, checkpoint_time, occurrence.start_at.tzinfo)
+            if occurrence.start_at <= due_at <= occurrence.end_at:
+                checkpoints.append(
+                    RankingCheckpoint(
+                        instance_key=occurrence.instance_key,
+                        activity_type=occurrence.activity_type,
+                        family=occurrence.family,
+                        runtime_id=occurrence.runtime_id,
+                        activity_id=occurrence.activity_id,
+                        checkpoint_kind=checkpoint_kind,
+                        business_date=business_day.isoformat(),
+                        due_at=due_at,
+                    )
+                )
     resource_kinds = (
         (LINGZHUANG_STRENGTHENING_KIND, time(5, 15),
          occurrence.activity_type == "lingzhuang-huadao" and occurrence.cross_count == 1),
@@ -729,6 +790,9 @@ def due_ranking_checkpoints(
                     BEAST_ABYSS_MANUAL_CLEAR_KIND,
                     XIANMENG_ACTIVE_KIND,
                     TIANDI_YIJU_ACTIVE_KIND,
+                    YUNMENG_ACTIVE_KIND,
+                    YUNMENG_CHALLENGE_KIND,
+                    YUNMENG_CHALLENGE_EVENING_KIND,
                     RESOURCE_FREE_GIFT_KIND,
                     DANDAO_REWARDS_KIND,
                     YUANDING_GIFT_KIND,
@@ -819,6 +883,9 @@ __all__ = [
     "MAGIC_MAIL_KIND",
     "XUTIAN_ACTIVE_KIND",
     "XIANMENG_ACTIVE_KIND",
+    "YUNMENG_ACTIVE_KIND",
+    "YUNMENG_CHALLENGE_EVENING_KIND",
+    "YUNMENG_CHALLENGE_KIND",
     "TIANDI_YIJU_ACTIVE_KIND",
     "TIANDI_YIJU_PLAYABLE_ACTIVITY_IDS",
     "RESOURCE_FREE_GIFT_KIND",

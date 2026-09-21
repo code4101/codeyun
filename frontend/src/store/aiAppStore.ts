@@ -80,7 +80,7 @@ function buildDefaultAppConfig(appId?: AiAppId): AiAppRuntimeConfig {
   return {
     enabled: true,
     provider: appId === 'codex-diary' ? 'deepseek' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'codex-cli' : '',
-    model: appId === 'codex-diary' ? 'deepseek-v4-pro' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'gpt-5.3-codex-spark' : '',
+    model: appId === 'codex-diary' ? 'deepseek-v4-flash' : appId === 'note-taxonomy' || appId === 'codeclaw' ? 'gpt-5.3-codex-spark' : '',
     updatedAt: null,
   }
 }

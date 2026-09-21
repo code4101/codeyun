@@ -296,7 +296,7 @@ def test_resolve_ai_app_runtime_config_falls_back_to_provider_preferred_model():
         assert runtime["model"] == "deepseek-preferred"
 
 
-def test_codex_diary_default_uses_deepseek_pro():
+def test_codex_diary_default_uses_deepseek_flash():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
@@ -313,6 +313,33 @@ def test_codex_diary_default_uses_deepseek_pro():
         assert app_config["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
         assert runtime["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
         assert runtime["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
+
+
+def test_diary_legacy_pro_is_read_as_flash_and_flash_survives_save():
+    from backend.core.ai.app_config import build_ai_app_config_setting_key
+
+    engine = _build_engine()
+    with Session(engine) as session:
+        user = _create_user(session)
+        session.add(AppSetting(
+            key=build_ai_app_config_setting_key(user.id),
+            value={"apps": {AI_APP_CODEX_DIARY: {
+                "provider": "deepseek", "model": "deepseek-v4-pro",
+            }}},
+        ))
+        session.commit()
+        assert get_user_ai_app_config(session, user.id, AI_APP_CODEX_DIARY)["model"] == "deepseek-v4-flash"
+        saved = save_user_ai_app_config(
+            session, user.id, AI_APP_CODEX_DIARY,
+            provider="deepseek", model="deepseek-v4-flash",
+        )
+        assert saved["provider"] == "deepseek"
+        assert saved["model"] == "deepseek-v4-flash"
+        runtime = resolve_ai_app_runtime_config(
+            session=session, current_user=user, app_id=AI_APP_CODEX_DIARY,
+            model="deepseek-v4-pro",
+        )
+        assert runtime["model"] == "deepseek-v4-flash"
 
 
 def test_codex_diary_manual_provider_selection_is_preserved():

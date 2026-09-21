@@ -39,11 +39,11 @@ def _fragment(text: str, x: float, y: float, w: float = 40, h: float = 30):
     return {"text": text, "x": x, "y": y, "w": w, "h": h}
 
 
-def test_prayer_daily_resource_is_one_daily_standard_job() -> None:
+def test_prayer_daily_resource_is_internal_daily_component() -> None:
     register_fanxiu_default_jobs()
     definition = get_fanxiu_data_annotation_task_cell_definition("prayer_daily_resource")
     assert definition is not None
-    assert definition.scheduler_supported is True
+    assert definition.scheduler_supported is False
     assert not hasattr(definition, "lifecycle")
 
     tasks = [
@@ -51,12 +51,9 @@ def test_prayer_daily_resource_is_one_daily_standard_job() -> None:
         for item in default_kernel_scheduler_tasks(datetime(2026, 8, 7, 1, 0, 0))
         if item["task_type"] == "prayer_daily_resource"
     ]
-    assert len(tasks) == 1
-    assert tasks[0]["id"] == "prayer-daily-resource"
-    assert tasks[0]["label"] == "祈愿_每日资源"
-    assert tasks[0]["trigger_description"] == "每日"
-    assert tasks[0]["next_time"] == "2026-08-08 00:00:00"
-    assert tasks[0]["error_retry_delay_seconds"] == 600
+    assert tasks == []
+    from backend.core.fanxiu.data_annotation.tasks.resource_daily_contract import RESOURCE_DAILY_STAGES
+    assert next(s for s in RESOURCE_DAILY_STAGES if s.task_type == definition.task_type).cadence == 'daily'
 
 
 def test_prayer_entry_uses_unique_left_menu_suffix_not_weekly_prefix() -> None:

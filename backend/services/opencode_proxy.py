@@ -160,6 +160,99 @@ def _tool_content(output: Any) -> Any:
     return json.dumps(output, ensure_ascii=False)
 
 
+# Chat Completions rejects the whole request when an assistant message carrying
+# ``tool_calls`` is not directly followed by one ``tool`` message per
+# ``tool_call_id``.  Codex emits shapes that violate that rule: a parallel
+# ``view_image`` turn gets an ``<image_resize_notice>`` developer item wedged
+# between its two outputs, and an interrupted turn can leave a call with no
+# output at all.  Both reached the upstream untouched and failed the turn with
+# ``invalid_request_error``.
+_SYNTHETIC_TOOL_OUTPUT = "Tool call was cancelled before it returned any output."
+
+
+def _tool_message_as_user(message: dict[str, Any]) -> dict[str, Any]:
+    """Demote an unmatched ``tool`` message so its content is not lost.
+
+    Chat Completions only accepts a ``tool`` message that answers a preceding
+    ``tool_calls`` entry.  An orphan (e.g. a trimmed history) breaks the request,
+    while the payload itself is still useful context, so it is replayed as a user
+    message that names the call it belonged to.
+    """
+
+    content = message.get("content")
+    call_id = str(message.get("tool_call_id") or "")
+    note = f"[tool output for unknown call {call_id}]" if call_id else "[tool output without call id]"
+    if isinstance(content, list):
+        content = [{"type": "text", "text": note}, *content]
+    elif content:
+        content = f"{note}\n{content}"
+    else:
+        content = note
+    return {"role": "user", "content": content}
+
+
+def _normalize_chat_tool_pairing(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Make ``messages`` satisfy Chat Completions' assistant/tool pairing rules.
+
+    Every assistant message with ``tool_calls`` ends up directly followed by one
+    ``tool`` reply per ``tool_call_id``: replies that were separated by other
+    items are gathered back, items that interrupted the pair are replayed after
+    the replies, missing replies are synthesized, and orphan ``tool`` messages
+    are demoted with :func:`_tool_message_as_user`.
+    """
+
+    normalized: list[dict[str, Any]] = []
+    # ``tool_call_id``s of the current assistant message still awaiting a reply.
+    pending: list[str] = []
+    # Items that arrived before the pairing was complete.  They keep their
+    # relative order but are replayed once every call has been answered.
+    deferred: list[dict[str, Any]] = []
+
+    def flush_deferred() -> None:
+        if deferred:
+            normalized.extend(deferred)
+            deferred.clear()
+
+    def close_pending() -> None:
+        nonlocal pending
+        if not pending and not deferred:
+            return
+        for call_id in pending:
+            normalized.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": _SYNTHETIC_TOOL_OUTPUT,
+            })
+        pending = []
+        flush_deferred()
+
+    for message in messages:
+        role = message.get("role")
+        calls = message.get("tool_calls") if role == "assistant" else None
+        if calls:
+            close_pending()
+            normalized.append(message)
+            pending = [str(call.get("id") or "") for call in calls]
+            continue
+
+        if pending:
+            call_id = str(message.get("tool_call_id") or "") if role == "tool" else None
+            if call_id is not None and call_id in pending:
+                pending.remove(call_id)
+                normalized.append(message)
+                continue
+            # A reply for another call, or any other item: hold it back so the
+            # assistant message stays directly followed by its tool replies.
+            deferred.append(_tool_message_as_user(message) if role == "tool" else message)
+            continue
+
+        flush_deferred()
+        normalized.append(_tool_message_as_user(message) if role == "tool" else message)
+
+    close_pending()
+    return normalized
+
+
 def _reasoning_text(item: dict[str, Any]) -> str:
     """Collect a Responses ``reasoning`` item's text for ``reasoning_content``."""
 
@@ -185,7 +278,10 @@ def responses_to_chat(body: dict[str, Any], *, stream: bool = False) -> dict[str
     # Responses ``function_call`` item per call (plus a sibling assistant text
     # item), so consecutive calls must be folded into a single assistant message
     # or a parallel-tool turn is rejected upstream as "insufficient tool messages
-    # following tool_calls message".  DeepSeek additionally requires the previous
+    # following tool_calls message".  Whatever else breaks the pairing - a
+    # developer notice wedged between two outputs, a call whose output never
+    # arrived - is repaired afterwards by ``_normalize_chat_tool_pairing``.
+    # DeepSeek additionally requires the previous
     # assistant turn's ``reasoning_content`` to be passed back once a thread has
     # used thinking with tools, so the leading ``reasoning`` item is folded into
     # the same assistant message.
@@ -246,7 +342,10 @@ def responses_to_chat(body: dict[str, Any], *, stream: bool = False) -> dict[str
                 })
     flush_assistant()
 
-    payload: dict[str, Any] = {"model": body.get("model"), "messages": messages}
+    payload: dict[str, Any] = {
+        "model": body.get("model"),
+        "messages": _normalize_chat_tool_pairing(messages),
+    }
     if body.get("max_output_tokens"):
         payload["max_tokens"] = body["max_output_tokens"]
     if stream:
@@ -371,6 +470,56 @@ def _messages_tool_content(output: Any) -> Any:
     return json.dumps(output, ensure_ascii=False)
 
 
+def _pending_tool_use_ids(message: dict[str, Any]) -> list[str]:
+    """Return the ``tool_use`` ids of an assistant message's content blocks."""
+
+    if message.get("role") != "assistant":
+        return []
+    return [
+        str(block.get("id") or "")
+        for block in message.get("content") or []
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+
+
+def _normalize_messages_tool_pairing(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Answer every assistant ``tool_use`` before the next turn.
+
+    Anthropic pairs an assistant message's ``tool_use`` blocks with the
+    ``tool_result`` blocks at the start of the next user message and rejects the
+    request otherwise.  An interrupted turn leaves a call unanswered, so the
+    missing result is synthesized instead of failing the turn.
+    """
+
+    normalized: list[dict[str, Any]] = []
+    for message in messages:
+        blocks = message.get("content") or []
+        pending = _pending_tool_use_ids(normalized[-1]) if normalized else []
+        if message.get("role") == "assistant" or not pending:
+            normalized.append(message)
+            continue
+        answered = {
+            str(block.get("tool_use_id") or "")
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == "tool_result"
+        }
+        missing = [call_id for call_id in pending if call_id not in answered]
+        if not missing:
+            normalized.append(message)
+            continue
+        # ``tool_result`` blocks have to come first, so the synthesized results
+        # lead and whatever the user actually sent follows them.
+        normalized.append({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": call_id, "content": _SYNTHETIC_TOOL_OUTPUT}
+                for call_id in missing
+            ]
+            + list(blocks),
+        })
+    return normalized
+
+
 def responses_to_messages(body: dict[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
     system_extra: list[str] = []
@@ -452,7 +601,7 @@ def responses_to_messages(body: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": body.get("model"),
         "max_tokens": body.get("max_output_tokens") or 4096,
-        "messages": messages,
+        "messages": _normalize_messages_tool_pairing(messages),
     }
     system_parts = [str(body["instructions"])] if body.get("instructions") else []
     system_parts.extend(system_extra)

@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlmodel import Session
 
-from backend.core.ai.chat import AiProviderConfig, get_ai_provider, get_default_ai_provider_id
+from backend.core.ai.chat import AiProviderConfig, get_ai_provider, get_default_ai_provider_id, normalize_deepseek_model
 from backend.core.ai.chat_user_config import (
     AiChatUserConfigError,
     get_user_ai_chat_provider_runtime_config,
@@ -39,28 +39,28 @@ AI_APP_CODEX_SPARK_MODEL = "gpt-5.3-codex-spark"
 AI_APP_OLLAMA_PROVIDER = "ollama"
 AI_APP_OLLAMA_GIT_COMMIT_MODEL = "qwen3.5:4b-instruct"
 AI_APP_DEEPSEEK_PROVIDER = "deepseek"
-AI_APP_DEEPSEEK_PRO_MODEL = "deepseek-v4-pro"
+AI_APP_DEEPSEEK_FLASH_MODEL = "deepseek-v4-flash"
 AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = AI_APP_OLLAMA_PROVIDER
 AI_APP_GIT_COMMIT_DEFAULT_MODEL = AI_APP_OLLAMA_GIT_COMMIT_MODEL
-AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_CODEX_CLI_PROVIDER
-AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_CODEX_SPARK_MODEL
+AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = AI_APP_DEEPSEEK_PROVIDER
+AI_APP_CODEX_DIARY_DEFAULT_MODEL = AI_APP_DEEPSEEK_FLASH_MODEL
 _CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
 _AI_APP_DEFAULTS: dict[str, tuple[str, str]] = {
     AI_APP_NOTE_TAXONOMY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_GIT_COMMIT: (AI_APP_GIT_COMMIT_DEFAULT_PROVIDER, AI_APP_GIT_COMMIT_DEFAULT_MODEL),
     AI_APP_CODEX_DIARY: (AI_APP_CODEX_DIARY_DEFAULT_PROVIDER, AI_APP_CODEX_DIARY_DEFAULT_MODEL),
-    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_CODEX_DAILY_SUMMARY: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
     AI_APP_NOTE_SHEET_CLOCKIN_LINK_DETECTION: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_NOTE_SHEET_EXCEL_IMPORT: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
     AI_APP_RIME_LINT: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
-    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_FANXIU_PSEUDOCODE: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
     AI_APP_FANXIU_GAME_MACRO_ANNOTATION: (AI_APP_CODEX_CLI_PROVIDER, "gpt-5.5"),
-    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_ATTENDANCE_PRECHECK: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
     AI_APP_CODECLAW: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_DAILY_SUMMARY: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_WECHAT_CHAT_BOOK: (AI_APP_CODEX_CLI_PROVIDER, AI_APP_CODEX_SPARK_MODEL),
     AI_APP_DEVICE_AGENT: (AI_APP_CODEX_CLI_PROVIDER, ""),
-    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_PRO_MODEL),
+    AI_APP_SKILL_BOOK_TRANSLATION: (AI_APP_DEEPSEEK_PROVIDER, AI_APP_DEEPSEEK_FLASH_MODEL),
 }
 SYSTEM_AI_RESOURCE_FALLBACK_POLICIES: dict[str, frozenset[str]] = {
     AI_APP_NOTE_SHEET_EXCEL_IMPORT: frozenset({
@@ -201,6 +201,10 @@ def _is_codex_cli_provider(value: Any) -> bool:
 
 
 def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    # Explicit DeepSeek choices must survive legacy Spark migrations. Old Pro
+    # settings are read and saved as Flash, including scheduled diary imports.
+    if item.get("provider") == AI_APP_DEEPSEEK_PROVIDER:
+        return {**item, "model": normalize_deepseek_model(item.get("model"))}
     if app_id == AI_APP_GIT_COMMIT:
         provider = str(item.get("provider") or "").strip().lower()
         model = str(item.get("model") or "").strip()
@@ -427,7 +431,7 @@ def resolve_ai_app_runtime_config(
             "provider": resolved_provider,
             "base_url": resolved_base_url or None,
             "api_key": resolved_api_key or None,
-            "model": resolved_model or None,
+            "model": normalize_deepseek_model(resolved_model) or None,
             "extra_providers": extra_providers,
             "resource_scope": resource_scope,
             "system_resource_id": system_resource_id,

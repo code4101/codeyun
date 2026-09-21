@@ -59,6 +59,17 @@ def ocr_name_similarity(expected: Any, observed: Any) -> float:
     for width in range(min_window, max_window + 1):
         for start in range(0, len(observed_key) - width + 1):
             best = max(best, _edit_similarity(expected_key, observed_key[start:start + width]))
+    # Runtime 活动名常带限定词（例如“炼体法相 (预赛)”），而日程行只印基础名。
+    # 只搜索 observed 的窗口时，期望名比 OCR 名更长就永远取不到窗口（旧的
+    # width 区间为空），相似度恒为 0，整条日程对齐直接判定失败。反方向再搜
+    # 一次，让基础名可以落在期望名内部，其余评分仍是同一套 edit 相似度。
+    if len(expected_key) > len(observed_key):
+        for width in range(1, len(observed_key) + 1):
+            for start in range(0, len(expected_key) - width + 1):
+                best = max(
+                    best,
+                    _edit_similarity(observed_key, expected_key[start:start + width]),
+                )
     return round(best, 6)
 
 

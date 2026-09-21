@@ -41,7 +41,15 @@ class LoginGameTaskMixin:
     def _is_resource_loading_frame(frame_text: str) -> bool:
         compact = "".join(str(frame_text or "").split())
         # Adjacent OCR line boxes can duplicate the final character (化化).
-        return "AppVer" in compact and bool(re.search(r"(?:初始化化?|加载载?)资源", compact))
+        if "AppVer" not in compact:
+            return False
+        if re.search(r"(?:初始化化?|加载载?)资源", compact):
+            return True
+        # Bright startup art can erase or split 初始化 into 初始台化. The
+        # version header plus numeric progress and the exact storage notice
+        # independently prove this loading screen, authorizing only a wait.
+        return "ResVer" in compact and bool(re.search(
+            r"\d+(?:\.\d+)?%[（(]本次不会占用额外存储空间[）)]", compact))
 
     @staticmethod
     def _has_visible_login_bubble(context: Any, *, frame: str) -> bool:

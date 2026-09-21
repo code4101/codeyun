@@ -273,7 +273,12 @@ def submit_local_job_once(
         )
 
 
-def request_local_job_cancel(run_id: str, *, db_engine: Engine = engine) -> LocalJobRun:
+def request_local_job_cancel(run_id: str, *, db_engine: Engine = engine, terminate: bool = False) -> LocalJobRun:
+    """Cancel cooperatively, or stop a verified worker when its handler cannot poll.
+
+    Forced cancellation validates process creation time before signalling so a
+    stale PID can never terminate an unrelated process.
+    """
     ensure_local_job_schema(db_engine)
     with Session(db_engine) as session:
         run = session.get(LocalJobRun, run_id)
@@ -292,6 +297,15 @@ def request_local_job_cancel(run_id: str, *, db_engine: Engine = engine) -> Loca
         session.commit()
         session.refresh(run)
         session.expunge(run)
+        if terminate and run.worker_started_at is not None and _worker_identity_matches(run.worker_pid, run.worker_started_at):
+            import psutil
+
+            try:
+                process = psutil.Process(int(run.worker_pid))
+                process.terminate()
+                process.wait(timeout=5)
+            except psutil.NoSuchProcess:
+                pass
         return run
 
 

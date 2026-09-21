@@ -122,6 +122,21 @@ RESOURCE_RANK_GIFT_ADAPTERS = (
         page_scene_ids=(597, 598, 599),
         intro_scene_id=596,
     ),
+    # Only the 8-server instance 8043001 passed the real 754 查看详情 -> 755 礼包
+    # -> 605 page acceptance.  Other lianti-faxiang variants stay unregistered
+    # on purpose so the occurrence-scoped filter rejects them instead of
+    # guessing a page.
+    ResourceRankGiftAdapter(
+        key="lianti-faxiang",
+        label="炼体法相",
+        schedule_pattern=r"炼体法相",
+        activity_ids=(8043001,),
+        page_scene_ids=(755,),
+        intro_scene_id=754,
+        # #66 上预赛与跨服行同名，日历两行对齐会歧义；复用 Runtime 卡片按
+        # activity_id + start/end 精确选期次（同社团灵宠）。
+        schedule_entry="card",
+    ),
 )
 
 

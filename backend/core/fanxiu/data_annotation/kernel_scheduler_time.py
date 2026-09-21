@@ -13,8 +13,7 @@ from typing import Any
 DEFAULT_TIME_SEQUENCE: dict[str, list[str]] = {
     "00:00": [
         "legacy-daily-assistant",
-        "legacy-daily-vip",
-        "daily-signin",
+        "resource-auto-use",
         "weekly-activity",
         "xianshi-weekly-resources",
         "mail-selective-claim",
@@ -22,7 +21,6 @@ DEFAULT_TIME_SEQUENCE: dict[str, list[str]] = {
     "05:00": [
         "daily-boss",
         "legacy-daily-signup",
-        "legacy-daily-xianshi",
         "xianqiao-trial",
         "legacy-daily-xianyuan",
         "legacy-daily-baiye",
@@ -31,6 +29,7 @@ DEFAULT_TIME_SEQUENCE: dict[str, list[str]] = {
         "daily-weekly-dungeon",
         "weekly-hanli",
         "xianshi-weekly-resources",
+        "weekly-wanxian",
     ],
     "10:00": ["dongtian-seating"],
     "21:30": [

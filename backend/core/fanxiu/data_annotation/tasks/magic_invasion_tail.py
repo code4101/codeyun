@@ -248,16 +248,22 @@ def _resolve_exact_magic_historical_date_cell(
     )
 
 
-def _verify_dialog(context: Any, *, name: str, unit_price: int) -> None:
+def _verify_dialog(
+    context: Any,
+    *,
+    name: str,
+    unit_price: int,
+    dialog_scene: int = COMMON_SHOP_DIALOG_SCENE,
+) -> None:
     title = context.ocr_text_in_shapes(
-        COMMON_SHOP_DIALOG_SCENE,
+        dialog_scene,
         ("商品标题",),
         padding=10,
     )
     if ocr_name_similarity(_compact(name), _compact(title)) < 0.78:
         raise RuntimeError(f"魔道_兑换收尾：购买框商品未对齐 {name}：{title}")
     values, text = context.ocr_numbers_in_shapes(
-        COMMON_SHOP_DIALOG_SCENE,
+        dialog_scene,
         ("价格",),
         padding=8,
     )
@@ -274,14 +280,30 @@ def _open_verified_shop_product(
     name: str,
     unit_price: int,
     max_scrolls: int,
+    shop_scene: int = MAGIC_SHOP_SCENE,
+    product_list_shape: str = "商品列表",
+    product_row_shapes: tuple[str, ...] = (
+        "商品行1",
+        "商品行2",
+        "商品行3",
+        "商品行4",
+        "商品行5",
+    ),
+    dialog_scene: int = COMMON_SHOP_DIALOG_SCENE,
+    label: str = "魔道_兑换收尾",
 ):
-    """Find the next planned product by live row identity before clicking it."""
+    """Find the next planned product by live row identity before clicking it.
 
-    view = context.view(MAGIC_SHOP_SCENE)
-    product_list = view.get_shape("商品列表")
-    rows = [view.get_shape(f"商品行{slot}") for slot in range(1, 6)]
+    The row remove/reorder contract differs across activity shop variants, so
+    callers must pass the shop geometry instead of assuming Runtime order maps
+    onto GUI rows.  Every click is gated by live name+unit-price alignment.
+    """
+
+    view = context.view(shop_scene)
+    product_list = view.get_shape(product_list_shape)
+    rows = [view.get_shape(shape) for shape in product_row_shapes]
     if product_list is None or any(row is None for row in rows):
-        raise RuntimeError("魔道_兑换收尾：缺少 #519 商品列表正式几何")
+        raise RuntimeError(f"{label}：缺少 #{shop_scene} 商品列表正式几何")
 
     # A completed purchase may remove or reorder rows.  Re-establish the list
     # origin before resolving every next action, then scan from top to bottom.
@@ -290,8 +312,8 @@ def _open_verified_shop_product(
     # later rows.
     for _attempt in range(max(0, int(max_scrolls)) + 1):
         changed = yield from context.scroll_shape_content(
-            MAGIC_SHOP_SCENE,
-            "商品列表",
+            shop_scene,
+            product_list_shape,
             direction="up",
             ratio=SHOP_TRAVERSAL_RATIO,
             duration=SHOP_TRAVERSAL_DURATION_SECONDS,
@@ -300,7 +322,7 @@ def _open_verified_shop_product(
         if not changed:
             break
     else:
-        raise RuntimeError("魔道_兑换收尾：商品列表在有界次数内未能归顶")
+        raise RuntimeError(f"{label}：商品列表在有界次数内未能归顶")
 
     last_error = ""
     page_changes = 0
@@ -333,16 +355,18 @@ def _open_verified_shop_product(
                     # A list drag can leave a persistent item-description
                     # tooltip over row 1.  Clear it through the formal inert
                     # shop title before deciding that the product is absent.
-                    context.click_shape_center(MAGIC_SHOP_SCENE, "兑换宝阁标题")
+                    context.click_shape_center(shop_scene, "兑换宝阁标题")
                     yield from context.wait_action_settle(0.35)
                 continue
-            context.click_frame_point(MAGIC_SHOP_SCENE, target.x, target.y)
+            context.click_frame_point(shop_scene, target.x, target.y)
             landed = yield from context.wait_scene(
-                [COMMON_SHOP_DIALOG_SCENE],
+                [dialog_scene],
                 wait=15.0,
-                label=f"魔道_兑换收尾：等待 {name} 购买框",
+                label=f"{label}：等待 {name} 购买框",
             )
-            _verify_dialog(context, name=name, unit_price=unit_price)
+            _verify_dialog(
+                context, name=name, unit_price=unit_price, dialog_scene=dialog_scene
+            )
             return landed
 
         # Full-frame OCR can merge the item title with rotating effect text
@@ -350,11 +374,11 @@ def _open_verified_shop_product(
         # formal list restores the product line while retaining global row
         # coordinates.  Keep this as a fallback so the common fast path stays
         # cheap.
-        context.click_shape_center(MAGIC_SHOP_SCENE, "兑换宝阁标题")
+        context.click_shape_center(shop_scene, "兑换宝阁标题")
         yield from context.wait_action_settle(0.35)
         cropped_tokens = tuple(context.ocr_tokens_in_shapes(
-            MAGIC_SHOP_SCENE,
-            ("商品列表",),
+            shop_scene,
+            (product_list_shape,),
             padding=0,
             crop=True,
         ))
@@ -374,20 +398,22 @@ def _open_verified_shop_product(
         except RuntimeError as exc:
             last_error = str(exc)
         else:
-            context.click_frame_point(MAGIC_SHOP_SCENE, target.x, target.y)
+            context.click_frame_point(shop_scene, target.x, target.y)
             landed = yield from context.wait_scene(
-                [COMMON_SHOP_DIALOG_SCENE],
+                [dialog_scene],
                 wait=15.0,
-                label=f"魔道_兑换收尾：等待 {name} 购买框",
+                label=f"{label}：等待 {name} 购买框",
             )
-            _verify_dialog(context, name=name, unit_price=unit_price)
+            _verify_dialog(
+                context, name=name, unit_price=unit_price, dialog_scene=dialog_scene
+            )
             return landed
 
         if scroll_index >= max_scrolls:
             break
         changed = yield from context.scroll_shape_content(
-            MAGIC_SHOP_SCENE,
-            "商品列表",
+            shop_scene,
+            product_list_shape,
             direction="down",
             ratio=SHOP_TRAVERSAL_RATIO,
             duration=SHOP_TRAVERSAL_DURATION_SECONDS,
@@ -399,7 +425,7 @@ def _open_verified_shop_product(
     # 换页次数是本轮遍历的实际证据：0 次说明列表没有位移，
     # 此时"未找到"不能当作"商品不存在"，两者必须能被区分。
     raise RuntimeError(
-        f"魔道_兑换收尾：有界滚动后未找到商品 {name}({unit_price})："
+        f"{label}：有界滚动后未找到商品 {name}({unit_price})："
         f"换页 {page_changes} 次，{last_error}"
     )
 

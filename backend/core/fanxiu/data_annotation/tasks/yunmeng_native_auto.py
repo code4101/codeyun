@@ -63,11 +63,12 @@ class YunmengNativeAutoAssets:
     count_slider_thumb: str = "挑战次数_滑块"
     count_slider_track: str | None = None
     count_minimum_marker: str | None = None
-    # The retained #560 frame is captured immediately after UpdateMaxUse:
-    # the thumb is at the native maximum.  The minus button's right edge and
-    # that thumb center therefore prove the two coordinate endpoints.
-    count_slider_left_anchor: str | None = "挑战次数_减少"
-    count_slider_right_anchor: str | None = "挑战次数_滑块"
+    # #560 实拍（900x1600 参考帧）证明的真实轨道：y≈1273、x≈240..700。
+    # 游标中心样本 值2490↔x457、值4856↔x673，两点线性外推得游标中心行程
+    # x≈230..673。左/右锚点即该行程的两个端点；不再把「−按钮」或滑块模板
+    # 的中心当轨道端点（旧锚点与真实像素不符，精调像素拖拽会打空）。
+    count_slider_left_anchor: str | None = "挑战次数_滑轨左端"
+    count_slider_right_anchor: str | None = "挑战次数_滑轨右端"
     count_slider_left_center_offset: float = 0.0
     count_slider_right_center_offset: float = 0.0
 
@@ -100,21 +101,24 @@ def _count_assets_with_proven_bounds(
     context: Any,
     assets: YunmengNativeAutoAssets,
 ) -> YunmengNativeAutoAssets:
-    """Resolve #560's button edge and retained max-thumb center in pixels."""
+    """Calibrate #560's verified cursor travel endpoints for the integer slider.
+
+    左右锚点 Shape 直接落在实拍游标中心行程的端点上（左≈x230、右≈x673，见
+    #560 证据）。``integer_count_control`` 读取右锚点时会先减去半个滑块宽度，
+    因此这里按实测滑块宽度补回，使闭环拿到真实可拖拽区间；左锚点无需偏移。
+    """
 
     if not assets.count_slider_left_anchor or not assets.count_slider_right_anchor:
         raise RuntimeError("云梦挑战次数缺少已证明的滑轨左右边界")
-    decrease = context.shape_box(assets.settings_scene_id, assets.count_decrease)
+    if not assets.count_slider_thumb:
+        raise RuntimeError("云梦挑战次数滑轨缺少滑块 Shape")
     thumb = context.shape_box(assets.settings_scene_id, assets.count_slider_thumb)
-    decrease_width = float(decrease.get("w") or 0.0)
     thumb_width = float(thumb.get("w") or 0.0)
-    if decrease_width <= 0 or thumb_width <= 0:
-        raise RuntimeError("云梦挑战次数滑轨边界 Shape 几何无效")
+    if thumb_width <= 0:
+        raise RuntimeError("云梦挑战次数滑轨滑块几何无效")
     return replace(
         assets,
-        count_slider_left_center_offset=decrease_width * 0.5,
-        # integer_count_control subtracts half a thumb from a conventional
-        # right anchor; this anchor is itself the retained max-thumb center.
+        count_slider_left_center_offset=0.0,
         count_slider_right_center_offset=thumb_width * 0.5,
     )
 
@@ -130,6 +134,9 @@ class YunmengNativeAutoRequest:
     fast_auto: bool = True
     skip_animation: bool = True
     max_count_adjustments: int = 200
+    # 只花当日可用次数：把本批请求夹到面板原生上限，读不到可用次数就当作已用完。
+    # 规划得到的目标次数可以更大，调用方无需先开面板读次数。
+    maximize_available: bool = False
 
     def __post_init__(self) -> None:
         if int(self.requested_challenges) <= 0:
@@ -143,8 +150,8 @@ class YunmengNativeAutoRequest:
             )
         if int(self.max_count_adjustments) <= 0:
             raise ValueError("云梦自动挑战次数调整预算必须大于 0")
-        if bool(self.auto_refill_stamina):
-            raise ValueError("云梦分批挑战必须关闭论剑令自动补充体力")
+        # 是否用论剑令补体力是可逆性最强的消耗决策：由调用方通过 payload
+        # ``use_refill_items`` 显式授权后才会置真，这里只做类型上的收敛。
         if not bool(self.skip_battle):
             raise ValueError("云梦分批挑战必须开启默认跳过战斗")
         if not bool(self.fast_auto):
@@ -397,6 +404,41 @@ def _set_required_toggle(
     raise RuntimeError(f"云梦安全开关「{asset.action}」设置后无法验证，已回滚")
 
 
+def _set_refill_toggle_by_panel(
+    context: Any,
+    assets: YunmengNativeAutoAssets,
+    desired: bool,
+) -> Iterator[Any]:
+    """用面板原生上限验证「论剑令补体力」开关。
+
+    #561 参考帧里这一行只有「未选」模板，没有「已选」模板，图像验证无法证明开启
+    成功。该开关的语义可以被面板自身证明：开启后 ``UpdateMaxUse`` 会把背包里的
+    云梦·论剑令计入 ``_MaxSliderValue``，上限随之抬升；关闭后回落。这里点一次、
+    比较上限变化、必要时回滚一次，仍不一致就失败关闭。
+    """
+
+    from backend.core.fanxiu.instrumentation.yunmeng_trial import (
+        read_yunmeng_auto_count_snapshot,
+    )
+
+    baseline = int(read_yunmeng_auto_count_snapshot().get("maximum") or 0)
+    context.click_shape_center(assets.settings_scene_id, TOGGLES["auto_refill_stamina"].action)
+    yield from context.wait_action_settle(0.6)
+    after_first = int(read_yunmeng_auto_count_snapshot().get("maximum") or 0)
+    state = after_first > baseline
+    if state == desired:
+        return desired
+    context.click_shape_center(assets.settings_scene_id, TOGGLES["auto_refill_stamina"].action)
+    yield from context.wait_action_settle(0.6)
+    after_second = int(read_yunmeng_auto_count_snapshot().get("maximum") or 0)
+    if (after_second > baseline) != desired:
+        raise RuntimeError(
+            "云梦论剑令补体力开关无法通过面板上限证明："
+            f"baseline={baseline}, first={after_first}, second={after_second}"
+        )
+    return desired
+
+
 def _attempt_optional_boost(
     context: Any,
     assets: YunmengNativeAutoAssets,
@@ -459,6 +501,12 @@ def run_yunmeng_native_auto(
                     assets,
                     TOGGLES[name],
                 )
+            elif name == "auto_refill_stamina" and value:
+                actual_toggles[name] = yield from _set_refill_toggle_by_panel(
+                    context,
+                    assets,
+                    True,
+                )
             else:
                 actual_toggles[name] = yield from _set_required_toggle(
                     context,
@@ -467,8 +515,9 @@ def run_yunmeng_native_auto(
                     value,
                 )
     else:
+        refill_authorized = bool(payload.get("use_refill_items", False))
         if (
-            locked_settings.auto_refill_stamina
+            (locked_settings.auto_refill_stamina and not refill_authorized)
             or not locked_settings.skip_battle
             or not locked_settings.fast_auto
             or not locked_settings.skip_animation
@@ -487,6 +536,13 @@ def run_yunmeng_native_auto(
                     TOGGLES[name].unselected,
                 )
                 continue
+            if name == "auto_refill_stamina" and value:
+                actual_toggles[name] = yield from _set_refill_toggle_by_panel(
+                    context,
+                    assets,
+                    True,
+                )
+                continue
             actual_toggles[name] = yield from _set_required_toggle(
                 context,
                 assets,
@@ -500,15 +556,35 @@ def run_yunmeng_native_auto(
     count_assets = _count_assets_with_proven_bounds(context, assets)
     live_count = read_yunmeng_auto_count_snapshot()
     native_maximum = int(live_count.get("maximum") or 0)
-    if request.requested_challenges > native_maximum:
+    requested_challenges = int(request.requested_challenges)
+    if request.maximize_available:
+        requested_challenges = min(requested_challenges, native_maximum)
+        if requested_challenges < 1:
+            # 面板已打开但今日可用次数为 0：这是正常业务边界，不是运行故障。
+            return YunmengNativeAutoResult(
+                terminal=YunmengAutoTerminal.RESOURCE_EXHAUSTED,
+                scene_id=assets.settings_scene_id,
+                ocr_text="云梦自动挑战面板可用次数为 0",
+                settings=YunmengNativeAutoSettings(
+                    requested_challenges=0,
+                    use_high_power_boost=bool(actual_toggles.get("use_high_power_boost", False)),
+                    use_score_boost=bool(actual_toggles.get("use_score_boost", False)),
+                    use_chase_sword=bool(actual_toggles.get("use_chase_sword", False)),
+                    skip_battle=bool(actual_toggles.get("skip_battle", False)),
+                    auto_refill_stamina=bool(actual_toggles.get("auto_refill_stamina", False)),
+                    fast_auto=bool(actual_toggles.get("fast_auto", False)),
+                    skip_animation=bool(actual_toggles.get("skip_animation", False)),
+                ),
+            )
+    if requested_challenges > native_maximum:
         raise RuntimeError(
             "云梦自动挑战请求超过当前面板原生上限："
-            f"target={request.requested_challenges}, maximum={native_maximum}"
+            f"target={requested_challenges}, maximum={native_maximum}"
         )
     yield from _set_count(
         context,
         count_assets,
-        request.requested_challenges,
+        requested_challenges,
         # The shared parameter is the residual error threshold for entering
         # exact +/- convergence, not a total click budget.
         max_adjustments=YUNMENG_NATIVE_COUNT_FINE_THRESHOLD,
@@ -526,13 +602,13 @@ def run_yunmeng_native_auto(
         runtime_reader=read_yunmeng_auto_count_snapshot,
     )
     if (
-        runtime_count != request.requested_challenges
+        runtime_count != requested_challenges
         or gui_count != runtime_count
         or final_maximum != native_maximum
     ):
         raise RuntimeError(
             "云梦自动挑战次数 GUI 与 Runtime 未对齐："
-            f"target={request.requested_challenges}, gui={gui_count}, "
+            f"target={requested_challenges}, gui={gui_count}, "
             f"runtime={runtime_count}, maximum={final_maximum}, "
             f"initial_maximum={native_maximum}"
         )
@@ -616,11 +692,11 @@ def execute_yunmeng_native_auto_job(
     from backend.core.fanxiu.activity.exchange_planning import (
         calculate_exchange_currency_gap,
     )
-    from backend.core.fanxiu.instrumentation.wallet import (
-        read_wallet_currency_snapshot,
+    from backend.core.fanxiu.activity.yunmeng_exchange import (
+        read_yunmeng_currency_snapshot,
     )
 
-    wallet_before = read_wallet_currency_snapshot(19, allow_discovery=True)
+    wallet_before = read_yunmeng_currency_snapshot(allow_discovery=True)
     wallet_identity = _wallet_runtime_identity(wallet_before)
     fresh_gap = calculate_exchange_currency_gap(
         target_total_tokens=target_total_tokens,
@@ -696,7 +772,10 @@ def execute_yunmeng_native_auto_job(
             use_high_power_boost=bool(payload.get("use_high_power_boost", True)),
             use_score_boost=bool(payload.get("use_score_boost", True)),
             use_chase_sword=bool(payload.get("use_chase_sword", True)),
-            auto_refill_stamina=False,
+            # 论剑令补体力默认关闭；只有调用方显式授权 use_refill_items 才会开启，
+            # 每个论剑令换 1 次挑战次数，属于不可逆消耗。
+            auto_refill_stamina=bool(payload.get("use_refill_items", False)),
+            maximize_available=bool(payload.get("use_available_attempts", False)),
         )
         result = yield from run_yunmeng_native_auto(
             context,
@@ -706,6 +785,14 @@ def execute_yunmeng_native_auto_job(
             terminal_polls=max(1, int(payload.get("terminal_polls") or 1800)),
         )
         if result.terminal is not YunmengAutoTerminal.COMPLETED:
+            if (
+                result.terminal is YunmengAutoTerminal.RESOURCE_EXHAUSTED
+                and int(result.settings.requested_challenges or 0) == 0
+            ):
+                # 面板已打开但今日可用次数为 0：正常业务边界，如实收尾而不是报错。
+                yield from context.go_scene(34)
+                incomplete_reason = "今日可用挑战次数已用完"
+                break
             if result.terminal is not YunmengAutoTerminal.UNKNOWN:
                 yield from context.go_scene(34)
             raise RuntimeError(
@@ -738,7 +825,7 @@ def execute_yunmeng_native_auto_job(
         # verified above.  Only errors inside this safe-home reconciliation
         # boundary are allowed to navigate back to #34.
         try:
-            wallet_after = read_wallet_currency_snapshot(19, allow_discovery=False)
+            wallet_after = read_yunmeng_currency_snapshot(allow_discovery=False)
             if _wallet_runtime_identity(wallet_after) != wallet_identity:
                 raise RuntimeError("云梦试剑：批次前后游戏进程或钱包身份变化，拒绝对账")
             current_delta = int(wallet_after["exchange_currency"]) - int(

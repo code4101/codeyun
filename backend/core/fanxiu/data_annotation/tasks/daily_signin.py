@@ -800,7 +800,7 @@ class DailySigninTaskMixin:
         business_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         scheduler_task_id = str((payload or {}).get("__scheduler_task_id") or "").strip()
-        if scheduler_task_id:
+        if scheduler_task_id and bool((payload or {}).get("schedule", True)):
             next_time = next_business_time(("00:00",))
             self._persist_scheduler_task_next_time(scheduler_task_id, next_time)
             message = f"{message}，下次 {next_time}"

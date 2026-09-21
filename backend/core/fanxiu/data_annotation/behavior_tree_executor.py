@@ -192,6 +192,11 @@ DEFAULT_GO_SCENE_OBSERVATION_TIMEOUT_SECONDS = 60.0
 DEFAULT_SCENE_RECOGNITION_POLL_SECONDS = 1.0
 OFFLINE_CULTIVATION_SETTLE_WAIT_SECONDS = 120.0
 UNKNOWN_FALLBACK_MAX_ATTEMPTS_PER_NAVIGATION = 4
+# 凡修所有菜单都用“点背景”退出，全屏活动封面更是没有关闭按钮。 #424
+# 只声明了左下退出角，没有一个用“图形是否可见”判定的箭头可用，因此允许
+# 在同一次导航里做少量“背景退出”探针；次数保持最小，且每次点击后必须
+# 由新画面证明状态改变。 声明坐标来自资产树，不在代码里再存一份。
+UNKNOWN_BACKDROP_EXIT_MAX_ATTEMPTS_PER_NAVIGATION = 2
 OCCLUSION_ASSET_GROUP_TITLE = "遮挡"
 LEGACY_OCCLUSION_ASSET_GROUP_TITLES = {"遮挡标记"}
 XIANQIAO_TRIAL_TRACK_SHAPES = {
@@ -1279,6 +1284,7 @@ class BehaviorTreeContext(AutomationContext):
         shape: Shape | str,
         *,
         frame_data_url: str | None = None,
+        require_unique: bool = True,
     ) -> dict[str, Any] | None:
         """Read one fresh frame against a Shape's declared visual conditions.
 
@@ -1286,6 +1292,13 @@ class BehaviorTreeContext(AutomationContext):
         a stateful visual gate (for example a bright, unclaimed reward mask)
         from a fixed-coordinate action before consuming it.  Unconstrained
         shapes cannot be used as state evidence.
+
+        ``require_unique`` defaults to True so every existing click gate keeps
+        the strict "one unambiguous floating object" contract.  Pass False only
+        for a deliberate enumeration read (for example a list of identical red
+        packet badges): the raw multi-match result is preserved and candidate
+        validity is judged per ``crop_similarity`` instead of collapsing to a
+        single object or a zero similarity.
         """
 
         view = self.resolve_view_selector(frame)
@@ -1315,6 +1328,7 @@ class BehaviorTreeContext(AutomationContext):
                 match_shape,
                 captured_frame,
                 condition=condition,
+                require_unique=require_unique,
             )
             if bool(result.get("matched")):
                 return result
@@ -6595,6 +6609,7 @@ class BehaviorTreeContext(AutomationContext):
         zero_progress_can_mark_done: bool = False,
         max_scrolls: int = 30,
         initial_checks: int = 1,
+        observations: list[dict[str, Any]] | None = None,
     ):
         """Find one #69 entry after normalizing its persisted list cursor.
 
@@ -6604,6 +6619,13 @@ class BehaviorTreeContext(AutomationContext):
         observations prove the real starting edge, then scan forward.  Every
         frame is re-identified as #69 before another drag or click, so a stale
         cursor cannot turn into a click on another activity (notably 道法争锋).
+
+        ``observations`` is an optional read-only per-page diagnostic sink for
+        Cell reproduction: every scanned page appends ``scroll_index``,
+        ``check_index``, the page's post-``_ensure_daily_list_frame``
+        ``frame_data_url``, a snapshot copy of ``lines`` and the ``matches``
+        returned by ``_daily_entry_matches``.  It defaults to ``None`` and
+        otherwise adds no behaviour and never changes scroll/click decisions.
         """
         view69 = self.view(69)
         list_shape = self.shape(view69, "滚动窗口")
@@ -6700,6 +6722,14 @@ class BehaviorTreeContext(AutomationContext):
                         title_pattern=title_pattern,
                         exclude_pattern=exclude_pattern,
                     )
+                    if observations is not None:
+                        observations.append({
+                            "scroll_index": scroll_index,
+                            "check_index": check_index,
+                            "frame_data_url": frame,
+                            "lines": [dict(line) for line in lines],
+                            "matches": list(matches),
+                        })
                     if matches:
                         x, y, matched_text = matches[0]
                         progress = self._daily_entry_row_progress(lines, y)
@@ -7049,6 +7079,7 @@ from backend.core.fanxiu.data_annotation.tasks.yihuo import 日常异火任务Mi
 from backend.core.fanxiu.data_annotation.tasks.zhenxie import ZhenxieTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.xianqiao_trial import XianqiaoTrialTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.weekly_hanli import WeeklyHanliTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.weekly_wanxian import WeeklyWanxianTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.bubble_claim_pills import BubbleClaimPillsTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.bubble_hide import BubbleHideTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.bubble_lifecycle import BubbleLifecycleTaskMixin
@@ -7089,6 +7120,7 @@ class BehaviorTreeExecutor(
     TakeMedicineBatchTaskMixin,
     WeeklyHanliTaskMixin,
     WeeklyShengzuTaskMixin,
+    WeeklyWanxianTaskMixin,
     LingquanTaskMixin,
     LingtaChallengeTaskMixin,
     XianqiaoTrialTaskMixin,
@@ -8933,14 +8965,25 @@ class BehaviorTreeExecutor(
 
     def _record_daily_xianshi_done(self, payload: dict[str, Any], *, message: str) -> str:
         next_time = self._next_daily_boss_reset_time_text()
-        self._persist_scheduler_task_next_time(
-            str(payload.get("__scheduler_task_id") or "legacy-daily-xianshi"),
-            next_time,
-        )
-        self._log("success", f"仙市_秘藏阁：{message}，下次 {next_time}")
+        if bool(payload.get("schedule", True)):
+            self._persist_scheduler_task_next_time(
+                str(payload.get("__scheduler_task_id") or "legacy-daily-xianshi"),
+                next_time,
+            )
+            self._log("success", f"仙市_秘藏阁：{message}，下次 {next_time}")
+        else:
+            # Aggregated run: record the business fact only.  The parent Job owns
+            # the single schedule write, so no retired id may be rescheduled.
+            self._log("success", f"仙市_秘藏阁：{message}")
         return next_time
 
     def _schedule_daily_xianshi_next_check(self, payload: dict[str, Any], *, message: str, seconds: int) -> str:
+        if not bool(payload.get("schedule", True)):
+            # A bounded recheck is not a completion.  Under aggregation it must
+            # surface to the parent instead of pretending the stage finished.
+            raise RuntimeError(
+                f"仙市_秘藏阁：聚合调度下不能用短重试伪装完成（{message}）"
+            )
         task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-xianshi").strip() or "legacy-daily-xianshi"
         next_time = (_now() + timedelta(seconds=max(60, int(seconds)))).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
@@ -8952,11 +8995,15 @@ class BehaviorTreeExecutor(
 
     def _record_daily_vip_done(self, payload: dict[str, Any], *, message: str) -> str:
         next_time = self._next_daily_vip_reset_time_text()
-        self._persist_scheduler_task_next_time(
-            str(payload.get("__scheduler_task_id") or "legacy-daily-vip"),
-            next_time,
-        )
-        self._log("success", f"日常_vip：{message}，下次 {next_time}")
+        if bool(payload.get("schedule", True)):
+            self._persist_scheduler_task_next_time(
+                str(payload.get("__scheduler_task_id") or "legacy-daily-vip"),
+                next_time,
+            )
+            self._log("success", f"日常_vip：{message}，下次 {next_time}")
+        else:
+            # Aggregated run: the parent Job writes the canonical next_time.
+            self._log("success", f"日常_vip：{message}")
         return next_time
 
     def _next_daily_vip_reset_time_text(self) -> str:
@@ -8991,19 +9038,21 @@ class BehaviorTreeExecutor(
             max_clicks=int(payload.get("xianshi_entry_max_clicks") or 3),
             label=f"{task_label}：等待仙市入口页",
         )
-        # #248 is a reference frame for the unselected ``仙币`` tab, not a
-        # globally recognizable scene.  Requiring current_scene == 248 makes
-        # its own perfectly matching local shape unreachable.  Keep #247 as
-        # the established source, wait for the reference shape directly, then
-        # use #249's OCR identity to prove that the tab switch completed.
+        # #248 is a reference frame for the 秘藏阁 tab strip, not a globally
+        # recognizable scene, so it can never satisfy wait_click's source-scene
+        # guard.  Keep #247 as the established source and click the strip.
         yield from context.wait_click(247, "秘藏阁")
         yield from context.wait_action_settle(1.5)
-        yield from context.wait_any(
-            {"coin_tab": context.shape_visible(248, "仙币")},
-            timeout=float(payload.get("coin_tab_visible_wait_seconds") or 30.0),
-            label=f"{task_label}：等待秘藏阁仙币标签",
+        # The tab strip is regular text whose tabs are added or shifted by game
+        # versions, so the 仙币 tab is located as OCR text inside the whole
+        # 页签条 region.  A fixed box keeps matching the neighbouring tab at
+        # ~79% and would click it after any threshold relaxation.
+        yield from context.wait_click_ocr_text(
+            248,
+            "仙币",
+            in_shapes=("页签条",),
+            timeout_seconds=float(payload.get("coin_tab_visible_wait_seconds") or 30.0),
         )
-        context.click_shape_center(248, "仙币")
         yield from context.wait_action_settle(float(payload.get("coin_tab_settle_seconds") or 2.5))
         yield from context.wait_scene(
             [249],
@@ -11030,10 +11079,12 @@ class BehaviorTreeExecutor(
     ) -> tuple[float, list[int]]:
         source_id = int(edge.get("source_id") or 0)
         source_distance = distances_to_target.get(source_id)
-        if source_distance is None or self._scene_navigation_edge_risk(edge, target_scene_id) is None:
-            return 0.0, []
         shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
         edge_key = self._scene_jump_edge_key(edge)
+        # Populate the shared cache before the reachability guard.  The caller
+        # reads ``landing_probability_cache[edge_key]`` unconditionally, so an
+        # unreachable source must still leave a posterior here instead of
+        # raising KeyError.  The returned progress weight is unchanged.
         landing_probabilities = landing_probability_cache.get(edge_key)
         if landing_probabilities is None:
             landing_probabilities = posterior_landing_probabilities(
@@ -11041,6 +11092,8 @@ class BehaviorTreeExecutor(
                 [int(scene_id) for scene_id in edge.get("target_ids") or []],
             )
             landing_probability_cache[edge_key] = landing_probabilities
+        if source_distance is None or self._scene_navigation_edge_risk(edge, target_scene_id) is None:
+            return 0.0, []
         progress_landing_ids = [
             int(landing_id)
             for landing_id in landing_probabilities
@@ -11829,6 +11882,122 @@ class BehaviorTreeExecutor(
         self._clear_tick_frame(ctx)
         return _UnknownFallbackDecision("clicked", attempt=attempt_count, point=(float(x), float(y)))
 
+    def _try_navigation_backdrop_exit(
+        self,
+        ctx: dict[str, Any],
+        frame_data_url: str,
+        *,
+        navigation_state_key: str,
+        target_scene_id: int,
+        attempted_actions: dict[tuple[str, str], dict[str, float | int]],
+        current_scene_id: int | None = None,
+        current_score: float = 0.0,
+        incident_recorder: NavigationIncidentRecorder | None = None,
+    ) -> _UnknownFallbackDecision:
+        """Consume one declared backdrop-exit probe for an unknown overlay.
+
+        凡修没有为菜单准备关闭按钮，退出方式是点背景；全屏活动宣传封面
+        （云梦试剑、万域问鼎这类）连左下返回箭头都不画，所以上面基于
+        “箭头图形是否可见”的 #424 分支永远不可用，导航阶梯只能停在修复
+        边界。 这里复用 #424 在资产树里声明的左下退出角坐标，把它当作
+        “背景退出”探针，而不是在代码里另存一套坐标。
+
+        有界且失败即停：
+
+        * 只在连续 unknown 的恢复阶梯里工作，已识别场景永不触发；
+        * 每次导航最多 ``UNKNOWN_BACKDROP_EXIT_MAX_ATTEMPTS_PER_NAVIGATION`` 次；
+        * 每次点击后画面必须变化（比对本次与上次探针帧），否则立即停手；
+        * 声明坐标必须落在左下角，越界就拒绝点击；
+        * ``#424`` 可显式声明 ``backdropExitProbe=false`` 关闭该探针。
+        """
+
+        if current_scene_id is not None:
+            return _UnknownFallbackDecision("unavailable")
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        fallback_image = images.get(424) if isinstance(images, dict) else None
+        if not isinstance(fallback_image, dict):
+            return _UnknownFallbackDecision("unavailable")
+        if fallback_image.get("backdropExitProbe") is False:
+            return _UnknownFallbackDecision("unavailable")
+        shape = self._find_shape(fallback_image, "返回")
+        if not isinstance(shape, dict):
+            return _UnknownFallbackDecision("unavailable")
+        width, height = self._frame_size(fallback_image)
+        x = (float(shape.get("x") or 0.0) + float(shape.get("w") or 0.0) / 2) * width
+        y = (float(shape.get("y") or 0.0) + float(shape.get("h") or 0.0) / 2) * height
+        if width <= 0 or height <= 0 or x > width * 0.35 or y < height * 0.7:
+            self._log(
+                "warning",
+                f"场景移动：背景退出声明点 ({x:.0f},{y:.0f}) 不在左下安全区，拒绝点击",
+            )
+            return _UnknownFallbackDecision("unavailable")
+        attempt_key = ("__continuous_unknown__", "backdrop_exit")
+        state = attempted_actions.setdefault(attempt_key, {"count": 0})
+        attempt_count = int(state.get("count") or 0)
+        if attempt_count >= UNKNOWN_BACKDROP_EXIT_MAX_ATTEMPTS_PER_NAVIGATION:
+            return _UnknownFallbackDecision("exhausted", attempt=attempt_count)
+        previous_frame = state.get("last_frame")
+        if isinstance(previous_frame, str) and previous_frame:
+            # 上一次背景点击没有改变画面，说明这里不是“点背景就退出”的浮层，
+            # 再点一次只会重复同一个无效动作，保留现场交给修复边界。
+            similarity = _image_similarity_percent(self, previous_frame, frame_data_url)
+            if similarity >= 99.0:
+                return _UnknownFallbackDecision("exhausted", attempt=attempt_count)
+        attempt_count += 1
+        state["count"] = attempt_count
+        state["last_frame"] = frame_data_url
+        reason = "unknown 全屏浮层使用声明的左下背景退出"
+        if incident_recorder is not None:
+            incident_recorder.trigger(
+                trigger_type="normal_actions_exhausted",
+                trigger_label=f"{reason}，开始背景退出探针",
+                threshold={
+                    "backdrop_exit_attempt": attempt_count,
+                    "max_attempts_per_navigation": UNKNOWN_BACKDROP_EXIT_MAX_ATTEMPTS_PER_NAVIGATION,
+                    "declared_point": [round(float(x), 1), round(float(y), 1)],
+                    "continuous_unknown_seconds": DEFAULT_GO_SCENE_CONTINUOUS_UNKNOWN_SECONDS,
+                },
+                frame_data_url=frame_data_url,
+                current_scene_id=current_scene_id,
+                current_score=current_score,
+                candidate_scene_ids=[target_scene_id, 424],
+            )
+            incident_recorder.mark_fallback_used()
+        with self._lock:
+            self._status.update({
+                "phase": "go_scene_navigation_fallback",
+                "current_scene": None,
+                "message": (
+                    f"场景移动：{reason}（第 {attempt_count} 次），"
+                    f"随后重新识别并规划到 #{target_scene_id}"
+                ),
+                "updated_at": time.time(),
+            })
+        self._log(
+            "action",
+            f"场景移动：{reason}，点击一次左下背景 ({x:.0f},{y:.0f})（第 {attempt_count}/"
+            f"{UNKNOWN_BACKDROP_EXIT_MAX_ATTEMPTS_PER_NAVIGATION} 次），随后重新计时并规划到 #{target_scene_id}",
+        )
+        self._save_action_trace(
+            ctx,
+            fallback_image,
+            {
+                "kind": "click",
+                "point": [float(x), float(y)],
+                "label": "click backdrop exit navigation_fallback",
+                "shape_title": shape.get("title"),
+                "shape_id": shape.get("id"),
+                "source_scene_id": current_scene_id,
+                "target_scene_id": int(target_scene_id),
+                "navigation_backdrop_exit_attempt": attempt_count,
+                "navigation_state_key": navigation_state_key,
+            },
+            frame_data_url=frame_data_url,
+        )
+        self._click_frame_point(ctx, fallback_image, x, y, save_action_trace=False)
+        self._clear_tick_frame(ctx)
+        return _UnknownFallbackDecision("clicked", attempt=attempt_count, point=(float(x), float(y)))
+
     def _wait_or_click_navigation_fallback_return(
         self,
         ctx: dict[str, Any],
@@ -11852,6 +12021,21 @@ class BehaviorTreeExecutor(
             current_score=current_score,
             incident_recorder=incident_recorder,
         )
+        used_backdrop_exit = False
+        if decision.status == "unavailable":
+            # 画面上没有画出左下返回箭头（典型是全屏活动封面），退回复工具
+            # 仍然存在：本游戏所有菜单都靠点背景退出。
+            decision = self._try_navigation_backdrop_exit(
+                ctx,
+                frame_data_url,
+                navigation_state_key=navigation_state_key,
+                target_scene_id=target_scene_id,
+                attempted_actions=attempted_actions,
+                current_scene_id=current_scene_id,
+                current_score=current_score,
+                incident_recorder=incident_recorder,
+            )
+            used_backdrop_exit = decision.status in {"clicked", "exhausted"}
         if decision.status == "clicked":
             yield from self._wait_action_settle(ctx, stop_event, seconds=1.5)
             if incident_recorder is not None and incident_recorder.active:
@@ -11864,7 +12048,11 @@ class BehaviorTreeExecutor(
                     source_scene_id=current_scene_id,
                     source_score=current_score,
                     shape=fallback_shape,
-                    reason="连续一分钟 unknown 后的通用返回投影",
+                    reason=(
+                        "连续一分钟 unknown 后使用声明的左下背景退出"
+                        if used_backdrop_exit
+                        else "连续一分钟 unknown 后的通用返回投影"
+                    ),
                     before_frame=frame_data_url,
                     landing_scene_id=after_scene_id,
                     landing_score=after_score,
@@ -11876,9 +12064,10 @@ class BehaviorTreeExecutor(
                 )
             return True
         if decision.status == "exhausted":
+            label = "左下背景退出" if used_backdrop_exit else "#424「返回」"
             self._log(
                 "warning",
-                f"场景移动：本次导航已尝试 #424「返回」{decision.attempt} 次，停止重复点击并保留现场",
+                f"场景移动：本次导航已尝试 {label}{decision.attempt} 次，停止重复点击并保留现场",
             )
         return False
 
@@ -12570,6 +12759,7 @@ class BehaviorTreeExecutor(
         frame_data_url: str,
         *,
         condition: str = "auto",
+        require_unique: bool = True,
     ) -> dict[str, Any]:
         flags = self._shape_match_payload_flags(shape, condition=condition)
         image_role = str(flags["image_role"])
@@ -12596,7 +12786,7 @@ class BehaviorTreeExecutor(
                 match_strategy=str(flags["match_strategy"]),
                 ocr_enabled=ocr_enabled,
             )
-            if bool(flags["scan"]) and image_role != "off":
+            if bool(flags["scan"]) and image_role != "off" and require_unique:
                 result = self._resolve_unique_floating_image_match(
                     ctx,
                     image,
@@ -12608,6 +12798,22 @@ class BehaviorTreeExecutor(
         except Exception as exc:
             raise RuntimeError(f"浮动标注「{shape.get('title') or shape.get('id')}」匹配失败：{exc}") from exc
         similarity = float(result.get("similarity") or 0)
+        if bool(flags["scan"]) and image_role != "off" and not require_unique:
+            # Enumeration read: the caller asked for every matching object, so
+            # the unique-selection pass above was skipped.  The raw full-frame
+            # similarity can be 0 even when valid candidates exist, so judge
+            # validity from each candidate's own crop_similarity.
+            raw_matches = result.get("matches") if isinstance(result.get("matches"), list) else []
+            candidate_similarity = max(
+                (
+                    float(item.get("crop_similarity") or 0)
+                    for item in raw_matches
+                    if isinstance(item, dict)
+                ),
+                default=0.0,
+            )
+            if candidate_similarity > similarity:
+                similarity = candidate_similarity
         result_ocr_matched = bool(ocr_enabled and self._shape_match_result_ocr_matches(shape, result))
         if ocr_enabled and not result_ocr_matched and self._has_cached_ocr_tokens(ctx, frame_data_url):
             existing_fixed_box = result.get("fixed_box") if isinstance(result.get("fixed_box"), dict) else None
@@ -12754,6 +12960,57 @@ class BehaviorTreeExecutor(
                 return True
         return False
 
+    def _scene_identity_ocr_line(
+        self,
+        lines: list[dict[str, Any]],
+        search_box: dict[str, Any],
+        target: str,
+        mode: str,
+    ) -> dict[str, Any] | None:
+        """Pick the authoritative OCR line for one scene-identity shape.
+
+        Exact box overlaps win; when annotation drift leaves the ROI just off
+        the rendered line (a real #567 frame had “效果说明” overlap at 0.22,
+        below the 0.30 token threshold), fall back to the nearest line whose
+        text matches within one line-height / box-width of the box centre.
+        """
+
+        exact = [
+            line
+            for line in query_ocr_lines(lines, search_box)
+            if self._ocr_text_matches(_sanitize_ocr_text(line.get("text")), target, mode)
+        ]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+
+        left = float(search_box.get("x") or 0.0)
+        top = float(search_box.get("y") or 0.0)
+        width = float(search_box.get("w") or 0.0)
+        height = float(search_box.get("h") or 0.0)
+        center_x = left + width / 2.0
+        center_y = top + height / 2.0
+        best: tuple[float, dict[str, Any]] | None = None
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            line_text = _sanitize_ocr_text(line.get("text"))
+            if not line_text or not self._ocr_text_matches(line_text, target, mode):
+                continue
+            line_x = float(line.get("x") or 0.0)
+            line_y = float(line.get("y") or 0.0)
+            line_width = float(line.get("w") or 0.0)
+            line_height = float(line.get("h") or 0.0)
+            dx = abs((line_x + line_width / 2.0) - center_x)
+            dy = abs((line_y + line_height / 2.0) - center_y)
+            if dx > width or dy > max(height, line_height):
+                continue
+            distance = dx + dy
+            if best is None or distance < best[0]:
+                best = (distance, line)
+        return best[1] if best is not None else None
+
     def _shape_cached_frame_ocr_match(
         self,
         ctx: dict[str, Any],
@@ -12814,6 +13071,32 @@ class BehaviorTreeExecutor(
                 text = _sanitize_ocr_text(spatial.get("text"))
                 result["reason"] = "action_envelope_ocr"
                 self._log("detail", f"局部 OCR 复核 {shape.get('_wait_click_action_title')}：{text[:120]}")
+        if (
+            not floating_ocr
+            and bool(shape.get("isSceneIdentity"))
+            and not (text and self._ocr_text_matches(text, target, mode))
+        ):
+            # A tight identity ROI can clip its leading/trailing character, or
+            # sit a few pixels off the rendered line, so the token-ROI text may
+            # be a fragment such as “前拥有论剑玉：” or empty.  Paddle's own
+            # line grouping already owns the complete text; accept the
+            # authoritative line instead of trusting the clipped ROI boundary,
+            # preferring an exact overlap and otherwise the nearest matching
+            # line within one line-height of the box.  Only scene identity
+            # incurs this fallback.
+            cached_lines = cache.get("lines") if isinstance(cache.get("lines"), list) else []
+            matched_line = self._scene_identity_ocr_line(
+                cached_lines, search_box, target, mode
+            )
+            if matched_line is not None:
+                line_text = _sanitize_ocr_text(matched_line.get("text"))
+                text = line_text
+                spatial = {
+                    "text": line_text,
+                    "fragments": [matched_line],
+                    "tokens": spatial.get("tokens") or [],
+                }
+                result["reason"] = "cached_frame_ocr_line"
         fragments = spatial.get("fragments") if isinstance(spatial.get("fragments"), list) else []
         result["ocr_text"] = text
         result["matches"] = fragments
@@ -15173,6 +15456,75 @@ class BehaviorTreeExecutor(
                     final_score=score,
                     final_frame=frame,
                     message="重新规划后到达目标场景",
+                )
+                ctx.pop("_navigation_incident_recorder", None)
+                return "success"
+
+            if int(current_scene_id) == 661 and int(target_scene_id) == 34:
+                # #661 is the world HUD variant that carries a nearby landmark
+                # ``进入`` action.  That action is never a return-to-world
+                # control: it starts the game's own landmark auto-route (e.g.
+                # #400 天道外域) and bounces straight back to #661.  The real
+                # world identity is still visible behind the variant, so
+                # require fresh-frame #34 confirmation before treating this as
+                # already home; otherwise stop and preserve the live frame.
+                confirmed = False
+                observed_scene_id: int | None = None
+                observed_score = 0.0
+                fresh_frame = frame
+                for _world_variant_confirm_attempt in range(3):
+                    confirmed, observed_scene_id, observed_score, fresh_frame = yield from confirm_target_on_fresh_frame()
+                    if confirmed:
+                        break
+                if not confirmed:
+                    observed_text = f"#{observed_scene_id}" if observed_scene_id is not None else "unknown"
+                    self._log(
+                        "warning",
+                        f"场景移动：当前 #{current_scene_id} 新帧未复核出 #{target_scene_id}"
+                        f"（{observed_text} {observed_score:.0f}%），禁止点击 #661「进入」回世界，保留现场",
+                    )
+                    incident_recorder.trigger(
+                        trigger_type="world_variant_unconfirmed",
+                        trigger_label="#661 世界变体未复核出 #34，拒绝用「进入」冒充回世界",
+                        threshold={
+                            "observed_scene_id": int(observed_scene_id or 0),
+                            "observed_score": round(float(observed_score or 0.0), 1),
+                        },
+                        frame_data_url=fresh_frame or frame,
+                        current_scene_id=current_scene_id,
+                        current_score=score,
+                        candidate_scene_ids=[current_scene_id, target_scene_id],
+                    )
+                    incident_recorder.finalize(
+                        status="unrecovered",
+                        final_scene_id=current_scene_id,
+                        final_score=score,
+                        final_frame=fresh_frame or frame,
+                        message="#661 世界变体未复核出 #34，已保留现场",
+                    )
+                    ctx.pop("_navigation_incident_recorder", None)
+                    context.require_scene_repair(
+                        int(current_scene_id),
+                        fresh_frame or frame,
+                        expected_scene_ids=[target_scene_id],
+                        reason=f"go_scene({target_scene_id}) 失败：当前 #{current_scene_id} 未在新帧复核出 "
+                               f"#{target_scene_id}（{observed_text} {observed_score:.0f}%）；"
+                               "禁止点击 #661「进入」回世界，已保留现场。",
+                    )
+                frame = fresh_frame
+                score = observed_score
+                with self._lock:
+                    self._status.update({
+                        "current_scene": target_scene_id,
+                        "updated_at": time.time(),
+                    })
+                self._log("success", f"已在目标场景 #{target_scene_id}（#661 世界变体新帧复核确认）")
+                incident_recorder.finalize(
+                    status="recovered_with_fallback" if incident_recorder.fallback_used else "recovered_after_stall",
+                    final_scene_id=target_scene_id,
+                    final_score=observed_score,
+                    final_frame=fresh_frame,
+                    message="#661 世界变体经新帧确认已在 #34",
                 )
                 ctx.pop("_navigation_incident_recorder", None)
                 return "success"

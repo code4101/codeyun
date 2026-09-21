@@ -20,6 +20,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     RANKING_CAPABILITY_STATUS,
     RESOURCE_FREE_GIFT_KIND,
     TIANDI_YIJU_ACTIVE_KIND,
+    XIANMENG_ACTIVE_KIND,
     XUTIAN_ACTIVE_KIND,
     RankingActivityIdentity,
     RankingOccurrence,
@@ -85,6 +86,42 @@ def test_production_due_includes_only_promoted_magic_initialization() -> None:
         for item in catalog_due
         if ranking_checkpoint_is_production(item)
     } == {MAGIC_INITIALIZATION_KIND}
+
+
+def test_xianmeng_active_is_production_and_retry_drives_next_time() -> None:
+    occurrence = RankingOccurrence(
+        activity_type="xianmeng-competition",
+        family="gameplay_rank",
+        runtime_id="xianmeng-1",
+        activity_id=28000,
+        start_at=datetime(2026, 9, 20, 0, 0, tzinfo=TZ),
+        end_at=datetime(2026, 9, 20, 22, 0, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 20, 0, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 20, 22, 0, tzinfo=TZ),
+        cross_count=1,
+    )
+    now = datetime(2026, 9, 20, 10, 0, tzinfo=TZ)
+
+    catalog_due = due_ranking_checkpoints((occurrence,), now=now)
+    production_due = due_ranking_checkpoints(
+        (occurrence,), now=now, production_only=True
+    )
+
+    assert {item.checkpoint_kind for item in catalog_due} == {
+        DAILY_RECONCILE_KIND,
+        XIANMENG_ACTIVE_KIND,
+    }
+    assert [item.checkpoint_kind for item in production_due] == [XIANMENG_ACTIVE_KIND]
+    assert ranking_checkpoint_is_production(production_due[0]) is True
+
+    retry_at = datetime(2026, 9, 20, 10, 44, tzinfo=TZ)
+    assert next_ranking_lifecycle_time(
+        (occurrence,),
+        now=now,
+        retry_times=[retry_at],
+        production_only=True,
+    ) == retry_at
+
 
 RESOURCE_RANK_ACTIVITY_ID_CASES = (
     *((value, "lingzhuang-huadao") for value in (

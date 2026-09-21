@@ -452,3 +452,62 @@ def test_complete_viewport_keeps_four_columns_and_excludes_partial_fifth_row() -
         (3, 2),
         (3, 3),
     ]
+
+
+def test_upscaled_ocr_fragments_scales_boxes_back_to_native_coordinates() -> None:
+    import base64
+    import io
+
+    from PIL import Image
+
+    from backend.core.fanxiu.runtime_gui.storage_bag_alignment import (
+        upscaled_ocr_fragments,
+    )
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (20, 10), (255, 255, 255)).save(buffer, format="PNG")
+    frame = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+    class Runner:
+        def __init__(self):
+            self.calls = []
+
+        def _ocr_frame(self, url, *, options=None):
+            self.calls.append(url)
+            # Boxes come back in the upscaled pixel space (scale=2).
+            return {"lines": [{"text": "1/1", "x": 40.0, "y": 60.0, "w": 8.0, "h": 6.0, "score": 0.9}]}
+
+    class Context:
+        runner = Runner()
+
+        def ocr_fragments(self, url):  # pragma: no cover - must not be used
+            raise AssertionError("upscaled path must not re-recognize the scene")
+
+    context = Context()
+    fragments = upscaled_ocr_fragments(context, frame, scale=2.0)
+
+    assert len(context.runner.calls) == 1
+    assert context.runner.calls[0] != frame  # the upscaled frame was OCR'd
+    assert fragments == (
+        {"text": "1/1", "x": 20.0, "y": 30.0, "w": 4.0, "h": 3.0, "score": 0.9},
+    )
+
+
+def test_upscaled_ocr_fragments_falls_back_to_native_frame() -> None:
+    from backend.core.fanxiu.runtime_gui.storage_bag_alignment import (
+        upscaled_ocr_fragments,
+    )
+
+    class Context:
+        def __init__(self):
+            self.calls = []
+
+        def ocr_fragments(self, url):
+            self.calls.append(url)
+            return [{"text": "3", "x": 5.0, "y": 7.0, "w": 2.0, "h": 2.0}]
+
+    context = Context()
+    fragments = upscaled_ocr_fragments(context, "not-a-data-url", scale=2.0)
+
+    assert context.calls == ["not-a-data-url"]
+    assert fragments == ({"text": "3", "x": 5.0, "y": 7.0, "w": 2.0, "h": 2.0},)

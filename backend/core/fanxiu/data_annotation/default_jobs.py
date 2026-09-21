@@ -71,6 +71,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "bubble_weekly_pills",
     "take_medicine_batch",
     "weekly_hanli",
+    "weekly_wanxian",
     "daily_lingquan",
     "weekly_shengzu",
     "daily_vip",
@@ -103,6 +104,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "kunlun_secret_lottery",
     "lingxiao_xianhui",
     "wanbao_zhenbao",
+    "theme_collection",
     "xutian_palace_rankings",
     "xutian_palace_native_auto",
     "yunmeng_trial_auto_challenge",
@@ -120,18 +122,35 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
 )
 
 
-def _run_manual_standard_job(runner: Any, task_id: str, operation: Any):
-    """Keep a manually triggered Job dormant after every normal return."""
+def _run_manual_standard_job(
+    runner: Any,
+    task_id: str,
+    operation: Any,
+    *,
+    schedule: bool = True,
+):
+    """Keep a manually triggered Job dormant after every normal return.
+
+    ``schedule=False`` is used by components internalized into the canonical
+    theme-collection Job.  Those components must never write a retired
+    first-level id, including during a manual/AI debug run.
+    """
 
     result = operation()
     if hasattr(result, "send"):
         result = yield from result
-    runner._persist_scheduler_task_next_time(task_id, None)
+    if schedule:
+        runner._persist_scheduler_task_next_time(task_id, None)
     return result
 
 
-def register_fanxiu_default_jobs() -> None:
-    if all(get_fanxiu_data_annotation_task_cell_definition(task_type) is not None for task_type in _DEFAULT_BEHAVIOR_TREE_JOB_TYPES):
+def register_fanxiu_default_jobs(*, force: bool = False) -> None:
+    """Register defaults; AI may explicitly refresh handlers in an idle Kernel.
+
+    ``force`` replaces definitions, not Kernel state or an active generator.
+    The caller must own the idle execution slot before hot-loading definitions.
+    """
+    if not force and all(get_fanxiu_data_annotation_task_cell_definition(task_type) is not None for task_type in _DEFAULT_BEHAVIOR_TREE_JOB_TYPES):
         return
 
     def _compact_detect_scene_trace(trace: list[dict[str, Any]], *, max_candidates: int = 12) -> list[dict[str, Any]]:
@@ -688,12 +707,12 @@ def register_fanxiu_default_jobs() -> None:
 
     @register_fanxiu_data_annotation_task_cell(
         "resource_auto_use",
-        "资源_自动使用",
+        "资源_每日处理",
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="resource-auto-use",
-        standard_job_description="手动",
-        standard_job_payload={"max_rounds": 3},
+        standard_job_description="每日",
+        standard_job_payload={"max_rounds": 3, "max_execution_seconds": 10800},
     )
     def _run_data_annotation_resource_auto_use_task_cell(
         runner: Any,
@@ -701,23 +720,13 @@ def register_fanxiu_default_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        from backend.core.fanxiu.data_annotation.tasks.resource_auto_use import (
-            STANDARD_JOB_ID,
-            execute_resource_auto_use_task,
-        )
+        from backend.core.fanxiu.data_annotation.tasks.resource_daily import execute_resource_daily_task
+        return (yield from execute_resource_daily_task(runner, ctx, payload, stop_event))
 
-        return (
-            yield from _run_manual_standard_job(
-                runner,
-                STANDARD_JOB_ID,
-                lambda: execute_resource_auto_use_task(
-                    runner,
-                    ctx,
-                    payload,
-                    stop_event,
-                ),
-            )
-        )
+    @register_fanxiu_data_annotation_task_cell("xianfu_science", "仙府_玄机阁升级", scheduler_supported=False)
+    def _run_xianfu_science_component(runner, ctx, payload, stop_event):
+        from backend.core.fanxiu.data_annotation.tasks.xianfu_science import execute_xianfu_science_task
+        return (yield from execute_xianfu_science_task(runner, ctx, payload, stop_event))
 
     @register_fanxiu_data_annotation_task_cell(
         "xianyuan_auto_gift",
@@ -754,15 +763,7 @@ def register_fanxiu_default_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "holy_wood_prayer",
         "圣木祈愿",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="holy-wood-prayer",
-        standard_job_description="手动",
-        standard_job_payload={
-            "spend_budget": 2952,
-            "max_task_clicks": 20,
-            "max_draw_rounds": 64,
-        },
+        scheduler_supported=False,
     )
     def _run_data_annotation_holy_wood_prayer_task_cell(
         runner: Any,
@@ -785,21 +786,14 @@ def register_fanxiu_default_jobs() -> None:
                     payload,
                     stop_event,
                 ),
+                schedule=False,
             )
         )
 
     @register_fanxiu_data_annotation_task_cell(
         "xianyan_host_baihua",
         "仙宴_清理",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="xianyan-host-baihua",
-        standard_job_description="手动",
-        standard_job_payload={
-            "max_rounds": 100,
-            "max_scrolls": 100,
-            "max_execution_seconds": 3600,
-        },
+        scheduler_supported=False,
     )
     def _run_data_annotation_xianyan_host_baihua_task_cell(
         runner: Any,
@@ -811,18 +805,17 @@ def register_fanxiu_default_jobs() -> None:
             yield from _run_manual_standard_job(
                 runner,
                 "xianyan-host-baihua",
-                lambda: runner._execute_xianyan_clean_task(ctx, stop_event, payload),
+                lambda: runner._execute_xianyan_clean_task(
+                    ctx, stop_event, {**payload, "schedule": False}
+                ),
+                schedule=False,
             )
         )
 
     @register_fanxiu_data_annotation_task_cell(
         "xianyan_participation",
         "仙宴_参与同档",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="xianyan-participation",
-        standard_job_description="手动",
-        standard_job_payload={"max_rounds": 100, "max_scrolls": 100, "max_execution_seconds": 3600},
+        scheduler_supported=False,
     )
     def _run_data_annotation_xianyan_participation_task_cell(
         runner: Any,
@@ -834,14 +827,17 @@ def register_fanxiu_default_jobs() -> None:
             yield from _run_manual_standard_job(
                 runner,
                 "xianyan-participation",
-                lambda: runner._execute_xianyan_participation_task(ctx, stop_event, payload),
+                lambda: runner._execute_xianyan_participation_task(
+                    ctx, stop_event, {**payload, "schedule": False}
+                ),
+                schedule=False,
             )
         )
 
     @register_fanxiu_data_annotation_task_cell(
         "xianyan_rewards",
         "仙宴_获得奖励",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_xianyan_rewards_task_cell(
         runner: Any,
@@ -849,7 +845,37 @@ def register_fanxiu_default_jobs() -> None:
         payload: dict[str, Any],
         stop_event: threading.Event,
     ) -> Any:
-        return runner._execute_xianyan_rewards_task(ctx, stop_event, payload)
+        return runner._execute_xianyan_rewards_task(
+            ctx, stop_event, {**payload, "schedule": False}
+        )
+
+    @register_fanxiu_data_annotation_task_cell(
+        "theme_collection",
+        "主题集",
+        scheduler_supported=True,
+        standard_job=True,
+        standard_job_id="theme-collection",
+        standard_job_description="动态",
+        standard_job_payload={"max_execution_seconds": 10800},
+    )
+    def _run_data_annotation_theme_collection_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.theme_collection import (
+            execute_theme_collection_job,
+        )
+
+        return (
+            yield from execute_theme_collection_job(
+                runner,
+                ctx,
+                payload,
+                stop_event,
+            )
+        )
 
     @register_fanxiu_data_annotation_task_cell(
         "daily_youli",
@@ -1003,7 +1029,8 @@ def register_fanxiu_default_jobs() -> None:
         scheduler_supported=True,
         standard_job=True,
         standard_job_id="daily-task-rewards",
-        standard_job_description="每日",
+        standard_job_description="首领完成后",
+        standard_job_payload={"max_execution_seconds": 1800},
     )
     def _run_data_annotation_daily_task_rewards_task_cell(
         runner: Any,
@@ -1090,7 +1117,7 @@ def register_fanxiu_default_jobs() -> None:
         yield from context.go_scene(34)
         return result
 
-    @register_fanxiu_data_annotation_task_cell("daily_xianshi", "仙市_秘藏阁", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell("daily_xianshi", "仙市_秘藏阁", scheduler_supported=False)
     def _run_data_annotation_daily_xianshi_task_cell(
         runner: Any,
         ctx: dict[str, Any],
@@ -1128,7 +1155,7 @@ def register_fanxiu_default_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "xianshi_zhenwuge",
         "仙市_真悟阁",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_xianshi_zhenwuge_task_cell(
         runner: Any,
@@ -1141,7 +1168,7 @@ def register_fanxiu_default_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "xianshi_langya_rankings",
         "仙市_琅琊榜",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_xianshi_langya_rankings_task_cell(
         runner: Any,
@@ -1189,6 +1216,26 @@ def register_fanxiu_default_jobs() -> None:
             current_fact_scene_ids, wait=15.0,
             label="论道_座位：等待入口或当前入座流程稳定",
         )
+        if match.scene_id not in current_fact_scene_ids:
+            # 过渡页会自行离开，所以不能凭单帧就导航回世界；连续两次识别到同一个
+            # 列表外场景，才认定是“上一个作业失败留下的稳定现场”（实测红包失败会把
+            # GUI 留在群聊 #30）。此时场景图有回世界的路径，先有界恢复再重试入口，
+            # 否则每个重试周期都会在原地失败，把队列卡死在这一项上。
+            confirmed = yield from context.wait_scene(
+                [match.scene_id], wait=5.0, required=False,
+                label="论道_座位：复核未声明场景是否稳定",
+            )
+            if confirmed is not None and int(confirmed.scene_id or 0) == int(match.scene_id):
+                runner._log(
+                    "detail",
+                    f"论道_座位：连续两次识别为列表外稳定场景 #{match.scene_id}，"
+                    "按上一作业遗留现场处理，先回世界再重试入口",
+                )
+                yield from context.go_scene(34)
+                match = yield from context.wait_scene(
+                    current_fact_scene_ids, wait=15.0,
+                    label="论道_座位：回世界后重新等待入口",
+                )
         if match.scene_id not in current_fact_scene_ids:
             raise RuntimeError(
                 f"论道_座位：入口等待后落到未声明场景 #{match.scene_id}，"
@@ -1287,6 +1334,18 @@ def register_fanxiu_default_jobs() -> None:
         yield from context.go_scene(34)
         return result
 
+    @register_fanxiu_data_annotation_task_cell("weekly_wanxian", "周常_万仙", scheduler_supported=True)
+    def _run_data_annotation_weekly_wanxian_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        # 整单幂等：每次 attempt 都从世界 #34 重入，是否参战由 #69 的次数进度决定。
+        context = runner._behavior_tree_context(ctx, stop_event=stop_event)
+        yield from context.go_scene(34)
+        return (yield from runner._execute_weekly_wanxian_task(ctx, stop_event, payload))
+
     @register_fanxiu_data_annotation_task_cell(
         "bubble_weekly_pills",
         "气泡_每周丹药",
@@ -1355,7 +1414,7 @@ def register_fanxiu_default_jobs() -> None:
         yield from context.go_scene(34)
         return result
 
-    @register_fanxiu_data_annotation_task_cell("daily_vip", "日常_vip", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell("daily_vip", "日常_vip", scheduler_supported=False)
     def _run_data_annotation_daily_vip_task_cell(
         runner: Any,
         ctx: dict[str, Any],
@@ -1373,7 +1432,7 @@ def register_fanxiu_default_jobs() -> None:
         from backend.core.fanxiu.data_annotation.tasks.xinghai import execute_xinghai_task
         return (yield from execute_xinghai_task(runner, ctx, payload, stop_event))
 
-    @register_fanxiu_data_annotation_task_cell("daily_signin", "日常_签到", scheduler_supported=True)
+    @register_fanxiu_data_annotation_task_cell("daily_signin", "日常_签到", scheduler_supported=False)
     def _run_data_annotation_daily_signin_task_cell(
         runner: Any,
         ctx: dict[str, Any],
@@ -1468,8 +1527,12 @@ def register_fanxiu_default_jobs() -> None:
         # Entering the native panel synchronizes the server model. A cached
         # all-seated model observed from the world is not this check's result.
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
-        yield from context.go_scene(34)
-        yield from enter_dongtian_home_for_research(runner, ctx, stop_event, payload)
+        current = yield from context.wait_scene([279], wait=5, required=False)
+        if current is None or current.scene_id != 279:
+            yield from context.go_scene(34)
+            yield from enter_dongtian_home_for_research(runner, ctx, stop_event, payload)
+        # Already in the live native panel: read current Runtime below, rather
+        # than leave and rescan the daily list just to return to this same page.
         result = yield from execute_dongtian_seating_runtime_job(
             runner,
             ctx,
@@ -1802,7 +1865,7 @@ def register_fanxiu_default_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "prayer_daily_resource",
         "祈愿_每日资源",
-        scheduler_supported=True,
+        scheduler_supported=False,
         # #449 is an existing visually similar store asset that can win the
         # scene score after the free prayer card disappears.  The task verifies
         # the Prayer OCR identity before treating it as a resumable state.
@@ -1904,7 +1967,7 @@ def register_fanxiu_default_jobs() -> None:
     @register_fanxiu_data_annotation_task_cell(
         "penglai_xianzang_config",
         "蓬莱仙藏_配置",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_penglai_xianzang_config_task_cell(
         runner: Any,
@@ -1919,12 +1982,14 @@ def register_fanxiu_default_jobs() -> None:
         # The dedicated job owns both its resumable #448 transaction and its
         # final return to #34.  A generic wrapper-level goto would strand an
         # incomplete choice page before the job can idempotently resume it.
-        return execute_xianzang_config_job(runner, ctx, payload, stop_event)
+        return execute_xianzang_config_job(
+            runner, ctx, {**payload, "schedule": False}, stop_event
+        )
 
     @register_fanxiu_data_annotation_task_cell(
         "penglai_xianzang_lottery",
         "蓬莱仙藏_抽奖",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_penglai_xianzang_lottery_task_cell(
         runner: Any,
@@ -1938,14 +2003,20 @@ def register_fanxiu_default_jobs() -> None:
 
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
         yield from context.go_scene(34)
-        result = execute_xianzang_lottery_job(runner, ctx, payload, stop_event)
+        # 本 cell 自己是生成器函数：框架只驱动这一层。内层作业生成器必须
+        # yield from 进来，否则任务体不会执行（实测只剩两次 go_scene(34)，
+        # 无任何蓬莱业务日志，随后因“未形成 next_time 调度决策”被判技术错误，
+        # 每 600 秒重试一次）。
+        result = yield from execute_xianzang_lottery_job(
+            runner, ctx, {**payload, "schedule": False}, stop_event
+        )
         yield from context.go_scene(34)
         return result
 
     @register_fanxiu_data_annotation_task_cell(
         "kunlun_secret_config",
         "昆仑秘藏_配置",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_kunlun_secret_config_task_cell(
         runner: Any,
@@ -1957,12 +2028,14 @@ def register_fanxiu_default_jobs() -> None:
             execute_kunlun_config_job,
         )
 
-        return execute_kunlun_config_job(runner, ctx, payload, stop_event)
+        return execute_kunlun_config_job(
+            runner, ctx, {**payload, "schedule": False}, stop_event
+        )
 
     @register_fanxiu_data_annotation_task_cell(
         "kunlun_secret_lottery",
         "昆仑秘藏_抽奖",
-        scheduler_supported=True,
+        scheduler_supported=False,
     )
     def _run_data_annotation_kunlun_secret_lottery_task_cell(
         runner: Any,
@@ -1974,16 +2047,14 @@ def register_fanxiu_default_jobs() -> None:
             execute_kunlun_lottery_job,
         )
 
-        return execute_kunlun_lottery_job(runner, ctx, payload, stop_event)
+        return execute_kunlun_lottery_job(
+            runner, ctx, {**payload, "schedule": False}, stop_event
+        )
 
     @register_fanxiu_data_annotation_task_cell(
         "lingxiao_xianhui",
         "灵霄仙会",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="lingxiao-xianhui",
-        standard_job_description="动态",
-        standard_job_payload={"max_execution_seconds": 180},
+        scheduler_supported=False,
     )
     def _run_data_annotation_lingxiao_xianhui_task_cell(
         runner: Any,
@@ -1995,16 +2066,14 @@ def register_fanxiu_default_jobs() -> None:
             execute_lingxiao_xianhui_job,
         )
 
-        return (yield from execute_lingxiao_xianhui_job(runner, ctx, payload, stop_event))
+        return (yield from execute_lingxiao_xianhui_job(
+            runner, ctx, {**payload, "schedule": False}, stop_event
+        ))
 
     @register_fanxiu_data_annotation_task_cell(
         "wanbao_zhenbao",
         "万宝臻宝",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="wanbao-zhenbao",
-        standard_job_description="手动",
-        standard_job_payload={"max_execution_seconds": 600},
+        scheduler_supported=False,
     )
     def _run_data_annotation_wanbao_zhenbao_task_cell(
         runner: Any,
@@ -2024,9 +2093,10 @@ def register_fanxiu_default_jobs() -> None:
                 lambda: execute_wanbao_zhenbao_job(
                     runner,
                     ctx,
-                    payload,
+                    {**payload, "schedule": False},
                     stop_event,
                 ),
+                schedule=False,
             )
         )
 

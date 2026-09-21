@@ -22,6 +22,22 @@ XIANMENG_FORMAL_BASE_IDS = frozenset({28000, *XIANMENG_FORMAL_CHILD_BASE_IDS})
 XIANMENG_STAMINA_SWEEPS = ((21, 10), (21, 50))
 XIANMENG_TRIPLE_DISABLE_AT = (21, 30)
 XIANMENG_FINAL_SWEEP = (21, 50)
+# Independent of evening tail sweeps: after 11:00, a missing commander target
+# no longer blocks attacks on a verified non-friendly, attackable camp.
+XIANMENG_AUTONOMOUS_SWEEP_START = (11, 0)
+
+
+def next_xianmeng_stamina_review(now: datetime, *, tail_at: datetime | None = None) -> datetime | None:
+    """After the daytime stamina batch, wait for the user-authorized 21:50 tail.
+
+    This is called after rewards are empty and stamina is below the batch
+    threshold, not after technical failures. Regeneration does not authorize
+    repeated daytime visits. ``tail_at`` remains API-compatible; the fixed
+    final sweep is authoritative, not a legacy 21:10 override.
+    """
+    close = now.replace(hour=22, minute=0, second=0, microsecond=0)
+    review = now.replace(hour=XIANMENG_FINAL_SWEEP[0], minute=XIANMENG_FINAL_SWEEP[1], second=0, microsecond=0)
+    return review if now < review < close else None
 
 
 @dataclass(frozen=True)
@@ -206,6 +222,7 @@ def next_xianmeng_challenge_tail_time(
 
 __all__ = [
     "AUTHORIZED_ACTIVITY_JOB_BINDINGS",
+    "XIANMENG_AUTONOMOUS_SWEEP_START",
     "XIANMENG_CHALLENGE_LABEL",
     "XIANMENG_CHALLENGE_TASK_ID",
     "XIANMENG_FINAL_SWEEP",
@@ -216,4 +233,5 @@ __all__ = [
     "AuthorizedActivityJobBinding",
     "build_authorized_daily_activity_job_schedule",
     "next_xianmeng_challenge_tail_time",
+    "next_xianmeng_stamina_review",
 ]

@@ -369,6 +369,22 @@ class BehaviorTreeDebugContext:
         context = self._bound_context()
         return (yield from context.go_scene(scene, **options))
 
+    def open_dongtian_place(self, place_name: str, *, max_scrolls: int = 24,
+                            scroll_directions: tuple[str, ...] = ("down", "up")):
+        """Open a named #279 map location using the shared geometric locator.
+
+        Navigation only: this grants no seat replacement or combat authority.
+        Reuses the same locator as action-power and seating jobs, including
+        roster avoidance and visible OCR before clicking. No Runtime refresh.
+        The caller must verify the #341 location identity before a seat action.
+        """
+        self._require_act()
+        return (yield from self._runner._daily_dongtian_click_place(
+            self._bound_context(), self._stop_event, [place_name],
+            max_scrolls=max_scrolls, scroll_directions=scroll_directions,
+            task_label="洞天_地点定位",
+        ))
+
     def run(
         self,
         value: Any,

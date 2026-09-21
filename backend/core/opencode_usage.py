@@ -74,6 +74,7 @@ def parse_opencode_go_usage(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 _OPENCODE_MONTHLY_WINDOW_DAYS = 30
+_OPENCODE_MONTHLY_WINDOW_PERIODS = 2
 _OPENCODE_HISTORY_DEDUP_MINUTES = 10
 
 
@@ -176,13 +177,61 @@ def record_opencode_usage_snapshot(
     return record
 
 
+def _build_monthly_periods(
+    snapshots: list[dict[str, Any]],
+    end: dt.datetime | None,
+    period: dt.timedelta,
+    span: dt.timedelta,
+) -> list[dict[str, str]]:
+    """Distinct monthly cycles in the display range as ``{start_at, reset_at}``.
+
+    The usage API only exposes ``resetsAt``; each cycle's ``start_at`` is its own
+    reset minus one period, so a cycle's end is never reused as the next cycle's
+    start.
+    """
+
+    if end is None:
+        return []
+    moments: list[dt.datetime] = []
+    seen: set[str] = set()
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        moment = _parse_timestamp(snapshot.get("monthly_reset_at"))
+        if moment is None or moment > end or moment <= end - span:
+            continue
+        key = moment.isoformat()
+        if key in seen:
+            continue
+        seen.add(key)
+        moments.append(moment)
+    if end.isoformat() not in seen:
+        moments.append(end)
+    moments.sort()
+    moments = moments[-_OPENCODE_MONTHLY_WINDOW_PERIODS:]
+    return [
+        {"start_at": (moment - period).isoformat(), "reset_at": moment.isoformat()}
+        for moment in moments
+    ]
+
+
 def build_opencode_monthly_window(
     payload: dict[str, Any],
     snapshots: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Plot the monthly plan balance for the current reset window (30 days).
+
+    ``period_minutes`` mirrors the fixed monthly span while ``periods`` lists each
+    cycle's own ``{start_at, reset_at}`` for the even-burn reference lines.  The
+    usage API only exposes ``resetsAt``, so the span stays the same 30 days the
+    chart already plots.
+    """
+
     monthly = _window_by_label(payload).get("每月") if isinstance(payload, dict) else None
     reset = _parse_timestamp(monthly.get("reset_at")) if isinstance(monthly, dict) else None
-    raw_start = reset - dt.timedelta(days=_OPENCODE_MONTHLY_WINDOW_DAYS) if reset else None
+    period = dt.timedelta(days=_OPENCODE_MONTHLY_WINDOW_DAYS)
+    span = period * _OPENCODE_MONTHLY_WINDOW_PERIODS
+    raw_start = reset - period if reset else None
 
     points: list[dict[str, Any]] = []
     for snapshot in snapshots:
@@ -206,12 +255,15 @@ def build_opencode_monthly_window(
     local_tz = dt.datetime.now().astimezone().tzinfo
     start = _floor_to_local_day(raw_start, local_tz) if raw_start else None
     axis_end = _ceil_to_local_day(end_for_axis, local_tz) if end_for_axis else None
+    periods = _build_monthly_periods(snapshots, reset, period, span)
 
     return {
         "name": "OpenCode Go 套餐余额",
         "window_start": start.isoformat() if start else "",
         "window_end": axis_end.isoformat() if axis_end else "",
         "reset_at": reset.isoformat() if reset else "",
+        "period_minutes": _OPENCODE_MONTHLY_WINDOW_DAYS * 24 * 60,
+        "periods": periods,
         "remaining_percent": monthly.get("remaining_percent") if isinstance(monthly, dict) else None,
         "points": points,
     }

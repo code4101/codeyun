@@ -162,6 +162,118 @@ def test_wallet_missing_currency_can_use_the_client_zero_semantics(monkeypatch) 
     }
 
 
+def test_wallet_snapshot_unmapped_retries_fresh_maps_without_marker(monkeypatch) -> None:
+    """A stale mapping must refresh /proc/maps instead of masking the cause."""
+    cached_calls: list[int] = []
+    discover_calls: list[int] = []
+    marker_calls: list[object] = []
+
+    monkeypatch.setattr(
+        wallet.MumuProcessMemory,
+        "discover_cached",
+        lambda **_kwargs: cached_calls.append(1) or _Memory(),
+    )
+    monkeypatch.setattr(
+        wallet.MumuProcessMemory,
+        "discover",
+        lambda **_kwargs: discover_calls.append(1) or _Memory(),
+    )
+    monkeypatch.setattr(wallet, "LuaJitReader", lambda memory: object())
+    monkeypatch.setattr(
+        redbag_runtime_loader,
+        "_lua_addresses",
+        lambda memory: {"state": "0x1234"},
+    )
+
+    def fail_global(*args, **kwargs):
+        raise FanxiuRuntimeMemoryError(
+            "Runtime 内存地址越界：0x1+8", code="memory_address_unmapped"
+        )
+
+    monkeypatch.setattr(wallet, "resolve_lua_global_manager_root", fail_global)
+    monkeypatch.setattr(
+        wallet,
+        "resolve_manager_root",
+        lambda *args, **kwargs: marker_calls.append(kwargs) or (0xBEEF, False),
+    )
+
+    with pytest.raises(FanxiuRuntimeMemoryError) as excinfo:
+        wallet.read_wallet_currency_snapshot(14)
+
+    assert excinfo.value.code == "memory_address_unmapped"
+    assert cached_calls == [1]
+    assert discover_calls == [1]
+    assert marker_calls == []
+
+
+@pytest.mark.parametrize("allow_discovery", [False, True])
+def test_wallet_snapshot_retry_keeps_allow_discovery(monkeypatch, allow_discovery) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(currency_type, **kwargs):
+        calls.append({"currency_type": currency_type, **kwargs})
+        if len(calls) == 1:
+            raise FanxiuRuntimeMemoryError(
+                "Runtime 内存地址越界：0x1+8", code="memory_address_unmapped"
+            )
+        return {"source": "runtime_memory"}
+
+    monkeypatch.setattr(wallet, "_read_wallet_currency_snapshot", fake_helper)
+
+    result = wallet.read_wallet_currency_snapshot(
+        14, allow_discovery=allow_discovery, missing_as_zero=True
+    )
+
+    assert result == {"source": "runtime_memory"}
+    assert len(calls) == 2
+    assert "refresh_process" not in calls[0]
+    assert calls[1] == {
+        "currency_type": 14,
+        "allow_discovery": allow_discovery,
+        "missing_as_zero": True,
+        "refresh_process": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "code", ["root_cache_miss", "process_cache_miss", "memory_read_failed"]
+)
+def test_wallet_snapshot_does_not_retry_other_error_codes(monkeypatch, code) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(currency_type, **kwargs):
+        calls.append({"currency_type": currency_type, **kwargs})
+        raise FanxiuRuntimeMemoryError("wallet read failed", code=code)
+
+    monkeypatch.setattr(wallet, "_read_wallet_currency_snapshot", fake_helper)
+
+    with pytest.raises(FanxiuRuntimeMemoryError) as excinfo:
+        wallet.read_wallet_currency_snapshot(14, allow_discovery=True)
+
+    assert excinfo.value.code == code
+    assert len(calls) == 1
+
+
+def test_wallet_snapshot_second_unmapped_failure_propagates_directly(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_helper(currency_type, **kwargs):
+        calls.append({"currency_type": currency_type, **kwargs})
+        raise FanxiuRuntimeMemoryError(
+            "Runtime 内存地址越界：0x2+8", code="memory_address_unmapped"
+        )
+
+    monkeypatch.setattr(wallet, "_read_wallet_currency_snapshot", fake_helper)
+
+    with pytest.raises(FanxiuRuntimeMemoryError) as excinfo:
+        wallet.read_wallet_currency_snapshot(14, allow_discovery=True)
+
+    assert excinfo.value.code == "memory_address_unmapped"
+    assert len(calls) == 2
+    assert calls[1]["refresh_process"] is True
+    assert calls[1]["allow_discovery"] is True
+
+
 @pytest.mark.parametrize("target_present", [True, False])
 def test_wallet_success_does_not_decode_unrelated_currency(monkeypatch, target_present):
     """A targeted observation cannot fail on an unrelated VO's unreadable fields."""

@@ -334,7 +334,7 @@ def _selected_string_fields(
 
 
 def _serialize_selected_entry(reader: LuaJitReader, value: Any, *, include_progress: bool = False) -> dict[str, Any]:
-    names = frozenset({"taskId", "status", "turn", "rewardTime", "progressList"})
+    names = frozenset({"taskId", "status", "turn", "rewardTime", "targetTurn", "progressList"})
     fields = _selected_string_fields(reader, value, names)
     progress: list[dict[str, Any]] = []
     turn = _integer(fields.get("turn"))
@@ -360,6 +360,7 @@ def _serialize_selected_entry(reader: LuaJitReader, value: Any, *, include_progr
         "status": fields.get("status"),
         "turn": fields.get("turn"),
         "rewardTime": fields.get("rewardTime"),
+        "targetTurn": fields.get("targetTurn"),
         "progressList": progress,
     }
 

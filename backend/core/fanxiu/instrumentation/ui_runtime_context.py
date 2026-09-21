@@ -216,6 +216,45 @@ def has_ui_object_fields(
     return True
 
 
+def read_ui_selected_tab_panel(
+    context: UiRuntimeContext, host_address: int
+) -> tuple[int, int] | None:
+    """Resolve the host's currently selected tab panel through its bounded CList.
+
+    Read-only: follows only ``tabPanelGroup.curTabIndex`` and
+    ``panelShowComps._dt_`` (the same structure used by the Bothdraw toggle).
+    Only the selected slot ``curTabIndex + 1`` is read from that storage table,
+    through ``numeric_fields`` so both the array part and a numeric-hash entry
+    resolve (a loaded CList may keep its components in either representation,
+    and slots other than the selected one need not be materialized). Returns
+    ``(panel_address, curTabIndex)`` or ``None`` when the tab group, declared
+    count, or selected slot is missing or outside the ``count <= 16`` bound, so
+    a caller can fail closed instead of guessing a panel. Returned addresses
+    are temporary and valid only for the current snapshot.
+    """
+
+    tab_group = table_ref(read_ui_object_field(context, host_address, "tabPanelGroup"))
+    if tab_group is None:
+        return None
+    current_index = as_int(read_ui_object_field(context, tab_group.address, "curTabIndex"))
+    panels = table_ref(read_ui_object_field(context, tab_group.address, "panelShowComps"))
+    panel_count = as_int(read_ui_object_field(context, panels.address, "count")) if panels else None
+    storage = table_ref(read_ui_object_field(context, panels.address, "_dt_")) if panels else None
+    if (
+        current_index is None
+        or panel_count is None
+        or not 0 <= current_index < panel_count <= 16
+        or storage is None
+    ):
+        return None
+    slot = current_index + 1
+    component = table_ref(
+        context.reader.numeric_fields(storage.address, frozenset({slot})).get(slot)
+    )
+    panel = table_ref(read_ui_object_field(context, component.address, "m_panel")) if component else None
+    return (panel.address, current_index) if panel is not None else None
+
+
 def _required_active_component_link(
     ctx: UiRuntimeContext,
     address: int,
@@ -313,7 +352,7 @@ def active_ui_component_objects(ctx: UiRuntimeContext) -> tuple[LuaRef, ...]:
             root_fields = ctx.reader.fields(root)
         except (FanxiuRuntimeMemoryError, AttributeError) as exc:
             raise FanxiuRuntimeMemoryError(
-                "UIShowMgr 组件根无法完整读取",
+                f"UIShowMgr 组件根 0x{root.address:x} 无法完整读取：{exc}",
                 code="runtime_incomplete",
             ) from exc
         if table_ref(root_fields.get("_dt_")) is None:
@@ -872,6 +911,43 @@ def _refresh_context_maps(context: UiRuntimeContext) -> None:
             _binding_cache = None
 
 
+def read_active_ui_window_panels(ctx: UiRuntimeContext, window_name: str) -> tuple[LuaRef, ...]:
+    """Resolve one named Window through UIShowMgr's current per-id CList.
+
+    Mirrors the read-only membership part of F_WinIsOpen/GetWinByType:
+    Window[name] -> V_M_compDic[id] -> list components -> m_panel. Returns all
+    instances so a consumer can require uniqueness; it never chooses a cached
+    address or traverses unrelated windows. An absent registry entry means
+    closed. A partial list, missing panel, or mismatched component/panel uId
+    is an incomplete observation and raises. No game Lua is executed.
+    """
+    windows = table_ref(read_ui_object_field(ctx, ctx.binding.environment_address, 'Window'))
+    if windows is None:
+        raise FanxiuRuntimeMemoryError('Window 枚举尚未加载', code='data_not_loaded')
+    ident = as_int(read_ui_object_field(ctx, windows.address, window_name))
+    if ident is None or ident <= 0:
+        raise FanxiuRuntimeMemoryError(f'Window.{window_name} 未加载', code='data_not_loaded')
+    registry = ctx.reader.dictionary_fields(LuaRef('table', ctx.binding.components_address))
+    root = table_ref(registry.get(ident))
+    if root is None:
+        return ()
+    items, count = ctx.reader.indexed_list_items(root)
+    if count is None or count != len(items) or not 0 <= count <= _ACTIVE_UI_COMPONENT_MAX_LIST_ITEMS:
+        raise FanxiuRuntimeMemoryError('指定窗口实例列表不完整', code='runtime_incomplete')
+    panels = []
+    for _, component in items:
+        ref = table_ref(component)
+        if ref is None or as_int(read_ui_object_field(ctx, ref.address, 'uId')) != ident:
+            raise FanxiuRuntimeMemoryError('指定窗口组件身份不符', code='runtime_incomplete')
+        panel = table_ref(read_ui_object_field(ctx, ref.address, 'm_panel'))
+        if panel is None or as_int(read_ui_object_field(ctx, panel.address, 'V_uId')) != ident:
+            raise FanxiuRuntimeMemoryError('指定窗口面板尚未就绪', code='runtime_incomplete')
+        panels.append(panel)
+    if len(set(panels)) != len(panels):
+        raise FanxiuRuntimeMemoryError('指定窗口实例重复', code='runtime_incomplete')
+    return tuple(panels)
+
+
 def clear_ui_runtime_context_cache() -> None:
     global _binding_cache
     with _CACHE_LOCK:
@@ -888,4 +964,5 @@ __all__ = [
     "read_ui_object_field",
     "has_ui_object_fields",
     "read_ui_runtime_snapshot",
+    "read_active_ui_window_panels",
 ]
