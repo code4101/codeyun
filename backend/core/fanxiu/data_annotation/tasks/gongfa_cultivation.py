@@ -1,13 +1,17 @@
 """功法书养成组件：悟境、通玄、法则均消耗已有材料至不足。
 
 业务结果页必须显式继续，不属于弹窗守护。所有动作使用资产 scene/Shape；
-本组件负责已打开的升级页，列表扫描、快速融合及藏书共鸣由上层组合。
+只执行现场教学流程：快速融合、快速共鸣、悟境/通玄、法则、返回世界。
+不进入单项共鸣详情。秘法按用户要求仅保留函数占位。
 """
 from __future__ import annotations
 
 import re
 
 BOOK = 781
+STAGE_ID = "gongfa-cultivation"
+STAGE_VERSION = "1"
+TABS = ("剑修", "法修", "魔修", "体修", "仙术")
 ENLIGHTENMENT = 786
 ENLIGHTENMENT_RESULT = 787
 TRANSCENDENCE = 788
@@ -44,6 +48,12 @@ def complete_current_upgrade(context, scene_id: int, *, max_actions: int = 100):
     while True:
         yield from require_scene(context, scene_id)
         frame = context.cur_frame(update=True)
+        if scene_id == ENLIGHTENMENT:
+            terminal = context.ocr_text_in_shapes(
+                scene_id, ["满级状态"], crop=True, padding=0, frame_data_url=frame,
+            )
+            if "大圆满" in re.sub(r"\s+", "", terminal):
+                return {"upgrade": action, "actions": actions, "outcome": "max_level"}
         text = context.ocr_text_in_shapes(
             scene_id, ["材料数量"], crop=True, padding=0, frame_data_url=frame,
         )
@@ -66,3 +76,175 @@ def complete_current_upgrade(context, scene_id: int, *, max_actions: int = 100):
             yield from context.wait_action_settle(1)
         previous = available
         actions += 1
+
+
+def activate_and_upgrade_secret_art(context):
+    """秘法亮起时还有激活、升级操作；当前无候选，尚未进行现场教学。
+
+    用户明确要求保留 pass 占位，后续教学后在此补齐，不自行探索新分支。
+    """
+    pass
+
+
+def quick_fusion(context):
+    """原生快速融合；确认是业务弹窗，由本流程显式处理。"""
+    yield from context.wait_click(BOOK, "快速融合")
+    # 空批次提示短暂，先采帧再识别，避免 OCR 延迟错过反馈。
+    frames = []
+    for _ in range(5):
+        yield from context.wait_action_settle(.25)
+        frames.append(context.cur_frame(update=True))
+    for frame in frames:
+        text = context.ocr_text_in_shapes(
+            BOOK, ["操作反馈"], crop=True, padding=0, frame_data_url=frame,
+        )
+        if "暂无可融合功法" in text:
+            return {"outcome": "nothing_to_fuse"}
+    yield from require_scene(context, 782)
+    yield from context.wait_click(782, "确认")
+    yield from require_scene(context, 783)
+    yield from context.wait_click(783, "继续")
+    yield from require_scene(context, BOOK)
+    return {"outcome": "fused"}
+
+
+def quick_resonance(context):
+    """只走藏书→快速共鸣→结果继续→返回，不进入各品质的单项共鸣。"""
+    yield from context.wait_click(BOOK, "藏书")
+    yield from context.wait_click(784, "快速共鸣")
+    yield from context.wait_action_settle(1)
+    match = yield from context.wait_scene([785, 784], wait=8)
+    if match.scene_id == 785:
+        yield from context.wait_click(785, "继续")
+        outcome = "resonated"
+    elif match.scene_id == 784:
+        # 原生批量入口在没有共鸣项时留在藏书；不扩展单项共鸣分支。
+        outcome = "no_result_page"
+    else:
+        raise RuntimeError(f"快速共鸣出现未知页面 #{match.scene_id}")
+    yield from context.wait_click(784, "返回")
+    yield from require_scene(context, BOOK)
+    return {"outcome": outcome}
+
+
+def active_book_tabs(context):
+    frame = context.cur_frame(update=True)
+    return [tab for tab in TABS if context.shape_matches(
+        BOOK, tab + "激活点", frame_data_url=frame,
+    )]
+
+
+def visible_upgrade_candidate(context, *, frame_data_url=None):
+    """在标注的左右列中解析重复 Shape；同屏多个提示时取一个完整实例。"""
+    frame = frame_data_url or context.cur_frame(update=True)
+    for title, scene in (("可悟境", ENLIGHTENMENT), ("可通玄", TRANSCENDENCE)):
+        for column in ("左列", "右列"):
+            container = "功法列表/" + column
+            template = container + "/" + title
+            items = context.find_floating_items_by_anchor_text(
+                BOOK, template, "提示", title, container_shape=container,
+                frame_data_url=frame, match_mode="contains", crop=True,
+            )
+            for item in items:
+                if context.floating_item_field_is_fully_inside(item, "提示", container):
+                    return item, scene
+    return None
+
+
+def find_upgrade_candidate(context):
+    """使用连续列表的默认重叠滚动；先覆盖当前位置上方，再向下扫描。"""
+    for direction in ("up", "down"):
+        for _ in range(30):
+            yield from require_scene(context, BOOK)
+            candidate = visible_upgrade_candidate(context)
+            if candidate is not None:
+                return candidate
+            changed = yield from context.scroll_shape_content(
+                BOOK, "功法列表", direction=direction,
+            )
+            if not changed:
+                break
+        else:
+            raise RuntimeError("功法列表滚动超过上限，未确认边界")
+    return visible_upgrade_candidate(context)
+
+
+def complete_book_tabs(context):
+    results = []
+    for tab in TABS:
+        if tab not in active_book_tabs(context):
+            continue
+        yield from context.wait_click(BOOK, tab)
+        for _ in range(100):
+            yield from require_scene(context, BOOK)
+            if tab not in active_book_tabs(context):
+                break
+            candidate = yield from find_upgrade_candidate(context)
+            if candidate is None:
+                raise RuntimeError(f"{tab}红点未消失，但列表未找到悟境/通玄候选")
+            yield from require_scene(context, BOOK)
+            candidate = visible_upgrade_candidate(context)
+            if candidate is None:
+                raise RuntimeError("功法升级候选在点击前发生变化")
+            item, scene = candidate
+            context.click_floating_item_field(item, "提示")
+            result = yield from complete_current_upgrade(context, scene)
+            if not result["actions"]:
+                raise RuntimeError(f"{tab}可升级提示与材料数量不一致")
+            results.append({"tab": tab, **result})
+            yield from context.wait_click(scene, "返回")
+        else:
+            raise RuntimeError(f"{tab}升级循环超过上限")
+    if active_book_tabs(context):
+        raise RuntimeError("功法分类仍有激活点")
+    return results
+
+
+def upgrade_law(context):
+    """当前已教学的红点对应鸿蒙时间法则，消耗已有材料升级。"""
+    yield from require_scene(context, BOOK)
+    if not context.shape_matches(BOOK, "法则激活点", frame_data_url=context.cur_frame(update=True)):
+        return {"outcome": "no_upgrade_indicator"}
+    yield from context.wait_click(BOOK, "法则")
+    yield from context.wait_click(256, "鸿蒙时间法则")
+    result = yield from complete_current_upgrade(context, LAW_UPGRADE)
+    yield from context.wait_click(LAW_UPGRADE, "返回")
+    yield from context.wait_click(256, "功法书")
+    yield from require_scene(context, BOOK)
+    if context.shape_matches(BOOK, "法则激活点", frame_data_url=context.cur_frame(update=True)):
+        raise RuntimeError("法则升级后仍有红点，保留现场")
+    return result
+
+
+def upgrade_gongfa_book(context):
+    """升级功法书整单：从当前已知页面重入，完成后回世界 #34（含 #661 变体）。"""
+    known = [BOOK, 782, 783, 784, 785, 786, 787, 788, 789, 790, 256, 34, 661]
+    for _ in range(6):
+        match = yield from context.wait_scene(known, wait=8)
+        scene = match.scene_id
+        if scene == BOOK:
+            break
+        if scene in (34, 661):
+            yield from context.wait_click(scene, "功法书入口")
+        elif scene in (783, 785, 787, 789):
+            yield from context.wait_click(scene, "继续")
+        elif scene == 782:
+            yield from context.wait_click(scene, "取消")
+        elif scene in (784, 786, 788, 790, 256):
+            yield from context.wait_click(scene, "返回")
+        else:
+            raise RuntimeError(f"升级功法书遇到未知起始页面 #{scene}")
+    else:
+        raise RuntimeError("未进入功法书")
+    fusion = yield from quick_fusion(context)
+    resonance = yield from quick_resonance(context)
+    books = yield from complete_book_tabs(context)
+    law = yield from upgrade_law(context)
+    activate_and_upgrade_secret_art(context)
+    yield from context.wait_click(BOOK, "返回")
+    world = yield from context.wait_scene([34, 661], wait=8)
+    if world.scene_id not in (34, 661):
+        raise RuntimeError(f"升级功法书结束未回世界：#{world.scene_id}")
+    return {"result": "success", "outcome": "complete", "fusion": fusion,
+            "resonance": resonance, "books": books, "law": law,
+            "secret_art": "reserved_by_user", "final_scene": world.scene_id}

@@ -1693,7 +1693,9 @@ class DailyResourceTaskMixin:
                 return "skipped"
 
             if scene_id in (294, 295):
-                if scene_id == 294 and not reward_score_checked:
+                # 临近结束只清体力；积分不再决定选敌或开启三连，无需读战报 OCR。
+                if (scene_id == 294 and not reward_score_checked
+                        and self._daily_xianmeng_triple_window_open(payload)):
                     reward_points, reward_text = context.ocr_value_in_shapes(
                         294, ("个人积分",),
                         padding=int(payload.get("reward_score_ocr_padding") or 12),
@@ -1761,7 +1763,7 @@ class DailyResourceTaskMixin:
                 yield from context.wait_action_settle(
                     float(payload.get("result_click_ready_seconds") or 0.8)
                 )
-                context.click_shape_center(scene_id, "确定" if scene_id == 294 else "关闭")
+                context.click_shape_center_fast(scene_id, "确定" if scene_id == 294 else "关闭")
                 yield from context.wait_action_settle(float(payload.get("result_close_settle_seconds") or 0.35))
                 scene_id = yield from self._wait_daily_xianmeng_fast_attack_scene(
                     context,
@@ -1791,8 +1793,10 @@ class DailyResourceTaskMixin:
                         average_score=getattr(self, "_daily_xianmeng_recent_average_score", None),
                     )
                 elif (
-                    not triple_attack_enabled
-                    and single_attacks_since_option_probe >= next_triple_probe_after
+                    (triple_attack_enabled and not self._daily_xianmeng_triple_window_open(payload))
+                    or (not triple_attack_enabled
+                        and self._daily_xianmeng_triple_window_open(payload)
+                        and single_attacks_since_option_probe >= next_triple_probe_after)
                 ):
                     # Runtime is authoritative, but reading it after every
                     # attack is wasteful.  Probe near the estimated crossing
@@ -1881,7 +1885,7 @@ class DailyResourceTaskMixin:
                         remaining_attempts=remaining_attack_count,
                     )
                     required_attempts = self._daily_xianmeng_required_attempts(triple_attack_enabled)
-                context.click_shape_center(293, "攻击")
+                context.click_shape_center_fast(293, "攻击")
                 yield from context.wait_action_settle(float(payload.get("attack_click_settle_seconds") or 0.25))
                 departed = yield from self._wait_daily_xianmeng_attack_departure(context, payload)
                 if not departed:
@@ -1990,28 +1994,29 @@ class DailyResourceTaskMixin:
             self._clear_tick_frame(context.ctx)
             yield BehaviorTreeStatus.RUNNING
             frame = context.cur_frame(update=True)
-            report_confirm_score = context.shape_score(294, "确定", frame_data_url=frame)
-            report_title_score = context.shape_score(294, "挑战成功", frame_data_url=frame)
-            scores = {
-                294: min(report_confirm_score, report_title_score),
-                295: context.shape_score(295, "关闭", frame_data_url=frame),
-                293: context.shape_score(293, "攻击", frame_data_url=frame),
-            }
+            # 关战报后先看攻击按钮；攻击后只看结果。每帧命中即返回，
+            # 不为已确认状态继续识别其它页面的 Shape/OCR。
+            elapsed = time.monotonic() - start
+            scores = {}
+            if accept_attack and elapsed >= max(0.0, float(attack_min_elapsed)):
+                scores[293] = context.shape_score(293, "攻击", frame_data_url=frame)
+                if scores[293] >= threshold:
+                    return 293
+            if accept_results and elapsed >= max(0.0, float(result_min_elapsed)):
+                scores[295] = context.shape_score(295, "关闭", frame_data_url=frame)
+                if scores[295] >= threshold:
+                    return 295
+                report_confirm_score = context.shape_score(294, "确定", frame_data_url=frame)
+                report_title_score = (
+                    context.shape_score(294, "挑战成功", frame_data_url=frame)
+                    if report_confirm_score >= threshold else 0.0
+                )
+                scores[294] = min(report_confirm_score, report_title_score)
+                if scores[294] >= threshold:
+                    return 294
             # The reward rows vary, so their broad body anchor is deliberately
             # weaker than a normal control. Pair it with the exact 100% report
             # button; the network warning negative frame scores 0%/2% here.
-            elapsed = time.monotonic() - start
-            if (
-                accept_results
-                and elapsed >= max(0.0, float(result_min_elapsed))
-                and report_confirm_score >= threshold
-                and report_title_score >= threshold
-            ):
-                return 294
-            if accept_results and elapsed >= max(0.0, float(result_min_elapsed)) and scores[295] >= threshold:
-                return 295
-            if accept_attack and elapsed >= max(0.0, float(attack_min_elapsed)) and scores[293] >= threshold:
-                return 293
             # Some multi-battle reports are valid #294 scenes but use a
             # different report body/button skin, so the two cheap ROIs above
             # both score 0%. Pay for one complete layered recognition only
@@ -2993,6 +2998,16 @@ class DailyResourceTaskMixin:
 
         return not numbers or min(numbers) <= 0
 
+    @staticmethod
+    def _daily_xianmeng_triple_window_open(
+        payload: dict[str, Any], *, now: datetime | None = None,
+    ) -> bool:
+        """游戏在战场结束前 30 分钟禁止三倍挑战；积分达标也不能开启。"""
+        current = now or datetime.now().astimezone()
+        end_clock = datetime.strptime(str(payload.get("daily_end_time") or "22:00"), "%H:%M").time()
+        closes = current.replace(hour=end_clock.hour, minute=end_clock.minute, second=0, microsecond=0)
+        return current < closes - timedelta(minutes=30)
+
     def _ensure_daily_xianmeng_attack_options(
         self,
         context: Any,
@@ -3006,8 +3021,10 @@ class DailyResourceTaskMixin:
         """
 
         now_day = datetime.now().astimezone().date().isoformat()
+        triple_window_open = self._daily_xianmeng_triple_window_open(payload)
         verification_cache = getattr(self, "_daily_xianmeng_option_verification_cache", None)
-        if isinstance(verification_cache, dict) and verification_cache.get("day") == now_day:
+        if (isinstance(verification_cache, dict) and verification_cache.get("day") == now_day
+                and verification_cache.get("triple_window_open") == triple_window_open):
             return bool(verification_cache.get("triple_checked"))
 
         snapshot = self._read_daily_xianmeng_attack_options_snapshot()
@@ -3018,7 +3035,7 @@ class DailyResourceTaskMixin:
         skip_threshold = int(snapshot.get("skip_score_threshold") or 1_000)
         triple_threshold = int(snapshot.get("triple_score_threshold") or 15_000)
         desired_skip = score >= skip_threshold
-        desired_triple = score >= triple_threshold
+        desired_triple = score >= triple_threshold and triple_window_open
         changed: list[str] = []
 
         if bool(snapshot.get("skip_checked")) != desired_skip:
@@ -3049,12 +3066,15 @@ class DailyResourceTaskMixin:
         self._daily_xianmeng_last_option_snapshot = dict(verified)
 
         cycle_key = self._daily_xianmeng_option_cycle_key(verified)
-        if desired_triple:
+        if desired_triple or not triple_window_open:
             self._daily_xianmeng_option_verification_cache = {
                 "day": cycle_key[:10],
                 "cycle_key": cycle_key,
-                "triple_checked": True,
+                "triple_checked": desired_triple,
+                "triple_window_open": triple_window_open,
             }
+        if not triple_window_open:
+            self._log("detail", "日常_仙盟：战场结束前30分钟禁用三连，已确认单攻配置")
         if changed:
             self._log(
                 "success",
@@ -3085,6 +3105,7 @@ class DailyResourceTaskMixin:
             "day": cycle_key[:10],
             "cycle_key": cycle_key,
             "triple_checked": False,
+            "triple_window_open": self._daily_xianmeng_triple_window_open(payload),
         }
         self._log(
             "success",

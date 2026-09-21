@@ -6,6 +6,26 @@ from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorT
 from backend.core.fanxiu.data_annotation.tasks.daily_foundation import _DONGTIAN_PLACE_ANCHORS
 
 
+def test_enemy_places_preserve_map_order_including_white_jade():
+    runner = BehaviorTreeExecutor()
+    snapshot = {
+        "available": True, "complete": True, "own_union_id": 10,
+        "own_union_name": "我方",
+        "mines": [
+            {"id": 1, "config_name": "白玉京", "cross_union_id": 20},
+            {"id": 3, "config_name": "太明玉墟", "cross_union_id": 10},
+            {"id": 2, "config_name": "大罗天墟", "cross_union_id": 30},
+        ],
+    }
+    assert runner._daily_dongtian_enemy_places_from_runtime(
+        {"__dongtian_runtime_snapshot": snapshot},
+    ) == ["白玉京", "大罗天墟"]
+    snapshot["mines"][0]["cross_union_id"] = 10
+    assert runner._daily_dongtian_enemy_places_from_runtime(
+        {"__dongtian_runtime_snapshot": snapshot},
+    ) == ["大罗天墟"]
+
+
 def test_dongtian_action_power_uses_runtime_without_gui():
     class Runtime:
         def cur_frame(self, **_kwargs):
@@ -441,17 +461,26 @@ def test_dongtian_location_box_rejects_same_prefix_different_place():
 
 
 def test_dongtian_location_click_point_rejects_fixed_header_hotspot():
-    runner = BehaviorTreeExecutor()
+    click_point = BehaviorTreeExecutor._daily_dongtian_location_click_point
     window = {"x": 13, "y": 160, "w": 872, "h": 1162}
 
-    assert runner._daily_dongtian_location_click_point(
+    assert click_point(
         {"x": 730, "y": 188, "w": 97, "h": 32},
         window,
     ) is None
-    assert runner._daily_dongtian_location_click_point(
+    assert click_point(
         {"x": 730, "y": 388, "w": 97, "h": 32},
         window,
-    ) == (780.0, 304.0)
+    ) == (778.5, 324.0)
+
+    # 坐标与 OCR 字高同比缩放，入口仍在名称上方两倍字高。
+    assert click_point(
+        {"x": 1460, "y": 776, "w": 194, "h": 64},
+        {key: value * 2 for key, value in window.items()},
+    ) == (1557.0, 648.0)
+    assert click_point({"x": 730, "y": 388, "w": 97, "h": 0}, window) is None
+    assert click_point({"x": 850, "y": 388, "w": 97, "h": 32}, window) is None
+    assert click_point({"x": 730, "y": 1310, "w": 97, "h": 32}, window) is None
 
 
 def test_dongtian_place_locator_reverses_after_down_boundary_and_finds_target_upward():

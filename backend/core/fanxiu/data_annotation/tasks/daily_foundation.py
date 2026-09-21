@@ -92,6 +92,8 @@ from backend.core.fanxiu.data_annotation.tasks.xianyuan_reentry import (
 
 XIANYUAN_DUEL_ENTRY_NOT_FOUND_DATE_FLAG = "_xianyuan_duel_entry_not_found_date"
 DAILY_ACTIVITY_OCR_MAX_ATTEMPTS = 5
+# 入座事实可能先于对白/胜利动画生效；正常推进与离场恢复共用这组结算入口。
+LUNDAO_SETTLEMENT_SCENE_IDS = (303, 318, 375, 295)
 
 
 from backend.core.fanxiu.data_annotation.tasks.lundao import (
@@ -8570,8 +8572,10 @@ class DailyFoundationTaskMixin:
         start_scene: int | None = None,
     ) -> dict[str, Any]:
         """共用 #303 推进人物对话；实际胜利页和入座页决定流程，不猜对话阶段。"""
+        from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
+
         terminal_scenes = (52, 53, 186, 329, 301)
-        candidates = [303, 318, 375, 295, *terminal_scenes]
+        candidates = [*LUNDAO_SETTLEMENT_SCENE_IDS, *terminal_scenes]
         scene_id = start_scene
         clicks = 0
         for _cycle in range(8):
@@ -8591,7 +8595,15 @@ class DailyFoundationTaskMixin:
                     303, "对话", label="论道_座位：推进人物对话",
                 ))
             elif scene_id in {375, 295}:
-                context.click_shape_center(scene_id, "关闭")
+                try:
+                    yield from context.wait_click(scene_id, "关闭")
+                except SceneClickMismatch as exc:
+                    # 结算层可能自行切换；未发出点击时只重新观察已知后继，
+                    # 不沿用旧弹窗坐标，也不把未知页面当作可重试成功。
+                    if exc.actual_scene_id not in candidates:
+                        raise
+                    scene_id = None
+                    continue
                 yield from context.wait_action_settle(1.5)
             else:
                 raise RuntimeError(f"论道_座位：对话/战斗链出现未声明落点 #{scene_id}")
@@ -8740,7 +8752,7 @@ class DailyFoundationTaskMixin:
             )
             scene_id = int(dialogue_result.get("scene_id") or 52)
             score = float(dialogue_result.get("score") or 0.0)
-        elif scene_id in {303, 318, 375, 295}:
+        elif scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
             dialogue_result = yield from self._advance_daily_lundao_kick_dialogue(
                 context,
                 start_scene=scene_id,
@@ -8788,11 +8800,11 @@ class DailyFoundationTaskMixin:
                     raise RuntimeError("论道_座位：等待入座结果 15 秒仍未成立；保留现场")
                 yield from context.wait_action_settle(0.5)
                 pending = yield from context.wait_scene(
-                    [303, 52, 53, 186], wait=5.0,
+                    [*LUNDAO_SETTLEMENT_SCENE_IDS, 52, 53, 186], wait=5.0,
                     label="论道_座位：等待入座对话或实际入座结果",
                 )
                 scene_id, score = pending.scene_id, pending.score
-                if scene_id == 303:
+                if scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
                     scene_id, score = yield from self._advance_daily_lundao_post_seat_dialogue(
                         context, scene_id,
                     )
@@ -8816,11 +8828,7 @@ class DailyFoundationTaskMixin:
                         and seated_status.get("complete")
                         and seated_status.get("seated") is True
                     ):
-                        yield from self._leave_shared_scene_186_to_world(
-                            context,
-                            label="论道_座位",
-                            include_lundao_scene=True,
-                        )
+                        yield from self._leave_daily_lundao_seated_for_daily_entry(context, 186)
                         self._log(
                             "success",
                             "论道_座位：OCR 与 Runtime 均确认已入座，"
@@ -8843,9 +8851,7 @@ class DailyFoundationTaskMixin:
             self._log("success", "论道_座位：已完成听道并退出回世界")
             return "success"
         if scene_id == 186:
-            yield from self._leave_shared_scene_186_to_world(
-                context, label="论道_座位", include_lundao_scene=True,
-            )
+            yield from self._leave_daily_lundao_seated_for_daily_entry(context, 186)
             self._log("success", "论道_座位：已从 #186 点击「离开」并退出回世界")
             return "success"
         raise RuntimeError(f"论道_座位：抢座或收尾落点尚未实现，当前 #{scene_id if scene_id is not None else 'unknown'} {score:.0f}%")
@@ -9042,51 +9048,53 @@ class DailyFoundationTaskMixin:
         return scene_id, float(score or 0.0), context.ocr_text(frame_after)
 
     def _leave_daily_lundao_seated_for_daily_entry(self, context: Any, scene_id: int | None):
+        """从已确认入座页离场；业务事实与延迟结算界面分别验收。"""
         from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 
-        if scene_id != 53:
+        if scene_id not in {53, 186}:
             raise RuntimeError(
-                f"论道闻道中只接受正式场景 #53，当前 #{scene_id if scene_id is not None else 'unknown'}，"
+                f"论道闻道中只接受正式场景 #53/#186，当前 #{scene_id if scene_id is not None else 'unknown'}，"
                 "禁止借用其它场景的「离开」坐标"
             )
         for attempt in range(3):
             try:
                 return (yield from self._leave_shared_scene_186_to_world(
                     context, label="论道_座位", include_lundao_scene=True,
-                    source_scene_id=53,
+                    source_scene_id=scene_id,
                 ))
-            except SceneClickMismatch:
-                # The server can confirm seated before the final character
-                # speech or the #52 reward confirmation appears. The click
-                # guard prevents leaving through those delayed frames; consume
-                # only a freshly identified dialogue or #52 confirmation and
-                # keep the original mismatch for every unknown scene.
-                match = yield from context.wait_scene([318, 303, 52], wait=5.0)
-                if match.scene_id == 52:
-                    landed = 52
-                elif match.scene_id in {318, 303}:
+            except SceneClickMismatch as exc:
+                # Runtime 入座成立不代表 GUI 结算已结束。延迟胜利页与
+                # 对白、收益确认属于同一结算链，必须复用正常流程消费。
+                recovery_scenes = [*LUNDAO_SETTLEMENT_SCENE_IDS, 52, 53, 186, 69, 34]
+                if exc.actual_scene_id not in recovery_scenes:
+                    raise
+                self._log("detail", f"论道_座位：离场前出现 #{exc.actual_scene_id}，重新确认并收尾")
+                match = yield from context.wait_scene(
+                    recovery_scenes, wait=5.0, label="论道_座位：重新识别延迟结算或离场落点",
+                )
+                if match.scene_id in LUNDAO_SETTLEMENT_SCENE_IDS:
                     result = yield from self._advance_daily_lundao_kick_dialogue(
                         context, start_scene=match.scene_id,
                     )
                     landed = int(result['scene_id'])
+                elif match.scene_id in {52, 53, 186, 69, 34}:
+                    landed = match.scene_id
                 else:
                     raise
                 if landed == 52:
                     landed, _score, _text = yield from self._confirm_daily_lundao_reward_scene(context)
-                if landed == 53:
+                if landed in {53, 186, 69, 34}:
+                    self._require_daily_lundao_seated_or_completed()
+                if landed in {53, 186}:
+                    scene_id = landed
                     continue
                 if landed in {69, 34}:
                     return "success"
-                if landed == 186:
-                    yield from self._leave_shared_scene_186_to_world(
-                        context, label="论道_座位", include_lundao_scene=True,
-                    )
-                    return "success"
                 raise RuntimeError(
-                    f"论道_座位：延迟对白或 #52 确认后未回到正式闻道页，"
+                    f"论道_座位：延迟结算后未回到正式闻道页或离场终点，"
                     f"当前 #{landed if landed is not None else 'unknown'}，保留现场"
                 )
-        raise RuntimeError('论道_座位：离场前连续出现延迟对白，保留现场')
+        raise RuntimeError('论道_座位：离场前延迟结算有界重试耗尽，保留现场')
 
     def _advance_daily_lundao_seat_confirmation(
         self,
@@ -10646,18 +10654,8 @@ class DailyFoundationTaskMixin:
             f"洞天_行动力：Runtime 解析敌对地点 {enemies}，"
             f"已解码 {len(mines)} 个，unions={union_summary}",
         )
-        # #279 opens with the tier-one White Jade card already selected and
-        # its roster rendered at the right.  Clicking the visible ``白玉京``
-        # label again is therefore an idempotent selection, not navigation to
-        # #341.  Prefer any other Runtime-authorized enemy; keep White Jade as
-        # a last-resort target only when it is the sole hostile place.
-        non_selected_enemies = [
-            item
-            for item in enemies
-            if self._daily_dongtian_normalize_place_name(item) != "白玉京"
-        ]
-        if non_selected_enemies:
-            return non_selected_enemies
+        # Runtime 已按地图从上到下排序。只过滤归属，不按地点名称
+        # 添加例外；点不进地点应修复入口定位，不能更改敌对目标优先级。
         return enemies
 
     def _daily_dongtian_validate_enemy_detail(
@@ -10811,6 +10809,11 @@ class DailyFoundationTaskMixin:
         *,
         max_scrolls: int,
     ):
+        """从当前可见且入口可点击的敌对地点中，优先选最上方一个。"""
+        if not enemy_places:
+            raise RuntimeError("洞天_行动力：没有敌对地点可定位")
+        # 全部敌对地点均参与当前帧匹配：如名单 abde、OCR 看见 bde，
+        # 直接选 b。只有当前帧没有可安全点击的敌对地点时才滚动。
         return (yield from self._daily_dongtian_click_place(
             context,
             stop_event,
@@ -10911,13 +10914,13 @@ class DailyFoundationTaskMixin:
                                 continue
                         click_point = self._daily_dongtian_location_click_point(location_box, window_box)
                         if click_point is None:
-                            # Partially clipped labels must be revealed before
-                            # clicking; building offsets are not click targets.
+                            # 名称和它上方的地点入口都必须完整露在窗口内。
                             continue
                         click_x, click_y = click_point
                         if point_in_box(location_center_x, location_center_y, roster_box) or point_in_box(click_x, click_y, roster_box):
                             continue
-                        matches.append((float(line.get("y") or 0), float(line.get("x") or 0), original, line, click_x, click_y, location_center_x, location_center_y))
+                        # 排序依据实际地点名称框，而非可能合并其它文字的 OCR 行框。
+                        matches.append((location_center_y, location_center_x, original, line, click_x, click_y, location_center_x, location_center_y))
                         break
                 if matches:
                     _y, _x, place, line, click_x, click_y, location_center_x, location_center_y = min(matches, key=lambda item: (item[0], item[1]))
@@ -10926,9 +10929,9 @@ class DailyFoundationTaskMixin:
                         raise RuntimeError(f"{task_label}：地点名称内部一致性校验失败：place={place!r}")
                     if click_x <= 0 or click_y <= 0:
                         raise RuntimeError(f"{task_label}：地点「{place}」 OCR 坐标无效，line={line}")
-                    # Real #279 navigation verifies the label centre. Never
-                    # probe nearby building art after a failed transition.
-                    click_candidates = [(location_center_x, location_center_y)]
+                    # OCR 名称只用于定位；实际入口位于名称上方，必须使用
+                    # 定位函数已校验的落点，不能重新覆盖成文字中心。
+                    click_candidates = [(click_x, click_y)]
                     successor_wait_seconds = float(
                         context.payload.get("place_click_successor_wait_seconds") or 20.0
                     )
@@ -10938,12 +10941,10 @@ class DailyFoundationTaskMixin:
                         self._log(
                             "click",
                             f"{task_label}：调用方目标地点「{place}」，"
-                            f"点击可见地点名称=({candidate_x:.0f},{candidate_y:.0f})"
+                            f"点击名称上方地点入口=({candidate_x:.0f},{candidate_y:.0f})"
                             f"，尝试 {attempt}/{len(click_candidates)}",
                         )
                         context.click_frame_point(279, candidate_x, candidate_y)
-                        if not hasattr(context, "current_scene"):
-                            return place
                         try:
                             landing = yield from context.wait_scene(
                                 [341,
@@ -11082,20 +11083,26 @@ class DailyFoundationTaskMixin:
         location_box: Mapping[str, Any],
         window_box: Mapping[str, Any],
     ) -> tuple[float, float] | None:
-        """Use the verified title centre only for a fully visible map label."""
+        """名称是 OCR 锚点；地点入口为 (x + w/2, y - 2h)。
 
-        center_x = float(location_box.get("x") or 0) + float(location_box.get("w") or 0) * 0.5
-        center_y = float(location_box.get("y") or 0) + float(location_box.get("h") or 0) * 0.5
-        click_x = center_x
-        click_y = center_y
+        名称完整可见且上方入口位于地图窗口内才返回落点。入口被顶部
+        遮挡时返回 None，让调用方滚动露出，不能退回点击名称。
+        """
+
+        x = float(location_box.get("x") or 0)
+        y = float(location_box.get("y") or 0)
+        width = float(location_box.get("w") or 0)
+        height = float(location_box.get("h") or 0)
+        if width <= 0 or height <= 0:
+            return None
+        click_x = x + width * 0.5
+        click_y = y - height * 2
         left = float(window_box.get("x") or 0)
         top = float(window_box.get("y") or 0)
         right = left + float(window_box.get("w") or 0)
         bottom = top + float(window_box.get("h") or 0)
-        half_width = float(location_box.get("w") or 0) / 2
-        half_height = float(location_box.get("h") or 0) / 2
-        if not (left <= click_x - half_width and click_x + half_width <= right
-                and top <= click_y - half_height and click_y + half_height <= bottom):
+        if not (left <= x and x + width <= right
+                and top <= click_y < y and y + height <= bottom):
             return None
         return click_x, click_y
 

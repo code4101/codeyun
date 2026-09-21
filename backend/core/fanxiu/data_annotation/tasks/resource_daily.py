@@ -37,6 +37,16 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         lambda: dismiss_friend_notice(runner._behavior_tree_context(ctx, stop_event=stop_event)),
     )
     domains.append({"domain": "好友提示", "result": friend_notice})
+    from backend.core.fanxiu.data_annotation.tasks.reward_recovery import (
+        STAGE_ID as RECOVERY_STAGE_ID, STAGE_VERSION as RECOVERY_STAGE_VERSION,
+        recover_rewards,
+    )
+    recovery = yield from progress.run(
+        RECOVERY_STAGE_ID, daily_cycle,
+        lambda: recover_rewards(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=RECOVERY_STAGE_VERSION,
+    )
+    domains.append({"domain": "找回", "result": recovery})
     internalized = payload.get("internalized_jobs") or {}
     for stage in RESOURCE_DAILY_STAGES:
         definition = get_fanxiu_data_annotation_task_cell_definition(stage.task_type)
@@ -75,6 +85,16 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         stage_executor=run_resource_stage,
     )
     domains.extend(resources["domains"])
+    from backend.core.fanxiu.data_annotation.tasks.gongfa_cultivation import (
+        STAGE_ID as GONGFA_STAGE_ID, STAGE_VERSION as GONGFA_STAGE_VERSION,
+        upgrade_gongfa_book,
+    )
+    gongfa = yield from progress.run(
+        GONGFA_STAGE_ID, daily_cycle,
+        lambda: upgrade_gongfa_book(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=GONGFA_STAGE_VERSION,
+    )
+    domains.append({"domain": "升级功法书", "result": gongfa})
     from backend.core.fanxiu.data_annotation.tasks.xianfu_science import (
         STAGE_ID, STAGE_VERSION, execute_xianfu_science_task,
     )

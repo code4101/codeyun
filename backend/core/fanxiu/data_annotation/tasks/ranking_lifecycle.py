@@ -348,6 +348,10 @@ def _execute_family_job(
     task_id: str,
     label: str,
 ) -> Iterator[Any]:
+    """Run due obligations; explicit retry_pending_activity_types bypasses only
+    the pending retry clock for those activity types, never completion or the
+    activity's own admission checks. Ordinary scheduled runs keep retry clocks.
+    """
     from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
     from backend.db import engine
 
@@ -365,6 +369,12 @@ def _execute_family_job(
     )
     by_instance = {item.instance_key: item for item in occurrences}
     scheduler_task_id = str(ctx.get("scheduler_task_id") or task_id)
+    retry_pending_activity_types = payload.get("retry_pending_activity_types", [])
+    if not isinstance(retry_pending_activity_types, list) or any(
+        not isinstance(item, str) or not item for item in retry_pending_activity_types
+    ):
+        raise ValueError("retry_pending_activity_types 必须是非空活动类型字符串的列表")
+    retry_pending_activity_types = set(retry_pending_activity_types)
     ensure_ranking_lifecycle_checkpoint_table(engine)
     results: list[dict[str, Any]] = []
 
@@ -416,6 +426,7 @@ def _execute_family_job(
             (row.instance_key, row.checkpoint_kind, row.business_date)
             for row in checkpoint_rows
             if row.status == "pending" and row.retry_at
+            and row.activity_type not in retry_pending_activity_types
             and (retry := _parse_retry_at(row.retry_at)) is not None and retry > now
         }
         due = tuple(checkpoint for checkpoint in due if checkpoint.key not in waiting_keys)
