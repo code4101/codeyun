@@ -42,28 +42,25 @@ class MoyuSignupTaskMixin:
         )
 
     def moyu_signup_flow(self, context: Any):
-        yield from context.wait_click_then_scene(34, "日常", 69)
-        entry_result = yield from context.open_daily_entry(
-            label="魔狱_报名",
-            title_pattern=r"魔狱|封阵",
-            progress_can_mark_done=False,
-            max_scrolls=30,
-            initial_checks=2,
-        )
-        if entry_result != "open":
-            raise RuntimeError("魔狱_报名：#69 日常列表未找到“魔狱/封阵”入口")
+        current = yield from context.wait_scene([401, 400, 69, 34], wait=5, required=False)
+        scene_id = getattr(current, "scene_id", None)
+        if scene_id not in (400, 401):
+            if scene_id != 69:
+                yield from context.go_scene(34)
+                yield from context.wait_click_then_scene(34, "日常", 69)
+            entry_result = yield from context.open_daily_entry(
+                label="魔狱_报名", title_pattern=r"魔狱|封阵",
+                progress_can_mark_done=False, max_scrolls=30, initial_checks=2,
+            )
+            if entry_result != "open":
+                raise RuntimeError("魔狱_报名：#69 日常列表未找到“魔狱/封阵”入口")
 
         payload = getattr(context, "attrs", {}).get("payload", {})
-        yield from context.wait_scene_or_ocr(
-            400,
-            lambda text: (
-                "大道外域" in re.sub(r"\s+", "", str(text or ""))
-                and "魔狱封阵" in re.sub(r"\s+", "", str(text or ""))
-            ),
-            timeout=float(payload.get("moyu_entry_travel_timeout") or 180.0),
-            label="魔狱_报名：等待自动寻路抵达大道外域 #400",
-        )
-        yield from context.wait_click_then_scene(400, "封阵", 401)
+        if scene_id != 401:
+            landing = yield from context.wait_scene([400], wait=float(payload.get("moyu_entry_travel_timeout") or 180.0))
+            if landing.scene_id != 400:
+                raise RuntimeError(f"魔狱_报名：未到天道外墟，实际 #{landing.scene_id}")
+            yield from context.wait_click_then_scene(400, "封阵", 401)
 
         text = context.ocr_text(update=True)
         already_signed = self._moyu_signup_text_is_signed(text)

@@ -675,6 +675,81 @@ def _build_projection(
     )
 
 
+def read_talisman_refinement_candidates() -> dict[str, Any]:
+    """只读已加载模型的神炼候选，不展开图鉴、属性、升阶表或所有等级。
+
+    调用一次用于背包候选规划；单件神炼的连续动作不重复调用。
+    缓存复用交给公共根解析器，当前等级和专属材料每次调用读取新值。
+    与客户端 CheckOneTalismanCanWuJing 一致：当前配置 cost 为空表示
+    免费晋升，下一等级不存在表示满级；额外排除未升一阶的本体。
+    """
+    from .resource_auto_use import _inventory_counts_from_root, parse_direct_item_consume
+    from .backpack import _backpack_data_fields
+
+    started = time.perf_counter()
+    memory = MumuProcessMemory.discover_cached()
+    try:
+        state = int(_lua_addresses(memory)['state'], 16)
+        root, cache_hit, environment = resolve_lua_global_manager_root(
+            memory, manager_key='magic-treasure-talisman', state_address=state,
+            global_name='TalismanMgr', required_methods=_TALISMAN_METHODS,
+            validate=_talisman_data_fields,
+        )
+        reader = LuaJitReader(memory)
+        data = _talisman_data_fields(reader, root)
+        owned = _owned_talisman_rows(reader, data)
+        pin_index = _config_indexes(reader, environment, 'TalismanPin')
+        base_index = _config_indexes(reader, environment, 'Talisman')
+        if not pin_index or not base_index:
+            raise FanxiuRuntimeMemoryError('神炼配置索引未加载')
+        bases = _all_talisman_configs(reader, data,
+            {k: v for k, v in base_index.items() if k in ('id', 'name', 'talismanType')},
+            {r['talisman_id'] for r in owned})
+        pins = _selected_nested_config_rows_multi(reader, data.get('_TalismanWuJingDic'),
+            {k: v for k, v in pin_index.items() if k in ('level', 'cost', 'pin')},
+            {r['talisman_id']: {r['wujing_level'], r['wujing_level']+1} for r in owned})
+        observations = []
+        for row in owned:
+            identity, level = row['talisman_id'], row['wujing_level']
+            if row['stage'] < 1:
+                continue
+            base = bases.get(identity)
+            current = pins.get(identity, {}).get(level)
+            if base is None:
+                raise FanxiuRuntimeMemoryError(f'神炼当前配置未加载：{identity}/{level}')
+            # 客户端 cfg=nil 时不提供神炼；部分先天古宝没有该养成维度。
+            if current is None:
+                if level > 0:
+                    raise FanxiuRuntimeMemoryError(f'已神炼对象当前配置缺失：{identity}/{level}')
+                continue
+            if level+1 not in pins[identity]:
+                continue
+            cost = current.get('cost')
+            parsed = parse_direct_item_consume(cost) if cost else None
+            if cost and parsed is None:
+                raise FanxiuRuntimeMemoryError(f'神炼消耗不支持：{identity}/{cost}')
+            observations.append({**row, 'name': base.get('name'),
+                'bag': '古宝' if (as_int(base.get('talismanType')) or 0) > 0 or (as_int(current.get('pin')) or 0) > 0 else '法宝',
+                'material_id': parsed[0] if parsed else None,
+                'cost': parsed[1] if parsed else 0})
+        material_ids = {r['material_id'] for r in observations if r['material_id']}
+        counts = {}
+        if material_ids:
+            bag_root, _, _ = resolve_lua_global_manager_root(
+                memory, manager_key='resource-auto-use-talisman-backpack', state_address=state,
+                global_name='BackpackMgr', required_methods=frozenset({'Inst_get'}),
+                validate=_backpack_data_fields,
+            )
+            counts = _inventory_counts_from_root(reader, bag_root, material_ids)
+        candidates = [{**r, 'available': counts.get(r['material_id'], 0)} for r in observations
+            if r['cost'] == 0 or counts.get(r['material_id'], 0) >= r['cost']]
+        return {'complete': True, 'candidates': candidates, 'root_cache_hit': cache_hit,
+            'elapsed_seconds': time.perf_counter()-started}
+    except Exception as exc:
+        return {'complete': False, 'candidates': [], 'reason': str(exc),
+            'elapsed_seconds': time.perf_counter()-started}
+
+
 def read_magic_treasure_hall_runtime() -> dict[str, Any]:
     started_at = time.perf_counter()
     memory: MumuProcessMemory | None = None

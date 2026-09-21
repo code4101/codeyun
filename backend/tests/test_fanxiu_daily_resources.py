@@ -176,10 +176,12 @@ def test_xianmeng_eleven_sweep_spends_even_sub_cap_low_score_stamina():
     assert task._daily_xianmeng_should_continue_low_score_sweep({"ok": False}, {}, now=datetime(2026, 9, 20, 11)) == (False, None)
 
 
-def test_xianmeng_stamina_review_keeps_eleven_and_intraday_wakeups():
+def test_xianmeng_completed_batch_waits_for_evening_checkpoints():
     from backend.core.fanxiu.activity.daily_activity_job_registry import next_xianmeng_stamina_review
-    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 10)) == datetime(2026, 9, 20, 11)
-    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 12)) == datetime(2026, 9, 20, 12, 30)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 10)) == datetime(2026, 9, 20, 20, 45)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 12), tail_at=datetime(2026, 9, 20, 21, 10)) == datetime(2026, 9, 20, 20, 45)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 20, 45)) == datetime(2026, 9, 20, 21, 50)
+    assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 21, 50)) is None
     assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 21, 40), tail_at=datetime(2026, 9, 20, 21, 50)) == datetime(2026, 9, 20, 21, 50)
     assert next_xianmeng_stamina_review(datetime(2026, 9, 20, 22)) is None
 
@@ -218,7 +220,7 @@ def test_xianmeng_fallback_skips_immune_and_ranks_shielded_after_unshielded(monk
     assert [row["id"] for row in result["candidates"]] == [4, 3]
 
 
-def test_xianmeng_tail_preserve_only_before_eleven_sweep():
+def test_xianmeng_tail_preserved_until_2150():
     task = DailyResourceTaskMixin()
 
     assert (
@@ -231,17 +233,17 @@ def test_xianmeng_tail_preserve_only_before_eleven_sweep():
         task._daily_xianmeng_should_preserve_tail_before_triple_disable(
             datetime(2026, 9, 20, 11, 0)
         )
-        is False
+        is True
     )
     assert (
         task._daily_xianmeng_should_preserve_tail_before_triple_disable(
             datetime(2026, 9, 20, 11, 1)
         )
-        is False
+        is True
     )
     assert (
         task._daily_xianmeng_should_preserve_tail_before_triple_disable(
-            datetime(2026, 9, 20, 21, 30)
+            datetime(2026, 9, 20, 21, 50)
         )
         is False
     )

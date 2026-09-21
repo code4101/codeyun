@@ -19,7 +19,7 @@ XIANMENG_CHALLENGE_TASK_ID = "legacy-daily-xianmeng"
 XIANMENG_CHALLENGE_LABEL = "仙盟_挑战"
 XIANMENG_FORMAL_CHILD_BASE_IDS = frozenset({28100, 28200})
 XIANMENG_FORMAL_BASE_IDS = frozenset({28000, *XIANMENG_FORMAL_CHILD_BASE_IDS})
-XIANMENG_STAMINA_SWEEPS = ((21, 10), (21, 50))
+XIANMENG_STAMINA_SWEEPS = ((20, 45), (21, 50))
 XIANMENG_TRIPLE_DISABLE_AT = (21, 30)
 XIANMENG_FINAL_SWEEP = (21, 50)
 # Independent of evening tail sweeps: after 11:00, a missing commander target
@@ -28,16 +28,16 @@ XIANMENG_AUTONOMOUS_SWEEP_START = (11, 0)
 
 
 def next_xianmeng_stamina_review(now: datetime, *, tail_at: datetime | None = None) -> datetime | None:
-    """After the daytime stamina batch, wait for the user-authorized 21:50 tail.
+    """After a completed stamina batch, wait for 20:45 or the 21:50 tail.
 
     This is called after rewards are empty and stamina is below the batch
     threshold, not after technical failures. Regeneration does not authorize
-    repeated daytime visits. ``tail_at`` remains API-compatible; the fixed
-    final sweep is authoritative, not a legacy 21:10 override.
+    repeated daytime visits. ``tail_at`` remains API-compatible; the shared
+    evening checkpoints are authoritative, not a legacy 21:10 override.
     """
     close = now.replace(hour=22, minute=0, second=0, microsecond=0)
-    review = now.replace(hour=XIANMENG_FINAL_SWEEP[0], minute=XIANMENG_FINAL_SWEEP[1], second=0, microsecond=0)
-    return review if now < review < close else None
+    return next((review for hour, minute in XIANMENG_STAMINA_SWEEPS
+                 if now < (review := now.replace(hour=hour, minute=minute, second=0, microsecond=0)) < close), None)
 
 
 @dataclass(frozen=True)
@@ -185,7 +185,7 @@ def next_xianmeng_challenge_tail_time(
     now: datetime | None = None,
     timezone_name: str = DEFAULT_TIMEZONE,
 ) -> str | None:
-    """Return the next 21:10/21:50 stamina sweep for an active Xianmeng day."""
+    """Return the next 20:45/21:50 stamina sweep for an active Xianmeng day."""
 
     timezone = ZoneInfo(timezone_name)
     current = now or datetime.now(timezone)

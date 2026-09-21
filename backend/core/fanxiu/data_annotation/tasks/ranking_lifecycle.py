@@ -251,13 +251,14 @@ def _parse_retry_at(value: Any) -> datetime | None:
 
 
 def _execute_xianmeng_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+    from backend.core.fanxiu.activity.daily_activity_job_registry import XIANMENG_STAMINA_SWEEPS
     options = dict(payload)
     options.pop("__scheduler_task_id", None)
     options.update({
         "manage_schedule": False,
         "schedule_tail_from_daily_activity_list": False,
         "event_tail_date": job_now().astimezone().date().isoformat(),
-        "event_tail_times": ["21:10", "21:50"],
+        "event_tail_times": [f"{hour:02d}:{minute:02d}" for hour, minute in XIANMENG_STAMINA_SWEEPS],
         "daily_end_time": "22:00",
     })
     result = yield from runner._execute_daily_xianmeng_task(ctx, stop_event, options)

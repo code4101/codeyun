@@ -499,7 +499,6 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         stop_event: threading.Event,
     ) -> Any:
         context = runner._behavior_tree_context(ctx, stop_event=stop_event)
-        yield from context.go_scene(34)
         result = yield from runner._execute_daily_task(
             ctx,
             stop_event,

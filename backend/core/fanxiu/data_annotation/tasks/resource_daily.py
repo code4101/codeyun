@@ -29,6 +29,14 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
     moment = job_now()
     daily_cycle = moment.date().isoformat()
     domains = []
+    from backend.core.fanxiu.data_annotation.tasks.friend_notice import (
+        STAGE_ID as FRIEND_NOTICE_STAGE_ID, dismiss_friend_notice,
+    )
+    friend_notice = yield from progress.run(
+        FRIEND_NOTICE_STAGE_ID, daily_cycle,
+        lambda: dismiss_friend_notice(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+    )
+    domains.append({"domain": "好友提示", "result": friend_notice})
     internalized = payload.get("internalized_jobs") or {}
     for stage in RESOURCE_DAILY_STAGES:
         definition = get_fanxiu_data_annotation_task_cell_definition(stage.task_type)

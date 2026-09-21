@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from types import GeneratorType
@@ -140,20 +141,41 @@ class BehaviorTreeContainer:
             state_path=None,
             trace=0,
         )
-        while True:
-            self.owner._raise_if_stopped(self.stop_event)
-            if max_execution_seconds is not None and time.monotonic() - started_at > max_execution_seconds:
-                self.stop_event.set()
-                raise RuntimeError(f"行为树任务超时：{label} 超过 {max_execution_seconds:.0f} 秒")
-            tick_started_at = time.monotonic()
-            status = runner.run_once()
-            tick_elapsed = time.monotonic() - tick_started_at
-            if tick_elapsed >= 10.0:
-                log = getattr(self.owner, "_log", None)
-                if callable(log):
-                    log("detail", f"{label}：行为树tick耗时 {tick_elapsed:.2f}s status={status}")
-            if status == BehaviorTreeStatus.SUCCESS:
-                return result_holder.get("value")
-            if status == BehaviorTreeStatus.FAILURE:
-                raise RuntimeError(f"行为树节点失败：{label}")
-            self.stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
+        try:
+            while True:
+                self.owner._raise_if_stopped(self.stop_event)
+                if max_execution_seconds is not None and time.monotonic() - started_at > max_execution_seconds:
+                    self.stop_event.set()
+                    raise RuntimeError(f"行为树任务超时：{label} 超过 {max_execution_seconds:.0f} 秒")
+                tick_started_at = time.monotonic()
+                status = runner.run_once()
+                tick_elapsed = time.monotonic() - tick_started_at
+                if tick_elapsed >= 10.0:
+                    log = getattr(self.owner, "_log", None)
+                    if callable(log):
+                        log("detail", f"{label}：行为树tick耗时 {tick_elapsed:.2f}s status={status}")
+                if status == BehaviorTreeStatus.SUCCESS:
+                    return result_holder.get("value")
+                if status == BehaviorTreeStatus.FAILURE:
+                    raise RuntimeError(f"行为树节点失败：{label}")
+                self.stop_event.wait(max(0.1, float(tick_seconds or 1.0)))
+        finally:
+            self.close_suspended_actions(runner.root)
+
+    @staticmethod
+    def close_suspended_actions(root: Node) -> None:
+        """Release this Cell's generators before another Cell can start.
+
+        An interrupt between ticks never enters the suspended generator. Leaving
+        cleanup to GC lets a retained traceback/tree cycle reset task ContextVars
+        and payloads during a later Job. Close synchronously, including guards;
+        ExitStack still closes the other actions if one cleanup raises.
+        """
+        with ExitStack() as cleanup:
+            pending = [root]
+            while pending:
+                node = pending.pop()
+                pending.extend(node.children)
+                if isinstance(node, Action) and node.generator is not None:
+                    cleanup.callback(node.generator.close)
+                    node.generator = None
