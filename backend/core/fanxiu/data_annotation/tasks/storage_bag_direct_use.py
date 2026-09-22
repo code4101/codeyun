@@ -393,12 +393,12 @@ class StorageBagSpiritStoneGuiAdapter:
                 )
                 if directive.direction == "none":
                     raise StorageBagDirectUseBlocked("#525 滚动规划与不可见判定矛盾")
+                # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）。2026-09-22 实测
+                # 任务原先自定的 0.45s 快速手势在 #525 会被游戏忽略，整格不动。
                 self.context.drag_shape_content(
                     STORAGE_BAG_SCENE,
                     "窗口",
                     direction=directive.direction,
-                    ratio=0.72 if directive.mode == "coarse" else 0.38,
-                    duration=0.45,
                 )
                 scroll_count += 1
                 retry_count = 0

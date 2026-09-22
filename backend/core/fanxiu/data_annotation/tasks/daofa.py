@@ -406,7 +406,6 @@ class DaofaTaskMixin:
                 376,
                 "窗口",
                 direction=direction,
-                ratio=0.38,
                 unchanged_confirmations=2,
             )
             if not changed:

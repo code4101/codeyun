@@ -373,9 +373,9 @@ def _find_setting_label(
             # retained pane has large static areas and can report “unchanged”
             # after a real but small scroll.  This loop is bounded, and OCR
             # target identity remains the only completion condition.
-            context.drag_shape_content(
-                pane, direction=direction, ratio=0.5, duration=0.6
-            )
+            # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）；任务不再自定
+            # 短时长手势。
+            context.drag_shape_content(pane, direction=direction)
             yield from context.wait_action_settle(0.8)
     raise RuntimeError(f"虚天自动设置未找到配置行：{label}")
 

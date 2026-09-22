@@ -706,6 +706,7 @@ def _resolve_partner_fragment_base_id(
 ) -> int:
     expected_effect = f"PartnerFragment|{int(target_partner_id)}"
     matches: list[int] = []
+    fragment_matches: list[int] = []
     for raw_key, card in catalog_cards_by_id.items():
         effect_value = str(
             card.get("effect_value") or card.get("effectValue") or ""
@@ -718,6 +719,14 @@ def _resolve_partner_fragment_base_id(
             base_id = 0
         if base_id > 0:
             matches.append(base_id)
+            # 仙侣碎片与同名绝技会声明同一个 PartnerFragment 效果（实测
+            # PartnerFragment|16 同时命中 19600016「碎片·小极宫主」和
+            # 19710016「绝技·玄冰敕令」）。碎片道具按命名约定带「碎片·」前缀，
+            # 用它把技能排除；仍不唯一时继续失败关闭。
+            if str(card.get("name") or "").startswith("碎片·"):
+                fragment_matches.append(base_id)
+    if len(set(fragment_matches)) == 1:
+        return fragment_matches[0]
     if len(set(matches)) != 1:
         raise StorageBagChoiceBoxBlocked(
             f"Catalog 未唯一解析 {expected_effect} 对应的碎片 base_id"

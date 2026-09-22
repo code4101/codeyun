@@ -47,6 +47,16 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=RECOVERY_STAGE_VERSION,
     )
     domains.append({"domain": "找回", "result": recovery})
+    from backend.core.fanxiu.data_annotation.tasks.divine_artifact_upgrade import (
+        STAGE_ID as ARTIFACT_STAGE_ID, STAGE_VERSION as ARTIFACT_STAGE_VERSION,
+        upgrade_divine_artifacts,
+    )
+    artifacts = yield from progress.run(
+        ARTIFACT_STAGE_ID, daily_cycle,
+        lambda: upgrade_divine_artifacts(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=ARTIFACT_STAGE_VERSION,
+    )
+    domains.append({"domain": "神器升阶", "result": artifacts})
     internalized = payload.get("internalized_jobs") or {}
     for stage in RESOURCE_DAILY_STAGES:
         definition = get_fanxiu_data_annotation_task_cell_definition(stage.task_type)

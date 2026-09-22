@@ -9,6 +9,9 @@ from __future__ import annotations
 import re
 
 BOOK = 781
+# 书页会记住上次页签：从世界入口进入时可能停在自创等其它页签，此时是另一个真实页面，
+# 必须先切回功法书页签再执行养成流程。
+BOOK_OTHER_TAB = 800
 STAGE_ID = "gongfa-cultivation"
 STAGE_VERSION = "1"
 TABS = ("剑修", "法修", "魔修", "体修", "仙术")
@@ -217,25 +220,7 @@ def upgrade_law(context):
 
 
 def upgrade_gongfa_book(context):
-    """升级功法书整单：从当前已知页面重入，完成后回世界 #34（含 #661 变体）。"""
-    known = [BOOK, 782, 783, 784, 785, 786, 787, 788, 789, 790, 256, 34, 661]
-    for _ in range(6):
-        match = yield from context.wait_scene(known, wait=8)
-        scene = match.scene_id
-        if scene == BOOK:
-            break
-        if scene in (34, 661):
-            yield from context.wait_click(scene, "功法书入口")
-        elif scene in (783, 785, 787, 789):
-            yield from context.wait_click(scene, "继续")
-        elif scene == 782:
-            yield from context.wait_click(scene, "取消")
-        elif scene in (784, 786, 788, 790, 256):
-            yield from context.wait_click(scene, "返回")
-        else:
-            raise RuntimeError(f"升级功法书遇到未知起始页面 #{scene}")
-    else:
-        raise RuntimeError("未进入功法书")
+    yield from enter_book(context)
     fusion = yield from quick_fusion(context)
     resonance = yield from quick_resonance(context)
     books = yield from complete_book_tabs(context)
@@ -248,3 +233,39 @@ def upgrade_gongfa_book(context):
     return {"result": "success", "outcome": "complete", "fusion": fusion,
             "resonance": resonance, "books": books, "law": law,
             "secret_art": "reserved_by_user", "final_scene": world.scene_id}
+
+
+def enter_book(context):
+    """进入功法书页并停在该页；从已知页面重入，书页停在其它页签时先切回。
+
+    过渡帧上分层识别可能给出园区其它已知场景，点击前的场景守护会拒绝落点；
+    这种情况按识别波动重试，只有持续无法识别才交由未匹配守护上报。
+    """
+    from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
+
+    known = [BOOK, BOOK_OTHER_TAB, 782, 783, 784, 785, 786, 787, 788, 789, 790, 256, 34, 661]
+    for attempt in range(8):
+        match = yield from context.wait_scene(known, wait=8, required=(attempt == 0))
+        if match is None:
+            yield from context.wait_action_settle(1.0)
+            continue
+        scene = int(match.scene_id)
+        if scene == BOOK:
+            return match
+        if scene == BOOK_OTHER_TAB:
+            shape = "功法书页签"
+        elif scene in (34, 661):
+            shape = "功法书入口"
+        elif scene in (783, 785, 787, 789):
+            shape = "继续"
+        elif scene == 782:
+            shape = "取消"
+        elif scene in (784, 786, 788, 790, 256):
+            shape = "返回"
+        else:
+            raise RuntimeError(f"升级功法书遇到未知起始页面 #{scene}")
+        try:
+            yield from context.wait_click(scene, shape)
+        except SceneClickMismatch:
+            yield from context.wait_action_settle(1.0)
+    raise RuntimeError("未进入功法书")

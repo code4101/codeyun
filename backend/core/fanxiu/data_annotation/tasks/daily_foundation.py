@@ -11016,7 +11016,9 @@ class DailyFoundationTaskMixin:
                     )
                 direction_text = "向下" if scroll_direction == "down" else "向上"
                 self._log("action", f"{task_label}：当前窗口未安全识别目标，{direction_text}小幅滚动 {scroll_index + 1}/{max_scrolls}")
-                changed = yield from context.scroll_shape_content(view279, window_shape, direction=scroll_direction, ratio=0.2)
+                # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）；几何推断只
+                # 用于选择方向，不参与换算滚动步长。
+                changed = yield from context.scroll_shape_content(view279, window_shape, direction=scroll_direction)
                 if not changed:
                     break
             if direction_index + 1 < len(directions):

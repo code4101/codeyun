@@ -41,6 +41,55 @@ FIXED_BOX_DETAIL_SCENE = 585
 USE_QUANTITY_SCENE = 584
 TRANSIENT_REWARD_SCENE = 578
 STORAGE_BAG_PLAN_FRAME_STABILITY_THRESHOLD = 95.0
+# #584 数量闭环的加减按钮动作上限。正常弹窗默认 1、目标是一整叠，比例定位先把
+# 数量推到接近上限，剩下的差值用按钮收紧；40 步足够覆盖已验证的整叠规模。
+# 拉满后用“增加”点几下确认的步数：已经到顶时这些点击是无副作用的空操作。
+STORAGE_BAG_USE_QUANTITY_MAX_STEPS = 3
+# 2026-09-22 真实 #525 实测：框架默认手势（ratio 0.5、duration 1.5s）确实推进列表，
+# 6 次推进约 27 格；任务原先自定的 0.45s 快速手势会被游戏整格忽略。滚动统一走默认
+# 手势，允许次数按“当前剩余格数 / 单次实测下界”推导，只在原地打转时才耗尽。
+DEFAULT_DRAG_SLOTS_FLOOR = 4
+SCROLL_ALLOWANCE_MARGIN = 2
+# 粗推进：同一份配准最多连续承担几次默认手势。批量数必须按“单把实测位移上界”反算，
+# 否则估算出的批量会冲过目标再回滚。2026-09-22 在真实 #525 上双向实测：默认手势
+# （ratio 0.5、duration 1.5s）每把推进约 9 格（上下行一致），故取 10 格为上界，
+# 批量覆盖剩余距离的 75–90%，保留防越界余量。
+COARSE_DRAG_BATCH_MAX = 6
+DRAG_SLOTS_UPPER_BOUND = 10
+# 拖拽本身只负责手势（框架默认 1.5s），惯性要靠调用方等待。全仓拖拽后的标准等待是
+# ``wait_action_settle`` 0.8–1.0s；#525 列表更长更滑，取 1.2s 留余量。等待不足会让
+# 窗口还在滑行时就发出下一把拖拽，实测能把一次定位从 7 次滚屏放大到 46 次。
+STORAGE_BAG_DRAG_SETTLE_SECONDS = 1.2
+
+
+def coarse_drag_batch(remaining_slots: int) -> int:
+    """How many default drags one registration may carry without overshooting.
+
+    Re-registering after every single drag costs a full-frame OCR plus sequence
+    alignment (~5.6s on real #525), so a coarse approach batches several default
+    gestures per registration.  The count is derived from the conservative
+    *upper* bound of one gesture so the target still ends up at or below the
+    window; a larger batch would push it past the top and force a corrective
+    scroll back, which costs more than the registration it saves.
+    """
+
+    remaining = max(0, int(remaining_slots))
+    return max(1, min(COARSE_DRAG_BATCH_MAX, remaining // DRAG_SLOTS_UPPER_BOUND))
+
+
+def bounded_scroll_allowance(remaining_slots: int) -> int:
+    """Derive the per-anchor drag allowance from the measured displacement floor.
+
+    A fixed drag count silently fails once the Runtime list grows past
+    ``count * displacement``; the allowance therefore scales with the real
+    remaining distance at the current anchor and stays conservative about how
+    far one framework default gesture actually moves the window.  It is a
+    budget for repeatedly re-registering the same anchor, never for the whole
+    scroll sequence: the caller re-anchors every time the distance shrinks.
+    """
+
+    remaining = max(0, int(remaining_slots))
+    return max(1, -(-remaining // DEFAULT_DRAG_SLOTS_FLOOR) + SCROLL_ALLOWANCE_MARGIN)
 
 
 class StorageBagRandomBoxBlocked(RuntimeError):
@@ -387,6 +436,90 @@ def plan_current_random_box_click(
     )
 
 
+def read_live_use_quantity(context: Any, *, retries: int = 4):
+    """Read #584's count from full-frame OCR tokens inside the ``当前数量`` box.
+
+    The dialog draws the count in a stylised font: on a real frame the ROI crop
+    OCR (and its enlarged fallback) can return nothing while the full-frame pass
+    still detects the integer (2026-09-22 measured).  The closed loop therefore
+    reads the full frame and keeps only tokens whose centre is inside the
+    annotated box.  Anything other than one unique positive integer is
+    re-sampled a bounded number of times, then fails closed.
+    """
+
+    box = context.shape_box(USE_QUANTITY_SCENE, "当前数量")
+    left = float(box.get("x") or 0.0)
+    top = float(box.get("y") or 0.0)
+    right = left + float(box.get("w") or 0.0)
+    bottom = top + float(box.get("h") or 0.0)
+    hits: list[int] = []
+    for _ in range(max(1, int(retries))):
+        frame = context.cur_frame(update=True)
+        tokens = context.full_frame_ocr_tokens(frame_data_url=frame)
+        hits = []
+        for token in tokens:
+            text = str(token.get("text") or "").strip()
+            if not text.isdigit():
+                continue
+            centre_x = float(token.get("x") or 0.0) + float(token.get("w") or 0.0) / 2
+            centre_y = float(token.get("y") or 0.0) + float(token.get("h") or 0.0) / 2
+            if left <= centre_x <= right and top <= centre_y <= bottom:
+                hits.append(int(text))
+        if hits and len(set(hits)) == 1:
+            return hits[0]
+        yield from context.wait_action_settle(0.4)
+    raise StorageBagRandomBoxBlocked(f"#584 当前数量整帧读数不唯一：{hits}")
+
+
+def drag_use_quantity_slider_to_end(context: Any) -> None:
+    """Push #584's slider towards its right end while the thumb is still at 1.
+
+    The dialog opens with the count at 1, i.e. the thumb sits exactly where the
+    shape was annotated, so one proportional drag is enough.  The gesture may
+    overshoot because the game clamps it to the slider maximum (2026-09-22
+    measured 1 -> 14 in a single 0.8s drag).
+    """
+
+    thumb = context.shape_box(USE_QUANTITY_SCENE, "数量滑杆拖柄")
+    anchor = context.shape_box(USE_QUANTITY_SCENE, "数量滑杆右端")
+    start_x = float(thumb.get("x") or 0.0) + float(thumb.get("w") or 0.0) / 2
+    start_y = float(thumb.get("y") or 0.0) + float(thumb.get("h") or 0.0) / 2
+    end_x = float(anchor.get("x") or 0.0) + float(anchor.get("w") or 0.0) + 40.0
+    end_y = float(anchor.get("y") or 0.0) + float(anchor.get("h") or 0.0) / 2
+    context.drag_frame_point(
+        USE_QUANTITY_SCENE, start_x, start_y, end_x, end_y, duration_ms=800
+    )
+
+
+def adjust_use_quantity(context: Any, target: int):
+    """Push #584's pending quantity to the stack maximum, without reading it.
+
+    The confirmation dialog always opens at 1 and the business target is always
+    the whole stack, so no reading is required: drag the thumb to the slider's
+    right end (the game clamps it to the maximum) and then press "增加" a few
+    times, which is a no-op once the slider is already full.
+
+    This deliberately replaces an OCR closed loop: on real #584 frames the
+    stylised count is only detected by OCR when it shows two digits
+    (2026-09-22 measured), so a read-based loop stalls at the dialog's default
+    value of 1.  Unreadable feedback is not turned into a guessed value -- the
+    authoritative gate remains the Runtime delta after "使用".
+    """
+
+    del target  # 目标恒为整叠上限，由 Runtime 数量给出；这里只负责把控件拉满
+    drag_use_quantity_slider_to_end(context)
+    yield from context.wait_action_settle(0.8)
+    box = context.shape_box(USE_QUANTITY_SCENE, "增加")
+    for _ in range(STORAGE_BAG_USE_QUANTITY_MAX_STEPS):
+        context.click_frame_point(
+            USE_QUANTITY_SCENE,
+            float(box.get("x") or 0.0) + float(box.get("w") or 0.0) / 2,
+            float(box.get("y") or 0.0) + float(box.get("h") or 0.0) / 2,
+        )
+        yield from context.wait_action_settle(0.35)
+    return 0
+
+
 def _ordered_texts(tokens: list[Mapping[str, Any]]) -> tuple[str, ...]:
     def key(token: Mapping[str, Any]) -> tuple[float, float]:
         return (float(token.get("y") or 0), float(token.get("x") or 0))
@@ -510,11 +643,15 @@ class StorageBagRandomBoxGuiAdapter:
         operation_label: str = "随机箱",
         operation_template: str = "random_box",
         alignment_retries: int = 2,
-        max_scrolls: int = 12,
+        max_scrolls: int = 120,
         after_snapshot_retries: int = 4,
     ) -> None:
         self.context = context
         self.snapshot_reader = snapshot_reader
+        # 上一件开箱后的 Runtime 快照：它同时是下一件的“动作前快照”。整单一件件
+        # 开箱时快照读取本身要十几秒（548 件解码），复用它可以省掉一半读取；复用
+        # 前仍按实例身份与数量校验，不成立就退回重新读取。
+        self._reusable_after_snapshot: dict[str, Any] | None = None
         self.catalog_cards_by_id = catalog_cards_by_id
         self.click_planner = click_planner
         self.recorder = recorder
@@ -530,15 +667,42 @@ class StorageBagRandomBoxGuiAdapter:
         }:
             raise ValueError("储物袋开箱详情场景必须是正式 #583/#585")
         self.alignment_retries = max(0, min(4, int(alignment_retries)))
-        self.max_scrolls = max(0, min(30, int(max_scrolls)))
+        # 绝对上限只兜住失控情况；真实允许次数由 bounded_scroll_allowance
+        # 按剩余距离推导，避免固定次数在物品列表变长后静默失效。
+        self.max_scrolls = max(0, min(240, int(max_scrolls)))
         self.after_snapshot_retries = max(1, min(10, int(after_snapshot_retries)))
+
+    def _take_reusable_snapshot(
+        self, request: StorageBagRandomBoxRequest
+    ) -> dict[str, Any] | None:
+        """Reuse the previous open's post-action snapshot as this action's pre-state.
+
+        Reading the 548-item Runtime list costs about 11s (2026-09-22 measured), and
+        one open only changes the target stack plus its rewards, so the previous
+        post-action snapshot is the exact current state of the next item.  It is
+        reused only after the same instance/quantity validation a fresh read would
+        get; otherwise the caller falls back to a new read.
+        """
+
+        candidate = self._reusable_after_snapshot
+        self._reusable_after_snapshot = None
+        if candidate is None:
+            return None
+        snapshot = dict(candidate)
+        try:
+            _target_runtime_item(snapshot, request)
+        except StorageBagRandomBoxBlocked:
+            return None
+        return snapshot
 
     def execute(
         self, request: StorageBagRandomBoxRequest
     ) -> Generator[Any, Any, StorageBagRandomBoxExecution]:
         if request.base_id <= 0 or not request.instance_id or not request.name.strip():
             raise StorageBagRandomBoxBlocked("随机箱请求缺少 base_id/instance_id/稳定名称")
-        before = dict(self.snapshot_reader())
+        before = self._take_reusable_snapshot(request)
+        if before is None:
+            before = dict(self.snapshot_reader())
         process_identity = _snapshot_process_identity(before)
         _target_runtime_item(before, request)
         box_card = self.catalog_cards_by_id.get(str(request.base_id)) or {}
@@ -559,6 +723,10 @@ class StorageBagRandomBoxGuiAdapter:
 
         retry_count = 0
         scroll_count = 0
+        # 滚动预算只对“当前锚点”生效：视窗每往前推进一次就重新锚定，预算按更近的
+        # 剩余距离重算；于是正常推进不会被累计次数误判，只有同一锚点原地打转才耗尽。
+        anchor_remaining: int | None = None
+        anchor_scroll_count = 0
         while True:
             planned = self.click_planner(self.context, before, request)
             plan = (yield from planned) if isinstance(planned, GeneratorType) else planned
@@ -573,27 +741,43 @@ class StorageBagRandomBoxGuiAdapter:
                 yield from self.context.wait_action_settle(0.2)
                 continue
             if plan.status == "target_not_visible":
-                if scroll_count >= self.max_scrolls:
-                    raise StorageBagRandomBoxBlocked("#525 有界滚动后目标仍不可见")
                 if plan.viewport_runtime_start is None or not plan.observations:
                     raise StorageBagRandomBoxBlocked("#525 目标不可见但缺少唯一视窗起点")
                 directive = plan_storage_bag_scroll(
                     target_runtime_index=int(plan.runtime_index),
-                    viewport_runtime_start=plan.viewport_runtime_start,
+                    viewport_runtime_start=int(plan.viewport_runtime_start),
                     visible_cell_count=max(obs.visible_index for obs in plan.observations) + 1,
                 )
                 if directive.direction == "none":
                     raise StorageBagRandomBoxBlocked("#525 滚动规划与不可见判定矛盾")
-                self.context.drag_shape_content(
-                    STORAGE_BAG_SCENE,
-                    "窗口",
-                    direction=directive.direction,
-                    ratio=0.72 if directive.mode == "coarse" else 0.38,
-                    duration=0.45,
+                if anchor_remaining is None or directive.remaining_items < anchor_remaining:
+                    anchor_remaining = directive.remaining_items
+                    anchor_scroll_count = scroll_count
+                allowance = min(
+                    self.max_scrolls,
+                    bounded_scroll_allowance(anchor_remaining),
                 )
-                scroll_count += 1
-                retry_count = 0
-                yield from self.context.wait_action_settle(0.25)
+                anchor_used = scroll_count - anchor_scroll_count
+                if anchor_used >= allowance:
+                    raise StorageBagRandomBoxBlocked(
+                        "#525 有界滚动后目标仍不可见"
+                        f"（同一锚点已滚动 {anchor_used} 次 / 允许 {allowance} 次，"
+                        f"剩余 {directive.remaining_items} 格，累计 {scroll_count} 次）"
+                    )
+                # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）。2026-09-22 实测
+                # 任务原先自定的 0.45s 快速手势在 #525 会被游戏忽略，整格不动。
+                # 粗推进：同一份配准承担多次手势，下一次循环才重新识别配准。每把手势后
+                # 都留足惯性停稳时间，否则窗口还在滑行时发出的下一把位移无法估计。
+                batch = min(coarse_drag_batch(directive.remaining_items), allowance - anchor_used)
+                for _ in range(max(1, batch)):
+                    self.context.drag_shape_content(
+                        STORAGE_BAG_SCENE,
+                        "窗口",
+                        direction=directive.direction,
+                    )
+                    scroll_count += 1
+                    retry_count = 0
+                    yield from self.context.wait_action_settle(STORAGE_BAG_DRAG_SETTLE_SECONDS)
                 continue
             raise StorageBagRandomBoxBlocked(
                 f"#525 目标定位失败：{plan.status}；{plan.reason}"
@@ -642,12 +826,10 @@ class StorageBagRandomBoxGuiAdapter:
             wait=8.0,
             label="储物袋随机箱：等待 #584 数量确认",
         )
-        quantity_frame = self.context.cur_frame(update=True)
-        confirmed_quantity = read_confirmed_use_quantity(self.context, quantity_frame)
-        if confirmed_quantity != request.quantity:
-            raise StorageBagRandomBoxBlocked(
-                f"#584 当前数量 {confirmed_quantity} != 目标 Runtime 数量 {request.quantity}，拒绝使用"
-            )
+        # 弹窗默认停在 1，而业务语义是“一叠开完”：把控件拉满即可，不需要读那个
+        # 美术字数字（真机单位数根本检不出）。是否真的整叠开完由下面开箱后的
+        # Runtime 差值证明，这里不做无法证明的读数断言。
+        yield from adjust_use_quantity(self.context, request.quantity)
 
         yield from self.context.wait_click(USE_QUANTITY_SCENE, "使用", timeout=8.0)
         landed = yield from self.context.wait_scene(
@@ -704,8 +886,17 @@ class StorageBagRandomBoxGuiAdapter:
             catalog_cards_by_id=self.catalog_cards_by_id,
             additional_rewards=wallet_rewards,
         )
-        if delta.opened_count != request.quantity:
-            raise StorageBagRandomBoxBlocked("Runtime 实际开启数量不等于 #584 已确认全量")
+        if delta.opened_count <= 0:
+            raise StorageBagRandomBoxBlocked("Runtime 没有记录到任何目标实例消耗")
+        if delta.opened_count > request.quantity:
+            raise StorageBagRandomBoxBlocked(
+                f"Runtime 实际开启数量 {delta.opened_count} 超过计划 {request.quantity}"
+            )
+        # 游戏对单次“使用”数量有自己的上限：2026-09-22 实测万兽鼎馈赠 x66 单次只放行
+        # 43 个，而同一批的 2052/1032 大叠都能一次开完。少开不属于失败关闭条件——
+        # 按实际消耗记账，剩余数量由下一次整单重入按当前 Runtime 事实继续消费。
+        # 这次开箱后的快照就是下一件的动作前事实，留给下一次 execute 复用。
+        self._reusable_after_snapshot = dict(after)
         execution = StorageBagRandomBoxExecution(
             request=request,
             delta=delta,
@@ -747,6 +938,9 @@ __all__ = [
     "parse_confirmed_use_quantity",
     "require_stable_storage_bag_plan_frame",
     "read_confirmed_use_quantity",
+    "read_live_use_quantity",
+    "drag_use_quantity_slider_to_end",
+    "adjust_use_quantity",
     "wallet_reward_targets",
     "plan_current_random_box_click",
     "record_box_execution",

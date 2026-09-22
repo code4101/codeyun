@@ -35,6 +35,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_direct_use import (
 )
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     STORAGE_BAG_SCENE,
+    USE_QUANTITY_SCENE,
     StorageBagFixedBoxGuiAdapter,
     StorageBagRandomBoxGuiAdapter,
     StorageBagRandomBoxRequest,
@@ -48,6 +49,23 @@ from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snap
 from backend.core.fanxiu.storage_bag_settings import apply_storage_bag_item_settings
 from backend.core.fanxiu.storage_bag_usage import ensure_storage_bag_atlas_analysis
 from backend.db import engine
+
+
+def _wallet_snapshot_reader(currency_type: int) -> dict[str, Any]:
+    """开箱前后的钱包读取发生在长时间 GUI 导航之后，进程缓存可能已经过期或换代。
+
+    默认读者禁止重新发现进程，缓存未命中会以 process_cache_miss 失败关闭，把一次
+    正常的缓存过期当成业务阻塞。本作业显式允许发现：它本来就要进入储物袋操作，
+    不依赖复用只读巡检建立的进程缓存。
+    """
+
+    # 活动奖励币种在余额为 0 时会被客户端从钱包字典里省略，此时官方
+    # GetCurrencyByType 的语义就是 0。开箱奖励里正有这类币种（2026-09-22 实测
+    # 兑币类型 29907 尚未同步，动作前读取直接失败），所以显式采用客户端零值语义；
+    # 缺失仍不会伪造成“已到账”——动作后如果还是读不到，差值就是 0，归因照样失败关闭。
+    return read_wallet_currency_snapshot(
+        currency_type, allow_discovery=True, missing_as_zero=True
+    )
 
 
 WORLD_SCENE = 34
@@ -287,6 +305,24 @@ def preflight_storage_bag_auto_claim_task(
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
+    # #584 的出口标注只接回储物袋主页，导航图里没有从 #584 直达世界页的安全路径；
+    # 上次失败若把现场留在数量确认弹窗上，必须先按已确认语义关掉它再导航，否则
+    # go_scene 会直接触发场景修复闩锁（2026-09-22 实测）。
+    scene = 0
+    try:
+        scene, _score, _frame = yield from context.current_scene()
+    except Exception:
+        scene = 0
+    if int(scene or 0) == USE_QUANTITY_SCENE:
+        yield from context.wait_click_then_scene(
+            USE_QUANTITY_SCENE,
+            "外侧空白",
+            STORAGE_BAG_SCENE,
+            # 关闭后场景识别会短暂停留在 #584（实测约 15s 才稳定回 #525），
+            # 超时太短会把成功的关闭误判为失败。
+            timeout=30.0,
+            label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
+        )
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
@@ -340,6 +376,22 @@ def execute_storage_bag_auto_claim_task(
         ctx.get("asset_tree_path"),
         stop_event=stop_event,
     )
+    # 整单重入：上次失败可能把现场留在 #584 数量确认弹窗上，而导航图里没有从
+    # #584 直达世界页的安全路径，直接 go_scene 会触发场景修复闩锁（2026-09-22
+    # 实测）。先按已确认语义关掉弹窗再进储物袋。
+    scene = 0
+    try:
+        scene, _score, _frame = yield from context.current_scene()
+    except Exception:
+        scene = 0
+    if int(scene or 0) == USE_QUANTITY_SCENE:
+        yield from context.wait_click_then_scene(
+            USE_QUANTITY_SCENE,
+            "外侧空白",
+            STORAGE_BAG_SCENE,
+            timeout=8.0,
+            label="储物袋_操作/整单重入：关闭遗留 #584 数量确认",
+        )
     yield from context.go_scene(WORLD_SCENE)
     yield from context.wait_click(WORLD_SCENE, "右侧菜单/储物袋", timeout=10.0)
     yield from context.wait_scene(
@@ -366,14 +418,14 @@ def execute_storage_bag_auto_claim_task(
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
         recorder=recorder,
-        wallet_snapshot_reader=read_wallet_currency_snapshot,
+        wallet_snapshot_reader=_wallet_snapshot_reader,
     )
     fixed_adapter = StorageBagFixedBoxGuiAdapter(
         context=context,
         snapshot_reader=snapshot_reader,
         catalog_cards_by_id=cards_by_id,
         recorder=recorder,
-        wallet_snapshot_reader=read_wallet_currency_snapshot,
+        wallet_snapshot_reader=_wallet_snapshot_reader,
     )
     choice_adapter = StorageBagChoiceBoxGuiAdapter(
         context=context,
@@ -383,32 +435,52 @@ def execute_storage_bag_auto_claim_task(
     spirit_stone_adapter = StorageBagSpiritStoneGuiAdapter(
         context=context,
         snapshot_reader=snapshot_reader,
-        wallet_snapshot_reader=read_wallet_currency_snapshot,
+        wallet_snapshot_reader=_wallet_snapshot_reader,
     )
 
     executions: list[dict[str, Any]] = []
-    for entry in plan.action_queue:
-        if entry.template == "open_random_box":
-            result = yield from random_adapter.execute(_random_request(entry))
-        elif entry.template == "open_fixed_box":
-            result = yield from fixed_adapter.execute(_random_request(entry))
-        elif entry.template == "choice_box":
-            result = yield from choice_adapter.execute(_choice_request(entry))
-        elif _is_enabled_spirit_stone_entry(
-            entry,
-            spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
-        ):
-            result = yield from spirit_stone_adapter.execute(
-                _direct_use_request(entry)
-            )
-        else:  # guarded by _validate_production_batch
-            raise AssertionError(f"unreachable storage-bag template: {entry.template}")
-        executions.append({
-            "base_id": entry.base_id,
-            "instance_id": entry.instance_id,
-            "template": entry.template,
-            "verified": result is not None,
-        })
+    try:
+        for entry in plan.action_queue:
+            if entry.template == "open_random_box":
+                result = yield from random_adapter.execute(_random_request(entry))
+            elif entry.template == "open_fixed_box":
+                result = yield from fixed_adapter.execute(_random_request(entry))
+            elif entry.template == "choice_box":
+                result = yield from choice_adapter.execute(_choice_request(entry))
+            elif _is_enabled_spirit_stone_entry(
+                entry,
+                spirit_stone_direct_use_enabled=spirit_stone_direct_use_enabled,
+            ):
+                result = yield from spirit_stone_adapter.execute(
+                    _direct_use_request(entry)
+                )
+            else:  # guarded by _validate_production_batch
+                raise AssertionError(f"unreachable storage-bag template: {entry.template}")
+            executions.append({
+                "base_id": entry.base_id,
+                "instance_id": entry.instance_id,
+                "template": entry.template,
+                "verified": result is not None,
+            })
+    except Exception:
+        # 失败关闭也要退出中间页（#583 详情 / #584 数量确认）。留在弹窗上会让下一个
+        # 到期作业直接拒绝动作，把队列一起带崩（2026-09-22 真实事故）。离场属于
+        # best-effort：它只影响现场，不改变已发生的业务失败。
+        try:
+            scene, _score, _frame = yield from context.current_scene()
+            if int(scene or 0) == USE_QUANTITY_SCENE:
+                # #584 没有直达世界页的安全路径，先按已确认语义点掉弹窗。
+                yield from context.wait_click_then_scene(
+                    USE_QUANTITY_SCENE,
+                    "外侧空白",
+                    STORAGE_BAG_SCENE,
+                    timeout=30.0,
+                    label="储物袋_操作/失败离场：关闭 #584 数量确认",
+                )
+            yield from context.go_scene(WORLD_SCENE)
+        except Exception:
+            pass
+        raise
 
     yield from context.wait_click(STORAGE_BAG_SCENE, "返回", timeout=8.0)
     yield from context.wait_scene(

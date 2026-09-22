@@ -75,6 +75,32 @@ class _Runtime:
         self.events.append(("frame", update))
         return "frame"
 
+    # #584 数量滑轨：#584 场景里这些控件的像素框由标注提供，假 Runtime 只
+    # 复刻控制器用到的几何契约，不代表真实页面。
+    SLIDER_BOXES = {
+        "当前数量": (400.0, 830.0, 140.0, 70.0),
+        "数量滑杆拖柄": (250.0, 890.0, 36.0, 40.0),
+        "数量滑杆右端": (690.0, 890.0, 20.0, 26.0),
+        "减少": (180.0, 880.0, 38.0, 46.0),
+        "增加": (700.0, 880.0, 38.0, 46.0),
+    }
+
+    def shape_box(self, scene, shape):
+        x, y, w, h = self.SLIDER_BOXES.get(str(shape), (0.0, 0.0, 10.0, 10.0))
+        return {"x": x, "y": y, "w": w, "h": h}
+
+    def full_frame_ocr_tokens(self, *, frame_data_url=None, **_options):
+        self.events.append(("ocr_full", frame_data_url))
+        text = str(self.quantity_text or "").strip()
+        if not text.isdigit():
+            return []
+        return [{"text": text, "x": 430.0, "y": 845.0, "w": 40.0, "h": 30.0}]
+
+    def drag_frame_point(
+        self, scene, start_x, start_y, end_x, end_y, *, duration_ms=300
+    ):
+        self.events.append(("slider_drag", scene, round(start_x), round(end_x)))
+
     def ocr_tokens_in_shapes(self, scene, shapes, **_options):
         if scene in {583, 585}:
             return [
@@ -293,7 +319,13 @@ def test_fixed_box_reuses_box_flow_with_fixed_detail_identity() -> None:
     assert ("view", (525, 578)) in runtime.events
 
 
-def test_quantity_mismatch_fails_before_use_and_before_recording() -> None:
+def test_unproven_open_delta_fails_without_recording() -> None:
+    """弹窗数量无法读数时的契约：控件照常拉满并“使用”，
+
+    但业务是否整叠开完只能由开箱后的 Runtime 差值证明；差值对不上就必须在
+    写记录之前失败关闭。
+    """
+
     before = _snapshot([("i1", 100, 10), ("r", 200, 3)], "before")
     runtime = _Runtime(quantity_text="9")
     recorded = []
@@ -305,10 +337,12 @@ def test_quantity_mismatch_fails_before_use_and_before_recording() -> None:
         recorder=recorded.append,
     )
 
-    with pytest.raises(StorageBagRandomBoxBlocked, match="当前数量 9"):
+    # 差值可能在校验快照阶段就失败，也可能失败在实际开启数量上；两条都属于
+    # “使用之后、写记录之前”的失败关闭。
+    with pytest.raises(StorageBagRandomBoxBlocked, match="使用后未取得|实际开启数量"):
         _consume(adapter.execute(StorageBagRandomBoxRequest(100, "i1", "随机宝匣", 10)))
 
-    assert ("click", 584, "使用") not in runtime.events
+    assert ("click", 584, "使用") in runtime.events
     assert recorded == []
 
 

@@ -32,6 +32,12 @@ DomainAdapter = Callable[
 PET_HOME_SCENE_ID = 483
 PET_QUICK_SWALLOW_CONFIRM_SCENE_ID = 555
 PET_QUICK_SWALLOW_RESULT_SCENE_ID = 556
+PET_PRAYER_SCENE_ID = 798
+PET_PRAYER_RESULT_SCENE_ID = 799
+# 真实观测（2026-09-21）：一次「快速祈灵」即消化当前全部可用祈灵材料，第二次点击不再出结果页。
+# 仍保留有限循环以容忍分批结算，上限用于防止界面异常时空转。
+PET_PRAYER_BATCH_LIMIT = 6
+PET_PRAYER_RESULT_WAIT_SECONDS = 8.0
 
 
 def complete_pet_quick_swallow(
@@ -41,7 +47,11 @@ def complete_pet_quick_swallow(
     stop_event: threading.Event,
     before: dict[str, Any],
 ):
-    """Execute one fully authorized native ordinary-pet batch."""
+    """灵兽每日闭环：快速吞噬 + 快速祈灵，一次进入灵兽主页内完成。
+
+    吞噬仍由 Runtime 快照授权：快照证明无可升阶候选时不点吞噬界面。
+    祈灵尚无等价 Runtime 投影，因此按正式页面动作执行，无可用材料时保持幂等终态。
+    """
 
     context = runner._behavior_tree_context(
         ctx,
@@ -58,10 +68,11 @@ def complete_pet_quick_swallow(
         expected_scene_ids=(PET_HOME_SCENE_ID,),
         timeout_seconds=30,
     )
-    result = yield from complete_pet_quick_swallow_on_current_page(context)
+    swallow = yield from complete_pet_quick_swallow_on_current_page(context)
+    prayer = yield from complete_pet_quick_prayer_on_current_page(context)
     yield from context.wait_click(PET_HOME_SCENE_ID, "返回")
     yield from context.wait_scene([34], wait=20, label="资源_每日处理/灵兽：返回世界")
-    return result
+    return {"swallow": swallow, "prayer": prayer}
 
 
 def complete_pet_quick_swallow_on_current_page(context: Any):
@@ -97,6 +108,48 @@ def complete_pet_quick_swallow_on_current_page(context: Any):
     return {"ok": True, "verified": True}
 
 
+def complete_pet_quick_prayer_on_current_page(context: Any):
+    """在灵兽主页执行祈灵：进入祈灵页 → 快速祈灵 → 结果页继续 → 退回灵兽主页。
+
+    无可用祈灵材料时「快速祈灵」不产生结果页，这是幂等终态而不是失败。
+    本函数只负责动作链与页面终态，材料消耗量由游戏结算页自身呈现。
+    """
+
+    yield from context.wait_scene([PET_HOME_SCENE_ID], wait=15)
+    yield from context.wait_click(PET_HOME_SCENE_ID, "祈灵")
+    yield from context.wait_scene(
+        [PET_PRAYER_SCENE_ID],
+        wait=15,
+        label="资源_每日处理/灵兽：等待祈灵页",
+    )
+    batches = 0
+    while batches < PET_PRAYER_BATCH_LIMIT:
+        yield from context.wait_click(PET_PRAYER_SCENE_ID, "快速祈灵")
+        landed = yield from context.wait_scene(
+            [PET_PRAYER_RESULT_SCENE_ID],
+            wait=PET_PRAYER_RESULT_WAIT_SECONDS,
+            required=False,
+        )
+        # 分层识别会返回候选之外的已知场景：没有可用材料时点击后仍停在祈灵页，
+        # 此时 landing 会是 #798 而不是结果页。只有真正识别为结果页才算命中。
+        if landed is None or int(landed.scene_id) != PET_PRAYER_RESULT_SCENE_ID:
+            break
+        batches += 1
+        yield from context.wait_click(PET_PRAYER_RESULT_SCENE_ID, "继续")
+        yield from context.wait_scene(
+            [PET_PRAYER_SCENE_ID],
+            wait=20,
+            label="资源_每日处理/灵兽：祈灵结果返回祈灵页",
+        )
+    yield from context.wait_click(PET_PRAYER_SCENE_ID, "返回")
+    yield from context.wait_scene(
+        [PET_HOME_SCENE_ID],
+        wait=20,
+        label="资源_每日处理/灵兽：祈灵页返回灵兽主页",
+    )
+    return {"ok": True, "batches": batches, "consumed_materials": batches > 0}
+
+
 def _decision_record(
     domain: str,
     snapshot: dict[str, Any],
@@ -123,13 +176,18 @@ def _run_snapshot_domain(
     reader: SnapshotReader,
     planner: Callable[[dict[str, Any]], ResourceAutoUseDecision],
     adapter: DomainAdapter | None,
+    visit_when_complete: bool = False,
 ):
-    """Observe, decide, optionally act, and require a terminal re-observation."""
+    """Observe, decide, optionally act, and require a terminal re-observation.
+
+    ``visit_when_complete`` 用于「Runtime 已证明本域没有候选，但同一页面还承载无法用
+    Runtime 证明的其它动作」的场景：仍进入页面执行那些动作，再按本域快照复验终态。
+    """
 
     before = reader()
     decision = planner(before)
     record = _decision_record(domain, before, decision)
-    if decision.action == "complete":
+    if decision.action == "complete" and not visit_when_complete:
         # A proven empty native candidate set is a true zero-UI completion.
         return record
     if decision.action == "fail":
@@ -187,14 +245,17 @@ def execute_resource_auto_use_task(
 
     domains: list[dict[str, Any]] = []
     domains.append((yield from run_stage("storage-quick-operation", storage_action)))
-    for stage_id, domain, reader, planner, adapter in (
-        ("talisman-upgrade", "法宝", talisman_reader, plan_talisman_quick_upgrade, talisman_adapter),
-        ("pet-swallow", "灵兽", pet_reader, plan_pet_quick_swallow, pet_adapter),
+    for stage_id, domain, reader, planner, adapter, visit_when_complete in (
+        ("talisman-upgrade", "法宝", talisman_reader, plan_talisman_quick_upgrade, talisman_adapter, False),
+        # 灵兽：吞噬可由 Runtime 证明「无可升阶」而零界面完成，但祈灵尚无等价投影，
+        # 因此即使吞噬候选为空也要进入灵兽主页，消费已积累的祈灵材料。
+        ("pet-swallow", "灵兽", pet_reader, plan_pet_quick_swallow, pet_adapter, True),
     ):
-        def operation(domain=domain, reader=reader, planner=planner, adapter=adapter):
+        def operation(domain=domain, reader=reader, planner=planner, adapter=adapter, visit=visit_when_complete):
             return (yield from _run_snapshot_domain(
                 domain=domain, runner=runner, ctx=ctx, payload=payload,
                 stop_event=stop_event, reader=reader, planner=planner, adapter=adapter,
+                visit_when_complete=visit,
             ))
         domains.append((yield from run_stage(stage_id, operation)))
     outcome = (

@@ -52,7 +52,7 @@ def _storage_success(order):
     return execute
 
 
-def test_aggregate_runs_storage_then_zero_ui_talisman_and_pet(monkeypatch):
+def test_aggregate_keeps_talisman_zero_ui_and_visits_pet_for_prayer(monkeypatch):
     order = []
     monkeypatch.setattr(
         resource_auto_use,
@@ -68,6 +68,11 @@ def test_aggregate_runs_storage_then_zero_ui_talisman_and_pet(monkeypatch):
         order.append("灵兽")
         return _empty_pet()
 
+    def pet_adapter(*_args):
+        order.append("灵兽动作")
+        yield None
+        return {"ok": True, "verified": True}
+
     result = _consume(resource_auto_use.execute_resource_auto_use_task(
         object(),
         {},
@@ -75,10 +80,13 @@ def test_aggregate_runs_storage_then_zero_ui_talisman_and_pet(monkeypatch):
         threading.Event(),
         talisman_reader=talisman_reader,
         pet_reader=pet_reader,
+        pet_adapter=pet_adapter,
     ))
 
     assert result["ok"] is True
-    assert order == ["储物袋", "法宝", "灵兽"]
+    # 法宝：原生快照证明无可升级法宝，零界面完成；灵兽：即使吞噬候选为空也必须进页面
+    # 消费祈灵材料（祈灵没有等价 Runtime 投影），动作后仍需复验完整终态。
+    assert order == ["储物袋", "法宝", "灵兽", "灵兽动作", "灵兽"]
     assert [item["outcome"] for item in result["domains"][1:]] == [
         "complete",
         "complete",
@@ -175,6 +183,10 @@ def test_formal_adapter_must_reobserve_a_complete_terminal_snapshot(monkeypatch)
         yield None
         return {"ok": True}
 
+    def pet_adapter(*_args):
+        yield None
+        return {"ok": True, "verified": True}
+
     result = _consume(resource_auto_use.execute_resource_auto_use_task(
         object(),
         {},
@@ -183,6 +195,7 @@ def test_formal_adapter_must_reobserve_a_complete_terminal_snapshot(monkeypatch)
         talisman_reader=lambda: next(observations),
         pet_reader=_empty_pet,
         talisman_adapter=adapter,
+        pet_adapter=pet_adapter,
     ))
 
     assert result["ok"] is True

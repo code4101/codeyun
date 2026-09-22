@@ -399,7 +399,9 @@ class MailClaimLawTaskMixin:
                 directive = plan_storage_bag_scroll(target_runtime_index=int(plan.runtime_index or -1), viewport_runtime_start=plan.viewport_runtime_start, visible_cell_count=len(cells))
                 if directive.direction == "none":
                     raise RuntimeError("邮件_领法则：目标应可见但未生成点击计划")
-                context.drag_shape_content(window, direction=directive.direction, ratio=0.60 if directive.mode == "coarse" else 0.28, duration=0.55)
+                # 统一使用框架默认滚动手势（ratio 0.5、duration 1.5s）。2026-09-22
+                # 实测 #525 对短于 1s 的快速手势会整格不动。
+                context.drag_shape_content(window, direction=directive.direction)
                 yield from context.wait_action_settle(1.0)
                 continue
             # The count OCR is a soft anchor: a clustered frame can leave only
@@ -410,7 +412,7 @@ class MailClaimLawTaskMixin:
             if geometry_retries > 8:
                 raise RuntimeError(f"邮件_领法则：储物袋 Runtime-GUI 对齐失败：{plan.reason}")
             direction = "down" if geometry_retries % 2 else "up"
-            context.drag_shape_content(window, direction=direction, ratio=0.30, duration=0.5)
+            context.drag_shape_content(window, direction=direction)
             yield from context.wait_action_settle(0.8)
         raise RuntimeError("邮件_领法则：储物袋滚动 40 次仍未定位目标")
 
