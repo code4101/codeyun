@@ -96,6 +96,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "resource_rank_daily_free_gift",
     "dandao_task_rewards",
     "yuanding_sansheng_daily_gift",
+    "yuanding_sansheng_resource_unit",
     "xianfu_visit_partner",
     "xianfu_learn_skill",
     "penglai_xianzang_config",
@@ -1933,6 +1934,25 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         internal_payload.pop("__scheduler_task_id", None)
         internal_payload["manage_schedule"] = False
         return (yield from runner._execute_yuanding_sansheng_daily_gift_task(
+            ctx, stop_event, internal_payload
+        ))
+
+    @register_fanxiu_data_annotation_task_cell(
+        "yuanding_sansheng_resource_unit",
+        "缘定三生_正式运行",
+        scheduler_supported=False,
+    )
+    def _run_data_annotation_yuanding_sansheng_resource_unit_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        """活动期每天 10/12/15/18/20 的正式运行单元（资源榜 checkpoint 调度）。"""
+        internal_payload = dict(payload)
+        internal_payload.pop("__scheduler_task_id", None)
+        internal_payload["manage_schedule"] = False
+        return (yield from runner._execute_yuanding_sansheng_resource_unit(
             ctx, stop_event, internal_payload
         ))
 

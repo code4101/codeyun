@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 import threading
 from zoneinfo import ZoneInfo
 
@@ -1038,3 +1038,49 @@ def test_reopen_only_legacy_failure_preserves_history(status, result, reopen):
         assert completed_ranking_checkpoint_keys(session) == set()
         with pytest.raises(ValueError, match="Only legacy"):
             reopen_failed_ranking_checkpoint(session, **args)
+
+
+def test_yuanding_resource_unit_runs_five_daily_slots_while_open() -> None:
+    """缘定三生正式运行单元：活动期每天 10/12/15/18/20 五个时点各一次。
+
+    运行单元本身负责「任务奖励 + 使用资源」两段连跑并回到 #34；排程只决定这些时点
+    在活动开放期内是否生成 checkpoint，以及是否属于生产准入。
+    """
+
+    occurrence = RankingOccurrence(
+        activity_type="yuanding-sansheng",
+        family="resource_rank",
+        runtime_id="runtime-yuanding",
+        activity_id=16045101,
+        start_at=datetime(2026, 9, 21, 5, 0, 5, tzinfo=TZ),
+        end_at=datetime(2026, 9, 22, 22, 0, 0, tzinfo=TZ),
+        prepare_at=datetime(2026, 9, 20, 5, 0, 0, tzinfo=TZ),
+        close_at=datetime(2026, 9, 22, 22, 0, 0, tzinfo=TZ),
+        cross_count=16,
+    )
+    day_two = [
+        checkpoint
+        for checkpoint in checkpoints_for_occurrence(occurrence, business_day=date(2026, 9, 22))
+        if checkpoint.checkpoint_kind.startswith("yuanding_resource_")
+    ]
+    assert [checkpoint.checkpoint_kind for checkpoint in day_two] == [
+        "yuanding_resource_1000",
+        "yuanding_resource_1200",
+        "yuanding_resource_1500",
+        "yuanding_resource_1800",
+        "yuanding_resource_2000",
+    ]
+    assert [checkpoint.due_at.hour for checkpoint in day_two] == [10, 12, 15, 18, 20]
+    assert all(ranking_checkpoint_is_production(checkpoint) for checkpoint in day_two)
+
+    # 开盘当天（05:00:05 开盘）时点晚于开盘，同样要生成；实例结束后不再生成。
+    day_one = {
+        checkpoint.checkpoint_kind
+        for checkpoint in checkpoints_for_occurrence(occurrence, business_day=date(2026, 9, 21))
+    }
+    assert {"yuanding_resource_1000", "yuanding_resource_2000"} <= day_one
+    after_close = {
+        checkpoint.checkpoint_kind
+        for checkpoint in checkpoints_for_occurrence(occurrence, business_day=date(2026, 9, 23))
+    }
+    assert not any(kind.startswith("yuanding_resource_") for kind in after_close)

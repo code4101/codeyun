@@ -32,6 +32,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     YUNMENG_CHALLENGE_EVENING_KIND,
     YUNMENG_CHALLENGE_KIND,
     YUANDING_GIFT_KIND,
+    YUANDING_RESOURCE_UNIT_KIND_SET,
     RankingFamily,
     discover_ranking_occurrences,
     due_ranking_checkpoints,
@@ -334,6 +335,18 @@ def _execute_resource_checkpoint(
     if checkpoint_kind == YUANDING_GIFT_KIND:
         return (yield from runner._execute_yuanding_sansheng_daily_gift_task(
             ctx, stop_event, {**options, "manage_schedule": False}
+        ))
+    if checkpoint_kind in YUANDING_RESOURCE_UNIT_KIND_SET:
+        # 缘定三生正式运行单元：任务奖励领取 + 自动联姻使用资源，两段连跑，最后回 #34。
+        # 任务奖励在本期领完后由运行单元自己按页面「领」角标幂等跳过。
+        return (yield from runner._execute_yuanding_sansheng_resource_unit(
+            ctx,
+            stop_event,
+            {
+                **options,
+                "manage_schedule": False,
+                "task_rewards_done": bool(options.get("yuanding_task_rewards_done")),
+            },
         ))
     raise RuntimeError(f"未知资源榜 checkpoint：{checkpoint_kind}")
 

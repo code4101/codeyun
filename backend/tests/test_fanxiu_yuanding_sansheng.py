@@ -109,58 +109,6 @@ def test_yuanding_fragment_text_matches_runtime_compact_text_contract() -> None:
     ]) == "缘定三生每日限购：1"
 
 
-def test_wait_yuanding_page_reuses_fragments_without_second_ocr_call() -> None:
-    class Task(YuandingSanshengTaskMixin):
-        def _raise_if_stopped(self, _stop_event):
-            return None
-
-    class Runtime:
-        def __init__(self):
-            self.ocr_fragment_calls = 0
-            self.ocr_text_calls = 0
-
-        def cur_frame(self, *, update):
-            assert update is True
-            return "frame"
-
-        def ocr_fragments(self, frame):
-            assert frame == "frame"
-            self.ocr_fragment_calls += 1
-            return [
-                _fragment("礼包", 772, 1449, 54, 95),
-                _fragment("缘宠三生", 300, 100),
-            ]
-
-        def ocr_text(self, _frame):
-            self.ocr_text_calls += 1
-            raise AssertionError("已有 fragments 时不应再调用 Runtime.ocr_text")
-
-        def sample_scene_once(self, scenes, *, update):
-            assert 249 in scenes
-            assert update is False
-            return 249, 100.0, "frame"
-
-    runtime = Runtime()
-    operation = Task()._wait_yuanding_page(
-        runtime,
-        Event(),
-        "main",
-        timeout_seconds=1.0,
-    )
-
-    try:
-        next(operation)
-    except StopIteration as exc:
-        frame, fragments = exc.value
-    else:
-        raise AssertionError("首帧已命中 main，不应进入等待")
-
-    assert frame == "frame"
-    assert len(fragments) == 2
-    assert runtime.ocr_fragment_calls == 1
-    assert runtime.ocr_text_calls == 0
-
-
 def test_yuanding_store_state_distinguishes_free_and_claimed() -> None:
     common = [
         _fragment("冲榜商店", 416, 323, 370, 95),

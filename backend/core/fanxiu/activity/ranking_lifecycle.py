@@ -91,6 +91,16 @@ TIANDI_YIJU_ACTIVE_TIME = time(10, 5)
 RESOURCE_FREE_GIFT_TIME = time(5, 10)
 DANDAO_REWARDS_TIME = time(18, 10)
 YUANDING_GIFT_TIME = time(5, 0)
+# 缘定三生「正式运行」单元：任务奖励领取 + 自动联姻使用资源，最后回 #34。
+# 活动期间每天固定 5 个时点各跑一次；两个模块连跑，中间不回世界。
+YUANDING_RESOURCE_UNIT_KINDS = (
+    ("yuanding_resource_1000", time(10, 0)),
+    ("yuanding_resource_1200", time(12, 0)),
+    ("yuanding_resource_1500", time(15, 0)),
+    ("yuanding_resource_1800", time(18, 0)),
+    ("yuanding_resource_2000", time(20, 0)),
+)
+YUANDING_RESOURCE_UNIT_KIND_SET = frozenset(kind for kind, _unit_time in YUANDING_RESOURCE_UNIT_KINDS)
 
 # Only resource ranks with a real activity page, shared #605 landing and
 # ChargeMgr idempotency proof may receive this side-effectful checkpoint.
@@ -709,11 +719,27 @@ def checkpoints_for_occurrence(
         ),
         (DANDAO_REWARDS_KIND, DANDAO_REWARDS_TIME, occurrence.activity_type == "dandao-wending"),
         (YUANDING_GIFT_KIND, YUANDING_GIFT_TIME, occurrence.activity_type == "yuanding-sansheng"),
+        *(
+            (kind, unit_time, occurrence.activity_type == "yuanding-sansheng")
+            for kind, unit_time in YUANDING_RESOURCE_UNIT_KINDS
+        ),
     )
     if occurrence.family == "resource_rank":
         for checkpoint_kind, checkpoint_time, enabled in resource_kinds:
-            due_at = _at(business_day, checkpoint_time, occurrence.start_at.tzinfo)
-            if enabled and occurrence.start_at <= due_at <= occurrence.end_at:
+            if not enabled:
+                continue
+            # 资源榜的每日业务按「业务日」归属，不按开服那一秒做瞬时比较：
+            # 2026-09-21 缘定三生开盘时间是 05:00:05，而礼包时间是 05:00:00，
+            # 旧实现因差 5 秒把开盘当天的免费礼包整档丢掉（当天不会生成 checkpoint，
+            # 永远不会补跑）。这里改为先按日期归属当天，再把 due_at 抬到活动实际开盘，
+            # 保证不会在活动尚未开启时被判定到期。
+            if not occurrence.start_at.date() <= business_day <= occurrence.end_at.date():
+                continue
+            due_at = max(
+                _at(business_day, checkpoint_time, occurrence.start_at.tzinfo),
+                occurrence.start_at,
+            )
+            if due_at <= occurrence.end_at:
                 checkpoints.append(
                     RankingCheckpoint(
                         instance_key=occurrence.instance_key,
@@ -796,6 +822,7 @@ def due_ranking_checkpoints(
                     RESOURCE_FREE_GIFT_KIND,
                     DANDAO_REWARDS_KIND,
                     YUANDING_GIFT_KIND,
+                    *YUANDING_RESOURCE_UNIT_KIND_SET,
                 }
                 and not (
                     checkpoint.checkpoint_kind

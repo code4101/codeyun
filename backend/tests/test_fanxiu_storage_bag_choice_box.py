@@ -78,12 +78,34 @@ class _Runtime:
     def wait_scene(self, layer0, **_options):
         scenes = tuple(layer0)
         self.events.append(("view", scenes))
-        if False:
-            yield None
         return scenes[0]
 
     def cur_frame(self, update=False):
         return "frame"
+
+    def shape(self, scene, title, **_options):
+        # 生产代码会读取 shape.raw 作为窗口几何；假 Runtime 只提供最小契约。
+        return type("Shape", (), {"raw": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}})()
+
+    def shape_box(self, scene, title, **_options):
+        return {"x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0}
+
+    def shape_center(self, scene, title, **_options):
+        return (50.0, 50.0)
+
+    def click_shape_center(self, scene, title, **_options):
+        # 现生产路径用 click_shape_center 驱动加减按钮，事件名与旧 wait_click 断言保持一致。
+        self.events.append(("click", scene, title))
+        # 精调闭环要求“点一下数量真的变”，否则会被正确判定为无进展。
+        if title == "增加数量":
+            self.count += 1
+        elif title == "减少数量":
+            self.count = max(1, self.count - 1)
+        if False:
+            yield None
+
+    def ocr_numbers_in_shapes(self, scene, shapes, **_options):
+        return [self.count], str(self.count)
 
     def ocr_tokens_in_shapes(self, scene, shapes, **_options):
         if scene == 587:

@@ -8,7 +8,15 @@ from typing import Any, Iterable
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
 
 YUANDING_ACTIVITY_NAME = "缘定三生"
-YUANDING_MAIN_SCENE_ID = 249
+# 2026-09-22 在真实账号上核定并写入资产树（日程/资源榜/缘定三生）的三个活动页场景号：
+#   #801 说明/封面层（查看详情 + 活动时间）
+#   #802 活动主页（顶部活动结束倒计时 + 榜单/奖励/任务/礼包页签）
+#   #803 冲榜商店（免费冲榜礼包 + 每日限购 + 免费按钮）
+# 历史值 249 实际是「资源/仙市/秘藏阁·仙币页」，与缘定三生无关：写死错误场景号后，
+# 点击日程入口落到的活动页永远识别为 unknown，礼包状态机固定卡死在「等待 intro 超时，末帧=」。
+YUANDING_INTRO_SCENE_ID = 801
+YUANDING_MAIN_SCENE_ID = 802
+YUANDING_STORE_SCENE_ID = 803
 
 
 def _normalized_text(value: Any) -> str:
@@ -93,14 +101,24 @@ def yuanding_page_state(
     text = _normalized_text(full_text)
     if scene_id == 34:
         return "world"
-    if "冲榜商店" in text and (
-        "免费冲榜礼包" in text
-        or ("VIP3特惠灵石礼包" in text and "适度娱乐" in text and "理性消费" in text)
+    # 场景号是 2026-09-22 核定的主判据；OCR 语义保留为同一页面的兜底，避免一次
+    # 资产重编号就把业务状态机变成 unknown。
+    if scene_id == YUANDING_STORE_SCENE_ID or (
+        "冲榜商店" in text
+        and (
+            "免费冲榜礼包" in text
+            or ("VIP3特惠灵石礼包" in text and "适度娱乐" in text and "理性消费" in text)
+        )
     ):
         return "store"
-    if exact_fragment(items, "查看详情") is not None and "活动时间" in text:
+    if scene_id == YUANDING_INTRO_SCENE_ID or (
+        exact_fragment(items, "查看详情") is not None and "活动时间" in text
+    ):
         return "intro"
-    if gift_tab_fragment(items) is not None and ("缘宠三生" in text or YUANDING_ACTIVITY_NAME in text):
+    if scene_id == YUANDING_MAIN_SCENE_ID or (
+        gift_tab_fragment(items) is not None
+        and ("缘宠三生" in text or YUANDING_ACTIVITY_NAME in text)
+    ):
         return "main"
     if scene_id == 66 and "日程" in text:
         return "schedule"
@@ -137,7 +155,7 @@ class YuandingSanshengTaskMixin:
             frame = context.cur_frame(update=True)
             fragments = context.ocr_fragments(frame)
             last_text = fragment_text(fragments)
-            _wait_scene_match = yield from context.wait_scene([34, 66, YUANDING_MAIN_SCENE_ID], wait=5.0, required=False)
+            _wait_scene_match = yield from context.wait_scene([34, 66, YUANDING_INTRO_SCENE_ID, YUANDING_MAIN_SCENE_ID, YUANDING_STORE_SCENE_ID], wait=5.0, required=False)
             (scene_id, _score, _frame) = (
                 (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
                 if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -165,7 +183,7 @@ class YuandingSanshengTaskMixin:
         frame = context.cur_frame(update=True)
         fragments = context.ocr_fragments(frame)
         text = fragment_text(fragments)
-        _wait_scene_match = yield from context.wait_scene([34, 66, YUANDING_MAIN_SCENE_ID], wait=5.0, required=False)
+        _wait_scene_match = yield from context.wait_scene([34, 66, YUANDING_INTRO_SCENE_ID, YUANDING_MAIN_SCENE_ID, YUANDING_STORE_SCENE_ID], wait=5.0, required=False)
         (scene_id, _score, _frame) = (
             (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
             if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
@@ -262,7 +280,7 @@ class YuandingSanshengTaskMixin:
         if stable_state == "claimable":
             if free is None:
                 raise RuntimeError("缘定三生_每日礼包：存在每日限购 1，但未唯一识别到“免费”")
-            context.click_frame_point(YUANDING_MAIN_SCENE_ID, *fragment_center(free))
+            context.click_frame_point(YUANDING_STORE_SCENE_ID, *fragment_center(free))
             claimed_count = 0
             verify_deadline = time.monotonic() + max(5.0, page_timeout)
             while time.monotonic() < verify_deadline:
@@ -297,7 +315,9 @@ class YuandingSanshengTaskMixin:
 
 __all__ = [
     "YUANDING_ACTIVITY_NAME",
+    "YUANDING_INTRO_SCENE_ID",
     "YUANDING_MAIN_SCENE_ID",
+    "YUANDING_STORE_SCENE_ID",
     "YuandingSanshengTaskMixin",
     "exact_fragment",
     "fragment_text",

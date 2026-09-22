@@ -1000,8 +1000,22 @@ class DailyRedpacketTaskMixin:
         )
         locator = context.shape_matches(30, "红包")
         if locator and locator.get("matched"):
-            yield from context.wait_click(30, "红包", timeout=transition_timeout)
-            yield from context.wait_action_settle(poll_seconds)
+            # 表头 [红包] 定位入口只证明本群仍有待领入口，本身不是领取凭证。
+            # 点击后若在新帧上重复确认失败，不能中断整个群事务：
+            # 结论由下方卡片 OCR + Runtime UID 后验给出。
+            try:
+                yield from context.wait_click(30, "红包", timeout=transition_timeout)
+                yield from context.wait_action_settle(poll_seconds)
+            except RuntimeError as exc:
+                if "超时" not in str(exc):
+                    raise
+                self._log(
+                    "warning",
+                    (
+                        f"日常_红包：#30 待领定位入口点击未完成（{exc}），"
+                        "改为直接以当前群聊卡片 OCR 继续"
+                    ),
+                )
         targets: list[dict[str, Any]] = []
         # Two fresh OCR frames plus the settle interval must fit before
         # falling back to the locator. A 3s cold probe can time out after
@@ -1033,7 +1047,7 @@ class DailyRedpacketTaskMixin:
                         30,
                         "红包",
                         timeout=transition_timeout,
-                        label="日常_红包：确认右上红包定位入口仍有数字角标",
+                        label="日常_红包：确认右上红包定位入口仍存在",
                     )
                 except TimeoutError:
                     self._daily_redpacket_verify_uid_postcondition(

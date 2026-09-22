@@ -7091,6 +7091,7 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_daily_resource import Pray
 from backend.core.fanxiu.data_annotation.tasks.resource_rank_daily_gift import ResourceRankDailyGiftTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import DandaoTaskRewardsTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.yuanding_sansheng import YuandingSanshengTaskMixin
+from backend.core.fanxiu.data_annotation.tasks.yuanding_sansheng_run import YuandingSanshengRunMixin
 from backend.core.fanxiu.data_annotation.tasks.xianshi_exchange import XianshiExchangeTaskMixin
 
 
@@ -7135,7 +7136,7 @@ class BehaviorTreeExecutor(
     PrayerDailyResourceTaskMixin,
     ResourceRankDailyGiftTaskMixin,
     DandaoTaskRewardsTaskMixin,
-    YuandingSanshengTaskMixin,
+    YuandingSanshengRunMixin,
     XianshiExchangeTaskMixin,
 ):
     default_guard_enabled = False
