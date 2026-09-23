@@ -15,6 +15,8 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     BEAST_ABYSS_MANUAL_CLEAR_KIND,
     DAILY_RECONCILE_KIND,
     DANDAO_REWARDS_KIND,
+    DANDAO_RESOURCE_USE_KIND,
+    DANDAO_TAKE_MEDICINE_KIND,
     EXCHANGE_TAIL_KIND,
     MAGIC_INITIALIZATION_KIND,
     MAGIC_ACTIVE_KIND,
@@ -317,6 +319,27 @@ def _execute_resource_checkpoint(
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         yield from context.go_scene(34)
         return {**result, "status": "completed" if result.get("ok") else "blocked"}
+    if checkpoint_kind == DANDAO_RESOURCE_USE_KIND:
+        from backend.core.fanxiu.data_annotation.tasks.dandao_resource_use import (
+            run_dandao_resource_use_flow,
+        )
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        return (yield from run_dandao_resource_use_flow(
+            context, activity_id=occurrence.activity_id, now=job_now(),
+        ))
+    if checkpoint_kind == DANDAO_TAKE_MEDICINE_KIND:
+        from backend.core.fanxiu.data_annotation.tasks.take_medicine_batch import run_take_medicine_batch_flow
+        from backend.db import engine
+
+        # A separate durable occurrence checkpoint also covers deployments
+        # where today's alchemy checkpoint was completed before medicine existed.
+        with Session(engine) as session:
+            completed = completed_ranking_checkpoint_keys(session, family="resource_rank")
+        if not any(key[0] == occurrence.instance_key and key[1] == DANDAO_RESOURCE_USE_KIND
+                   for key in completed):
+            return {"status": "blocked", "message": "服用丹药等待本期炼丹任务完成"}
+        context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
+        return (yield from run_take_medicine_batch_flow(context))
     if checkpoint_kind == DANDAO_REWARDS_KIND:
         from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import (
             run_dandao_task_rewards_flow,
@@ -324,6 +347,7 @@ def _execute_resource_checkpoint(
         context = runner._behavior_tree_context(ctx, ctx.get("asset_tree_path"), stop_event=stop_event)
         result = yield from run_dandao_task_rewards_flow(
             context,
+            expected_activity_id=occurrence.activity_id,
             max_claims=int(options.get("max_claims") or 20),
             manage_schedule=False,
         )

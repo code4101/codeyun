@@ -66,6 +66,8 @@ YUNMENG_CHALLENGE_EVENING_KIND = "yunmeng_challenge_2045"
 RESOURCE_FREE_GIFT_KIND = "resource_free_gift_0510"
 LINGZHUANG_STRENGTHENING_KIND = "lingzhuang_tier12_0515"
 DANDAO_REWARDS_KIND = "dandao_rewards_1810"
+DANDAO_RESOURCE_USE_KIND = "dandao_resource_use_0500"
+DANDAO_TAKE_MEDICINE_KIND = "dandao_take_medicine_once"
 YUANDING_GIFT_KIND = "yuanding_gift_0500"
 DAILY_RECONCILE_TIME = time(0, 10)
 EXCHANGE_TAIL_CLOSE_SAFETY_MARGIN = timedelta(minutes=5)
@@ -90,6 +92,7 @@ XIANMENG_ACTIVE_TIME = time(10, 0)
 TIANDI_YIJU_ACTIVE_TIME = time(10, 5)
 RESOURCE_FREE_GIFT_TIME = time(5, 10)
 DANDAO_REWARDS_TIME = time(18, 10)
+DANDAO_RESOURCE_USE_TIME = time(5, 0)
 YUANDING_GIFT_TIME = time(5, 0)
 # 缘定三生「正式运行」单元：任务奖励领取 + 自动联姻使用资源，最后回 #34。
 # 活动期间每天固定 5 个时点各跑一次；两个模块连跑，中间不回世界。
@@ -718,6 +721,8 @@ def checkpoints_for_occurrence(
             occurrence.activity_type in RESOURCE_FREE_GIFT_ACTIVITY_TYPES,
         ),
         (DANDAO_REWARDS_KIND, DANDAO_REWARDS_TIME, occurrence.activity_type == "dandao-wending"),
+        (DANDAO_RESOURCE_USE_KIND, DANDAO_RESOURCE_USE_TIME, occurrence.activity_type == "dandao-wending"),
+        (DANDAO_TAKE_MEDICINE_KIND, DANDAO_RESOURCE_USE_TIME, occurrence.activity_type == "dandao-wending"),
         (YUANDING_GIFT_KIND, YUANDING_GIFT_TIME, occurrence.activity_type == "yuanding-sansheng"),
         *(
             (kind, unit_time, occurrence.activity_type == "yuanding-sansheng")
@@ -735,8 +740,11 @@ def checkpoints_for_occurrence(
             # 保证不会在活动尚未开启时被判定到期。
             if not occurrence.start_at.date() <= business_day <= occurrence.end_at.date():
                 continue
+            # Medicine belongs to the occurrence, not each business day.
+            checkpoint_day = (occurrence.start_at.date()
+                              if checkpoint_kind == DANDAO_TAKE_MEDICINE_KIND else business_day)
             due_at = max(
-                _at(business_day, checkpoint_time, occurrence.start_at.tzinfo),
+                _at(checkpoint_day, checkpoint_time, occurrence.start_at.tzinfo),
                 occurrence.start_at,
             )
             if due_at <= occurrence.end_at:
@@ -748,7 +756,7 @@ def checkpoints_for_occurrence(
                         runtime_id=occurrence.runtime_id,
                         activity_id=occurrence.activity_id,
                         checkpoint_kind=checkpoint_kind,
-                        business_date=business_day.isoformat(),
+                        business_date=checkpoint_day.isoformat(),
                         due_at=due_at,
                     )
                 )
@@ -821,6 +829,8 @@ def due_ranking_checkpoints(
                     YUNMENG_CHALLENGE_EVENING_KIND,
                     RESOURCE_FREE_GIFT_KIND,
                     DANDAO_REWARDS_KIND,
+                    DANDAO_RESOURCE_USE_KIND,
+                    DANDAO_TAKE_MEDICINE_KIND,
                     YUANDING_GIFT_KIND,
                     *YUANDING_RESOURCE_UNIT_KIND_SET,
                 }
@@ -918,6 +928,8 @@ __all__ = [
     "RESOURCE_FREE_GIFT_KIND",
     "RESOURCE_FREE_GIFT_ACTIVITY_TYPES",
     "DANDAO_REWARDS_KIND",
+    "DANDAO_RESOURCE_USE_KIND",
+    "DANDAO_TAKE_MEDICINE_KIND",
     "YUANDING_GIFT_KIND",
     "RANKING_CAPABILITY_STATUS",
     "PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS",

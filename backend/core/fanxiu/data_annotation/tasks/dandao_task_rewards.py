@@ -93,11 +93,17 @@ def run_dandao_task_rewards_flow(
     *,
     now: datetime | None = None,
     expected_activity_id: int | None = None,
+    initial_snapshot: Mapping[str, Any] | None = None,
     max_claims: int = 20,
     manage_schedule: bool = False,
     include_schedule_hint: bool = True,
     return_to_world: bool = True,
 ) -> dict[str, Any]:
+    """Claim the active ladder; a caller may reuse its fresh same-activity read.
+
+    No claim or external game action may intervene between initial_snapshot
+    and this invocation. Every claim still receives a new confirmation read.
+    """
     def result_with_optional_schedule_hint(result: dict[str, Any]) -> dict[str, Any]:
         if include_schedule_hint:
             return result
@@ -125,7 +131,9 @@ def run_dandao_task_rewards_flow(
     adapter, activity_id = active
     if expected_activity_id is not None and activity_id != int(expected_activity_id):
         raise RuntimeError("丹道领奖活动与资源使用活动不一致")
-    snapshot = read_dandao_task_reward_snapshot(activity_id)
+    snapshot = dict(initial_snapshot) if initial_snapshot is not None else read_dandao_task_reward_snapshot(activity_id)
+    if int(snapshot.get("activity_id") or 0) != activity_id:
+        raise RuntimeError("丹道领奖快照不属于当前活动")
     _require_complete_snapshot(snapshot)
     claimable = [int(value) for value in snapshot.get("authorized_claim_task_ids") or []]
     if not claimable:

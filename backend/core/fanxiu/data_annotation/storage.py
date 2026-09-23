@@ -565,6 +565,30 @@ def save_data_annotation_asset_tree_snapshot(
         return _read_asset_tree_unlocked(path)
 
 
+def create_data_annotation_scene(
+    data: bytes, *, title: str, same_level_as_scene_id: int,
+    entry_id: str | None = None,
+) -> FanxiuDataAnnotationFrameTreeSave:
+    """Create a captured scene beside an existing scene; allocate IDs internally.
+
+    The underlying frame/tree transaction owns numbering, locking and insertion.
+    This is an explicit creation, not an upsert; inspect the catalog before use.
+    """
+    path = data_annotation_asset_tree_path(entry_id)
+    snapshot = read_data_annotation_asset_tree_snapshot(path)
+    anchor = resolve_data_annotation_scene_node_id(snapshot.tree, same_level_as_scene_id)
+    for folder in snapshot.tree:
+        if folder.get("title") == "场景" and any(
+            child.get("id") == anchor for child in folder.get("children", [])
+        ):
+            raise ValueError("场景目录仅保留用户预设 Layer1；新增业务资产请选择业务分组内的参考场景")
+    return save_data_annotation_frame_tree_node(
+        path, data,
+        {"id": f"image-{uuid4()}", "type": "image", "title": title, "shapes": []},
+        entry_id=entry_id, after_node_id=anchor, expected_revision=snapshot.revision,
+    )
+
+
 def save_data_annotation_frame_tree_node(
     path: Path,
     data: bytes,
@@ -709,6 +733,56 @@ def update_data_annotation_asset_tree(
             before_write()
         write_data_annotation_json(path, normalized_tree)
         return _read_asset_tree_unlocked(path)
+
+
+def move_data_annotation_scenes(
+    destinations: dict[int, str], *, entry_id: str | None = None,
+) -> FanxiuDataAnnotationAssetTreeSnapshot:
+    """Move existing scenes to business folder paths without changing identity.
+
+    Creates missing folders below an existing root. The transaction resolves
+    scene IDs, preserves order/metadata and owns all directory IDs and locking.
+    Layer1 scenes and the user-owned 场景 directory are not migration targets.
+    """
+    def update(tree: list[dict[str, Any]]) -> bool:
+        def locate(nodes, target):
+            for node in nodes:
+                if node.get("id") == target:
+                    return nodes, node
+                found = locate(node.get("children") or [], target)
+                if found is not None:
+                    return found
+            return None
+
+        changed = False
+        for scene_id, destination in destinations.items():
+            parts = [part.strip() for part in destination.split("/") if part.strip()]
+            if len(parts) < 2 or parts[0] == "场景":
+                raise ValueError("目标必须是业务根目录下的分组路径，不能是场景目录")
+            source, node = locate(tree, resolve_data_annotation_scene_node_id(tree, scene_id))
+            if node.get("layer") == 1:
+                raise ValueError(f"保留用户 Layer1 场景 #{scene_id}")
+            siblings = tree
+            for index, part in enumerate(parts):
+                matches = [n for n in siblings if n.get("type") == "folder" and n.get("title") == part]
+                if len(matches) > 1 or (not matches and index == 0):
+                    raise ValueError(f"业务目录不存在或不唯一：{destination}")
+                if not matches:
+                    folder = {"id": f"folder-{uuid4()}", "type": "folder", "title": part,
+                              "folderRole": "task" if index == len(parts) - 1 else "task-family",
+                              "children": []}
+                    siblings.append(folder)
+                    changed = True
+                else:
+                    folder = matches[0]
+                siblings = folder.setdefault("children", [])
+            if source is not siblings:
+                source.remove(node)
+                siblings.append(node)
+                changed = True
+        return changed
+
+    return update_data_annotation_asset_tree(data_annotation_asset_tree_path(entry_id), update)
 
 
 def upsert_data_annotation_shape(

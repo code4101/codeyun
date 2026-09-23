@@ -14,6 +14,7 @@ from backend.core.fanxiu.activity.dandao_wending import (
     load_dandao_wending_tasks,
     load_dandao_observed_task_milestones,
     resolve_dandao_live_task_ids,
+    resolve_dandao_task_targets,
     resolve_dandao_static_plan,
 )
 from backend.core.fanxiu.activity.exchange_activity_registry import (
@@ -31,6 +32,17 @@ def _write_table(root: Path, table: str, rows: list[dict]) -> None:
     path = root / "parsed_configs" / table / "rows.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+
+def test_live_task_targets_do_not_select_another_retained_ladder(tmp_path: Path):
+    _write_table(tmp_path, "ActiveTask", [
+        {"id": 1, "activityId": 4043101, "finishCondition": ["MedicalExp|1000"]},
+        {"id": 2, "activityId": 4043101, "finishCondition": ["MedicalExp|120000"]},
+        {"id": 3, "activityId": 4043101, "finishCondition": ["MedicalExp|900000"]},
+    ])
+    assert resolve_dandao_task_targets(4043101, (1, 2), export_root=tmp_path) == (1000, 120000)
+    with pytest.raises(ValueError):
+        resolve_dandao_task_targets(1043111, (1, 2), export_root=tmp_path)
 
 
 def _activity_rows(*, reversed_follow: bool = False) -> list[dict]:

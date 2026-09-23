@@ -118,7 +118,10 @@ RESOURCE_RANK_GIFT_ADAPTERS = (
         key="dandao-wending",
         label="丹道问鼎",
         schedule_pattern=r"丹道问鼎",
-        activity_ids=(1043111, 4043101),
+        # These static templates share the preliminary/cross-server page
+        # families. In particular, the next observed occurrence is 8-server,
+        # not 4-server. Runtime task membership still selects the live ladder.
+        activity_ids=(1043111, 2043101, 4043101, 8043101, 16043101, 32043101),
         page_scene_ids=(597, 598, 599),
         intro_scene_id=596,
     ),

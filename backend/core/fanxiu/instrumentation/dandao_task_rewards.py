@@ -118,7 +118,6 @@ def read_dandao_task_reward_snapshot(activity_id: int) -> dict[str, Any]:
         "activity_progress": next(iter(pending_progress)) if pending_progress else None,
         "task_target": targets[-1],
         "all_tasks_complete": bool(projection.get("complete") and not pending_ids),
-        "goal_120000_complete": bool(projection.get("complete") and not pending_ids),
         "evidence": {
             **dict(shared.get("evidence") or {}),
             "membership": "QuestMgr taskEntryVOs + finishTasks joined to ActiveTask",

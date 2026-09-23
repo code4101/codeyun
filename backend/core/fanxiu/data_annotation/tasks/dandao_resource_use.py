@@ -37,7 +37,6 @@ from backend.core.fanxiu.runtime_gui.alchemy_red_dots import (
 )
 
 
-DANDAO_TASK_TARGET = 120_000
 DANDAO_MIN_BASE_BATCH = 10_000
 DANDAO_RECIPE_ROWS = tuple(f"配方{index}" for index in range(1, 7))
 
@@ -103,6 +102,14 @@ def _read_one_number(context: Any, scene_id: int, shape: str) -> int:
     return unique.pop()
 
 
+def _wait_alchemy_scene(context: Any, scenes: list[int], *, wait: float, label: str):
+    """A global fallback match is diagnostic evidence, not the expected landing."""
+    match = yield from context.wait_scene(scenes, wait=wait, label=label)
+    if match.scene_id not in scenes:
+        raise RuntimeError(f"{label}：实际落点 #{match.scene_id} 不在 {scenes}")
+    return match
+
+
 def _read_recipe_capacity(context: Any, row: str) -> tuple[int, str]:
     """Read the rendered capacity label from the recipe row OCR cache."""
     fragments = context.ocr_fragments_in_shapes(625, [row])
@@ -136,13 +143,13 @@ def _open_alchemy_selection(context: Any, activity_id: int, now: datetime):
         return
     if scene_id == 624:
         context.click_shape_center(624, "前往炼丹")
-        yield from context.wait_scene([625], wait=20, label="丹道：等待丹方选择")
+        yield from _wait_alchemy_scene(context, [625], wait=20, label="丹道：等待丹方选择")
         return
     if scene_id == 597:
         context.click_shape_center(597, "前往炼丹")
-        yield from context.wait_scene([624], wait=25, label="丹道：等待炼丹首页")
+        yield from _wait_alchemy_scene(context, [624], wait=25, label="丹道：等待炼丹首页")
         context.click_shape_center(624, "前往炼丹")
-        yield from context.wait_scene([625], wait=20, label="丹道：等待丹方选择")
+        yield from _wait_alchemy_scene(context, [625], wait=20, label="丹道：等待丹方选择")
         return
     adapter = next(item for item in RESOURCE_RANK_GIFT_ADAPTERS if item.key == "dandao-wending")
     scene = yield from open_resource_rank_activity_page(
@@ -153,11 +160,11 @@ def _open_alchemy_selection(context: Any, activity_id: int, now: datetime):
     )
     if scene != 597:
         context.click_shape_center(scene, "榜")
-        yield from context.wait_scene([597], wait=20, label="丹道：等待资源榜")
+        yield from _wait_alchemy_scene(context, [597], wait=20, label="丹道：等待资源榜")
     context.click_shape_center(597, "前往炼丹")
-    yield from context.wait_scene([624], wait=25, label="丹道：等待炼丹首页")
+    yield from _wait_alchemy_scene(context, [624], wait=25, label="丹道：等待炼丹首页")
     context.click_shape_center(624, "前往炼丹")
-    yield from context.wait_scene([625], wait=20, label="丹道：等待丹方选择")
+    yield from _wait_alchemy_scene(context, [625], wait=20, label="丹道：等待丹方选择")
 
 
 def _first_available_recipe_row(context: Any):
@@ -193,9 +200,9 @@ def _first_available_recipe_row(context: Any):
 
 def _open_recipe(context: Any, category: str, row: str, maximum: int):
     context.click_shape_center(625, row)
-    yield from context.wait_scene([810], wait=15, label="丹道：等待丹方提示")
+    yield from _wait_alchemy_scene(context, [810], wait=15, label="丹道：等待丹方提示")
     context.click_shape_center(810, "选择丹方")
-    yield from context.wait_scene([627], wait=15, label="丹道：等待炼制数量")
+    yield from _wait_alchemy_scene(context, [627], wait=15, label="丹道：等待炼制数量")
     current_count = _read_one_number(context, 627, "炼制数量")
     current_base = _read_one_number(context, 627, "本次基础熟练度")
     if current_count <= 0 or current_count > maximum or current_base <= 0:
@@ -234,12 +241,12 @@ def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int):
     if actual_base != expected_base:
         raise RuntimeError(f"丹道点击前基础熟练度 {actual_base} 与计划 {expected_base} 不一致")
     context.click_shape_center(627, "开始炼制")
-    yield from context.wait_scene([811], wait=30, label="丹道：等待炼制奖励")
+    yield from _wait_alchemy_scene(context, [811], wait=30, label="丹道：等待炼制奖励")
     context.click_shape_center(811, "点击屏幕继续")
-    landing = yield from context.wait_scene([624, 629], wait=20, label="丹道：等待炼制落点")
+    landing = yield from _wait_alchemy_scene(context, [624, 629], wait=20, label="丹道：等待炼制落点")
     if int(landing.id) == 629:
         context.click_shape_center(629, "关闭")
-        yield from context.wait_scene([624], wait=15, label="丹道：关闭炼制提示")
+        yield from _wait_alchemy_scene(context, [624], wait=15, label="丹道：关闭炼制提示")
     return expected_base
 
 
@@ -251,7 +258,7 @@ def _spend_one_base_batch(context: Any, target_base: int):
             return spent, recipes
         context.click_shape_center(624, "前往炼丹") if spent else None
         if spent:
-            yield from context.wait_scene([625], wait=20, label="丹道：返回丹方选择")
+            yield from _wait_alchemy_scene(context, [625], wait=20, label="丹道：返回丹方选择")
         choice = yield from _first_available_recipe_row(context)
         if choice is None:
             raise RuntimeError("丹道批次尚未达到基础目标，但分类已无红点")
@@ -317,13 +324,14 @@ def run_dandao_resource_use_flow(
         gained = after - before
         if gained <= 0:
             raise RuntimeError("丹道炼制后本期熟练度没有增长")
-        observed_rate = Fraction(gained, spent_base)
+        observed_rate = None if after_snapshot["all_tasks_complete"] else Fraction(gained, spent_base)
         batches.append({
             "before": before,
             "after": after,
+            "after_is_lower_bound": after_snapshot["all_tasks_complete"],
             "planned_base": target_base,
             "spent_base": spent_base,
-            "observed_rate": float(observed_rate),
+            "observed_rate": float(observed_rate) if observed_rate is not None else None,
             "recipes": recipes,
         })
         snapshot = after_snapshot
@@ -331,24 +339,38 @@ def run_dandao_resource_use_flow(
         context,
         now=current,
         expected_activity_id=activity_id,
-        max_claims=20,
+        initial_snapshot=snapshot,
+        max_claims=int(snapshot["expected_task_count"]),
         manage_schedule=False,
         include_schedule_hint=False,
         return_to_world=return_to_world,
     )
     if rewards.get("result") != "success" or rewards.get("boundary") != "already_claimed":
         raise RuntimeError(f"丹道任务奖励未完成：{rewards}")
+    exit_warning = None
+    if return_to_world and rewards.get("current_scene") != 34:
+        try:
+            yield from context.go_scene(34)
+        except (InterruptedError, GeneratorExit):
+            raise
+        except Exception as exc:
+            # The business result is already proven. Navigation must not
+            # turn a completed consumption/claim into a repeated action.
+            exit_warning = f"{type(exc).__name__}: {exc}"
     return {
         "result": "success",
         "goal": target,
         "batch_count": len(batches),
         "batches": batches,
         "rewards": rewards,
+        "exit_warning": exit_warning,
+        "message": f"丹道本期 {target} 任务已全部达成并领奖；本次炼制 {len(batches)} 批",
     }
 
 
 __all__ = [
-    "DANDAO_TASK_TARGET",
+    "AlchemyRecipe",
+    "craft_alchemy_recipe",
     "DANDAO_MIN_BASE_BATCH",
     "plan_dandao_base_batch",
     "plan_dandao_recipe_count",
