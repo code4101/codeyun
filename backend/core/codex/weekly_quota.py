@@ -331,20 +331,22 @@ def _build_reset_periods(
     if end is None:
         return []
     moments: list[dt.datetime] = []
-    seen: set[str] = set()
     for item in points:
         moment = _parse_iso_timestamp(item.get("reset_at"))
         if moment is None or moment > end or moment <= end - span:
             continue
-        key = moment.isoformat()
-        if key in seen:
-            continue
-        seen.add(key)
         moments.append(moment)
-    if end.isoformat() not in seen:
-        moments.append(end)
+    moments.append(end)
     moments.sort()
-    moments = moments[-GENERAL_QUOTA_WINDOW_PERIODS:]
+    # The upstream reset timestamp can drift by a second between collections.
+    # Treat such readings as one cycle, keeping the latest deadline.
+    distinct: list[dt.datetime] = []
+    for moment in moments:
+        if distinct and moment - distinct[-1] <= dt.timedelta(seconds=60):
+            distinct[-1] = moment
+        else:
+            distinct.append(moment)
+    moments = distinct
     return [
         {"start_at": (moment - period).isoformat(), "reset_at": moment.isoformat()}
         for moment in moments
@@ -364,7 +366,7 @@ def build_codex_general_quota_window(
     boundaries, while ``reset_at`` stays precise to the minute.
 
     ``period_minutes`` is the reset period itself (7 days for the weekly limit).
-    ``periods`` lists each reset cycle individually as ``{start_at, reset_at}``:
+    ``periods`` lists each visible reset cycle individually as ``{start_at, reset_at}``:
     the timer only starts on first use after a reset, so a period's ``start_at`` is
     its own ``reset_at`` minus one period and is *not* the previous period's reset.
     The client draws one even-burn reference line per period from that pair.

@@ -52,7 +52,8 @@ def _next_pending_check_time(now: datetime) -> datetime:
     return now + timedelta(minutes=30)
 
 
-def _active_dandao_adapter(now: datetime):
+def resolve_active_dandao_activity(now: datetime):
+    """Resolve the unique active alchemy occurrence from the schedule snapshot."""
     active = active_resource_rank_gift_adapters(
         load_worldline_activity_schedule_snapshot(),
         now=now,
@@ -91,9 +92,11 @@ def run_dandao_task_rewards_flow(
     context: Any,
     *,
     now: datetime | None = None,
+    expected_activity_id: int | None = None,
     max_claims: int = 20,
     manage_schedule: bool = False,
     include_schedule_hint: bool = True,
+    return_to_world: bool = True,
 ) -> dict[str, Any]:
     def result_with_optional_schedule_hint(result: dict[str, Any]) -> dict[str, Any]:
         if include_schedule_hint:
@@ -105,9 +108,11 @@ def run_dandao_task_rewards_flow(
     current = now or job_now()
     zone = ZoneInfo(DEFAULT_TIMEZONE)
     current = current.replace(tzinfo=zone) if current.tzinfo is None else current.astimezone(zone)
-    active = _active_dandao_adapter(current)
+    active = resolve_active_dandao_activity(current)
     next_daily = next_dandao_task_reward_time(current).strftime("%Y-%m-%d %H:%M:%S")
     if active is None:
+        if expected_activity_id is not None:
+            raise RuntimeError("指定丹道活动当前未开放，拒绝将未领奖报告为完成")
         if manage_schedule:
             context.set_next_time(next_daily)
         return result_with_optional_schedule_hint({
@@ -118,6 +123,8 @@ def run_dandao_task_rewards_flow(
         })
 
     adapter, activity_id = active
+    if expected_activity_id is not None and activity_id != int(expected_activity_id):
+        raise RuntimeError("丹道领奖活动与资源使用活动不一致")
     snapshot = read_dandao_task_reward_snapshot(activity_id)
     _require_complete_snapshot(snapshot)
     claimable = [int(value) for value in snapshot.get("authorized_claim_task_ids") or []]
@@ -180,6 +187,7 @@ def run_dandao_task_rewards_flow(
         snapshot = after
 
     pending = [int(value) for value in snapshot.get("pending_task_ids") or []]
+    boundary = "already_claimed" if snapshot.get("state") == "already_claimed" else "no_claimable_progress"
     next_time = (
         _next_pending_check_time(current).strftime("%Y-%m-%d %H:%M:%S")
         if pending
@@ -187,6 +195,16 @@ def run_dandao_task_rewards_flow(
     )
     if manage_schedule:
         context.set_next_time(next_time)
+    if not return_to_world:
+        return result_with_optional_schedule_hint({
+            "result": "success",
+            "current_scene": DANDAO_TASK_REWARDS_SCENE_ID,
+            "claimed_count": len(claimed_ids),
+            "boundary": boundary,
+            "claimed_ids": claimed_ids,
+            "next_time": next_time,
+            "message": f"{DANDAO_TASK_REWARDS_LABEL}：QuestMgr 已确认领取 {len(claimed_ids)} 档",
+        })
     try:
         result = context.go_scene(34)
         if hasattr(result, "send"):
@@ -198,6 +216,7 @@ def run_dandao_task_rewards_flow(
             "result": "success",
             "current_scene": DANDAO_TASK_REWARDS_SCENE_ID,
             "claimed_count": len(claimed_ids),
+            "boundary": boundary,
             "claimed_ids": claimed_ids,
             "next_time": next_time,
             "message": (
@@ -209,6 +228,7 @@ def run_dandao_task_rewards_flow(
         "result": "success",
         "current_scene": 34,
         "claimed_count": len(claimed_ids),
+        "boundary": boundary,
         "claimed_ids": claimed_ids,
         "next_time": next_time,
         "message": (

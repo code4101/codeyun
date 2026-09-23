@@ -77,6 +77,7 @@ class IntegerSliderAssets:
     count_slider_right_anchor: str | None = None
     count_slider_left_center_offset: float = 0.0
     count_slider_right_center_offset: float = 0.0
+    count_ocr_padding: int = 16
 
     def __post_init__(self) -> None:
         if self.settings_scene_id <= 0:
@@ -101,7 +102,8 @@ class IntegerSliderAssets:
 
 def _ocr_count(context: Any, assets: IntegerCountAssets) -> int:
     values, text = context.ocr_numbers_in_shapes(
-        assets.settings_scene_id, [assets.count_region], crop=True
+        assets.settings_scene_id, [assets.count_region], crop=True,
+        padding=getattr(assets, "count_ocr_padding", 16),
     )
     unique = sorted({int(value) for value in values if int(value) > 0})
     minimum_marker = getattr(assets, "count_minimum_marker", None)
@@ -403,7 +405,7 @@ def _coarse_pixel_converge(
             return current, probes, interpolation_rows, "within_drag_grain"
     raise RuntimeError(
         f"{count_label}拖拽逼近未进入颗粒度范围："
-        f"current={current}, target={desired}"
+        f"current={current}, target={desired}; probes={probes}; corrections={interpolation_rows}"
     )
 
 

@@ -39,8 +39,10 @@ def _snapshot(
         "runtime_complete": True,
         "runtime_updated_at": time.time(),
         "runtime_debug": {"pid": 123, "process_start_ticks": 456},
+        "runtime_equipped_count": 1,
         "artifacts": [
             {
+                "order": 1,
                 "name": "血晶摩诃剑",
                 "rows": [
                     {
@@ -84,9 +86,20 @@ def _snapshot(
 
 
 def _complete_snapshot(*, pending: bool = False, value: int = 6700) -> dict:
+    """完整已加载集合：每个灵器一个 artifact（带 order），各六个部位。
+
+    资产快照按灵器分组并带 order，行内 runtime_ware_id 必须与所在 artifact 一致；
+    装配数量等于全部非空部位数，validator 才能核验集合完整性。
+    """
+
     snapshot = _snapshot(pending=pending, value=value)
-    rows = snapshot["artifacts"][0]["rows"]
-    for ware_id in range(1, 9):
+    artifacts = snapshot["artifacts"]
+    for ware_id in range(1, 10):
+        if ware_id == 1:
+            rows = artifacts[0]["rows"]
+        else:
+            rows = []
+            artifacts.append({"order": ware_id, "name": f"灵器{ware_id}", "rows": rows})
         for part in range(1, 7):
             if (ware_id, part) == (1, 1):
                 continue
@@ -109,6 +122,7 @@ def _complete_snapshot(*, pending: bool = False, value: int = 6700) -> dict:
                     "runtime_pending_effects": [],
                 }
             )
+    snapshot["runtime_equipped_count"] = sum(len(artifact["rows"]) for artifact in artifacts)
     return snapshot
 
 

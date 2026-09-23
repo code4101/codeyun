@@ -2,7 +2,8 @@
 
 完成边界内刷新全馆快照；五槽部件培养、突破与同步已真实通过。
 
-只从已就绪的 #668 发起，#722 只确认一次。中断恢复仅支持明确选择
+只从已就绪的 #668 发起，#722 只确认一次；入口误落 #721 效果激活时先按已有动作点击继续回到 #668。
+中断恢复仅支持明确选择
 finish_result_only=True 并且当前确为 #723 或 #721：核验指定本体已突破后继续收尾。
 不会从 #722 自动恢复/重复确认，也不会将 #668 已突破当作本次动作成功。
 """
@@ -159,6 +160,10 @@ def breakthrough_spirit_artifact(
             identity()
             item(True)
         else:
+            if entry.scene_id == assets.effect_activation_scene_id:
+                # 保存后组合效果激活弹层可能晚于保存动作出现（2026-09-23 01:44 真机）：按已有
+                # 确定性动作点击继续，直到回到洗炼页，再要求干净 #668。
+                entry = gui.finish_effect_activation()
             if entry.scene_id != assets.wash_scene_id:
                 raise RuntimeError('突破入口要求无候选洗炼页 #668；不自动恢复确认窗口')
             identity(readiness=True)

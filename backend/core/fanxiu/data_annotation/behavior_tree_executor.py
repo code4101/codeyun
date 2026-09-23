@@ -15629,6 +15629,19 @@ class BehaviorTreeExecutor(
             image = edge["image"]
             shape = edge["shape"]
             shape_title = str(shape.get("title") or "未命名")
+            if (
+                int(current_scene_id or 0) == 66
+                and int(target_scene_id) == 597
+                and shape_title == "前往"
+                and 596 in (edge.get("target_ids") or [])
+            ):
+                from backend.core.fanxiu.data_annotation.schedule_cards import (
+                    prepare_schedule_card_for_scene,
+                )
+
+                selected = yield from prepare_schedule_card_for_scene(context, 597)
+                self._log("detail", f"#66 活动卡片前置条件已核验：{selected['title']}")
+                frame = context.cur_frame(update=True)
             if int(target_scene_id) == 34:
                 # Returning to the stable world anchor is common and a false
                 # positive here is unusually destructive: one stale/animated
@@ -16126,8 +16139,6 @@ class BehaviorTreeExecutor(
         if key and self._scene_matches(key, score):
             with self._lock:
                 self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
-
-
 
 
 

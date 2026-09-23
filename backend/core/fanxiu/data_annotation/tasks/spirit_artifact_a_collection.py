@@ -10,7 +10,10 @@ import json
 import time
 from pathlib import Path
 
-from .spirit_artifact_cleanse import SpiritArtifactCleanseRuntimeGuiAdapter
+from .spirit_artifact_cleanse import (
+    SpiritArtifactCleanseBlocked, SpiritArtifactCleanseErrorCode,
+    SpiritArtifactCleanseRuntimeGuiAdapter,
+)
 from .spirit_artifact_yinxian import (
     DEFAULT_PREPARED_TARGET_RATIO, YinxianAttribute, analyze_yinxian_sample,
     plan_a_collection, plan_b_supplement,
@@ -36,7 +39,7 @@ def run_a_collection(
     stop_at 是生产窗口前的绝对截止秒；每次消耗前预留 90 秒收尾。
     max_consumptions 只限制本次运行，不修改概率样本或业务完成条件。
     返回 status 保持 complete/paused；stop_reason 区分 all_a_full、
-    b_supplement_complete、budget_paused、deadline_paused。target_hit 仅是
+    b_supplement_complete、budget_paused、deadline_paused、material_exhausted。target_hit 仅是
     候选决策事件，表示停止本轮引仙筛选并采用，不表示整个培养完成。
     不负责导航、突破或调度。默认拒绝入口候选；evaluate_existing_candidate=True
     仅授权用当前完整事实重新评价 A／补 B 筛选或严格改善的精炼目标候选，
@@ -200,8 +203,19 @@ def run_a_collection(
             material = 14000006 if plan.action == 'yinxian' else 14000007
             iteration_started = time.monotonic()
             # preview 校验当前实例、库存、未锁项、道具确认文案；窗口路线在本程序内复用。
-            preview = gui.preview_advanced_item(material, fast_observation=fast_observation,
-                expected_snapshot=current)
+            try:
+                preview = gui.preview_advanced_item(material, fast_observation=fast_observation,
+                    expected_snapshot=current)
+            except SpiritArtifactCleanseBlocked as blocked:
+                # 材料为零只是本批预算暂停：按 paused 正常返回，让上层收尾回到
+                # 安全场景；只有目录/身份不一致才继续 fail-closed。
+                if blocked.code != SpiritArtifactCleanseErrorCode.MATERIAL_EXHAUSTED:
+                    raise
+                record({'record_type': 'material_exhausted', 'probability_sample': False,
+                        'new_consumption': False, 'material_id': material,
+                        'reason': str(blocked), 'evidence': blocked.evidence,
+                        'snapshot': current})
+                return finish('paused', 'material_exhausted', plan)
             if preview['target_item_id'] != target.item_id:
                 raise RuntimeError('使用道具确认目标与培养目标不一致')
             # 对照已知计划；正常独占连续操作不为未改变的事实追加 Runtime。

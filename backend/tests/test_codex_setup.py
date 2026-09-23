@@ -757,6 +757,35 @@ def test_build_general_quota_window_breaks_at_early_reset(remaining):
     ]
 
 
+def test_build_general_quota_window_deduplicates_reset_timestamp_drift():
+    snapshots = [
+        {"observed_at": "2026-09-16T00:00:00+00:00", "remaining_percent": 0,
+         "reset_at": "2026-09-19T16:09:42+00:00"},
+        {"observed_at": "2026-09-20T00:00:00+00:00", "remaining_percent": 84,
+         "reset_at": "2026-09-26T16:10:35+00:00"},
+        {"observed_at": "2026-09-21T00:00:00+00:00", "remaining_percent": 46,
+         "reset_at": "2026-09-26T16:10:36+00:00"},
+    ]
+
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+
+    assert [item["reset_at"] for item in window["periods"]] == [
+        "2026-09-19T16:09:42+00:00",
+        "2026-09-26T16:10:36+00:00",
+    ]
+
+    snapshots.append({
+        "observed_at": "2026-09-23T11:00:00+00:00", "remaining_percent": 100,
+        "reset_at": "2026-09-30T10:07:30+00:00",
+    })
+    window = weekly_quota.build_codex_general_quota_window([], snapshots)
+    assert [item["reset_at"] for item in window["periods"]] == [
+        "2026-09-19T16:09:42+00:00",
+        "2026-09-26T16:10:36+00:00",
+        "2026-09-30T10:07:30+00:00",
+    ]
+
+
 def test_api_quota_serves_history_without_snapshot(monkeypatch):
     monkeypatch.setattr(
         codex_setup_api, "load_codex_quota_snapshot", lambda: {"observed_at": "", "groups": []}

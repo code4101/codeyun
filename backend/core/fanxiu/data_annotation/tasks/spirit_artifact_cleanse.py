@@ -112,6 +112,8 @@ class SpiritArtifactCleanseErrorCode(str, Enum):
     CONTROL_UNAVAILABLE = "CONTROL_UNAVAILABLE"
     SCENE_MISMATCH = "SCENE_MISMATCH"
     POSTCONDITION_MISMATCH = "POSTCONDITION_MISMATCH"
+    # 目录里存在该道具但库存为零：这是预算暂停，不是身份异常。
+    MATERIAL_EXHAUSTED = "MATERIAL_EXHAUSTED"
 
 
 class SpiritArtifactCleanseBlocked(RuntimeError):
@@ -131,6 +133,27 @@ class SpiritArtifactCleanseBlocked(RuntimeError):
         self.phase = phase
         self.retryable = retryable
         self.evidence = dict(evidence or {})
+
+
+def resolve_advanced_item_stock(catalog: Mapping[str, Any], item_id: int) -> dict[str, Any]:
+    """按 Runtime 道具 ID 取唯一目录行，并把零库存与身份异常分开。
+
+    目录里没有该道具（或同 ID 多行）说明当前灵器/页面与预期不一致，继续 fail-closed；
+    存在且 count<=0 只说明材料用尽，调用方应按 MATERIAL_EXHAUSTED 记为暂停。
+    """
+
+    matches = [row for row in (catalog.get('items') or []) if row.get('item') == item_id]
+    if len(matches) != 1:
+        raise SpiritArtifactCleanseBlocked(
+            f'当前灵器目录没有唯一道具 {item_id}', phase='preview_advanced')
+    item = matches[0]
+    if int(item.get('count') or 0) <= 0:
+        raise SpiritArtifactCleanseBlocked(
+            f"洗炼材料库存为零：{item.get('name')}",
+            code=SpiritArtifactCleanseErrorCode.MATERIAL_EXHAUSTED,
+            phase='preview_advanced',
+            evidence={'item': item_id, 'name': item.get('name'), 'count': item.get('count')})
+    return item
 
 
 @dataclass(frozen=True)
@@ -932,10 +955,7 @@ class SpiritArtifactCleanseRuntimeGuiAdapter:
         timings['catalog_detail'] = catalog.get('timings', {})
         timings['combined_before'] = combined_before is not None
         timings['catalog_reused'] = cached is not None
-        matches = [row for row in catalog['items'] if row['item'] == item_id]
-        if len(matches) != 1 or matches[0]['count'] <= 0:
-            raise SpiritArtifactCleanseBlocked('当前灵器没有该道具或库存为零', phase='preview_advanced')
-        item = matches[0]
+        item = resolve_advanced_item_stock(catalog, item_id)
         name = str(item['name']).replace('·', '').replace(' ', '')
         if not name.startswith('洗灵') or len(name) <= 2:
             raise SpiritArtifactCleanseBlocked('高级洗炼道具名称未解析', phase='preview_advanced')

@@ -440,15 +440,13 @@ async function applySwitch() {
     const result = await switchCodexSetup(selectedProvider.value)
     status.value = result.status
     syncSelection()
-    ElMessage.success(result.message)
-    if (result.notice) {
-      ElMessage({
-        message: result.notice,
-        type: 'warning',
-        duration: 10000,
-        showClose: true,
-      })
-    }
+    const notice = result.notice?.replace(/^已还原为 OpenAI 默认配置：/, '')
+    ElMessage({
+      message: notice ? `${result.message}；${notice}` : result.message,
+      type: notice ? 'warning' : 'success',
+      duration: notice ? 10000 : 3000,
+      showClose: Boolean(notice),
+    })
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {

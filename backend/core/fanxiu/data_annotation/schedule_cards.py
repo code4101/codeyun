@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Mapping
 
 from backend.core.fanxiu.instrumentation.schedule_cards import read_schedule_card_runtime_snapshot
@@ -177,14 +178,14 @@ def inspect_schedule_cards(context):
     return {'runtime': snapshot, 'current': current}
 
 
-def select_schedule_card(context, runtime_key: str):
+def select_schedule_card(context, runtime_key: str, *, state: Mapping[str, Any] | None = None):
     """Locate a Runtime task in #66 and stop on its verified card.
 
     Uses the current ordered Runtime list to choose the dot, but only fresh
     title OCR can confirm the landing. Does not enter the event or test its
     business availability; even expired/future cards can be selected.
     """
-    state = yield from inspect_schedule_cards(context)
+    state = state if state is not None else (yield from inspect_schedule_cards(context))
     snapshot = state['runtime']
     matches = [row for row in snapshot['items'] if row['key'] == runtime_key]
     if len(matches) != 1:
@@ -202,6 +203,35 @@ def select_schedule_card(context, runtime_key: str):
     if current['task']['key'] != runtime_key:
         raise RuntimeError(f'#66 卡片落点与目标不符：{current}')
     return current
+
+
+def prepare_schedule_card_for_scene(context, target_scene_id: int):
+    """Satisfy the #66 Forward Shape's business precondition for a destination.
+
+    The scene graph says where Forward may land. This function chooses the
+    currently open card and confirms its GUI title before that Shape is clicked.
+    One Runtime inventory read is reused through selection; title and pager
+    feedback are GUI observations.
+    """
+    activity_ids_by_scene = {597: (1043111, 4043101)}
+    activity_ids = activity_ids_by_scene.get(int(target_scene_id))
+    if activity_ids is None:
+        raise ValueError(f'#66 未配置目标场景 #{target_scene_id} 的卡片前置条件')
+    state = yield from inspect_schedule_cards(context)
+    now_ms = time.time() * 1000
+    candidates = [
+        item for item in state['runtime']['items']
+        if int(item.get('activity_id') or 0) in activity_ids
+        and float(item.get('start_time') or 0) <= now_ms <= float(item.get('end_time') or 0)
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(f'#66 目标 #{target_scene_id} 的有效活动卡片不唯一：{candidates}')
+    selected = yield from select_schedule_card(
+        context, str(candidates[0]['key']), state=state,
+    )
+    if str(selected['task']['key']) != str(candidates[0]['key']):
+        raise RuntimeError(f'#66 目标 #{target_scene_id} 的卡片前置条件未满足')
+    return selected
 
 
 def verify_schedule_card_carousel(context):

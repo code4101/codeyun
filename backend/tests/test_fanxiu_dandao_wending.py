@@ -400,6 +400,22 @@ def test_collect_cross_occurrence_uses_both_follow_rank_ids(
     }
 
 
+def test_loaded_empty_dandao_rank_is_complete() -> None:
+    rows = dandao_wending._runtime_rank_rows(
+        {
+            "ok": True,
+            "complete": True,
+            "rank_list_size": 0,
+            "rankings": [],
+            "self_ranking": {"rank": 0, "score": 0},
+        }
+    )
+    assert len(rows) == 1
+    assert rows[0]["has_player"] is False
+    assert rows[0]["raw_data"]["scope_complete"] is True
+    assert rows[0]["raw_data"]["reported_rank_list_size"] == 0
+
+
 def test_live_task_ids_follow_questmgr_membership_not_static_variant(tmp_path: Path) -> None:
     rows = [
         {

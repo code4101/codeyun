@@ -279,6 +279,31 @@ def load_dandao_observed_task_milestones(
     return milestones
 
 
+def resolve_dandao_task_targets(
+    activity_id: int, task_ids: tuple[int, ...], *,
+    export_root: str | Path | None = None,
+) -> tuple[int, ...]:
+    """Resolve thresholds for the already-authorized live task membership."""
+    configs = {
+        int(row.get("id") or 0): row
+        for row in _load_config_rows(resolve_fanxiu_export_root(export_root), "ActiveTask")
+        if int(row.get("activityId") or 0) == int(activity_id)
+    }
+    targets = []
+    for task_id in task_ids:
+        row = configs.get(task_id)
+        if row is None:
+            raise ValueError(f"丹道任务配置缺失：{task_id}")
+        values = [int(m.group(1)) for condition in row.get("finishCondition") or []
+                  if (m := _MEDICAL_EXP_CONDITION.fullmatch(str(condition or "")))]
+        if len(values) != 1 or values[0] <= 0:
+            raise ValueError(f"丹道任务熟练度目标无效：{task_id}")
+        targets.append(values[0])
+    if not targets or targets != sorted(set(targets)):
+        raise ValueError("丹道任务梯度必须严格递增")
+    return tuple(targets)
+
+
 def resolve_dandao_live_task_ids(
     activity_id: int,
     *,
@@ -520,7 +545,10 @@ def _runtime_rank_rows(
         raise ValueError(str(snapshot.get("reason") or "丹道问鼎榜单尚未加载"))
     declared = int(snapshot.get("rank_list_size") or 0)
     items = [dict(row) for row in snapshot.get("rankings") or [] if isinstance(row, dict)]
-    if declared <= 0 or len(items) != declared:
+    # A freshly opened leaderboard may legitimately contain zero players before
+    # anyone scores. The Runtime snapshot above proves the page was loaded;
+    # zero declared rows and zero observed rows are a complete empty ranking.
+    if declared < 0 or len(items) != declared:
         raise ValueError(f"丹道问鼎{scope}榜不完整：{len(items)}/{declared}")
     ranks = [int(row.get("rank") or 0) for row in items]
     if ranks != list(range(1, declared + 1)):
@@ -565,7 +593,13 @@ def _runtime_rank_rows(
                 "is_reward_guard": False,
                 "is_last_player": False,
                 "has_player": False,
-                "raw_data": {"unranked": True, "source": "read_only_runtime_memory"},
+            "raw_data": {
+                "unranked": True,
+                "reported_rank_list_size": declared,
+                "loaded_player_count": len(items),
+                "scope_complete": True,
+                "source": "read_only_runtime_memory",
+            },
             }
         )
     return rows
