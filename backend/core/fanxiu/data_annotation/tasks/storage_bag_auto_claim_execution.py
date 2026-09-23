@@ -439,8 +439,21 @@ def execute_storage_bag_auto_claim_task(
     )
 
     executions: list[dict[str, Any]] = []
+    previous_box_adapter = None
     try:
         for entry in plan.action_queue:
+            box_adapter = (
+                random_adapter if entry.template == "open_random_box"
+                else fixed_adapter if entry.template == "open_fixed_box"
+                else None
+            )
+            if box_adapter is not previous_box_adapter:
+                # Each box adapter caches its own post-open bag snapshot. A
+                # different box, choice or direct-use action can consume other
+                # items, so the old cache can no longer be the next pre-state.
+                random_adapter.invalidate_reusable_snapshot()
+                fixed_adapter.invalidate_reusable_snapshot()
+            previous_box_adapter = box_adapter
             if entry.template == "open_random_box":
                 result = yield from random_adapter.execute(_random_request(entry))
             elif entry.template == "open_fixed_box":

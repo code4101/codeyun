@@ -277,63 +277,75 @@ def _wait_scene(
     )
 
 
-def _enter_xutian_map(context: Any) -> Iterator[Any]:
+def enter_xutian_map(context: Any) -> Iterator[Any]:
+    """Enter the active map while accepting skipped panel/confirm/tutorial views.
+
+    #616, #617 and #618 are optional business views. Each click is authorized
+    only by its freshly recognized source scene; a direct #614 landing ends the
+    transition without replaying the skipped action.
+    """
     from datetime import datetime
 
     from backend.core.fanxiu.data_annotation.schedule_navigation import (
         select_schedule_activity,
     )
 
-    _wait_scene_match = yield from context.wait_scene([XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_SETTINGS_SCENE_ID, XUTIAN_MAP_SCENE_ID], wait=5.0, required=False)
+    _wait_scene_match = yield from context.wait_scene(
+        [XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_SETTINGS_SCENE_ID,
+         XUTIAN_MAP_SCENE_ID, XUTIAN_ACTIVITY_SCENE_ID,
+         XUTIAN_ENTER_CONFIRM_SCENE_ID],
+        wait=5.0, required=False,
+    )
     (current_scene, current_score, _frame) = (
         (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
         if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
     )
-    if (
-        int(current_scene or 0) == XUTIAN_TUTORIAL_SCENE_ID
-        and float(current_score) >= 80.0
-    ):
-        context.click_shape_center(XUTIAN_TUTORIAL_SCENE_ID, "点击空白关闭")
-        yield from _wait_scene(context, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
+    if int(current_scene or 0) == XUTIAN_SETTINGS_SCENE_ID and float(current_score) >= 80.0:
         return
-    if (
-        int(current_scene or 0) in {XUTIAN_SETTINGS_SCENE_ID, XUTIAN_MAP_SCENE_ID}
-        and float(current_score) >= 80.0
-    ):
-        return
-    yield from context.go_scene(66)
-    yield from select_schedule_activity(
-        context,
-        r"虚天(殿)?",
-        enter=True,
-        require_runtime_alignment=True,
-        now=datetime.now().astimezone(),
-    )
-    scene, _score, frame = yield from _wait_scene(
-        context,
-        (XUTIAN_ACTIVITY_SCENE_ID, XUTIAN_MAP_SCENE_ID),
-        timeout_seconds=30.0,
-    )
+    if int(current_scene or 0) in {
+        XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID,
+        XUTIAN_ACTIVITY_SCENE_ID, XUTIAN_ENTER_CONFIRM_SCENE_ID,
+    } and float(current_score) >= 80.0:
+        scene = int(current_scene)
+    else:
+        yield from context.go_scene(66)
+        yield from select_schedule_activity(
+            context,
+            r"虚天(殿)?",
+            enter=True,
+            require_runtime_alignment=True,
+            now=datetime.now().astimezone(),
+        )
+        scene, _score, _frame = yield from _wait_scene(
+            context,
+            (XUTIAN_ACTIVITY_SCENE_ID, XUTIAN_ENTER_CONFIRM_SCENE_ID,
+             XUTIAN_MAP_SCENE_ID, XUTIAN_TUTORIAL_SCENE_ID),
+            timeout_seconds=30.0,
+        )
     if scene == XUTIAN_ACTIVITY_SCENE_ID:
         context.click_shape_center(XUTIAN_ACTIVITY_SCENE_ID, "前往")
-        yield from _wait_scene(context, (XUTIAN_ENTER_CONFIRM_SCENE_ID,), timeout_seconds=15.0)
+        scene, _score, _frame = yield from _wait_scene(
+            context,
+            (XUTIAN_ENTER_CONFIRM_SCENE_ID, XUTIAN_MAP_SCENE_ID,
+             XUTIAN_TUTORIAL_SCENE_ID),
+            timeout_seconds=30.0,
+        )
+    if scene == XUTIAN_ENTER_CONFIRM_SCENE_ID:
         # This confirmation may enter the map even if the following transition
         # animation is visually unknown.  It is authorized once and never
         # repeated from an unknown frame.
         context.click_shape_center(XUTIAN_ENTER_CONFIRM_SCENE_ID, "确认")
-        scene, _score, frame = yield from _wait_scene(
+        scene, _score, _frame = yield from _wait_scene(
             context,
             (XUTIAN_MAP_SCENE_ID, XUTIAN_TUTORIAL_SCENE_ID),
             timeout_seconds=75.0,
         )
-        # The tutorial can be scheduled a moment after the map first becomes
-        # visible.  Let that delayed overlay settle before deciding the entry
-        # is complete.
+    if scene == XUTIAN_MAP_SCENE_ID:
+        # A delayed first-entry tutorial may cover an initially visible map.
         yield from context.wait_action_settle(2.0)
-        _wait_scene_match = yield from context.wait_scene([XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID], wait=5.0, required=False)
-        (scene, _score, frame) = (
-            (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
-            if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
+        scene, _score, _frame = yield from _wait_scene(
+            context, (XUTIAN_TUTORIAL_SCENE_ID, XUTIAN_MAP_SCENE_ID),
+            timeout_seconds=10.0,
         )
     if scene == XUTIAN_TUTORIAL_SCENE_ID:
         context.click_shape_center(XUTIAN_TUTORIAL_SCENE_ID, "点击空白关闭")
@@ -1142,7 +1154,7 @@ def execute_xutian_native_auto_job(
             "final_scene": 34,
         }
     # The Heaven Runtime model is lazily initialized by entering the activity.
-    yield from _enter_xutian_map(context)
+    yield from enter_xutian_map(context)
     if not isinstance(existing_mark, dict):
         _wait_scene_match = yield from context.wait_scene([XUTIAN_SETTINGS_SCENE_ID], wait=5.0, required=False)
         (scene, score, _frame) = (

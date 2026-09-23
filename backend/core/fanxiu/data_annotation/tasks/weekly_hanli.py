@@ -11,14 +11,14 @@ from backend.core.fanxiu.data_annotation.job_times import next_business_time
 class WeeklyHanliTaskMixin:
     """执行“周常_韩立”的当前可验证闭环。"""
 
-    def _record_weekly_hanli_done(
+    def _record_weekly_hanli_next_time(
         self,
         payload: dict[str, Any],
         *,
         now: datetime | None = None,
     ) -> str:
         next_time = next_business_time(
-            ("00:05",),
+            ("05:00",),
             now=now,
             weekdays=(0,),
         )
@@ -39,15 +39,24 @@ class WeeklyHanliTaskMixin:
         timeout_seconds: float,
         poll_seconds: float,
         require_unique: bool = True,
+        anchor_y: float | None = None,
     ):
-        """按底层 OCR token 框精确点击窗口中的唯一目标。"""
+        """等待菜单稳定，并只点击与韩立同行展开的完整按钮。"""
 
         deadline = time.monotonic() + max(1.0, float(timeout_seconds))
         keywords = tuple(str(item).strip() for item in alternatives if str(item).strip())
         last_matches: list[tuple[float, float, str]] = []
         while time.monotonic() < deadline:
             for keyword in keywords:
-                matches = context.ocr_centers_in_shape(scene_id, shape_title, include=(keyword,))
+                frame = context.cur_frame(update=True)
+                matches = context.ocr_centers_in_shape(
+                    scene_id, shape_title, include=(keyword,), frame_data_url=frame
+                )
+                if anchor_y is not None:
+                    matches = [
+                        item for item in matches
+                        if anchor_y + 20 <= item[1] <= anchor_y + 140
+                    ]
                 if not matches:
                     continue
                 last_matches = matches
@@ -69,14 +78,14 @@ class WeeklyHanliTaskMixin:
         reward_wait_seconds: float,
         transition_timeout: float,
     ):
-        """逐个领取韩立礼物；稳定空白列表与“空空如也”均是幂等完成态。"""
+        """逐个领取韩立礼物；稳定的「空空如也」是本周完成判据。"""
 
         claimed: list[dict[str, Any]] = []
         while True:
             deadline = time.monotonic() + max(1.0, float(transition_timeout))
             matches: list[tuple[float, float, str]] = []
             empty_matches: list[tuple[float, float, str]] = []
-            blank_frame_count = 0
+            empty_frame_count = 0
             while time.monotonic() < deadline:
                 frame = context.cur_frame(update=True)
                 matches = context.ocr_centers_in_shape(
@@ -94,24 +103,12 @@ class WeeklyHanliTaskMixin:
                     frame_data_url=frame,
                 )
                 if empty_matches:
-                    self._log(
-                        "success",
-                        f"周常_韩立：奖励列表为空，已识别幂等完成态“{empty_matches[0][2]}”",
-                    )
-                    return claimed
-                blank_frame_count += 1
-                if blank_frame_count >= 3:
-                    yield from context.wait_scene(
-                        [379],
-                        wait=transition_timeout,
-                        label="周常_韩立：复核空白奖励列表仍在私聊页 #379",
-                    )
-                    self._log(
-                        "success",
-                        "周常_韩立：私聊页奖励区连续 3 帧无“点击领取”，"
-                        "按稳定空白列表确认本周已完成",
-                    )
-                    return claimed
+                    empty_frame_count += 1
+                    if empty_frame_count >= 2:
+                        self._log("success", "周常_韩立：私聊礼物区稳定显示“空空如也”，本周已清空")
+                        return claimed
+                else:
+                    empty_frame_count = 0
                 yield from context.wait_action_settle(0.5)
 
             if not matches:
@@ -139,7 +136,7 @@ class WeeklyHanliTaskMixin:
         stop_event: Any,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """进入韩立私聊页，领完全部礼物或确认列表为空后返回世界。"""
+        """进入韩立私聊页，领完礼物或确认「空空如也」后返回世界。"""
 
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
@@ -148,7 +145,7 @@ class WeeklyHanliTaskMixin:
 
         context = self._behavior_tree_context(ctx, asset_tree_path, stop_event=stop_event)
         transition_timeout = float(payload.get("transition_timeout_seconds") or 15.0)
-        ocr_timeout = float(payload.get("ocr_timeout_seconds") or 15.0)
+        ocr_timeout = float(payload.get("ocr_timeout_seconds") or 30.0)
         poll_seconds = max(0.2, float(payload.get("poll_seconds") or 0.8))
         reward_wait_seconds = max(5.0, float(payload.get("reward_wait_seconds") or 5.0))
         max_gift_claims = max(1, min(100, int(payload.get("max_gift_claims") or 20)))
@@ -184,10 +181,11 @@ class WeeklyHanliTaskMixin:
         )
         private_chat = yield from self._wait_and_click_weekly_hanli_ocr_target(
             context,
-            alternatives=("私聊", "传音"),
+            alternatives=("私聊传音",),
             label="周常_韩立：进入私聊",
             timeout_seconds=ocr_timeout,
             poll_seconds=poll_seconds,
+            anchor_y=hanli["y"],
         )
         yield from context.wait_scene([379], wait=transition_timeout, label="周常_韩立：等待私聊页 #379")
 
@@ -197,6 +195,8 @@ class WeeklyHanliTaskMixin:
             reward_wait_seconds=reward_wait_seconds,
             transition_timeout=transition_timeout,
         )
+        # 领取事实已成立时先保存下次时间；离场失败不应触发重复领取。
+        next_time = self._record_weekly_hanli_next_time(payload)
         yield from context.click_shape_center_then_scene(
             379,
             "返回",
@@ -211,14 +211,10 @@ class WeeklyHanliTaskMixin:
             timeout=transition_timeout,
             label="周常_韩立：返回世界 #34",
         )
-        next_time = self._record_weekly_hanli_done(payload)
-        self._log(
-            "success",
-            f"周常_韩立：已领取 {len(gifts)} 个礼物并安全返回世界，下次 {next_time}",
-        )
+        self._log("success", f"周常_韩立：本轮领取 {len(gifts)} 个礼物，列表已清空并返回世界，下次 {next_time}")
         return {
             "result": "success",
-            "message": f"已领取 {len(gifts)} 个韩立礼物并返回世界",
+            "message": f"韩立私聊礼物已清空，本轮领取 {len(gifts)} 个，下次 {next_time}",
             "current_scene": 34,
             "hanli_text": hanli["text"],
             "private_chat_text": private_chat["text"],

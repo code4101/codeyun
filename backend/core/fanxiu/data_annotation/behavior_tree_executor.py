@@ -4414,7 +4414,11 @@ class BehaviorTreeContext(AutomationContext):
         success = self.view(success_view)
         failure = self.view(failure_view)
         world = self.view(world_view)
-        candidate_ids = [int(battle.id), int(success.id), int(failure.id), int(world.id)]
+        # A chat window can cover an in-progress battle (observed #30 over
+        # #362 on 2026-09-24). Recognize it in Layer 0 so the battle result
+        # watcher can close it before the short result page expires.
+        chat_id, chat_list_id = 30, 332
+        candidate_ids = [int(battle.id), int(success.id), int(failure.id), int(world.id), chat_id]
         result_ids = {int(success.id), int(failure.id)}
 
         def resolved_id(value: View | int) -> int:
@@ -4426,14 +4430,36 @@ class BehaviorTreeContext(AutomationContext):
             label="等待仙窍试炼战斗或直接结算",
         )
         deadline = time.monotonic() + max(1.0, float(battle_timeout))
+        chat_dismissals = 0
         while True:
             result_id = resolved_id(result_view)
+            if result_id == chat_id:
+                chat_dismissals += 1
+                if chat_dismissals > 2:
+                    raise RuntimeError("仙窍试炼战斗期间聊天窗反复遮挡，保留现场")
+                self.runner._log("warning", "仙窍试炼战斗期间 #30 聊天窗遮挡，点击标注返回后继续观察")
+                self.click_shape_center(chat_id, "返回")
+                yield from self.wait_action_settle(0.4)
+                result_view = yield from self.wait_scene(
+                    [int(battle.id), int(success.id), int(failure.id), int(world.id), chat_list_id, chat_id],
+                    wait=15.0,
+                    label="仙窍试炼关闭聊天窗后的实际落点",
+                )
+                if resolved_id(result_view) == chat_list_id:
+                    self.click_shape_center(chat_list_id, "返回")
+                    yield from self.wait_action_settle(0.4)
+                    result_view = yield from self.wait_scene(
+                        [int(battle.id), int(success.id), int(failure.id), int(world.id), chat_id],
+                        wait=15.0,
+                        label="仙窍试炼关闭聊天列表后的实际落点",
+                    )
+                continue
             if result_id == int(battle.id):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("等待仙窍试炼最终结算超时")
                 result_view = yield from self.wait_scene(
-                    [int(success.id), int(failure.id), int(world.id)],
+                    [int(success.id), int(failure.id), int(world.id), chat_id],
                     wait=remaining,
                     label="等待仙窍试炼成功、失败或结算过期",
                 )
@@ -4460,7 +4486,7 @@ class BehaviorTreeContext(AutomationContext):
                 )
                 result_view = int(battle.id)
                 continue
-            if stable_id in result_ids or stable_id == int(world.id):
+            if stable_id in result_ids or stable_id in {int(world.id), chat_id}:
                 result_view = int(stable_id)
                 continue
             raise RuntimeError(
@@ -16139,8 +16165,6 @@ class BehaviorTreeExecutor(
         if key and self._scene_matches(key, score):
             with self._lock:
                 self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
-
-
 
 
 

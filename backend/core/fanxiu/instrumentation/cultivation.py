@@ -51,7 +51,9 @@ def read_cultivation_progress_runtime(targets: Iterable[dict[str, Any]]) -> dict
     """Read requested loaded managers once, returning full component identities.
 
     Never initializes Lua models or operates GUI. Missing target in a complete
-    owned-list means rank 0; a missing/malformed list or field raises instead.
+    owned-list means rank 0; a missing/malformed list or owned rank raises.
+    GongFa's dictionary contains static definitions with no server VO; these
+    are unlearned rank-0 candidates, while learned candidates require a rank.
     Fashion's list includes unowned definitions, so absent identity is an error.
     Caches only process-bound manager locations; new observations use fresh
     readers. GUI reopen and process restart are not yet acceptance-tested for
@@ -66,6 +68,10 @@ def read_cultivation_progress_runtime(targets: Iterable[dict[str, Any]]) -> dict
     indices = {}
     evidence = {}
     for kind in sorted({target["kind"] for target in requested}):
+        requested_ids = {
+            int(target["target_id"])
+            for target in requested if target["kind"] == kind
+        }
         if kind == "fashion":
             global_name, model_name, methods = "FashionMgr", "FashionData", frozenset({"Inst_get", "GetFashionSexByHandPoint"})
         elif kind == "pet":
@@ -95,23 +101,33 @@ def read_cultivation_progress_runtime(targets: Iterable[dict[str, Any]]) -> dict
                 storage = fields(container).get("_dt_")
                 if not isinstance(storage, LuaRef) or storage.kind != "table":
                     raise FanxiuRuntimeMemoryError("GongFaNewMgr 拥有字典未完整加载")
-                entries = [(as_int(key), fields(fields(value).get("vo"))) for key, value in reader.dictionary_fields(container).items()]
+                # The owned dictionary also contains unrelated books whose
+                # progression fields may be lazy. Only requested candidates
+                # authorize this decision; malformed requested rows still fail.
+                entries = [
+                    (key, fields(fields(value).get("vo")), fields(value).get("vo") is not None)
+                    for raw_key, value in reader.dictionary_fields(container).items()
+                    if (key := as_int(raw_key)) in requested_ids
+                ]
             else:
                 values, count = reader.list_items(container)
                 if count is None or count != len(values):
                     raise FanxiuRuntimeMemoryError(f"{global_name} 拥有列表不完整")
-                entries = [(as_int(fields(value).get(identity)), fields(value)) for value in values]
+                entries = [(as_int(fields(value).get(identity)), fields(value), True) for value in values]
             index = {}
-            for target_id, row in entries:
-                rank = as_int(row.get(rank_field))
+            for target_id, row, has_progress in entries:
+                rank = as_int(row.get(rank_field)) if has_progress else 0
                 if target_id is None or target_id <= 0 or rank is None or rank < 0 or target_id in index:
-                    raise FanxiuRuntimeMemoryError(f"{global_name} 身份或阶数字段无效")
+                    raise FanxiuRuntimeMemoryError(
+                        f"{global_name} 身份或阶数字段无效："
+                        f"id={target_id!r} {rank_field}={row.get(rank_field)!r}"
+                    )
                 # FashionInfoVo.IsGet (Lua lines 370-379) lazily caches this
                 # flag; untouched/unowned definitions legitimately omit it.
                 # Match the already-accepted wardrobe reader's observation
                 # contract instead of requiring every definition to contain
                 # an eagerly materialized bool. List/id/level remain checked.
-                owned = bool(row.get("isGet")) if kind == "fashion" else True
+                owned = bool(row.get("isGet")) if kind == "fashion" else has_progress
                 index[target_id] = {"owned": owned, "rank": rank if owned else 0}
             return index
 

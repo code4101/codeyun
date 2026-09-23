@@ -288,6 +288,31 @@ def test_runtime_activity_qualifier_does_not_confuse_cross_server_counts() -> No
     assert targets[0].y == pytest.approx(492)
 
 
+def test_shared_cross_server_qualifier_does_not_match_unrelated_title() -> None:
+    """A live #66 calendar put 魔道入侵 above 丹道问鼎, both 跨服[8]."""
+
+    entity = RuntimeEntity(
+        key="8043101",
+        name="丹道问鼎 跨服[8]",
+        payload={"name": "丹道问鼎", "littleName": "跨服[8]"},
+    )
+    targets = resolve_schedule_runtime_activity_targets(
+        header_lines=[],
+        calendar_lines=[
+            _line("魔道入侵", 440, y=481, w=66),
+            _line("跨服[8]", 440, y=517, w=66),
+            _line("丹道问鼎", 440, y=590, w=66),
+            _line("跨服[8]", 440, y=626, w=66),
+        ],
+        runtime_entities=[entity],
+        anchor_date=date(2026, 9, 24),
+    )
+
+    assert len(targets) == 1
+    assert targets[0].y == pytest.approx(605)
+    assert "丹道问鼎" in targets[0].matched_text
+
+
 def test_runtime_activity_does_not_borrow_qualifier_from_adjacent_column() -> None:
     entities = runtime_activity_entities_for_date(
         {

@@ -299,6 +299,9 @@ def run_daily_activity_list_sync_flow(
             if wanxiang_opens_on_date(period, plan["target_date"], timezone_name):
                 result["wanxiang_baoge"] = yield from run_wanxiang_baoge_flow(context)
 
+    from backend.core.fanxiu.data_annotation.tasks.domain_equipment import run_domain_daily_flow
+    result["domain"] = yield from run_domain_daily_flow(context)
+
     theme_plan = result["theme_plan"]
     # The daily synchronizer only triggers the aggregation.  It writes the one
     # canonical theme-collection trigger and never a retired first-level id; an
@@ -321,6 +324,7 @@ def run_daily_activity_list_sync_flow(
     if "wanxiang_baoge" in result:
         review = result["wanxiang_baoge"]
         result["message"] += "；万象宝阁：" + str(review.get("reason") or review["outcome"])
+    result["message"] += "；领域处理完成并返回 #34"
     return result
 
 

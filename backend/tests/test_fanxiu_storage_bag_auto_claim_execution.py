@@ -110,6 +110,9 @@ def test_production_bridge_dispatches_a_selected_random_box_via_shared_adapter(m
         def __init__(self, **_kwargs):
             pass
 
+        def invalidate_reusable_snapshot(self):
+            pass
+
         def execute(self, request):
             observed.append(request)
             return _yielding(object())

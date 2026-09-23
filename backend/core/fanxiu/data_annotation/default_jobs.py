@@ -108,6 +108,7 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "theme_collection",
     "xutian_palace_rankings",
     "xutian_palace_native_auto",
+    "xutian_yandi_prepare",
     "yunmeng_trial_auto_challenge",
     "ranking_lifecycle",
     "magic_invasion_initialization_rnd",
@@ -2161,6 +2162,27 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
                 ctx,
                 payload,
                 stop_event,
+            )
+        )
+
+    @register_fanxiu_data_annotation_task_cell(
+        "xutian_yandi_prepare",
+        "虚天殿_炎帝战令定位",
+        scheduler_supported=False,
+    )
+    def _run_data_annotation_xutian_yandi_prepare_task_cell(
+        runner: Any,
+        ctx: dict[str, Any],
+        payload: dict[str, Any],
+        stop_event: threading.Event,
+    ) -> Any:
+        from backend.core.fanxiu.data_annotation.tasks.xutian_yandi_prepare import (
+            execute_xutian_yandi_prepare_job,
+        )
+
+        return (
+            yield from execute_xutian_yandi_prepare_job(
+                runner, ctx, payload, stop_event
             )
         )
 

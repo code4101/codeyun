@@ -480,6 +480,15 @@ def resolve_schedule_runtime_activity_targets(
         )
         eligible_entities: list[RuntimeEntity] = []
         for entity in entities:
+            # A shared qualifier such as 跨服[8] can make an unrelated card
+            # score highly. Its own title must match this Runtime entity
+            # before the qualifier participates in instance selection.
+            base_name = str(entity.payload.get("name") or entity.name)
+            if max(
+                (ocr_name_similarity(base_name, str(row.get("text") or "")) for row in nearby),
+                default=0.0,
+            ) < float(minimum_pair_score):
+                continue
             qualifier = str(
                 entity.payload.get("littleName")
                 or entity.payload.get("little_name")

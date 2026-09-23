@@ -92,14 +92,30 @@ def _require_progress(activity_id: int) -> dict[str, Any]:
     return snapshot
 
 
-def _read_one_number(context: Any, scene_id: int, shape: str) -> int:
-    values, text = context.ocr_numbers_in_shapes(
-        scene_id, [shape], crop=True, padding=0, expected_count=1,
-    )
-    unique = {int(value) for value in values if int(value) >= 0}
-    if len(unique) != 1:
-        raise RuntimeError(f"#{scene_id}「{shape}」数字无法唯一读回：{text!r}")
-    return unique.pop()
+def _read_recipe_count_and_base(context: Any) -> tuple[int, int]:
+    """Read both #627 values from two agreeing frames before planning spend.
+
+    A clipped trailing zero in the points OCR can still be a valid integer and
+    therefore bypass the usual invalid-text retry. Agreement across fresh
+    frames keeps that error from becoming a tenfold wrong per-pill estimate.
+    """
+    readings: list[tuple[int, int]] = []
+    for _ in range(3):
+        frame = context.cur_frame(update=True)
+        values: list[int] = []
+        for shape in ("炼制数量", "本次基础熟练度"):
+            numbers, text = context.ocr_numbers_in_shapes(
+                627, [shape], crop=True, padding=0, expected_count=1,
+                frame_data_url=frame,
+            )
+            if len(numbers) != 1 or numbers[0] <= 0:
+                raise RuntimeError(f"#627「{shape}」数字无法唯一读回：{text!r}")
+            values.append(int(numbers[0]))
+        reading = values[0], values[1]
+        readings.append(reading)
+        if len(readings) >= 2 and readings[-1] == readings[-2]:
+            return reading
+    raise RuntimeError(f"丹道炼制数量与基础熟练度换帧读数不稳定：{readings}")
 
 
 def _wait_alchemy_scene(context: Any, scenes: list[int], *, wait: float, label: str):
@@ -203,8 +219,7 @@ def _open_recipe(context: Any, category: str, row: str, maximum: int):
     yield from _wait_alchemy_scene(context, [810], wait=15, label="丹道：等待丹方提示")
     context.click_shape_center(810, "选择丹方")
     yield from _wait_alchemy_scene(context, [627], wait=15, label="丹道：等待炼制数量")
-    current_count = _read_one_number(context, 627, "炼制数量")
-    current_base = _read_one_number(context, 627, "本次基础熟练度")
+    current_count, current_base = _read_recipe_count_and_base(context)
     if current_count <= 0 or current_count > maximum or current_base <= 0:
         raise RuntimeError("丹道详情页次数、可炼上限或基础熟练度不一致")
     unit, remainder = divmod(current_base, current_count)
@@ -237,9 +252,12 @@ def craft_alchemy_recipe(context: Any, recipe: AlchemyRecipe, desired: int):
         count_label="炼丹次数",
     )
     expected_base = desired * recipe.base_per_item
-    actual_base = _read_one_number(context, 627, "本次基础熟练度")
-    if actual_base != expected_base:
-        raise RuntimeError(f"丹道点击前基础熟练度 {actual_base} 与计划 {expected_base} 不一致")
+    actual_count, actual_base = _read_recipe_count_and_base(context)
+    if actual_count != desired or actual_base != expected_base:
+        raise RuntimeError(
+            f"丹道点击前次数/基础熟练度 {actual_count}/{actual_base} "
+            f"与计划 {desired}/{expected_base} 不一致"
+        )
     context.click_shape_center(627, "开始炼制")
     yield from _wait_alchemy_scene(context, [811], wait=30, label="丹道：等待炼制奖励")
     context.click_shape_center(811, "点击屏幕继续")

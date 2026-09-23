@@ -215,6 +215,10 @@ def weekly_activity_reward_layout_from_ocr(
             or milestone % 100 != 0
         ):
             continue
+        if milestone not in WEEKLY_ACTIVITY_REWARD_MILESTONES:
+            # 横向滚动时单帧 OCR 可能把 1200 漏读为 200。让调用方取
+            # 新帧复核；持续未知仍报错，不能把未知档位当作领取事实。
+            raise RuntimeError(f"周常_活跃度：奖励轨道档位标签识别到未知档 {milestone}")
         if milestone in layout:
             raise RuntimeError(f"周常_活跃度：档位标签 {milestone} OCR 重复，拒绝投影")
         layout[milestone] = {
@@ -595,6 +599,7 @@ class DailyFoundationTaskMixin:
             transient_markers = (
                 "未识别到奖励轨道档位标签",
                 "档位标签不完整或顺序异常",
+                "档位标签识别到未知档",
             )
             attempts = 4
             last_error: RuntimeError | None = None

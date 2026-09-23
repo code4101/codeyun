@@ -582,7 +582,7 @@ def default_kernel_scheduler_tasks(
             description="手动",
             error_retry_delay_seconds=0,
         ),
-        job("weekly-hanli", "weekly_hanli", "周常_韩立", description="每周", initial_times=("00:05",), initial_weekdays=(0,)),
+        job("weekly-hanli", "weekly_hanli", "周常_韩立", description="每周", initial_times=("05:00",), initial_weekdays=(0,)),
         job(
             "weekly-wanxian",
             "weekly_wanxian",

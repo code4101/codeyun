@@ -392,7 +392,8 @@ def _resolve_resource_rank_schedule_target(
     if len(targets) != 1:
         raise RuntimeError(
             f"{RESOURCE_RANK_DAILY_GIFT_LABEL}：活动 {activity_id} 在 #66 "
-            f"对齐到 {len(targets)} 个日历任务行，拒绝猜测"
+            f"对齐到 {len(targets)} 个日历任务行，拒绝猜测；"
+            f"候选={[(round(target.x), round(target.y), target.matched_text) for target in targets]}"
         )
     return targets[0], entry_date
 

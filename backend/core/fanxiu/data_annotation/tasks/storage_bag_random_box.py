@@ -672,6 +672,11 @@ class StorageBagRandomBoxGuiAdapter:
         self.max_scrolls = max(0, min(240, int(max_scrolls)))
         self.after_snapshot_retries = max(1, min(10, int(after_snapshot_retries)))
 
+    def invalidate_reusable_snapshot(self) -> None:
+        """Discard a post-open snapshot when another adapter has changed the bag."""
+
+        self._reusable_after_snapshot = None
+
     def _take_reusable_snapshot(
         self, request: StorageBagRandomBoxRequest
     ) -> dict[str, Any] | None:
