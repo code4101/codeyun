@@ -21,7 +21,6 @@ from backend.core.fanxiu.data_annotation.tasks.xutian_native_auto import (
     XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES,
     XUTIAN_NATIVE_AUTO_START_MARK,
     execute_xutian_native_auto_job,
-    plan_xutian_native_batch,
 )
 from backend.models import FanxiuExchangeActivity
 
@@ -331,9 +330,9 @@ def execute_xutian_active_checkpoint(
     """Run no more than one occurrence-bound Xutian native-auto batch.
 
     ``required_new_currency`` is the fresh remaining gap supplied by the
-    ranking planner.  The coordinator does not infer a target from stale
-    wallet/batch history.  Existing same-occurrence observations are used only
-    for feedback batch sizing.
+    ranking planner. The first batch initializes a bounded 10-run yield probe.
+    Once a current-occurrence yield exists, the native panel uses its actual
+    maximum and the backend stops it against a fresh Runtime wallet target.
     """
 
     activity = _load_xutian_activity(occurrence)
@@ -413,33 +412,29 @@ def execute_xutian_active_checkpoint(
             "task_rewards": task_rewards,
         }
 
-    latest = yield_rows[-1] if yield_rows else {}
-    previous = yield_rows[-2] if len(yield_rows) >= 2 else {}
-    plan = plan_xutian_native_batch(
-        required_new_currency=required,
-        measured_currency_delta=int(latest.get("currency_delta") or 0),
-        measured_challenges=int(latest.get("completed_challenges") or 0),
-        previous_currency_delta=int(previous.get("currency_delta") or 0),
-        previous_challenges=int(previous.get("completed_challenges") or 0),
-    )
     if yield_rows and _explicit_true(payload, "disable_xutian_scaled_batch"):
         return _pending(
-            "虚天反馈放大批次已被 payload 人工暂停，保留给玩法榜窗口复查",
+            "虚天 Runtime 目标批次已被 payload 人工暂停，保留给玩法榜窗口复查",
             occurrence,
             phase="budget",
             next_phase="task_rewards",
             task_rewards=task_rewards,
             plan={
-                "requested_challenges": plan.requested_challenges,
-                "planning_mode": plan.planning_mode,
-                "required_new_currency": plan.required_new_currency,
+                "requested_challenges": "max",
+                "planning_mode": "runtime_target",
+                "required_new_currency": required,
             },
         )
 
-    if not yield_rows and plan.requested_challenges != XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES:
-        raise RuntimeError("虚天首次 active 批次不是 10 次安全探针，拒绝执行")
     native_payload = dict(payload)
-    native_payload["requested_challenges"] = int(plan.requested_challenges)
+    # Once a measured yield exists, let the native panel run at its actual
+    # maximum and stop against the live wallet. The 10-run first probe stays
+    # bounded until the activity's budget and wallet are initialized.
+    native_payload["requested_challenges"] = (
+        "max" if yield_rows and not budget_bootstrap else XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES
+    )
+    if yield_rows and not budget_bootstrap:
+        native_payload["required_new_currency"] = required
     native_payload["allow_item_refill"] = _explicit_true(
         payload, "allow_xutian_item_refill"
     )
@@ -467,8 +462,10 @@ def execute_xutian_active_checkpoint(
             observation=observation,
             native_result=native_result,
         )
-    if completed != int(plan.requested_challenges) or delta <= 0:
-        raise RuntimeError("虚天 active 单批缺少精确 Runtime 完成次数或正向钱包增量")
+    if completed <= 0 or delta <= 0:
+        raise RuntimeError("虚天 active 单批缺少 Runtime 完成次数或正向钱包增量")
+    if completed < int(observation.get("requested_challenges") or 0) and delta < required:
+        raise RuntimeError("虚天 active 提前停机但纳元晶目标尚未达到")
     if budget_bootstrap or first_yield_probe:
         return _pending(
             f"虚天 active 完成 {completed} 次模型引导探针，纳元晶 +{delta}，等待刷新兑换预算",

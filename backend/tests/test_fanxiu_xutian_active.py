@@ -469,7 +469,7 @@ def test_probe_can_complete_target(monkeypatch):
     assert result["next_phase"] == "task_rewards"
 
 
-def test_existing_probe_can_be_explicitly_paused_before_scaled_batch(monkeypatch):
+def test_existing_probe_can_be_explicitly_paused_before_runtime_target(monkeypatch):
     calls = []
     activity = _activity(batches=[{
         "completed_challenges": 10,
@@ -494,12 +494,12 @@ def test_existing_probe_can_be_explicitly_paused_before_scaled_batch(monkeypatch
     ))
 
     assert result["status"] == "pending"
-    assert result["plan"]["planning_mode"] == "geometric_half"
-    assert result["plan"]["requested_challenges"] == 50
+    assert result["plan"]["planning_mode"] == "runtime_target"
+    assert result["plan"]["requested_challenges"] == "max"
     assert calls == []
 
 
-def test_existing_probe_continues_one_feedback_batch_by_default(monkeypatch):
+def test_existing_probe_uses_live_wallet_target_and_native_maximum(monkeypatch):
     requested = []
     activity = _activity(batches=[{
         "completed_challenges": 10,
@@ -508,12 +508,16 @@ def test_existing_probe_continues_one_feedback_batch_by_default(monkeypatch):
     monkeypatch.setattr(active, "_load_xutian_activity", lambda _occ: activity)
 
     def native(_runner, _ctx, payload, _stop):
-        requested.append(payload["requested_challenges"])
+        requested.append((payload["requested_challenges"], payload["required_new_currency"]))
         if False:
             yield None
         return {
             "result": "success",
-            "observation": {"completed_challenges": 50, "currency_delta": 500},
+            "observation": {
+                "requested_challenges": 1390,
+                "completed_challenges": 350,
+                "currency_delta": 1000,
+            },
         }
 
     monkeypatch.setattr(active, "execute_xutian_native_auto_job", native)
@@ -525,9 +529,9 @@ def test_existing_probe_continues_one_feedback_batch_by_default(monkeypatch):
         occurrence=_occurrence(),
     ))
 
-    assert requested == [50]
+    assert requested == [("max", 1000)]
     assert result["status"] == "pending"
-    assert result["required_new_currency"] == 500
+    assert result["required_new_currency"] == 0
 
 
 def test_explicit_item_refill_grant_is_mapped_to_native_payload(monkeypatch):

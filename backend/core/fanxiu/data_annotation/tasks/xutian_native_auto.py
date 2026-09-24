@@ -35,7 +35,7 @@ from backend.core.fanxiu.data_annotation.tasks.bounded_batch_planning import (
 
 
 XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES = 10
-XUTIAN_MINIMUM_QUALITY_KEY = 6  # Quality 6 = 仙品
+XUTIAN_DEFAULT_QUALITY_KEYS = frozenset({6, 7})  # 当前最佳配置：仙品、神品
 XUTIAN_PLAYER_QUALITY_KEY = 99
 XUTIAN_QUALITY_8_SETTING_KEY = 15
 XUTIAN_MAP_SCENE_ID = 614
@@ -94,13 +94,9 @@ class XutianBatchObservation:
 
 
 def xutian_target_quality_keys(available_quality_keys: list[int]) -> set[int]:
-    available = {int(value) for value in available_quality_keys}
-    return {
-        key for key in available
-        if key != XUTIAN_PLAYER_QUALITY_KEY
-        and (8 if key == XUTIAN_QUALITY_8_SETTING_KEY else key)
-        >= XUTIAN_MINIMUM_QUALITY_KEY
-    }
+    """Use the confirmed #615 quality template; do not select 圣品 automatically."""
+
+    return {int(value) for value in available_quality_keys} & XUTIAN_DEFAULT_QUALITY_KEYS
 
 
 def validate_xutian_auto_settings(
@@ -134,6 +130,10 @@ def validate_xutian_auto_settings(
         if desired:
             fields = dict(raw.get(str(key)) or {})
             for field in ("use_item", "use_item_3", "use_item_4"):
+                # The client omits boost fields absent from this quality row
+                # (神品 currently has no 斗战敕令). None is not an off toggle.
+                if fields.get(field) is None:
+                    continue
                 expected = bool(allow_boost_items)
                 actual = fields.get(field)
                 mismatch = actual is not True if expected else actual is True
@@ -188,15 +188,19 @@ def build_xutian_batch_observation(
     currency_before: int,
     currency_after: int,
     elapsed_seconds: float,
+    target_currency: int | None = None,
 ) -> dict[str, Any]:
     before_progress = dict(before_resource.get("auto_progress") or {})
     after_progress = dict(after_resource.get("auto_progress") or {})
     completed = int(after_progress.get("completed_challenges") or 0)
     requested = int(requested_challenges)
     delta = int(currency_after) - int(currency_before)
-    if requested <= 0 or completed != requested:
+    maximum = requested + (2 if bool(after_resource.get("multiple_enabled")) else 0)
+    target_reached = target_currency is not None and int(currency_after) >= int(target_currency)
+    completed_in_bounds = 1 <= completed <= maximum if target_reached else requested <= completed <= maximum
+    if requested <= 0 or not completed_in_bounds:
         raise ValueError(
-            f"虚天批次完成次数不一致：requested={requested}, completed={completed}"
+            f"虚天批次完成次数不一致：requested={requested}, completed={completed}, maximum={maximum}"
         )
     if bool(after_progress.get("running")):
         raise ValueError("虚天批次仍在运行，不能形成散点")
@@ -275,6 +279,22 @@ def _wait_scene(
         f"等待虚天场景超时：targets={targets}, scene={last_scene}, "
         f"score={float(last_score):.1f}, ocr={text[:120]}"
     )
+
+
+def _confirm_xutian_auto_stop(context: Any) -> Iterator[Any]:
+    """Finish the game's two-step stop path from a freshly recognized page.
+
+    #835's button only opens #837; the native loop keeps running until the
+    confirmation is clicked. #836 is the terminal result page.
+    """
+
+    scene, _, _ = yield from _wait_scene(context, (835, 836, 837), timeout_seconds=15.0)
+    if scene == 835:
+        context.click_shape_center(835, "停止自动")
+        scene, _, _ = yield from _wait_scene(context, (836, 837), timeout_seconds=15.0)
+    if scene == 837:
+        context.click_shape_center(837, "确认")
+        yield from _wait_scene(context, (836,), timeout_seconds=15.0)
 
 
 def enter_xutian_map(context: Any) -> Iterator[Any]:
@@ -478,6 +498,8 @@ def _reconcile_quality_boosts(
         fields = dict((before.get("evidence") or {}).get("auto_settings_raw", {}).get(str(key)) or {})
         if before["auto_settings"].get(name) is not True:
             raise RuntimeError(f"虚天增益设置前品质「{quality_label}」并未开启")
+        if fields.get(field) is None:
+            continue
         if fields.get(field) is True:
             continue
 
@@ -576,6 +598,7 @@ def _configure_and_run_batch(
     stop_event: threading.Event,
     allow_item_refill: bool = False,
     allow_boost_items: bool = False,
+    target_currency: int | None = None,
     before_start: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Iterator[Any]:
     _wait_scene_match = yield from context.wait_scene([XUTIAN_SETTINGS_SCENE_ID], wait=5.0, required=False)
@@ -680,9 +703,15 @@ def _configure_and_run_batch(
         before_start(final_settings)
     auto_started_at = time.monotonic()
     context.click_shape_center(XUTIAN_SETTINGS_SCENE_ID, "开启自动")
+    # The information window's own refresh Cell cannot run while this long
+    # batch owns the sole Kernel. Commit #835 from this task so the overlay can
+    # start its independent read-only wallet loop during the challenge.
+    yield from _wait_scene(context, (835,), timeout_seconds=15.0)
 
     deadline = time.monotonic() + max(60.0, int(requested_challenges) * 2.0)
     observed_running = False
+    stop_requested = False
+    last_wallet_check = float("-inf")
     last_frame_check = float("-inf")
     while time.monotonic() < deadline:
         if stop_event.is_set():
@@ -698,14 +727,32 @@ def _configure_and_run_batch(
         state = dict(progress.get("auto_progress") or {})
         observed_running = observed_running or bool(state.get("running"))
         completed = int(state.get("completed_challenges") or 0)
-        if not bool(state.get("running")) and completed == int(requested_challenges):
-            yield from _wait_scene(context, (XUTIAN_MAP_SCENE_ID,), timeout_seconds=15.0)
+        maximum = int(requested_challenges) + (2 if bool(progress.get("multiple_enabled")) else 0)
+        if (
+            target_currency is not None
+            and not stop_requested
+            and bool(state.get("running"))
+            and now - last_wallet_check >= 1.0
+        ):
+            from backend.core.fanxiu.instrumentation.wallet import read_wallet_currency_snapshot
+
+            wallet = read_wallet_currency_snapshot(12, allow_discovery=False)
+            last_wallet_check = now
+            if int(wallet["exchange_currency"]) >= int(target_currency):
+                yield from _confirm_xutian_auto_stop(context)
+                stop_requested = True
+        if not bool(state.get("running")) and 1 <= completed <= maximum and (
+            completed >= int(requested_challenges) or stop_requested
+        ):
+            # The native result page (#836) stays open after both a natural
+            # limit and a manual stop. Its annotated close action leads to #614.
+            yield from context.go_scene(XUTIAN_MAP_SCENE_ID)
             terminal = dict(progress)
             terminal["batch_elapsed_seconds"] = time.monotonic() - auto_started_at
             return terminal
-        if not bool(state.get("running")) and completed > int(requested_challenges):
+        if not bool(state.get("running")) and completed > maximum:
             raise RuntimeError(
-                f"虚天自动挑战完成次数越界：{completed}>{requested_challenges}"
+                f"虚天自动挑战完成次数越界：{completed}>{maximum}"
             )
     raise RuntimeError(
         "虚天自动挑战 Runtime 终态超时："
@@ -835,6 +882,25 @@ def _load_pending_xutian_batch() -> tuple[str, dict[str, Any]] | None:
         return str(activity.id), _validate_pending_marker(activity, marker)
 
 
+def read_xutian_pending_batch_status() -> dict[str, Any] | None:
+    """Return the unresolved batch's business evidence without changing it."""
+
+    pending = _load_pending_xutian_batch()
+    if pending is None:
+        return None
+    activity_id, marker = pending
+    return {
+        "activity_id": activity_id,
+        "batch_id": marker.get("batch_id"),
+        "requested_challenges": marker.get("requested_challenges"),
+        "target_currency": marker.get("target_currency"),
+        "started_at": marker.get("started_at"),
+        "runtime_batch_identity": dict(marker.get("runtime_batch_identity") or {}),
+        "wallet_before": dict(marker.get("wallet_before") or {}),
+        "resource_before": dict(marker.get("resource_before") or {}),
+    }
+
+
 def _commit_activity_evidence(
     session: Any,
     activity: Any,
@@ -939,9 +1005,14 @@ def _validate_pending_batch_terminal(
     if bool(progress.get("running")):
         raise RuntimeError("虚天自动挑战批次仍在运行，尚不能结算")
     requested = int(marker.get("requested_challenges") or 0)
-    if int(progress.get("completed_challenges") or 0) != requested:
+    completed = int(progress.get("completed_challenges") or 0)
+    maximum = requested + (2 if bool(resource_after.get("multiple_enabled")) else 0)
+    target_currency = marker.get("target_currency")
+    target_reached = target_currency is not None and int(wallet_after["exchange_currency"]) >= int(target_currency)
+    completed_in_bounds = 1 <= completed <= maximum if target_reached else requested <= completed <= maximum
+    if not completed_in_bounds:
         raise RuntimeError(
-            "虚天自动挑战防重复标记存在，但 Runtime 未证明精确批次完成；"
+            "虚天自动挑战防重复标记存在，但 Runtime 未证明有界批次完成；"
             "保留标记和现场，禁止再次点击开启自动"
         )
     marked_wallet = dict(marker.get("wallet_before") or {})
@@ -990,6 +1061,7 @@ def _validate_pending_batch_terminal(
         after_resource=resource_after,
         currency_before=int(marked_wallet["exchange_currency"]),
         currency_after=int(wallet_after["exchange_currency"]),
+        target_currency=int(target_currency) if target_currency is not None else None,
         elapsed_seconds=max(
             0.001,
             time.time() - float(marker.get("started_epoch") or time.time()),
@@ -1089,7 +1161,13 @@ def execute_xutian_native_auto_job(
         read_xutian_resource_snapshot,
     )
 
-    requested = int(payload.get("requested_challenges") or XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES)
+    requested_value = payload.get("requested_challenges", XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES)
+    use_native_maximum = requested_value == "max"
+    requested = 0 if use_native_maximum else int(requested_value or XUTIAN_NATIVE_AUTO_PROBE_CHALLENGES)
+    target_currency = payload.get("target_currency")
+    target_currency = int(target_currency) if target_currency is not None else None
+    required_new_currency = payload.get("required_new_currency")
+    required_new_currency = int(required_new_currency) if required_new_currency is not None else None
     allow_item_refill = bool(payload.get("allow_item_refill", False))
     allow_boost_items = bool(payload.get("allow_boost_items", False))
     allow_unloaded_wallet_bootstrap = bool(
@@ -1102,8 +1180,15 @@ def execute_xutian_native_auto_job(
         # Recovery always owns the exact already-authorized batch.  A later
         # run-now payload must not replace it with a fresh irreversible batch.
         requested = int(existing_mark.get("requested_challenges") or 0)
-    if not 1 <= requested <= 500:
-        raise ValueError("虚天原生自动挑战单批必须在 1..500 次内")
+        use_native_maximum = False
+        target_currency = existing_mark.get("target_currency")
+        target_currency = int(target_currency) if target_currency is not None else None
+    if not use_native_maximum and not 1 <= requested <= 5000:
+        raise ValueError("虚天原生自动挑战单批必须在 1..5000 次内")
+    if target_currency is not None and target_currency <= 0:
+        raise ValueError("虚天纳元晶目标必须为正整数")
+    if required_new_currency is not None and required_new_currency <= 0:
+        raise ValueError("虚天目标增量必须为正整数")
     context = runner._behavior_tree_context(ctx)
     if isinstance(existing_mark, dict):
         # A persisted marker plus Runtime facts is sufficient to settle an
@@ -1115,6 +1200,7 @@ def execute_xutian_native_auto_job(
         if bool(progress.get("running")):
             deadline = time.monotonic() + max(60.0, requested * 2.0)
             last_frame_check = float("-inf")
+            last_wallet_check = float("-inf")
             while time.monotonic() < deadline:
                 if stop_event.is_set():
                     raise InterruptedError()
@@ -1124,6 +1210,11 @@ def execute_xutian_native_auto_job(
                     context.cur_frame(update=True)
                     last_frame_check = now
                 current = _read_auto_snapshot()
+                if target_currency is not None and now - last_wallet_check >= 1.0:
+                    wallet_during = read_wallet_currency_snapshot(12, allow_discovery=False)
+                    last_wallet_check = now
+                    if int(wallet_during["exchange_currency"]) >= target_currency:
+                        yield from _confirm_xutian_auto_stop(context)
                 if not bool(dict(current.get("auto_progress") or {}).get("running")):
                     resource_after = read_xutian_resource_snapshot()
                     break
@@ -1164,6 +1255,12 @@ def execute_xutian_native_auto_job(
         if int(scene or 0) != XUTIAN_SETTINGS_SCENE_ID or float(score) < 80.0:
             context.click_shape_center(XUTIAN_MAP_SCENE_ID, "自动挑战")
             yield from _wait_scene(context, (XUTIAN_SETTINGS_SCENE_ID,), timeout_seconds=15.0)
+    if use_native_maximum:
+        from backend.core.fanxiu.instrumentation.xutian_runtime import read_xutian_auto_count_snapshot
+
+        requested = int(read_xutian_auto_count_snapshot().get("maximum") or 0)
+        if not 1 <= requested <= 5000:
+            raise RuntimeError(f"虚天原生挑战次数上限无效：{requested}")
     wallet_before_unloaded = False
     try:
         wallet_before = read_wallet_currency_snapshot(12, allow_discovery=True)
@@ -1210,6 +1307,16 @@ def execute_xutian_native_auto_job(
         wallet_before_unloaded = True
         requested = 1
     resource_before = read_xutian_resource_snapshot()
+    if required_new_currency is not None and target_currency is None:
+        target_currency = int(wallet_before["exchange_currency"]) + required_new_currency
+    if target_currency is not None and not wallet_before_unloaded and int(wallet_before["exchange_currency"]) >= target_currency:
+        yield from context.go_scene(34)
+        return {
+            "result": "success",
+            "message": f"虚天纳元晶目标已达到：{int(wallet_before['exchange_currency'])}>={target_currency}",
+            "observation": None,
+            "final_scene": 34,
+        }
     if not allow_item_refill:
         capacity = dict(resource_before.get("capacity") or {})
         natural_capacity = min(
@@ -1232,6 +1339,7 @@ def execute_xutian_native_auto_job(
             "started_at": str(final_settings.get("captured_at") or ""),
             "started_epoch": time.time(),
             "requested_challenges": requested,
+            "target_currency": target_currency,
             "current_heaven": int(final_settings.get("current_heaven") or 0),
             "runtime_batch_identity": {
                 "pid": int((final_settings.get("evidence") or {}).get("pid") or 0),
@@ -1269,6 +1377,7 @@ def execute_xutian_native_auto_job(
         stop_event=stop_event,
         allow_item_refill=allow_item_refill,
         allow_boost_items=allow_boost_items,
+        target_currency=target_currency,
         before_start=persist_start_mark,
     )
     elapsed = float(terminal.get("batch_elapsed_seconds") or 0.0)
@@ -1300,6 +1409,7 @@ def execute_xutian_native_auto_job(
             currency_before=int(wallet_before["exchange_currency"]),
             currency_after=int(wallet_after["exchange_currency"]),
             elapsed_seconds=elapsed,
+            target_currency=target_currency,
         )
     yield from context.go_scene(34)
     _wait_scene_match = yield from context.wait_scene([34], wait=5.0, required=False)
@@ -1346,6 +1456,7 @@ __all__ = [
     "build_xutian_batch_observation",
     "execute_xutian_native_auto_job",
     "plan_xutian_native_batch",
+    "read_xutian_pending_batch_status",
     "validate_xutian_auto_settings",
     "xutian_target_quality_keys",
 ]

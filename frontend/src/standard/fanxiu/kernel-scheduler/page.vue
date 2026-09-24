@@ -157,6 +157,7 @@ const defaultInfoWindowSettings: FanxiuInfoWindowSettings = {
   show_scene_identity_shapes: true,
   show_all_shapes: false,
   show_magic_crystal: true,
+  show_xutian_currency: true,
 };
 const infoWindowSettings = computed(() => infoWindowStatus.value?.settings || defaultInfoWindowSettings);
 const infoWindowStatusText = computed(() => {
@@ -1050,6 +1051,15 @@ onUnmounted(() => {
               :model-value="infoWindowSettings.show_magic_crystal"
               :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
               @change="setInfoWindowSetting('show_magic_crystal', Boolean($event))"
+            />
+          </label>
+          <label title="虚天殿自动挑战中（#835）显示只读 Runtime 钱包中的累计纳元晶">
+            <span>累计纳元晶</span>
+            <el-switch
+              size="small"
+              :model-value="infoWindowSettings.show_xutian_currency"
+              :disabled="!infoWindowSettings.enabled || actionLoading === 'info-window'"
+              @change="setInfoWindowSetting('show_xutian_currency', Boolean($event))"
             />
           </label>
           <label title="显示当前已识别场景中标记为 isSceneIdentity 的 Shape">

@@ -564,6 +564,7 @@ export interface FanxiuInfoWindowSettings {
   show_scene_identity_shapes: boolean;
   show_all_shapes: boolean;
   show_magic_crystal: boolean;
+  show_xutian_currency: boolean;
 }
 
 export interface FanxiuInfoWindowControlStatus {

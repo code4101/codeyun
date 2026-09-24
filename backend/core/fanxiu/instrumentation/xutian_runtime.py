@@ -383,6 +383,10 @@ def read_xutian_auto_settings_snapshot() -> dict[str, Any]:
         "source": "runtime_memory",
         "read_only": True,
         "current_heaven": current_heaven,
+        # The native loop checks its requested limit before the next action,
+        # while one three-challenge action can advance _AutoFightCount by 3.
+        # Keep this cheap panel projection sufficient for terminal bounds.
+        "multiple_enabled": bool(info.get("multiple")),
         "auto_progress": {
             "running": bool(instance.get("_quickAutoStart")),
             "completed_challenges": max(

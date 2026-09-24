@@ -119,6 +119,58 @@ def test_magic_crystal_replaces_the_scene_number_on_the_auto_running_page() -> N
     ) == "魔晶 3.708万"
 
 
+def test_xutian_currency_only_replaces_the_835_auto_running_page() -> None:
+    from backend.core.fanxiu.info_window import format_fanxiu_scene_text
+
+    assert format_fanxiu_scene_text(
+        835, 100, asset_directory="日程/玩法榜/虚天殿", xutian_currency=2086,
+    ) == "#835 纳元晶 2086"
+    assert format_fanxiu_scene_text(
+        835, 100, asset_directory="日程/玩法榜/虚天殿", xutian_currency=None,
+    ) == "日程/玩法榜/虚天殿 #835 100%"
+    assert format_fanxiu_scene_text(
+        615, 100, asset_directory="日程/玩法榜/虚天殿", xutian_currency=2086,
+    ) == "日程/玩法榜/虚天殿 #615 100%"
+
+
+@pytest.mark.parametrize("scene_id, enabled, ok, expected", [
+    (835, True, True, 2086),
+    (835, False, True, None),
+    (835, True, False, None),
+    (615, True, True, None),
+])
+def test_xutian_currency_requires_835_and_a_successful_enabled_read(
+    scene_id, enabled, ok, expected,
+) -> None:
+    from backend.core.fanxiu.windows_info_window import FanxiuWindowsInfoWindow
+
+    class Stub:
+        settings = {"show_xutian_currency": enabled}
+        xutian_currency = {"ok": ok, "current": 1138, "cumulative": 2086}
+
+    assert FanxiuWindowsInfoWindow._xutian_currency_value(Stub(), scene_id) == expected
+
+
+def test_xutian_reader_uses_fixed_wallet_currency_and_cumulative_history(monkeypatch) -> None:
+    from backend.core.fanxiu.instrumentation import xutian_currency
+
+    calls = []
+
+    def read(currency_type, *, allow_discovery):
+        calls.append((currency_type, allow_discovery))
+        return {
+            "exchange_currency": 1138,
+            "cumulative_currency": 2086,
+            "captured_at": "2026-09-24T12:00:00+08:00",
+        }
+
+    monkeypatch.setattr(xutian_currency, "read_wallet_currency_snapshot", read)
+    reader = xutian_currency.XutianCurrencyReader()
+    assert reader.read(now=100)["cumulative"] == 2086
+    assert reader.read(now=101)["current"] == 1138
+    assert calls == [(12, True), (12, False)]
+
+
 @pytest.mark.parametrize("value, expected", [
     (0, "0"),
     (876, "876"),

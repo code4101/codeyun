@@ -80,6 +80,7 @@ class FanxiuInfoWindowSettings(BaseModel):
     # an unlisted key would be silently dropped in both directions and the
     # switch would look wired while changing nothing.
     show_magic_crystal: bool = True
+    show_xutian_currency: bool = True
     show_scene_identity_shapes: bool = True
     show_all_shapes: bool = False
 

@@ -22,6 +22,7 @@ from pyxllib.prog import read_json_state_dict, write_json_state
 
 from backend.core.fanxiu.info_window import (
     FANXIU_INFO_WINDOW_MAGIC_CRYSTAL_SCENE_ID,
+    FANXIU_INFO_WINDOW_XUTIAN_CURRENCY_SCENE_ID,
     fanxiu_info_window_state_path,
     fanxiu_windows_info_window_client,
     fanxiu_windows_info_window_heartbeat_path,
@@ -205,6 +206,18 @@ class FanxiuWindowsInfoWindow:
         self.last_drawn_magic_crystal_revision = 0
         self.magic_crystal_due = False
         self.magic_crystal_thread: threading.Thread | None = None
+        self.xutian_currency: dict[str, Any] = {}
+        self.xutian_currency_revision = 0
+        self.xutian_currency_epoch = 0
+        self.last_drawn_xutian_currency_revision = 0
+        self.xutian_currency_due = False
+        self.xutian_currency_thread: threading.Thread | None = None
+        self.xutian_currency_loop: dict[str, Any] = {
+            "attempts": 0,
+            "last_started_at": 0.0,
+            "last_seconds": 0.0,
+            "last_error": "",
+        }
         # Loop progress is republished in the heartbeat: "why is there no
         # number" must be answerable from outside this GUI process.
         self.magic_crystal_loop: dict[str, Any] = {
@@ -338,6 +351,7 @@ class FanxiuWindowsInfoWindow:
         scene_id = self.payload.get("scene_id")
         score = max(0.0, float(self.payload.get("score") or 0.0))
         magic_crystal = self._magic_crystal_value(scene_id)
+        xutian_currency = self._xutian_currency_value(scene_id)
         text = format_fanxiu_scene_text(
             int(scene_id) if scene_id is not None else None,
             score,
@@ -345,11 +359,12 @@ class FanxiuWindowsInfoWindow:
             show_scene_id=bool(self.settings.get("show_scene_id", True)),
             show_scene_score=bool(self.settings.get("show_scene_score", True)),
             magic_crystal=magic_crystal,
+            xutian_currency=xutian_currency,
         )
         observation_age_text = format_fanxiu_observation_age(
             (
-                self.magic_crystal.get("captured_at")
-                if magic_crystal is not None
+                self.magic_crystal.get("captured_at") if magic_crystal is not None
+                else self.xutian_currency.get("captured_at") if xutian_currency is not None
                 else None
             )
             or self.payload.get("captured_at")
@@ -400,6 +415,17 @@ class FanxiuWindowsInfoWindow:
         # the spendable balance can drop when the exchange shop is used.
         return int(self.magic_crystal.get("cumulative") or 0)
 
+    def _xutian_currency_value(self, scene_id: Any) -> int | None:
+        """Return only a successful live cumulative wallet reading for #835."""
+
+        if scene_id is None or int(scene_id) != FANXIU_INFO_WINDOW_XUTIAN_CURRENCY_SCENE_ID:
+            return None
+        if not bool(self.settings.get("show_xutian_currency", True)):
+            return None
+        if not self.xutian_currency.get("ok"):
+            return None
+        return int(self.xutian_currency.get("cumulative") or 0)
+
     def _hide(self) -> None:
         if self.visible:
             self.root.withdraw()
@@ -440,6 +466,15 @@ class FanxiuWindowsInfoWindow:
                     "thread_alive": bool(
                         self.magic_crystal_thread
                         and self.magic_crystal_thread.is_alive()
+                    ),
+                },
+                "xutian_currency_due": bool(self.xutian_currency_due),
+                "xutian_currency": dict(self.xutian_currency),
+                "xutian_currency_loop": {
+                    **self.xutian_currency_loop,
+                    "thread_alive": bool(
+                        self.xutian_currency_thread
+                        and self.xutian_currency_thread.is_alive()
                     ),
                 },
             })
@@ -533,6 +568,45 @@ class FanxiuWindowsInfoWindow:
                 last_warm = now
             time.sleep(INFO_WINDOW_MAGIC_CRYSTAL_LOOP_FLOOR_SECONDS)
 
+    def _refresh_xutian_currency_loop(self) -> None:
+        """Read the wallet while #835 is shown; never acquire the game GUI."""
+
+        reader = None
+        while not self.closed:
+            if not self.xutian_currency_due:
+                time.sleep(0.5)
+                continue
+            if reader is None:
+                from backend.core.fanxiu.instrumentation.xutian_currency import (
+                    XutianCurrencyReader,
+                )
+
+                reader = XutianCurrencyReader()
+            self.xutian_currency_loop["attempts"] = (
+                int(self.xutian_currency_loop.get("attempts") or 0) + 1
+            )
+            self.xutian_currency_loop["last_started_at"] = time.time()
+            epoch = self.xutian_currency_epoch
+            started = time.monotonic()
+            try:
+                snapshot = reader.read()
+            except Exception as exc:
+                snapshot = {
+                    "ok": False,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                    "captured_at": time.time(),
+                }
+            self.xutian_currency_loop["last_seconds"] = round(
+                time.monotonic() - started, 3
+            )
+            self.xutian_currency_loop["last_error"] = (
+                "" if snapshot.get("ok") else str(snapshot.get("reason") or "")
+            )
+            if self.xutian_currency_due and epoch == self.xutian_currency_epoch:
+                self.xutian_currency = dict(snapshot)
+                self.xutian_currency_revision += 1
+            time.sleep(INFO_WINDOW_MAGIC_CRYSTAL_LOOP_FLOOR_SECONDS)
+
     def poll(self) -> None:
         now = time.monotonic()
         if self._stopping():
@@ -555,6 +629,7 @@ class FanxiuWindowsInfoWindow:
             self.target_hwnd = None
             self._hide()
         self._sync_magic_crystal()
+        self._sync_xutian_currency()
         self._heartbeat(now)
         self.root.after(INFO_WINDOW_POLL_MILLISECONDS, self.poll)
 
@@ -577,6 +652,24 @@ class FanxiuWindowsInfoWindow:
             self.last_drawn_magic_crystal_revision = self.magic_crystal_revision
             self._draw()
 
+    def _sync_xutian_currency(self) -> None:
+        scene_id = self.payload.get("scene_id")
+        due = bool(
+            self.visible
+            and self.settings.get("show_xutian_currency", True)
+            and scene_id is not None
+            and int(scene_id) == FANXIU_INFO_WINDOW_XUTIAN_CURRENCY_SCENE_ID
+        )
+        if due != self.xutian_currency_due:
+            self.xutian_currency_epoch += 1
+        self.xutian_currency_due = due
+        if not self.xutian_currency_due and self.xutian_currency:
+            self.xutian_currency = {}
+            self.xutian_currency_revision += 1
+        if self.xutian_currency_revision != self.last_drawn_xutian_currency_revision:
+            self.last_drawn_xutian_currency_revision = self.xutian_currency_revision
+            self._draw()
+
     def _magic_crystal_warm_due(self, last_warm: float, now: float) -> bool:
         """Keep the Runtime reader hot even while #699 is not on screen.
 
@@ -586,7 +679,11 @@ class FanxiuWindowsInfoWindow:
         capturing a frame, sending input or occupying the Kernel.
         """
 
-        if not self.visible or not self.settings.get("show_magic_crystal", True):
+        if (
+            not self.visible
+            or self.xutian_currency_due
+            or not self.settings.get("show_magic_crystal", True)
+        ):
             return False
         return now - last_warm >= INFO_WINDOW_MAGIC_CRYSTAL_WARM_INTERVAL_SECONDS
 
@@ -614,6 +711,12 @@ class FanxiuWindowsInfoWindow:
             daemon=True,
         )
         self.magic_crystal_thread.start()
+        self.xutian_currency_thread = threading.Thread(
+            target=self._refresh_xutian_currency_loop,
+            name="fanxiu-info-window-xutian-currency",
+            daemon=True,
+        )
+        self.xutian_currency_thread.start()
         self.root.after(0, self.poll)
         self.root.mainloop()
 
