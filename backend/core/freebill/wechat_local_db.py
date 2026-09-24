@@ -59,7 +59,9 @@ def _decode_wechat_text(value: Any) -> str:
     if data.startswith(b"\x28\xb5\x2f\xfd"):
         try:
             import zstandard as zstd
-
+        except ImportError as exc:
+            raise RuntimeError("微信账单同步需要安装 zstandard 才能解压微信消息") from exc
+        try:
             data = zstd.ZstdDecompressor().decompress(data, max_output_size=8 * 1024 * 1024)
         except Exception:
             return ""
@@ -651,6 +653,7 @@ def sync_wechat_local_db_to_freebill(
     db_storage_root: str | Path | None = None,
     work_dir: Path | None = None,
     refresh_source: bool = True,
+    replay_payment_history: bool = False,
 ) -> dict[str, Any]:
     root = Path(db_storage_root) if db_storage_root is not None else resolve_wechat_db_storage_root()
     resolved_work_dir = work_dir or get_freebill_work_dir()
@@ -667,6 +670,15 @@ def sync_wechat_local_db_to_freebill(
                 source_sync_error = str(exc)
 
         state = _load_incremental_state(state_path, root)
+        if replay_payment_history:
+            state = {
+                **state,
+                "watermarks": {
+                    key: value
+                    for key, value in state["watermarks"].items()
+                    if not key.startswith("biz:")
+                },
+            }
         snapshot, next_state = parse_wechat_local_increment(root, state)
         archive: dict[str, Any] | None = None
         if snapshot["records"]:

@@ -6820,6 +6820,89 @@ class BehaviorTreeContext(AutomationContext):
                     unchanged_scrolls = 0
         return "not_found"
 
+    def open_navigation_list_entry(self, source_view: View, route_shape: Shape):
+        """Execute a data-declared list edge for the scene navigator.
+
+        The route Shape supplies the list viewport and OCR title pattern.  This
+        operator knows only how to rewind and scan a scrollable Shape; neither
+        the source nor the destination scene is encoded in the algorithm.
+        Every page is recognized again before an input is sent, so a delayed
+        popup cannot turn a list coordinate into an unrelated click.
+        """
+        data = route_shape.raw
+        list_title = str(data.get("navigationListShape") or "").strip()
+        title_pattern = str(data.get("navigationTitlePattern") or "").strip()
+        if not list_title or not title_pattern:
+            raise RuntimeError("滚动列表导航缺少 navigationListShape/navigationTitlePattern")
+        list_shape = self.shape(source_view, list_title)
+        scene_id = self.runner._image_number(source_view.raw)
+        if scene_id is None:
+            raise RuntimeError("滚动列表导航缺少来源场景 ID")
+        max_scrolls = max(1, min(60, int(data.get("navigationMaxScrolls") or 30)))
+        label = f"场景移动：#{scene_id}「{data.get('title') or '?'}」"
+        box = self.runner._box(list_shape.raw, source_view.raw)
+        left = float(box.get("x") or 0)
+        top = float(box.get("y") or 0)
+        right = left + float(box.get("w") or 0)
+        bottom = top + float(box.get("h") or 0)
+
+        def visible_match(lines: list[dict[str, Any]]) -> tuple[float, float, str] | None:
+            for line in lines:
+                value = _sanitize_ocr_text(line.get("text"))
+                if not value or re.search(title_pattern, value) is None:
+                    continue
+                x = float(line.get("x") or 0) + float(line.get("w") or 0) / 2
+                y = float(line.get("y") or 0) + float(line.get("h") or 0) / 2
+                if left <= x <= right and top <= y <= bottom:
+                    return x, y, value
+            return None
+
+        def confirmed_page():
+            match = yield from self.wait_scene([scene_id], wait=10.0, label=label)
+            if match.scene_id != scene_id:
+                raise RuntimeError(
+                    f"{label}：滚动列表已离开来源场景，实际 #{match.scene_id}；停止点击"
+                )
+            frame = match.frame_data_url
+            lines = self.runner._ocr_fragments_in_scene_shapes(self.ctx, frame, source_view.raw)
+            return frame, lines
+
+        # A persisted list may reopen at its previous cursor.  The list Shape
+        # declares that behavior; known-start lists avoid needless gestures.
+        initial_position = str(list_shape.raw.get("loadInitialPosition") or "unknown").strip().lower()
+        if initial_position != "start":
+            unchanged = 0
+            for _ in range(max_scrolls):
+                yield from confirmed_page()
+                changed = yield from self.scroll_shape_content(
+                    source_view, list_shape, direction="up", unchanged_confirmations=2,
+                )
+                unchanged = 0 if changed else unchanged + 1
+                if unchanged >= 2:
+                    break
+            else:
+                raise RuntimeError(f"{label}：{max_scrolls} 次反向滚动未确认列表起点")
+
+        unchanged = 0
+        for index in range(max_scrolls + 1):
+            _frame, lines = yield from confirmed_page()
+            found = visible_match(lines)
+            if found is not None:
+                x, y, value = found
+                self.runner._log("action", f"{label}：第 {index + 1} 屏点击 {value}")
+                self.click_frame_point(source_view, x, y)
+                yield from self.wait_action_settle()
+                return "open"
+            if index == max_scrolls:
+                break
+            changed = yield from self.scroll_shape_content(
+                source_view, list_shape, direction="down", unchanged_confirmations=2,
+            )
+            unchanged = 0 if changed else unchanged + 1
+            if unchanged >= 2:
+                break
+        return "not_found"
+
     def popup_score(self, view: View | None) -> float:
         if not isinstance(view, View) or not isinstance(view.raw, dict):
             return 0.0
@@ -10913,6 +10996,11 @@ class BehaviorTreeExecutor(
         return counts
 
     def _scene_navigation_shape_risk(self, shape: dict[str, Any]) -> int:
+        # The same label can mean a harmless page tab or a destructive choice.
+        # Keep the default conservative and let the annotated Shape state its
+        # verified navigation role instead of encoding scene IDs here.
+        if shape.get("navigationRole") == "safe_tab":
+            return 0
         title = _sanitize_ocr_text(shape.get("title"))
         if not title:
             return 0
@@ -10928,6 +11016,15 @@ class BehaviorTreeExecutor(
             "执行",
             "删除",
             "使用",
+            "保留",
+            "重铸",
+            "祭炼",
+            "装配",
+            "替换",
+            "神铸",
+            "强化",
+            "洗炼",
+            "合成",
         )
         return 100 if any(keyword in title for keyword in high_risk_keywords) else 0
 
@@ -11027,6 +11124,7 @@ class BehaviorTreeExecutor(
                 probabilities = self._scene_navigation_landing_probabilities(
                     tree, shape, target_ids,
                 )
+                probabilities = self._scene_navigation_reliable_landings(probabilities)
                 if probabilities:
                     source_actions.append(probabilities)
             if source_actions:
@@ -11058,6 +11156,24 @@ class BehaviorTreeExecutor(
         return values
 
     _SCENE_NAVIGATION_CONFIDENCE_Z = 1.0
+    _SCENE_NAVIGATION_MIN_LANDING_PROBABILITY = 0.05
+
+    def _scene_navigation_reliable_landings(
+        self,
+        probabilities: Mapping[int, float],
+    ) -> dict[int, float]:
+        """Ignore incidental destinations when planning a reliable route.
+
+        A historical return control can list many caller-dependent landings.
+        Its one-off destination is evidence of a past landing, not a usable
+        route.  Keep its probability in diagnostics, but do not propagate a
+        target through that edge in value iteration or next-action ranking.
+        """
+        return {
+            int(scene_id): float(probability)
+            for scene_id, probability in probabilities.items()
+            if float(probability) >= self._SCENE_NAVIGATION_MIN_LANDING_PROBABILITY
+        }
 
     def _scene_navigation_landing_probabilities(
         self,
@@ -11203,6 +11319,7 @@ class BehaviorTreeExecutor(
             action_probabilities = self._scene_navigation_landing_probabilities(
                 tree, shape, target_ids,
             )
+            action_probabilities = self._scene_navigation_reliable_landings(action_probabilities)
             for landing_id, probability in action_probabilities.items():
                 gain = float(reachability_values.get(int(landing_id), 0.0)) - current_value
                 if gain > 0:
@@ -15225,6 +15342,7 @@ class BehaviorTreeExecutor(
         navigation_states: list[tuple[int | None, bytes, str]] = []
         stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
         semantic_stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
+        repeated_landings: dict[tuple[Any, ...], int] = {}
         globally_failed_edge_keys: set[tuple[Any, ...]] = set()
         navigation_started_at = time.monotonic()
         incident_recorder = NavigationIncidentRecorder(
@@ -15717,13 +15835,26 @@ class BehaviorTreeExecutor(
             )
             no_response_count = semantic_stalled_edge_attempts.get(semantic_retry_key, 0)
             jitter_radius = self._navigation_retry_jitter_radius(no_response_count)
-            self._click_scene_route_shape(
-                ctx,
-                image,
-                shape,
-                frame,
-                jitter_radius=jitter_radius,
-            )
+            navigation_action = str(shape.get("navigationAction") or "").strip()
+            if navigation_action == "scroll_list_entry":
+                outcome = yield from context.open_navigation_list_entry(
+                    context.view(int(current_scene_id)),
+                    Shape(shape, parent_view=context.view(int(current_scene_id))),
+                )
+                if outcome != "open":
+                    raise RuntimeError(
+                        f"场景移动：#{current_scene_id}「{shape_title}」滚动列表中未找到入口"
+                    )
+            elif navigation_action:
+                raise RuntimeError(f"场景移动：未知 navigationAction={navigation_action}")
+            else:
+                self._click_scene_route_shape(
+                    ctx,
+                    image,
+                    shape,
+                    frame,
+                    jitter_radius=jitter_radius,
+                )
             actual_scene_id = yield from self._wait_scene_jump_result(
                 ctx,
                 asset_tree_path,
@@ -15847,6 +15978,25 @@ class BehaviorTreeExecutor(
                 )
                 yield BehaviorTreeStatus.RUNNING
                 continue
+            # A successful click can still be useless for this destination:
+            # e.g. #34「日常」-> #69 followed by #69「退出」-> #34.
+            # Exclude a semantic action after three identical landings in one
+            # navigation attempt.  Its history counters change on every click,
+            # so the full edge key cannot identify this loop reliably.
+            transition_key = (
+                int(current_scene_id),
+                *self._scene_jump_edge_semantic_key(edge),
+                int(actual_scene_id),
+            )
+            repeated_landings[transition_key] = repeated_landings.get(transition_key, 0) + 1
+            if repeated_landings[transition_key] >= 3:
+                globally_failed_edge_keys.add(self._scene_jump_edge_semantic_key(edge))
+                self._log(
+                    "warning",
+                    f"场景移动：#{current_scene_id} 点击「{shape_title}」连续"
+                    f" {repeated_landings[transition_key]} 次落到 #{actual_scene_id}，"
+                    f"仍未到达 #{target_scene_id}；本次导航排除该动作",
+                )
             self._log("detail", f"场景移动：实际到达 #{actual_scene_id}，重新规划到 #{target_scene_id}")
             yield from self._wait_action_settle(ctx, stop_event, seconds=1.5)
 
@@ -16163,6 +16313,3 @@ class BehaviorTreeExecutor(
         if key and self._scene_matches(key, score):
             with self._lock:
                 self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
-
-
-

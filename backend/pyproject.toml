@@ -48,6 +48,7 @@ dependencies = [
     "yt-dlp>=2026.7.4",
     "yt-dlp-ejs>=0.8.0",
     "frida==17.11.0",
+    "zstandard",
 ]
 
 [project.optional-dependencies]

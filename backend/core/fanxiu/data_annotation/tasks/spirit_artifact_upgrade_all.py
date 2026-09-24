@@ -111,6 +111,7 @@ def spirit_artifact_safe_upgrade_steps(context, *, stop_at: float,
     from ...instrumentation.spirit_artifact_grade import (
         read_spirit_artifact_grade_snapshot, read_spirit_artifact_realm_snapshot,
     )
+    from ...instrumentation.runtime_memory import FanxiuRuntimeMemoryError
     from .spirit_artifact_upgrade_count import (
         open_artifact_for_upgrade_steps, select_artifact_tab_steps,
     )
@@ -128,6 +129,23 @@ def spirit_artifact_safe_upgrade_steps(context, *, stop_at: float,
         counts, _ = read_backpack_item_counts(material_ids, manager_key='spirit-safe-upgrade')
         candidates = scan_spirit_artifact_upgrades(owned, counts, rules=rules)
         return owned, counts, candidates
+
+    def read_stable_page(reader):
+        """Allow a just-opened panel's Runtime pointers to finish rebinding.
+
+        A scene image can be stable before its backing VO is.  Retry only a
+        transient memory-read failure; all identity and material checks below
+        still use the fresh, fully validated snapshot.
+        """
+        last_error = None
+        for attempt in range(3):
+            try:
+                return reader()
+            except FanxiuRuntimeMemoryError as exc:
+                last_error = exc
+                if attempt < 2:
+                    yield from context.wait_action_settle(0.75)
+        raise last_error
 
     for _ in range(max_actions):
         if time.time() >= stop_at:
@@ -149,7 +167,7 @@ def spirit_artifact_safe_upgrade_steps(context, *, stop_at: float,
         yield from select_artifact_tab_steps(context, tab)
         if (yield from context.wait_scene([page], wait=8)).scene_id != page:
             raise RuntimeError(f'{tab}页未就绪')
-        ui = read_page()
+        ui = yield from read_stable_page(read_page)
         matches = [row for row in ui['parts'] if (row['part'], row['item_id']) ==
                    (candidate.part, candidate.item_id)]
         if len(matches) != 1 or matches[0]['index'] not in range(4):
@@ -157,7 +175,7 @@ def spirit_artifact_safe_upgrade_steps(context, *, stop_at: float,
         if ui['item_id'] != candidate.item_id:
             context.click_shape_center(page, f"首屏第{matches[0]['index'] + 1}格")
             yield from context.wait_action_settle(.8)
-        ui = read_page()
+        ui = yield from read_stable_page(read_page)
         before, counts_before, fresh = observe()
         exact = [item for item in fresh if (item.ware_id, item.part, item.dimension,
                  item.item_id, item.current_level) == (candidate.ware_id, candidate.part,

@@ -167,6 +167,18 @@ def run_daily_activity_list_sync_flow(
     return to #34.
     """
 
+    from backend.core.fanxiu.data_annotation.tasks.domain_equipment import run_domain_daily_flow
+
+    # A previous attempt may stop inside a material/recast page.  Finish that
+    # observed transaction before the list-sync cleanup tries to return to the
+    # world; scene navigation must never decide a candidate's keep/recast action.
+    current_scene_id, _score, _frame = yield from context.current_scene(
+        label="活动_每日清单同步：检查未完成镇物现场",
+    )
+    recovered_domain = None
+    if current_scene_id in {815, 817, 818, 819}:
+        recovered_domain = yield from run_domain_daily_flow(context)
+
     reader = plan_reader or read_daily_activity_discovery_plan
     sync = synchronizer or synchronize_daily_activity_plan
     current = now or datetime.now(ZoneInfo(timezone_name))
@@ -299,8 +311,11 @@ def run_daily_activity_list_sync_flow(
             if wanxiang_opens_on_date(period, plan["target_date"], timezone_name):
                 result["wanxiang_baoge"] = yield from run_wanxiang_baoge_flow(context)
 
-    from backend.core.fanxiu.data_annotation.tasks.domain_equipment import run_domain_daily_flow
-    result["domain"] = yield from run_domain_daily_flow(context)
+    result["domain"] = (
+        recovered_domain
+        if recovered_domain is not None
+        else (yield from run_domain_daily_flow(context))
+    )
 
     theme_plan = result["theme_plan"]
     # The daily synchronizer only triggers the aggregation.  It writes the one

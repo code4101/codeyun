@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pandas as pd
+import zstandard as zstd
 
 from backend.core.freebill.core import (
     get_freebill_connection,
@@ -242,6 +243,46 @@ def test_parse_wechat_local_payment_db_only_keeps_authoritative_transactions(tmp
     assert record["account_no"] == "零钱"
     assert record["cash_type"] == "零钱"
     assert record["raw_sequence"] == "wechat-biz:101"
+
+
+def test_parse_wechat_local_payment_db_reads_zstd_compressed_messages(tmp_path: Path) -> None:
+    db_root = _create_wechat_db_storage(tmp_path / "wechat-db")
+    table_name = "Msg_" + hashlib.md5(WECHAT_PAY_USERNAME.encode("utf-8")).hexdigest()
+    with sqlite3.connect(db_root / "message" / "biz_message_0.db") as conn:
+        conn.execute(
+            f'UPDATE "{table_name}" SET message_content = ? WHERE local_id = 1',
+            (zstd.ZstdCompressor().compress(_payment_message_xml().encode("utf-8")),),
+        )
+
+    result = parse_wechat_local_payment_db(db_root)
+
+    assert result["parsed"] == 1
+    assert result["records"][0]["trade_no"] == WECHAT_PAY_TRADE_NO
+
+
+def test_sync_wechat_local_db_can_replay_payment_history_after_ignored_messages(tmp_path: Path) -> None:
+    db_root = _create_wechat_db_storage(tmp_path / "wechat-db")
+    work_dir = tmp_path / "freebill"
+    table_name = "Msg_" + hashlib.md5(WECHAT_PAY_USERNAME.encode("utf-8")).hexdigest()
+    with sqlite3.connect(db_root / "message" / "biz_message_0.db") as conn:
+        conn.execute(f'UPDATE "{table_name}" SET message_content = NULL WHERE local_id = 1')
+
+    first = sync_wechat_local_db_to_freebill(db_storage_root=db_root, work_dir=work_dir, refresh_source=False)
+    assert first["payment"]["parsed"] == 0
+    with sqlite3.connect(db_root / "message" / "biz_message_0.db") as conn:
+        conn.execute(
+            f'UPDATE "{table_name}" SET message_content = ? WHERE local_id = 1',
+            (zstd.ZstdCompressor().compress(_payment_message_xml().encode("utf-8")),),
+        )
+
+    ordinary = sync_wechat_local_db_to_freebill(db_storage_root=db_root, work_dir=work_dir, refresh_source=False)
+    replay = sync_wechat_local_db_to_freebill(
+        db_storage_root=db_root, work_dir=work_dir, refresh_source=False, replay_payment_history=True,
+    )
+
+    assert ordinary["inserted"] == 0
+    assert replay["payment"]["parsed"] == 1
+    assert replay["inserted"] == 1
 
 
 def test_sync_wechat_local_db_is_idempotent_and_rebuildable(tmp_path: Path) -> None:

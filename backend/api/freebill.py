@@ -372,9 +372,9 @@ def refresh_freebill_sheet_file(
 
 
 @router.post("/sources/wechat-local/sync")
-def sync_wechat_local_source():
+def sync_wechat_local_source(replay_payment_history: bool = False):
     try:
-        return sync_wechat_local_db_to_freebill()
+        return sync_wechat_local_db_to_freebill(replay_payment_history=replay_payment_history)
     except (FileNotFoundError, ValueError, sqlite3.Error) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

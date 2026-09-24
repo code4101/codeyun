@@ -4,6 +4,8 @@ import pytest
 
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
 from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext
+from backend.core.fanxiu.data_annotation.tasks.mail import MailTaskMixin
+from backend.core.fanxiu.runtime_gui.mail import MailWindowGeometry
 from pyxllib.autogui import View
 
 
@@ -13,6 +15,22 @@ def _drain(generator):
             next(generator)
         except StopIteration as stop:
             return stop.value
+
+
+def test_scrolled_mail_title_refines_position_when_ocr_drops_brackets():
+    geometry = MailWindowGeometry(
+        frame_width=900, frame_height=1600,
+        first_center_y=409, second_center_y=599, row_pitch=190,
+        title_center_offset=-35,
+    )
+    point = MailTaskMixin._precise_mail_observed_title_point(
+        [{"text": "停服维护补偿", "x": 270, "y": 1020, "w": 260, "h": 42}],
+        title="【停服维护补偿】",
+        fallback_y=979,
+        geometry=geometry,
+        max_row_distance_ratio=0.8,
+    )
+    assert point == (400, 1041)
 
 
 def _mail(

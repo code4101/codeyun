@@ -355,6 +355,82 @@ def test_select_next_edge_unreachable_source_returns_none_without_keyerror():
     assert runner._select_scene_next_edge(tree, 69, 20) is None
 
 
+def test_return_history_does_not_turn_a_round_trip_into_a_route():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {
+            "type": "image", "id": 34, "title": "世界",
+            "shapes": [{"id": "daily", "title": "日常", "sceneJumpTarget": "69(100)"}],
+        },
+        {
+            "type": "image", "id": 69, "title": "日常",
+            "shapes": [{"id": "exit", "title": "退出", "sceneJumpTarget": "34(100),340(1)"}],
+        },
+        {
+            "type": "image", "id": 340, "title": "通用返回页",
+            "shapes": [{"id": "return", "title": "返回", "sceneJumpTarget": "34(100),279(1)"}],
+        },
+        {"type": "image", "id": 279, "title": "目标", "shapes": []},
+    ]
+
+    assert runner.plan_scene_navigation(tree, 34, 279)["status"] == "no_path"
+    assert runner._select_scene_next_edge(tree, 69, 279) is None
+
+
+def test_data_declared_scroll_list_edge_joins_the_generic_scene_graph():
+    runner = create_behavior_tree_executor()
+    for source, list_scene, target in ((34, 69, 279), (10, 11, 12)):
+        tree = [
+            {"type": "image", "id": source, "title": "source", "shapes": [
+                {"id": "open", "title": "打开列表", "sceneJumpTarget": str(list_scene)},
+            ]},
+            {"type": "image", "id": list_scene, "title": "list", "shapes": [
+                {"id": "row", "title": "动态任务入口", "sceneJumpTarget": str(target),
+                 "navigationAction": "scroll_list_entry",
+                 "navigationListShape": "滚动窗口",
+                 "navigationTitlePattern": "任务标题"},
+            ]},
+            {"type": "image", "id": target, "title": "target", "shapes": []},
+        ]
+        plan = runner.plan_scene_navigation(tree, source, target)
+        assert plan["status"] == "ok"
+        final_step = plan["candidates"][0]["downstream"]["steps"][-1]
+        assert (final_step["from_scene_id"], final_step["to_scene_id"]) == (list_scene, target)
+        assert final_step["action_title"] == "动态任务入口"
+
+
+def test_navigation_does_not_use_recast_candidate_decision_as_exit():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 819, "title": "重铸候选", "shapes": [
+            {"title": "保留新属性", "sceneJumpTarget": "818(10)"},
+        ]},
+        {"type": "image", "id": 818, "title": "重铸", "shapes": [
+            {"title": "返回", "sceneJumpTarget": "34(10)"},
+        ]},
+        {"type": "image", "id": 34, "title": "世界", "shapes": []},
+    ]
+
+    assert runner.plan_scene_navigation(tree, 819, 34)["status"] == "no_path"
+    assert runner._select_scene_next_edge(tree, 819, 34) is None
+
+
+def test_data_declared_safe_tab_can_exit_without_permitting_unmarked_equipment_actions():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 717, "title": "升阶", "shapes": [
+            {"id": "tab", "title": "装配", "navigationRole": "safe_tab", "sceneJumpTarget": "667(10)"},
+        ]},
+        {"type": "image", "id": 667, "title": "灵器", "shapes": [
+            {"id": "back", "title": "返回", "sceneJumpTarget": "34(10)"},
+        ]},
+        {"type": "image", "id": 34, "title": "世界", "shapes": []},
+    ]
+    assert runner.plan_scene_navigation(tree, 717, 34)["status"] == "ok"
+    tree[0]["shapes"][0].pop("navigationRole")
+    assert create_behavior_tree_executor().plan_scene_navigation(tree, 717, 34)["status"] == "no_path"
+
+
 @pytest.mark.parametrize("confidence_z", [0.0, 1.0, 2.0])
 def test_shengzu_unobserved_declared_destination_remains_reachable(confidence_z):
     observed = {338: 4, 661: 2, 385: 0}

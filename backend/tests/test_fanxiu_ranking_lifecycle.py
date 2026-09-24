@@ -598,7 +598,7 @@ def test_0030_collects_previous_tail_today_start_resource_and_missed_days() -> N
         now=datetime(2026, 8, 22, 0, 30, tzinfo=TZ),
     )
 
-    assert len(due) == 5
+    assert len(due) == 4
     assert {item.checkpoint_kind for item in due} == {
         DAILY_RECONCILE_KIND,
         EXCHANGE_TAIL_KIND,
@@ -606,7 +606,6 @@ def test_0030_collects_previous_tail_today_start_resource_and_missed_days() -> N
     }
     assert {item.runtime_id for item in due} == {
         "1070011400004",
-        "8070001400004",
         "9001",
     }
     assert {
@@ -615,7 +614,6 @@ def test_0030_collects_previous_tail_today_start_resource_and_missed_days() -> N
     } == {
         ("1070011400004", MAGIC_INITIALIZATION_KIND, "2026-08-21"),
         ("1070011400004", EXCHANGE_TAIL_KIND, "2026-08-22"),
-        ("8070001400004", MAGIC_INITIALIZATION_KIND, "2026-08-22"),
         ("9001", DAILY_RECONCILE_KIND, "2026-08-21"),
         ("9001", DAILY_RECONCILE_KIND, "2026-08-22"),
     }
@@ -755,7 +753,7 @@ def test_magic_initialization_is_one_start_day_checkpoint_not_prepare_day_reconc
         if item.checkpoint_kind == MAGIC_INITIALIZATION_KIND
     ]
     assert len(initialization) == 1
-    assert initialization[0].due_at == datetime(2026, 9, 5, 0, 30, tzinfo=TZ)
+    assert initialization[0].due_at == datetime(2026, 9, 5, 10, 1, tzinfo=TZ)
     assert DAILY_RECONCILE_KIND not in {
         item.checkpoint_kind for item in (*prepare_day, *start_day)
     }
@@ -780,7 +778,7 @@ def test_magic_1900_is_extra_checkpoint_not_a_parallel_job() -> None:
         now=datetime(2026, 8, 22, 12, 0, tzinfo=TZ),
         completed_keys=completed,
     )
-    assert [item.checkpoint_kind for item in mail_due] == [MAGIC_MAIL_KIND]
+    assert [item.checkpoint_kind for item in mail_due] == [MAGIC_INITIALIZATION_KIND, MAGIC_MAIL_KIND]
     completed.update(item.key for item in mail_due)
     active_due = due_ranking_checkpoints(
         (cross,),

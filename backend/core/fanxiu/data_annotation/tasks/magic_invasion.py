@@ -104,10 +104,16 @@ def wait_magic_invasion_cover_after_schedule_entry(
             label=label,
         )
         scene_id = int(getattr(match, "scene_id", match))
-        if scene_id != MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID:
+        if scene_id in targets:
             return match
-        context.click_shape_center(MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID, "返回")
-        yield from context.wait_action_settle(1.0)
+        if scene_id == MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID:
+            context.click_shape_center(MAGIC_INVASION_COVER_ENTRY_NOISE_SCENE_ID, "返回")
+            yield from context.wait_action_settle(1.0)
+        else:
+            # wait_scene may report a recognized fallback outside its request.
+            # In particular #66 still showing a preview is not an activity
+            # landing and must never be passed to a bottom-tab action.
+            yield from context.wait_action_settle(1.0)
 
 
 @dataclass(frozen=True)

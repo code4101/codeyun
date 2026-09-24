@@ -29,10 +29,11 @@ def _quantity(context, scene, shape):
     for attempt in range(4):
         # 真机 #817 的小数字在局部裁剪 OCR 中为空；全帧 OCR 后按 Shape
         # 空间筛选能稳定读到「89/11」，仍只接受完整分子/分母。
-        raw = _text(context, scene, shape, crop=False)
-        match = re.fullmatch(r'(\d+)/(\d+)', raw)
-        if match and int(match[2]) > 0:
-            return int(match[1]), int(match[2])
+        for crop in (False, True):
+            raw = _text(context, scene, shape, crop=crop)
+            match = re.fullmatch(r'(\d+)/(\d+)', raw)
+            if match and int(match[2]) > 0:
+                return int(match[1]), int(match[2])
         if attempt < 3:
             yield from context.wait_action_settle(0.7)
     raise RuntimeError(f"镇物材料读数不确定：{raw!r}")
@@ -52,17 +53,16 @@ def finish_domain_equipment(context, *, equipped: bool, recast_required=False,
 
     equipped 仅由本次真实装配动作决定，不能从历史步骤推测；重入由
     总览当前重铸提示决定 recast_required。重铸最多 20 次，祭炼最多
-    500 次，达到界限或进入时已有候选则保留现场，不伪装成成功。
+    500 次。已有候选时先按当前/最新评分裁决，再继续有界重铸。
     """
     scene = yield from _scene(context, [815, 817, 818, 819])
-    if scene == 819:
-        raise RuntimeError('已有重铸候选，请先处理候选，保留现场')
-    if scene != 817:
+    pending_recast = scene == 819
+    if scene not in (817, 819):
         context.click_shape_center(scene, '祭炼' if scene == 815 else '祭炼页签')
         yield from _scene(context, [817])
     previous = None
     clicks = 0
-    for _ in range(501):
+    for _ in range(0 if pending_recast else 501):
         have, need = yield from _quantity(context, 817, '材料数量')
         if have < need:
             log(f'祭炼完成：{have}/{need}，点击 {clicks} 次')
@@ -76,9 +76,10 @@ def finish_domain_equipment(context, *, equipped: bool, recast_required=False,
         clicks += 1
         yield from _scene(context, [817])
     recasts = 0
-    if equipped or recast_required:
-        context.click_shape_center(817, '重铸页签')
-        scene = yield from _scene(context, [818, 819])
+    if equipped or recast_required or pending_recast:
+        if not pending_recast:
+            context.click_shape_center(817, '重铸页签')
+            scene = yield from _scene(context, [818, 819])
         while True:
             if scene == 819:
                 old = _score(context, 819, '当前评分')
@@ -186,7 +187,12 @@ def run_domain_daily_flow(context):
     法身尚未研发，不自动操作。每次从实时页面重新判定资源，不持久化
     中途步骤。动画最多等待一分钟；未知材料读数有界复核后报错保留现场。
     """
-    scene = yield from _scene(context, [34, 20, 812, 814])
+    scene = yield from _scene(context, [34, 20, 812, 814, 815, 817, 818, 819])
+    if scene in (815, 817, 818, 819):
+        yield from finish_domain_equipment(
+            context, equipped=False, recast_required=True,
+        )
+        scene = 814
     if scene == 34:
         yield from context.go_scene(20, known_paths_only=True)
         scene = yield from _scene(context, [20])

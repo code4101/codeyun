@@ -142,6 +142,12 @@ def test_executable_domain_without_formal_adapter_fails_closed(monkeypatch):
         }],
     }
 
+    def pet_adapter(*_args):
+        order.append("灵兽")
+        if False:
+            yield
+        return {"ok": True}
+
     with pytest.raises(RuntimeError, match="正式资产/动作适配器尚未就绪"):
         _consume(resource_auto_use.execute_resource_auto_use_task(
             object(),
@@ -150,7 +156,9 @@ def test_executable_domain_without_formal_adapter_fails_closed(monkeypatch):
             threading.Event(),
             talisman_reader=lambda: snapshot,
             pet_reader=_empty_pet,
+            pet_adapter=pet_adapter,
         ))
+    assert order == ["储物袋", "灵兽"]
 
 
 def test_formal_adapter_must_reobserve_a_complete_terminal_snapshot(monkeypatch):

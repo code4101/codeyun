@@ -177,6 +177,7 @@ def _run_snapshot_domain(
     planner: Callable[[dict[str, Any]], ResourceAutoUseDecision],
     adapter: DomainAdapter | None,
     visit_when_complete: bool = False,
+    before_snapshot: dict[str, Any] | None = None,
 ):
     """Observe, decide, optionally act, and require a terminal re-observation.
 
@@ -184,7 +185,7 @@ def _run_snapshot_domain(
     Runtime 证明的其它动作」的场景：仍进入页面执行那些动作，再按本域快照复验终态。
     """
 
-    before = reader()
+    before = before_snapshot if before_snapshot is not None else reader()
     decision = planner(before)
     record = _decision_record(domain, before, decision)
     if decision.action == "complete" and not visit_when_complete:
@@ -244,6 +245,7 @@ def execute_resource_auto_use_task(
         return (yield from operation())
 
     domains: list[dict[str, Any]] = []
+    pending_adapters: list[str] = []
     domains.append((yield from run_stage("storage-quick-operation", storage_action)))
     for stage_id, domain, reader, planner, adapter, visit_when_complete in (
         ("talisman-upgrade", "法宝", talisman_reader, plan_talisman_quick_upgrade, talisman_adapter, False),
@@ -251,13 +253,32 @@ def execute_resource_auto_use_task(
         # 因此即使吞噬候选为空也要进入灵兽主页，消费已积累的祈灵材料。
         ("pet-swallow", "灵兽", pet_reader, plan_pet_quick_swallow, pet_adapter, True),
     ):
-        def operation(domain=domain, reader=reader, planner=planner, adapter=adapter, visit=visit_when_complete):
+        observed_snapshot = None
+        if adapter is None:
+            # An unimplemented domain must keep the aggregate Job incomplete,
+            # but it need not starve later, independently checkpointed domains.
+            # Do not commit a success receipt for this stage: the next attempt
+            # must re-read its live candidates after an adapter is installed.
+            observed_snapshot = reader()
+            decision = planner(observed_snapshot)
+            if decision.action == "execute":
+                pending_adapters.append(domain)
+                domains.append({**_decision_record(domain, observed_snapshot, decision),
+                                "outcome": "pending_adapter"})
+                continue
+        def operation(domain=domain, reader=reader, planner=planner, adapter=adapter,
+                      visit=visit_when_complete, snapshot=observed_snapshot):
             return (yield from _run_snapshot_domain(
                 domain=domain, runner=runner, ctx=ctx, payload=payload,
                 stop_event=stop_event, reader=reader, planner=planner, adapter=adapter,
-                visit_when_complete=visit,
+                visit_when_complete=visit, before_snapshot=snapshot,
             ))
         domains.append((yield from run_stage(stage_id, operation)))
+    if pending_adapters:
+        raise RuntimeError(
+            "资源_每日处理：" + "、".join(pending_adapters)
+            + "有待执行候选，但正式资产/动作适配器尚未就绪；已继续其它已实现子项，作业保持未完成"
+        )
     outcome = (
         "partial_safe"
         if any(domain.get("outcome") == "partial_safe" for domain in domains)

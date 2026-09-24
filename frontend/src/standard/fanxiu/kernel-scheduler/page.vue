@@ -445,14 +445,14 @@ const runContextTaskNow = async () => {
     if (status.status === 'error' || status.status === 'stopped') {
       ElMessage.error(status.error || status.message || `${task.label}运行失败`);
     } else {
-      ElMessage.success(`${task.label}已立即运行（按当前时间）`);
+      ElMessage.success(`${task.label}已提交运行（按当前时间）`);
     }
     await Promise.allSettled([
       refreshScheduler(),
       refreshStatus(),
       refreshSchedulerPlan(),
       refreshDoctorWatchLatest(),
-      refreshCellLogs(),
+      refreshLogs(),
     ]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '立即运行失败');
@@ -485,14 +485,14 @@ const runContextTaskEarly = async () => {
     if (status.status === 'error' || status.status === 'stopped') {
       ElMessage.error(status.error || status.message || `${task.label}运行失败`);
     } else {
-      ElMessage.success(`${task.label}已提前运行（按计划时间）`);
+      ElMessage.success(`${task.label}已提交运行（按计划时间）`);
     }
     await Promise.allSettled([
       refreshScheduler(),
       refreshStatus(),
       refreshSchedulerPlan(),
       refreshDoctorWatchLatest(),
-      refreshCellLogs(),
+      refreshLogs(),
     ]);
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '提前运行失败');

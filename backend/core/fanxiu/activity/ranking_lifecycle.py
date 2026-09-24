@@ -538,10 +538,12 @@ def checkpoints_for_occurrence(
         )
     magic_at = _at(business_day, MAGIC_ACTIVE_TIME, occurrence.start_at.tzinfo)
     magic_mail_at = _at(business_day, MAGIC_MAIL_TIME, occurrence.start_at.tzinfo)
-    magic_initialization_at = _at(
-        business_day,
-        MAGIC_INITIALIZATION_TIME,
-        occurrence.start_at.tzinfo,
+    # The calendar can show an upcoming Magic occurrence before its entry is
+    # open.  Its 00:30 card then only opens a preview, so initialization must
+    # wait for the Runtime start rather than treating the preview as a page.
+    magic_initialization_at = max(
+        _at(business_day, MAGIC_INITIALIZATION_TIME, occurrence.start_at.tzinfo),
+        occurrence.start_at + timedelta(minutes=1),
     )
     if (
         occurrence.activity_type == "magic-invasion"

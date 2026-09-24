@@ -1199,7 +1199,10 @@ class MailTaskMixin:
         it only refines the pixel position of an already aligned MailMgr item.
         """
 
-        expected = re.sub(r"\s+", "", _sanitize_ocr_text(title))
+        # OCR often drops decorative brackets around a mail title.  Compare
+        # semantic characters so a scrolled row can still refine its click
+        # position instead of falling back to the stale asset row lattice.
+        expected = "".join(ch for ch in _sanitize_ocr_text(title) if ch.isalnum())
         if not expected:
             return None
         expected_title_y = float(fallback_y) + float(geometry.title_center_offset)
@@ -1216,7 +1219,9 @@ class MailTaskMixin:
         )
         candidates: list[tuple[float, float, float]] = []
         for fragment in fragments:
-            text = re.sub(r"\s+", "", _sanitize_ocr_text(fragment.get("text")))
+            text = "".join(
+                ch for ch in _sanitize_ocr_text(fragment.get("text")) if ch.isalnum()
+            )
             if not text:
                 continue
             similarity = difflib.SequenceMatcher(None, text, expected).ratio()
