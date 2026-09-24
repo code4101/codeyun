@@ -22,6 +22,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     TIANDI_YIJU_ACTIVE_KIND,
     XIANMENG_ACTIVE_KIND,
     XUTIAN_ACTIVE_KIND,
+    XUTIAN_OPEN_COLLECTION_KIND,
     RankingActivityIdentity,
     RankingOccurrence,
     checkpoints_for_occurrence,
@@ -845,6 +846,17 @@ def test_xutian_1000_is_one_occurrence_scoped_checkpoint() -> None:
         completed_keys=completed,
     )
     assert [item.checkpoint_kind for item in at_open] == [XUTIAN_ACTIVE_KIND]
+
+    collection_due = due_ranking_checkpoints(
+        (occurrence,),
+        now=datetime(2026, 8, 31, 10, 5, tzinfo=TZ),
+        completed_keys={*completed, *(item.key for item in at_open)},
+        production_only=True,
+    )
+    assert [item.checkpoint_kind for item in collection_due] == [
+        XUTIAN_OPEN_COLLECTION_KIND,
+    ]
+    assert collection_due[0].instance_key == occurrence.instance_key
 
 
 def test_unverified_beast_active_stays_disabled_without_hiding_its_shop_tail() -> None:

@@ -80,7 +80,7 @@ def fill_available_tree(*, read_tree, read_counts, enter_node, fill_node, leave_
     raise RuntimeError('技能树升级超出初始剩余等级上限')
 
 
-def tree_progress_labels(tokens, *, viewport):
+def tree_progress_labels(tokens, *, viewport, include_choice=False):
     """Reassemble native OCR lines, then cluster rows despite small y jitter."""
     lines = defaultdict(list)
     x, y, w, h = viewport
@@ -91,7 +91,8 @@ def tree_progress_labels(tokens, *, viewport):
     for fragments in lines.values():
         fragments.sort(key=lambda t: t['x'])
         text = ''.join(t['text'] for t in fragments).replace(' ', '')
-        if not re.fullmatch(r'满|\d+/\d+', text):
+        pattern = r'满|\d+/\d+|抉择' if include_choice else r'满|\d+/\d+'
+        if not re.fullmatch(pattern, text):
             continue
         left, top = min(t['x'] for t in fragments), min(t['y'] for t in fragments)
         right = max(t['x']+t['w'] for t in fragments)
@@ -116,6 +117,8 @@ def node_progress_matches(text, node):
     """
     if text == '满':
         return node['level'] == node['max_level']
+    if text == '抉择':
+        return node.get('requires_choice') is True and node['level'] == 0
     matched = re.fullmatch(r'(\d+)/(\d+)', text)
     if matched is None:
         return False

@@ -1845,14 +1845,14 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         return (yield from runner._execute_mail_claim_law_task(ctx, stop_event, payload))
 
     @register_fanxiu_data_annotation_task_cell(
-        "prayer_daily_resource",
-        "祈愿_每日资源",
+        "prayer_update",
+        "祈愿更新",
         scheduler_supported=False,
         # #449 is an existing visually similar store asset that can win the
         # scene score after the free prayer card disappears.  The task verifies
         # the Prayer OCR identity before treating it as a resumable state.
     )
-    def _run_data_annotation_prayer_daily_resource_task_cell(
+    def _run_data_annotation_prayer_update_task_cell(
         runner: Any,
         ctx: dict[str, Any],
         payload: dict[str, Any],

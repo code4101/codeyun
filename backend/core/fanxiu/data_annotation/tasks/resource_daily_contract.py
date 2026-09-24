@@ -18,7 +18,7 @@ RESOURCE_DAILY_TASK_TYPE = "resource_auto_use"
 RESOURCE_DAILY_LABEL = "资源_每日处理"
 RESOURCE_DAILY_TRIGGER_DESCRIPTION = "每日"
 
-RESOURCE_DAILY_SCHEMA_VERSION = 2
+RESOURCE_DAILY_SCHEMA_VERSION = 3
 RESOURCE_DAILY_PAYLOAD_SCHEMA_KEY = "resource_daily_schema_version"
 RESOURCE_DAILY_INTERNALIZED_JOBS_KEY = "internalized_jobs"
 RESOURCE_DAILY_PROGRESS_KEY = "aggregate_progress"
@@ -51,7 +51,7 @@ class ResourceDailyStage:
 RESOURCE_DAILY_STAGES: tuple[ResourceDailyStage, ...] = (
     ResourceDailyStage("legacy-daily-vip", "daily_vip", "日常_vip", RESOURCE_DAILY_DAILY_CADENCE),
     ResourceDailyStage("daily-signin", "daily_signin", "日常_签到", RESOURCE_DAILY_DAILY_CADENCE),
-    ResourceDailyStage("prayer-daily-resource", "prayer_daily_resource", "祈愿_每日资源", RESOURCE_DAILY_DAILY_CADENCE),
+    ResourceDailyStage("prayer-update", "prayer_update", "祈愿更新", RESOURCE_DAILY_DAILY_CADENCE),
     ResourceDailyStage("legacy-daily-xianshi", "daily_xianshi", "仙市_秘藏阁", RESOURCE_DAILY_DAILY_CADENCE),
     ResourceDailyStage("xianshi-langya-rankings", "xianshi_langya_rankings", "仙市_琅琊榜", RESOURCE_DAILY_WEEKLY_CADENCE),
     ResourceDailyStage("xianshi-zhenwuge", "xianshi_zhenwuge", "仙市_真悟阁", RESOURCE_DAILY_WEEKLY_CADENCE),
@@ -67,8 +67,8 @@ RESOURCE_DAILY_STAGE_TYPES: frozenset[str] = frozenset(
 
 # Retired first-level identities.  The Scheduler catalogue migration removes
 # these and refuses to readmit them.
-RESOURCE_DAILY_RETIRED_TASK_IDS: frozenset[str] = RESOURCE_DAILY_STAGE_IDS
-RESOURCE_DAILY_RETIRED_TASK_TYPES: frozenset[str] = RESOURCE_DAILY_STAGE_TYPES
+RESOURCE_DAILY_RETIRED_TASK_IDS: frozenset[str] = RESOURCE_DAILY_STAGE_IDS | {"prayer-daily-resource"}
+RESOURCE_DAILY_RETIRED_TASK_TYPES: frozenset[str] = RESOURCE_DAILY_STAGE_TYPES | {"prayer_daily_resource"}
 
 
 def match_resource_daily_stage(item: Mapping[str, Any]) -> ResourceDailyStage | None:
@@ -76,6 +76,8 @@ def match_resource_daily_stage(item: Mapping[str, Any]) -> ResourceDailyStage | 
 
     task_id = str(item.get("id") or "")
     task_type = str(item.get("task_type") or "")
+    if task_id == "prayer-daily-resource" or task_type == "prayer_daily_resource":
+        return next(stage for stage in RESOURCE_DAILY_STAGES if stage.task_type == "prayer_update")
     for stage in RESOURCE_DAILY_STAGES:
         if task_id == stage.task_id or task_type == stage.task_type:
             return stage
@@ -125,7 +127,7 @@ def resource_daily_completion(
     # The old beast Job stored Scheduler success, but its business result can
     # still be layout_update_required. Its record has no durable outcome field,
     # so the new aggregate must observe it afresh on the next Monday.
-    if stage.task_type == "beast_spirit_update":
+    if stage.task_type == "beast_spirit_update" or item.get("task_type") == "prayer_daily_resource":
         return None
     run_status = str(item.get("last_result") or "").strip().lower()
     finished_at = str(item.get("finished_at") or "").strip()

@@ -29,6 +29,7 @@ from backend.core.fanxiu.activity.ranking_lifecycle import (
     RESOURCE_RANKING_TASK_ID,
     TIANDI_YIJU_ACTIVE_KIND,
     XUTIAN_ACTIVE_KIND,
+    XUTIAN_OPEN_COLLECTION_KIND,
     XIANMENG_ACTIVE_KIND,
     YUNMENG_ACTIVE_KIND,
     YUNMENG_CHALLENGE_EVENING_KIND,
@@ -115,6 +116,23 @@ def _execute_xutian_active_checkpoint(runner, ctx, payload, stop_event, *, occur
     )
     return (yield from execute_xutian_active_checkpoint(
         runner, ctx, payload, stop_event, occurrence=occurrence
+    ))
+
+
+def _execute_xutian_open_collection_checkpoint(
+    runner, ctx, stop_event, *, occurrence, captured_at, required_fact_watermark,
+):
+    from backend.core.fanxiu.data_annotation.tasks.xutian_open_collection import (
+        execute_xutian_open_collection_checkpoint,
+    )
+
+    return (yield from execute_xutian_open_collection_checkpoint(
+        runner,
+        ctx,
+        stop_event,
+        occurrence=occurrence,
+        captured_at=captured_at,
+        required_fact_watermark=required_fact_watermark,
     ))
 
 
@@ -592,6 +610,15 @@ def _execute_family_job(
             elif checkpoint.checkpoint_kind == XUTIAN_ACTIVE_KIND:
                 result = yield from _execute_xutian_active_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
+                )
+            elif checkpoint.checkpoint_kind == XUTIAN_OPEN_COLLECTION_KIND:
+                result = yield from _execute_xutian_open_collection_checkpoint(
+                    runner,
+                    ctx,
+                    stop_event,
+                    occurrence=occurrence,
+                    captured_at=now,
+                    required_fact_watermark=checkpoint.due_at,
                 )
             elif checkpoint.checkpoint_kind in {
                 BEAST_ABYSS_FORMAL_KIND,

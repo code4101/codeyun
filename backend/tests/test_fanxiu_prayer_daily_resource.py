@@ -37,6 +37,7 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_soul_upgrade import (
     cast_controls,
     completed_level,
 )
+from backend.core.fanxiu.data_annotation.tasks.prayer_wish_update import wish_balance
 
 
 def _fragment(text: str, x: float, y: float, w: float = 40, h: float = 30):
@@ -55,9 +56,9 @@ def test_prayer_soul_priority_and_material_parsing() -> None:
     ]) == 29
 
 
-def test_prayer_daily_resource_is_internal_daily_component() -> None:
+def test_prayer_update_is_internal_daily_component() -> None:
     register_fanxiu_default_jobs()
-    definition = get_fanxiu_data_annotation_task_cell_definition("prayer_daily_resource")
+    definition = get_fanxiu_data_annotation_task_cell_definition("prayer_update")
     assert definition is not None
     assert definition.scheduler_supported is False
     assert not hasattr(definition, "lifecycle")
@@ -65,11 +66,17 @@ def test_prayer_daily_resource_is_internal_daily_component() -> None:
     tasks = [
         item
         for item in default_kernel_scheduler_tasks(datetime(2026, 8, 7, 1, 0, 0))
-        if item["task_type"] == "prayer_daily_resource"
+        if item["task_type"] == "prayer_update"
     ]
     assert tasks == []
     from backend.core.fanxiu.data_annotation.tasks.resource_daily_contract import RESOURCE_DAILY_STAGES
     assert next(s for s in RESOURCE_DAILY_STAGES if s.task_type == definition.task_type).cadence == 'daily'
+
+
+def test_wish_balance_uses_annotated_numerator_and_denominator() -> None:
+    assert wish_balance([{"text": "1370"}, {"text": "/"}, {"text": "1000"}]) == (1370, 1000)
+    assert wish_balance([{"text": "370"}, {"text": "/"}, {"text": "1000"}]) == (370, 1000)
+    assert wish_balance([{"text": "370"}, {"text": "/"}]) is None
 
 
 def test_prayer_entry_uses_unique_left_menu_suffix_not_weekly_prefix() -> None:

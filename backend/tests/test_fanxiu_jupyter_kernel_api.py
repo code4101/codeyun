@@ -1477,7 +1477,7 @@ def test_world_navigation_jobs_are_registered_without_framework_lifecycle_metada
         "daily_signin", "daily_xuanhuang", "daily_dongtian",
         "daily_dongtian_clear", "daily_lingmai", "daily_lingmai_clear",
         "daily_dungeon", "daily_assistant", "lilian_claim", "lilian_event",
-        "xianqiao_trial", "mail_selective_claim", "prayer_daily_resource",
+        "xianqiao_trial", "mail_selective_claim", "prayer_update",
         "xianfu_learn_skill", "penglai_xianzang_config",
         "penglai_xianzang_lottery", "xutian_palace_rankings",
     }

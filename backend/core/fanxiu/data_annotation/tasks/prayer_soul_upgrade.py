@@ -80,13 +80,18 @@ def _select(context: Any, soul: str):
     raise RuntimeError(f"祈愿铸魂：{soul}魂当前等级无法确认")
 
 
-def _material(context: Any, soul: str):
+def _material(context: Any, soul: str | None):
     for _ in range(12):
         frame = context.cur_frame(update=True)
         fragments = context.ocr_fragments(frame)
         label, amount, action = cast_controls(fragments)
+        identity = any(
+            f"{name}魂铸魂" in str(item.get("text") or "")
+            for name in ((soul,) if soul else SOUL_BUTTONS)
+            for item in fragments
+        )
         if label == "前往铸魂" and action is not None:
-            if not any(f"{soul}魂铸魂" in str(item.get("text") or "") for item in fragments):
+            if not identity:
                 yield from context.wait_action_settle(0.35)
                 continue
             _click(context, action)
@@ -120,15 +125,28 @@ def upgrade_prayer_souls(
     """Choose one soul from current levels, then exhaust material on it."""
 
     spent = 0
-    target = "地"
-    selected = ""
-    for soul in ("天", "地", "人"):
-        check_stopped()
-        level = yield from _select(context, soul)
-        selected = soul
-        if level < MIN_LEVEL:
-            target = soul
-            break
+    # All three souls share the same casting material. Check that one resource
+    # before the more expensive level-based target selection.
+    context.click_frame_point(SCENE, *MAIN_TAB)
+    yield from context.wait_action_settle(0.5)
+    shared_amount, _ = yield from _material(context, None)
+    if shared_amount[1] <= 0:
+        raise RuntimeError(f"祈愿铸魂：无效材料消耗 {shared_amount}")
+    if shared_amount[0] < shared_amount[1]:
+        log(f"祈愿铸魂：材料 {shared_amount[0]}/{shared_amount[1]}，无需选择目标")
+        return {"soul": None, "spent": 0, "remaining": shared_amount[0], "cost": shared_amount[1]}
+
+    level = yield from _select(context, "天")
+    target = "天" if level < MIN_LEVEL else "地"
+    selected = "天"
+    if target != "天":
+        for soul in ("地", "人"):
+            check_stopped()
+            level = yield from _select(context, soul)
+            selected = soul
+            if level < MIN_LEVEL:
+                target = soul
+                break
     if selected != target:
         yield from _select(context, target)
     log(f"祈愿铸魂：本周期选择{target}魂")

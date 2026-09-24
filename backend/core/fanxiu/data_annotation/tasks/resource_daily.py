@@ -130,6 +130,16 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=GONGFA_STAGE_VERSION,
     )
     domains.append({"domain": "升级功法书", "result": gongfa})
+    from backend.core.fanxiu.data_annotation.tasks.lianshen_update import (
+        STAGE_ID as LIANSHEN_STAGE_ID, STAGE_VERSION as LIANSHEN_STAGE_VERSION,
+        update_lianshen,
+    )
+    lianshen = yield from progress.run(
+        LIANSHEN_STAGE_ID, daily_cycle,
+        lambda: update_lianshen(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=LIANSHEN_STAGE_VERSION,
+    )
+    domains.append({"domain": "炼神更新", "result": lianshen})
     from backend.core.fanxiu.data_annotation.tasks.xianfu_science import (
         STAGE_ID, STAGE_VERSION, execute_xianfu_science_task,
     )
@@ -139,7 +149,7 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=STAGE_VERSION,
     )
     domains.append({"domain": "仙府玄机阁", "result": science})
-    # Pending research (炼神/角色天赋/论道天赋树) is not represented by a
+    # Pending research (角色天赋/论道天赋树) is not represented by a
     # success-producing placeholder. Its production adapter is added only after
     # real GUI/Runtime acceptance, sharing the same component receipt contract.
     next_time = next_resource_daily_time(job_now())

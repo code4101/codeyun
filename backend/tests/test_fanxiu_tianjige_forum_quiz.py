@@ -453,6 +453,28 @@ def test_uncertain_submission_is_not_retried(monkeypatch) -> None:
     assert runner.next_times[-1][1] == "2026-08-06 17:59:50"
 
 
+def test_nickname_guard_releases_unsent_intent_for_retry(monkeypatch) -> None:
+    monkeypatch.setattr(task, "_now", lambda: datetime(2026, 8, 5, 18, 0, 0))
+    monkeypatch.setattr(task, "probe_tianjige_forum_quiz", lambda *_args, **_kwargs: _ready_probe())
+    ledger: dict = {}
+    monkeypatch.setattr(task, "_read_submission_ledger", lambda: dict(ledger))
+    monkeypatch.setattr(task, "_write_submission_ledger", lambda value: ledger.update(value))
+    monkeypatch.setattr(
+        task,
+        "submit_tianjige_forum_quiz_answer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            crawler.TianjigeForumQuizPreSubmitError("无法确认当前天机阁登录昵称，拒绝发送")
+        ),
+    )
+    runner = _Runner()
+
+    result = task.execute_tianjige_forum_quiz_task(runner, {}, {}, object())
+
+    assert ledger["state"] == "pre_submit_failed"
+    assert "尚未回帖" in result["message"]
+    assert runner.next_times[-1][1] == "2026-08-05 18:01:00"
+
+
 def test_tianjige_forum_quiz_is_one_standard_job() -> None:
     jobs = [
         item

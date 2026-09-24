@@ -8,6 +8,7 @@ from typing import Any
 from sqlmodel import Session
 
 from backend.core.fanxiu.tianjige_forum_quiz import (
+    TianjigeForumQuizPreSubmitError,
     TianjigeQuizProbe,
     probe_tianjige_forum_quiz,
     submit_tianjige_forum_quiz_answer,
@@ -66,6 +67,26 @@ def _write_submission_ledger(value: dict[str, Any], db_bind: Any | None = None) 
         row.updated_at = time.time()
         session.add(row)
         session.commit()
+
+
+def recover_tianjige_unsent_nickname_intent() -> bool:
+    """Release only the proven pre-send nickname failure from today's formal attempt.
+
+    The scheduler's terminal message proves the nickname guard fired before the
+    send click. Other ``submitting`` records remain protected against duplicates.
+    """
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_scheduler_tasks
+
+    task = next((item for item in read_scheduler_tasks() if item.get("id") == TIANJIGE_FORUM_QUIZ_TASK_ID), None)
+    if not task or "无法确认当前天机阁登录昵称，拒绝发送" not in str(task.get("last_message") or ""):
+        return False
+    if str(task.get("last_run_at") or "")[:10] != _now().strftime("%Y-%m-%d"):
+        return False
+    ledger = _read_submission_ledger()
+    if str(ledger.get("state") or "") != "submitting" or not ledger.get("thread_key"):
+        return False
+    _write_submission_ledger({**ledger, "state": "pre_submit_failed", "updated_at": _now().timestamp()})
+    return True
 
 
 def _set_next_time(runner: Any, value: datetime) -> str:
@@ -279,6 +300,13 @@ def execute_tianjige_forum_quiz_task(
             timeout_seconds=max(5.0, float(payload.get("submit_timeout_seconds") or 15)),
             check_cancel=lambda: runner._raise_if_stopped(stop_event),
         )
+    except TianjigeForumQuizPreSubmitError as exc:
+        _write_submission_ledger({**_read_submission_ledger(), "state": "pre_submit_failed", "updated_at": _now().timestamp()})
+        completed_at = _now()
+        next_time = _set_next_time(runner, _poll_next_time(completed_at, max(poll_seconds, 60)))
+        message = f"天机阁_有奖竞答：发送前检查未通过，尚未回帖：{exc}；下次 {next_time}"
+        runner._log("warning", message)
+        return {"thread_key": probe.thread_key, "answer": answer_text, "message": message}
     except Exception as exc:
         if bool(getattr(stop_event, "is_set", lambda: False)()):
             raise

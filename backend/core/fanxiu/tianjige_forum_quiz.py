@@ -30,6 +30,10 @@ class TianjigeForumQuizError(RuntimeError):
     """天机阁论坛页面不满足安全自动化前置条件。"""
 
 
+class TianjigeForumQuizPreSubmitError(TianjigeForumQuizError):
+    """回复尚未发出，调用方可安全释放待发送记录。"""
+
+
 @dataclass(frozen=True)
 class TianjigeQuizAnswer:
     """一个规范化后的三题回复候选。"""
@@ -465,7 +469,7 @@ def submit_tianjige_forum_quiz_answer(
         expected = parse_tianjige_quiz_answer(answer_text)
         nickname = _current_forum_nickname(tab)
         if not nickname:
-            raise TianjigeForumQuizError("无法确认当前天机阁登录昵称，拒绝发送")
+            raise TianjigeForumQuizPreSubmitError("无法确认当前天机阁登录昵称，拒绝发送")
         existing_comments = _load_latest_comments(tab, max_expand_rounds=0)
         existing_match_count = _own_answer_match_count(existing_comments, expected, nickname)
         entry = tab.ele("t:uni-view@@class:input-btn", timeout=timeout_seconds)
@@ -506,6 +510,7 @@ __all__ = [
     "TIANJIGE_PROFILE_URL",
     "TIANJIGE_QUIZ_COMMENT_LOAD_TIMEOUT_SECONDS",
     "TianjigeForumQuizError",
+    "TianjigeForumQuizPreSubmitError",
     "TianjigeQuizAnswer",
     "TianjigeQuizProbe",
     "parse_tianjige_quiz_answer",

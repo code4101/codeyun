@@ -399,8 +399,12 @@ def read_lianshen_tree(*, all_tabs=False):
         buttons, button_count = c.reader.indexed_list_items(table_ref(field(hosts[0], "btnList")))
         if button_count != len(tabs) or len(buttons) != len(tabs):
             fail("炼神页签按钮不完整")
+        # The daily updater only needs the selected tab. Projecting all four
+        # tabs on every read was the dominant cost of each upgrade cycle.
+        indexes_to_project = range(len(tabs)) if all_tabs else (selected_tab_index,)
         results = []
-        for index, tab in enumerate(tabs):
+        for index in indexes_to_project:
+            tab = tabs[index]
             result = project(tab)
             result.update(tab_index=index, name=tab["name"], show_condition=tab["showCondition"],
                           tab_condition=tab["condition"], sort=tab["sort"])
@@ -409,13 +413,29 @@ def read_lianshen_tree(*, all_tabs=False):
                 fail("炼神页签解锁状态不完整")
             results.append(result)
         levels = {v["talent_id"]: v["current_level"] for t in results for n in t["nodes"] for v in n["variants"]}
+        # Prerequisites can name a talent on another tab. Read only those
+        # missing level keys instead of projecting the unrelated full trees.
+        dependencies = {
+            int(match)
+            for t in results for n in t["nodes"] for v in n["variants"]
+            for match in re.findall(r"Cultivation\|(\d+)_\d+", v["condition"])
+        } - levels.keys()
+        if dependencies:
+            external_levels = keyed_fields(role_levels_root, frozenset(dependencies))
+            for talent_id in dependencies:
+                level = int_value(external_levels.get(talent_id))
+                if level is None:
+                    level = 0
+                if level < 0:
+                    fail(f"炼神前置天赋等级无效：{talent_id}")
+                levels[talent_id] = level
         for t in results:
             for n in t["nodes"]:
                 for v in n["variants"]:
                     v["unlocked"] = cultivation_condition_met(v["condition"], levels)
         if all_tabs:
             return {"complete": True, "selected_tab_index": selected_tab_index, "tabs": results}
-        return results[selected_tab_index]
+        return results[0]
 
     return read_ui_runtime_snapshot(("s_globalCfgIdx", "LianshenMgr"), read)
 

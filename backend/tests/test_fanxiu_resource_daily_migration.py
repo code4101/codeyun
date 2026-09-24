@@ -64,7 +64,7 @@ def test_real_maintenance_persists_moved_histories_and_does_not_mutate_reader_in
     parent = next(t for t in saved if t['id'] == RESOURCE_DAILY_TASK_ID)
     assert parent['next_time'] == NEXT_MIDNIGHT
     assert parent['payload']['keep'] == 'configuration'
-    assert set(parent['payload']['internalized_jobs']) == RESOURCE_DAILY_RETIRED_TASK_IDS
+    assert set(parent['payload']['internalized_jobs']) == {stage.task_id for stage in RESOURCE_DAILY_STAGES}
     assert not any(t['id'] in RESOURCE_DAILY_RETIRED_TASK_IDS for t in saved)
     assert read_scheduler_job_progress(RESOURCE_DAILY_TASK_ID, '2026-09-21', scheduler_state_path=state)['legacy-daily-vip']['status'] == 'complete'
     assert resource_daily_completion(RESOURCE_DAILY_STAGES[0], {
@@ -190,9 +190,10 @@ def test_migration_absorbs_retired_jobs_and_preserves_canonical_history():
     payload = canonical["payload"]
     assert payload[RESOURCE_DAILY_PAYLOAD_SCHEMA_KEY] == RESOURCE_DAILY_SCHEMA_VERSION
     internalized = payload[RESOURCE_DAILY_INTERNALIZED_JOBS_KEY]
-    assert set(internalized) == set(RESOURCE_DAILY_RETIRED_TASK_IDS)
+    assert set(internalized) == {stage.task_id for stage in RESOURCE_DAILY_STAGES}
     for original in RETIRED_RAW:
-        assert internalized[original["id"]] == original
+        stage_id = "prayer-update" if original["id"] == "prayer-daily-resource" else original["id"]
+        assert internalized[stage_id] == original
 
     progress = payload[RESOURCE_DAILY_PROGRESS_KEY]
     completed = progress["2026-09-21"]["legacy-daily-vip"]
@@ -217,6 +218,18 @@ def test_beast_spirit_is_monday_only_with_weekly_receipt():
     assert stage.monday_only and stage.weekly
     assert resource_daily_cycle_key(stage, datetime(2026, 9, 21, 0, 0)) == "week:2026-09-21"
     assert resource_daily_completion(stage, RETIRED_RAW[-1]) is None
+
+
+def test_legacy_prayer_completion_does_not_skip_new_prayer_update() -> None:
+    stage = next(s for s in RESOURCE_DAILY_STAGES if s.task_type == "prayer_update")
+    old = {
+        "id": "prayer-daily-resource",
+        "task_type": "prayer_daily_resource",
+        "last_result": "success",
+        "finished_at": "2026-09-21 00:05:00",
+        "next_time": "2026-09-22 00:00:00",
+    }
+    assert resource_daily_completion(stage, old) is None
 
 
 def test_migration_is_idempotent_and_does_not_rewrite_running_state():
