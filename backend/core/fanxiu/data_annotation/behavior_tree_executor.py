@@ -7109,7 +7109,6 @@ from backend.core.fanxiu.data_annotation.tasks.weekly_wanxian import WeeklyWanxi
 from backend.core.fanxiu.data_annotation.tasks.bubble_claim_pills import BubbleClaimPillsTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.bubble_hide import BubbleHideTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.bubble_lifecycle import BubbleLifecycleTaskMixin
-from backend.core.fanxiu.data_annotation.tasks.take_medicine_batch import TakeMedicineBatchTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.weekly_shengzu import WeeklyShengzuTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.lingquan import LingquanTaskMixin
 from backend.core.fanxiu.data_annotation.tasks.lingta_challenge import LingtaChallengeTaskMixin
@@ -7144,7 +7143,6 @@ class BehaviorTreeExecutor(
     BubbleLifecycleTaskMixin,
     BubbleClaimPillsTaskMixin,
     BubbleHideTaskMixin,
-    TakeMedicineBatchTaskMixin,
     WeeklyHanliTaskMixin,
     WeeklyShengzuTaskMixin,
     WeeklyWanxianTaskMixin,
@@ -16165,7 +16163,6 @@ class BehaviorTreeExecutor(
         if key and self._scene_matches(key, score):
             with self._lock:
                 self._status.update({"current_scene": self.scene_ids.get(key), "updated_at": time.time()})
-
 
 
 

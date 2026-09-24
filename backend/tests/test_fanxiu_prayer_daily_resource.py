@@ -33,10 +33,26 @@ from backend.core.fanxiu.data_annotation.tasks.prayer_daily_resource import (
     prayer_task_state,
     prayer_task_tab_fragment,
 )
+from backend.core.fanxiu.data_annotation.tasks.prayer_soul_upgrade import (
+    cast_controls,
+    completed_level,
+)
 
 
 def _fragment(text: str, x: float, y: float, w: float = 40, h: float = 30):
     return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+
+def test_prayer_soul_priority_and_material_parsing() -> None:
+    assert cast_controls([
+        _fragment("补魂", 396, 1250, 109, 44),
+        _fragment("0/5", 508, 1198),
+    ])[:2] == ("补魂", (0, 5))
+    assert completed_level([
+        _fragment("+28", 63, 951),
+        _fragment("+29", 64, 1022),
+        _fragment("（圆满）", 628, 1018),
+    ]) == 29
 
 
 def test_prayer_daily_resource_is_internal_daily_component() -> None:

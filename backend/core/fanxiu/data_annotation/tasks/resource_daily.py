@@ -57,8 +57,33 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=ARTIFACT_STAGE_VERSION,
     )
     domains.append({"domain": "神器升阶", "result": artifacts})
+    from backend.core.fanxiu.data_annotation.tasks.spirit_artifact_prompt_update import (
+        STAGE_ID as SPIRIT_ARTIFACT_STAGE_ID,
+        STAGE_VERSION as SPIRIT_ARTIFACT_STAGE_VERSION,
+        update_spirit_artifact_prompts,
+    )
+    spirit_artifacts = yield from progress.run(
+        SPIRIT_ARTIFACT_STAGE_ID, daily_cycle,
+        lambda: update_spirit_artifact_prompts(
+            runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=SPIRIT_ARTIFACT_STAGE_VERSION,
+    )
+    domains.append({"domain": "洗灵更新", "result": spirit_artifacts})
+    from backend.core.fanxiu.data_annotation.tasks.sword_spirit_update import (
+        STAGE_ID as SWORD_SPIRIT_STAGE_ID,
+        STAGE_VERSION as SWORD_SPIRIT_STAGE_VERSION,
+        update_sword_spirit,
+    )
+    sword_spirit = yield from progress.run(
+        SWORD_SPIRIT_STAGE_ID, daily_cycle,
+        lambda: update_sword_spirit(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=SWORD_SPIRIT_STAGE_VERSION,
+    )
+    domains.append({"domain": "剑灵更新", "result": sword_spirit})
     internalized = payload.get("internalized_jobs") or {}
     for stage in RESOURCE_DAILY_STAGES:
+        if stage.monday_only and moment.weekday() != 0:
+            continue
         definition = get_fanxiu_data_annotation_task_cell_definition(stage.task_type)
         if definition is None:
             raise RuntimeError(f"资源_每日处理：缺少内部任务 {stage.task_type}")

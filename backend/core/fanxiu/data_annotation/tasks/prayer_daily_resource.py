@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
+from backend.core.fanxiu.data_annotation.tasks.prayer_soul_upgrade import upgrade_prayer_souls
 
 
 PRAYER_MAIN_SCENE_ID = 455
@@ -740,6 +741,13 @@ class PrayerDailyResourceTaskMixin:
                 stop_event,
                 main_fragments,
                 timeout_seconds=page_timeout,
+            )
+            # Task rewards may contain cast material; consume them in the same
+            # daily attempt before visiting the free store gift.
+            yield from upgrade_prayer_souls(
+                context,
+                check_stopped=lambda: self._raise_if_stopped(stop_event),
+                log=lambda message: self._log("action", message),
             )
             _frame, _fragments, store_tab = yield from self._wait_prayer_store_tab(
                 context,

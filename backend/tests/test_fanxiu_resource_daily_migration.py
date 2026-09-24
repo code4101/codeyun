@@ -31,6 +31,7 @@ from backend.core.fanxiu.data_annotation.tasks.resource_daily_contract import (
     RESOURCE_DAILY_TASK_ID,
     RESOURCE_DAILY_TASK_TYPE,
     RESOURCE_DAILY_TRIGGER_DESCRIPTION,
+    resource_daily_cycle_key,
     resource_daily_completion,
 )
 from backend.core.fanxiu.data_annotation.tasks.xianshi_exchange import (
@@ -112,6 +113,14 @@ RETIRED_RAW = [
         "next_time": "2026-09-28 00:05:00",
         "last_result": "interrupted",
         "finished_at": "2026-09-21 00:07:00",
+    },
+    {
+        "id": "beast-spirit-update",
+        "task_type": "beast_spirit_update",
+        "next_time": "2026-09-28 00:05:00",
+        "last_result": "success",
+        "finished_at": "2026-09-21 01:58:32",
+        "payload": {"max_source_level": 8},
     },
 ]
 
@@ -200,6 +209,14 @@ def test_migration_absorbs_retired_jobs_and_preserves_canonical_history():
     assert "prayer-daily-resource" not in progress.get("2026-09-21", {})
     assert "legacy-daily-xianshi" not in progress.get("2026-09-21", {})
     assert "xianshi-zhenwuge" not in progress.get("week:2026-09-21", {})
+    assert "beast-spirit-update" not in progress.get("week:2026-09-21", {})
+
+
+def test_beast_spirit_is_monday_only_with_weekly_receipt():
+    stage = next(s for s in RESOURCE_DAILY_STAGES if s.task_type == "beast_spirit_update")
+    assert stage.monday_only and stage.weekly
+    assert resource_daily_cycle_key(stage, datetime(2026, 9, 21, 0, 0)) == "week:2026-09-21"
+    assert resource_daily_completion(stage, RETIRED_RAW[-1]) is None
 
 
 def test_migration_is_idempotent_and_does_not_rewrite_running_state():

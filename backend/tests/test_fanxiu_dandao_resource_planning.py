@@ -94,3 +94,19 @@ def test_medicine_is_once_per_occurrence_and_follows_alchemy():
     next_occurrence = replace(occurrence, runtime_id="medicine-next")
     assert any(c.checkpoint_kind == DANDAO_TAKE_MEDICINE_KIND for c in
                due_ranking_checkpoints([next_occurrence], now=tomorrow, completed_keys={medicine.key}))
+
+
+def test_batch_medicine_is_only_a_resource_ranking_component():
+    from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_task_cell_definition
+    from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
+        consolidate_arena_scheduler_instances, default_kernel_scheduler_tasks,
+    )
+
+    assert get_fanxiu_data_annotation_task_cell_definition("take_medicine_batch") is None
+    assert not any(job["id"] == "take-medicine-batch" for job in default_kernel_scheduler_tasks())
+    migrated, changed = consolidate_arena_scheduler_instances([
+        {"id": "resource-ranking", "task_type": "resource_ranking", "next_time": None},
+        {"id": "take-medicine-batch", "task_type": "take_medicine_batch", "next_time": None},
+    ])
+    assert changed
+    assert [job["id"] for job in migrated] == ["resource-ranking"]

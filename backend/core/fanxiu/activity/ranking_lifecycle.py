@@ -39,11 +39,13 @@ RETIRED_RESOURCE_RANKING_TASK_IDS = frozenset({
     "resource-rank-daily-free-gift",
     "dandao-task-rewards",
     "yuanding-sansheng-daily-gift",
+    "take-medicine-batch",
 })
 RETIRED_RESOURCE_RANKING_TASK_TYPES = frozenset({
     "resource_rank_daily_free_gift",
     "dandao_task_rewards",
     "yuanding_sansheng_daily_gift",
+    "take_medicine_batch",
 })
 DAILY_RECONCILE_KIND = "daily_reconcile"
 EXCHANGE_TAIL_KIND = "exchange_tail_0030"

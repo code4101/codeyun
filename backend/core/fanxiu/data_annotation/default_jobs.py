@@ -69,7 +69,6 @@ _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
     "daily_mojie_raid",
     "daily_weekly_dungeon",
     "bubble_weekly_pills",
-    "take_medicine_batch",
     "weekly_hanli",
     "weekly_wanxian",
     "daily_lingquan",
@@ -637,11 +636,7 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
     @register_fanxiu_data_annotation_task_cell(
         "beast_spirit_update",
         "兽魂更新",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="beast-spirit-update",
-        standard_job_description="每周",
-        standard_job_payload={"max_source_level": 8},
+        scheduler_supported=False,
     )
     def _run_data_annotation_beast_spirit_update_task_cell(
         runner: Any,
@@ -667,11 +662,14 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
             stop_event,
         )
         yield from context.go_scene(34)
-        runner._persist_scheduler_task_next_time(
-            STANDARD_JOB_ID,
-            next_beast_spirit_update_at().strftime("%Y-%m-%d %H:%M:%S"),
-        )
-        return result
+        if result.get("ok") is not True or result.get("outcome") != "complete":
+            raise RuntimeError(f"兽魂更新未达到业务完成终态：{result.get('outcome')}")
+        if payload.get("schedule") is not False:
+            runner._persist_scheduler_task_next_time(
+                STANDARD_JOB_ID,
+                next_beast_spirit_update_at().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        return {"result": "success", **result}
 
     @register_fanxiu_data_annotation_task_cell(
         "storage_bag_operation",
@@ -1363,23 +1361,6 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         # whether any SDK page needs opening; normalizing the underlying game
         # to #34 here strands claimed-week runs on unrelated pages.
         return (yield from runner._execute_bubble_weekly_task(ctx, stop_event, payload))
-
-    @register_fanxiu_data_annotation_task_cell(
-        "take_medicine_batch",
-        "服用丹药_批量",
-        scheduler_supported=True,
-        standard_job=True,
-        standard_job_id="take-medicine-batch",
-        standard_job_description="手动",
-        standard_job_payload={"timeout_seconds": 20.0},
-    )
-    def _run_data_annotation_take_medicine_batch_task_cell(
-        runner: Any,
-        ctx: dict[str, Any],
-        payload: dict[str, Any],
-        stop_event: threading.Event,
-    ) -> Any:
-        return (yield from runner._execute_take_medicine_batch_task(ctx, stop_event, payload))
 
     @register_fanxiu_data_annotation_task_cell(
         "daily_lingquan",

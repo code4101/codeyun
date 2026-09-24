@@ -65,7 +65,7 @@ _RETIRED_SCHEDULER_TASK_IDS = {
     *RETIRED_RESOURCE_RANKING_TASK_IDS,
     # 主题集旧一级任务统一归属唯一的 theme-collection。
     *THEME_COLLECTION_INTERNALIZED_TASK_IDS,
-    # 六项资源日常统一归属唯一的 resource-auto-use（资源_每日处理）。
+    # 资源日常及周一兽魂更新归属唯一的 resource-auto-use。
     *RESOURCE_DAILY_RETIRED_TASK_IDS,
 }
 
@@ -172,7 +172,7 @@ def consolidate_arena_scheduler_instances(
         return changed
 
     def migrate_resource_daily_family() -> bool:
-        """Absorb the six retired first-level Jobs into one canonical daily Job.
+        """Absorb retired first-level Jobs into one canonical daily Job.
 
         This is deliberately *not* ``migrate_family``: the canonical trigger is
         a fixed next 00:00, never the earliest retired ``next_time``, and the
@@ -550,15 +550,6 @@ def default_kernel_scheduler_tasks(
         job("hide-floating-window", "hide_floating_window", "隐藏浮动窗", description="手动"),
         job("jianling-cuiling", "jianling_cuiling", "剑灵_淬灵", description="手动"),
         job(
-            "beast-spirit-update",
-            "beast_spirit_update",
-            "兽魂更新",
-            description="每周",
-            initial_times=("00:05",),
-            initial_weekdays=(0,),
-            payload={"max_source_level": 8},
-        ),
-        job(
             "storage-bag-operation",
             "storage_bag_operation",
             "储物袋_操作",
@@ -782,6 +773,8 @@ def default_kernel_scheduler_tasks(
             not definition.scheduler_supported
             or not definition.standard_job
             or definition.task_type in existing_types
+            or definition.task_type in _RETIRED_SCHEDULER_TASK_TYPES
+            or definition.standard_job_id in _RETIRED_SCHEDULER_TASK_IDS
         ):
             continue
         tasks.append(

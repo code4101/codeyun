@@ -89,3 +89,117 @@ def run_spirit_artifact_all_upgrades(context, execute, *, artifacts, rules,
     root.mkdir(parents=True, exist_ok=True)
     (root / 'last-round.json').write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
     return report
+
+
+def run_spirit_artifact_safe_upgrade_round(context, execute, *, stop_at: float,
+                                           max_actions: int = 100) -> dict:
+    return execute(spirit_artifact_safe_upgrade_steps(
+        context, stop_at=stop_at, max_actions=max_actions))
+
+
+def spirit_artifact_safe_upgrade_steps(context, *, stop_at: float,
+                                       max_actions: int = 100):
+    """从灵器总览按实时库存逐笔升阶/悟境，并核验每笔精确消耗。
+
+    每次重新扫描全部已装备部件，只导航到有安全材料的候选；不依赖灵器编号、
+    历史红点或上次 Cell 的位置。客户端自动选料可能包含已培养备件时，
+    ``scan_spirit_artifact_upgrades`` 不会放行。当前只点击已证明位于首屏的
+    目标，后屏定位缺失时保留现场交由研发补齐。
+    """
+    from ...catalog.spirit_artifact_identity import load_spirit_artifact_templates
+    from ...catalog.spirit_artifact_progression import load_spirit_artifact_progression_rules
+    from ...instrumentation.spirit_artifact_grade import (
+        read_spirit_artifact_grade_snapshot, read_spirit_artifact_realm_snapshot,
+    )
+    from .spirit_artifact_upgrade_count import (
+        open_artifact_for_upgrade_steps, select_artifact_tab_steps,
+    )
+
+    if max_actions <= 0 or stop_at <= time.time():
+        raise ValueError('灵器升级需要有效动作上限与截止时间')
+    rules = load_spirit_artifact_progression_rules()
+    templates = load_spirit_artifact_templates()
+    material_ids = {cost[0] for dimension in ('grade', 'realm')
+                    for cost in rules[dimension].values() if cost}
+    results = []
+
+    def observe():
+        owned = read_spirit_artifact_owned_runtime()
+        counts, _ = read_backpack_item_counts(material_ids, manager_key='spirit-safe-upgrade')
+        candidates = scan_spirit_artifact_upgrades(owned, counts, rules=rules)
+        return owned, counts, candidates
+
+    for _ in range(max_actions):
+        if time.time() >= stop_at:
+            return {'status': 'paused', 'reason': 'deadline', 'actions': results}
+        before, counts_before, candidates = observe()
+        if not candidates:
+            return {'status': 'complete', 'actions': results, 'final_scene_id': 666}
+        candidate = candidates[0]
+        if candidate.ware_id not in templates:
+            raise RuntimeError(f'灵器编号缺少正式名称：{candidate.ware_id}')
+        scene = (yield from context.wait_scene([666], wait=5)).scene_id
+        if scene != 666:
+            raise RuntimeError(f'安全升级入口要求总览 #666，实际 #{scene}')
+        yield from open_artifact_for_upgrade_steps(context, templates[candidate.ware_id][0])
+        tab = '升阶' if candidate.dimension == 'grade' else '升品'
+        page = 717 if candidate.dimension == 'grade' else 731
+        read_page = (read_spirit_artifact_grade_snapshot if candidate.dimension == 'grade'
+                     else read_spirit_artifact_realm_snapshot)
+        yield from select_artifact_tab_steps(context, tab)
+        if (yield from context.wait_scene([page], wait=8)).scene_id != page:
+            raise RuntimeError(f'{tab}页未就绪')
+        ui = read_page()
+        matches = [row for row in ui['parts'] if (row['part'], row['item_id']) ==
+                   (candidate.part, candidate.item_id)]
+        if len(matches) != 1 or matches[0]['index'] not in range(4):
+            raise RuntimeError(f'{tab}目标不在已验证首屏四格，保留现场：{candidate}')
+        if ui['item_id'] != candidate.item_id:
+            context.click_shape_center(page, f"首屏第{matches[0]['index'] + 1}格")
+            yield from context.wait_action_settle(.8)
+        ui = read_page()
+        before, counts_before, fresh = observe()
+        exact = [item for item in fresh if (item.ware_id, item.part, item.dimension,
+                 item.item_id, item.current_level) == (candidate.ware_id, candidate.part,
+                 candidate.dimension, candidate.item_id, candidate.current_level)]
+        if (len(exact) != 1 or ui['ware_id'] != candidate.ware_id
+                or ui['part'] != candidate.part or ui['item_id'] != candidate.item_id
+                or ui[candidate.dimension] != candidate.current_level
+                or ui['material_id'] != candidate.cost_item_id
+                or ui['can_upgrade'] is not True):
+            raise RuntimeError(f'{tab}客户端准入与新鲜材料候选不一致，保留现场')
+        candidate = exact[0]
+        action_shape = '执行升阶' if candidate.dimension == 'grade' else '执行悟境'
+        context.click_shape_center(page, action_shape)
+        seen_results = set()
+        after = None
+        for _attempt in range(16):
+            landed = (yield from context.wait_scene([page, 718, 719, 720, 721], wait=8)).scene_id
+            if landed in (718, 719, 720, 721):
+                if landed not in seen_results:
+                    seen_results.add(landed)
+                    shape = '确认' if landed in (718, 719) else '点击屏幕继续'
+                    context.click_shape_center(landed, shape)
+                yield from context.wait_action_settle(.8)
+                continue
+            after = read_spirit_artifact_owned_runtime()
+            if any(row['item_id'] == candidate.item_id and
+                   row[candidate.dimension] == candidate.next_level
+                   for row in after['inventory']['items']):
+                break
+            yield from context.wait_action_settle(.8)
+        if after is None:
+            raise RuntimeError(f'{tab}动作后未返回业务页，保留现场')
+        counts_after, _ = read_backpack_item_counts(
+            {candidate.cost_item_id}, manager_key='spirit-safe-upgrade-after')
+        removed = verify_spirit_artifact_upgrade_delta(
+            before, after, candidate=candidate,
+            counts_before=counts_before, counts_after=counts_after)
+        results.append({'ware_id': candidate.ware_id, 'part': candidate.part,
+                        'dimension': candidate.dimension, 'from': candidate.current_level,
+                        'to': candidate.next_level, 'consumed_item_ids': removed})
+        yield from select_artifact_tab_steps(context, '装配')
+        yield from context.wait_scene([667], wait=8)
+        context.click_shape_center(667, '背景返回封面')
+        yield from context.wait_scene([666], wait=10)
+    return {'status': 'paused', 'reason': 'action_limit', 'actions': results}

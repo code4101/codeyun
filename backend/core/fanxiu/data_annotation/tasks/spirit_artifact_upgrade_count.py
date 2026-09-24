@@ -66,6 +66,10 @@ def use_visible_upgrade_materials(context, execute, *, scene_id=717,
 
 
 def select_artifact_tab(context, execute, label, *, optional=False):
+    return execute(select_artifact_tab_steps(context, label, optional=optional))
+
+
+def select_artifact_tab_steps(context, label, *, optional=False):
     """页签数量会改变布局，按当前文字定位；升品缺席是正常能力差异。"""
     from ..ocr_spatial import find_text_matches, select_text_match
     band = context.shape_box(667, '升阶页签')
@@ -77,11 +81,11 @@ def select_artifact_tab(context, execute, label, *, optional=False):
         match = find(label)
         if match is not None:
             context.click_frame_point(667, *match.point())
-            execute(context.wait_action_settle(1.2))
+            yield from context.wait_action_settle(1.2)
             return True
         if optional and all(find(text) is not None for text in ('装配', '升阶')):
             return False
-        execute(context.wait_action_settle(.5))
+        yield from context.wait_action_settle(.5)
     raise RuntimeError(f'灵器页签 {label} 未识别，保留现场')
 
 
@@ -113,6 +117,10 @@ def finish_visible_artifact(context, execute):
 
 
 def open_artifact_for_upgrade(context, execute, name):
+    return execute(open_artifact_for_upgrade_steps(context, name))
+
+
+def open_artifact_for_upgrade_steps(context, name):
     """按封面名称定位灵器，不为已识别 GUI 再扫描 Runtime。"""
     from ...instrumentation.spirit_artifact_ui import locate_spirit_artifact_name
     names = (name, name.replace('摩诃', '摩河'), name.replace('干天', '千天'))
@@ -127,7 +135,7 @@ def open_artifact_for_upgrade(context, execute, name):
         point = locate_spirit_artifact_name(tokens, names)
         if point is not None:
             context.click_frame_point(666, *point)
-            landed = execute(context.wait_scene(list(ARTIFACT_TAB_SCENES), wait=8)).scene_id
+            landed = (yield from context.wait_scene(list(ARTIFACT_TAB_SCENES), wait=8)).scene_id
             if landed not in ARTIFACT_TAB_SCENES:
                 raise RuntimeError(f'灵器名称点击后进入 #{landed}，保留现场')
             return landed
@@ -137,13 +145,13 @@ def open_artifact_for_upgrade(context, execute, name):
             # 封面刚打开或滚动结束时，名称可能仍在入场动画中。
             if empty_observations == 0:
                 empty_observations += 1
-                execute(context.wait_action_settle(.6))
+                yield from context.wait_action_settle(.6)
                 continue
             raise RuntimeError('灵器列表 OCR 未识别出任何已配置名称，保留现场')
         empty_observations = 0
         if min(visible) < target < max(visible):
             raise RuntimeError(f'目标 {name} 位于可见范围但名称未识别，保留现场')
         direction = 'right' if target > max(visible) else 'left'
-        execute(context.scroll_shape_content(context.shape(666, '灵器列表'), direction=direction))
-        execute(context.wait_action_settle(.6))
+        yield from context.scroll_shape_content(context.shape(666, '灵器列表'), direction=direction)
+        yield from context.wait_action_settle(.6)
     raise RuntimeError(f'封面未找到灵器 {name}')

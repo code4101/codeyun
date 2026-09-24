@@ -3,8 +3,8 @@ from __future__ import annotations
 """Lightweight contract for the consolidated resource Daily Processing Job.
 
 The canonical ``resource-auto-use`` Job owns one business run at 00:00 and
-aggregates six retired first-level Jobs.  This module only names that identity
-and the six internalized stages (plus two pure helpers used by the Scheduler
+aggregates retired first-level Jobs.  This module only names that identity
+and the internalized stages (plus two pure helpers used by the Scheduler
 catalogue migration).  It imports nothing from the Scheduler so both the
 defaults module and pure tests can depend on it without cycles.
 """
@@ -18,7 +18,7 @@ RESOURCE_DAILY_TASK_TYPE = "resource_auto_use"
 RESOURCE_DAILY_LABEL = "资源_每日处理"
 RESOURCE_DAILY_TRIGGER_DESCRIPTION = "每日"
 
-RESOURCE_DAILY_SCHEMA_VERSION = 1
+RESOURCE_DAILY_SCHEMA_VERSION = 2
 RESOURCE_DAILY_PAYLOAD_SCHEMA_KEY = "resource_daily_schema_version"
 RESOURCE_DAILY_INTERNALIZED_JOBS_KEY = "internalized_jobs"
 RESOURCE_DAILY_PROGRESS_KEY = "aggregate_progress"
@@ -26,6 +26,7 @@ RESOURCE_DAILY_STAGE_VERSION = "1"
 
 RESOURCE_DAILY_DAILY_CADENCE = "daily"
 RESOURCE_DAILY_WEEKLY_CADENCE = "weekly_monday"
+RESOURCE_DAILY_MONDAY_ONLY_CADENCE = "monday_only"
 
 
 @dataclass(frozen=True)
@@ -39,10 +40,14 @@ class ResourceDailyStage:
 
     @property
     def weekly(self) -> bool:
-        return self.cadence == RESOURCE_DAILY_WEEKLY_CADENCE
+        return self.cadence in (RESOURCE_DAILY_WEEKLY_CADENCE, RESOURCE_DAILY_MONDAY_ONLY_CADENCE)
+
+    @property
+    def monday_only(self) -> bool:
+        return self.cadence == RESOURCE_DAILY_MONDAY_ONLY_CADENCE
 
 
-# Two Monday 00:00 exchanges are weekly; the other four stages are daily.
+# Beast spirit executes only on Monday; exchanges keep their weekly receipts.
 RESOURCE_DAILY_STAGES: tuple[ResourceDailyStage, ...] = (
     ResourceDailyStage("legacy-daily-vip", "daily_vip", "日常_vip", RESOURCE_DAILY_DAILY_CADENCE),
     ResourceDailyStage("daily-signin", "daily_signin", "日常_签到", RESOURCE_DAILY_DAILY_CADENCE),
@@ -50,6 +55,7 @@ RESOURCE_DAILY_STAGES: tuple[ResourceDailyStage, ...] = (
     ResourceDailyStage("legacy-daily-xianshi", "daily_xianshi", "仙市_秘藏阁", RESOURCE_DAILY_DAILY_CADENCE),
     ResourceDailyStage("xianshi-langya-rankings", "xianshi_langya_rankings", "仙市_琅琊榜", RESOURCE_DAILY_WEEKLY_CADENCE),
     ResourceDailyStage("xianshi-zhenwuge", "xianshi_zhenwuge", "仙市_真悟阁", RESOURCE_DAILY_WEEKLY_CADENCE),
+    ResourceDailyStage("beast-spirit-update", "beast_spirit_update", "兽魂更新", RESOURCE_DAILY_MONDAY_ONLY_CADENCE),
 )
 
 RESOURCE_DAILY_STAGE_IDS: frozenset[str] = frozenset(
@@ -116,6 +122,11 @@ def resource_daily_completion(
     minted; otherwise the caller keeps its history without one.
     """
 
+    # The old beast Job stored Scheduler success, but its business result can
+    # still be layout_update_required. Its record has no durable outcome field,
+    # so the new aggregate must observe it afresh on the next Monday.
+    if stage.task_type == "beast_spirit_update":
+        return None
     run_status = str(item.get("last_result") or "").strip().lower()
     finished_at = str(item.get("finished_at") or "").strip()
     finished = _parse_finished_at(finished_at)
@@ -145,6 +156,7 @@ def resource_daily_completion(
 __all__ = [
     "RESOURCE_DAILY_DAILY_CADENCE",
     "RESOURCE_DAILY_INTERNALIZED_JOBS_KEY",
+    "RESOURCE_DAILY_MONDAY_ONLY_CADENCE",
     "RESOURCE_DAILY_LABEL",
     "RESOURCE_DAILY_PAYLOAD_SCHEMA_KEY",
     "RESOURCE_DAILY_PROGRESS_KEY",

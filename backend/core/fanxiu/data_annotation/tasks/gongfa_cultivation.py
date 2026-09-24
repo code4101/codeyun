@@ -2,7 +2,7 @@
 
 业务结果页必须显式继续，不属于弹窗守护。所有动作使用资产 scene/Shape；
 只执行现场教学流程：快速融合、快速共鸣、悟境/通玄、法则、返回世界。
-不进入单项共鸣详情。秘法按用户要求仅保留函数占位。
+不进入单项共鸣详情。秘术的秘传页仅点亮有提示且持有功法书的卡片。
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ BOOK = 781
 # 必须先切回功法书页签再执行养成流程。
 BOOK_OTHER_TAB = 800
 STAGE_ID = "gongfa-cultivation"
-STAGE_VERSION = "1"
+STAGE_VERSION = "2"
 TABS = ("剑修", "法修", "魔修", "体修", "仙术")
 ENLIGHTENMENT = 786
 ENLIGHTENMENT_RESULT = 787
@@ -81,12 +81,80 @@ def complete_current_upgrade(context, scene_id: int, *, max_actions: int = 100):
         actions += 1
 
 
-def activate_and_upgrade_secret_art(context):
-    """秘法亮起时还有激活、升级操作；当前无候选，尚未进行现场教学。
+def activate_secret_legacy(context):
+    """清理秘术→秘传的点亮提示；其它秘术分类留给各自业务规则。
 
-    用户明确要求保留 pass 占位，后续教学后在此补齐，不自行探索新分支。
+    总页签与秘传页签红点只用于定位，实际候选由列表上的
+    「点亮功法书」文字确认。一次只点亮一件，结果页继续后重新从
+    功法书稳定入口观察；素材不足或页面不明确时保留现场报错。
     """
-    pass
+    actions = 0
+    for _ in range(30):
+        yield from require_scene(context, BOOK)
+        if not context.shape_matches(
+            BOOK, "秘术激活点", frame_data_url=context.cur_frame(update=True),
+        ):
+            return {"outcome": "clear", "actions": actions}
+        yield from context.wait_click(BOOK, "秘术页签")
+        match = yield from context.wait_scene([828, 826], wait=12)
+        if match.scene_id == 828:
+            yield from context.wait_click(828, "秘传")
+            yield from require_scene(context, 826)
+        elif match.scene_id != 826:
+            raise RuntimeError(f"秘术页未进入秘传：#{match.scene_id}")
+
+        frame = context.cur_frame(update=True)
+        if not context.shape_matches(826, "秘传激活点", frame_data_url=frame):
+            # 秘术总红点还可能属于绝招、双人、异能或斗技。
+            yield from context.wait_click(826, "功法书页签")
+            return {"outcome": "secret_legacy_clear", "actions": actions}
+        candidate = yield from find_secret_legacy_candidate(context)
+        if candidate is None:
+            raise RuntimeError("秘传仍有提示，但列表未找到点亮功法书候选")
+        context.click_ocr_text(
+            826, "点亮功法书", in_shapes=["秘传列表"], crop=True,
+            occurrence=0, frame_data_url=candidate,
+        )
+        yield from require_scene(context, 827)
+        frame = context.cur_frame(update=True)
+        button = context.ocr_text_in_shapes(
+            827, ["点亮功法书"], crop=True, padding=0,
+            frame_data_url=frame,
+        )
+        if "点亮功法书" not in button:
+            raise RuntimeError(f"秘传点亮按钮未就绪：{button!r}")
+        yield from context.wait_click(827, "点亮功法书")
+        yield from require_scene(context, 378)
+        yield from context.wait_click(378, "继续")
+        yield from context.wait_action_settle(1)
+        # 点亮结果可能回到秘传或重置为功法书；都经已知页签回稳定入口。
+        match = yield from context.wait_scene([BOOK, 826, 828], wait=12)
+        if match.scene_id in (826, 828):
+            yield from context.wait_click(match.scene_id, "功法书页签")
+        yield from require_scene(context, BOOK)
+        actions += 1
+    raise RuntimeError("秘传点亮超过单次动作上限 30")
+
+
+def find_secret_legacy_candidate(context):
+    """在秘传连续列表中找一条真实可点亮提示，返回其原始帧。"""
+    for direction in ("up", "down"):
+        for _ in range(30):
+            yield from require_scene(context, 826)
+            frame = context.cur_frame(update=True)
+            if context.find_ocr_text(
+                826, "点亮功法书", in_shapes=["秘传列表"], crop=True,
+                occurrence=0, frame_data_url=frame,
+            ) is not None:
+                return frame
+            changed = yield from context.scroll_shape_content(
+                826, "秘传列表", direction=direction,
+            )
+            if not changed:
+                break
+        else:
+            raise RuntimeError("秘传列表滚动超过上限，未确认边界")
+    return None
 
 
 def quick_fusion(context):
@@ -117,6 +185,13 @@ def quick_resonance(context):
     yield from context.wait_click(784, "快速共鸣")
     yield from context.wait_action_settle(1)
     match = yield from context.wait_scene([785, 784], wait=8)
+    # 原生结果窗晚于藏书页的按钮回弹。首次见到 #784 不能立即判空，
+    # 需在新帧上复核，否则结果窗稍后出现会让「返回」点错场景。
+    for _ in range(3):
+        if match.scene_id != 784:
+            break
+        yield from context.wait_action_settle(1)
+        match = yield from context.wait_scene([785, 784], wait=8)
     if match.scene_id == 785:
         yield from context.wait_click(785, "继续")
         outcome = "resonated"
@@ -125,6 +200,7 @@ def quick_resonance(context):
         outcome = "no_result_page"
     else:
         raise RuntimeError(f"快速共鸣出现未知页面 #{match.scene_id}")
+    yield from require_scene(context, 784)
     yield from context.wait_click(784, "返回")
     yield from require_scene(context, BOOK)
     return {"outcome": outcome}
@@ -225,14 +301,14 @@ def upgrade_gongfa_book(context):
     resonance = yield from quick_resonance(context)
     books = yield from complete_book_tabs(context)
     law = yield from upgrade_law(context)
-    activate_and_upgrade_secret_art(context)
+    secret_art = yield from activate_secret_legacy(context)
     yield from context.wait_click(BOOK, "返回")
     world = yield from context.wait_scene([34, 661], wait=8)
     if world.scene_id not in (34, 661):
         raise RuntimeError(f"升级功法书结束未回世界：#{world.scene_id}")
     return {"result": "success", "outcome": "complete", "fusion": fusion,
             "resonance": resonance, "books": books, "law": law,
-            "secret_art": "reserved_by_user", "final_scene": world.scene_id}
+            "secret_art": secret_art, "final_scene": world.scene_id}
 
 
 def enter_book(context):
@@ -243,7 +319,7 @@ def enter_book(context):
     """
     from backend.core.fanxiu.behavior_tree.errors import SceneClickMismatch
 
-    known = [BOOK, BOOK_OTHER_TAB, 782, 783, 784, 785, 786, 787, 788, 789, 790, 256, 34, 661]
+    known = [BOOK, BOOK_OTHER_TAB, 826, 828, 782, 783, 784, 785, 786, 787, 788, 789, 790, 256, 34, 661]
     for attempt in range(8):
         match = yield from context.wait_scene(known, wait=8, required=(attempt == 0))
         if match is None:
@@ -252,7 +328,7 @@ def enter_book(context):
         scene = int(match.scene_id)
         if scene == BOOK:
             return match
-        if scene == BOOK_OTHER_TAB:
+        if scene in (BOOK_OTHER_TAB, 826, 828):
             shape = "功法书页签"
         elif scene in (34, 661):
             shape = "功法书入口"

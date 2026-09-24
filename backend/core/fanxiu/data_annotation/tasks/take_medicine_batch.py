@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-"""Batch medicine component shared by the standalone job and resource ranking.
+"""Batch medicine component owned by the alchemy checkpoint in resource ranking.
 
 #595 is the authoritative active-queue state. Never click 停止服用. Success
 requires returning to #34; an interrupted exit rechecks game state on retry.
 """
 
-from pathlib import Path
-import threading
 from typing import Any
-
-STANDARD_JOB_ID = "take-medicine-batch"
 
 
 class TakeMedicineBatchSafetyError(RuntimeError):
@@ -71,23 +67,4 @@ def run_take_medicine_batch_flow(context: Any, *, timeout: float = 20.0):
     }
 
 
-class TakeMedicineBatchTaskMixin:
-    def _execute_take_medicine_batch_task(
-        self, ctx: dict[str, Any], stop_event: threading.Event,
-        payload: dict[str, Any] | None = None,
-    ):
-        payload = dict(payload or {})
-        path = ctx.get("asset_tree_path")
-        if not isinstance(path, Path):
-            raise TakeMedicineBatchSafetyError("服用丹药：缺少资产树路径")
-        context = self._behavior_tree_context(ctx, path, stop_event=stop_event)
-        result = yield from run_take_medicine_batch_flow(
-            context, timeout=max(5.0, min(60.0, float(payload.get("timeout_seconds") or 20))),
-        )
-        self._persist_scheduler_task_next_time(str(payload.get("__scheduler_task_id") or STANDARD_JOB_ID), None)
-        self._log("success", result["message"])
-        return result
-
-
-__all__ = ["STANDARD_JOB_ID", "TakeMedicineBatchSafetyError", "TakeMedicineBatchTaskMixin",
-           "run_take_medicine_batch_flow"]
+__all__ = ["TakeMedicineBatchSafetyError", "run_take_medicine_batch_flow"]
