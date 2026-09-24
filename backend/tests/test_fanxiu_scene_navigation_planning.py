@@ -399,6 +399,105 @@ def test_data_declared_scroll_list_edge_joins_the_generic_scene_graph():
         assert final_step["action_title"] == "动态任务入口"
 
 
+def test_rotating_card_identity_is_shape_data_and_plans_through_its_landing():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 10, "title": "home", "shapes": [
+            {"id": "calendar", "title": "日程", "sceneJumpTarget": "11(10)"},
+        ]},
+        {"type": "image", "id": 11, "title": "calendar", "shapes": [
+            {"id": "card", "title": "目标活动卡片", "sceneJumpTarget": "12",
+             "navigationAction": "schedule_card_forward",
+             "navigationRuntimeActivityIds": [12345],
+             "navigationForwardShape": "活动卡片/前往"},
+        ]},
+        {"type": "image", "id": 12, "title": "cover", "shapes": [
+            {"id": "detail", "title": "查看详情", "sceneJumpTarget": "13(10)"},
+        ]},
+        {"type": "image", "id": 13, "title": "rank", "shapes": []},
+    ]
+    plan = runner.plan_scene_navigation(tree, 10, 13, limit=1)
+    assert plan["status"] == "ok"
+    assert [(step["from_scene_id"], step["to_scene_id"])
+            for step in plan["candidates"][0]["downstream"]["steps"]] == [(11, 12), (12, 13)]
+
+
+def test_runtime_world_menu_function_is_a_data_declared_graph_edge():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 10, "title": "world", "shapes": [
+            {"id": "open", "title": "打开菜单", "sceneJumpTarget": "11(10)"},
+        ]},
+        {"type": "image", "id": 11, "title": "menu", "shapes": [
+            {"id": "item", "title": "动态功能", "sceneJumpTarget": "12",
+             "navigationAction": "world_menu_function", "navigationMenuShape": "菜单",
+             "navigationRuntimeFunctionId": 5000},
+        ]},
+        {"type": "image", "id": 12, "title": "home", "shapes": [
+            {"id": "tab", "title": "目标页签", "sceneJumpTarget": "13(10)"},
+        ]},
+        {"type": "image", "id": 13, "title": "target", "shapes": []},
+    ]
+    plan = runner.plan_scene_navigation(tree, 10, 13, limit=1)
+    assert plan["status"] == "ok"
+    assert [(step["from_scene_id"], step["to_scene_id"])
+            for step in plan["candidates"][0]["downstream"]["steps"]] == [(11, 12), (12, 13)]
+
+
+def test_shortest_progress_replans_to_longer_route_after_failed_edge():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 10, "title": "起点", "shapes": [
+            {"id": "short", "title": "短路", "sceneJumpTarget": "11(10)"},
+            {"id": "long", "title": "绕行", "sceneJumpTarget": "12(10)"},
+        ]},
+        {"type": "image", "id": 11, "title": "短路中转", "shapes": [
+            {"id": "short-last", "title": "终点", "sceneJumpTarget": "14(10)"},
+        ]},
+        {"type": "image", "id": 12, "title": "绕行一", "shapes": [
+            {"id": "long-middle", "title": "继续", "sceneJumpTarget": "13(10)"},
+        ]},
+        {"type": "image", "id": 13, "title": "绕行二", "shapes": [
+            {"id": "long-last", "title": "终点", "sceneJumpTarget": "14(10)"},
+        ]},
+        {"type": "image", "id": 14, "title": "目标", "shapes": []},
+    ]
+    healthy = runner.plan_scene_navigation(tree, 10, 14)
+    assert [item["action_title"] for item in healthy["candidates"]] == ["短路"]
+
+    short_edge = next(edge for edge in runner._scene_jump_edges(tree)[10]
+                      if edge["shape"]["title"] == "短路")
+    failed = {runner._scene_jump_edge_semantic_key(short_edge)}
+    remaining = runner._scene_next_edge_candidates(tree, 10, 14, failed_edge_keys=failed)
+    assert [item["edge"]["shape"]["title"] for item in remaining] == ["绕行"]
+    assert remaining[0]["progress_probability"] > 0
+
+
+def test_one_off_landing_does_not_create_a_fictional_shortcut():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {"type": "image", "id": 10, "title": "起点", "shapes": [
+            {"id": "return", "title": "返回", "sceneJumpTarget": "11(100),12(1)"},
+        ]},
+        {"type": "image", "id": 11, "title": "主落点", "shapes": [
+            {"id": "middle", "title": "继续", "sceneJumpTarget": "13(10)"},
+        ]},
+        {"type": "image", "id": 12, "title": "偶发落点", "shapes": [
+            {"id": "rare-last", "title": "目标", "sceneJumpTarget": "14(10)"},
+        ]},
+        {"type": "image", "id": 13, "title": "主路中转", "shapes": [
+            {"id": "main-last", "title": "目标", "sceneJumpTarget": "14(10)"},
+        ]},
+        {"type": "image", "id": 14, "title": "目标", "shapes": []},
+    ]
+    plan = runner.plan_scene_navigation(tree, 10, 14)
+    assert plan["status"] == "ok"
+    assert plan["candidates"][0]["expected_landing_id"] == 11
+    assert plan["candidates"][0]["single_step_progress_probability"] > 0.9
+    assert [(step["from_scene_id"], step["to_scene_id"])
+            for step in plan["candidates"][0]["downstream"]["steps"]] == [(11, 13), (13, 14)]
+
+
 def test_navigation_does_not_use_recast_candidate_decision_as_exit():
     runner = create_behavior_tree_executor()
     tree = [

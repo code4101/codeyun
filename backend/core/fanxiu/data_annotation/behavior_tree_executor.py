@@ -6903,6 +6903,46 @@ class BehaviorTreeContext(AutomationContext):
                 break
         return "not_found"
 
+    def open_navigation_world_menu_entry(self, source_view: View, route_shape: Shape):
+        """Click a dynamic world-menu item named by its Shape's Runtime ID.
+
+        The menu layout and enabled functions come from the live Runtime
+        inventory; OCR aligns that inventory to the current #35-like frame.
+        The route Shape declares its source viewport, function ID and expected
+        landing, while the navigator remains independent of business names.
+        """
+        from backend.core.fanxiu.instrumentation.world_menu import read_world_menu_snapshot
+        from backend.core.fanxiu.runtime_gui.world_menu import plan_world_menu_click
+
+        data = route_shape.raw
+        source_id = self.runner._image_number(source_view.raw)
+        if source_id is None:
+            raise RuntimeError("动态菜单导航缺少来源场景 ID")
+        menu_shape = str(data.get("navigationMenuShape") or "").strip()
+        function_id = data.get("navigationRuntimeFunctionId")
+        if not menu_shape or function_id is None:
+            raise ValueError("动态菜单导航缺少 navigationMenuShape/navigationRuntimeFunctionId")
+        expected = self.runner._scene_jump_target_ids(
+            self.ctx.get("asset_tree") or [], data,
+        )
+        if not expected:
+            raise ValueError("动态菜单导航缺少 sceneJumpTarget")
+        match = yield from self.wait_scene([source_id], wait=10,
+                                           label="场景移动：动态菜单点击前复核")
+        if match.scene_id != source_id:
+            raise RuntimeError(f"动态菜单导航来源已变为 #{match.scene_id}")
+        snapshot = read_world_menu_snapshot()
+        tokens = self.ocr_tokens_in_shapes(
+            source_id, (menu_shape,), frame_data_url=match.frame_data_url,
+        )
+        plan = plan_world_menu_click(
+            snapshot, int(function_id), tokens, expected_scene_ids=expected,
+        )
+        if not plan.ready or plan.point is None:
+            raise RuntimeError(f"动态菜单导航无法安全定位：{plan.reason}")
+        self.click_frame_point(source_view, *plan.point)
+        return "open"
+
     def popup_score(self, view: View | None) -> float:
         if not isinstance(view, View) or not isinstance(view.raw, dict):
             return 0.0
@@ -11061,6 +11101,7 @@ class BehaviorTreeExecutor(
 
     def _scene_navigation_distances_to_target(
         self,
+        tree: list[dict[str, Any]],
         navigation_edges: dict[int, list[dict[str, Any]]],
         target_scene_id: int,
     ) -> dict[int, int]:
@@ -11069,7 +11110,13 @@ class BehaviorTreeExecutor(
             for edge in edges:
                 if self._scene_navigation_edge_risk(edge, int(target_scene_id)) is None:
                     continue
-                for landing_id in edge.get("target_ids") or []:
+                shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
+                reliable = self._scene_navigation_reliable_landings(
+                    self._scene_navigation_landing_probabilities(
+                        tree, shape, [int(value) for value in edge.get("target_ids") or []],
+                    )
+                )
+                for landing_id in reliable:
                     reverse_edges.setdefault(int(landing_id), set()).add(int(source_id))
         distances = {int(target_scene_id): 0}
         queue = [int(target_scene_id)]
@@ -11235,9 +11282,14 @@ class BehaviorTreeExecutor(
             landing_probability_cache[edge_key] = landing_probabilities
         if source_distance is None or self._scene_navigation_edge_risk(edge, target_scene_id) is None:
             return 0.0, []
+        reliable_landing_ids = self._scene_navigation_reliable_landings(
+            self._scene_navigation_landing_probabilities(
+                tree, shape, [int(scene_id) for scene_id in edge.get("target_ids") or []],
+            )
+        )
         progress_landing_ids = [
             int(landing_id)
-            for landing_id in landing_probabilities
+            for landing_id in reliable_landing_ids
             if int(landing_id) == int(target_scene_id)
             or distances_to_target.get(int(landing_id), source_distance) < source_distance
         ]
@@ -11298,7 +11350,7 @@ class BehaviorTreeExecutor(
         distances_to_target = (
             distances_to_target
             if distances_to_target is not None
-            else self._scene_navigation_distances_to_target(navigation_edges, int(target_scene_id))
+            else self._scene_navigation_distances_to_target(tree, navigation_edges, int(target_scene_id))
         )
         landing_probability_cache = landing_probability_cache if landing_probability_cache is not None else {}
         progress_probability, progress_landing_ids = self._scene_navigation_edge_progress_probability(
@@ -11309,6 +11361,11 @@ class BehaviorTreeExecutor(
             landing_probability_cache=landing_probability_cache,
         )
         landing_probabilities = landing_probability_cache[self._scene_jump_edge_key(edge)]
+        # A route must reduce the remaining hop count under the currently
+        # available graph.  Longer alternatives become progress only after a
+        # failed edge is removed and distances are recomputed below.
+        if progress_probability <= 0:
+            return None
         expected_reachability = 0.0
         if reachability_values is not None:
             # Incremental (advantage) score: only landing mass that leaves this
@@ -11432,7 +11489,18 @@ class BehaviorTreeExecutor(
         failed_edge_keys = failed_edge_keys or set()
         candidates: list[dict[str, Any]] = []
         navigation_edges = self._scene_jump_edges(tree)
+        if failed_edge_keys:
+            # Failures belong to this navigation attempt, not persisted scene
+            # data.  Recompute shortest distances against the remaining edges
+            # so a valid longer route can take over after its shorter peer
+            # stalls; otherwise it would always look like a non-progress edge.
+            navigation_edges[int(current_scene_id)] = [
+                edge for edge in navigation_edges.get(int(current_scene_id), [])
+                if self._scene_jump_edge_key(edge) not in failed_edge_keys
+                and self._scene_jump_edge_semantic_key(edge) not in failed_edge_keys
+            ]
         distances_to_target = self._scene_navigation_distances_to_target(
+            tree,
             navigation_edges,
             int(target_scene_id),
         )
@@ -11562,6 +11630,7 @@ class BehaviorTreeExecutor(
             return {**result, "status": "already_at_target"}
         navigation_edges = self._scene_jump_edges(tree)
         distances_to_target = self._scene_navigation_distances_to_target(
+            tree,
             navigation_edges,
             target,
         )
@@ -15771,19 +15840,6 @@ class BehaviorTreeExecutor(
             image = edge["image"]
             shape = edge["shape"]
             shape_title = str(shape.get("title") or "未命名")
-            if (
-                int(current_scene_id or 0) == 66
-                and int(target_scene_id) == 597
-                and shape_title == "前往"
-                and 596 in (edge.get("target_ids") or [])
-            ):
-                from backend.core.fanxiu.data_annotation.schedule_cards import (
-                    prepare_schedule_card_for_scene,
-                )
-
-                selected = yield from prepare_schedule_card_for_scene(context, 597)
-                self._log("detail", f"#66 活动卡片前置条件已核验：{selected['title']}")
-                frame = context.cur_frame(update=True)
             if int(target_scene_id) == 34:
                 # Returning to the stable world anchor is common and a false
                 # positive here is unusually destructive: one stale/animated
@@ -15845,6 +15901,30 @@ class BehaviorTreeExecutor(
                     raise RuntimeError(
                         f"场景移动：#{current_scene_id}「{shape_title}」滚动列表中未找到入口"
                     )
+            elif navigation_action == "schedule_card_forward":
+                from backend.core.fanxiu.data_annotation.schedule_cards import (
+                    prepare_schedule_card_for_activity_ids,
+                )
+
+                forward_shape = str(shape.get("navigationForwardShape") or "").strip()
+                if not forward_shape:
+                    raise ValueError("场景跳转 Shape 缺少 navigationForwardShape")
+                selected = yield from prepare_schedule_card_for_activity_ids(
+                    context, shape.get("navigationRuntimeActivityIds") or (),
+                )
+                self._log("detail", f"场景移动：活动卡片身份已核验：{selected['title']}")
+                context.click_shape(
+                    int(current_scene_id),
+                    forward_shape,
+                    frame_data_url=context.cur_frame(update=True),
+                )
+            elif navigation_action == "world_menu_function":
+                outcome = yield from context.open_navigation_world_menu_entry(
+                    context.view(int(current_scene_id)),
+                    Shape(shape, parent_view=context.view(int(current_scene_id))),
+                )
+                if outcome != "open":
+                    raise RuntimeError(f"场景移动：#{current_scene_id}「{shape_title}」菜单入口未打开")
             elif navigation_action:
                 raise RuntimeError(f"场景移动：未知 navigationAction={navigation_action}")
             else:

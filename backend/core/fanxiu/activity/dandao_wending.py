@@ -543,12 +543,16 @@ def _runtime_rank_rows(
 ) -> list[dict[str, Any]]:
     if not snapshot.get("ok") or not snapshot.get("complete"):
         raise ValueError(str(snapshot.get("reason") or "丹道问鼎榜单尚未加载"))
-    declared = int(snapshot.get("rank_list_size") or 0)
+    total_players = int(snapshot.get("rank_list_size") or 0)
+    # rankListSize counts all participants; rankVOS is the game's bounded
+    # leaderboard (typically the top 50).  Its own declared count is the
+    # completeness contract for the rows we can actually observe.
+    declared = int(snapshot.get("declared_rank_count") if snapshot.get("declared_rank_count") is not None else total_players)
     items = [dict(row) for row in snapshot.get("rankings") or [] if isinstance(row, dict)]
     # A freshly opened leaderboard may legitimately contain zero players before
     # anyone scores. The Runtime snapshot above proves the page was loaded;
     # zero declared rows and zero observed rows are a complete empty ranking.
-    if declared < 0 or len(items) != declared:
+    if declared < 0 or total_players < declared or len(items) != declared:
         raise ValueError(f"丹道问鼎{scope}榜不完整：{len(items)}/{declared}")
     ranks = [int(row.get("rank") or 0) for row in items]
     if ranks != list(range(1, declared + 1)):
@@ -567,11 +571,12 @@ def _runtime_rank_rows(
             "club_name": str(row.get("club_name") or ""),
             "is_self": int(row["rank"]) == self_rank and self_rank > 0,
             "is_reward_guard": False,
-            "is_last_player": int(row["rank"]) == declared,
+            "is_last_player": int(row["rank"]) == total_players and declared == total_players,
             "has_player": True,
             "raw_data": {
-                "reported_rank_list_size": declared,
+                "reported_rank_list_size": total_players,
                 "loaded_player_count": len(items),
+                "declared_rank_count": declared,
                 "scope_complete": True,
                 "source": "read_only_runtime_memory",
             },
@@ -595,8 +600,9 @@ def _runtime_rank_rows(
                 "has_player": False,
             "raw_data": {
                 "unranked": True,
-                "reported_rank_list_size": declared,
+                "reported_rank_list_size": total_players,
                 "loaded_player_count": len(items),
+                "declared_rank_count": declared,
                 "scope_complete": True,
                 "source": "read_only_runtime_memory",
             },
@@ -661,8 +667,9 @@ def collect_and_store_dandao_wending_activity(
         captured_values.append(captured_at)
         rows.extend(_runtime_rank_rows(snapshot, scope=request.scope))
         completeness[request.scope] = {
-            "declared": int(snapshot.get("rank_list_size") or 0),
-            "loaded": int(snapshot.get("loaded_rank_count") or 0),
+            "total_players": int(snapshot.get("rank_list_size") or 0),
+            "declared": int(snapshot.get("declared_rank_count") if snapshot.get("declared_rank_count") is not None else snapshot.get("rank_list_size") or 0),
+            "loaded": int(snapshot.get("loaded_rank_count") if snapshot.get("loaded_rank_count") is not None else len(snapshot.get("rankings") or [])),
         }
         runtime_evidence[request.scope] = dict(snapshot.get("evidence") or {})
     captured_at = max(captured_values)

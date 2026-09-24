@@ -428,6 +428,23 @@ def test_loaded_empty_dandao_rank_is_complete() -> None:
     assert rows[0]["raw_data"]["reported_rank_list_size"] == 0
 
 
+def test_dandao_top_list_is_complete_when_total_participants_exceed_list_capacity() -> None:
+    snapshot = {
+        "ok": True, "complete": True,
+        "rank_list_size": 59, "declared_rank_count": 50, "loaded_rank_count": 50,
+        "rankings": [{"rank": rank, "score": 100 - rank} for rank in range(1, 51)],
+        "self_ranking": {"rank": 0, "score": 1},
+    }
+    rows = dandao_wending._runtime_rank_rows(snapshot)
+    assert len([row for row in rows if row["has_player"]]) == 50
+    assert not any(row["is_last_player"] for row in rows)
+    assert rows[0]["raw_data"]["reported_rank_list_size"] == 59
+    assert rows[0]["raw_data"]["declared_rank_count"] == 50
+    snapshot["rankings"].pop()
+    with pytest.raises(ValueError, match="49/50"):
+        dandao_wending._runtime_rank_rows(snapshot)
+
+
 def test_live_task_ids_follow_questmgr_membership_not_static_variant(tmp_path: Path) -> None:
     rows = [
         {

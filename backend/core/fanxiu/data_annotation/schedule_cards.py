@@ -121,7 +121,14 @@ def wait_schedule_card(context, snapshot: Mapping[str, Any], *, expected_key: st
         yield from context.wait_action_settle(0.35)
         observed = read_schedule_card(context, snapshot)
         key = observed['task']['key'] if observed['status'] == 'aligned' else None
-        identity = (normalize_ocr_name(observed['title']), observed['pager_index'])
+        # OCR may omit a trailing glyph between fresh frames while both
+        # observations still uniquely identify the same Runtime card.  Use
+        # that resolved identity when available; ambiguous titles must still
+        # agree textually before sequence disambiguation.
+        identity = (
+            ('task', key) if key is not None else ('title', normalize_ocr_name(observed['title'])),
+            observed['pager_index'],
+        )
         if observed['status'] in {'aligned', 'ambiguous'} and identity == previous and (expected_key is None or key == expected_key):
             return observed
         previous = identity
@@ -205,18 +212,20 @@ def select_schedule_card(context, runtime_key: str, *, state: Mapping[str, Any] 
     return current
 
 
-def prepare_schedule_card_for_scene(context, target_scene_id: int):
-    """Satisfy the #66 Forward Shape's business precondition for a destination.
+def prepare_schedule_card_for_activity_ids(context, activity_ids):
+    """Select one open Runtime card from IDs declared by a navigation Shape.
 
     The scene graph says where Forward may land. This function chooses the
     currently open card and confirms its GUI title before that Shape is clicked.
     One Runtime inventory read is reused through selection; title and pager
     feedback are GUI observations.
     """
-    activity_ids_by_scene = {597: (1043111, 4043101)}
-    activity_ids = activity_ids_by_scene.get(int(target_scene_id))
-    if activity_ids is None:
-        raise ValueError(f'#66 未配置目标场景 #{target_scene_id} 的卡片前置条件')
+    try:
+        activity_ids = {int(value) for value in activity_ids if int(value) > 0}
+    except (TypeError, ValueError) as exc:
+        raise ValueError('场景跳转 Shape 的 navigationRuntimeActivityIds 必须是活动 ID 列表') from exc
+    if not activity_ids:
+        raise ValueError('场景跳转 Shape 缺少有效 navigationRuntimeActivityIds')
     state = yield from inspect_schedule_cards(context)
     now_ms = time.time() * 1000
     candidates = [
@@ -225,12 +234,12 @@ def prepare_schedule_card_for_scene(context, target_scene_id: int):
         and float(item.get('start_time') or 0) <= now_ms <= float(item.get('end_time') or 0)
     ]
     if len(candidates) != 1:
-        raise RuntimeError(f'#66 目标 #{target_scene_id} 的有效活动卡片不唯一：{candidates}')
+        raise RuntimeError(f'#66 所选活动身份 {sorted(activity_ids)} 的有效卡片不唯一：{candidates}')
     selected = yield from select_schedule_card(
         context, str(candidates[0]['key']), state=state,
     )
     if str(selected['task']['key']) != str(candidates[0]['key']):
-        raise RuntimeError(f'#66 目标 #{target_scene_id} 的卡片前置条件未满足')
+        raise RuntimeError('#66 活动卡片前置条件未满足')
     return selected
 
 

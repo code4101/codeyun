@@ -744,6 +744,17 @@ def _execute_family_job(
         f"待重试 {len(pending)}，不可用 {len(unavailable)}；"
         f"下次 {next_time:%Y-%m-%d %H:%M:%S}"
     )
+    if pending or unavailable:
+        details = []
+        for item in [*pending, *unavailable]:
+            checkpoint = item["checkpoint"]
+            outcome = item["result"]
+            reason = str(outcome.get("message") or outcome.get("reason") or "未提供原因").strip()
+            details.append(
+                f"{checkpoint.get('activity_type')}/{checkpoint.get('checkpoint_kind')}"
+                f"[{outcome.get('status')}]：{reason[:160]}"
+            )
+        message += "；" + "；".join(details[:3])
     runner._log("warning" if pending or unavailable else "success", message)
     return {
         # Business waiting is a successful Scheduler pass; a

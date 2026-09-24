@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,10 +156,56 @@ def test_executable_domain_without_formal_adapter_fails_closed(monkeypatch):
             {},
             threading.Event(),
             talisman_reader=lambda: snapshot,
+            talisman_adapter=None,
             pet_reader=_empty_pet,
             pet_adapter=pet_adapter,
         ))
     assert order == ["储物袋", "灵兽"]
+
+
+def test_talisman_adapter_rejects_a_different_confirmation_scene(monkeypatch):
+    from backend.core.fanxiu.data_annotation.tasks import world_menu_navigation
+
+    clicks = []
+    snapshot = {
+        "complete": True,
+        "source": "TalismanModel.GetAllUpgradeableTalismanList",
+        "candidates": [{"talisman_id": 5, "category": "法宝", "owned": True,
+                        "active": True, "upgrade_count": 1,
+                        "resources": [{"kind": "talisman_upgrade_material",
+                                       "item_id": 4010005, "quantity": 1}]}],
+    }
+
+    class Context:
+        def go_scene(self, scene_id):
+            if False:
+                yield
+            return "success"
+
+        def wait_scene(self, scene_ids, **kwargs):
+            if False:
+                yield
+            return SimpleNamespace(scene_id=554 if list(scene_ids) == [554] else 640)
+
+        def wait_click(self, scene_id, title):
+            clicks.append((scene_id, title))
+            if False:
+                yield
+
+    def open_menu(*args, **kwargs):
+        if False:
+            yield
+        return SimpleNamespace(scene_id=553)
+
+    monkeypatch.setattr(world_menu_navigation, "open_world_menu_function", open_menu)
+    monkeypatch.setattr(resource_auto_use, "read_talisman_quick_upgrade_runtime", lambda: snapshot)
+    runner = SimpleNamespace(_behavior_tree_context=lambda *args, **kwargs: Context())
+
+    with pytest.raises(RuntimeError, match="升级确认身份不符 #640"):
+        _consume(resource_auto_use.complete_talisman_quick_upgrade(
+            runner, {}, {}, threading.Event(), snapshot,
+        ))
+    assert clicks == [(554, "快速升级")]
 
 
 def test_formal_adapter_must_reobserve_a_complete_terminal_snapshot(monkeypatch):

@@ -38,6 +38,73 @@ PET_PRAYER_RESULT_SCENE_ID = 799
 # 仍保留有限循环以容忍分批结算，上限用于防止界面异常时空转。
 PET_PRAYER_BATCH_LIMIT = 6
 PET_PRAYER_RESULT_WAIT_SECONDS = 8.0
+TALISMAN_HOME_SCENE_ID = 553
+TALISMAN_BAG_SCENE_ID = 554
+TALISMAN_UPGRADE_CONFIRM_SCENE_ID = 838
+TALISMAN_UPGRADE_RESULT_SCENE_ID = 839
+
+
+def complete_talisman_quick_upgrade(
+    runner: Any,
+    ctx: dict[str, Any],
+    payload: dict[str, Any],
+    stop_event: threading.Event,
+    before: dict[str, Any],
+):
+    """Consume the Runtime-authorized native upgrade batch and leave at world.
+
+    The menu enters #553, then its 法宝 tab opens #554.  The confirmation
+    and result have their own OCR-identified scenes; a generic-looking popup
+    or transition frame cannot authorize the confirmation click.  The caller
+    re-reads Runtime after this adapter and accepts only a complete empty
+    candidate set.
+    """
+    context = runner._behavior_tree_context(
+        ctx, ctx.get("asset_tree_path"), stop_event=stop_event,
+    )
+    from backend.core.fanxiu.data_annotation.tasks.world_menu_navigation import (
+        open_world_menu_function,
+    )
+
+    opened = yield from open_world_menu_function(
+        context, 5000, expected_scene_ids=(TALISMAN_HOME_SCENE_ID,),
+        timeout_seconds=30,
+    )
+    if opened is None or int(opened.scene_id) != TALISMAN_HOME_SCENE_ID:
+        raise RuntimeError("资源_每日处理/法宝：菜单未确认到达法宝主页")
+    yield from context.go_scene(TALISMAN_BAG_SCENE_ID)
+    bag = yield from context.wait_scene([TALISMAN_BAG_SCENE_ID], wait=15)
+    if bag.scene_id != TALISMAN_BAG_SCENE_ID:
+        raise RuntimeError(f"资源_每日处理/法宝：背包页身份不符 #{bag.scene_id}")
+
+    current = read_talisman_quick_upgrade_runtime()
+    decision = plan_talisman_quick_upgrade(current)
+    if decision.action == "fail":
+        raise RuntimeError(f"资源_每日处理/法宝：{decision.reason}")
+    if decision.action == "execute":
+        yield from context.wait_click(TALISMAN_BAG_SCENE_ID, "快速升级")
+        confirmation = yield from context.wait_scene(
+            [TALISMAN_UPGRADE_CONFIRM_SCENE_ID], wait=20,
+            label="资源_每日处理/法宝：等待升级确认",
+        )
+        if confirmation.scene_id != TALISMAN_UPGRADE_CONFIRM_SCENE_ID:
+            raise RuntimeError(
+                f"资源_每日处理/法宝：升级确认身份不符 #{confirmation.scene_id}"
+            )
+        yield from context.wait_click(TALISMAN_UPGRADE_CONFIRM_SCENE_ID, "确认")
+        result = yield from context.wait_scene(
+            [TALISMAN_UPGRADE_RESULT_SCENE_ID], wait=30,
+            label="资源_每日处理/法宝：等待升级结果",
+        )
+        if result.scene_id != TALISMAN_UPGRADE_RESULT_SCENE_ID:
+            raise RuntimeError(f"资源_每日处理/法宝：升级结果身份不符 #{result.scene_id}")
+        yield from context.wait_click(TALISMAN_UPGRADE_RESULT_SCENE_ID, "继续")
+        bag = yield from context.wait_scene([TALISMAN_BAG_SCENE_ID], wait=20)
+        if bag.scene_id != TALISMAN_BAG_SCENE_ID:
+            raise RuntimeError(f"资源_每日处理/法宝：结果页未返回背包 #{bag.scene_id}")
+    yield from context.go_scene(34)
+    return {"ok": True, "before_candidates": int(before.get("candidate_count") or 0),
+            "executed_batch": decision.action == "execute"}
 
 
 def complete_pet_quick_swallow(
@@ -225,7 +292,7 @@ def execute_resource_auto_use_task(
     *,
     talisman_reader: SnapshotReader = read_talisman_quick_upgrade_runtime,
     pet_reader: SnapshotReader = read_pet_quick_swallow_runtime,
-    talisman_adapter: DomainAdapter | None = None,
+    talisman_adapter: DomainAdapter | None = complete_talisman_quick_upgrade,
     pet_adapter: DomainAdapter | None = complete_pet_quick_swallow,
     stage_executor: Callable | None = None,
 ):

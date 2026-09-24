@@ -2,7 +2,7 @@
 import pytest
 
 from backend.core.fanxiu.data_annotation.schedule_cards import (
-    align_schedule_card_title, align_schedule_card_sequence,
+    align_schedule_card_title, align_schedule_card_sequence, wait_schedule_card,
 )
 
 
@@ -66,3 +66,25 @@ def test_missing_qualifier_needs_sequence_not_local_version_guess():
     assert align_schedule_card_title('魔道入侵', snapshot)['status'] == 'ambiguous'
     assert align_schedule_card_sequence(['魔道入侵', '洞天福地'], snapshot)['task']['key'] == '2'
     assert align_schedule_card_title('魔道入侵跨服[4]', snapshot)['task']['key'] == '2'
+
+
+def test_stable_card_accepts_ocr_variants_of_same_resolved_identity(monkeypatch):
+    import backend.core.fanxiu.data_annotation.schedule_cards as cards
+
+    observed = iter([
+        {'status': 'aligned', 'title': '丹道问鼎跨服[8]', 'pager_index': 5,
+         'task': {'key': '8043101:8043101400004'}},
+        {'status': 'aligned', 'title': '丹道问鼎跨服[8', 'pager_index': 5,
+         'task': {'key': '8043101:8043101400004'}},
+    ])
+    monkeypatch.setattr(cards, 'read_schedule_card', lambda context, snapshot: next(observed))
+
+    class Context:
+        def wait_action_settle(self, seconds):
+            if False:
+                yield seconds
+
+    iterator = wait_schedule_card(Context(), {}, expected_key='8043101:8043101400004')
+    with pytest.raises(StopIteration) as result:
+        next(iterator)
+    assert result.value.value['title'] == '丹道问鼎跨服[8'
