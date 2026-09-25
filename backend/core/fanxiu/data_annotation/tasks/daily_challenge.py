@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from backend.core.fanxiu.data_annotation.effective_time import job_now
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, write_world_facts
+
 import json
 import os
 import re
@@ -14,17 +17,9 @@ from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import Shape, View, image_number as _image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.data_annotation import behavior_tree_executor as _behavior_tree_executor
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
-from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
-    FULLWIDTH_DIGIT_TRANSLATION,
-    _now,
-    _parse_daily_boss_cd_seconds,
-    _parse_daily_boss_reward_remaining,
-    _parse_xianfu_skill_cd_seconds,
-    _parse_xianfu_visit_cd_seconds,
-)
+from backend.core.fanxiu.data_annotation.ocr_values import FULLWIDTH_DIGIT_TRANSLATION
 from backend.core.fanxiu.data_annotation.tasks.scene_candidates import (
     DAILY_XIANYUAN_CHALLENGE_LAYER0_SCENE_IDS,
     DAILY_XIANYUAN_LAYER0_SCENE_IDS,
@@ -57,7 +52,7 @@ class DailyChallengeTaskMixin:
         if business_date is None:
             return None
 
-        facts = _behavior_tree_executor._read_data_annotation_world_facts()
+        facts = read_world_facts()
         discoveries = facts.setdefault("discoveries", {})
         if not isinstance(discoveries, dict):
             discoveries = {}
@@ -73,7 +68,7 @@ class DailyChallengeTaskMixin:
             "assistant_succeeded_at": now.strftime("%Y-%m-%d %H:%M:%S"),
             "lilian_next_time": next_time,
         }
-        _behavior_tree_executor._write_data_annotation_world_facts(facts)
+        write_world_facts(facts)
         return next_time
 
     def _execute_daily_dungeon_task(
@@ -2199,14 +2194,14 @@ class DailyChallengeTaskMixin:
         if daily_status == "not_found":
             self._persist_scheduler_task_next_time(
                 str(payload.get("__scheduler_task_id") or "legacy-daily-assistant"),
-                (_behavior_tree_executor._now() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
+                (job_now() + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S"),
             )
             raise RuntimeError("日常_助手：未找到小助手入口，已记录 30 分钟后重试")
         scene_id, _score = yield from self._wait_daily_assistant_after_entry(ctx, stop_event, payload)
         if scene_id == 204:
             result = yield from self._run_daily_assistant_from_list(ctx, stop_event, payload)
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "legacy-daily-assistant")
-            completed_at = _behavior_tree_executor._now()
+            completed_at = job_now()
             lilian_next_time = self._schedule_lilian_event_after_daily_assistant_success(completed_at)
             next_time = next_business_time(("00:00", "05:00", "12:00", "18:00"))
             self._persist_scheduler_task_next_time(scheduler_task_id, next_time)

@@ -28,13 +28,7 @@ from backend.core.fanxiu.data_annotation.ocr_spatial import (
 )
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
-from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
-    FULLWIDTH_DIGIT_TRANSLATION,
-    _parse_daily_boss_cd_seconds,
-    _parse_daily_boss_reward_remaining,
-    _parse_xianfu_skill_cd_seconds,
-    _parse_xianfu_visit_cd_seconds,
-)
+from backend.core.fanxiu.data_annotation.ocr_values import FULLWIDTH_DIGIT_TRANSLATION
 
 
 class DailyResourceTaskMixin:

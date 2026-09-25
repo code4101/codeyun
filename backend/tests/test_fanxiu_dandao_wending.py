@@ -8,6 +8,7 @@ import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.core.fanxiu.activity import dandao_wending
+from backend.core.fanxiu.catalog import dandao_wending as dandao_catalog
 from backend.core.fanxiu.activity.dandao_wending import (
     collect_and_store_dandao_wending_activity,
     ensure_dandao_wending_activity,
@@ -257,7 +258,7 @@ def test_registry_get_materializes_current_dandao_occurrence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_static_tables(tmp_path)
-    monkeypatch.setattr(dandao_wending, "resolve_fanxiu_export_root", lambda _=None: tmp_path)
+    monkeypatch.setattr(dandao_catalog, "resolve_fanxiu_export_root", lambda _=None: tmp_path)
     monkeypatch.setattr(
         dandao_wending,
         "load_worldline_activity_schedule_snapshot",
@@ -296,7 +297,7 @@ def test_collect_uses_current_runtime_rank_and_exposes_fourteen_tasks(
             for index in range(1, 15)
         ],
     )
-    monkeypatch.setattr(dandao_wending, "resolve_fanxiu_export_root", lambda _=None: tmp_path)
+    monkeypatch.setattr(dandao_catalog, "resolve_fanxiu_export_root", lambda _=None: tmp_path)
     monkeypatch.setattr(
         dandao_wending,
         "load_worldline_activity_schedule_snapshot",
@@ -360,7 +361,7 @@ def test_collect_cross_occurrence_uses_both_follow_rank_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_static_tables(tmp_path)
-    monkeypatch.setattr(dandao_wending, "resolve_fanxiu_export_root", lambda _=None: tmp_path)
+    monkeypatch.setattr(dandao_catalog, "resolve_fanxiu_export_root", lambda _=None: tmp_path)
     requested: list[int] = []
 
     def read_snapshot(activity_id: int) -> dict:

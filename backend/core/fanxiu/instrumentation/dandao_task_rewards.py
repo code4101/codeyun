@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.core.fanxiu.activity.dandao_wending import (
+from backend.core.fanxiu.catalog.dandao_wending import (
     DANDAO_WENDING_METRIC,
     resolve_dandao_live_task_ids,
     resolve_dandao_task_targets,
 )
+
 from backend.core.fanxiu.instrumentation.daily_task_rewards import (
     TaskRewardDomainSpec,
     build_activity_task_reward_snapshot,

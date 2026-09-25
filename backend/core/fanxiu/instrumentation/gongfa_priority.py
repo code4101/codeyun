@@ -5,14 +5,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Iterable
 
-from sqlmodel import Session
-
-from backend.core.fanxiu.catalog.inventory_snapshot_store import (
-    load_inventory_hall_snapshot,
-)
-from backend.db import engine
-
-
 GONGFA_ATLAS_KEY = "gongfa_atlas"
 
 
@@ -45,6 +37,11 @@ def priority_book_ids_from_snapshot(snapshot: dict[str, Any] | None) -> list[int
 
 
 def load_gongfa_priority_book_ids() -> list[int]:
+    """Load durable settings only when requested; pure policies need no ORM."""
+    from sqlmodel import Session
+    from backend.core.fanxiu.catalog.inventory_snapshot_store import load_inventory_hall_snapshot
+    from backend.db import engine
+
     with Session(engine) as session:
         snapshot = load_inventory_hall_snapshot(session, GONGFA_ATLAS_KEY)
     return priority_book_ids_from_snapshot(snapshot)

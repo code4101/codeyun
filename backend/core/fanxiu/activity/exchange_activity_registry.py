@@ -92,10 +92,11 @@ class XutianPalaceExchangeActivityAdapter:
         del game_activity_id
         from backend.core.fanxiu.activity.xutian_palace_instrumentation import (
             resolve_xutian_palace_reward_activity_id,
+            xutian_personal_rank_activity_id,
         )
 
         runtime_ids = {
-            "personal": 80000 + int(cross_count) * 100 + 91,
+            "personal": xutian_personal_rank_activity_id(cross_count),
             "plane": 80000 + int(cross_count) * 100 + 71,
         }
         return {

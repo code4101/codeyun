@@ -5,15 +5,12 @@ import time
 from datetime import datetime, time as clock_time, timedelta
 from typing import Any
 
-from sqlmodel import Session
-
 from backend.core.fanxiu.tianjige_forum_quiz import (
     TianjigeForumQuizPreSubmitError,
     TianjigeQuizProbe,
     probe_tianjige_forum_quiz,
     submit_tianjige_forum_quiz_answer,
 )
-from backend.models import AppSetting
 
 
 TIANJIGE_FORUM_QUIZ_TASK_ID = "tianjige-forum-quiz"
@@ -45,6 +42,9 @@ def _format_next_time(value: datetime) -> str:
 
 
 def _read_submission_ledger(db_bind: Any | None = None) -> dict[str, Any]:
+    from sqlmodel import Session
+    from backend.models import AppSetting
+
     if db_bind is None:
         from backend.db import engine
 
@@ -55,6 +55,9 @@ def _read_submission_ledger(db_bind: Any | None = None) -> dict[str, Any]:
 
 
 def _write_submission_ledger(value: dict[str, Any], db_bind: Any | None = None) -> None:
+    from sqlmodel import Session
+    from backend.models import AppSetting
+
     if db_bind is None:
         from backend.db import engine
 

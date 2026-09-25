@@ -59,7 +59,9 @@ def execute_xutian_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *,
         shop_base_id=80000, currency=15, label=label)
     from .gameplay_final_rankings import refresh_gameplay_final_rankings
     rankings = yield from refresh_gameplay_final_rankings(context,
-        tabs=((739,'虚天榜',453),(453,'位面',454)),
+        # The ranking page restores a map-stage tab. Explicitly load the
+        # personal-total tab; page identity alone does not select that scope.
+        tabs=((739,'虚天榜',453),(453,'个人',453),(453,'位面',454)),
         collect=lambda: store_xutian_final_rankings(activity_id))
     yield from context.go_scene(34)
     return dict(status='completed', activity_id=activity_id, rankings=rankings, **result)

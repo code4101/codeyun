@@ -135,6 +135,7 @@ RANKING_CAPABILITY_STATUS = {
 # must never discover or wake for them until live idempotent acceptance has
 # promoted the capability here.
 PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
+    "xutian-palace",
     "beast-abyss",
     "magic-invasion",
     "yunmeng-trial",

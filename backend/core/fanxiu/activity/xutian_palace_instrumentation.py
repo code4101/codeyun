@@ -54,9 +54,18 @@ def resolve_xutian_palace_reward_activity_id(
     return max(int(row.get("id") or 0) for row in matches)
 
 
+def xutian_personal_rank_activity_id(cross_count: int) -> int:
+    """Current 8-cross personal tab is ..51; retain legacy cohort bindings.
+
+    Verified against the visible top rows and self score on 2026-09-25.
+    Do not rewrite unobserved historical cohorts from one live cohort.
+    """
+    return 80000 + int(cross_count) * 100 + (51 if int(cross_count) == 8 else 91)
+
+
 def xutian_rank_scope_identities(cross_count: int) -> dict[str, dict[str, int | None]]:
     runtime_ids = {
-        "personal": 80000 + int(cross_count) * 100 + 91,
+        "personal": xutian_personal_rank_activity_id(cross_count),
         "plane": 80000 + int(cross_count) * 100 + 71,
     }
     return serialize_rank_scope_identities({
@@ -285,7 +294,7 @@ def ensure_xutian_palace_activity(session: Session) -> str:
         existing.instance_key = stable_instance_key
     if existing is not None:
         rank_scope_ids = {
-            "personal": 80000 + int(period["cross_count"]) * 100 + 91,
+            "personal": xutian_personal_rank_activity_id(period["cross_count"]),
             "plane": 80000 + int(period["cross_count"]) * 100 + 71,
         }
         scope_identities = xutian_rank_scope_identities(int(period["cross_count"]))
@@ -335,7 +344,7 @@ def ensure_xutian_palace_activity(session: Session) -> str:
         "cross_count": int(period["cross_count"]),
         "start_date": period["start_date"],
         "end_date": period["end_date"],
-        "game_rank_activity_id": 80000 + int(period["cross_count"]) * 100 + 91,
+        "game_rank_activity_id": xutian_personal_rank_activity_id(period["cross_count"]),
         "game_shop_base_id": XUTIAN_PALACE_SHOP_BASE_ID,
         "currency_type": XUTIAN_PALACE_CURRENCY_TYPE,
         "currency_name": "纳元晶",
@@ -460,7 +469,7 @@ def collect_xutian_palace_rank_snapshot(
 
     personal_rank_activity_id = int(
         personal_rank_activity_id
-        or (80000 + int(cross_count) * 100 + 91)
+        or (xutian_personal_rank_activity_id(cross_count))
     )
     plane_rank_activity_id = 80000 + int(cross_count) * 100 + 71
     from backend.core.fanxiu.activity.rank_reward import (
@@ -573,8 +582,8 @@ def collect_and_store_xutian_palace_rankings(
     )
     loaded_ids = set(loaded_activity_rank_ids(reader, root))
     if personal_rank_activity_id not in loaded_ids:
-        base_id = 80000 + int(activity.cross_count) * 100
-        loaded_personal_candidates = [base_id + 91] if base_id + 91 in loaded_ids else []
+        expected_id = xutian_personal_rank_activity_id(activity.cross_count)
+        loaded_personal_candidates = [expected_id] if expected_id in loaded_ids else []
         if len(loaded_personal_candidates) != 1:
             raise ValueError(
                 "虚天殿个人总榜身份不唯一："
@@ -663,9 +672,9 @@ def collect_and_store_xutian_palace_activity(
             f"runtime={period['start_date']}~{period['end_date']}, config_end={expected_end_date}"
         )
 
-    # Runtime personal-total rank uses the ..91 namespace.  Reward Activity
-    # rows are resolved separately; the two ids are not interchangeable.
-    rank_activity_id = 80000 + int(activity.cross_count) * 100 + 91
+    # The visible personal-total tab loads ..51 (verified against its top
+    # rows and self score). ..91 is not loaded by this client; do not invent it.
+    rank_activity_id = xutian_personal_rank_activity_id(activity.cross_count)
     if int(activity.game_rank_activity_id or 0) != rank_activity_id:
         activity.game_rank_activity_id = rank_activity_id
         session.add(activity)

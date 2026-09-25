@@ -263,6 +263,9 @@ def test_rank_activity_id_bindings_resolve_authoritative_ids() -> None:
         game_activity_id=4080001,
         cross_count=4,
     )
+    current_xutian = resolve_registered_occurrence_rank_identities(
+        activity_type="xutian-palace", game_activity_id=8080001, cross_count=8)
+    assert current_xutian["personal"].runtime_rank_activity_id == 80851
     assert xutian_identities["personal"].runtime_rank_activity_id == 80491
     assert xutian_identities["personal"].reward_activity_id == 80452
     assert xutian_identities["plane"].runtime_rank_activity_id == 80471

@@ -6,6 +6,13 @@ from typing import Any, Callable
 EngineGetter = Callable[[], Any]
 
 
+def mail_database_engine() -> Any:
+    """Resolve the mail persistence binding at use time, without eager ORM loading."""
+    from backend.db import engine
+
+    return engine
+
+
 def _sqlmodel_mail_record() -> tuple[Any, Any, Any]:
     from sqlmodel import Session, select
 
@@ -52,6 +59,7 @@ def current_runtime_mail_sequence_snapshot(engine_getter: EngineGetter) -> dict[
 
 
 __all__ = [
+    "mail_database_engine",
     "current_runtime_mail_sequence",
     "current_runtime_mail_sequence_snapshot",
 ]

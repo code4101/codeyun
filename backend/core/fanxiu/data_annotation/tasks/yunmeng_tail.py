@@ -120,8 +120,8 @@ def execute_yunmeng_tail_job(
     from backend.core.fanxiu.activity.yunmeng_exchange import (
         read_yunmeng_currency_snapshot,
     )
-    from backend.core.fanxiu.data_annotation.tasks.magic_invasion_tail import (
-        _open_verified_shop_product,
+    from backend.core.fanxiu.runtime_gui.exchange_navigation import (
+        open_exchange_shop_product,
     )
     from backend.core.fanxiu.data_annotation.tasks.yunmeng_active import (
         enter_yunmeng_activity_home,
@@ -235,7 +235,7 @@ def execute_yunmeng_tail_job(
     for action in actions:
         if stop_event.is_set():
             raise InterruptedError()
-        yield from _open_verified_shop_product(
+        yield from open_exchange_shop_product(
             context,
             name=action.name,
             unit_price=action.unit_price,

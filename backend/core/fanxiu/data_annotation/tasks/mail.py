@@ -29,17 +29,33 @@ from backend.core.fanxiu.runtime_gui.mail import (
 )
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.data_annotation import behavior_tree_executor as _behavior_tree_executor
-from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
-    _VisibleMailRow,
-    _db_engine,
-)
+from backend.core.fanxiu.mail.runtime_store import mail_database_engine as _db_engine
+from backend.core.fanxiu.data_annotation.unknown_recovery import build_unknown_evidence
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.tasks.world_menu_navigation import (
     open_world_menu_function,
 )
 from pyxllib.autogui import Shape, View
 from pyxllib.prog import BehaviorTreeStatus
+
+
+@dataclass
+class _VisibleMailRow:
+    raw: dict[str, Any]
+    title_shape: Shape
+
+    @property
+    def title(self) -> str:
+        return str(self.raw.get("title") or "")
+
+    @property
+    def time_text(self) -> str:
+        return str(self.raw.get("time_text") or "")
+
+    @property
+    def status(self) -> str:
+        return str(self.raw.get("status") or "无")
+
 
 
 @dataclass(frozen=True)
@@ -74,7 +90,9 @@ class MailTaskMixin:
         protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
         cleanup_after_claim: bool = True,
     ) -> str:
-        _behavior_tree_executor.ensure_fanxiu_mail_table()
+        from backend.core.fanxiu.mail.store import ensure_fanxiu_mail_table
+
+        ensure_fanxiu_mail_table()
         payload = dict(payload or {})
         asset_tree_path = ctx.get("asset_tree_path")
         if not isinstance(asset_tree_path, Path):
@@ -1734,7 +1752,7 @@ class MailTaskMixin:
             yield from context.wait_action_settle(0.6)
         if last_frame:
             try:
-                evidence = _behavior_tree_executor.build_unknown_evidence(
+                evidence = build_unknown_evidence(
                     self,
                     context.ctx,
                     last_frame,

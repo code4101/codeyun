@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from backend.core.fanxiu.data_annotation.effective_time import job_now
+
 import base64
 import json
 import os
@@ -14,16 +16,11 @@ from pyxllib.prog import BehaviorTreeStatus
 from pyxllib.autogui import ActionPlanner, Shape, View, image_number as _image_number
 
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
-from backend.core.fanxiu.data_annotation import behavior_tree_executor as _behavior_tree_executor
 from backend.core.temp_paths import codeyun_temp_root
-from backend.core.fanxiu.data_annotation.behavior_tree_executor import (
-    FULLWIDTH_DIGIT_TRANSLATION,
-    _now,
-    _parse_daily_boss_cd_seconds,
-    _parse_daily_boss_reward_remaining,
-    _parse_first_int,
-    _parse_xianfu_skill_cd_seconds,
-    _parse_xianfu_visit_cd_seconds,
+from backend.core.fanxiu.data_annotation.tasks.daily_observations import (
+    parse_first_int,
+    parse_xianfu_skill_cd_seconds,
+    parse_xianfu_visit_cd_seconds,
 )
 
 
@@ -40,7 +37,7 @@ class XianfuTaskMixin:
     ) -> str:
         delay = max(60, int(payload.get("fallback_seconds") or seconds))
         next_time = (
-            _behavior_tree_executor._now() + timedelta(seconds=delay)
+            job_now() + timedelta(seconds=delay)
         ).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time(
             str(payload.get("__scheduler_task_id") or task_id),
@@ -197,11 +194,11 @@ class XianfuTaskMixin:
             raise RuntimeError("缺少 #174 绝品仙侣标注，无法读取寻访状态")
         frame = context.cur_frame(update=True)
         status_text = self._behavior_tree_context_ocr_text_in_shapes(context, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
-        cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
+        cd_seconds = parse_xianfu_visit_cd_seconds(status_text)
         if cd_seconds is None:
             raise RuntimeError(f"仙府_寻访仙侣：无法识别免费寻访倒计时：{status_text or '空'}")
         if cd_seconds > 0:
-            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (job_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-visit-partner")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -238,9 +235,9 @@ class XianfuTaskMixin:
         yield from self._handle_xianfu_continue_visit_popup(context, max_continue=max_continue)
         frame = context.cur_frame(update=True)
         status_text = self._behavior_tree_context_ocr_text_in_shapes(context, image174, ("状态", "免费提示"), frame_data_url=frame, padding=16)
-        cd_seconds = _parse_xianfu_visit_cd_seconds(status_text)
+        cd_seconds = parse_xianfu_visit_cd_seconds(status_text)
         if cd_seconds and cd_seconds > 0:
-            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (job_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-visit-partner")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -274,7 +271,7 @@ class XianfuTaskMixin:
             yield from context.wait_scene([175], wait=18.0, label="仙府_寻访仙侣：等待继续寻访弹窗 #175")
             frame = context.cur_frame(update=True)
             half_text = self._behavior_tree_context_ocr_text_in_shapes(context, view175, ("半价",), frame_data_url=frame, padding=24)
-            half_value = _parse_first_int(half_text)
+            half_value = parse_first_int(half_text)
             if half_value is not None and half_value < 100 and continue_count < max_continue_count:
                 continue_shape = view175.get_shape("继续")
                 if continue_shape is None:
@@ -625,10 +622,10 @@ class XianfuTaskMixin:
                 frame_data_url=frame,
                 padding=16,
             )
-            cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
+            cd_seconds = parse_xianfu_skill_cd_seconds(status_text)
         if cd_seconds is None:
             fallback_seconds = int(payload.get("fallback_seconds") or 1800)
-            next_time = (_behavior_tree_executor._now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (job_now() + timedelta(seconds=max(60, fallback_seconds))).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -638,7 +635,7 @@ class XianfuTaskMixin:
             yield from self._return_xianfu_learn_skill_to_world(context)
             return "skipped"
         if cd_seconds > 0:
-            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (job_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,
@@ -709,9 +706,9 @@ class XianfuTaskMixin:
 
         frame = context.cur_frame(update=True)
         status_text = self._behavior_tree_context_ocr_text_in_shapes(context, image176, ("状态", "价格"), frame_data_url=frame, padding=16)
-        cd_seconds = _parse_xianfu_skill_cd_seconds(status_text)
+        cd_seconds = parse_xianfu_skill_cd_seconds(status_text)
         if cd_seconds and cd_seconds > 0:
-            next_time = (_behavior_tree_executor._now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+            next_time = (job_now() + timedelta(seconds=cd_seconds)).strftime("%Y-%m-%d %H:%M:%S")
             scheduler_task_id = str(payload.get("__scheduler_task_id") or "xianfu-learn-skill")
             self._persist_scheduler_task_next_time(
                 scheduler_task_id,

@@ -5,6 +5,9 @@ import unicodedata
 from typing import Any, Callable, TypeVar
 
 
+FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
 def parse_ocr_values(
     text: Any,
     *,

@@ -3,14 +3,10 @@ from __future__ import annotations
 """Read and persist every learned GongFa book and its live progression."""
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlmodel import Session
-
-from backend.core.fanxiu.catalog.inventory_snapshot_store import (
-    load_inventory_hall_snapshot,
-    upsert_inventory_hall_snapshot,
-)
+if TYPE_CHECKING:
+    from sqlmodel import Session
 from backend.core.fanxiu.instrumentation.gongfa_equipment import (
     _GONGFA_MARKER,
     _GONGFA_METHODS,
@@ -25,7 +21,6 @@ from backend.core.fanxiu.instrumentation.runtime_memory import (
     MumuProcessMemory,
     resolve_manager_root,
 )
-from backend.db import engine
 from backend.core.fanxiu.instrumentation.gongfa_priority import (
     apply_gongfa_priority_to_books,
     load_gongfa_priority_book_ids,
@@ -197,6 +192,10 @@ def read_gongfa_atlas_runtime(
 
 
 def collect_gongfa_atlas_snapshot_once() -> dict[str, Any]:
+    from sqlmodel import Session
+    from backend.db import engine
+    from backend.core.fanxiu.catalog.inventory_snapshot_store import upsert_inventory_hall_snapshot
+
     # The page's 更新 action is the sole refresh point for the shared order:
     # reread the current game equipment and overwrite the previous priority.
     snapshot = read_gongfa_atlas_runtime(refresh_priority_from_equipment=True)
@@ -215,6 +214,8 @@ def collect_gongfa_atlas_snapshot_once() -> dict[str, Any]:
 
 
 def load_gongfa_atlas_snapshot(session: Session) -> dict[str, Any]:
+    from backend.core.fanxiu.catalog.inventory_snapshot_store import load_inventory_hall_snapshot
+
     snapshot = load_inventory_hall_snapshot(session, GONGFA_ATLAS_KEY)
     if snapshot:
         books = _project_gongfa_books(list(snapshot.get("books") or []))

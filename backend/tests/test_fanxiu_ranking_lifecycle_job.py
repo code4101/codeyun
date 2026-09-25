@@ -196,7 +196,7 @@ def test_beast_exchange_tail_rnd_cell_runs_only_the_unique_settlement_occurrence
 def test_exchange_tail_business_fact_is_independent_from_executor_acceptance() -> None:
     assert lifecycle_job.exchange_tail_executor_is_production("magic-invasion") is True
     assert lifecycle_job.exchange_tail_executor_is_production("beast-abyss") is True
-    assert lifecycle_job.exchange_tail_executor_is_production("xutian-palace") is False
+    assert lifecycle_job.exchange_tail_executor_is_production("xutian-palace") is True
 
 
 def _arrange(monkeypatch, *, reconcile):

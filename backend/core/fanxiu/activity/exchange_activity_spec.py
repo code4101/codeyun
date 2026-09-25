@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, runtime_checkable
 
-from sqlmodel import Session
+if TYPE_CHECKING:
+    from sqlmodel import Session
 
 
 RankBindingSource = Literal[
