@@ -174,6 +174,19 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         )
         domains.append({"domain": "仙缘兑换", "result": xianyuan})
 
+    from backend.core.fanxiu.data_annotation.tasks.sect_exchange import (
+        STAGE_ID as SECT_STAGE_ID, STAGE_VERSION as SECT_STAGE_VERSION,
+        sect_exchange_cycle, exchange_sect_resources,
+    )
+    sect_cycle = sect_exchange_cycle(moment)
+    if sect_cycle is not None:
+        sect = yield from progress.run(
+            SECT_STAGE_ID, sect_cycle,
+            lambda: exchange_sect_resources(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+            version=SECT_STAGE_VERSION,
+        )
+        domains.append({'domain': '宗门兑换', 'result': sect})
+
     from backend.core.fanxiu.data_annotation.tasks.resource_auto_use import execute_resource_auto_use_task
 
     def run_resource_stage(stage_id, operation):
@@ -204,6 +217,26 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=LIANSHEN_STAGE_VERSION,
     )
     domains.append({"domain": "炼神更新", "result": lianshen})
+    from backend.core.fanxiu.data_annotation.tasks.role_talent_update import (
+        STAGE_ID as TALENT_STAGE_ID, STAGE_VERSION as TALENT_STAGE_VERSION,
+        update_role_talents,
+    )
+    talents = yield from progress.run(
+        TALENT_STAGE_ID, daily_cycle,
+        lambda: update_role_talents(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=TALENT_STAGE_VERSION,
+    )
+    domains.append({"domain": "天赋技能树", "result": talents})
+    from backend.core.fanxiu.data_annotation.tasks.god_flame_update import (
+        STAGE_ID as GOD_FLAME_STAGE_ID, STAGE_VERSION as GOD_FLAME_STAGE_VERSION,
+        update_god_flames,
+    )
+    god_flames = yield from progress.run(
+        GOD_FLAME_STAGE_ID, daily_cycle,
+        lambda: update_god_flames(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=GOD_FLAME_STAGE_VERSION,
+    )
+    domains.append({"domain": "神焰", "result": god_flames})
     from backend.core.fanxiu.data_annotation.tasks.xianfu_science import (
         STAGE_ID, STAGE_VERSION, execute_xianfu_science_task,
     )
@@ -213,7 +246,7 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=STAGE_VERSION,
     )
     domains.append({"domain": "仙府玄机阁", "result": science})
-    # Pending research (角色天赋/论道天赋树) is not represented by a
+    # Pending research (论道天赋树) is not represented by a
     # success-producing placeholder. Its production adapter is added only after
     # real GUI/Runtime acceptance, sharing the same component receipt contract.
     next_time = next_resource_daily_time(job_now())

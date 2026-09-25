@@ -105,13 +105,15 @@ class ActivityPurchasePolicy:
         """
         from backend.core.fanxiu.data_annotation.ocr_spatial import group_ocr_tokens
         from backend.core.fanxiu.runtime_gui.exchange_shop import (
-            resolve_exchange_shop_item, resolve_ordered_exchange_candidate, exchange_scroll_direction)
+            resolve_exchange_shop_item, resolve_ordered_exchange_candidate, exchange_scroll_direction,
+            normalize_exchange_product_name)
         from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import read_common_shop_buy_dialog_snapshot
 
         observed_lines = []
-        def locate():
+        def locate(*, full_frame=False):
             nonlocal observed_lines
-            tokens = tuple(context.ocr_tokens_in_shapes(self.shop_scene, ('商品列表',), crop=True))
+            tokens = tuple(context.full_frame_ocr_tokens() if full_frame else
+                           context.ocr_tokens_in_shapes(self.shop_scene, ('商品列表',), crop=True))
             lines = tuple(group_ocr_tokens(tokens))
             observed_lines = lines
             container = context.shape(self.shop_scene,'商品列表').box()
@@ -120,7 +122,7 @@ class ActivityPurchasePolicy:
                 name_box = context.shape(self.shop_scene,'商品列表/商品模板/名称').box()
                 offset = name_box['y']-template['y']
                 boxes = [dict(x=template['x'],y=line['y']-offset,w=template['w'],h=template['h'])
-                         for line in lines if str(line.get('text','')).replace(' ','')==row['name']]
+                         for line in lines if normalize_exchange_product_name(line.get('text',''))==normalize_exchange_product_name(row['name'])]
             else:
                 boxes = [context.shape(self.shop_scene,f'商品行{i}').box() for i in range(1,6)]
             try:
@@ -146,6 +148,13 @@ class ActivityPurchasePolicy:
                 target=locate()
                 break
             except RuntimeError:
+                # A cropped OCR pass can omit pale/learned rows. Reuse the
+                # frame's full OCR before interpreting absence as a scroll.
+                try:
+                    target = locate(full_frame=True)
+                    break
+                except RuntimeError:
+                    pass
                 direction=exchange_scroll_direction(observed_lines,items=snapshot['items'],goods_id=row['goods_id'])
                 if direction=='visible':
                     obscured_samples+=1

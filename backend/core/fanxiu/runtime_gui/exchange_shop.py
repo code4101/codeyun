@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from backend.core.fanxiu.runtime_gui.text import normalize_ocr_name
 
 
-_UI_OWNERSHIP_SUFFIXES = ("已认主", "已拥有", "已激活")
+_UI_OWNERSHIP_SUFFIXES = ("已认主", "已拥有", "已激活", "已学习")
 
 # 实测几何（2026-09-16，#519 兑换宝阁第二屏起）：商品行标注框高 160、行距 180，
 # 而“所需：<价格>”固定渲染在名称下方约 58px，其数字行因此可能落在标注框下缘
@@ -26,6 +26,11 @@ def _normalize_product_name(value: Any) -> str:
         if normalized.endswith(suffix) and len(normalized) > len(suffix):
             return normalized[:-len(suffix)]
     return normalized
+
+
+def normalize_exchange_product_name(value: Any) -> str:
+    """Ignore punctuation and known UI ownership badges, not product qualifiers."""
+    return _normalize_product_name(value)
 
 
 @dataclass(frozen=True)
@@ -51,7 +56,7 @@ def exchange_scroll_direction(lines, *, items, goods_id):
     target=next(i for i,r in enumerate(rows) if r['goods_id']==goods_id)
     anchors=[]
     for line in lines:
-        ranked=sorted(((ocr_name_similarity(r['name'],line.get('text','')),i)
+        ranked=sorted(((ocr_name_similarity(_normalize_product_name(r['name']),_normalize_product_name(line.get('text',''))),i)
                        for i,r in enumerate(rows)),reverse=True)
         if ranked and ranked[0][0]>=0.8 and (len(ranked)==1 or ranked[0][0]-ranked[1][0]>=0.12):
             anchors.append((float(line['y']),ranked[0][1]))
@@ -86,9 +91,9 @@ def resolve_ordered_exchange_candidate(
     for i, row in enumerate(rows):
         name = _normalize_product_name(row['name'])
         hits = [t for t in tokens if _contained(t, product_list_box)
-                and ocr_name_similarity(row['name'],str(t.get('text',''))) >= 0.8
-                and all(ocr_name_similarity(other['name'],str(t.get('text',''))) <=
-                        ocr_name_similarity(row['name'],str(t.get('text',''))) - 0.12
+                and ocr_name_similarity(name,_normalize_product_name(t.get('text',''))) >= 0.8
+                and all(ocr_name_similarity(_normalize_product_name(other['name']),_normalize_product_name(t.get('text',''))) <=
+                        ocr_name_similarity(name,_normalize_product_name(t.get('text',''))) - 0.12
                         for j,other in enumerate(rows) if j!=i)]
         if names[name] == 1 and len(hits) == 1:
             t = hits[0]
