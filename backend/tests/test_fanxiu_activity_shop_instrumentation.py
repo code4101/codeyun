@@ -69,3 +69,19 @@ def test_activity_shop_manager_falls_back_when_global_is_unavailable(
         False,
         "constructor_marker",
     )
+
+
+def test_free_compact_shop_row_preserves_currency_layout():
+    raw = [None,41000023,41000018,4001,2009101,1,None,19002,2,1,None,
+           'SpecifyTalismanPinLevel|37_27','CL|999',2,1,None,None,63]
+    row, layout = activity_shop._canonical_shop_row(raw,shop_base_id=4001,currency_type=19002)
+    assert layout == 'compact'
+    assert (row[6],row[7]) == (0,19002)
+    assert activity_shop._canonical_shop_row(raw,shop_base_id=4001,currency_type=16001) is None
+
+
+def test_reward_layout_without_currency_filter_is_not_ambiguous():
+    raw=[None,21000033,1,620000,390037007,1,None,100,37130501,2,25,None,'','',1,1,None,None,0,0]
+    row,layout=activity_shop._canonical_shop_row(raw,shop_base_id=620000)
+    assert layout=='reward'
+    assert (row[6],row[7])==(100,37130501)

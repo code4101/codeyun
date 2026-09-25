@@ -8,7 +8,7 @@ from backend.core.fanxiu.data_annotation.jobs import get_fanxiu_data_annotation_
 from backend.core.fanxiu.data_annotation.tasks.aggregate_progress import AggregateJobProgress
 from backend.core.fanxiu.data_annotation.tasks.resource_daily_contract import (
     RESOURCE_DAILY_STAGES, RESOURCE_DAILY_TASK_ID, next_resource_daily_time,
-    resource_daily_cycle_key,
+    resource_daily_cycle_key, tuesday_purchase_cycle,
 )
 
 
@@ -110,19 +110,55 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         )
         domains.append({"domain": stage.label, "result": result})
 
+    from backend.core.fanxiu.data_annotation.tasks.fengmosha_exchange import (
+        STAGE_ID as FENGMOSHA_STAGE_ID, STAGE_VERSION as FENGMOSHA_STAGE_VERSION,
+        fengmosha_exchange_cycle, exchange_fengmosha_resources,
+    )
+    fengmosha_cycle = fengmosha_exchange_cycle(moment)
+    if fengmosha_cycle is not None:
+        fengmosha = yield from progress.run(
+            FENGMOSHA_STAGE_ID, fengmosha_cycle,
+            lambda: exchange_fengmosha_resources(
+                runner._behavior_tree_context(ctx,stop_event=stop_event),moment=moment),
+            version=FENGMOSHA_STAGE_VERSION,
+        )
+        domains.append({"domain":"秘境封魔杀兑换","result":fengmosha})
+
     from backend.core.fanxiu.data_annotation.tasks.dongtian_exchange import (
         STAGE_ID as DONGTIAN_STAGE_ID, STAGE_VERSION as DONGTIAN_STAGE_VERSION,
-        dongtian_purchase_cycle, purchase_dongtian_resources,
+        purchase_dongtian_resources,
     )
-    dongtian_cycle = dongtian_purchase_cycle(moment)
-    if dongtian_cycle is not None:
+    purchase_cycle = tuesday_purchase_cycle(moment)
+    if purchase_cycle is not None:
         dongtian = yield from progress.run(
-            DONGTIAN_STAGE_ID, dongtian_cycle,
+            DONGTIAN_STAGE_ID, purchase_cycle,
             lambda: purchase_dongtian_resources(
                 runner._behavior_tree_context(ctx, stop_event=stop_event)),
             version=DONGTIAN_STAGE_VERSION,
         )
-        domains.append({"domain": "洞天购买", "result": dongtian})
+        domains.append({"domain": "洞天兑换", "result": dongtian})
+        from backend.core.fanxiu.data_annotation.tasks.daofa_purchase import (
+            STAGE_ID as DAOFA_STAGE_ID, STAGE_VERSION as DAOFA_STAGE_VERSION,
+            purchase_daofa_resources,
+        )
+        daofa = yield from progress.run(
+            DAOFA_STAGE_ID, purchase_cycle,
+            lambda: purchase_daofa_resources(
+                runner._behavior_tree_context(ctx, stop_event=stop_event)),
+            version=DAOFA_STAGE_VERSION,
+        )
+        domains.append({"domain": "道法兑换", "result": daofa})
+        from backend.core.fanxiu.data_annotation.tasks.xianyuan_purchase import (
+            STAGE_ID as XIANYUAN_STAGE_ID, STAGE_VERSION as XIANYUAN_STAGE_VERSION,
+            purchase_xianyuan_resources,
+        )
+        xianyuan = yield from progress.run(
+            XIANYUAN_STAGE_ID, purchase_cycle,
+            lambda: purchase_xianyuan_resources(
+                runner._behavior_tree_context(ctx, stop_event=stop_event)),
+            version=XIANYUAN_STAGE_VERSION,
+        )
+        domains.append({"domain": "仙缘兑换", "result": xianyuan})
 
     from backend.core.fanxiu.data_annotation.tasks.resource_auto_use import execute_resource_auto_use_task
 

@@ -789,27 +789,7 @@ def test_select_magic_cross_occurrence_by_runtime_id_and_cross_count() -> None:
     assert runtime.clicked_shapes == []
 
 
-def test_select_duplicate_magic_rows_without_instance_constraint_is_ambiguous() -> None:
-    class Runtime:
-        def cur_frame(self, *, update=False):
-            return "frame"
-
-        def ocr_fragments_in_shapes(self, _scene, shapes, **_kwargs):
-            if shapes == ["表头"]:
-                return HEADER
-            return [
-                _line("魔道入侵", 175, y=370, w=134, h=38),
-                _line("魔道入侵", 175, y=477, w=134, h=38),
-                _line("跨服[4]", 190, y=514, w=110, h=30),
-            ]
-
-        def paged_content_snapshot(self, *_args, **_kwargs):
-            return {"lines": [_line("云梦试剑", 80)]}
-
-        def wait_action_settle(self, _seconds):
-            if False:
-                yield None
-
+def test_duplicate_magic_rows_preserve_both_runtime_instances() -> None:
     schedule = {
         "available": True,
         "items": [
@@ -832,14 +812,11 @@ def test_select_duplicate_magic_rows_without_instance_constraint_is_ambiguous() 
         ],
     }
 
-    with pytest.raises(RuntimeError, match="命中 2 个，拒绝猜测入口"):
-        _finish(
-            select_schedule_activity(
-                Runtime(),
-                r"魔道入侵",
-                enter=True,
-                runtime_schedule=schedule,
-                require_runtime_alignment=True,
-                now=datetime(2026, 9, 5, 19, 0),
-            )
-        )
+    entities = runtime_activity_entities_for_date(schedule,r"魔道入侵",target_date=date(2026,9,5))
+    targets = resolve_schedule_runtime_activity_targets(
+        header_lines=HEADER,
+        calendar_lines=[_line("魔道入侵",175,y=370,w=134,h=38),
+                        _line("魔道入侵",175,y=477,w=134,h=38),
+                        _line("跨服[4]",190,y=514,w=110,h=30)],
+        runtime_entities=entities,anchor_date=date(2026,9,5))
+    assert {t.runtime_key for t in targets} == {"4070000|4070000400004","4070001|4070001400004"}

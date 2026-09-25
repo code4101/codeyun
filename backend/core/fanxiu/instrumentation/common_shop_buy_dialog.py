@@ -156,11 +156,14 @@ def read_common_shop_buy_dialog_snapshot() -> dict[str, Any]:
         return snapshot
     except (FanxiuRuntimeMemoryError, KeyError, AttributeError, TypeError, ValueError) as exc:
         error = exc
+        import traceback
+        diagnostic_traceback = traceback.format_exc()
     return {
         "ok": False,
         "complete": False,
         "source": "active_common_shop_buy_tips",
         "reason": str(error),
+        "diagnostic_traceback": diagnostic_traceback,
         "panel_rebinds": max(0, read_attempts - 1),
         "read_attempts": max(1, read_attempts),
         "panel_rebind_reasons": tuple(rebind_reasons),

@@ -69,7 +69,7 @@ def _canonical_shop_row(
         and (currency_type is None or as_int(raw[8]) == int(currency_type))
     )
     legacy = (
-        isinstance(raw[6], (int, float))
+        ((raw[6] is None and currency_type is not None) or isinstance(raw[6], (int, float)))
         and isinstance(raw[7], (int, float))
         and (currency_type is None or as_int(raw[7]) == int(currency_type))
     )
@@ -78,6 +78,10 @@ def _canonical_shop_row(
     if augmented:
         raw.pop(6)
         return raw, "reward"
+    # Generated config omits a zero price (e.g. free Xianyuan unlock reward).
+    # Currency still identifies the compact layout; never shift that row.
+    if raw[6] is None:
+        raw[6] = 0
     return raw, "compact"
 
 
@@ -332,7 +336,8 @@ def _decode_config_rows_from_shop_dictionary(
         )
         if decoded is None:
             raise FanxiuActivityShopCollectionError(
-                f"V_ShopDic[{int(shop_base_id)}][{int(currency_type)}] 配置身份不一致"
+                f"V_ShopDic[{int(shop_base_id)}][{int(currency_type)}] 配置身份不一致："
+                f"{reader.table(row_ref.address)['array']!r}"
             )
         values, schema = decoded
         schemas.add(schema)
@@ -785,18 +790,21 @@ def _infer_show_list_cross_count(
     *,
     shop_base_id: int,
 ) -> int | None:
-    cross_counts = {
-        int(match.group(2))
-        for group in groups
-        for row in group
-        for match in _EQUAL_CROSS_GROUP_RE.finditer(str(row[_ROW_SHOW_LIMIT] or ""))
-        if int(match.group(1)) == int(shop_base_id)
-    }
-    if len(cross_counts) > 1:
-        raise FanxiuActivityShopCollectionError(
-            f"兑换页 V_ShowList 混入多个跨服配置：{sorted(cross_counts)}"
-        )
-    return next(iter(cross_counts)) if cross_counts else None
+    # One visible row may allow several cross groups (semicolon alternatives).
+    # Visibility proves membership, not which alternative matched.
+    constraints = []
+    for group in groups:
+        for row in group:
+            allowed = {int(m.group(2)) for m in _EQUAL_CROSS_GROUP_RE.finditer(
+                str(row[_ROW_SHOW_LIMIT] or '')) if int(m.group(1)) == int(shop_base_id)}
+            if allowed:
+                constraints.append(allowed)
+    if not constraints:
+        return None
+    possible = set.intersection(*constraints)
+    if not possible:
+        raise FanxiuActivityShopCollectionError('兑换页 V_ShowList 跨服条件互相冲突')
+    return next(iter(possible)) if len(possible) == 1 else None
 
 
 def _discover_active_index(

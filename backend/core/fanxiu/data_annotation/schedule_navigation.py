@@ -943,7 +943,8 @@ def select_schedule_activity(
             return projection
 
         def card_matches(page: Mapping[str, Any]) -> bool:
-            return classify_page(page).exact_match
+            projection = classify_page(page)
+            return projection.exact_match or runtime_name_only_match(projection)
 
         found = None
         runtime_name_only_candidates: list[tuple[float, float, Mapping[str, Any]]] = []
@@ -961,7 +962,9 @@ def select_schedule_activity(
                 break
             if runtime_name_only_match(projection):
                 runtime_name_only_candidates.append((x, y, candidate))
-        if found is None and not indicator_points:
+        # Indicator detection may be partial or clicks may be obscured. It is
+        # an acceleration only; the annotated pager owns complete coverage.
+        if found is None:
             found = yield from context.find_paged_content(
                 SCHEDULE_SCENE_ID,
                 card_matches,

@@ -179,3 +179,10 @@ __all__ = [
     "resource_daily_completion",
     "resource_daily_cycle_key",
 ]
+
+
+def tuesday_purchase_cycle(moment: datetime) -> str | None:
+    """Weekly purchase receipt for Tuesday's frozen parent business occurrence."""
+    if moment.weekday() != 1:
+        return None
+    return f"week:{(moment.date()-timedelta(days=1)).isoformat()}"
