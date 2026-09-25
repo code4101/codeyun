@@ -23,8 +23,35 @@ from backend.core.fanxiu.data_annotation.schedule_navigation import select_sched
 from backend.db import engine
 
 
-XUTIAN_HOME_SCENES = (452, 616)
+XUTIAN_HOME_SCENES = (452, 616, 859)
 XUTIAN_SHOP_SCENE = 739
+
+
+def enter_xutian_exchange_shop(context, occurrence):
+    """Open the exact live or grace-period occurrence, never today's namesake."""
+    schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
+    if not schedule.get('available') or not schedule.get('complete'):
+        raise RuntimeError('虚天兑换：Runtime 日程不完整')
+    now = datetime.now().astimezone()
+    if not occurrence.start_at <= now < occurrence.close_at:
+        raise RuntimeError('虚天兑换：实例尚未开始或兑换窗口已关闭')
+    yield from context.go_scene(66)
+    selected = yield from select_schedule_activity(
+        context, r'虚天(殿)?', day_offset=(min(now.date(), occurrence.end_at.date())-now.date()).days,
+        enter=True, runtime_schedule=schedule, require_runtime_alignment=True,
+        expected_activity_id=int(occurrence.activity_id), expected_runtime_id=str(occurrence.runtime_id),
+        expected_cross_count=int(occurrence.cross_count), now=now,
+    )
+    if not str(getattr(selected, 'runtime_key', '') or ''):
+        raise RuntimeError('虚天兑换：缺少精确实例标识')
+    home = yield from context.wait_scene(list(XUTIAN_HOME_SCENES), wait=30)
+    scene = int(home)
+    if scene not in XUTIAN_HOME_SCENES:
+        raise RuntimeError(f'虚天兑换：入口异常 #{scene}')
+    yield from context.wait_click(scene, '兑换宝阁')
+    shop = yield from context.wait_scene([XUTIAN_SHOP_SCENE], wait=20)
+    if int(shop) != XUTIAN_SHOP_SCENE:
+        raise RuntimeError('虚天兑换：未进入宝阁')
 
 
 def execute_xutian_open_collection_checkpoint(
@@ -61,7 +88,7 @@ def execute_xutian_open_collection_checkpoint(
     selected = yield from select_schedule_activity(
         context,
         r"虚天(殿)?",
-        day_offset=(occurrence.start_at.date() - ui_now.date()).days,
+        day_offset=(min(ui_now.date(), occurrence.end_at.date()) - ui_now.date()).days,
         enter=True,
         runtime_schedule=schedule,
         require_runtime_alignment=True,

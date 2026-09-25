@@ -219,6 +219,10 @@ def _execute_yunmeng_active_checkpoint(
 
 
 def _execute_exchange_tail_checkpoint(runner, ctx, payload, stop_event, *, occurrence):
+    if occurrence.activity_type == "xutian-palace":
+        from backend.core.fanxiu.data_annotation.tasks.xutian_tail import execute_xutian_exchange_tail_checkpoint
+        return (yield from execute_xutian_exchange_tail_checkpoint(
+            runner, ctx, payload, stop_event, occurrence=occurrence))
     if occurrence.activity_type == "beast-abyss":
         from backend.core.fanxiu.data_annotation.tasks.beast_abyss_active import (
             execute_beast_abyss_exchange_tail_checkpoint,
@@ -444,23 +448,24 @@ def _execute_family_job(
             completed_keys=completed,
             production_only=True,
         )
-        deferred_exchange_tails = tuple(
-            checkpoint
-            for checkpoint in planned_due
-            if checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND
-            and not exchange_tail_executor_is_production(checkpoint.activity_type)
-        )
-        due = tuple(
-            checkpoint
-            for checkpoint in planned_due
-            if checkpoint not in deferred_exchange_tails
-        )
+        due = planned_due
+        # Explicit maintenance replay can target one gameplay without running
+        # siblings that become due while its repair is in progress.
+        only_activity_types = payload.get("only_activity_types")
+        if only_activity_types is not None:
+            if not isinstance(only_activity_types, list) or not only_activity_types or any(
+                not isinstance(value, str) or not value for value in only_activity_types
+            ):
+                raise ValueError("only_activity_types 必须是非空活动类型列表")
+            due = tuple(c for c in due if c.activity_type in only_activity_types)
         # An active Xianmeng retry must never silently become a zero-action
         # pass that sleeps until tomorrow. Keep its durable obligation visible
         # if discovery/planning admission stops producing its checkpoint.
         planned_keys = {checkpoint.key for checkpoint in planned_due}
         checkpoint_rows = list_ranking_checkpoint_rows(session, instance_keys=by_instance)
         for row in checkpoint_rows:
+            if only_activity_types is not None and row.activity_type not in only_activity_types:
+                continue
             occurrence = by_instance.get(row.instance_key)
             if (
                 row.checkpoint_kind == XIANMENG_ACTIVE_KIND
@@ -596,6 +601,11 @@ def _execute_family_job(
                     required_fact_watermark=checkpoint.due_at,
                 )
             elif checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
+                if not exchange_tail_executor_is_production(checkpoint.activity_type):
+                    from backend.core.fanxiu.data_annotation.ranking_escalation import RankingCapabilityMissing
+                    raise RankingCapabilityMissing(
+                        f'{checkpoint.activity_type} 已到兑换收尾时间，但缺少已验收执行器；'
+                        f'兑换截止 {occurrence.close_at.isoformat()}，禁止静默跳过')
                 result = yield from _execute_exchange_tail_checkpoint(
                     runner, ctx, payload, stop_event, occurrence=occurrence
                 )
@@ -712,6 +722,22 @@ def _execute_family_job(
                     message=str(exc),
                     result={"error_type": type(exc).__name__},
                 )
+                try:
+                    from backend.core.fanxiu.data_annotation.ranking_escalation import report_ranking_failure
+                    try:
+                        failure_frame = runner._behavior_tree_context(ctx, stop_event=stop_event).cur_frame(update=True)
+                    except Exception:
+                        failure_frame = None
+                    repair = report_ranking_failure(
+                        session, checkpoint=checkpoint, occurrence=occurrence, error=exc,
+                        task_id=scheduler_task_id, entry_id=str(ctx.get('entry_id') or ''),
+                        frame_data_url=failure_frame,
+                    )
+                    runner._log('warning', f"榜单异常升级：{repair.get('status')}；{repair.get('dispatch_error') or repair.get('dispatch_id') or str(exc)}")
+                except Exception as dispatch_error:
+                    # Preserve the business exception even if evidence or AI
+                    # transport is broken, and make that second fault visible.
+                    runner._log('warning', f'榜单异常上报失败：{dispatch_error}')
             raise
 
     with Session(engine) as session:
@@ -768,13 +794,6 @@ def _execute_family_job(
         "pending_checkpoint_count": len(pending),
         "unavailable_checkpoint_count": len(unavailable),
         "checkpoint_results": results,
-        "deferred_exchange_tails": [
-            {
-                **checkpoint.as_dict(),
-                "reason": "exchange_tail_executor_not_production",
-            }
-            for checkpoint in deferred_exchange_tails
-        ],
     }
 
 

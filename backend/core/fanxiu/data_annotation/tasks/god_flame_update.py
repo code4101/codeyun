@@ -34,7 +34,8 @@ def update_god_flames(context):
             context.click_shape_center(scene, '返回背景')
             yield from context.wait_action_settle(2)
     elif scene != MAIN:
-        yield from context.go_scene(MAIN)
+        from backend.core.fanxiu.runtime_gui.role_menu import enter_role_feature
+        yield from enter_role_feature(context, '神焰')
     yield from require_main(context)
     receipts = []
     for entry, name in FLAMES:

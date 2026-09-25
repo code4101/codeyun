@@ -142,7 +142,9 @@ PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES = frozenset({
     "tiandi-yiju",
 })
 PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS = {
-    "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND}),
+    # 19:00 supply -> 3x500 (+one reward-miss batch) -> task rewards has
+    # occurrence-scoped consumption evidence and passed live replay.
+    "magic-invasion": frozenset({MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND}),
     "xutian-palace": frozenset({XUTIAN_OPEN_COLLECTION_KIND}),
     # 仙盟争霸只有 10:00 的正式挑战是已验收的生产动作；00:10 的日常对账在该活动
     # 上是 no-op retained 标记，不纳入准入，避免每天多一次无动作唤醒。
@@ -160,7 +162,10 @@ def ranking_checkpoint_is_production(checkpoint: "RankingCheckpoint") -> bool:
     if checkpoint.family == "resource_rank":
         return True
     if checkpoint.checkpoint_kind == EXCHANGE_TAIL_KIND:
-        return checkpoint.activity_type in PRODUCTION_GAMEPLAY_EXCHANGE_TAIL_ACTIVITY_TYPES
+        # A known shop's closing obligation must wake the owner even when its
+        # executor is missing. The owner escalates that capability gap to AI;
+        # filtering here used to silently sleep past the redemption window.
+        return True
     return checkpoint.checkpoint_kind in PRODUCTION_GAMEPLAY_CHECKPOINT_KINDS.get(
         checkpoint.activity_type,
         frozenset(),

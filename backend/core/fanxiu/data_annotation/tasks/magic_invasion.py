@@ -847,7 +847,9 @@ def _reward_currency_snapshot(occurrence: MagicInvasionOccurrence) -> dict[str, 
     )
     snapshot = read_wallet_currency_snapshot(
         currency_type,
-        allow_discovery=False,
+        # Supply/navigation can outlive the process-binding cache. This
+        # explicit gameplay task must resolve its own read-only wallet root.
+        allow_discovery=True,
         missing_as_zero=True,
     )
     if int(snapshot.get("currency_type") or 0) != int(currency_type):

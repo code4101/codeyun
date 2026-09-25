@@ -62,6 +62,9 @@ class SacredExchangeSupplySpec:
     target_item_id: int
     storage_category: str = "日程"
     allow_partial: bool = False
+    # Sacred items can have a description-only detail panel, without the
+    # ordinary consumable's effect heading. Bind the verified source asset.
+    detail_scene: int = ITEM_DETAIL_SCENE
 
 
 def runtime_backpack_items(snapshot: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -247,9 +250,9 @@ def _open_source_exchange(
         raise RuntimeError(f"{spec.source_item_name}无法唯一对齐储物袋：{click.status}")
     context.click_frame_point(STORAGE_BAG_SCENE, *click.point)
     yield from context.wait_scene(
-        [ITEM_DETAIL_SCENE], wait=10.0, label=f"{spec.label}：等待{spec.source_item_name}详情"
+        [spec.detail_scene], wait=10.0, label=f"{spec.label}：等待{spec.source_item_name}详情"
     )
-    yield from context.wait_click(ITEM_DETAIL_SCENE, "使用（高风险）", timeout=8.0)
+    yield from context.wait_click(spec.detail_scene, "使用（高风险）", timeout=8.0)
     landed = yield from context.wait_scene(
         [SACRED_ITEM_SCENE, SACRED_SHOP_SCENE],
         wait=10.0,

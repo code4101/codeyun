@@ -113,7 +113,8 @@ def _update_role_talents(context):
         yield from context.wait_click(CHOICE_SCENE,'返回')
         yield from wait_talent_scene(context,[TREE_SCENE])
     elif scene!=TREE_SCENE:
-        yield from context.go_scene(TREE_SCENE)
+        from backend.core.fanxiu.runtime_gui.role_menu import enter_role_feature
+        yield from enter_role_feature(context, '天赋')
         yield from wait_talent_scene(context,[TREE_SCENE])
     initial = read_role_talent_tree(all_tabs=True)
     counts = read_item_available_counts(TALENT_MATERIALS,manager_key='role-talent')[0]

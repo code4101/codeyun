@@ -52,7 +52,8 @@ def test_shequn_lingchong_only_registers_the_occurrence_before_collection() -> N
     assert RANKING_CAPABILITY_STATUS["shequn-lingchong"] == "observed_unhandled"
 
 
-def test_production_due_includes_only_promoted_magic_initialization() -> None:
+@pytest.mark.parametrize('cross_count', [1, 8])
+def test_production_magic_wakes_at_1900_after_collection(cross_count) -> None:
     magic = RankingOccurrence(
         activity_type="magic-invasion",
         family="gameplay_rank",
@@ -62,7 +63,7 @@ def test_production_due_includes_only_promoted_magic_initialization() -> None:
         end_at=datetime(2026, 8, 22, 22, 0, tzinfo=TZ),
         prepare_at=datetime(2026, 8, 22, 0, 0, tzinfo=TZ),
         close_at=datetime(2026, 8, 23, 23, 59, 59, tzinfo=TZ),
-        cross_count=8,
+        cross_count=cross_count,
     )
 
     catalog_due = due_ranking_checkpoints(
@@ -81,12 +82,27 @@ def test_production_due_includes_only_promoted_magic_initialization() -> None:
     }
     assert [item.checkpoint_kind for item in production_due] == [
         MAGIC_INITIALIZATION_KIND,
+        MAGIC_ACTIVE_KIND,
     ]
     assert {
         item.checkpoint_kind
         for item in catalog_due
         if ranking_checkpoint_is_production(item)
-    } == {MAGIC_INITIALIZATION_KIND}
+    } == {MAGIC_INITIALIZATION_KIND, MAGIC_ACTIVE_KIND}
+    initialized = {item.key for item in production_due
+                   if item.checkpoint_kind == MAGIC_INITIALIZATION_KIND}
+    assert next_ranking_lifecycle_time(
+        (magic,), now=datetime(2026, 8, 22, 11, 15, tzinfo=TZ),
+        completed_keys=initialized, production_only=True,
+    ) == datetime(2026, 8, 22, 19, 0, tzinfo=TZ)
+    assert [item.checkpoint_kind for item in due_ranking_checkpoints(
+        (magic,), now=datetime(2026, 8, 22, 19, 12, tzinfo=TZ),
+        completed_keys=initialized, production_only=True,
+    )] == [MAGIC_ACTIVE_KIND]
+    assert not due_ranking_checkpoints(
+        (magic,), now=datetime(2026, 8, 22, 19, 12, tzinfo=TZ),
+        completed_keys={item.key for item in production_due}, production_only=True,
+    )
 
 
 def test_xianmeng_active_is_production_and_retry_drives_next_time() -> None:
@@ -948,7 +964,8 @@ def test_checkpoint_store_is_occurrence_scoped_and_idempotently_updates_one_row(
     )
     checkpoint = due_ranking_checkpoints(
         (cross,),
-        now=datetime(2026, 8, 22, 0, 30, tzinfo=TZ),
+        # This fixture opens at 10:00; collection is due one minute later.
+        now=datetime(2026, 8, 22, 10, 1, tzinfo=TZ),
     )[0]
 
     with Session(engine) as session:

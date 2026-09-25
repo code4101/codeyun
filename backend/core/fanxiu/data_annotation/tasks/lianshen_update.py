@@ -29,7 +29,8 @@ def update_lianshen(context, *, tab_types=(1, 2, 3, 4)):
         raise ValueError('炼神页签范围无效')
     tab = _selected_tab()
     if tab is None:
-        yield from context.go_scene(771)
+        from backend.core.fanxiu.runtime_gui.role_menu import enter_role_feature
+        yield from enter_role_feature(context, '炼神')
         tab = read_lianshen_tree()
     receipts = []
     for tab_type in tab_types:

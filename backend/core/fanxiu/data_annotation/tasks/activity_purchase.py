@@ -82,11 +82,13 @@ class ActivityPurchasePolicy:
     def validate_dialog(self, dialog, row, quantity=None):
         gid = row['goods_id']
         if gid not in self.offers or not dialog.get('complete') or not dialog.get('identity_complete'):
-            raise ValueError('活动兑换框身份不完整')
+            raise ValueError(f"活动兑换框身份不完整：{dialog.get('reason') or dialog}")
         item, price, _, _ = self.offers[gid]
-        if (dialog.get('goods_id'), dialog.get('item_id'), dialog.get('cost_item_id'),
-                dialog.get('Price')) != (gid, item, self.currency, price):
-            raise ValueError('活动兑换框商品、币种或价格不符')
+        observed = (dialog.get('goods_id'), dialog.get('item_id'),
+                    dialog.get('cost_item_id'), dialog.get('Price'))
+        expected = (gid, item, self.currency, price)
+        if observed != expected:
+            raise ValueError(f'活动兑换框商品、币种或价格不符：observed={observed}, expected={expected}')
         if quantity is not None:
             if (not 0 < quantity <= dialog['maxNum'] or dialog['showNum'] != quantity
                     or not dialog.get('CanBuy') or not dialog.get('isEnough')):
@@ -132,6 +134,16 @@ class ActivityPurchasePolicy:
                     expected_name=row['name'],expected_unit_price=row['token_cost'],
                     current_price_right_ratio=self.current_price_right_ratio)
             except RuntimeError:
+                # Floating battle/effect text can cover the price without
+                # covering the unique product title. This only opens a
+                # candidate: exact Runtime goods/item/currency/price identity
+                # remains mandatory before purchase authorization below.
+                try:
+                    return resolve_exchange_shop_item(lines,
+                        product_list_box=container, product_row_boxes=boxes,
+                        expected_name=row['name'])
+                except RuntimeError:
+                    pass
                 if not self.repeated_row_template:
                     raise
                 return resolve_ordered_exchange_candidate(lines,items=snapshot['items'],
@@ -178,6 +190,14 @@ class ActivityPurchasePolicy:
         if int((yield from context.wait_scene([self.dialog_scene],wait=12))) != self.dialog_scene:
             raise RuntimeError('活动商品未打开购买框')
         dialog = read_common_shop_buy_dialog_snapshot()
+        if not dialog.get('complete') or not dialog.get('identity_complete'):
+            # The panel artwork can appear before CommonShop binds its fields.
+            # One observation after settling is allowed; no action is resent.
+            first_observation = dialog
+            yield from context.wait_action_settle(0.5)
+            dialog = read_common_shop_buy_dialog_snapshot()
+            if not dialog.get('complete') or not dialog.get('identity_complete'):
+                raise RuntimeError(f'购买框绑定未完成：first={first_observation}, last={dialog}')
         self.validate_dialog(dialog,row)
         return dialog
 
@@ -208,6 +228,14 @@ class ActivityPurchasePolicy:
         if int((yield from context.wait_scene([34],wait=15))) != 34:
             raise RuntimeError('活动兑换未返回世界')
         return {**result, 'final_scene':34}
+
+    def confirm_purchase(self, row, quantity, balance):
+        """Read fresh post-purchase facts; confirmation itself is never resent."""
+        snapshot = self.read_snapshot()
+        after = self.authorized_rows(snapshot)[row['goods_id']]
+        if after['purchased_count'] != row['purchased_count'] + quantity:
+            raise RuntimeError('活动兑换已发送但计数未确认，禁止重发')
+        return snapshot
 
     def buy_current_shop(self, context):
         """Complete one already-open tab; caller owns navigation and weekly receipts."""
@@ -262,13 +290,13 @@ class ActivityPurchasePolicy:
                     assets=SACRED_SHOP_QUANTITY_ASSETS if self.dialog_scene==634 else COMMON_SHOP_QUANTITY_ASSETS)
                 dialog = proof['snapshot']
             self.validate_dialog(dialog,row,quantity)
-            context.click_shape_center(self.dialog_scene,self.dialog_confirm)
+            # A notification can arrive while quantity is being configured.
+            # Re-enter the shared interruption guard immediately before the
+            # irreversible confirmation, instead of clicking through it.
+            yield from context.wait_click(self.dialog_scene,self.dialog_confirm)
             if int((yield from context.wait_scene([self.shop_scene],wait=15))) != self.shop_scene:
                 raise RuntimeError('活动兑换已发送但落点不明，禁止重发')
-            snapshot = self.read_snapshot()
-            after = self.authorized_rows(snapshot)[row['goods_id']]
-            if after['purchased_count'] != row['purchased_count'] + quantity:
-                raise RuntimeError('活动兑换已发送但计数未确认，禁止重发')
+            snapshot = self.confirm_purchase(row, quantity, balance)
             balance -= quantity * row['token_cost']
             purchases.append({'goods_id':row['goods_id'],'quantity':quantity})
         return {'result':'success','outcome':'complete','purchases':purchases,

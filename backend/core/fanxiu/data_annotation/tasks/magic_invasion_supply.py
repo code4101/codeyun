@@ -29,6 +29,7 @@ MAGIC_TIANYAN_SUPPLY = SacredExchangeSupplySpec(
     source_item_id=TIANLEI_BAMBOO_ITEM_ID,
     source_item_name="天雷竹",
     target_item_id=TIANYAN_ITEM_ID,
+    detail_scene=858,
 )
 
 

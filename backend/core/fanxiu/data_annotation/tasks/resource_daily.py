@@ -237,6 +237,16 @@ def execute_resource_daily_task(runner, ctx, payload, stop_event):
         version=GOD_FLAME_STAGE_VERSION,
     )
     domains.append({"domain": "神焰", "result": god_flames})
+    from backend.core.fanxiu.data_annotation.tasks.three_emperors_comprehend import (
+        STAGE_ID as EMPERORS_STAGE_ID, STAGE_VERSION as EMPERORS_STAGE_VERSION,
+        comprehend_three_emperors,
+    )
+    emperors = yield from progress.run(
+        EMPERORS_STAGE_ID, daily_cycle,
+        lambda: comprehend_three_emperors(runner._behavior_tree_context(ctx, stop_event=stop_event)),
+        version=EMPERORS_STAGE_VERSION,
+    )
+    domains.append({'domain': '三皇灵威领悟', 'result': emperors})
     from backend.core.fanxiu.data_annotation.tasks.xianfu_science import (
         STAGE_ID, STAGE_VERSION, execute_xianfu_science_task,
     )

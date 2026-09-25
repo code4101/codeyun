@@ -797,6 +797,10 @@ class BehaviorTreeContext(AutomationContext):
                     and layer0_scene_id not in self.runner._LEAVE_CONFIRM_VIEW_IDS):
                 return commit(layer0_recognition, frame, scope="business")
             if handle_popup(layer0_recognition, frame):
+                # Closing animations can retain the old identity for >1s.
+                # Do not send a second background/Return click through the
+                # fading popup into the underlying business page.
+                yield from self.wait_action_settle(1.5)
                 start = time.monotonic()  # 弹窗动作后的新过渡重新享有等待预算。
                 continue
             has_business_layer0 = layer0 is not None and bool(business_ids)
@@ -810,6 +814,7 @@ class BehaviorTreeContext(AutomationContext):
                     include_default_popup_candidates=False,
                 )
             if handle_popup(global_recognition, frame):
+                yield from self.wait_action_settle(1.5)
                 # 与 Layer 0 相同：处理后下一 tick 重新观察原业务候选。
                 start = time.monotonic()
                 continue
