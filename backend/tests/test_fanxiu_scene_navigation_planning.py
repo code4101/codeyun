@@ -13,9 +13,11 @@ import json
 import pytest
 
 from backend.core.fanxiu.data_annotation.runner import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import BehaviorTreeContext, SceneMatch
 from backend.core.fanxiu.data_annotation.scene_navigation import (
     posterior_landing_probabilities,
 )
+from pyxllib.autogui import Shape, View
 
 
 def _semantics_tree() -> list[dict]:
@@ -145,6 +147,163 @@ def test_plan_source_equals_target_is_explicit():
     result = runner.plan_scene_navigation(_semantics_tree(), 34, 34)
     assert result["status"] == "already_at_target"
     assert result["candidates"] == []
+
+
+def test_plan_scene_alias_requires_visual_confirmation_instead_of_click():
+    tree = [
+        {
+            "type": "image",
+            "id": 910,
+            "title": "目标上的浮层",
+            "navigationAliasOf": 920,
+            "shapes": [{"title": "进入其他地点", "sceneJumpTarget": "920(100)"}],
+        },
+        {"type": "image", "id": 920, "title": "目标", "shapes": []},
+    ]
+
+    result = create_behavior_tree_executor().plan_scene_navigation(tree, 910, 920)
+
+    assert result["status"] == "alias_confirmation_required"
+    assert result["alias_target_scene_id"] == 920
+    assert result["candidates"] == []
+    assert result["read_only"] is True
+
+
+def test_plan_excludes_annotated_non_navigation_control():
+    tree = [
+        {
+            "type": "image", "id": 910, "title": "地标浮层",
+            "shapes": [
+                {"title": "进入", "navigationRole": "non_navigation", "sceneJumpTarget": "920(50)"},
+                {"title": "安全返回", "sceneJumpTarget": "930(20)"},
+            ],
+        },
+        {"type": "image", "id": 920, "title": "无关地点", "shapes": [{"title": "返回", "sceneJumpTarget": "940(20)"}]},
+        {"type": "image", "id": 930, "title": "中转", "shapes": [{"title": "前往", "sceneJumpTarget": "940(20)"}]},
+        {"type": "image", "id": 940, "title": "目标", "shapes": []},
+    ]
+
+    result = create_behavior_tree_executor().plan_scene_navigation(tree, 910, 940)
+
+    assert result["status"] == "ok"
+    assert [item["action_title"] for item in result["candidates"]] == ["安全返回"]
+
+
+@pytest.mark.parametrize("target_scene_id", [34, 940])
+def test_plan_uses_shape_destination_exclusions_instead_of_button_title(target_scene_id):
+    tree = [
+        {
+            "type": "image", "id": 910, "title": "入口",
+            "shapes": [
+                {"id": "forward", "title": "前往", "sceneJumpTarget": f"{target_scene_id}(20)"},
+                {"id": "return", "title": "返回", "sceneJumpTarget": "930(20)"},
+            ],
+        },
+        {"type": "image", "id": 930, "title": "中转", "shapes": [
+            {"id": "next", "title": "前往目标", "sceneJumpTarget": f"{target_scene_id}(20)"},
+        ]},
+        {"type": "image", "id": target_scene_id, "title": "目标", "shapes": []},
+    ]
+    planner = create_behavior_tree_executor()
+
+    unrestricted = planner.plan_scene_navigation(tree, 910, target_scene_id)
+    assert unrestricted["status"] == "ok"
+    assert unrestricted["candidates"][0]["action_title"] == "前往"
+
+    restricted_tree = json.loads(json.dumps(tree))
+    restricted_tree[0]["shapes"][0]["navigationDenyTargets"] = [target_scene_id]
+    restricted = planner.plan_scene_navigation(restricted_tree, 910, target_scene_id)
+    assert restricted["status"] == "ok"
+    assert [item["action_title"] for item in restricted["candidates"]] == ["返回"]
+
+
+def test_forward_shape_target_scope_keeps_its_entrance_but_excludes_world_detour():
+    tree = [
+        {"type": "image", "id": 337, "title": "区域入口", "shapes": [
+            {"id": "forward", "title": "前往", "sceneJumpTarget": "338(20),34(18)"},
+            {"id": "return", "title": "返回", "sceneJumpTarget": "336(20)"},
+        ]},
+        {"type": "image", "id": 338, "title": "区域内部", "shapes": []},
+        {"type": "image", "id": 336, "title": "上一级", "shapes": [
+            {"id": "return-world", "title": "返回", "sceneJumpTarget": "34(20)"},
+        ]},
+        {"type": "image", "id": 34, "title": "世界", "shapes": [
+            {"id": "daily", "title": "日常", "sceneJumpTarget": "69(20)"},
+        ]},
+        {"type": "image", "id": 69, "title": "日常", "shapes": [
+            {"id": "entry", "title": "任务入口", "sceneJumpTarget": "279(20)"},
+        ]},
+        {"type": "image", "id": 279, "title": "目标", "shapes": []},
+    ]
+    planner = create_behavior_tree_executor()
+    assert planner.plan_scene_navigation(tree, 337, 279)["candidates"][0]["action_title"] == "前往"
+
+    scoped_tree = json.loads(json.dumps(tree))
+    scoped_tree[0]["shapes"][0]["navigationAllowTargets"] = [338]
+    outer_route = planner.plan_scene_navigation(scoped_tree, 337, 279)
+    inner_route = planner.plan_scene_navigation(scoped_tree, 337, 338)
+    assert [item["action_title"] for item in outer_route["candidates"]] == ["返回"]
+    assert [item["action_title"] for item in inner_route["candidates"]] == ["前往"]
+
+
+def test_plan_requires_explicit_safe_exit_role_for_reward_control():
+    tree = [
+        {"type": "image", "id": 437, "title": "奖励", "shapes": [
+            {"id": "reward", "title": "领取奖励", "sceneJumpTarget": "438(20)"},
+        ]},
+        {"type": "image", "id": 438, "title": "收尾", "shapes": []},
+    ]
+    planner = create_behavior_tree_executor()
+    assert planner.plan_scene_navigation(tree, 437, 438)["status"] == "no_path"
+
+    annotated_tree = json.loads(json.dumps(tree))
+    annotated_tree[0]["shapes"][0]["navigationRole"] = "safe_exit"
+    result = planner.plan_scene_navigation(annotated_tree, 437, 438)
+    assert result["status"] == "ok"
+    assert [item["action_title"] for item in result["candidates"]] == ["领取奖励"]
+
+
+@pytest.mark.parametrize("confirmation_title", ["确认", "确定"])
+def test_plan_requires_verified_navigation_role_for_confirmation(confirmation_title):
+    tree = [
+        {"type": "image", "id": 910, "title": "操作确认", "shapes": [
+            {"id": "confirm", "title": confirmation_title, "sceneJumpTarget": "940(20)"},
+            {"id": "cancel", "title": "取消", "sceneJumpTarget": "930(20)"},
+        ]},
+        {"type": "image", "id": 930, "title": "安全退出", "shapes": [
+            {"id": "next", "title": "返回", "sceneJumpTarget": "940(20)"},
+        ]},
+        {"type": "image", "id": 940, "title": "目标", "shapes": []},
+    ]
+    planner = create_behavior_tree_executor()
+
+    default_plan = planner.plan_scene_navigation(tree, 910, 940)
+    assert default_plan["status"] == "ok"
+    assert [item["action_title"] for item in default_plan["candidates"]] == ["取消"]
+
+    annotated_tree = json.loads(json.dumps(tree))
+    annotated_tree[0]["shapes"][0]["navigationRole"] = "safe_exit"
+    verified_plan = planner.plan_scene_navigation(annotated_tree, 910, 940)
+    assert verified_plan["status"] == "ok"
+    assert confirmation_title in [item["action_title"] for item in verified_plan["candidates"]]
+
+
+def test_plan_does_not_invent_jump_for_unannotated_confirmation():
+    tree = [
+        {"type": "image", "id": 910, "title": "事件", "shapes": [
+            {"id": "confirm", "title": "确认", "sceneJumpTarget": ""},
+            {"id": "return", "title": "返回", "sceneJumpTarget": "930(20)"},
+        ]},
+        {"type": "image", "id": 930, "title": "中转", "shapes": [
+            {"id": "daily", "title": "日常", "sceneJumpTarget": "940(20)"},
+        ]},
+        {"type": "image", "id": 940, "title": "目标", "shapes": []},
+    ]
+
+    result = create_behavior_tree_executor().plan_scene_navigation(tree, 910, 940)
+
+    assert result["status"] == "ok"
+    assert [item["action_title"] for item in result["candidates"]] == ["返回"]
 
 
 def test_plan_unknown_scenes_are_explicit():
@@ -399,6 +558,61 @@ def test_data_declared_scroll_list_edge_joins_the_generic_scene_graph():
         assert final_step["action_title"] == "动态任务入口"
 
 
+@pytest.mark.parametrize("visible_initially", [True, False])
+def test_scroll_list_navigation_checks_visible_row_before_rewinding(monkeypatch, visible_initially):
+    runner = create_behavior_tree_executor()
+    view = View({"type": "image", "id": 69, "filename": "0069.png", "width": 900, "height": 1600})
+    viewport = Shape({"title": "滚动窗口", "x": 0.1, "y": 0.2, "w": 0.8, "h": 0.7,
+                      "loadInitialPosition": "unknown"}, parent_view=view)
+    route = Shape({"title": "动态任务入口", "navigationListShape": "滚动窗口",
+                   "navigationTitlePattern": "目标", "navigationMaxScrolls": 3}, parent_view=view)
+    context = BehaviorTreeContext(runner, {})
+    actions = []
+    ocr_calls = 0
+
+    def wait_scene(_ids, **_kwargs):
+        actions.append("recognize")
+        if False:
+            yield None
+        return SceneMatch(69, score=100, matched_layer=0, scope="business",
+                          status="matched", frame_data_url="frame")
+
+    def ocr(*_args):
+        nonlocal ocr_calls
+        ocr_calls += 1
+        if visible_initially or ocr_calls >= 4:
+            return [{"text": "目标入口", "x": 200, "y": 500, "w": 120, "h": 40}]
+        return []
+
+    def scroll(*_args, **_kwargs):
+        actions.append("rewind")
+        if False:
+            yield None
+        return False
+
+    def settle(*_args, **_kwargs):
+        actions.append("settle")
+        if False:
+            yield None
+
+    monkeypatch.setattr(context, "shape", lambda *_args: viewport)
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+    monkeypatch.setattr(context, "scroll_shape_content", scroll)
+    monkeypatch.setattr(context, "click_frame_point", lambda _view, x, y: actions.append(("click", x, y)))
+    monkeypatch.setattr(context, "wait_action_settle", settle)
+    monkeypatch.setattr(runner, "_ocr_fragments_in_scene_shapes", ocr)
+
+    generator = context.open_navigation_list_entry(view, route)
+    with pytest.raises(StopIteration) as completed:
+        while True:
+            next(generator)
+    assert completed.value.value == "open"
+    assert ("click", 260.0, 520.0) in actions
+    assert actions[-1] == "settle"
+    assert actions.count("rewind") == (0 if visible_initially else 2)
+    assert actions.count("recognize") == (1 if visible_initially else 4)
+
+
 def test_rotating_card_identity_is_shape_data_and_plans_through_its_landing():
     runner = create_behavior_tree_executor()
     tree = [
@@ -406,6 +620,8 @@ def test_rotating_card_identity_is_shape_data_and_plans_through_its_landing():
             {"id": "calendar", "title": "日程", "sceneJumpTarget": "11(10)"},
         ]},
         {"type": "image", "id": 11, "title": "calendar", "shapes": [
+            {"id": "rotating-forward", "title": "前往", "sceneJumpTarget": "14(20)",
+             "navigationRole": "non_navigation"},
             {"id": "card", "title": "目标活动卡片", "sceneJumpTarget": "12",
              "navigationAction": "schedule_card_forward",
              "navigationRuntimeActivityIds": [12345],
@@ -415,11 +631,13 @@ def test_rotating_card_identity_is_shape_data_and_plans_through_its_landing():
             {"id": "detail", "title": "查看详情", "sceneJumpTarget": "13(10)"},
         ]},
         {"type": "image", "id": 13, "title": "rank", "shapes": []},
+        {"type": "image", "id": 14, "title": "另一个轮播活动", "shapes": []},
     ]
     plan = runner.plan_scene_navigation(tree, 10, 13, limit=1)
     assert plan["status"] == "ok"
     assert [(step["from_scene_id"], step["to_scene_id"])
             for step in plan["candidates"][0]["downstream"]["steps"]] == [(11, 12), (12, 13)]
+    assert runner.plan_scene_navigation(tree, 10, 14)["status"] == "no_path"
 
 
 def test_runtime_world_menu_function_is_a_data_declared_graph_edge():

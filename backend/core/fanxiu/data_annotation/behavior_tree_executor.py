@@ -6867,9 +6867,27 @@ class BehaviorTreeContext(AutomationContext):
             lines = self.runner._ocr_fragments_in_scene_shapes(self.ctx, frame, source_view.raw)
             return frame, lines
 
+        def click_visible(lines: list[dict[str, Any]], page_index: int) -> bool:
+            found = visible_match(lines)
+            if found is None:
+                return False
+            x, y, value = found
+            self.runner._log("action", f"{label}：第 {page_index} 屏点击 {value}")
+            self.click_frame_point(source_view, x, y)
+            return True
+
+        # A row already visible at the current cursor needs no repositioning.
+        # Rewind only after confirming that this page does not contain it; the
+        # viewport match above still guards against unrelated OCR text.
+        initial_page = yield from confirmed_page()
+        if click_visible(initial_page[1], 1):
+            yield from self.wait_action_settle()
+            return "open"
+
         # A persisted list may reopen at its previous cursor.  The list Shape
         # declares that behavior; known-start lists avoid needless gestures.
         initial_position = str(list_shape.raw.get("loadInitialPosition") or "unknown").strip().lower()
+        pending_page = initial_page if initial_position == "start" else None
         if initial_position != "start":
             unchanged = 0
             for _ in range(max_scrolls):
@@ -6885,12 +6903,9 @@ class BehaviorTreeContext(AutomationContext):
 
         unchanged = 0
         for index in range(max_scrolls + 1):
-            _frame, lines = yield from confirmed_page()
-            found = visible_match(lines)
-            if found is not None:
-                x, y, value = found
-                self.runner._log("action", f"{label}：第 {index + 1} 屏点击 {value}")
-                self.click_frame_point(source_view, x, y)
+            _frame, lines = pending_page if pending_page is not None else (yield from confirmed_page())
+            pending_page = None
+            if click_visible(lines, index + 1):
                 yield from self.wait_action_settle()
                 return "open"
             if index == max_scrolls:
@@ -10981,11 +10996,15 @@ class BehaviorTreeExecutor(
 
     def _scene_jump_edges(self, tree: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
         tree = self._resolved_asset_tree(tree)
-        edges = explicit_scene_jump_edges(tree)
-        self._add_dynamic_confirm_scene_edges(edges)
-        return edges
+        return explicit_scene_jump_edges(tree)
 
     def _find_scene_route(self, tree: list[dict[str, Any]], start_scene_id: int, target_scene_id: int) -> list[dict[str, Any]] | None:
+        """Find a safe route using the same reliable landings as the planner.
+
+        A rare historical destination is evidence of one landing, not a
+        dependable edge.  Jump-result waiting uses this answer to decide
+        whether to replan immediately or keep observing the current frame.
+        """
         if start_scene_id == target_scene_id:
             return []
         edges = self._scene_jump_edges(tree)
@@ -10994,7 +11013,15 @@ class BehaviorTreeExecutor(
         while queue:
             scene_id, route = queue.pop(0)
             for edge in edges.get(scene_id, []):
-                for next_scene_id in edge.get("target_ids") or []:
+                if self._scene_navigation_edge_risk(edge, int(target_scene_id)) is None:
+                    continue
+                shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
+                landings = self._scene_navigation_reliable_landings(
+                    self._scene_navigation_landing_probabilities(
+                        tree, shape, [int(value) for value in edge.get("target_ids") or []],
+                    )
+                )
+                for next_scene_id in landings:
                     if next_scene_id in visited:
                         continue
                     next_route = [*route, edge]
@@ -11039,12 +11066,16 @@ class BehaviorTreeExecutor(
         # The same label can mean a harmless page tab or a destructive choice.
         # Keep the default conservative and let the annotated Shape state its
         # verified navigation role instead of encoding scene IDs here.
-        if shape.get("navigationRole") == "safe_tab":
+        if shape.get("navigationRole") == "non_navigation":
+            return 100
+        if shape.get("navigationRole") in {"safe_tab", "safe_exit"}:
             return 0
         title = _sanitize_ocr_text(shape.get("title"))
         if not title:
             return 0
         high_risk_keywords = (
+            "确认",
+            "确定",
             "一键领取",
             "领取",
             "购买",
@@ -11081,22 +11112,35 @@ class BehaviorTreeExecutor(
             risk += self._scene_navigation_shape_risk(shape)
         return risk
 
+    @staticmethod
+    def _scene_navigation_target_denied(shape: dict[str, Any], target_scene_id: int) -> bool:
+        """Honor a Shape's target scope without encoding route IDs in code.
+
+        A forward control may have historical landings on the world page while
+        still being the correct entrance to its own area.  An explicit allow
+        list keeps that control available for the area and excludes unrelated
+        destinations without requiring a deny entry for every future scene.
+        """
+        target = str(int(target_scene_id))
+        allowed = shape.get("navigationAllowTargets")
+        if isinstance(allowed, (list, tuple, set)) and target not in {
+            str(value).strip() for value in allowed
+        }:
+            return True
+        targets = shape.get("navigationDenyTargets")
+        return isinstance(targets, (list, tuple, set)) and target in {
+            str(value).strip() for value in targets
+        }
+
     def _scene_navigation_edge_risk(
         self,
         edge: dict[str, Any],
         target_scene_id: int,
     ) -> int | None:
         shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
-        shape_title = str(shape.get("title") or "")
-        if (
-            int(target_scene_id) == 34
-            and "前往" in _sanitize_ocr_text(shape_title)
-            and shape.get("allowReturnViaForward") is not True
-        ):
+        if self._scene_navigation_target_denied(shape, target_scene_id):
             return None
         risk = self._scene_navigation_shape_risk(shape)
-        if risk >= 100 and _sanitize_ocr_text(shape_title) == "领取奖励":
-            return 0
         return None if risk >= 100 else risk
 
     def _scene_navigation_distances_to_target(
@@ -11321,27 +11365,18 @@ class BehaviorTreeExecutor(
         shape = edge.get("shape") if isinstance(edge.get("shape"), dict) else {}
         shape_title = str(shape.get("title") or "")
         current_edge_risk = self._scene_navigation_edge_risk(edge, int(target_scene_id))
-        if (
-            current_edge_risk is None
-            and int(target_scene_id) == 34
-            and "前往" in _sanitize_ocr_text(shape_title)
-            and shape.get("allowReturnViaForward") is not True
-        ):
+        if current_edge_risk is None and self._scene_navigation_target_denied(shape, target_scene_id):
             if log_rejections:
                 self._log(
                     "detail",
-                    f"场景移动：回 #34 时拒绝把 #{source_id}「{shape_title}」作为返回动作",
+                    f"场景移动：#{source_id}「{shape_title}」标注禁止用于前往 #{target_scene_id}",
                 )
             return None
-        if (
-            current_edge_risk == 0
-            and self._scene_navigation_shape_risk(shape) >= 100
-            and _sanitize_ocr_text(shape_title) == "领取奖励"
-        ):
+        if current_edge_risk == 0 and shape.get("navigationRole") == "safe_exit":
             if log_rejections:
                 self._log(
                     "detail",
-                    f"场景移动：精确奖励收尾 #{source_id}，允许点击「{shape_title}」回到已声明落点",
+                    f"场景移动：#{source_id}「{shape_title}」标注为可导航收尾动作",
                 )
         if current_edge_risk is None:
             return None
@@ -11628,6 +11663,16 @@ class BehaviorTreeExecutor(
             return {**result, "status": "unknown_target_scene"}
         if source == target:
             return {**result, "status": "already_at_target"}
+        source_image = images[source]
+        if str(source_image.get("navigationAliasOf") or "").strip() == str(target):
+            # A navigation alias is a visual overlay, not an action edge.
+            # Live go_scene accepts it only after fresh-frame target identity
+            # confirmation; a read-only plan cannot make that observation.
+            return {
+                **result,
+                "status": "alias_confirmation_required",
+                "alias_target_scene_id": target,
+            }
         navigation_edges = self._scene_jump_edges(tree)
         distances_to_target = self._scene_navigation_distances_to_target(
             tree,
@@ -12282,50 +12327,12 @@ class BehaviorTreeExecutor(
             )
         return False
 
-    def _add_dynamic_confirm_scene_edges(self, edges: dict[int, list[dict[str, Any]]]) -> None:
-        for source_id, source_edges in list(edges.items()):
-            if source_id in self._LEAVE_CONFIRM_VIEW_IDS:
-                continue  # 离开确认仅由弹窗守护处理，不派生第二个确认动作。
-            image = next(
-                (edge.get("image") for edge in source_edges if isinstance(edge.get("image"), dict)),
-                None,
-            )
-            if not isinstance(image, dict):
-                continue
-            confirm_shape = next(
-                (
-                    shape
-                    for shape in self._flatten_shapes(image.get("shapes"))
-                    if str(shape.get("title") or "").strip() in {"确定", "确认"}
-                    and not str(shape.get("sceneJumpTarget") or "").strip()
-                ),
-                None,
-            )
-            if not isinstance(confirm_shape, dict):
-                continue
-            target_ids: list[int] = []
-            for edge in source_edges:
-                for target_id in edge.get("target_ids") or []:
-                    target_id = int(target_id)
-                    if target_id == int(source_id) or target_id in target_ids:
-                        continue
-                    target_ids.append(target_id)
-            if not target_ids:
-                continue
-            edges[source_id] = [
-                {
-                    "source_id": source_id,
-                    "image": image,
-                    "shape": confirm_shape,
-                    "target_ids": target_ids,
-                    "_dynamic_confirm_edge": True,
-                },
-                *source_edges,
-            ]
-
     def _scene_route_candidate_ids(self, tree: list[dict[str, Any]], target_scene_id: int) -> list[int]:
         tree = self._resolved_asset_tree(tree)
         images = self._index_images(tree)
+        distances_to_target = self._scene_navigation_distances_to_target(
+            tree, self._scene_jump_edges(tree), int(target_scene_id),
+        )
 
         def is_route_candidate(scene_id: int) -> bool:
             image = images.get(int(scene_id))
@@ -12341,7 +12348,12 @@ class BehaviorTreeExecutor(
             target_scene_id,
             confirmation_scene_ids=(),
         )
-        candidates = [int(scene_id) for scene_id in candidates if is_route_candidate(int(scene_id))]
+        candidates = [
+            int(scene_id)
+            for scene_id in candidates
+            if is_route_candidate(int(scene_id))
+            and int(scene_id) in distances_to_target
+        ]
         candidate_set = {int(scene_id) for scene_id in candidates}
         image_ids: list[int] = []
 
@@ -12366,13 +12378,10 @@ class BehaviorTreeExecutor(
         for image_id in image_ids:
             if int(image_id) == int(target_scene_id) or int(image_id) in candidate_set:
                 continue
-            route = self._find_scene_route(tree, int(image_id), int(target_scene_id))
-            if route is None:
+            distance = distances_to_target.get(int(image_id))
+            if distance is None:
                 continue
-            route_risk = self._scene_route_navigation_risk(route)
-            if route_risk >= 100:
-                continue
-            reachable_sources.append((len(route), int(image_id)))
+            reachable_sources.append((distance, int(image_id)))
         for _route_len, image_id in sorted(reachable_sources, key=lambda item: (item[0], image_ids.index(item[1]))):
             if image_id not in candidate_set:
                 candidates.append(image_id)
@@ -15413,6 +15422,7 @@ class BehaviorTreeExecutor(
         semantic_stalled_edge_attempts: dict[tuple[Any, ...], int] = {}
         repeated_landings: dict[tuple[Any, ...], int] = {}
         globally_failed_edge_keys: set[tuple[Any, ...]] = set()
+        alias_observation_attempted: set[int] = set()
         navigation_started_at = time.monotonic()
         incident_recorder = NavigationIncidentRecorder(
             self,
@@ -15672,14 +15682,52 @@ class BehaviorTreeExecutor(
                 ctx.pop("_navigation_incident_recorder", None)
                 return "success"
 
-            if int(current_scene_id) == 661 and int(target_scene_id) == 34:
-                # #661 is the world HUD variant that carries a nearby landmark
-                # ``进入`` action.  That action is never a return-to-world
-                # control: it starts the game's own landmark auto-route (e.g.
-                # #400 天道外域) and bounces straight back to #661.  The real
-                # world identity is still visible behind the variant, so
-                # require fresh-frame #34 confirmation before treating this as
-                # already home; otherwise stop and preserve the live frame.
+            current_image = (ctx.get("images") or {}).get(int(current_scene_id))
+            alias_target = (
+                str(current_image.get("navigationAliasOf") or "").strip()
+                if isinstance(current_image, dict) else ""
+            )
+            alias_id = int(alias_target) if alias_target.isdecimal() else None
+            if (
+                alias_id is not None
+                and alias_id != int(target_scene_id)
+                and int(current_scene_id) not in alias_observation_attempted
+            ):
+                # An overlaid scene may settle into its annotated base scene
+                # without any input.  Give that transition one short chance
+                # before choosing a longer clickable route from the overlay.
+                alias_observation_attempted.add(int(current_scene_id))
+                with self._scene_observation_probe(ctx):
+                    alias_match = yield from context.wait_scene(
+                        [alias_id],
+                        label=f"场景移动：等待 #{current_scene_id} 别名自然落到 #{alias_id}",
+                        wait=3.0,
+                        required=False,
+                    )
+                if (
+                    alias_match is not None
+                    and alias_match.scene_id == alias_id
+                    and self._scene_matches_id(alias_id, float(alias_match.score or 0.0))
+                ):
+                    overlay_scene_id = int(current_scene_id)
+                    current_scene_id = alias_id
+                    score = float(alias_match.score or 0.0)
+                    frame = alias_match.frame_data_url or frame
+                    self._commit_scene_observation(ctx, frame, current_scene_id, score)
+                    last_navigation_frame = frame
+                    last_navigation_scene_id = current_scene_id
+                    last_navigation_score = score
+                    navigation_state_key = self._navigation_state_key(frame, current_scene_id, navigation_states)
+                    failed_edge_keys = failed_edge_keys_by_state.setdefault(navigation_state_key, set())
+                    failed_edge_keys.update(globally_failed_edge_keys)
+                    last_failed_edge = last_failed_edges_by_state.get(navigation_state_key)
+                    self._log("info", f"场景移动：#{overlay_scene_id} 别名新帧确认 #{alias_id}，直接规划 #{target_scene_id}")
+            if alias_target == str(int(target_scene_id)):
+                # A scene annotation may declare that it overlays another
+                # scene's identity.  This is not a clickable graph edge:
+                # accept the target only after a fresh frame independently
+                # recognizes that target underneath the overlay.  Otherwise
+                # preserve the live frame instead of inventing a route.
                 confirmed = False
                 observed_scene_id: int | None = None
                 observed_score = 0.0
@@ -15693,11 +15741,11 @@ class BehaviorTreeExecutor(
                     self._log(
                         "warning",
                         f"场景移动：当前 #{current_scene_id} 新帧未复核出 #{target_scene_id}"
-                        f"（{observed_text} {observed_score:.0f}%），禁止点击 #661「进入」回世界，保留现场",
+                        f"（{observed_text} {observed_score:.0f}%），场景别名未获证实，保留现场",
                     )
                     incident_recorder.trigger(
-                        trigger_type="world_variant_unconfirmed",
-                        trigger_label="#661 世界变体未复核出 #34，拒绝用「进入」冒充回世界",
+                        trigger_type="scene_alias_unconfirmed",
+                        trigger_label=f"#{current_scene_id} 场景别名未复核出 #{target_scene_id}",
                         threshold={
                             "observed_scene_id": int(observed_scene_id or 0),
                             "observed_score": round(float(observed_score or 0.0), 1),
@@ -15712,7 +15760,7 @@ class BehaviorTreeExecutor(
                         final_scene_id=current_scene_id,
                         final_score=score,
                         final_frame=fresh_frame or frame,
-                        message="#661 世界变体未复核出 #34，已保留现场",
+                        message=f"#{current_scene_id} 场景别名未复核出 #{target_scene_id}，已保留现场",
                     )
                     ctx.pop("_navigation_incident_recorder", None)
                     context.require_scene_repair(
@@ -15721,7 +15769,7 @@ class BehaviorTreeExecutor(
                         expected_scene_ids=[target_scene_id],
                         reason=f"go_scene({target_scene_id}) 失败：当前 #{current_scene_id} 未在新帧复核出 "
                                f"#{target_scene_id}（{observed_text} {observed_score:.0f}%）；"
-                               "禁止点击 #661「进入」回世界，已保留现场。",
+                               "场景别名未获证实，已保留现场。",
                     )
                 frame = fresh_frame
                 score = observed_score
@@ -15730,13 +15778,13 @@ class BehaviorTreeExecutor(
                         "current_scene": target_scene_id,
                         "updated_at": time.time(),
                     })
-                self._log("success", f"已在目标场景 #{target_scene_id}（#661 世界变体新帧复核确认）")
+                self._log("success", f"已在目标场景 #{target_scene_id}（#{current_scene_id} 场景别名新帧复核确认）")
                 incident_recorder.finalize(
                     status="recovered_with_fallback" if incident_recorder.fallback_used else "recovered_after_stall",
                     final_scene_id=target_scene_id,
                     final_score=observed_score,
                     final_frame=fresh_frame,
-                    message="#661 世界变体经新帧确认已在 #34",
+                    message=f"#{current_scene_id} 场景别名经新帧确认已在 #{target_scene_id}",
                 )
                 ctx.pop("_navigation_incident_recorder", None)
                 return "success"

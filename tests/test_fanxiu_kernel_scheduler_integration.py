@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -3950,7 +3951,7 @@ def test_behavior_tree_context_wait_click_ocr_floating_child_uses_shape_center(m
     assert clicks[-1]["y"] == pytest.approx(1488.0)
 
 
-def test_go_scene_route_candidate_ranking_prefers_clarity_then_shortest_after_threshold(monkeypatch):
+def test_go_scene_planner_reports_direct_and_two_step_routes():
     runner = create_behavior_tree_executor()
     tree = [
         {"type": "image", "id": 1, "title": "高可信长路径", "shapes": [{"title": "下一步", "sceneJumpTarget": "10"}]},
@@ -3960,18 +3961,14 @@ def test_go_scene_route_candidate_ranking_prefers_clarity_then_shortest_after_th
         {"type": "image", "id": 98, "title": "旁路", "shapes": []},
         {"type": "image", "id": 99, "title": "目标", "shapes": []},
     ]
-    ctx = {"images": {scene_id: {"id": scene_id, "title": str(scene_id), "shapes": []} for scene_id in [1, 2, 3, 99]}}
-    scores = {1: 90.0, 2: 90.0, 3: 89.0, 99: 0.0}
-    monkeypatch.setattr(runner, "_scene_score", lambda _ctx, image, _frame: scores[int(image["id"])])
+    two_step = runner.plan_scene_navigation(tree, 1, 99)
+    direct = runner.plan_scene_navigation(tree, 3, 99)
 
-    scene_id, score = runner._identify_scene_number_for_route(ctx, "frame", tree, 99, [99, 1, 2, 3])
-
-    assert (scene_id, score) == (1, 90.0)
-
-    scores[3] = 91.0
-    scene_id, score = runner._identify_scene_number_for_route(ctx, "frame", tree, 99, [99, 1, 2, 3])
-
-    assert (scene_id, score) == (3, 91.0)
+    assert two_step["status"] == direct["status"] == "ok"
+    assert two_step["candidates"][0]["expected_landing_id"] == 10
+    assert [step["to_scene_id"] for step in two_step["candidates"][0]["downstream"]["steps"]] == [99]
+    assert direct["candidates"][0]["expected_landing_id"] == 99
+    assert direct["candidates"][0]["downstream"]["steps"] == []
 
 
 def test_go_scene_route_from_green_bottle_rank_prefers_exit_when_returning_world():
@@ -4035,37 +4032,37 @@ def test_world_side_leave_matches_split_vertical_ocr():
     assert 720 < y < 860
 
 
-def test_go_scene_unknown_start_tries_world_side_leave_once(tmp_path, monkeypatch):
+def test_go_scene_unknown_first_frame_rechecks_before_recovery(monkeypatch):
     runner = create_behavior_tree_executor()
-    asset_tree = tmp_path / "asset_tree.json"
-    ctx = {"asset_tree": [], "images": {69: {"id": 69, "title": "日常", "width": 900, "height": 1600, "shapes": []}}}
-    calls: list[str] = []
-    scene_results = [(None, 4.0), (69, 96.0)]
+    observations = [None, SimpleNamespace(scene_id=69, score=96.0, frame_data_url="known")]
+    seen_scopes = []
+    ctx = {}
 
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_scene_route_candidate_ids", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(runner, "_identify_scene_number_for_route", lambda *_args, **_kwargs: (None, 0.0))
-    monkeypatch.setattr(runner, "_recover_unknown_start_to_world", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(runner, "_ocr_lines", lambda _frame: [{"text": "离", "x": 792, "y": 790, "w": 42, "h": 44}, {"text": "开", "x": 792, "y": 840, "w": 42, "h": 44}])
-    monkeypatch.setattr(runner, "_ocr_text", lambda _lines: "离开")
+    class Context:
+        frame_data_url = "frame"
 
-    def fake_identify(_ctx, _frame, scene_ids=None):
-        calls.append("identify")
-        return scene_results.pop(0)
+        def wait_scene(self, scene_ids, **_kwargs):
+            seen_scopes.append(scene_ids)
+            if False:
+                yield None
+            return observations.pop(0)
 
-    def fake_leave(*_args, **_kwargs):
-        calls.append("leave")
+    def no_wait(*_args, **_kwargs):
         if False:
             yield None
-        return True
 
-    monkeypatch.setattr(runner, "_identify_scene_number", fake_identify)
-    monkeypatch.setattr(runner, "_leave_world_side_scene_if_present", fake_leave)
+    monkeypatch.setattr(runner, "_wait_action_settle", no_wait)
+    monkeypatch.setattr(runner, "_commit_scene_observation", lambda *_args: None)
+    monkeypatch.setattr(runner, "_scene_matches_id", lambda *_args: True)
 
-    result = _drain_generator(runner._go_scene_task(ctx, asset_tree, 69, fanxiu.threading.Event()))
+    result = _drain_generator(
+        runner._wait_for_go_scene_recognition(
+            ctx, Context(), [], 279, threading.Event(), "frame", wait_seconds=10.0,
+        )
+    )
 
-    assert result == "success"
-    assert calls == ["identify", "leave", "identify"]
+    assert result[:3] == (69, 96.0, "known")
+    assert seen_scopes == [None, None]
 
 
 def test_world_side_leave_falls_back_to_scene85_leave_shape(monkeypatch):
@@ -4518,12 +4515,16 @@ def test_daily_lingta_finish_result_uses_context_clicks(tmp_path, monkeypatch):
     frames = iter(["result", "main"])
 
     class FakeContext:
-        def sample_scene_once(self, view_ids=None, **kwargs):
+        frame_data_url = "frame"
+
+        def wait_scene(self, view_ids, **kwargs):
             frame = next(frames)
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
+            actions.append(("wait_scene", tuple(view_ids), kwargs, frame))
+            if False:
+                yield None
             if frame == "result":
-                return 196, 100.0, frame
-            return 194, 100.0, frame
+                return SimpleNamespace(scene_id=196, score=100.0, frame_data_url=frame)
+            return SimpleNamespace(scene_id=194, score=100.0, frame_data_url=frame)
 
         def ocr_text(self, frame):
             actions.append(("ocr_text", frame))
@@ -4545,10 +4546,10 @@ def test_daily_lingta_finish_result_uses_context_clicks(tmp_path, monkeypatch):
 
     assert result == "success"
     assert actions == [
-        ("current_scene", (194, 196), {"update": True}, "result"),
+        ("wait_scene", (194, 196), {"wait": 5.0, "required": False}, "result"),
         ("ocr_text", "result"),
         ("wait_click", 196, "点击继续", {}),
-        ("current_scene", (194, 196), {"update": True}, "main"),
+        ("wait_scene", (194, 196), {"wait": 5.0, "required": False}, "main"),
         ("ocr_text", "main"),
     ]
 
@@ -4667,7 +4668,6 @@ def test_daily_lingta_sweep_uses_context_clicks(tmp_path, monkeypatch):
     assert result is None
     assert actions == [
         ("wait_click", 194, "扫荡", {}),
-        ("wait_scene", (195,), {"label": "日常_灵塔：等待扫荡确认 #195"}),
         ("confirm",),
         ("finish",),
         ("record_done", "混沌灵塔扫荡完成"),
@@ -4708,7 +4708,6 @@ def test_daily_lingta_confirm_uses_context_clicks(tmp_path, monkeypatch):
 
     assert result is None
     assert actions == [
-        ("wait_click", 195, "进行扫荡", {}),
         ("wait_scene", (196,), {"label": "日常_灵塔：等待扫荡结果 #196"}),
     ]
 
@@ -4721,12 +4720,16 @@ def test_daily_lingta_entry_opens_main_with_context_clicks(tmp_path, monkeypatch
     frames = iter(["entry", "main"])
 
     class FakeContext:
-        def sample_scene_once(self, view_ids=None, **kwargs):
+        frame_data_url = "frame"
+
+        def wait_scene(self, view_ids, **kwargs):
             frame = next(frames)
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs, frame))
+            actions.append(("wait_scene", tuple(view_ids), kwargs, frame))
+            if False:
+                yield None
             if frame == "entry":
-                return 193, 100.0, frame
-            return 194, 100.0, frame
+                return SimpleNamespace(scene_id=193, score=100.0, frame_data_url=frame)
+            return SimpleNamespace(scene_id=194, score=100.0, frame_data_url=frame)
 
         def ocr_text(self, frame):
             actions.append(("ocr_text", frame))
@@ -4748,10 +4751,10 @@ def test_daily_lingta_entry_opens_main_with_context_clicks(tmp_path, monkeypatch
 
     assert result == "success"
     assert actions == [
-        ("current_scene", (194, 193), {"update": True}, "entry"),
+        ("wait_scene", (194, 193), {"wait": 5.0, "required": False}, "entry"),
         ("ocr_text", "entry"),
         ("wait_click", 193, "进入", {}),
-        ("current_scene", (194, 193), {"update": True}, "main"),
+        ("wait_scene", (194, 193), {"wait": 5.0, "required": False}, "main"),
         ("ocr_text", "main"),
     ]
 
@@ -4763,9 +4766,13 @@ def test_daily_lingta_entry_keeps_jianling_misroute_guard(tmp_path, monkeypatch)
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def sample_scene_once(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return None, 0.0, "jianling"
+        frame_data_url = "jianling"
+
+        def wait_scene(self, view_ids, **kwargs):
+            actions.append(("wait_scene", tuple(view_ids), kwargs))
+            if False:
+                yield None
+            return None
 
         def ocr_text(self, frame):
             actions.append(("ocr_text", frame))
@@ -4789,7 +4796,7 @@ def test_daily_lingta_entry_keeps_jianling_misroute_guard(tmp_path, monkeypatch)
         _drain_generator(runner._open_daily_lingta_main_from_entry(ctx, fanxiu.threading.Event()))
 
     assert actions == [
-        ("current_scene", (194, 193), {"update": True}),
+        ("wait_scene", (194, 193), {"wait": 5.0, "required": False}),
         ("ocr_text", "jianling"),
         ("return_jianling",),
     ]
@@ -4865,9 +4872,13 @@ def test_daily_lingta_return_to_world_uses_context_clicks(tmp_path, monkeypatch)
     ctx["asset_tree_path"].write_text("[]", encoding="utf-8")
 
     class FakeContext:
-        def sample_scene_once(self, view_ids=None, **kwargs):
-            actions.append(("current_scene", tuple(view_ids or ()), kwargs))
-            return 194, 100.0, "frame"
+        frame_data_url = "frame"
+
+        def wait_scene(self, view_ids, **kwargs):
+            actions.append(("wait_scene", tuple(view_ids), kwargs))
+            if False:
+                yield None
+            return SimpleNamespace(scene_id=194, score=100.0, frame_data_url="frame")
 
         def ocr_text(self, frame):
             actions.append(("ocr_text", frame))
@@ -4904,7 +4915,7 @@ def test_daily_lingta_return_to_world_uses_context_clicks(tmp_path, monkeypatch)
 
     assert result == "success"
     assert actions == [
-        ("current_scene", (194, 69, 20, 34), {"update": True}),
+        ("wait_scene", (194, 69, 20, 34), {"wait": 5.0, "required": False}),
         ("ocr_text", "frame"),
         ("wait_click", 194, "返回", {}),
         (
@@ -4918,38 +4929,31 @@ def test_daily_lingta_return_to_world_uses_context_clicks(tmp_path, monkeypatch)
     ]
 
 
-def test_daily_lingta_daily_list_requires_progress_on_lingta_row(monkeypatch):
+def test_daily_lingta_missing_entry_schedules_retry_without_click(monkeypatch):
     runner = create_behavior_tree_executor()
-    image69 = {
-        "id": 69,
-        "title": "日常",
-        "w": 1080,
-        "h": 1920,
-        "shapes": [{"title": "滚动窗口", "x": 0.0, "y": 0.15, "w": 1.0, "h": 0.7}],
-    }
-    ctx = {"images": {69: image69}}
-    lines = [
-        {"text": "日常", "x": 80, "y": 220, "w": 100, "h": 40},
-        {"text": "活跃度 修为 修为", "x": 220, "y": 280, "w": 260, "h": 40},
-        {"text": "参与击败圣祖", "x": 120, "y": 480, "w": 300, "h": 40},
-        {"text": "1/1", "x": 760, "y": 480, "w": 80, "h": 40},
-        {"text": "活动报名小助手奖励找回新", "x": 160, "y": 1580, "w": 420, "h": 40},
-        {"text": "日常周常", "x": 420, "y": 1800, "w": 180, "h": 40},
-    ]
+    calls = []
 
-    def no_scroll(*args, **kwargs):
-        if False:
-            yield None
-        return False
+    class FakeContext:
+        def open_daily_entry(self, **kwargs):
+            calls.append(kwargs)
+            if False:
+                yield None
+            return "not_found"
 
-    monkeypatch.setattr(runner, "_screencap", lambda ctx: "frame")
-    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: lines)
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (69, 100.0))
-    monkeypatch.setattr(runner, "_scroll_daily_xianyuan_list", no_scroll)
+    monkeypatch.setattr(runner, "_behavior_tree_context", lambda *_args, **_kwargs: FakeContext())
+    monkeypatch.setattr(
+        runner, "_record_daily_entry_not_found_retry",
+        lambda *_args, **kwargs: calls.append(("retry", kwargs["task_type"])),
+    )
 
-    gen = runner._open_daily_lingta_from_daily(ctx, fanxiu.threading.Event(), {"max_scrolls": 0})
-    with pytest.raises(RuntimeError, match="未找到"):
-        next(gen)
+    result = _drain_generator(
+        runner._open_daily_lingta_from_daily({}, fanxiu.threading.Event(), {"max_scrolls": 0})
+    )
+
+    assert result == "skipped"
+    assert calls[0]["title_pattern"] == r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔"
+    assert calls[0]["max_scrolls"] == 0
+    assert calls[1] == ("retry", "daily_lingta")
 
 
 def test_open_daily_entry_from_daily_uses_annotated_forward_scan(monkeypatch):
@@ -5083,32 +5087,26 @@ def test_daily_boss_daily_list_uses_annotated_forward_scan(monkeypatch):
 
 def test_daily_lingta_daily_list_refuses_false_scene_69_world_frame(monkeypatch):
     runner = create_behavior_tree_executor()
-    image69 = {
-        "id": 69,
-        "title": "日常",
-        "w": 1080,
-        "h": 1920,
-        "shapes": [{"title": "滚动窗口", "x": 0.0, "y": 0.15, "w": 1.0, "h": 0.7}],
-    }
-    ctx = {"images": {69: image69}}
-    scrolled = []
+    context = behavior_tree_executor_core.BehaviorTreeContext(runner, {}, stop_event=fanxiu.threading.Event())
+    observed = []
 
-    def no_scroll(*args, **kwargs):
-        scrolled.append(True)
+    def wait_scene(scene_ids, **kwargs):
+        observed.append((scene_ids, kwargs))
         if False:
             yield None
-        return False
+        return SimpleNamespace(scene_id=34, score=100.0, frame_data_url="world-frame")
 
-    monkeypatch.setattr(runner, "_screencap", lambda ctx: "world-frame")
-    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: [{"text": "世界 储物袋 角色 装备 功法书 日程"}])
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (69, 100.0))
-    monkeypatch.setattr(runner, "_scroll_daily_xianyuan_list", no_scroll)
+    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args: (34, 100.0))
+    monkeypatch.setattr(context, "wait_scene", wait_scene)
+    monkeypatch.setattr(
+        context, "require_scene_repair",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("列表已被其它场景替换")),
+    )
 
-    gen = runner._open_daily_lingta_from_daily(ctx, fanxiu.threading.Event(), {"max_scrolls": 3})
-    with pytest.raises(RuntimeError, match="未确认当前在 #69 日常列表"):
-        next(gen)
+    with pytest.raises(RuntimeError, match="列表已被其它场景替换"):
+        _drain_generator(context._ensure_daily_list_frame("world-frame", [], label="日常_灵塔"))
 
-    assert scrolled == []
+    assert observed[0][0] == [69]
 
 
 def test_daily_boss_daily_list_refuses_false_scene_69_world_frame(monkeypatch):
@@ -5135,13 +5133,13 @@ def test_daily_boss_daily_list_refuses_false_scene_69_world_frame(monkeypatch):
     assert scrolled == []
 
 
-def test_daily_lingta_daily_list_marks_done_only_on_lingta_row(monkeypatch):
+def test_daily_lingta_daily_list_progress_is_read_from_matched_row():
     runner = create_behavior_tree_executor()
     image69 = {
         "id": 69,
         "title": "日常",
-        "w": 1080,
-        "h": 1920,
+        "width": 1080,
+        "height": 1920,
         "shapes": [{"title": "滚动窗口", "x": 0.0, "y": 0.15, "w": 1.0, "h": 0.7}],
     }
     ctx = {"images": {69: image69}}
@@ -5154,15 +5152,14 @@ def test_daily_lingta_daily_list_marks_done_only_on_lingta_row(monkeypatch):
         {"text": "日常周常", "x": 420, "y": 1800, "w": 180, "h": 40},
     ]
 
-    monkeypatch.setattr(runner, "_screencap", lambda ctx: "frame")
-    monkeypatch.setattr(runner, "_ocr_lines", lambda frame: lines)
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda ctx, frame, preferred=None: (69, 100.0))
+    context = behavior_tree_executor_core.BehaviorTreeContext(runner, ctx)
+    matches = context._daily_entry_matches(
+        lines, context.view(69), title_pattern=r"挑战或扫荡混沌灵塔|混沌灵塔|灵塔",
+    )
 
-    gen = runner._open_daily_lingta_from_daily(ctx, fanxiu.threading.Event(), {"max_scrolls": 0})
-    with pytest.raises(StopIteration) as exc_info:
-        next(gen)
-
-    assert exc_info.value.value == "done"
+    assert len(matches) == 1
+    assert context._daily_entry_row_progress(lines, matches[0][1]) == (1, 1)
+    assert context._daily_entry_matches(lines, context.view(69), title_pattern=r"挑战或扫荡淬剑试炼") == []
 
 
 def test_daily_jianling_daily_list_requires_progress_on_jianling_row(monkeypatch):
@@ -8323,37 +8320,31 @@ def test_scene_jump_wait_allows_dynamic_minus_one_landing_to_replan(monkeypatch,
     assert any("动态落点" in str(item) for item in calls)
 
 
-def test_go_scene_uses_default_current_scene_before_route_candidates(monkeypatch, tmp_path):
+def test_go_scene_first_recognition_uses_global_scene_scope(monkeypatch):
     runner = create_behavior_tree_executor()
-    shape = {"title": "回到世界", "sceneJumpTarget": "34"}
-    image20 = {"type": "image", "id": "20", "title": "绿瓶", "filename": "0020.png", "layer": 2, "shapes": [shape]}
-    image34 = {"type": "image", "id": "34", "title": "世界", "filename": "0034.png", "layer": 2, "shapes": []}
-    ctx = {"entry": object(), "asset_tree": [image20, image34], "images": {20: image20, 34: image34}}
-    calls = []
+    observed_scopes = []
+    ctx = {}
 
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (20, 100.0))
-    monkeypatch.setattr(
-        runner,
-        "_identify_scene_number_for_route",
-        lambda *_args, **_kwargs: calls.append("route-candidate") or (34, 100.0),
+    class Context:
+        frame_data_url = "frame"
+
+        def wait_scene(self, scene_ids, **_kwargs):
+            observed_scopes.append(scene_ids)
+            if False:
+                yield fanxiu.BehaviorTreeStatus.RUNNING
+            return SimpleNamespace(scene_id=20, score=100.0, frame_data_url="frame")
+
+    monkeypatch.setattr(runner, "_commit_scene_observation", lambda *_args: None)
+    monkeypatch.setattr(runner, "_scene_matches_id", lambda *_args: True)
+    iterator = runner._wait_for_go_scene_recognition(
+        ctx, Context(), [], 34, threading.Event(), "frame",
     )
-    monkeypatch.setattr(runner, "_click_scene_route_shape", lambda *_args, **_kwargs: calls.append("click"))
-
-    def wait_scene_jump_result(*_args, **_kwargs):
-        if False:
-            yield fanxiu.BehaviorTreeStatus.RUNNING
-        return 34
-
-    monkeypatch.setattr(runner, "_wait_scene_jump_result", wait_scene_jump_result)
-
-    gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 34, fanxiu.threading.Event())
     with pytest.raises(StopIteration) as exc_info:
         while True:
-            next(gen)
+            next(iterator)
 
-    assert exc_info.value.value == "success"
-    assert calls == ["click"]
+    assert exc_info.value.value[:2] == (20, 100.0)
+    assert observed_scopes == [None]
 
 
 def test_go_scene_next_edge_prefers_shorter_route_over_high_history_count():
@@ -8408,7 +8399,31 @@ def test_go_scene_route_candidates_exclude_layer3_child_reference(monkeypatch, t
     assert 68 not in route_candidates
 
 
-def test_go_scene_missing_route_reports_clear_annotation_gap(monkeypatch, tmp_path):
+def test_go_scene_route_candidates_ignore_incidental_historical_landing():
+    runner = create_behavior_tree_executor()
+    tree = [
+        {
+            "type": "image", "filename": "0910.png", "title": "偶发来源", "layer": 1,
+            "shapes": [{"title": "返回", "sceneJumpTarget": "911(100),920(1)"}],
+        },
+        {"type": "image", "filename": "0911.png", "title": "通常落点", "layer": 1, "shapes": []},
+        {
+            "type": "image", "filename": "0930.png", "title": "可靠来源", "layer": 1,
+            "shapes": [{"title": "前往目标", "sceneJumpTarget": "920(20)"}],
+        },
+        {"type": "image", "filename": "0920.png", "title": "目标", "layer": 1, "shapes": []},
+    ]
+
+    candidates = runner._scene_route_candidate_ids(tree, 920)
+
+    assert 910 not in candidates
+    assert 930 in candidates
+    assert 920 in candidates
+    assert runner._find_scene_route(tree, 910, 920) is None
+    assert len(runner._find_scene_route(tree, 930, 920) or []) == 1
+
+
+def test_go_scene_missing_route_reports_clear_annotation_gap():
     runner = create_behavior_tree_executor()
     image34 = {
         "type": "image",
@@ -8418,18 +8433,9 @@ def test_go_scene_missing_route_reports_clear_annotation_gap(monkeypatch, tmp_pa
         "shapes": [{"title": "进入绿瓶", "sceneJumpTarget": ""}],
     }
     image20 = {"type": "image", "title": "绿瓶", "filename": "0020.png", "layer": 1, "shapes": []}
-    ctx = {"entry": object(), "asset_tree": [image34, image20], "images": {34: image34, 20: image20}}
-    clicks: list[str] = []
-
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (34, 100.0))
-    monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
-
-    gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 20, fanxiu.threading.Event())
-    with pytest.raises(RuntimeError, match=r"go_scene\(20\) 失败：无法从当前#34找到可达#20的路径，请检查标注shape。"):
-        _drain_generator(gen)
-
-    assert clicks == []
+    plan = runner.plan_scene_navigation([image34, image20], 34, 20)
+    assert plan["status"] == "no_path"
+    assert plan["candidates"] == []
 
 def test_go_scene_prefers_recorded_target_over_unlinked_target_named_shape():
     runner = create_behavior_tree_executor()
@@ -8457,44 +8463,28 @@ def test_go_scene_route_rejects_business_action_as_navigation():
     assert runner._select_scene_next_edge(tree, 34, 20) is None
 
 
-def test_go_scene_does_not_use_unranked_fallback_route(monkeypatch, tmp_path):
+def test_go_scene_does_not_use_unranked_fallback_route():
     runner = create_behavior_tree_executor()
     xianfu_shape = {"title": "仙府", "sceneJumpTarget": "171"}
     leave_shape = {"title": "离开", "sceneJumpTarget": "34"}
     image34 = {"type": "image", "title": "世界", "filename": "0034.png", "layer": 1, "shapes": [xianfu_shape]}
     image171 = {"type": "image", "title": "仙府", "filename": "0171.png", "layer": 1, "shapes": [leave_shape]}
     image20 = {"type": "image", "title": "绿瓶", "filename": "0020.png", "layer": 1, "shapes": []}
-    ctx = {"entry": object(), "asset_tree": [image34, image171, image20], "images": {34: image34, 171: image171, 20: image20}}
-    clicks: list[str] = []
-
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (34, 100.0))
-    monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
-
-    gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 20, fanxiu.threading.Event())
-    with pytest.raises(RuntimeError, match=r"go_scene\(20\) 失败：无法从当前#34找到可达#20的路径，请检查标注shape。"):
-        _drain_generator(gen)
-
-    assert clicks == []
+    plan = runner.plan_scene_navigation([image34, image171, image20], 34, 20)
+    assert plan["status"] == "no_path"
+    assert plan["candidates"] == []
 
 
-def test_go_scene_missing_route_does_not_synthesize_leave_confirm_edge(monkeypatch, tmp_path):
+def test_go_scene_missing_route_does_not_synthesize_leave_confirm_edge():
     runner = create_behavior_tree_executor()
     leave_shape = {"title": "离开", "sceneJumpTarget": ""}
     image171 = {"type": "image", "title": "仙府", "filename": "0171.png", "layer": 1, "shapes": [leave_shape]}
     image20 = {"type": "image", "title": "绿瓶", "filename": "0020.png", "layer": 1, "shapes": []}
-    ctx = {"entry": object(), "asset_tree": [image171, image20], "images": {171: image171, 20: image20}}
-    clicks: list[str] = []
-
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "frame")
-    monkeypatch.setattr(runner, "_identify_scene_number", lambda *_args, **_kwargs: (171, 100.0))
-    monkeypatch.setattr(runner, "_click_scene_route_shape", lambda _ctx, _image, shape, _frame: clicks.append(str(shape.get("title") or "")))
-
-    gen = runner._go_scene_task(ctx, tmp_path / "entry.json", 20, fanxiu.threading.Event())
-    with pytest.raises(RuntimeError, match=r"go_scene\(20\) 失败：无法从当前#171找到可达#20的路径，请检查标注shape。"):
-        _drain_generator(gen)
-
-    assert clicks == ["离开"]
+    tree = [image171, image20]
+    assert runner._scene_jump_edges(tree).get(171) is None
+    plan = runner.plan_scene_navigation(tree, 171, 20)
+    assert plan["status"] == "no_path"
+    assert plan["candidates"] == []
 
 
 def test_ensure_clean_world_after_task_exits_green_bottle(monkeypatch):

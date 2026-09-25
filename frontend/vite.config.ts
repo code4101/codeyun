@@ -187,6 +187,10 @@ export default defineConfig(({ command }) => ({
             return 'data-vendor'
           }
 
+          if (normalizedId.includes('/node_modules/maplibre-gl/')) {
+            return 'maplibre-vendor'
+          }
+
           return 'vendor'
         },
       },

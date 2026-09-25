@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import create_behavior_tree_executor
+from backend.core.fanxiu.data_annotation.behavior_tree_executor import SceneMatch
 from backend.core.fanxiu.data_annotation.tasks import lingta_challenge as lingta_challenge_module
 
 from backend.core.fanxiu.data_annotation.tasks.lingta_challenge import (
@@ -22,6 +23,18 @@ from backend.core.fanxiu.data_annotation.tasks.lingta_challenge import (
 from backend.core.fanxiu.data_annotation.popup_guard import (
     FanxiuEmulatorRestartRequired,
 )
+
+
+def _scene_match(scene_id: int, frame: str = "frame") -> SceneMatch:
+    """Model the public wait_scene result, including its recognition frame."""
+    return SceneMatch(
+        scene_id,
+        score=100.0,
+        matched_layer=0,
+        scope="business",
+        status="matched",
+        frame_data_url=frame,
+    )
 
 
 def test_lingta_daily_limit_is_twenty() -> None:
@@ -250,10 +263,10 @@ def test_lingta_route_ignores_completed_sweep_and_opens_current_floor_detail() -
             if False:
                 yield None
             if scene_ids == (193, 194):
-                return 194
+                return _scene_match(194)
             if scene_ids == (531, 532):
-                return 531
-            return scene_ids[-1]
+                return _scene_match(531)
+            return _scene_match(scene_ids[-1])
 
         def sample_scene_once(self, scene_ids, **kwargs):
             self.actions.append(("current_scene", tuple(scene_ids), kwargs.get("update")))
@@ -333,7 +346,11 @@ def test_lingta_route_accepts_current_card_landing_directly_on_532() -> None:
             scene_ids = tuple(layer0)
             if False:
                 yield None
-            return 194 if scene_ids == (193, 194) else 532
+            return _scene_match(194 if scene_ids in ((193, 194), (194,)) else 532)
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
 
         def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
@@ -392,7 +409,11 @@ def test_lingta_route_accepts_late_direct_532_after_first_identifying_531() -> N
             scene_ids = tuple(layer0)
             if False:
                 yield None
-            return 194 if scene_ids == (193, 194) else 531
+            return _scene_match(194 if scene_ids in ((193, 194), (194,)) else 531)
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
 
         def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
@@ -454,8 +475,8 @@ def test_lingta_route_aligns_context_loaded_overview_with_stable_jump_anchor(mon
             scene_ids = tuple(layer0)
             if False:
                 yield None
-            if scene_ids == (193, 194):
-                return 194
+            if scene_ids in ((193, 194), (194,)):
+                return _scene_match(194)
             raise TimeoutError("dynamic overview identity")
 
         def sample_scene_once(self, *_args, **_kwargs):
@@ -531,7 +552,11 @@ def test_lingta_route_propagates_overview_race_timeout_without_clicking() -> Non
             scene_ids = tuple(layer0)
             if False:
                 yield None
-            return 194 if scene_ids == (193, 194) else 531
+            return _scene_match(194 if scene_ids in ((193, 194), (194,)) else 531)
+
+        def wait_action_settle(self, _seconds):
+            if False:
+                yield None
 
         def sample_scene_once(self, *_args, **_kwargs):
             return 194, 100.0, "frame"
@@ -635,6 +660,7 @@ class _FakeLingtaRuntime:
         }
         self._scenes = iter(scenes)
         self._last_scene: int | None = 34
+        self.frame_data_url = "frame"
         self.actions: list[tuple] = []
         self.wait_click_options: list[dict] = []
         self.completion_message = ""
@@ -644,16 +670,20 @@ class _FakeLingtaRuntime:
         self._last_scene = next(self._scenes, self._last_scene)
         return self._last_scene, 100.0, "frame"
 
-    def click_ocr_text(self, scene_id, title, **kwargs):
-        self.actions.append(
-            (
-                "click_ocr",
-                scene_id,
-                title,
-                kwargs.get("in_shapes"),
-                kwargs.get("match_mode"),
-            )
-        )
+    def wait_scene(self, _candidates, **_kwargs):
+        scene_id, _score, frame = self.sample_scene_once(_candidates)
+        if False:
+            yield None
+        return _scene_match(scene_id, frame) if scene_id is not None else None
+
+    def shape_visible(self, scene_id, shape):
+        return ("shape", scene_id, shape)
+
+    def wait_any(self, conditions, **_kwargs):
+        self.actions.append(("wait_any", tuple(conditions)))
+        if False:
+            yield None
+        return next(iter(conditions))
 
     def ocr_text(self, _frame):
         return self._ocr_text
@@ -710,7 +740,7 @@ def test_lingta_flow_refuses_challenge_when_start_mark_persistence_fails() -> No
     with pytest.raises(RuntimeError, match="防重复标记未确认持久化"):
         _drain(runner.灵塔挑战流程(runtime))
 
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_continues_from_already_open_532_without_reopening_route() -> None:
@@ -734,8 +764,8 @@ def test_lingta_flow_continues_from_already_open_532_without_reopening_route() -
     result = _drain(runner.灵塔挑战流程(runtime))
 
     assert result["outcome"] == "power_limit"
-    assert [action for action in runtime.actions if action[0] == "click_ocr"] == [
-        ("click_ocr", 532, "挑战", ("挑战文字",), "exact")
+    assert [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")] == [
+        ("wait_click", 532, "挑战文字")
     ]
     assert persisted[0][2]["ui_passed"] is None
     assert persisted[0][2]["ui_total"] is None
@@ -773,8 +803,8 @@ def test_lingta_flow_waits_through_stale_detail_frame_then_treats_failure_as_nor
     assert result["result"] == "success"
     assert result["outcome"] == "power_limit"
     assert "连续通过 1 层后挑战失败" in result["message"]
-    assert [action for action in runtime.actions if action[0] == "click_ocr"] == [
-        ("click_ocr", 532, "挑战", ("挑战文字",), "exact")
+    assert [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")] == [
+        ("wait_click", 532, "挑战文字")
     ]
     assert persisted and cleared == [("lingta-challenge", "lingta_auto_chain_started")]
     assert ("settle", 0.5) in runtime.actions
@@ -844,9 +874,11 @@ def test_lingta_failure_exit_aligns_dynamic_532_with_runtime_and_ocr() -> None:
         def wait_scene(self, layer0, **kwargs):
             scene_ids = tuple(layer0)
             self.actions.append(("wait_scene", scene_ids, kwargs.get("label")))
+            if 365 in scene_ids:
+                return (yield from super().wait_scene(layer0, **kwargs))
             if False:
                 yield None
-            return SimpleNamespace(id=194)
+            return _scene_match(194)
 
     runner = create_behavior_tree_executor()
     runtime = DynamicCurrentFloorRuntime((365,))
@@ -912,7 +944,7 @@ def test_lingta_flow_treats_zero_pass_failure_as_normal_terminal(monkeypatch) ->
     assert persisted[-1][2]["terminal_outcome"] == "power_limit"
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
     assert ("wait_click_then_scene", 365, "退出", [34, 532]) in runtime.actions
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 @pytest.mark.parametrize("stable_scene", [34, 194])
@@ -948,7 +980,7 @@ def test_lingta_flow_finishes_marked_chain_from_stable_scene_without_reclick(
     assert updates[0][1].endswith("07:00:00")
     assert "未重复点击挑战" in result["message"]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
     assert (("goto", 34) in runtime.actions) is (stable_scene == 194)
 
 
@@ -1004,9 +1036,9 @@ def test_lingta_flow_reads_persisted_idempotency_fact_when_cell_payload_is_stale
 
     assert result["result"] == "success"
     assert "本轮计数 3" in result["message"]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_does_not_treat_preexisting_max_config_as_progress() -> None:
@@ -1039,7 +1071,7 @@ def test_lingta_flow_does_not_treat_preexisting_max_config_as_progress() -> None
 
     assert updates == []
     assert cleared == []
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_recovers_only_after_advancing_beyond_config_boundary() -> None:
@@ -1100,7 +1132,7 @@ def test_lingta_flow_finishes_daily_limit_settlement_without_reclick() -> None:
     assert updates[0][1].endswith("07:00:00")
     assert ("wait_click_then_scene", 533, "点击退出", [34, 534]) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_finishes_auto_closed_daily_limit_detail_without_reclick() -> None:
@@ -1126,7 +1158,7 @@ def test_lingta_flow_finishes_auto_closed_daily_limit_detail_without_reclick() -
     assert ("wait_click_then_scene", 534, "返回灵塔列表", 194) in runtime.actions
     assert ("goto", 34) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_follows_daily_limit_exit_into_detail_page() -> None:
@@ -1190,7 +1222,7 @@ def test_lingta_flow_finishes_persisted_daily_limit_terminal_from_world() -> Non
     assert result["outcome"] == "daily_limit"
     assert "防重复标记" in result["message"]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_exits_observed_daily_limit_after_one_challenge() -> None:
@@ -1207,8 +1239,8 @@ def test_lingta_flow_exits_observed_daily_limit_after_one_challenge() -> None:
 
     assert result["outcome"] == "daily_limit"
     assert "已挑战 20 层" in result["message"]
-    assert [action for action in runtime.actions if action[0] == "click_ocr"] == [
-        ("click_ocr", 532, "挑战", ("挑战文字",), "exact")
+    assert [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")] == [
+        ("wait_click", 532, "挑战文字")
     ]
     assert ("wait_click_then_scene", 533, "点击退出", [34, 534]) in runtime.actions
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
@@ -1243,7 +1275,7 @@ def test_lingta_flow_finishes_persisted_win_when_live_model_was_unloaded() -> No
     assert result["outcome"] == "recovered_auto_chain"
     assert "本轮计数 3、当前配置 1429" in result["message"]
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert not [action for action in runtime.actions if action[0] == "click_ocr"]
+    assert not [action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]
 
 
 def test_lingta_flow_preserves_start_mark_on_level_gated_victory() -> None:
@@ -1267,7 +1299,7 @@ def test_lingta_flow_preserves_start_mark_on_level_gated_victory() -> None:
     with pytest.raises(RuntimeError, match="静态‘下一层/点击退出’等级门槛页"):
         _drain(runner.灵塔挑战流程(runtime))
 
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
     assert cleared == []
 
 
@@ -1293,7 +1325,7 @@ def test_lingta_flow_consumes_countdown_victory_locally_then_confirms_world() ->
     assert result["result"] == "success"
     assert result["outcome"] == "no_next_floor"
     assert ("wait_click", 548, "下一层") in runtime.actions
-    assert runtime.wait_click_options == [{"timeout": 2.0}]
+    assert runtime.wait_click_options == [{}, {"timeout": 2.0}]
     assert persisted[-1][2]["max_chain_pass_count"] == 1
     assert persisted[-1][2]["progress_evidence"] == "ordinary_result_next_clicked"
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
@@ -1319,7 +1351,7 @@ def test_lingta_flow_uses_unique_ui_progress_when_runtime_root_is_unavailable() 
     assert persisted[0][2]["ui_passed"] == 149
     assert persisted[0][2]["start_evidence"] == "unique_ui_progress"
     assert persisted[-1][2]["max_chain_pass_count"] == 1
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
 
 
 def test_lingta_countdown_click_timeout_reidentifies_returned_detail() -> None:
@@ -1327,6 +1359,8 @@ def test_lingta_countdown_click_timeout_reidentifies_returned_detail() -> None:
 
     class VanishedCountdownRuntime(_FakeLingtaRuntime):
         def wait_click(self, source, shape, **kwargs):
+            if source != 548:
+                return (yield from super().wait_click(source, shape, **kwargs))
             self.actions.append(("wait_click", source, shape))
             self.wait_click_options.append(dict(kwargs))
             if False:
@@ -1348,7 +1382,7 @@ def test_lingta_countdown_click_timeout_reidentifies_returned_detail() -> None:
     with pytest.raises(RuntimeError, match="随后自动链返回 #532"):
         _drain(runner.灵塔挑战流程(runtime))
 
-    assert runtime.wait_click_options == [{"timeout": 2.0}]
+    assert runtime.wait_click_options == [{}, {"timeout": 2.0}]
 
 
 def test_lingta_retry_uses_list_progress_to_close_interrupted_chain() -> None:
@@ -1491,7 +1525,7 @@ def test_lingta_flow_preserves_special_failure_summary_for_real_asset_capture() 
     with pytest.raises(RuntimeError, match="灵塔专用失败汇总页"):
         _drain(runner.灵塔挑战流程(runtime))
 
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
     assert len(persisted) == 3
     assert persisted[-1][2]["max_chain_pass_count"] == 3
     assert persisted[-1][2]["last_tower_id"] == 1429
@@ -1529,7 +1563,7 @@ def test_lingta_flow_preserves_last_floor_settlement_when_config_is_exhausted() 
     with pytest.raises(RuntimeError, match="越过本地最大灵塔配置"):
         _drain(runner.灵塔挑战流程(runtime))
 
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
     assert cleared == []
 
 
@@ -1558,7 +1592,7 @@ def test_lingta_flow_accepts_server_exit_after_twenty_wins_as_daily_limit() -> N
     assert "next_time" not in result
     assert updates[0][1].endswith("07:00:00")
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
 
 
 def test_lingta_flow_classifies_early_stable_exit_as_no_next_floor() -> None:
@@ -1586,7 +1620,7 @@ def test_lingta_flow_classifies_early_stable_exit_as_no_next_floor() -> None:
     assert "next_time" not in result
     assert updates[0][1].endswith("07:00:00")
     assert cleared == [("lingta-challenge", "lingta_auto_chain_started")]
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
 
 
 def _prepare_lingta_stuck_after_click(runner, runtime, monkeypatch):
@@ -1625,7 +1659,7 @@ def test_lingta_stuck_532_cleanup_success_keeps_marker_and_primary_error(monkeyp
         _drain(runner.灵塔挑战流程(runtime))
 
     assert ("goto", 34) in runtime.actions
-    assert len([action for action in runtime.actions if action[0] == "click_ocr"]) == 1
+    assert len([action for action in runtime.actions if action[:3] == ("wait_click", 532, "挑战文字")]) == 1
     assert persisted and cleared == []
     assert runtime.payload["lingta_auto_chain_started"] == persisted[-1][2]
 
