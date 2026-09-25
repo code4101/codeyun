@@ -1,6 +1,6 @@
 """凡修 HTTP 写权限与所属账户的共享实现；不依赖具体业务路由。
 
-保留现有账户创建、同步及所有者/管理员判定语义；只有显式调用才访问会话。
+权限判断与只读查找不写数据库；get_fanxiu_user 是显式的账户准备入口。
 """
 import time
 import uuid
@@ -15,7 +15,14 @@ FANXIU_USERNAME = "凡修手游"
 
 CODE4101_USERNAME = "code4101"
 
+def find_fanxiu_user(session: Session) -> User | None:
+    """只读查找所属账号，不创建账号、同步凭证或提交 Session。"""
+    with session.no_autoflush:
+        return session.exec(select(User).where(User.username == FANXIU_USERNAME)).first()
+
+
 def get_fanxiu_user(session: Session) -> User:
+    """准备写入所属账号：必要时创建或同步凭证并提交；查询应使用 find_fanxiu_user。"""
     statement = select(User).where(User.username == FANXIU_USERNAME)
     user = session.exec(statement).first()
     
@@ -53,6 +60,10 @@ def get_fanxiu_user(session: Session) -> User:
     return user
 
 def ensure_fanxiu_write_permission(current_user: User, session: Session) -> None:
-    fanxiu_user = get_fanxiu_user(session)
-    if current_user.id != fanxiu_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")
+    """仅允许所属账号或管理员；允许和拒绝分支均不准备账号或提交数据。"""
+    with session.no_autoflush:
+        if current_user.is_superuser:
+            return
+        fanxiu_user = find_fanxiu_user(session)
+        if fanxiu_user is None or current_user.id != fanxiu_user.id:
+            raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")

@@ -14,7 +14,7 @@ from backend.core.fanxiu.instrumentation.storage_bag_partner import (
 )
 from backend.core.fanxiu.instrumentation.spirit_artifact import read_spirit_artifact_inventory_runtime
 from backend.core.fanxiu.data_annotation.ocr_values import parse_ocr_values
-from .integer_count_control import IntegerButtonAssets, set_verified_integer_button_count
+from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerButtonAssets, set_verified_integer_button_count
 from backend.core.fanxiu.data_annotation.tasks.storage_bag_auto_claim_policy import (
     parse_storage_bag_choice_note,
 )

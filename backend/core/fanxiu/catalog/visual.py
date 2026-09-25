@@ -15,7 +15,7 @@ import imagehash
 from PIL import Image, ImageChops, ImageOps
 from pyxllib.file.game_assets import load_unity_environment
 
-from backend.core.fanxiu.catalog.apk_static import resolve_fanxiu_apk_unpacked_root
+from backend.core.fanxiu.catalog.apk_sources import resolve_fanxiu_apk_unpacked_root
 from backend.core.fanxiu.catalog.resources import (
     FanxiuResourceError,
     resolve_fanxiu_export_root,

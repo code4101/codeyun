@@ -984,7 +984,7 @@ def complete_xianmeng_defeated_day_from_runtime() -> dict[str, Any]:
     from backend.core.fanxiu.activity.runtime_schedule import read_fanxiu_activity_runtime_schedule
     from backend.core.fanxiu.activity.ranking_lifecycle import checkpoints_for_occurrence
     from backend.core.fanxiu.data_annotation.kernel_scheduler_control import set_scheduler_task_next_time
-    from backend.core.fanxiu.data_annotation.tasks.daily_resources import DailyResourceTaskMixin
+    from backend.core.fanxiu.activity.xianmeng_targets import read_xianmeng_attackable_targets
 
     now = job_now().astimezone()
     schedule = read_fanxiu_activity_runtime_schedule(allow_discovery=True, force_refresh=True)
@@ -995,7 +995,7 @@ def complete_xianmeng_defeated_day_from_runtime() -> dict[str, Any]:
               and o.start_at <= now <= o.end_at]
     if len(active) != 1:
         raise RuntimeError("当前仙盟活动不唯一，不能结算当日")
-    snapshot = DailyResourceTaskMixin().read_xianmeng_attackable_targets()
+    snapshot = read_xianmeng_attackable_targets()
     plan = snapshot["fallback_plan"]
     if not plan["all_opponents_defeated"]:
         return {"status": "pending", "message": "尚未证明所有非友军积分归零，未改动完成状态"}

@@ -23,15 +23,7 @@ _WEEKLY_TYPE = 2
 
 # Generate.Cfg.ActiveTasks.ActiveProgress, type=WeekendTask.  Runtime rows are
 # checked against this exact contract before their state may authorize a claim.
-WEEKLY_ACTIVITY_TIERS = (
-    {"config_id": 13, "threshold": 400, "reward": ("Item|1010_50",)},
-    {"config_id": 14, "threshold": 600, "reward": ("Item|1010_50",)},
-    {"config_id": 15, "threshold": 800, "reward": ("Item|1010_50",)},
-    {"config_id": 16, "threshold": 1200, "reward": ("Item|1010_100",)},
-    {"config_id": 17, "threshold": 1600, "reward": ("Item|1010_100",)},
-    {"config_id": 18, "threshold": 2000, "reward": ("Item|1010_150",)},
-    {"config_id": 19, "threshold": 2400, "reward": ("Item|1010_200",)},
-)
+from backend.core.fanxiu.catalog.weekly_activity import WEEKLY_ACTIVITY_TIERS
 
 
 def _fields(reader: LuaJitReader, value: Any) -> dict[Any, Any]:

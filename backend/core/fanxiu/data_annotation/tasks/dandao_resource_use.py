@@ -21,7 +21,7 @@ from backend.core.fanxiu.data_annotation.tasks.dandao_task_rewards import (
     resolve_active_dandao_activity,
 )
 from backend.core.fanxiu.data_annotation.effective_time import job_now
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     IntegerSliderAssets,
     set_verified_integer_slider_count,
 )

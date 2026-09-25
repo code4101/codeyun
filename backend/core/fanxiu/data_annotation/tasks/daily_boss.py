@@ -1335,12 +1335,12 @@ class DailyBossTaskMixin:
                     ctx, context, update=True
                 )
                 if scene_id == 34:
-                    yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
+                    yield from self._ensure_outer_world(ctx, stop_event, label="日常_首领")
                     return "success"
                 if scene_id is not None:
                     break
         if scene_id == 34:
-            yield from self._ensure_daily_lingzu_outer_world(ctx, stop_event)
+            yield from self._ensure_outer_world(ctx, stop_event, label="日常_首领")
             return "success"
         if allow_post_boss_transition and scene_id in {186, 678}:
             result_view = context.get_view(scene_id)

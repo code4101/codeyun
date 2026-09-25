@@ -61,7 +61,7 @@ def prepare_pet_pill_quantity(context: Any, *, item_id: int, quantity: int,
     把按钮预算放大到库存量级。
     """
     from backend.core.fanxiu.instrumentation.item_batch_use_dialog import read_item_batch_use_dialog_snapshot
-    from backend.core.fanxiu.data_annotation.tasks.integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count
+    from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count
 
     if initial_snapshot is None:
         scene = yield from context.wait_scene([PET_PILL_DIALOG_SCENE_ID], wait=15)

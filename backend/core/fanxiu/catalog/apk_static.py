@@ -11,49 +11,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from .apk_sources import (
+    APK_INDEX_DEFAULT_KEYWORDS,
+    DEFAULT_FANXIU_APK_UNPACKED_ROOT,
+    FANXIU_APK_UNPACKED_ROOT_ENV,
+    resolve_fanxiu_apk_unpacked_root,
+)
+
 from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_fanxiu_export_root, resolve_fanxiu_resource_root
 
 
-FANXIU_APK_UNPACKED_ROOT_ENV = "FANXIU_APK_UNPACKED_ROOT"
-DEFAULT_FANXIU_APK_UNPACKED_ROOT = Path(
-    r"C:\TapTap\Support\android_emulator\games\308550\apk\1023295_unpacked"
-)
 DEFAULT_TAPTAP_DOWNLOAD_DAT_PATH = Path(r"C:\TapTap\Support\android_emulator\download\101000000.dat")
 
-APK_INDEX_DEFAULT_KEYWORDS = (
-    "UnityPlayerActivity",
-    "UnityPlayer",
-    "loadLibrary",
-    "il2cpp",
-    "tolua",
-    "Lua",
-    "AssetBundle",
-    "filelist",
-    "resdownload",
-    "download",
-    "hotfix",
-    "patch",
-    "version",
-    "md5",
-    "encrypt",
-    "decrypt",
-    "http",
-    "https",
-    "cdn",
-    "frxx",
-    "gongfa",
-    "resource",
-    "config",
-    "功法",
-    "玄魔",
-    "法宝",
-    "仙侣",
-    "资源",
-    "下载",
-    "加密",
-    "解密",
-    "热更",
-)
 
 APK_RUNTIME_ENTRY_SCAN_KEYWORDS = (
     "frxx",
@@ -341,20 +310,6 @@ def _value_keyword_hits(
             "keyword": keyword,
             "value": value,
         }
-
-
-def resolve_fanxiu_apk_unpacked_root(apk_root: str | os.PathLike[str] | None = None) -> Path:
-    value = apk_root or os.environ.get(FANXIU_APK_UNPACKED_ROOT_ENV) or DEFAULT_FANXIU_APK_UNPACKED_ROOT
-    root = Path(value).expanduser().resolve()
-    if not root.exists():
-        raise FanxiuResourceError(f"APK 解包目录不存在：{root}")
-    if not root.is_dir():
-        raise FanxiuResourceError(f"APK 解包路径不是目录：{root}")
-    has_dex = any(root.glob("classes*.dex"))
-    has_manifest = (root / "AndroidManifest.xml").exists()
-    if not has_dex and not has_manifest:
-        raise FanxiuResourceError(f"目录不像 APK 解包目录，缺少 classes*.dex 或 AndroidManifest.xml：{root}")
-    return root
 
 
 def _read_key_value_file(path: Path) -> dict[str, str]:

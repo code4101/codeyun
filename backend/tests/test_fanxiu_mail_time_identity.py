@@ -8,10 +8,6 @@ from __future__ import annotations
 
 import pytest
 
-# Import the executor shim before ``tasks.mail`` so its module-level import of
-# ``MailTaskMixin`` resolves against a fully initialized package (same ordering
-# the existing selective-claim tests rely on).
-import backend.core.fanxiu.data_annotation.behavior_tree_executor  # noqa: F401
 from backend.core.fanxiu.runtime_gui.mail import (
     MailVisualObservation,
     align_mail_window,
@@ -20,9 +16,9 @@ from backend.core.fanxiu.runtime_gui.mail import (
     mail_time_is_match,
     mail_time_relation,
 )
-from backend.core.fanxiu.data_annotation.tasks.mail import (
-    MailTaskMixin,
-    _MailWindowAmbiguous,
+from backend.core.fanxiu.runtime_gui.mail_window import (
+    MailWindowAmbiguous,
+    map_ordered_mail_window,
 )
 
 _DATE_OLD = "2026年08月30日23:59"
@@ -179,7 +175,7 @@ def test_ordered_mapping_picks_the_matching_full_date_over_hhmm_twins() -> None:
     ]
     fragments = _fragments([("重名", _DATE_NEW)] * 4)
 
-    window = MailTaskMixin._ordered_runtime_window_mapping(
+    window = map_ordered_mail_window(
         _snapshot(rows),
         _image121(),
         fragments,
@@ -203,8 +199,8 @@ def test_ordered_mapping_hhmm_only_does_not_resolve_cross_date_twins() -> None:
     ]
     fragments = _fragments([("重名", "23:59")] * 4)
 
-    with pytest.raises(_MailWindowAmbiguous):
-        MailTaskMixin._ordered_runtime_window_mapping(
+    with pytest.raises(MailWindowAmbiguous):
+        map_ordered_mail_window(
             _snapshot(rows),
             _image121(),
             fragments,
@@ -217,8 +213,8 @@ def test_ordered_mapping_true_duplicate_dates_stay_ambiguous() -> None:
     rows = [_item(index, "重名", _DATE_NEW) for index in range(8)]
     fragments = _fragments([("重名", _DATE_NEW)] * 4)
 
-    with pytest.raises(_MailWindowAmbiguous):
-        MailTaskMixin._ordered_runtime_window_mapping(
+    with pytest.raises(MailWindowAmbiguous):
+        map_ordered_mail_window(
             _snapshot(rows),
             _image121(),
             fragments,
@@ -244,7 +240,7 @@ def test_ordered_mapping_top_branch_vetoes_conflicting_dates() -> None:
     )
 
     with pytest.raises(RuntimeError):
-        MailTaskMixin._ordered_runtime_window_mapping(
+        map_ordered_mail_window(
             _snapshot(rows),
             _image121(),
             fragments,

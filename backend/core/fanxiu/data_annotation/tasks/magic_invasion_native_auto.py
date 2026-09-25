@@ -20,7 +20,7 @@ from typing import Any, Iterator
 from backend.core.fanxiu.activity.magic_invasion import (
     resolve_magic_invasion_shop_identity,
 )
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     IntegerButtonAssets,
     set_verified_integer_button_count,
 )

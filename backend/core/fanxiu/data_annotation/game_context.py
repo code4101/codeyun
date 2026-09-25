@@ -1511,6 +1511,48 @@ class BehaviorTreeContext(XianqiaoTrialActions, AutomationContext):
             raise RuntimeError(f"前往 #{target_scene_id} 失败")
         return status
 
+    def wait_scene_exact(
+        self,
+        scenes: Iterable[View | int],
+        *,
+        timeout: float,
+        label: str = "等待目标场景",
+    ):
+        """等待指定落点并返回 SceneMatch，其他正式识别结果只作为过渡事实。
+
+        与 wait_scene 的候选优先语义不同，本接口保证返回值属于 scenes。
+        底层仍执行完整分层识别和弹窗处理；每轮使用新帧，不点击导航动作。
+        timeout 是重观测预算，在完整识别之间检查，不能中断正在进行的 OCR。
+        全层未匹配也在此预算内重试，耗尽后抛 TimeoutError，包含最后识别结果。
+        """
+        targets = tuple(dict.fromkeys(
+            scene.id if isinstance(scene, View) else int(scene) for scene in scenes
+        ))
+        if not targets or any(scene_id is None for scene_id in targets):
+            raise ValueError("wait_scene_exact scenes 必须包含有效场景编号")
+        budget = float(timeout)
+        if budget < 0:
+            raise ValueError("wait_scene_exact timeout 必须大于等于 0")
+        deadline = time.monotonic() + budget
+        expected = "/".join(f"#{scene_id}" for scene_id in targets)
+        last_match = None
+        while True:
+            if self.stop_event is not None:
+                self.runner._raise_if_stopped(self.stop_event)
+            self.clear_frame()
+            last_match = yield from self.wait_scene(
+                targets,
+                wait=max(0.0, min(5.0, deadline - time.monotonic())),
+                required=False,
+                label=label,
+            )
+            if last_match is not None and last_match.scene_id in targets:
+                return last_match
+            if time.monotonic() >= deadline:
+                actual = f"#{last_match.scene_id} {last_match.score:.0f}%" if last_match is not None else "unknown"
+                raise TimeoutError(f"{label} 超时，未检测到 {expected}，最后 {actual}")
+            yield from self.wait_action_settle(min(0.5, max(0.0, deadline - time.monotonic())))
+
     def wait_scene(
         self,
         scenes: Iterable[View | int] | None = None,

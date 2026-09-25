@@ -8,7 +8,7 @@ from backend.core.fanxiu.instrumentation.sect_shop import read_sect_shop_snapsho
 from backend.core.fanxiu.instrumentation.gongfa_atlas import read_gongfa_atlas_runtime
 from backend.core.fanxiu.instrumentation.backpack import read_backpack_item_counts
 from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import read_common_shop_buy_dialog_snapshot
-from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+from backend.core.fanxiu.runtime_gui.common_shop_quantity import (
     SACRED_SHOP_QUANTITY_ASSETS, set_verified_common_shop_quantity,
 )
 

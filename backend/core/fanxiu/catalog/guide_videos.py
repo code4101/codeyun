@@ -608,7 +608,7 @@ def query_guide_videos(
     research_snapshot_path: str | Path | None = None,
     download_snapshot_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    from backend.core.fanxiu.catalog.guide_video_downloads import (
+    from backend.core.fanxiu.catalog.guide_video_download_state import (
         download_record_by_item_id,
         load_guide_video_download_snapshot,
     )

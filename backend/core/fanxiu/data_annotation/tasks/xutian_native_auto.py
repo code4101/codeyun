@@ -23,7 +23,7 @@ import time
 import uuid
 from typing import Any, Callable, Iterator, Mapping
 
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     IntegerSliderAssets,
     read_positive_integer_count,
     set_verified_integer_slider_count as _set_count,

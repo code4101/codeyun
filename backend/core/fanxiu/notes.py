@@ -2,9 +2,11 @@
 
 get_or_migrate_fanxiu_char_note 合并旧记录并暂存变更，由调用方提交；
 upsert_character_note 完成一次更新并提交。字段与关系迁移规则集中在此，
-HTTP 层只负责鉴权、参数和响应。共享语义函数也供物品笔记更新复用。
+read_character_note 提供不落盘的兼容视图；HTTP 层只负责鉴权、参数和响应。
+共享语义函数也供物品笔记更新复用。
 """
 
+from copy import deepcopy
 from datetime import date, time as dt_time
 from typing import Callable
 from sqlmodel import or_
@@ -89,7 +91,7 @@ def _is_fanxiu_char_stub(note: NoteNode) -> bool:
 def _has_meaningful_fanxiu_char_data(note: NoteNode) -> bool:
     return not _is_fanxiu_char_stub(note)
 
-def _merge_legacy_fanxiu_char_note_data(target: NoteNode, legacy: NoteNode) -> bool:
+def _merge_legacy_fanxiu_char_note_data(target: NoteNode, legacy: NoteNode, *, now: float | None = None) -> bool:
     if not _is_fanxiu_char_stub(target) or not _has_meaningful_fanxiu_char_data(legacy):
         return False
 
@@ -98,7 +100,7 @@ def _merge_legacy_fanxiu_char_note_data(target: NoteNode, legacy: NoteNode) -> b
     target.start_at = legacy.start_at
     target.history = legacy.history if isinstance(legacy.history, list) else []
     target.custom_fields = legacy.custom_fields if isinstance(legacy.custom_fields, list) else []
-    target.updated_at = max(float(target.updated_at or 0), float(legacy.updated_at or 0), time.time())
+    target.updated_at = max(float(target.updated_at or 0), float(legacy.updated_at or 0), time.time() if now is None else now)
     return True
 
 def _normalize_fanxiu_custom_fields(value: Any) -> list[list[Any]]:
@@ -128,7 +130,8 @@ def _normalize_fanxiu_custom_fields(value: Any) -> list[list[Any]]:
 
     return []
 
-def _merge_fanxiu_char_note_fields(target: NoteNode, source: NoteNode) -> bool:
+def _merge_fanxiu_char_note_fields(target: NoteNode, source: NoteNode, *, now: float | None = None) -> bool:
+    current_time = time.time() if now is None else now
     changed = False
     target_content = str(target.content or "").strip()
     source_content = str(source.content or "").strip()
@@ -136,7 +139,7 @@ def _merge_fanxiu_char_note_fields(target: NoteNode, source: NoteNode) -> bool:
         target.content = source.content
         changed = True
     elif source_content and target_content and source_content != target_content:
-        source_label = datetime.fromtimestamp(float(source.updated_at or source.start_at or time.time())).strftime("%Y-%m-%d %H:%M:%S")
+        source_label = datetime.fromtimestamp(float(source.updated_at or source.start_at or current_time)).strftime("%Y-%m-%d %H:%M:%S")
         target.content = (
             f"{target.content or ''}"
             f'<hr data-codeyun-merged-fanxiu-char="true">'
@@ -186,7 +189,7 @@ def _merge_fanxiu_char_note_fields(target: NoteNode, source: NoteNode) -> bool:
         target.history = []
         changed = True
 
-    target.updated_at = max(float(target.updated_at or 0), float(source.updated_at or 0), time.time() if changed else 0)
+    target.updated_at = max(float(target.updated_at or 0), float(source.updated_at or 0), current_time if changed else 0)
     return changed
 
 def _retarget_fanxiu_char_edges(session: Session, source_note: NoteNode, target_note: NoteNode) -> None:
@@ -257,23 +260,46 @@ def _fanxiu_char_note_rank(note: NoteNode) -> tuple[int, int, int, int, int, flo
         str(note.id or ""),
     )
 
+def _character_note_candidates(session: Session, fanxiu_user: User, char_name: str) -> list[NoteNode]:
+    notes = session.exec(select(NoteNode).where(
+        NoteNode.user_id == fanxiu_user.id,
+        NoteNode.title == char_name,
+    )).all()
+    return [note for note in notes if note.note_kind in (FANXIU_CHAR_KIND, None, "", NOTE_KIND_DEFAULT)]
+
+
+def read_character_note(session: Session, fanxiu_user: User, char_name: str) -> NoteNode | None:
+    """返回脱离 Session 的兼容视图；不创建、合并落盘、改关系或更新修改时间。
+
+    复用写入路径的主记录选择与字段合并规则。旧记录仅在返回值中合并，
+    upsert_character_note 才执行真实迁移。也不刷出调用方已有的待写变更。
+    """
+    with session.no_autoflush:
+        candidates = _character_note_candidates(session, fanxiu_user, char_name)
+    primary = max(candidates, key=_fanxiu_char_note_rank, default=None)
+    if primary is None:
+        return None
+    view = NoteNode(**deepcopy(primary.model_dump()))
+    observed_at = max(float(note.updated_at or note.start_at or 0) for note in candidates)
+    legacy = max(
+        (note for note in candidates if note.note_kind in (None, "", NOTE_KIND_DEFAULT)),
+        key=_fanxiu_char_note_rank, default=None,
+    )
+    if legacy is not None and legacy.id != primary.id:
+        _merge_legacy_fanxiu_char_note_data(view, legacy, now=observed_at)
+    for note in candidates:
+        if note.id != primary.id:
+            _merge_fanxiu_char_note_fields(view, note, now=observed_at)
+    _ensure_fanxiu_char_note_semantics(view)
+    return view
+
+
 def get_or_migrate_fanxiu_char_note(
     session: Session,
     fanxiu_user: User,
     char_name: str,
 ) -> NoteNode | None:
-    statement = select(NoteNode).where(
-        NoteNode.user_id == fanxiu_user.id,
-        NoteNode.title == char_name,
-    )
-    notes = session.exec(statement).all()
-    if not notes:
-        return None
-
-    candidate_notes = [
-        note for note in notes
-        if note.note_kind == FANXIU_CHAR_KIND or note.note_kind in (None, "", NOTE_KIND_DEFAULT)
-    ]
+    candidate_notes = _character_note_candidates(session, fanxiu_user, char_name)
     primary_note = max(candidate_notes, key=_fanxiu_char_note_rank, default=None)
     legacy_note = max(
         [note for note in candidate_notes if note.note_kind in (None, "", NOTE_KIND_DEFAULT)],

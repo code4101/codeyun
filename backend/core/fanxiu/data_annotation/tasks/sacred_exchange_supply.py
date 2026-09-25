@@ -15,7 +15,7 @@ from backend.core.fanxiu.data_annotation.tasks.storage_bag_random_box import (
     StorageBagRandomBoxRequest,
     plan_current_random_box_click,
 )
-from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+from backend.core.fanxiu.runtime_gui.common_shop_quantity import (
     SACRED_SHOP_QUANTITY_ASSETS,
     set_verified_common_shop_quantity,
 )

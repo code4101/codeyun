@@ -2,7 +2,7 @@
 
 import pytest
 
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     IntegerSliderAssets,
     set_verified_integer_slider_count,
 )

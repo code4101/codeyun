@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 from backend.core.fanxiu.data_annotation.effective_time import job_now
-from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, write_world_facts
+from backend.core.fanxiu.data_annotation.kernel_scheduler_control import read_world_facts, record_world_discovery
 import re
 import threading
 import time
@@ -47,12 +47,11 @@ class DailyAssistantTaskMixin:
 
         next_time = (now + timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
         self._persist_scheduler_task_next_time("lilian-event", next_time)
-        discoveries[_DAILY_ASSISTANT_LILIAN_TRIGGER_FACT] = {
+        record_world_discovery(_DAILY_ASSISTANT_LILIAN_TRIGGER_FACT, {
             "business_date": business_date,
             "assistant_succeeded_at": now.strftime("%Y-%m-%d %H:%M:%S"),
             "lilian_next_time": next_time,
-        }
-        write_world_facts(facts)
+        })
         return next_time
 
     def _daily_assistant_entry_matches(self, lines: list[dict[str, Any]], image69: dict[str, Any]) -> list[tuple[float, float, str]]:

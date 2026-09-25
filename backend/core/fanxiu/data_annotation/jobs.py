@@ -1,8 +1,15 @@
+"""凡修 Task 的可发现契约与注册表，不负责运行 Task。
+
+默认声明由 default_jobs.register_fanxiu_default_jobs 安装；调用 list/get
+查询处理器、准入、payload 规范化和调度属性。列表来自实际注册结果，
+不要另建任务名称清单。注册/查询不访问游戏，执行由长驻 Kernel 的
+run_task 入口组织，外部 Scheduler 决定派发与独占运行权。
+"""
 from __future__ import annotations
 
 import threading
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 @dataclass(frozen=True)
@@ -82,15 +89,23 @@ def register_fanxiu_data_annotation_task_cell(
 
 
 def get_fanxiu_data_annotation_task_cell_definition(task_type: str) -> DataAnnotationTaskCellDefinition | None:
+    """返回定义快照；嵌套默认参数归调用方所有，处理器保持原引用。"""
     normalized = canonical_fanxiu_data_annotation_task_type(task_type)
     if is_deprecated_data_annotation_job_type(normalized):
         return None
-    return _DATA_ANNOTATION_TASK_CELL_REGISTRY.get(normalized)
+    definition = _DATA_ANNOTATION_TASK_CELL_REGISTRY.get(normalized)
+    return _definition_snapshot(definition) if definition is not None else None
+
+
+def _definition_snapshot(definition: DataAnnotationTaskCellDefinition) -> DataAnnotationTaskCellDefinition:
+    # frozen 只保护字段赋值，不能保护 payload 中的嵌套字典和列表。
+    return replace(definition, standard_job_payload=deepcopy(definition.standard_job_payload))
 
 
 def list_fanxiu_data_annotation_task_cell_definitions() -> list[DataAnnotationTaskCellDefinition]:
+    """按任务名返回独立快照；修改一个结果不会影响注册表或其他查询。"""
     return [
-        _DATA_ANNOTATION_TASK_CELL_REGISTRY[key]
+        _definition_snapshot(_DATA_ANNOTATION_TASK_CELL_REGISTRY[key])
         for key in sorted(_DATA_ANNOTATION_TASK_CELL_REGISTRY)
         if not is_deprecated_data_annotation_job_type(key)
     ]

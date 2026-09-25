@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from backend.core.fanxiu.catalog.apk_static import APK_INDEX_DEFAULT_KEYWORDS, resolve_fanxiu_apk_unpacked_root
+from backend.core.fanxiu.catalog.apk_sources import APK_INDEX_DEFAULT_KEYWORDS, resolve_fanxiu_apk_unpacked_root
 from backend.core.fanxiu.catalog.resources import FanxiuResourceError, resolve_fanxiu_export_root
 
 

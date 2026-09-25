@@ -16,7 +16,7 @@ from backend.core.fanxiu.instrumentation.common_shop_buy_dialog import (
 )
 from backend.core.fanxiu.instrumentation.exchange_shop import read_exchange_shop_runtime
 from backend.core.fanxiu.instrumentation.gongfa_atlas import read_gongfa_atlas_runtime
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     IntegerButtonAssets,
     set_verified_integer_button_count,
 )

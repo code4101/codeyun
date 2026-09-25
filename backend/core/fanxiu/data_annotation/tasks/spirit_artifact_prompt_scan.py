@@ -166,7 +166,9 @@ def spirit_artifact_prompt_update_steps(context, *, stop_at: float,
                 raise RuntimeError(f'灵器 {ware_id} 装配页未就绪')
             frame = context.cur_frame(update=True)
             tabs = red_arrow_centers(frame, surface='tabs')
-            equip_prompt = any(x < context.shape_box(667, '洗炼')['x']
+            # 装配页签的红箭头靠近其右缘；「洗炼」标注框的左缘
+            # 仍落在装配页签内。以右侧升阶页签左缘划分装配区域。
+            equip_prompt = any(x < context.shape_box(667, '升阶页签')['x']
                                for x, _ in tabs)
             if equip_prompt:
                 tokens = context.ocr_tokens_in_shapes(

@@ -1,4 +1,11 @@
-"""Runtime-GUI alignment primitives for the Fanxiu game client."""
+"""Runtime 与画面的语义接口：定位业务对象、验证身份、执行控件动作。
+
+通用对齐与文字匹配从本包导入；具体适配器按业务意图从子模块导入：
+mail_window 对齐邮件身份，integer_count_control 设置整数控件，
+common_shop_quantity 调整购买数量并验证购买前证据。
+适配器拥有坐标、OCR 和反馈细节；Task 保留业务策略、授权与完成判据。
+只读解析函数不采集游戏状态；执行函数的场景前置与副作用见各自契约。
+"""
 
 from backend.core.fanxiu.runtime_gui.alignment import (
     GuiCandidate,

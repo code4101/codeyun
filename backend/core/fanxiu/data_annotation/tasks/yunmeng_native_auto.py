@@ -16,7 +16,7 @@ from backend.core.fanxiu.data_annotation.tasks.bounded_batch_planning import (
     FeedbackBatchPlan as YunmengNativeBatchPlan,
     plan_feedback_batch,
 )
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     read_positive_integer_count,
     set_verified_integer_slider_count,
 )

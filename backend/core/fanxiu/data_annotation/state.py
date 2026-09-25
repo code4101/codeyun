@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 import time
+from contextlib import contextmanager
+from copy import deepcopy
 from datetime import time as dt_time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from filelock import FileLock
 from pyxllib.prog import (
@@ -272,6 +274,32 @@ def write_data_annotation_world_facts(
         _write()
 
 
+@contextmanager
+def edit_data_annotation_world_facts(path: Path) -> Iterator[dict[str, Any]]:
+    """在同一跨进程锁内读取和提交事实；异常退出不落盘。
+
+    仅用于短暂的数据修改，作用域内不得访问游戏、等待作业或再次锁定此文件。
+    调用方无需执行整份快照回写，也无需实现并发合并策略。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path.with_name(f"{path.name}.lock")), timeout=30):
+        facts = read_data_annotation_world_facts(path)
+        before = deepcopy(facts)
+        yield facts
+        if facts != before:
+            write_data_annotation_world_facts(
+                path, facts, preserve_existing_task_facts=False, _lock_already_held=True,
+            )
+
+
+def record_data_annotation_discovery(path: Path, key: str, value: dict[str, Any]) -> None:
+    """只替换指定业务发现，保留最新的其他业务事实和事件。"""
+    if not str(key).strip():
+        raise ValueError("discovery key 不能为空")
+    with edit_data_annotation_world_facts(path) as facts:
+        ensure_mapping_bucket(facts, "discoveries")[key] = deepcopy(value)
+
+
 def data_annotation_fact_key(prefix: str, *parts: Any) -> str:
     return fact_key(prefix, *parts)
 
@@ -284,37 +312,36 @@ def record_kernel_scheduler_task_fact(path: Path, task: dict[str, Any], result: 
     task_id = str(task.get("id") or "").strip()
     if not task_id:
         return
-    facts = read_data_annotation_world_facts(path)
-    task_facts = ensure_mapping_bucket(facts, "discoveries", "task")
-    existing_fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
-    fact = {
-        **existing_fact,
-        "id": task_id,
-        "task_type": str(task.get("task_type") or ""),
-        "label": str(task.get("label") or task_id),
-        "source": str(task.get("source") or ""),
-        "trigger_description": str(task.get("trigger_description") or ""),
-        "last_result": result,
-        "last_run_at": task.get("last_run_at") if task.get("last_run_at") else None,
-        "last_message": task.get("last_message") if task.get("last_message") else None,
-        "finished_at": task.get("finished_at") if task.get("finished_at") else None,
-        "updated_at": time.time(),
-    }
-    # World facts describe what was observed during a run.  The Job-owned
-    # trigger belongs only to scheduler_tasks.json; also remove legacy mirrors
-    # when this fact is refreshed so the two sources cannot drift again.
-    fact.pop("next_time", None)
-    task_facts[task_id] = fact
-    append_data_annotation_world_fact_event(
-        facts,
-        "scheduler_task",
-        {
-            "task_id": task_id,
+    with edit_data_annotation_world_facts(path) as facts:
+        task_facts = ensure_mapping_bucket(facts, "discoveries", "task")
+        existing_fact = task_facts.get(task_id) if isinstance(task_facts.get(task_id), dict) else {}
+        fact = {
+            **existing_fact,
+            "id": task_id,
             "task_type": str(task.get("task_type") or ""),
-            "result": result,
-        },
-    )
-    write_data_annotation_world_facts(path, facts)
+            "label": str(task.get("label") or task_id),
+            "source": str(task.get("source") or ""),
+            "trigger_description": str(task.get("trigger_description") or ""),
+            "last_result": result,
+            "last_run_at": task.get("last_run_at") if task.get("last_run_at") else None,
+            "last_message": task.get("last_message") if task.get("last_message") else None,
+            "finished_at": task.get("finished_at") if task.get("finished_at") else None,
+            "updated_at": time.time(),
+        }
+        # World facts describe what was observed during a run.  The Job-owned
+        # trigger belongs only to scheduler_tasks.json; also remove legacy mirrors
+        # when this fact is refreshed so the two sources cannot drift again.
+        fact.pop("next_time", None)
+        task_facts[task_id] = fact
+        append_data_annotation_world_fact_event(
+            facts,
+            "scheduler_task",
+            {
+                "task_id": task_id,
+                "task_type": str(task.get("task_type") or ""),
+                "result": result,
+            },
+        )
 
 
 def persist_kernel_scheduler_status(
@@ -325,62 +352,61 @@ def persist_kernel_scheduler_status(
     normalize_kernel_scheduler_current_scene(status)
     write_data_annotation_json(execution_state_path, status)
     now = time.time()
-    facts = read_data_annotation_world_facts(world_facts_path)
-    context = ensure_mapping_bucket(facts, "context")
-    context.update({
-        "entry_id": status.get("entry_id") or "",
-        "current_scene": status.get("current_scene"),
-        "current_task": status.get("current_task") or "",
-        "current_task_id": status.get("current_task_id") or "",
-        "task_type": status.get("task_type") or "",
-        "phase": status.get("phase") or "",
-        "status": status.get("status") or ("running" if status.get("running") else "idle"),
-        "running": bool(status.get("running")),
-        "message": status.get("message") or "",
-        "updated_at": now,
-    })
-
-    guard = ensure_mapping_bucket(facts, "guard")
-    last_guard_event = status.get("last_guard_event") if isinstance(status.get("last_guard_event"), dict) else {}
-    previous_guard_event = guard.get("last_event") if isinstance(guard.get("last_event"), dict) else {}
-    guard_event_changed = bool(last_guard_event) and last_guard_event != previous_guard_event
-    guard.update({
-        "group_enabled": bool(status.get("guard_group_enabled", True)),
-        "enabled": bool(status.get("guard_enabled")),
-        "running": bool(status.get("guard_running")),
-        "entry_id": status.get("guard_entry_id") or "",
-        "last_event": last_guard_event,
-        "updated_at": now,
-    })
-
-    scene_id = status.get("current_scene")
-    if scene_id is not None:
-        scene_facts = ensure_mapping_bucket(facts, "discoveries", "scene")
-        scene_facts[str(scene_id)] = {
-            "scene": scene_id,
-            "entry_id": status.get("entry_id") or status.get("guard_entry_id") or "",
+    with edit_data_annotation_world_facts(world_facts_path) as facts:
+        context = ensure_mapping_bucket(facts, "context")
+        context.update({
+            "entry_id": status.get("entry_id") or "",
+            "current_scene": status.get("current_scene"),
+            "current_task": status.get("current_task") or "",
+            "current_task_id": status.get("current_task_id") or "",
             "task_type": status.get("task_type") or "",
             "phase": status.get("phase") or "",
+            "status": status.get("status") or ("running" if status.get("running") else "idle"),
+            "running": bool(status.get("running")),
             "message": status.get("message") or "",
-            "seen_at": now,
-        }
-    if last_guard_event:
-        guard_kind = str(last_guard_event.get("kind") or "popup")
-        bucket_key = "occlusion" if guard_kind == "occlusion" else "popup"
-        bucket = ensure_mapping_bucket(facts, "discoveries", bucket_key)
-        popup_fact_key = data_annotation_fact_key(
-            bucket_key,
-            last_guard_event.get("image"),
-            last_guard_event.get("title"),
-            last_guard_event.get("folder_path"),
-        )
-        bucket[popup_fact_key] = {
-            **last_guard_event,
             "updated_at": now,
-        }
-        if guard_event_changed:
-            append_data_annotation_world_fact_event(facts, f"guard_{bucket_key}", last_guard_event)
-    write_data_annotation_world_facts(world_facts_path, facts)
+        })
+
+        guard = ensure_mapping_bucket(facts, "guard")
+        last_guard_event = status.get("last_guard_event") if isinstance(status.get("last_guard_event"), dict) else {}
+        previous_guard_event = guard.get("last_event") if isinstance(guard.get("last_event"), dict) else {}
+        guard_event_changed = bool(last_guard_event) and last_guard_event != previous_guard_event
+        guard.update({
+            "group_enabled": bool(status.get("guard_group_enabled", True)),
+            "enabled": bool(status.get("guard_enabled")),
+            "running": bool(status.get("guard_running")),
+            "entry_id": status.get("guard_entry_id") or "",
+            "last_event": last_guard_event,
+            "updated_at": now,
+        })
+
+        scene_id = status.get("current_scene")
+        if scene_id is not None:
+            scene_facts = ensure_mapping_bucket(facts, "discoveries", "scene")
+            scene_facts[str(scene_id)] = {
+                "scene": scene_id,
+                "entry_id": status.get("entry_id") or status.get("guard_entry_id") or "",
+                "task_type": status.get("task_type") or "",
+                "phase": status.get("phase") or "",
+                "message": status.get("message") or "",
+                "seen_at": now,
+            }
+        if last_guard_event:
+            guard_kind = str(last_guard_event.get("kind") or "popup")
+            bucket_key = "occlusion" if guard_kind == "occlusion" else "popup"
+            bucket = ensure_mapping_bucket(facts, "discoveries", bucket_key)
+            popup_fact_key = data_annotation_fact_key(
+                bucket_key,
+                last_guard_event.get("image"),
+                last_guard_event.get("title"),
+                last_guard_event.get("folder_path"),
+            )
+            bucket[popup_fact_key] = {
+                **last_guard_event,
+                "updated_at": now,
+            }
+            if guard_event_changed:
+                append_data_annotation_world_fact_event(facts, f"guard_{bucket_key}", last_guard_event)
 
 
 def read_kernel_scheduler_status(path: Path) -> dict[str, Any]:

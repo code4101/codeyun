@@ -5,14 +5,12 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
-from filelock import FileLock
-
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.job_times import next_business_time
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_world_fact_event,
     read_data_annotation_world_facts,
-    write_data_annotation_world_facts,
+    edit_data_annotation_world_facts,
 )
 from backend.core.fanxiu.client.mumu_control import (
     mark_mumu_device_startup_ready,
@@ -72,10 +70,6 @@ def next_bubble_weekly_time(now: datetime) -> str:
     return next_business_time(("00:00",), now=now, weekdays=(0,))
 
 
-def _facts_lock_path(path: Path) -> Path:
-    return path.with_name(f"{path.name}.lock")
-
-
 def read_bubble_lifecycle_fact(path: Path) -> dict[str, Any]:
     facts = read_data_annotation_world_facts(path)
     discoveries = facts.get("discoveries")
@@ -88,9 +82,7 @@ def read_bubble_lifecycle_fact(path: Path) -> dict[str, Any]:
 def _update_bubble_lifecycle_fact(
     path: Path, *, event_kind: str, updates: dict[str, Any]
 ) -> dict[str, Any]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(str(_facts_lock_path(path)), timeout=30):
-        facts = read_data_annotation_world_facts(path)
+    with edit_data_annotation_world_facts(path) as facts:
         discoveries = facts.setdefault("discoveries", {})
         if not isinstance(discoveries, dict):
             discoveries = {}
@@ -102,7 +94,6 @@ def _update_bubble_lifecycle_fact(
         append_data_annotation_world_fact_event(
             facts, event_kind, {"fact_key": BUBBLE_LIFECYCLE_FACT_KEY, **updates}
         )
-        write_data_annotation_world_facts(path, facts, _lock_already_held=True)
     return fact
 
 
@@ -136,8 +127,7 @@ def record_bubble_claim_item(
     if not normalized_id:
         raise ValueError("气泡领取检查点缺少礼包身份")
     week = bubble_week_key(now)
-    with FileLock(str(_facts_lock_path(path)), timeout=30):
-        facts = read_data_annotation_world_facts(path)
+    with edit_data_annotation_world_facts(path) as facts:
         discoveries = facts.setdefault("discoveries", {})
         fact = discoveries.get(BUBBLE_LIFECYCLE_FACT_KEY)
         if not isinstance(fact, dict):
@@ -163,7 +153,6 @@ def record_bubble_claim_item(
             {"fact_key": BUBBLE_LIFECYCLE_FACT_KEY, "week": week, "item_id": normalized_id,
              "partial_claim_count": len(claimed)},
         )
-        write_data_annotation_world_facts(path, facts, _lock_already_held=True)
         return dict(fact)
 
 

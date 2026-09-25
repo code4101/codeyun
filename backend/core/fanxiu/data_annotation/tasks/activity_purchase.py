@@ -210,7 +210,7 @@ class ActivityPurchasePolicy:
         backpack item). Confirmation is sent once; uncertain results fail closed.
         """
         from backend.core.fanxiu.instrumentation.activity_shop import collect_activity_shop_runtime
-        from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import set_verified_common_shop_quantity
+        from backend.core.fanxiu.runtime_gui.common_shop_quantity import set_verified_common_shop_quantity
         ready = yield from context.wait_scene([self.shop_scene,self.entry_scene,34,69], wait=5, required=False)
         current = int(ready) if ready is not None else None
         if current != self.shop_scene:
@@ -242,7 +242,7 @@ class ActivityPurchasePolicy:
     def buy_current_shop(self, context):
         """Complete one already-open tab; caller owns navigation and weekly receipts."""
         from backend.core.fanxiu.instrumentation.activity_shop import collect_activity_shop_runtime
-        from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import set_verified_common_shop_quantity
+        from backend.core.fanxiu.runtime_gui.common_shop_quantity import set_verified_common_shop_quantity
         if int((yield from context.wait_scene([self.shop_scene],wait=15))) != self.shop_scene:
             raise RuntimeError('未进入目标兑换页')
         snapshot = self.read_snapshot()
@@ -286,7 +286,7 @@ class ActivityPurchasePolicy:
                 action = refreshed[0]
             quantity = action['quantity']
             if dialog['showNum'] != quantity:
-                from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import COMMON_SHOP_QUANTITY_ASSETS, SACRED_SHOP_QUANTITY_ASSETS
+                from backend.core.fanxiu.runtime_gui.common_shop_quantity import COMMON_SHOP_QUANTITY_ASSETS, SACRED_SHOP_QUANTITY_ASSETS
                 proof = yield from set_verified_common_shop_quantity(context,quantity,
                     unit_price=row['token_cost'],label=self.label,initial_snapshot=dialog,
                     assets=SACRED_SHOP_QUANTITY_ASSETS if self.dialog_scene==634 else COMMON_SHOP_QUANTITY_ASSETS)

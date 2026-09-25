@@ -4,28 +4,32 @@ import difflib
 import re
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from pathlib import Path
 from types import GeneratorType
 
-from backend.core.fanxiu.mail.policy import (
-    fanxiu_mail_reward_is_always_claim,
-    fanxiu_mail_reward_name_known,
-    fanxiu_mail_rewards_from_payload,
-    fanxiu_mail_rewards_unresolved,
+from backend.core.fanxiu.mail.claim_contract import (
+    MailPolicyClassificationError as _MailPolicyClassificationError,
+    claimable_mail_targets,
+    runtime_mail_identity,
+    deletable_mail_garbage,
+    runtime_mail_read_state,
+    protected_mail_ids,
+    validate_mail_policy_snapshot,
+    validate_mail_terminal_result,
+    select_mail_claim_targets,
+    mail_target_requires_claim,
 )
 from backend.core.fanxiu.mail.runtime_store import (
     current_runtime_mail_sequence_snapshot,
 )
-from backend.core.fanxiu.runtime_gui.mail import (
-    align_mail_window,
-    best_mail_time_relation,
-    build_mail_visual_observations,
-    mail_runtime_time_key,
-    mail_time_is_match,
-    mail_window_geometry_from_asset,
+from backend.core.fanxiu.runtime_gui.mail import mail_window_geometry_from_asset
+from backend.core.fanxiu.runtime_gui.mail_window import (
+    MailWindowAmbiguous as _MailWindowAmbiguous,
+    map_first_mail_from_ordered_rows,
+    map_ordered_mail_window,
 )
 from backend.core.fanxiu.runtime_gui import ocr_name_similarity
 from backend.core.fanxiu.game.ocr_utils import _sanitize_ocr_text
@@ -37,6 +41,10 @@ from backend.core.fanxiu.data_annotation.tasks.world_menu_navigation import (
 )
 from pyxllib.autogui import Shape, View
 from pyxllib.prog import BehaviorTreeStatus
+
+
+if TYPE_CHECKING:
+    from ..game_context import BehaviorTreeContext
 
 
 @dataclass
@@ -57,7 +65,6 @@ class _VisibleMailRow:
         return str(self.raw.get("status") or "无")
 
 
-
 @dataclass(frozen=True)
 class _RuntimeMailActionOutcome:
     policy: str
@@ -65,21 +72,17 @@ class _RuntimeMailActionOutcome:
     visual_confirmed: bool
 
 
-class _MailPolicyClassificationError(RuntimeError):
-    def __init__(self, message: str, *, unknown_items: list[dict[str, Any]] | None = None) -> None:
-        super().__init__(message)
-        self.unknown_items = list(unknown_items or [])
-
-
-class _MailWindowAmbiguous(RuntimeError):
-    """Identical title/time rows cannot establish a unique mail identity."""
-
-
 class MailTaskMixin:
+    """邮件业务入口、列表就绪与离场、选信策略及领取结果确认。
+
+    Runtime/画面对齐算法由 runtime_gui.mail_window 提供；本模块组织一次完整
+    邮件任务，通用识别与点击由执行器提供。
+    """
     # 邮件详情偶尔会在服务器结算或连续翻页后延迟二十余秒才稳定为
     # #122/#123。12 秒会把仍在加载的真实详情误判成 unknown。
     _MAIL_DETAIL_READY_TIMEOUT_SECONDS = 30.0
     _MAIL_RUNTIME_READ_ATTEMPTS = 3
+
 
     def _execute_mail_selective_claim_task(
         self,
@@ -202,177 +205,145 @@ class MailTaskMixin:
             self._log_locked("success", message)
         return "success"
 
-    @staticmethod
-    def _precise_mail_claim_targets(
-        snapshot: dict[str, Any],
+
+    def _wait_mail_list_ready(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
         *,
-        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
-    ) -> list[dict[str, Any]]:
-        items = snapshot.get("items")
-        if not isinstance(items, list):
-            return []
-        return [
-            item
-            for item in items
-            if isinstance(item, dict)
-            and str(item.get("execution_status") or "") == "unclaimed"
-            and bool(item.get("present_in_runtime"))
-            and not bool(item.get("locked"))
-            and (
-                str(item.get("action_policy") or "") == "claim"
-                or (
-                    protected_claim_authorizer is not None
-                    and bool(protected_claim_authorizer(item))
-                )
+        timeout: float,
+        label: str = "等待邮件列表",
+    ):
+        image121 = (ctx.get("images") or {}).get(121)
+        marker_shape = self._find_shape(image121, "邮件标识") if isinstance(image121, dict) else None
+        if not isinstance(image121, dict) or not marker_shape:
+            return (yield from self._wait_scene_id(ctx, stop_event, 121, timeout=timeout, label=label))
+        start = time.monotonic()
+        last_scene_id: int | None = None
+        last_score = 0.0
+        last_marker_score = 0.0
+        asset_tree_path = ctx.get("asset_tree_path")
+        context = self._behavior_tree_context(
+            ctx,
+            asset_tree_path if isinstance(asset_tree_path, Path) else None,
+            stop_event=stop_event,
+        )
+        while True:
+            self._raise_if_stopped(stop_event)
+            elapsed = time.monotonic() - start
+            _wait_scene_match = yield from context.wait_scene([121], label=label, wait=5.0, required=False)
+            (scene_id, score, frame) = (
+                (_wait_scene_match.scene_id, _wait_scene_match.score, _wait_scene_match.frame_data_url)
+                if _wait_scene_match is not None else (None, 0.0, context.frame_data_url or "")
             )
-        ]
-
-    @staticmethod
-    def _runtime_mail_identity(item: dict[str, Any]) -> str:
-        return str(item.get("id") or item.get("mail_id") or "").strip()
-
-    @classmethod
-    def _deletable_runtime_mail_garbage(
-        cls,
-        snapshot: dict[str, Any],
-    ) -> dict[str, dict[str, Any]]:
-        """Return the exact unlocked Runtime mails covered by one-key delete."""
-
-        items = snapshot.get("items")
-        if not isinstance(items, list):
-            return {}
-        result: dict[str, dict[str, Any]] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            mail_id = cls._runtime_mail_identity(item)
-            if (
-                mail_id
-                and bool(item.get("present_in_runtime"))
-                and not bool(item.get("locked"))
-                and (
-                    str(item.get("execution_status") or "") == "claimed"
-                    or (
-                        str(item.get("execution_status") or "") == "no_attachment"
-                        and cls._runtime_mail_read_state(item) is True
+            last_scene_id, last_score = scene_id, score
+            try:
+                text = context.ocr_text(frame)
+            except Exception:
+                text = ""
+            reward_transition_matches = getattr(self, "_mail_reward_transition_text_matches", None)
+            if callable(reward_transition_matches) and reward_transition_matches(text):
+                with self._lock:
+                    self._status.update(
+                        {
+                            "phase": "wait_mail_reward_transition",
+                            "current_scene": scene_id,
+                            "message": f"{label}：检测到领取奖励过场，等待自动回到邮件 #121",
+                            "updated_at": time.time(),
+                        }
                     )
-                )
-            ):
-                result[mail_id] = item
-        return result
-
-    @staticmethod
-    def _runtime_mail_read_state(item: dict[str, Any]) -> bool | None:
-        """Return Runtime's authoritative read flag when projection preserved it."""
-
-        direct = item.get("read")
-        if isinstance(direct, bool):
-            return direct
-        payload = item.get("payload")
-        runtime_payload = payload.get("runtime") if isinstance(payload, dict) else None
-        nested = runtime_payload.get("read") if isinstance(runtime_payload, dict) else None
-        return nested if isinstance(nested, bool) else None
-
-    @classmethod
-    def _protected_runtime_mail_ids(cls, snapshot: dict[str, Any]) -> set[str]:
-        """Return locked or policy-retained mails that deletion must preserve."""
-
-        return {
-            cls._runtime_mail_identity(item)
-            for item in snapshot.get("items") or []
-            if isinstance(item, dict)
-            and bool(item.get("present_in_runtime"))
-            and cls._runtime_mail_identity(item)
-            and (
-                bool(item.get("locked"))
-                or (
-                    bool(item.get("has_attachment"))
-                    and str(item.get("execution_status") or "") == "unclaimed"
-                )
-            )
-        }
-
-    @staticmethod
-    def _validate_precise_mail_policy_snapshot(
-        snapshot: dict[str, Any],
-        *,
-        reason: str,
-        require_all_classified: bool = False,
-    ) -> None:
-        """Fail closed unless every live attachment has an explicit safe policy."""
-
-        failures: list[str] = []
-        unknown_items: list[dict[str, Any]] = []
-        for item in snapshot.get("items") or []:
-            if not isinstance(item, dict) or not bool(item.get("present_in_runtime")):
                 continue
-            if str(item.get("execution_status") or "") != "unclaimed" or not bool(
-                item.get("has_attachment")
-            ):
-                continue
-            mail_id = str(item.get("id") or item.get("mail_id") or "?")
-            desired = str(item.get("desired_status") or "").strip()
-            policy = str(item.get("action_policy") or "").strip()
-            locked = bool(item.get("locked"))
-            # Reward-name completeness is an authority requirement for a
-            # positive claim action, not for an explicit no-op.  A retained
-            # or locked mail is already fail-closed: this task will not click
-            # it, so a newly introduced item id must not block unrelated,
-            # fully classified claim targets forever.
-            if locked:
-                if desired != "锁定" or policy:
-                    failures.append(f"{mail_id}:锁定邮件策略不一致")
-                continue
-            payload = item.get("payload")
-            rewards = fanxiu_mail_rewards_from_payload(payload)
-            if fanxiu_mail_rewards_unresolved(payload) or not rewards:
-                failures.append(f"{mail_id}:奖励未解析")
-                continue
-            has_always_claim_reward = any(
-                fanxiu_mail_reward_is_always_claim(reward)
-                for reward in rewards
-            )
-            unresolved = [
-                reward
-                for reward in rewards
-                if not fanxiu_mail_reward_name_known(reward)
-            ]
-            if unresolved and not has_always_claim_reward:
-                item_ids = [str(reward.get("item_id") or "?") for reward in unresolved]
-                unknown_items.extend(
+            marker_score = 0.0
+            marker_matched = False
+            if scene_id == 121:
+                try:
+                    marker_result = self._match_shape(ctx, image121, marker_shape, frame)
+                    marker_score = float(marker_result.get("similarity") or 0)
+                    marker_matched = bool(marker_result.get("matched"))
+                except Exception as exc:
+                    self._log("detail", f"{label}：邮件标识匹配失败：{exc}")
+            last_marker_score = marker_score
+            if scene_id == 121 and marker_matched:
+                with self._lock:
+                    self._status.update({"current_scene": 121, "updated_at": time.time()})
+                self._log("success", f"{label}：已到达 #121 {score:.0f}%，邮件标识 {marker_score:.0f}%")
+                return 121, score
+            with self._lock:
+                self._status.update(
                     {
-                        "mail_id": mail_id,
-                        "item_id": str(reward.get("item_id") or ""),
-                        "reward_type": reward.get("type"),
-                        "item_type": str(reward.get("item_type") or ""),
-                        "item_type_id": reward.get("item_type_id"),
-                        "item_sub_type_id": reward.get("item_sub_type_id"),
-                        "runtime_name_id": reward.get("runtime_name_id"),
-                        "icon": str(reward.get("icon") or ""),
-                        "use_condition": str(reward.get("use_condition") or ""),
-                        "name_source": str(reward.get("name_source") or ""),
-                        "policy_resolution": str(reward.get("policy_resolution") or ""),
+                        "phase": "wait_mail_list_ready",
+                        "current_scene": scene_id,
+                        "message": (
+                            f"{label}：当前 {'#' + str(scene_id) if scene_id is not None else 'unknown'} "
+                            f"{score:.0f}%，邮件标识 {marker_score:.0f}%"
+                        ),
+                        "updated_at": time.time(),
                     }
-                    for reward in unresolved
                 )
-                # At task start an unknown retained mail must not prevent
-                # unrelated, fully classified claim targets from running.  At
-                # terminal verification it is not a completed business state:
-                # keep the job due and escalate the exact evidence.
-                if require_all_classified or desired not in {"锁定", "留存"} or policy:
-                    failures.append(f"{mail_id}:存在未知道具 {item_ids}")
-                    continue
-            if desired in {"锁定", "留存"} and not policy:
-                continue
-            if desired == "可领" and policy == "claim":
-                continue
-            failures.append(f"{mail_id}:desired={desired or '-'} policy={policy or '-'}")
-        if failures:
-            raise _MailPolicyClassificationError(
-                f"邮件_选择性领取：{reason}存在 {len(failures)} 封未完成安全分类的附件邮件，"
-                f"拒绝领取并拒绝顺延到次日；details={failures[:8]}",
-                unknown_items=unknown_items,
+            if elapsed >= timeout:
+                scene_text = f"#{last_scene_id}" if last_scene_id is not None else "unknown"
+                raise RuntimeError(f"{label} 超时，最后 {scene_text} {last_score:.0f}%，邮件标识 {last_marker_score:.0f}%")
+
+    def _leave_mail_scene_to_world(
+        self,
+        ctx: dict[str, Any],
+        stop_event: threading.Event,
+        context: BehaviorTreeContext,
+        scene_id: int,
+        *,
+        label: str,
+    ):
+        images = ctx.get("images") if isinstance(ctx.get("images"), dict) else {}
+        current = images.get(scene_id)
+        back_shape = self._find_shape(current, "空白-返回") if isinstance(current, dict) else None
+        if not isinstance(current, dict) or back_shape is None:
+            raise RuntimeError(f"{label}：当前在邮件页 #{scene_id}，但缺少「空白-返回」标注，无法恢复到世界")
+        with self._lock:
+            self._set_status_locked("running", f"{label}：退出邮件页 #{scene_id}", phase="daily_leave_mail_scene", current_scene=scene_id)
+            if scene_id == 121:
+                self._log_locked("action", f"{label}：点击 #121 外侧空白恢复到世界")
+            else:
+                self._log_locked("action", f"{label}：点击 #{scene_id}「空白-返回」恢复到世界")
+        def close_mail_list_to_world():
+            yield from context.wait_click_then_scene(
+                121,
+                "空白-返回",
+                34,
+                timeout=25.0,
+                label=f"{label}：关闭邮件列表并等待世界 #34",
             )
+            self._log("success", f"{label}：已关闭邮件页回到 #34")
+        if scene_id == 121:
+            yield from close_mail_list_to_world()
+        else:
+            yield from context.wait_click(scene_id, "空白-返回")
+            view = yield from context.wait_scene([34, 121, 227], wait=18.0, label=f"{label}：等待离开邮件详情")
+            landed_scene_id = getattr(view, "scene_id", getattr(view, "id", None))
+            if landed_scene_id == 227:
+                self._log("action", f"{label}：邮件详情返回后出现奖励页，点击 #227「继续」")
+                yield from context.wait_click(227, "继续", timeout=8.0)
+                view = yield from context.wait_scene([34, 121], wait=12.0, label=f"{label}：奖励页关闭后等待邮件或世界")
+                landed_scene_id = getattr(view, "scene_id", getattr(view, "id", None))
+            if landed_scene_id == 34:
+                self._log("success", f"{label}：已从邮件详情回到 #34")
+                return
+            if landed_scene_id == 121:
+                self._log("action", f"{label}：邮件详情已返回 #121，继续关闭邮件列表")
+                yield from close_mail_list_to_world()
+                return
+            yield from context.wait_scene([34], label=f"{label}：等待返回世界 #34")
+
+    _precise_mail_claim_targets = staticmethod(claimable_mail_targets)
+
+    _runtime_mail_identity = staticmethod(runtime_mail_identity)
+
+    _deletable_runtime_mail_garbage = staticmethod(deletable_mail_garbage)
+
+    _runtime_mail_read_state = staticmethod(runtime_mail_read_state)
+
+    _protected_runtime_mail_ids = staticmethod(protected_mail_ids)
+
+    _validate_precise_mail_policy_snapshot = staticmethod(validate_mail_policy_snapshot)
 
     def _validate_mail_policy_with_unknown_assistance(
         self,
@@ -405,355 +376,15 @@ class MailTaskMixin:
                 )
             raise
 
-    @staticmethod
-    def _validate_precise_mail_terminal_result(
-        result: dict[str, Any],
-        *,
-        target_count: int,
-        require_garbage_cleanup: bool = True,
-    ) -> None:
-        """Validate the count contract before exposing a successful summary."""
+    _validate_precise_mail_terminal_result = staticmethod(validate_mail_terminal_result)
 
-        if str(result.get("result") or "") != "success":
-            raise RuntimeError("邮件_选择性领取：批次没有形成 success 业务终态")
-        claimed_count = int(result.get("claimed_count") or 0)
-        garbage_before = int(result.get("garbage_before") or 0)
-        garbage_after = int(result.get("garbage_after") or 0)
-        deleted_count = int(result.get("deleted_count") or 0)
-        protected_count = int(result.get("protected_count") or 0)
-        if claimed_count != int(target_count):
-            raise RuntimeError(
-                "邮件_选择性领取：批次仍有待领取目标或领取计数不一致，"
-                f"target={target_count} claimed={claimed_count}"
-            )
-        if require_garbage_cleanup and (
-            garbage_after != 0 or deleted_count != garbage_before
-        ):
-            raise RuntimeError(
-                "邮件_选择性领取：可删除垃圾未形成归零闭环，"
-                f"before={garbage_before} deleted={deleted_count} after={garbage_after}"
-            )
-        if min(claimed_count, garbage_before, garbage_after, deleted_count, protected_count) < 0:
-            raise RuntimeError("邮件_选择性领取：业务终态计数非法，拒绝报告成功")
+    _select_precise_mail_claim_targets = staticmethod(select_mail_claim_targets)
 
-    @classmethod
-    def _select_precise_mail_claim_targets(
-        cls,
-        snapshot: dict[str, Any],
-        target_mail_ids: set[str] | None,
-        *,
-        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
-    ) -> list[dict[str, Any]]:
-        targets = cls._precise_mail_claim_targets(
-            snapshot,
-            protected_claim_authorizer=protected_claim_authorizer,
-        )
-        wanted = {str(value) for value in target_mail_ids or set() if str(value)}
-        if not wanted:
-            return targets
-        return [
-            item
-            for item in targets
-            if str(item.get("id") or item.get("mail_id") or "") in wanted
-        ]
+    _runtime_mail_target_still_requires_claim = staticmethod(mail_target_requires_claim)
 
-    @classmethod
-    def _runtime_mail_target_still_requires_claim(
-        cls,
-        snapshot: dict[str, Any],
-        mail_id: str,
-        *,
-        protected_claim_authorizer: Callable[[dict[str, Any]], bool] | None = None,
-    ) -> bool:
-        """Return whether one exact Runtime identity still needs a claim.
+    _first_screen_runtime_mapping = staticmethod(map_first_mail_from_ordered_rows)
 
-        A claim request is irreversible and the detail sheet may already have
-        switched from #122 (claim) to #123 (delete) before the batch's stable
-        snapshot is refreshed.  Only a new complete MailMgr read may classify
-        that case as already completed; title similarity is insufficient when
-        several adjacent mails look identical.
-        """
-
-        target_id = str(mail_id or "")
-        return any(
-            str(item.get("id") or item.get("mail_id") or "") == target_id
-            for item in cls._precise_mail_claim_targets(
-                snapshot,
-                protected_claim_authorizer=protected_claim_authorizer,
-            )
-        )
-
-    @staticmethod
-    def _first_screen_runtime_mapping(
-        snapshot: dict[str, Any],
-        image121: dict[str, Any],
-        fragments: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Infer Runtime #0 exclusively from the ordered OCR rows 2/3/4."""
-
-        items = snapshot.get("items")
-        if (
-            not snapshot.get("complete")
-            or not isinstance(items, list)
-            or int(snapshot.get("decoded_count") or -1) != len(items)
-            or len(items) < 4
-        ):
-            raise RuntimeError("邮件_选择性领取：首屏领取缺少完整 Runtime #0..#3 序列")
-        geometry = mail_window_geometry_from_asset(image121)
-        observations = build_mail_visual_observations(
-            fragments,
-            geometry,
-            visible_slots=(1, 2, 3),
-        )
-        by_slot = {item.slot_index: item for item in observations}
-        evidence: list[dict[str, Any]] = []
-        known_title_anchor_count = 0
-        for slot in (1, 2, 3):
-            observation = by_slot.get(slot)
-            runtime_item = items[slot]
-            if observation is None:
-                raise RuntimeError(
-                    f"邮件_选择性领取：首屏第 {slot + 1} 行 OCR 缺失，不能反推第1行"
-                )
-            expected_title = str(runtime_item.get("title") or "")
-            title_score = max(
-                (
-                    ocr_name_similarity(expected_title, candidate)
-                    for candidate in observation.title_candidates
-                ),
-                default=0.0,
-            )
-            expected_time = mail_runtime_time_key(runtime_item)
-            time_matched = mail_time_is_match(
-                best_mail_time_relation(observation.time_candidates, expected_time)
-            )
-            runtime_title_unknown = expected_title.startswith("未知邮件类型")
-            if not runtime_title_unknown and title_score >= 0.68:
-                known_title_anchor_count += 1
-            if (title_score < 0.68 and not runtime_title_unknown) or not time_matched:
-                raise RuntimeError(
-                    f"邮件_选择性领取：首屏第 {slot + 1} 行未按序匹配 Runtime #{slot}；"
-                    f"title_score={title_score:.2f} time_matched={time_matched} "
-                    f"ocr_titles={list(observation.title_candidates)} "
-                    f"ocr_times={list(observation.time_candidates)} "
-                    f"runtime_title={expected_title} runtime_time={expected_time}"
-                )
-            evidence.append(
-                {
-                    "slot_index": slot,
-                    "runtime_index": slot,
-                    "title_score": round(title_score, 4),
-                    "time_matched": True,
-                    "runtime_title_unknown": runtime_title_unknown,
-                }
-            )
-        if known_title_anchor_count < 1:
-            raise RuntimeError(
-                "邮件_选择性领取：首屏第2/3/4行仅有未知 Runtime 标题与时间证据，"
-                "缺少至少一条真实标题锚点，不能反推第1行"
-            )
-        first = items[0]
-        return {
-            "slot_index": 0,
-            "runtime_index": int(first.get("runtime_index") or 0),
-            "mail_id": str(first.get("id") or first.get("mail_id") or ""),
-            "title": str(first.get("title") or ""),
-            "create_time_text": str(first.get("create_time_text") or ""),
-            "evidence": evidence,
-        }
-
-    @staticmethod
-    def _ordered_runtime_window_mapping(
-        snapshot: dict[str, Any],
-        image121: dict[str, Any],
-        fragments: list[dict[str, Any]],
-        *,
-        previous_offset: int,
-        known_top: bool,
-    ) -> dict[str, Any]:
-        """Map one freshly OCRed GUI window to the ordered Runtime sequence."""
-
-        items = list(snapshot.get("items") or [])
-        geometry = mail_window_geometry_from_asset(image121)
-        # The footer overlays the fifth lattice row on the real #121 screen.
-        # Only rows 1..4 (slots 0..3) are fully actionable; a partially visible
-        # fifth title must trigger a downward scroll, never a click.
-        visible_slots = [slot for slot in geometry.visible_slot_indices() if int(slot) <= 3]
-        observations = []
-        if known_top:
-            try:
-                MailTaskMixin._first_screen_runtime_mapping(snapshot, image121, fragments)
-                anchor_count = 3
-            except RuntimeError:
-                # Some client mail types render completely blank rows. Require
-                # two independent visible anchors instead of inventing their
-                # missing titles/times. Row 0 is usable only when its exact,
-                # globally unique title and time both match current MailMgr.
-                if not snapshot.get("complete") or snapshot.get("decoded_count") != len(items):
-                    raise
-                observations = build_mail_visual_observations(
-                    fragments, geometry, visible_slots=visible_slots,
-                )
-                if items:
-                    title = str(items[0].get("title") or "")
-                    stamp = mail_runtime_time_key(items[0])
-                    unique_title = bool(title) and sum(str(x.get("title") or "") == title for x in items) == 1
-                    observations = [
-                        replace(o, trusted=True, reliability=1.0)
-                        if o.slot_index == 0 and unique_title
-                        and any(ocr_name_similarity(title, candidate) >= 0.99 for candidate in o.title_candidates)
-                        and mail_time_is_match(
-                            best_mail_time_relation(o.time_candidates, stamp)
-                        )
-                        else o for o in observations
-                    ]
-                alignment = align_mail_window(
-                    items, observations, visible_slots=visible_slots,
-                    min_anchor_count=2, expected_runtime_offset=0,
-                )
-                if not alignment.aligned or alignment.runtime_offset != 0:
-                    raise
-                anchor_count = alignment.anchor_count
-            offset = 0
-        else:
-            observations = build_mail_visual_observations(
-                fragments,
-                geometry,
-                visible_slots=visible_slots,
-            )
-            candidates: list[tuple[int, int, list[dict[str, Any]]]] = []
-            # Returning from a claimed detail can restore the list at the
-            # previous pre-scroll offset, or one row above it after the list
-            # settles.  A strictly increasing lower bound then rejects a fully
-            # aligned window and aborts the batch.  Accept that one-row rebound;
-            # the caller only scrolls again when every remaining target is
-            # beyond this verified visible window.
-            for offset_candidate in range(max(0, int(previous_offset) - 1), len(items)):
-                evidence: list[dict[str, Any]] = []
-                for observation in observations:
-                    runtime_index = offset_candidate + int(observation.slot_index)
-                    if not 0 <= runtime_index < len(items):
-                        continue
-                    runtime_item = items[runtime_index]
-                    expected_title = str(runtime_item.get("title") or "")
-                    title_score = max(
-                        (
-                            ocr_name_similarity(expected_title, candidate)
-                            for candidate in observation.title_candidates
-                        ),
-                        default=0.0,
-                    )
-                    expected_time = mail_runtime_time_key(runtime_item)
-                    time_matched = mail_time_is_match(
-                        best_mail_time_relation(
-                            observation.time_candidates, expected_time
-                        )
-                    )
-                    runtime_title_unknown = expected_title.startswith("未知邮件类型")
-                    if time_matched and (title_score >= 0.68 or runtime_title_unknown):
-                        evidence.append(
-                            {
-                                "slot_index": int(observation.slot_index),
-                                "runtime_index": runtime_index,
-                                "title_score": round(title_score, 4),
-                                "runtime_title_unknown": runtime_title_unknown,
-                            }
-                        )
-                if (
-                    len(evidence) >= 2
-                    and any(float(item["title_score"]) >= 0.68 for item in evidence)
-                ):
-                    candidates.append((len(evidence), offset_candidate, evidence))
-            if candidates:
-                strongest = max(item[0] for item in candidates)
-                strongest_candidates = [item for item in candidates if item[0] == strongest]
-                if len(strongest_candidates) != 1:
-                    raise _MailWindowAmbiguous(
-                        "邮件_选择性领取：同名同时间窗口存在多个等强序列位置，禁止猜测最小偏移；"
-                        f"offsets={[item[1] for item in strongest_candidates]}"
-                    )
-                _count, offset, _evidence = strongest_candidates[0]
-                anchor_count = strongest
-            else:
-                # A controlled scroll gives us a continuity boundary.  OCR can
-                # occasionally return only one complete row after the inertial
-                # list settles; requiring two rows then rejects an otherwise
-                # exact, unique title/time anchor.  Reuse the shared alignment
-                # law, which accepts one anchor only when it is exact and the
-                # competing offsets are unambiguous.  Repeated identical rows
-                # therefore remain fail-closed.
-                exact_alignment = align_mail_window(
-                    items,
-                    observations,
-                    visible_slots=visible_slots,
-                    min_anchor_count=1,
-                    # One exact unique title separates the best offset by
-                    # 0.68 when every neighbouring midnight mail shares the
-                    # same minute.  Keep the margin below that exact-title
-                    # contribution; duplicated title/time rows still tie at
-                    # zero and remain ambiguous.
-                    min_score_margin=0.5,
-                    expected_runtime_offset=max(0, int(previous_offset)),
-                )
-                if not exact_alignment.aligned:
-                    observed_summary = [
-                        {
-                            "slot": int(observation.slot_index),
-                            "titles": list(observation.title_candidates),
-                            "times": list(observation.time_candidates),
-                        }
-                        for observation in observations
-                    ]
-                    raise RuntimeError(
-                        "邮件_选择性领取：滚动后当前窗口既没有至少两行按序匹配 Runtime，"
-                        "也没有唯一精确单行锚点；"
-                        f"alignment={exact_alignment.status}:{exact_alignment.reason} "
-                        f"observed={observed_summary}"
-                    )
-                offset = int(exact_alignment.runtime_offset or 0)
-                anchor_count = int(exact_alignment.anchor_count)
-        mappings = []
-        for slot in visible_slots:
-            runtime_index = offset + int(slot)
-            if not 0 <= runtime_index < len(items):
-                continue
-            item = items[runtime_index]
-            observation = next(
-                (
-                    candidate
-                    for candidate in observations
-                    if int(candidate.slot_index) == int(slot)
-                ),
-                None,
-            )
-            observed_title = ""
-            if observation is not None and observation.title_candidates:
-                runtime_title = str(item.get("title") or "")
-                if runtime_title.startswith("未知邮件类型"):
-                    observed_title = max(
-                        observation.title_candidates,
-                        key=lambda candidate: len(re.sub(r"\s+", "", candidate)),
-                    )
-                else:
-                    observed_title = max(
-                        observation.title_candidates,
-                        key=lambda candidate: ocr_name_similarity(runtime_title, candidate),
-                    )
-            mappings.append(
-                {
-                    "slot_index": int(slot),
-                    "runtime_index": int(item.get("runtime_index") or runtime_index),
-                    "mail_id": str(item.get("id") or item.get("mail_id") or ""),
-                    "title": str(item.get("title") or ""),
-                    "observed_title": observed_title,
-                    "create_time_text": str(item.get("create_time_text") or ""),
-                }
-            )
-        return {
-            "runtime_offset": offset,
-            "anchor_count": anchor_count,
-            "mappings": mappings,
-        }
+    _ordered_runtime_window_mapping = staticmethod(map_ordered_mail_window)
 
     def _execute_ordered_runtime_claim_batch(
         self,
@@ -1438,86 +1069,6 @@ class MailTaskMixin:
         return result_scene
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def _open_mail_selective_claim_entry(
         self,
         context: BehaviorTreeContext,
@@ -1811,41 +1362,6 @@ class MailTaskMixin:
         )
         return scene_id if scene_id in {122, 123} else None
 
-    def _wait_mail_list_after_detail_action(
-        self,
-        ctx: dict[str, Any],
-        stop_event: threading.Event,
-        context: BehaviorTreeContext,
-        scene_id: int,
-        *,
-        timeout: float,
-        label: str,
-    ):
-        detail_image = (ctx.get("images") or {}).get(scene_id)
-        if isinstance(detail_image, dict):
-            detail_view = View(detail_image)
-            wait_result = yield from self._wait_mail_list_or_reopen_from_world_after_action(
-                context,
-                detail_view,
-                timeout=timeout,
-                label=label,
-            )
-            if wait_result in {"list", "reopened", "list_after_reward", "reopened_after_reward"}:
-                return wait_result
-            if wait_result in {"timeout", "detail_still_open"}:
-                back_shape = detail_view.get_shape("空白-返回")
-                if back_shape is not None:
-                    self._log("info", f"{label}：详情页未自动回列表，点击详情页返回")
-                    back_shape.click(context)
-                    yield from self._wait_mail_list_ready_or_restore_world(
-                        ctx,
-                        stop_event,
-                        timeout=12.0,
-                        label=label,
-                    )
-                    return "list"
-        yield from self._wait_mail_list_ready_or_restore_world(ctx, stop_event, timeout=timeout, label=label)
-        return "list"
 
     def _wait_mail_list_or_reopen_from_world_after_action(
         self,

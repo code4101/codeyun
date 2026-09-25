@@ -8,7 +8,7 @@ from typing import Any
 from backend.core.fanxiu.data_annotation.state import (
     append_data_annotation_world_fact_event,
     read_data_annotation_world_facts,
-    write_data_annotation_world_facts,
+    edit_data_annotation_world_facts,
 )
 
 
@@ -126,35 +126,34 @@ def open_maintenance_gate(
 ) -> dict[str, Any]:
     current = observed_at or datetime.now()
     now_ts = current.timestamp()
-    facts = read_data_annotation_world_facts(world_facts_path)
-    availability = facts.setdefault("availability", {})
-    if not isinstance(availability, dict):
-        availability = {}
-        facts["availability"] = availability
-    previous = normalize_maintenance_gate(availability.get("game"))
-    gate = {
-        **previous,
-        "active": True,
-        "state": "maintenance",
-        "reason": MAINTENANCE_REASON,
-        "scene_id": scene_id,
-        "opened_at": previous.get("opened_at") or now_ts,
-        "last_observed_at": now_ts,
-        "resolved_at": None,
-        "evidence": dict(evidence or {}),
-    }
-    availability["game"] = gate
-    append_data_annotation_world_fact_event(
-        facts,
-        "game_availability",
-        {
+    with edit_data_annotation_world_facts(world_facts_path) as facts:
+        availability = facts.setdefault("availability", {})
+        if not isinstance(availability, dict):
+            availability = {}
+            facts["availability"] = availability
+        previous = normalize_maintenance_gate(availability.get("game"))
+        gate = {
+            **previous,
+            "active": True,
             "state": "maintenance",
             "reason": MAINTENANCE_REASON,
             "scene_id": scene_id,
-            "observed_at": now_ts,
-        },
-    )
-    write_data_annotation_world_facts(world_facts_path, facts)
+            "opened_at": previous.get("opened_at") or now_ts,
+            "last_observed_at": now_ts,
+            "resolved_at": None,
+            "evidence": dict(evidence or {}),
+        }
+        availability["game"] = gate
+        append_data_annotation_world_fact_event(
+            facts,
+            "game_availability",
+            {
+                "state": "maintenance",
+                "reason": MAINTENANCE_REASON,
+                "scene_id": scene_id,
+                "observed_at": now_ts,
+            },
+        )
     return normalize_maintenance_gate(gate)
 
 
@@ -166,32 +165,31 @@ def clear_maintenance_gate(
 ) -> dict[str, Any]:
     current = resolved_at or datetime.now()
     now_ts = current.timestamp()
-    facts = read_data_annotation_world_facts(world_facts_path)
-    availability = facts.setdefault("availability", {})
-    if not isinstance(availability, dict):
-        availability = {}
-        facts["availability"] = availability
-    previous = normalize_maintenance_gate(availability.get("game"))
-    gate = {
-        **previous,
-        "active": False,
-        "state": "available",
-        "reason": "",
-        "scene_id": None,
-        "last_observed_at": previous.get("last_observed_at"),
-        "resolved_at": now_ts,
-        "evidence": dict(evidence or {}),
-    }
-    availability["game"] = gate
-    append_data_annotation_world_fact_event(
-        facts,
-        "game_availability",
-        {
+    with edit_data_annotation_world_facts(world_facts_path) as facts:
+        availability = facts.setdefault("availability", {})
+        if not isinstance(availability, dict):
+            availability = {}
+            facts["availability"] = availability
+        previous = normalize_maintenance_gate(availability.get("game"))
+        gate = {
+            **previous,
+            "active": False,
             "state": "available",
+            "reason": "",
+            "scene_id": None,
+            "last_observed_at": previous.get("last_observed_at"),
             "resolved_at": now_ts,
-        },
-    )
-    write_data_annotation_world_facts(world_facts_path, facts)
+            "evidence": dict(evidence or {}),
+        }
+        availability["game"] = gate
+        append_data_annotation_world_fact_event(
+            facts,
+            "game_availability",
+            {
+                "state": "available",
+                "resolved_at": now_ts,
+            },
+        )
     return normalize_maintenance_gate(gate)
 
 

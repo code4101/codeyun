@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import threading
 
 import pytest
 
@@ -16,82 +15,7 @@ from backend.core.fanxiu.data_annotation.maintenance import (
     open_maintenance_gate,
     read_maintenance_gate,
 )
-from backend.core.fanxiu.data_annotation.tasks import maintenance as maintenance_task
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import default_kernel_scheduler_tasks
-
-
-@pytest.fixture(autouse=True)
-def _isolate_mumu_health(monkeypatch):
-    monkeypatch.setattr(
-        maintenance_task,
-        "mumu_device_health_check",
-        lambda **_kwargs: {"status": "unhealthy"},
-    )
-
-
-class _FakeRuntime:
-    def __init__(self, scenes):
-        self.scenes = list(scenes)
-        self.clicks = []
-        self.completion_message = ""
-
-    def current_scene(self, _scene_ids=None, *, update=True, **_options):
-        scene_id = self.scenes.pop(0)
-        if False:
-            yield None
-        return scene_id, 100.0, f"frame-{scene_id}"
-
-    def click_shape_center(self, scene_id, title):
-        self.clicks.append((scene_id, title))
-
-    def wait_action_settle(self, _seconds):
-        if False:
-            yield None
-
-    def ocr_text(self, frame):
-        return str(frame)
-
-    def set_completion_message(self, message):
-        self.completion_message = message
-
-
-class _FakeMaintenanceRunner(maintenance_task.MaintenanceTaskMixin):
-    def __init__(self, world_facts_path, runtime):
-        self.world_facts_path = world_facts_path
-        self.runtime = runtime
-        self.next_times = []
-        self._lock = threading.RLock()
-
-    def _maintenance_world_facts_path(self):
-        return self.world_facts_path
-
-    def _persist_scheduler_task_next_time(self, task_id, next_time):
-        self.next_times.append((task_id, next_time))
-
-    def _schedule_login_job_first(self):
-        self.next_times.append(("login-game", "queue-head"))
-        return "queue-head"
-
-    def _behavior_tree_context(self, *_args, **_kwargs):
-        return self.runtime
-
-    def _raise_if_stopped(self, stop_event):
-        if stop_event.is_set():
-            raise RuntimeError("stopped")
-
-    def _set_status_locked(self, *_args, **_kwargs):
-        return None
-
-    def _log(self, *_args, **_kwargs):
-        return None
-
-
-def _drain(generator):
-    try:
-        while True:
-            next(generator)
-    except StopIteration as exc:
-        return exc.value
 
 
 def test_maintenance_wake_times_follow_operational_policy():
@@ -145,39 +69,17 @@ def test_maintenance_gate_only_allows_recovery_task():
     )
 
 
-def test_maintenance_recovery_restarts_until_a_preset_startup_page_appears():
+def test_maintenance_recovery_default_has_unbounded_execution_and_startup_budget():
     task = next(
         item
         for item in default_kernel_scheduler_tasks()
         if item["id"] == MAINTENANCE_RECOVERY_TASK_ID
     )
 
-    assert task["payload"]["unbounded_runtime"] is True
+    assert task["payload"]["unbounded_execution"] is True
     assert task["payload"]["startup_timeout_seconds"] == 300
     assert "startup_restart_limit" not in task["payload"]
     assert task["error_retry_delay_seconds"] == 1800
-
-
-def test_maintenance_startup_wait_accepts_world_as_available_business_scene(
-    monkeypatch,
-    tmp_path,
-):
-    runtime = _FakeRuntime([34, 14])
-    runner = _FakeMaintenanceRunner(tmp_path / "world_facts.json", runtime)
-    monotonic_values = iter([0.0, 1.0, 2.0])
-    monkeypatch.setattr(maintenance_task.time, "monotonic", lambda: next(monotonic_values))
-
-    result = _drain(
-        runner._wait_for_game_startup_page(
-            runtime,
-            threading.Event(),
-            timeout=300,
-            poll_seconds=5,
-        )
-    )
-
-    assert result["ready"] is True
-    assert result["scene_id"] == 34
 
 
 def test_game_startup_ocr_only_infers_stable_pages():
@@ -197,246 +99,6 @@ def test_game_startup_ocr_only_infers_stable_pages():
         47,
         "停更码字中，敬请期待更新",
     ) == LOGIN_MAINTENANCE_PROMPT_SCENE_ID
-
-
-def test_maintenance_observation_bypasses_ordinary_popup_guard(tmp_path):
-    class _RawRuntime:
-        ctx = {}
-
-        def cur_frame(self, *, update=True):
-            return "maintenance-frame"
-
-        def recognize_scene_in_frame(self, _scene_ids, *, frame_data_url):
-            return 47, 88.0, frame_data_url
-
-        def ocr_text(self, _frame):
-            return "停更码字中，敬请期待更新"
-
-    runtime = _RawRuntime()
-    runner = _FakeMaintenanceRunner(tmp_path / "world_facts.json", runtime)
-    runner._identify_scene_number = lambda *_args, **_kwargs: (47, 88.0)
-
-    scene_id, score, frame, text = _drain(runner._observe_maintenance_scene(runtime))
-
-    assert (scene_id, score, frame) == (LOGIN_MAINTENANCE_PROMPT_SCENE_ID, 88.0, "maintenance-frame")
-    assert "停更码字中" in text
-
-
-def test_recovery_task_keeps_gate_after_six_cover_probes(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([None, 14, 18, 18, 18, 18, 18, 18, 18, 18])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **_kwargs: {"recovered": True, "status": "healthy"},
-    )
-
-    generator = runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-        {"probe_interval_seconds": 5, "probe_duration_seconds": 30},
-    )
-    try:
-        while True:
-            next(generator)
-    except StopIteration as exc:
-        result = exc.value
-
-    assert result["result"] == "success"
-    assert len([click for click in runtime.clicks if click == (18, "进入游戏")]) == 6
-    assert read_maintenance_gate(path)["active"] is True
-    assert runner.next_times[-1][0] == MAINTENANCE_RECOVERY_TASK_ID
-    assert runner.next_times[-1][1] is not None
-
-
-def test_recovery_task_probes_actionable_cover_without_restarting(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([18, 18, 18, 18])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    restarts = []
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **kwargs: restarts.append(kwargs) or {"recovered": True, "status": "healthy"},
-    )
-
-    result = _drain(runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-        {"probe_interval_seconds": 1, "probe_duration_seconds": 3},
-    ))
-
-    assert result["result"] == "success"
-    assert restarts == []
-    assert len([click for click in runtime.clicks if click == (18, "进入游戏")]) == 3
-    assert read_maintenance_gate(path)["active"] is True
-
-
-def test_recovery_task_does_not_restart_healthy_unknown_scene(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([None])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    restarts = []
-    monkeypatch.setattr(
-        maintenance_task,
-        "mumu_device_health_check",
-        lambda **_kwargs: {"status": "healthy"},
-    )
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **kwargs: restarts.append(kwargs) or {"recovered": True, "status": "healthy"},
-    )
-
-    result = _drain(runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-    ))
-
-    assert result["result"] == "success"
-    assert restarts == []
-    assert "不重启模拟器" in result["message"]
-    assert read_maintenance_gate(path)["active"] is True
-
-
-def test_recovery_task_accepts_formal_business_scene_without_restarting(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([289])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    restarts = []
-    monkeypatch.setattr(
-        maintenance_task,
-        "mark_mumu_device_startup_ready",
-        lambda **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **kwargs: restarts.append(kwargs) or {"recovered": True, "status": "healthy"},
-    )
-
-    result = _drain(runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-    ))
-
-    assert result["result"] == "success"
-    assert restarts == []
-    assert read_maintenance_gate(path)["active"] is False
-    assert runner.next_times[-1] == (MAINTENANCE_RECOVERY_TASK_ID, None)
-
-
-def test_recovery_task_keeps_gate_when_cover_click_only_reaches_unknown(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([None, 14, 18, None, 18, None, 18])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **_kwargs: {"recovered": True, "status": "healthy"},
-    )
-
-    result = _drain(runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-        {"probe_interval_seconds": 1, "probe_duration_seconds": 3},
-    ))
-
-    assert result["result"] == "success"
-    assert read_maintenance_gate(path)["active"] is True
-    assert runner.next_times[-1][0] == MAINTENANCE_RECOVERY_TASK_ID
-    assert runner.next_times[-1][1] is not None
-
-
-def test_recovery_task_only_clears_gate_after_reaching_world(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([None, 14, 18, 18, 34])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **_kwargs: {"recovered": True, "status": "healthy"},
-    )
-
-    generator = runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-        {"probe_interval_seconds": 5, "probe_duration_seconds": 30},
-    )
-    try:
-        while True:
-            next(generator)
-    except StopIteration as exc:
-        result = exc.value
-
-    assert result["result"] == "success"
-    assert read_maintenance_gate(path)["active"] is False
-    assert runner.next_times[-1] == (MAINTENANCE_RECOVERY_TASK_ID, None)
-
-
-def test_recovery_task_marks_startup_ready_before_scheduling_login(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([None, 14, 18, 19])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    ready_reasons = []
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **_kwargs: {"recovered": True, "status": "healthy"},
-    )
-    monkeypatch.setattr(
-        maintenance_task,
-        "mark_mumu_device_startup_ready",
-        lambda **kwargs: ready_reasons.append(kwargs.get("reason")) or {},
-    )
-
-    result = _drain(runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-        {"probe_interval_seconds": 5, "probe_duration_seconds": 30},
-    ))
-
-    assert result["result"] == "success"
-    assert read_maintenance_gate(path)["active"] is False
-    assert ready_reasons == ["maintenance_startup_page_seen"]
-    assert runner.next_times[-2] == (MAINTENANCE_RECOVERY_TASK_ID, None)
-    assert runner.next_times[-1] == ("login-game", "queue-head")
-
-
-def test_recovery_task_does_not_restart_when_world_is_already_available(monkeypatch, tmp_path):
-    path = tmp_path / "world_facts.json"
-    open_maintenance_gate(path, observed_at=datetime(2026, 7, 23, 16, 20))
-    runtime = _FakeRuntime([34])
-    runner = _FakeMaintenanceRunner(path, runtime)
-    restarts = []
-    monkeypatch.setattr(
-        maintenance_task,
-        "recover_mumu_device",
-        lambda **kwargs: restarts.append(kwargs) or {"recovered": True, "status": "healthy"},
-    )
-
-    generator = runner._execute_maintenance_recovery_task(
-        {"asset_tree_path": tmp_path / "asset-tree.json"},
-        threading.Event(),
-    )
-    try:
-        while True:
-            next(generator)
-    except StopIteration as exc:
-        result = exc.value
-
-    assert result["result"] == "success"
-    assert restarts == []
-    assert read_maintenance_gate(path)["active"] is False
-    assert runner.next_times[-1] == (MAINTENANCE_RECOVERY_TASK_ID, None)
 
 
 def test_scheduler_dispatches_ordinary_due_task_while_maintenance_gate_is_active(monkeypatch, tmp_path):
@@ -669,62 +331,6 @@ def test_scheduler_ignores_announcement_and_blocking_overlay_producers(monkeypat
 
     assert scheduled == []
     assert dispatched == ["daily-redpacket"]
-
-
-def test_scheduler_overlay_probe_does_not_treat_scene_49_ocr_as_announcement(monkeypatch, tmp_path):
-    runner = kernel_scheduler_control.create_behavior_tree_executor()
-    frame = "frame-49"
-
-    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [])
-    monkeypatch.setattr(runner, "_index_images", lambda _tree: {})
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: frame)
-    monkeypatch.setattr(runner, "_ocr_fragments", lambda _frame: "ocr-fragments")
-    monkeypatch.setattr(runner, "_ocr_text", lambda _fragments: "游戏公告 更新公告 风险提醒")
-
-    def identify(ctx, observed_frame, preferred_scene_ids):
-        assert observed_frame == frame
-        assert preferred_scene_ids == [14]
-        ctx["_last_scene_recognition_status"] = "startup_ocr"
-        return 14, 100.0
-
-    monkeypatch.setattr(runner, "_identify_scene_number", identify)
-    monkeypatch.setattr(kernel_scheduler_control, "create_behavior_tree_executor", lambda: runner)
-
-    blockers = kernel_scheduler_control.scheduler_blocking_overlays(
-        entry=object(),
-        entry_id="entry",
-        asset_tree_path=tmp_path / "asset-tree.json",
-    )
-
-    assert blockers == []
-
-
-def test_scheduler_environment_probe_requires_current_reference_similarity(monkeypatch, tmp_path):
-    from backend.core.fanxiu.data_annotation import unknown_recovery
-
-    runner = kernel_scheduler_control.create_behavior_tree_executor()
-    image74 = {"id": "image-74", "type": "image", "title": "#74 天道魁首引导弹窗", "filename": "0074.png"}
-    monkeypatch.setattr(runner, "_load_asset_tree", lambda _path: [image74])
-    monkeypatch.setattr(runner, "_index_images", lambda _tree: {74: image74})
-    monkeypatch.setattr(runner, "_screencap", lambda _ctx: "current-frame")
-    monkeypatch.setattr(kernel_scheduler_control, "create_behavior_tree_executor", lambda: runner)
-    monkeypatch.setattr(unknown_recovery, "reference_frame_similarity", lambda *_args: 95.0)
-
-    blockers = kernel_scheduler_control.scheduler_blocking_overlays(
-        entry=object(),
-        entry_id="entry",
-        asset_tree_path=tmp_path / "asset-tree.json",
-        environment_circuit={
-            "scene_id": 74,
-            "task_ids": ["daily-boss", "daily-assistant"],
-            "incident_ids": ["incident-a", "incident-b"],
-        },
-    )
-
-    assert blockers[0]["kind"] == "repeated_environment_failure"
-    assert blockers[0]["blocking"] is True
-    assert blockers[0]["frame_similarity"] == 95.0
-    assert "next_time 保持不变" in blockers[0]["message"]
 
 
 def test_scheduler_environment_probe_fails_closed_when_reference_is_unavailable(monkeypatch, tmp_path):

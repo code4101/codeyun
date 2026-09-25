@@ -78,3 +78,27 @@ def test_catalog_query_exposes_download_progress(tmp_path) -> None:
     assert result["download_status"] == "running"
     assert result["download_done_count"] == 1
     assert result["items"][0]["download"]["status"] == "done"
+
+
+def test_catalog_query_does_not_load_worker_or_create_state_files(tmp_path):
+    import subprocess
+    import sys
+
+    code = """
+import sys
+from pathlib import Path
+from backend.core.fanxiu.catalog.guide_videos import query_guide_videos
+root = Path(sys.argv[1])
+result = query_guide_videos(
+    snapshot_path=root / 'catalog.json',
+    research_snapshot_path=root / 'research.json',
+    download_snapshot_path=root / 'downloads.json',
+)
+assert result['total'] == 0
+assert result['download_status'] == 'idle'
+assert 'backend.core.fanxiu.catalog.guide_video_downloads' not in sys.modules
+assert 'backend.core.media_download' not in sys.modules
+assert not list(root.iterdir())
+"""
+    result = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

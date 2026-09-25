@@ -16,7 +16,7 @@ from backend.core.fanxiu.data_annotation.tasks.exchange_tail_planning import (
     verify_exchange_wallet,
     verify_exchange_detail as _detail_matches,
 )
-from backend.core.fanxiu.data_annotation.tasks.common_shop_quantity import (
+from backend.core.fanxiu.runtime_gui.common_shop_quantity import (
     set_verified_common_shop_quantity,
 )
 

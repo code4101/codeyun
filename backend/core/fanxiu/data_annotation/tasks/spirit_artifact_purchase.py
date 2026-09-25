@@ -18,8 +18,8 @@ from ...instrumentation.spirit_artifact import read_spirit_artifact_inventory_ru
 from ...runtime_gui.exchange_shop import resolve_exchange_shop_item
 from ...runtime_gui.text import normalize_ocr_name
 from ...catalog.spirit_artifact_wash_rules import load_spirit_artifact_wash_rules
-from .common_shop_quantity import set_verified_common_shop_quantity
-from .integer_count_control import IntegerSliderAssets
+from backend.core.fanxiu.runtime_gui.common_shop_quantity import set_verified_common_shop_quantity
+from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerSliderAssets
 from .storage_bag_choice_box import StorageBagChoiceReward, verify_spirit_artifact_choice_outcome
 
 

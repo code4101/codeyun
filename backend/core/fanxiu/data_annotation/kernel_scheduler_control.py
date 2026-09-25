@@ -64,8 +64,10 @@ from backend.core.fanxiu.data_annotation.kernel_scheduler_plan import (
 )
 from backend.core.fanxiu.data_annotation.kernel_scheduler_defaults import (
     LOGIN_GAME_SCHEDULER_TASK_ID,
-    consolidate_arena_scheduler_instances,
     default_kernel_scheduler_tasks,
+)
+from backend.core.fanxiu.data_annotation.kernel_scheduler_migrations import (
+    migrate_scheduler_instances as consolidate_arena_scheduler_instances,
 )
 from backend.core.fanxiu.data_annotation.kernel_scheduler_incidents import (
     detect_scheduler_environment_circuit,
@@ -88,6 +90,8 @@ from backend.core.fanxiu.data_annotation.state import (
     read_kernel_scheduler_status as _read_kernel_scheduler_status,
     read_data_annotation_world_facts,
     record_kernel_scheduler_task_fact,
+    record_data_annotation_discovery,
+    edit_data_annotation_world_facts,
     write_data_annotation_json,
     write_data_annotation_world_facts,
 )
@@ -345,6 +349,11 @@ def write_world_facts(facts: dict[str, Any], path: Path | None = None) -> None:
     write_data_annotation_world_facts(path or fanxiu_data_annotation_world_facts_path(), facts)
 
 
+def record_world_discovery(key: str, value: dict[str, Any], path: Path | None = None) -> None:
+    """记录一个业务发现；原子保留其他作业已写入的事实。"""
+    record_data_annotation_discovery(path or fanxiu_data_annotation_world_facts_path(), key, value)
+
+
 def record_scheduler_task_fact(
     task: dict[str, Any],
     result: str,
@@ -459,17 +468,11 @@ def maintain_scheduler_tasks(
         for item in (raw if isinstance(raw, list) else [])
         if isinstance(item, dict) and str(item.get("id") or "")
     }
-    facts = read_world_facts(world_facts_path)
-    original_facts = deepcopy(facts)
-    tasks, changed = repair_kernel_scheduler_tasks(
-        raw,
-        default_kernel_scheduler_tasks(),
-        facts,
-        task_supported=task_supported,
-        now=now or datetime.now(),
-    )
-    if facts != original_facts:
-        write_world_facts(facts, world_facts_path)
+    defaults = default_kernel_scheduler_tasks()
+    with edit_data_annotation_world_facts(world_facts_path or fanxiu_data_annotation_world_facts_path()) as facts:
+        tasks, changed = repair_kernel_scheduler_tasks(
+            raw, defaults, facts, task_supported=task_supported, now=now or datetime.now(),
+        )
     if changed or consolidated:
         write_scheduler_tasks(
             tasks,
@@ -1085,18 +1088,12 @@ def reset_scheduler_task_runs(
         execution_update_ids=set(reset_ids),
     )
 
-    if reset_ids and isinstance(task_facts, dict):
-        changed = False
-        for task_id in reset_ids:
-            if task_id in task_facts:
-                task_facts.pop(task_id, None)
-                changed = True
-        if changed:
-            write_data_annotation_world_facts(
-                world_facts_path or fanxiu_data_annotation_world_facts_path(),
-                facts,
-                preserve_existing_task_facts=False,
-            )
+    if reset_ids:
+        with edit_data_annotation_world_facts(world_facts_path or fanxiu_data_annotation_world_facts_path()) as latest_facts:
+            latest_tasks = (latest_facts.get("discoveries") or {}).get("task")
+            if isinstance(latest_tasks, dict):
+                for task_id in reset_ids:
+                    latest_tasks.pop(task_id, None)
 
     return {
         "reset_count": len(reset_ids),
@@ -2967,14 +2964,21 @@ def ensure_scheduler_kernel_code_current(
     else:
         ensure_fanxiu_kernel_scheduler_service(entry, entry_id)
 
-    refreshed = fanxiu_kernel_manager_status(timeout_seconds=3.0)
-    refreshed_signature = str(refreshed.get("behavior_tree_code_signature") or "")
-    if (
-        not bool(refreshed.get("alive"))
-        or str(refreshed.get("execution_state") or "") != "idle"
-        or refreshed_signature != expected_signature
-    ):
-        raise RuntimeError("Fanxiu Kernel 未能加载最新版行为树代码")
+    # A newly spawned manager may answer status before its child finishes the
+    # bootstrap Cell. The first status response is not a readiness verdict.
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    while True:
+        refreshed = fanxiu_kernel_manager_status(timeout_seconds=3.0)
+        refreshed_signature = str(refreshed.get("behavior_tree_code_signature") or "")
+        if (
+            bool(refreshed.get("alive"))
+            and str(refreshed.get("execution_state") or "") == "idle"
+            and refreshed_signature == expected_signature
+        ):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Fanxiu Kernel 未能加载最新版行为树代码")
+        time.sleep(0.5)
     return {
         "ready": True,
         "restarted": True,

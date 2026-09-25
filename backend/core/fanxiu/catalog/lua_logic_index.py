@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from backend.core.fanxiu.catalog.apk_static import resolve_fanxiu_apk_unpacked_root
+from backend.core.fanxiu.catalog.apk_sources import resolve_fanxiu_apk_unpacked_root
 from backend.core.fanxiu.catalog.lua_config import parse_fanxiu_generated_lua_config
 from backend.core.fanxiu.catalog.resources import (
     FanxiuResourceError,

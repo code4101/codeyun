@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from backend.core.fanxiu.data_annotation.effective_time import job_effective_time
+
 from backend.core.fanxiu.data_annotation.arena_schedule import (
     next_daofa_cycle_trigger_at,
     next_daofa_trigger_at,
@@ -70,7 +72,7 @@ def test_scheduler_migration_folds_legacy_gameplay_job_into_family_owner():
 
     assert changed is True
     assert [(item["id"], item["task_type"], item["next_time"]) for item in tasks] == [
-        ("ranking-lifecycle", "ranking_lifecycle", "2026-08-22 00:30:00")
+        ("ranking-lifecycle", "ranking_lifecycle", "2026-08-22 00:10:00")
     ]
 
 
@@ -206,7 +208,7 @@ def test_scheduler_migration_is_idempotent_and_keeps_ranking_families_isolated()
     assert set(by_id) == {"ranking-lifecycle", "resource-ranking"}
     assert by_id["ranking-lifecycle"]["next_time"] == "2026-08-22 10:00:00"
     assert by_id["ranking-lifecycle"]["payload"] == {"max_execution_seconds": 10800}
-    assert by_id["resource-ranking"]["next_time"] == "2026-08-22 00:30:00"
+    assert by_id["resource-ranking"]["next_time"] == "2026-08-22 00:10:00"
     assert by_id["resource-ranking"]["payload"] == {"max_execution_seconds": 10800}
 
     rerun, rerun_changed = consolidate_arena_scheduler_instances(
@@ -224,7 +226,7 @@ def test_scheduler_migration_removes_hidden_gameplay_and_normalizes_resource_lab
             "label": "旧玩法名",
             "template_id": "old-template",
             "template_label": "旧模板名",
-            "next_time": "2026-08-22 00:30:00",
+            "next_time": "2026-08-22 00:10:00",
             "payload": {},
         },
         {
@@ -233,7 +235,7 @@ def test_scheduler_migration_removes_hidden_gameplay_and_normalizes_resource_lab
             "label": "旧资源名",
             "template_id": "old-resource-template",
             "template_label": "旧资源模板名",
-            "next_time": "2026-08-22 00:30:00",
+            "next_time": "2026-08-22 00:10:00",
             "payload": {},
         },
     ])
@@ -290,6 +292,7 @@ def test_old_sunday_instances_are_folded_into_the_single_jobs():
     assert by_id["daily-xianyuan-duel"]["next_time"] == "2026-08-02 19:00:00"
 
 
+@job_effective_time({"effective_now": datetime(2026, 8, 2, 9, 0, 0)})
 def test_xianyuan_duel_admission_advances_stale_run_without_game_side_effects(monkeypatch):
     runner = create_behavior_tree_executor()
     persisted: list[tuple[str, str]] = []
@@ -297,11 +300,6 @@ def test_xianyuan_duel_admission_advances_stale_run_without_game_side_effects(mo
         runner,
         "_persist_scheduler_task_next_time",
         lambda task_id, next_time: persisted.append((task_id, next_time)),
-    )
-    monkeypatch.setitem(
-        runner.daily_xianyuan_duel_admission.__func__.__globals__,
-        "_now",
-        lambda: datetime(2026, 8, 2, 9, 0, 0),
     )
     decision = runner.daily_xianyuan_duel_admission(
         {"__scheduler_task_id": "daily-xianyuan-duel"}
@@ -314,13 +312,9 @@ def test_xianyuan_duel_admission_advances_stale_run_without_game_side_effects(mo
     assert decision["scheduler_incident"]["kind"] == "window_expired"
 
 
+@job_effective_time({"effective_now": datetime(2026, 8, 4, 22, 51, 30)})
 def test_xianyuan_duel_uses_game_availability_not_strategy_trigger_as_window(monkeypatch):
     runner = create_behavior_tree_executor()
-    monkeypatch.setitem(
-        runner.daily_xianyuan_duel_admission.__func__.__globals__,
-        "_now",
-        lambda: datetime(2026, 8, 4, 22, 51, 30),
-    )
 
     assert runner.daily_xianyuan_duel_admission({"__scheduler_task_id": "daily-xianyuan-duel"}) is None
     assert xianyuan_duel_scheduler_in_window(datetime(2026, 8, 2, 10, 0, 0)) is True
@@ -328,15 +322,11 @@ def test_xianyuan_duel_uses_game_availability_not_strategy_trigger_as_window(mon
     assert xianyuan_duel_scheduler_in_window(datetime(2026, 8, 2, 22, 0, 0)) is False
 
 
+@job_effective_time({"effective_now": datetime(2026, 8, 4, 23, 1, 0)})
 def test_xianyuan_duel_first_complete_list_miss_records_same_day_recheck(monkeypatch):
     runner = create_behavior_tree_executor()
     stored_flags: list[tuple[str, str, str]] = []
     retries: list[dict] = []
-    monkeypatch.setitem(
-        runner._handle_daily_xianyuan_duel_entry_not_found.__func__.__globals__,
-        "_now",
-        lambda: datetime(2026, 8, 4, 23, 1, 0),
-    )
     monkeypatch.setattr(runner, "_get_scheduler_task_payload_flag", lambda *_args: None)
     monkeypatch.setattr(
         runner,
@@ -380,15 +370,11 @@ def test_xianyuan_duel_first_complete_list_miss_records_same_day_recheck(monkeyp
     ]
 
 
+@job_effective_time({"effective_now": datetime(2026, 8, 4, 23, 2, 0)})
 def test_xianyuan_duel_second_same_day_complete_list_miss_advances_cycle(monkeypatch):
     runner = create_behavior_tree_executor()
     writes: list[tuple] = []
     monkeypatch.setattr(runner, "_log", lambda *_args: None)
-    monkeypatch.setitem(
-        runner._handle_daily_xianyuan_duel_entry_not_found.__func__.__globals__,
-        "_now",
-        lambda: datetime(2026, 8, 4, 23, 2, 0),
-    )
     monkeypatch.setattr(
         runner,
         "_get_scheduler_task_payload_flag",

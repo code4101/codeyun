@@ -29,7 +29,7 @@ from backend.core.fanxiu.activity.magic_invasion_explore import (
 from backend.core.fanxiu.activity.magic_invasion import (
     resolve_magic_invasion_shop_identity,
 )
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     IntegerSliderAssets,
     set_verified_integer_slider_count as _set_verified_slider_count,
 )

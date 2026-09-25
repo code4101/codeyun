@@ -13,7 +13,7 @@ from typing import Any, Iterable
 from backend.core.fanxiu.behavior_tree.kernel_scheduler import fanxiu_data_annotation_world_facts_path
 from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_world_facts,
-    write_data_annotation_world_facts,
+    edit_data_annotation_world_facts,
 )
 from backend.core.fanxiu.instrumentation.backpack_ui import read_backpack_ui_snapshot
 from backend.core.fanxiu.instrumentation.role_progression import read_role_profile_from_memory
@@ -289,10 +289,9 @@ class MailClaimLawTaskMixin:
 
     def _remember_law(self, fact: dict[str, Any]) -> None:
         path = fanxiu_data_annotation_world_facts_path()
-        facts = read_data_annotation_world_facts(path)
-        task_facts = facts.setdefault("discoveries", {}).setdefault("task", {})
-        task_facts[MAIL_CLAIM_LAW_TASK_ID] = {**fact, "updated_at": time.time()}
-        write_data_annotation_world_facts(path, facts)
+        with edit_data_annotation_world_facts(path) as facts:
+            task_facts = facts.setdefault("discoveries", {}).setdefault("task", {})
+            task_facts[MAIL_CLAIM_LAW_TASK_ID] = {**fact, "updated_at": time.time()}
 
     def _schedule_active_law(
         self,

@@ -10,7 +10,7 @@ import time
 
 from ...instrumentation.spirit_artifact_auto import read_spirit_artifact_auto_snapshot
 from ...instrumentation.spirit_artifact_ui import read_spirit_artifact_ui_snapshot
-from .integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count
+from backend.core.fanxiu.runtime_gui.integer_count_control import IntegerSliderAssets, set_verified_integer_slider_count
 
 
 AUTO_MATERIAL_SLIDER = IntegerSliderAssets(

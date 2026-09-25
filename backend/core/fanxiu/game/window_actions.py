@@ -1,16 +1,30 @@
 from __future__ import annotations
 
+# 旧导入入口兼容；远端传输的唯一实现位于 window_remote。
+from .window_remote import (
+    click_remote_game_window2 as click_remote_game_window2,
+    drag_remote_game_window2 as drag_remote_game_window2,
+    extract_stream_error as extract_stream_error,
+    keyevent_remote_game_window2 as keyevent_remote_game_window2,
+    match_remote_game_window2 as match_remote_game_window2,
+    post_remote_game_window2_json as post_remote_game_window2_json,
+    remote_entry_base_url as remote_entry_base_url,
+    remote_entry_headers as remote_entry_headers,
+    remote_game_window2_screencap as remote_game_window2_screencap,
+    request_remote_game_window2_image as request_remote_game_window2_image,
+    request_remote_game_window2_json as request_remote_game_window2_json,
+    text_remote_game_window2 as text_remote_game_window2,
+)
+
 import hashlib
 import json
 import threading
 import time
 from typing import Any
 
-import requests
 from fastapi import HTTPException
 from fastapi.responses import Response
 
-from backend.core.devices.http_proxy import REMOTE_DEVICE_DIRECT_PROXIES
 from backend.core.fanxiu.client.mumu_control import (
     capture_mumu_window_frame,
     click_mumu_window_processed_point,
@@ -22,20 +36,6 @@ from backend.core.fanxiu.client.mumu_control import (
     screencap_mumu_adb_png,
     text_mumu_adb,
 )
-from backend.models import UserDevice
-
-
-def remote_entry_base_url(entry: UserDevice) -> str:
-    if entry.mode != "remote" or not entry.server_url:
-        raise HTTPException(status_code=400, detail="远程设备入口未配置后端地址")
-    return entry.server_url.rstrip("/")
-
-
-def remote_entry_headers(entry: UserDevice) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {entry.token}",
-        "X-Device-Token": entry.token,
-    }
 
 
 def normalize_game_window2_title(title: str | None) -> str | None:
@@ -57,18 +57,6 @@ def positive_int_or_none(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
-
-
-def extract_stream_error(response: requests.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict):
-        detail = payload.get("detail") or payload.get("message") or payload.get("error")
-        if isinstance(detail, str) and detail.strip():
-            return detail.strip()
-    return response.text.strip() or f"画面流服务返回 HTTP {response.status_code}"
 
 
 _GAME_WINDOW2_MATCH_CACHE_TTL = 8.0
@@ -367,85 +355,3 @@ def match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def post_remote_game_window2_json(entry: UserDevice, service_path: str, payload: dict[str, Any], action: str) -> dict[str, Any]:
-    target_url = f"{remote_entry_base_url(entry)}/api/fanxiu/game-window2/{service_path}"
-    try:
-        response = requests.post(
-            target_url,
-            headers=remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 12.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应格式不支持")
-    return data
-
-
-def click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    return post_remote_game_window2_json(entry, "service-input/click", payload, "操作")
-
-
-def drag_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    return post_remote_game_window2_json(entry, "service-input/drag", payload, "拖拽")
-
-
-def keyevent_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    return post_remote_game_window2_json(entry, "service-input/keyevent", payload, "按键")
-
-
-def text_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    return post_remote_game_window2_json(entry, "service-input/text", payload, "文本输入")
-
-
-def match_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-match"
-    try:
-        response = requests.post(
-            target_url,
-            headers=remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 30.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏匹配服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="远程游戏匹配服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="远程游戏匹配服务响应格式不支持")
-    return data
-
-
-def remote_game_window2_screencap(entry: UserDevice) -> Response:
-    target_url = f"{remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-screencap"
-    try:
-        response = requests.get(
-            target_url,
-            headers=remote_entry_headers(entry),
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 20.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏 ADB 截图服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=extract_stream_error(response))
-    return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type") or "image/png",
-        headers={"Cache-Control": "no-store"},
-    )

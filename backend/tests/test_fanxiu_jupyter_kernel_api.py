@@ -443,6 +443,47 @@ def test_scheduler_replaces_idle_manager_before_job_when_code_is_stale(monkeypat
     assert calls == [("shutdown", 15.0), ("ensure", 0.0)]
 
 
+def test_scheduler_waits_for_new_manager_bootstrap_signature(monkeypatch) -> None:
+    statuses = iter((
+        {"alive": True, "execution_state": "idle", "manager_pid": 123,
+         "behavior_tree_code_signature": "old"},
+        {"alive": False, "execution_state": "starting", "manager_pid": 456,
+         "behavior_tree_code_signature": ""},
+        {"alive": True, "execution_state": "idle", "manager_pid": 456,
+         "behavior_tree_code_signature": "current"},
+    ))
+    calls = []
+
+    class Kernel:
+        def __init__(self, *, entry_id):
+            assert entry_id == "entry"
+
+        def shutdown(self, *, timeout_seconds):
+            calls.append("shutdown")
+
+    monkeypatch.setattr(kernel_scheduler_control, "fanxiu_behavior_tree_code_signature", lambda: "current")
+    monkeypatch.setattr(
+        "backend.core.fanxiu.behavior_tree.jupyter_kernel.fanxiu_kernel_manager_status",
+        lambda **_kwargs: next(statuses),
+    )
+    monkeypatch.setattr(
+        importlib.import_module("backend.core.fanxiu.behavior_tree.kernel"),
+        "FanxiuKernel", Kernel,
+    )
+    monkeypatch.setattr(
+        kernel_scheduler_control, "ensure_fanxiu_kernel_scheduler_service",
+        lambda *_args: calls.append("ensure"),
+    )
+    monkeypatch.setattr(kernel_scheduler_control.time, "sleep", lambda _seconds: calls.append("wait"))
+
+    result = kernel_scheduler_control.ensure_scheduler_kernel_code_current(
+        entry=object(), entry_id="entry",
+    )
+
+    assert result["ready"] is True
+    assert calls == ["shutdown", "ensure", "wait"]
+
+
 def test_scheduler_replaces_stale_manager_even_when_child_is_dead(monkeypatch) -> None:
     statuses = iter((
         {

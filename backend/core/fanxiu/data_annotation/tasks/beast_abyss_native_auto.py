@@ -20,7 +20,7 @@ from backend.core.fanxiu.activity.beast_abyss_challenge_planning import (
     BeastAbyssAutoSettings,
     validate_beast_abyss_auto_settings,
 )
-from backend.core.fanxiu.data_annotation.tasks.integer_count_control import (
+from backend.core.fanxiu.runtime_gui.integer_count_control import (
     set_verified_integer_slider_count,
 )
 from backend.core.fanxiu.data_annotation.tasks.beast_abyss_task_rewards import (

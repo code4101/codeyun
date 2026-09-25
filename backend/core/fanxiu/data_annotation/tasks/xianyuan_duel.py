@@ -146,3 +146,31 @@ def choose_xianyuan_duel_target(
     chosen = max(pool, key=lambda item: int(item.get("score") or 0))
     chosen["selection_group"] = "non_friendly" if non_friendly else "friendly_fallback"
     return chosen
+
+
+def xianyuan_duel_dynamic_signature(facts: dict[str, Any]) -> tuple[Any, ...]:
+    """Return only the round-changing facts; stable self power is excluded."""
+
+    targets = tuple(
+        (
+            item.get("target_id"),
+            str(item.get("name") or ""),
+            item.get("score"),
+            item.get("team_power"),
+        )
+        for item in facts.get("targets") or []
+        if isinstance(item, dict)
+    )
+    return (
+        facts.get("remaining_challenges"),
+        facts.get("remaining_refreshes"),
+        facts.get("rank"),
+        targets,
+    )
+
+
+def xianyuan_duel_runtime_facts_advanced(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+) -> bool:
+    return xianyuan_duel_dynamic_signature(current) != xianyuan_duel_dynamic_signature(previous)

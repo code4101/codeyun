@@ -9,118 +9,14 @@ from typing import Any
 from backend.core.fanxiu.data_annotation.effective_time import job_now
 from backend.core.fanxiu.data_annotation.jobs import (
     get_fanxiu_data_annotation_task_cell_definition,
+    list_fanxiu_data_annotation_task_cell_definitions,
     normalize_data_annotation_go_scene_payload,
     register_fanxiu_data_annotation_task_cell,
 )
 
 
-_DEFAULT_BEHAVIOR_TREE_JOB_TYPES = (
-    "detect_scene",
-    "manual_tick",
-    "maintenance_recovery",
-    "login_game",
-    "weekly_gift_code",
-    "tianjige_forum_quiz",
-    "go_scene",
-    "hide_floating_window",
-    "daily_mozu",
-    "daily_zhenxie",
-    "activity_daily_list_sync",
-    "daily_activity",
-    "weekly_activity",
-    "daily_redpacket",
-    "daily_signup",
-    "moyu_signup",
-    "moyu_challenge",
-    "daily_boss",
-    "daily_experience",
-    "daily_jianling",
-    "jianling_cuiling",
-    "lingzhuang_strengthening",
-    "beast_spirit_update",
-    "storage_bag_operation",
-    "resource_auto_use",
-    "xianyuan_auto_gift",
-    "holy_wood_prayer",
-    "xianyan_host_baihua",
-    "xianyan_participation",
-    "xianyan_rewards",
-    "daily_youli",
-    "daily_lingta",
-    "lingta_challenge",
-    "daily_lingzu",
-    "daily_shuangxiu",
-    "daily_yaowang",
-    "daily_yaozu",
-    "daily_xianyuan",
-    "daozu_challenge",
-    "daily_task_rewards",
-    "daily_xianyuan_duel",
-    "daily_baiye",
-    "daily_green_bottle_baiye",
-    "daily_gongfeng",
-    "daily_xianshi",
-    "xianshi_weekly_resources",
-    "xianshi_zhenwuge",
-    "xianshi_langya_rankings",
-    "daily_xianmeng",
-    "daily_lundao",
-    "daily_daofa",
-    "daily_mojie_raid",
-    "daily_weekly_dungeon",
-    "bubble_weekly_pills",
-    "weekly_hanli",
-    "weekly_wanxian",
-    "daily_lingquan",
-    "weekly_shengzu",
-    "daily_vip",
-    "daily_signin",
-    "resource_xinghai",
-    "daily_xuanhuang",
-    "daily_dongtian",
-    "daily_dongtian_clear",
-    "dongtian_seating",
-    "daily_lingmai",
-    "daily_lingmai_clear",
-    "daily_dungeon",
-    "daily_assistant",
-    "lilian_claim",
-    "lilian_event",
-    "activity_quiz",
-    "activity_quiz_final",
-    "daily_audit",
-    "xianqiao_trial",
-    "mail_selective_claim",
-    "mail_claim_law",
-    "resource_rank_daily_free_gift",
-    "dandao_task_rewards",
-    "yuanding_sansheng_daily_gift",
-    "yuanding_sansheng_resource_unit",
-    "xianfu_visit_partner",
-    "xianfu_learn_skill",
-    "penglai_xianzang_config",
-    "penglai_xianzang_lottery",
-    "kunlun_secret_config",
-    "kunlun_secret_lottery",
-    "lingxiao_xianhui",
-    "wanbao_zhenbao",
-    "theme_collection",
-    "xutian_palace_rankings",
-    "xutian_palace_native_auto",
-    "xutian_yandi_prepare",
-    "yunmeng_trial_auto_challenge",
-    "ranking_lifecycle",
-    "magic_invasion_initialization_rnd",
-    "magic_invasion_initialization_rewards_rnd",
-    "magic_invasion_active_rnd",
-    "magic_invasion_native_auto_rnd",
-    "beast_abyss_lifecycle_rnd",
-    "beast_abyss_initialization_rnd",
-    "beast_abyss_rank_refresh_rnd",
-    "beast_abyss_exchange_tail_rnd",
-    "resource_ranking",
-    "yunmeng_tail",
-)
+# Registration is authoritative; this cache is filled only after a complete pass.
+_DEFAULT_BEHAVIOR_TREE_JOB_TYPES: tuple[str, ...] = ()
 
 
 def _run_manual_standard_job(
@@ -151,7 +47,8 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
     ``force`` replaces definitions, not Kernel state or an active generator.
     The caller must own the idle execution slot before hot-loading definitions.
     """
-    if not force and all(get_fanxiu_data_annotation_task_cell_definition(task_type) is not None for task_type in _DEFAULT_BEHAVIOR_TREE_JOB_TYPES):
+    global _DEFAULT_BEHAVIOR_TREE_JOB_TYPES
+    if not force and _DEFAULT_BEHAVIOR_TREE_JOB_TYPES and all(get_fanxiu_data_annotation_task_cell_definition(task_type) is not None for task_type in _DEFAULT_BEHAVIOR_TREE_JOB_TYPES):
         return
 
     def _compact_detect_scene_trace(trace: list[dict[str, Any]], *, max_candidates: int = 12) -> list[dict[str, Any]]:
@@ -2440,3 +2337,9 @@ def register_fanxiu_default_jobs(*, force: bool = False) -> None:
         )
 
         return (yield from execute_yunmeng_tail_job(runner, ctx, payload, stop_event))
+
+    _DEFAULT_BEHAVIOR_TREE_JOB_TYPES = tuple(
+        definition.task_type
+        for definition in list_fanxiu_data_annotation_task_cell_definitions()
+        if definition.handler.__module__ == __name__
+    )

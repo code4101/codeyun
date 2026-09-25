@@ -1,3 +1,36 @@
+from backend.api.fanxiu_notes import (
+    inventory_router as inventory_notes_router,
+    chars_router as character_notes_router,
+    FANXIU_ACTIVITY_KIND,
+    FANXIU_ACTIVITY_TYPE,
+    FANXIU_MAGIC_TREASURE_KIND,
+    FANXIU_MAGIC_TREASURE_TYPE,
+    FANXIU_SPIRIT_BEAST_KIND,
+    FANXIU_SPIRIT_BEAST_TYPE,
+    FANXIU_WARDROBE_KIND,
+    FANXIU_WARDROBE_TYPE,
+    XIANZHOU_RACE_CHAR_NAMES,
+    _upsert_fanxiu_inventory_item_note,
+    find_activity_item,
+    find_magic_treasure_item,
+    find_spirit_beast_item,
+    find_wardrobe_item,
+    read_char,
+    read_chars,
+    read_fanxiu_activity_note,
+    read_fanxiu_magic_treasure_note,
+    read_fanxiu_spirit_beast_note,
+    read_fanxiu_wardrobe_note,
+    serialize_fanxiu_note_read,
+    update_char,
+    update_fanxiu_activity_note,
+    update_fanxiu_magic_treasure_note,
+    update_fanxiu_spirit_beast_note,
+    update_fanxiu_wardrobe_note,
+)
+from backend.core.fanxiu.game.window_streaming import stream_response_from_requests as _stream_response_from_requests
+from backend.core.fanxiu.game.window_remote import request_remote_game_window2_image
+from backend.core.fanxiu.game.window_remote import request_remote_game_window2_json
 from backend.core.fanxiu.data_annotation.state import (
     normalize_kernel_scheduler_current_scene as _coerce_status_current_scene,
 )
@@ -96,7 +129,6 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from jose import JWTError, jwt
 from sqlmodel import Session, select
-from starlette.background import BackgroundTask
 from pyxllib.autogui import View, image_number
 from pyxllib.prog.behavior_tree import Status as BehaviorTreeStatus
 
@@ -145,26 +177,8 @@ from backend.core.fanxiu.client.mumu_control import (
     stream_mumu_window_mjpeg,
     write_fanxiu_screenshot_pre_label,
 )
-from backend.core.fanxiu.game.window_actions import (
-    click_game_window2_service as _core_click_game_window2_service,
-    click_remote_game_window2 as _core_click_remote_game_window2,
-    drag_game_window2_service as _core_drag_game_window2_service,
-    drag_remote_game_window2 as _core_drag_remote_game_window2,
-    extract_stream_error as _core_extract_stream_error,
-    game_window2_desktop_title as _core_game_window2_desktop_title,
-    keyevent_game_window2_service as _core_keyevent_game_window2_service,
-    keyevent_remote_game_window2 as _core_keyevent_remote_game_window2,
-    match_game_window2_service as _core_match_game_window2_service,
-    match_remote_game_window2 as _core_match_remote_game_window2,
-    normalize_game_window2_title as _core_normalize_game_window2_title,
-    post_remote_game_window2_json as _core_post_remote_game_window2_json,
-    remote_entry_base_url as _core_remote_entry_base_url,
-    remote_entry_headers as _core_remote_entry_headers,
-    remote_game_window2_screencap as _core_remote_game_window2_screencap,
-    screencap_game_window2_service as _core_screencap_game_window2_service,
-    text_game_window2_service as _core_text_game_window2_service,
-    text_remote_game_window2 as _core_text_remote_game_window2,
-)
+from backend.core.fanxiu.game.window_actions import click_game_window2_service as _core_click_game_window2_service, drag_game_window2_service as _core_drag_game_window2_service, game_window2_desktop_title as _core_game_window2_desktop_title, keyevent_game_window2_service as _core_keyevent_game_window2_service, match_game_window2_service as _core_match_game_window2_service, normalize_game_window2_title as _core_normalize_game_window2_title, screencap_game_window2_service as _core_screencap_game_window2_service, text_game_window2_service as _core_text_game_window2_service
+from backend.core.fanxiu.game.window_remote import click_remote_game_window2 as _core_click_remote_game_window2, drag_remote_game_window2 as _core_drag_remote_game_window2, extract_stream_error as _core_extract_stream_error, keyevent_remote_game_window2 as _core_keyevent_remote_game_window2, match_remote_game_window2 as _core_match_remote_game_window2, post_remote_game_window2_json as _core_post_remote_game_window2_json, remote_entry_base_url as _core_remote_entry_base_url, remote_entry_headers as _core_remote_entry_headers, remote_game_window2_screencap as _core_remote_game_window2_screencap, text_remote_game_window2 as _core_text_remote_game_window2
 from backend.core.fanxiu.game.pseudocode_executor import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
 from backend.core.fanxiu.game.visual_macro_executor import (
     VisualMacroCallbacks,
@@ -357,8 +371,6 @@ from backend.core.fanxiu.data_annotation.state import (
     read_data_annotation_json as _read_data_annotation_json,
     read_data_annotation_world_facts,
     record_kernel_scheduler_task_fact,
-    write_data_annotation_json as _write_data_annotation_json,
-    write_data_annotation_world_facts,
 )
 from backend.core.fanxiu.data_annotation.kernel_scheduler_plan import (
     build_kernel_scheduler_plan,
@@ -487,88 +499,8 @@ inventory_router = APIRouter(
 )
 
 
-FANXIU_WARDROBE_TYPE = "doc"
-FANXIU_WARDROBE_KIND = NOTE_KIND_FANXIU_WARDROBE_ITEM
-FANXIU_SPIRIT_BEAST_TYPE = "doc"
-FANXIU_SPIRIT_BEAST_KIND = NOTE_KIND_FANXIU_SPIRIT_BEAST_ITEM
-FANXIU_MAGIC_TREASURE_TYPE = "doc"
-FANXIU_MAGIC_TREASURE_KIND = NOTE_KIND_FANXIU_MAGIC_TREASURE_ITEM
-FANXIU_ACTIVITY_TYPE = "doc"
-FANXIU_ACTIVITY_KIND = NOTE_KIND_FANXIU_ACTIVITY_ITEM
-XIANZHOU_RACE_CHAR_NAMES = (
-    "凌玉灵",
-    "大衍神君",
-    "黑凤王",
-    "黛儿",
-    "南宫婉",
-    "向之礼",
-    "冰凤仙子",
-    "银月",
-    "甲天木",
-    "元刹",
-    "天元圣皇",
-    "冰魄仙子",
-)
 FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE = "fanxiu.game-window2:stream"
 FANXIU_GAME_WINDOW2_STREAM_TOKEN_EXPIRE_HOURS = 2
-
-
-def find_wardrobe_item(
-    wardrobe_hall: dict[str, list[dict[str, Any]]],
-    item_id: str,
-) -> tuple[str | None, dict[str, Any] | None]:
-    target_id = str(item_id or "").strip()
-    if not target_id:
-        return None, None
-
-    for section_key, items in wardrobe_hall.items():
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if isinstance(item, dict) and str(item.get("id") or "").strip() == target_id:
-                return section_key, item
-    return None, None
-
-
-def find_spirit_beast_item(
-    spirit_beast_hall: dict[str, list[dict[str, Any]]],
-    item_id: str,
-) -> tuple[str | None, dict[str, Any] | None]:
-    return find_wardrobe_item(spirit_beast_hall, item_id)
-
-
-def find_magic_treasure_item(
-    magic_treasure_hall: dict[str, list[dict[str, Any]]],
-    item_id: str,
-) -> tuple[str | None, dict[str, Any] | None]:
-    return find_wardrobe_item(magic_treasure_hall, item_id)
-
-
-def find_activity_item(
-    activity_list: list[dict[str, Any]],
-    item_id: str,
-) -> dict[str, Any] | None:
-    target_id = str(item_id or "").strip()
-    if not target_id:
-        return None
-
-    for item in activity_list:
-        if isinstance(item, dict) and str(item.get("id") or "").strip() == target_id:
-            return item
-    return None
-
-
-def serialize_fanxiu_note_read(
-    note: NoteNode,
-    current_user: Optional[User],
-    **extra_fields: Any,
-) -> dict[str, Any]:
-    payload = note_to_response_dict(note, current_user, **extra_fields)
-    if not isinstance(payload.get("custom_fields"), list):
-        payload["custom_fields"] = []
-    if not isinstance(payload.get("history"), list):
-        payload["history"] = []
-    return payload
 
 
 @status_router.get("/scripts", response_model=LocalScriptProcessListResponse)
@@ -982,31 +914,6 @@ def _extract_stream_error(response: requests.Response) -> str:
     return _core_extract_stream_error(response)
 
 
-def _stream_response_from_requests(response: requests.Response, *, cleanup: Callable[[], None] | None = None) -> StreamingResponse:
-    if response.status_code >= 400:
-        detail = _extract_stream_error(response)
-        response.close()
-        raise HTTPException(status_code=response.status_code, detail=detail)
-
-    def close_stream() -> None:
-        try:
-            response.close()
-        finally:
-            if cleanup is not None:
-                cleanup()
-
-    return StreamingResponse(
-        response.iter_content(chunk_size=64 * 1024),
-        media_type=response.headers.get("content-type") or "multipart/x-mixed-replace; boundary=frame",
-        headers={
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-        background=BackgroundTask(close_stream),
-    )
-
-
 def _open_remote_game_window2_stream(entry: UserDevice, params: dict[str, Any]) -> requests.Response:
     target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-stream"
     try:
@@ -1206,31 +1113,15 @@ def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> di
 
 
 def _activate_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-input/activate"
     try:
-        response = requests.post(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 12.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏窗口激活服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        if response.status_code == 404:
+        return request_remote_game_window2_json(entry, "service-input/activate", payload, "窗口激活")
+    except HTTPException as exc:
+        if exc.status_code == 404:
             raise HTTPException(
                 status_code=502,
                 detail="远程 codeyun 缺少激活窗口接口，请更新并重启远程 codeyun；如果已更新，请停止并重启“凡修游戏画面流”服务。",
-            )
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="远程游戏窗口激活服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="远程游戏窗口激活服务响应格式不支持")
-    return data
+            ) from exc
+        raise
 
 
 def _drag_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1250,26 +1141,7 @@ def _text_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dic
 
 
 def _save_remote_game_window2_frame(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-save-frame"
-    try:
-        response = requests.post(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 20.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏保存帧服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="远程游戏保存帧服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="远程游戏保存帧服务响应格式不支持")
-    return data
+    return request_remote_game_window2_json(entry, "service-save-frame", payload, "保存帧", read_timeout=20.0)
 
 
 def _match_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1349,47 +1221,13 @@ def _remote_game_window2_screenshot_json(
     payload: dict[str, Any] | None = None,
     action: str,
 ) -> dict[str, Any]:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/{path.lstrip('/')}"
-    try:
-        response = requests.request(
-            method,
-            target_url,
-            headers=_remote_entry_headers(entry),
-            json=payload,
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 20.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应不是 JSON") from exc
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应格式不支持")
-    return data
+    return request_remote_game_window2_json(entry, path, payload, action, method=method, read_timeout=20.0)
 
 
 def _remote_game_window2_screenshot_image(entry: UserDevice, filename: str) -> Response:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-screenshot/image"
-    try:
-        response = requests.get(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            params={"filename": filename},
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 30.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏截图服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type") or "image/jpeg",
-        headers={"Cache-Control": "private, no-cache"},
+    return request_remote_game_window2_image(
+        entry, "service-screenshot/image", params={"filename": filename},
+        action="截图", cache_control="private, no-cache",
     )
 
 
@@ -1398,23 +1236,8 @@ def _remote_game_window2_screencap(entry: UserDevice) -> Response:
 
 
 def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Response:
-    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-match/image"
-    try:
-        response = requests.get(
-            target_url,
-            headers=_remote_entry_headers(entry),
-            params={"filename": filename},
-            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
-            timeout=(5.0, 30.0),
-        )
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"远程游戏匹配帧服务不可达：{exc}") from exc
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
-    return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type") or "image/jpeg",
-        headers={"Cache-Control": "no-store"},
+    return request_remote_game_window2_image(
+        entry, "service-match/image", params={"filename": filename}, action="匹配帧",
     )
 
 
@@ -1639,10 +1462,6 @@ def _read_data_annotation_world_facts() -> dict[str, Any]:
     return _kernel_scheduler_control.read_world_facts(_data_annotation_world_facts_path())
 
 
-def _write_data_annotation_world_facts(facts: dict[str, Any]) -> None:
-    _kernel_scheduler_control.write_world_facts(facts, _data_annotation_world_facts_path())
-
-
 def _record_kernel_scheduler_task_fact(task: dict[str, Any], result: str) -> None:
     _kernel_scheduler_control.record_scheduler_task_fact(task, result, world_facts_path=_data_annotation_world_facts_path())
 
@@ -1670,8 +1489,6 @@ def _append_kernel_scheduler_log_once(status: dict[str, Any], kind: str, message
 def _normalize_kernel_scheduler_guard_items(status: dict[str, Any]) -> None:
     _sync_behavior_tree_executor_to_core()
     _kernel_scheduler_control.normalize_scheduler_guard_items(status)
-
-
 
 
 def _kernel_scheduler_status(*, include_cell_logs: bool = True) -> dict[str, Any]:
@@ -4361,6 +4178,53 @@ def update_fanxiu_wardrobe_hall(
     return FanxiuWardrobeHallSnapshot.model_validate(row.payload)
 
 
+def _submit_catalog_collection(kind: str) -> None:
+    """图鉴采集的 HTTP 编排：检查运行权，提交正式 Cell，保留诊断与错误契约。
+
+    调用前完成写权限检查；本函数会从真实游戏采集并落盘。
+    各图鉴的快照读取、响应模型和完整性判定仍由其端点负责。
+    """
+    label, source, timeout, output_limit, hall = {
+        "wardrobe": ("衣装", "wardrobe-hall", 120.0, 2000, True),
+        "magic_treasure": ("法宝", "magic-treasure-hall", 120.0, 2000, True),
+        "xianyuan": ("仙缘图鉴", "xianyuan-atlas", 180.0, 3000, False),
+        "gongfa": ("个人功法", "gongfa-atlas", 120.0, 3000, False),
+    }[kind]
+    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
+        scheduler_settings_path=_kernel_scheduler_settings_path(),
+        execution_state_path=_kernel_execution_state_path(),
+        world_facts_path=_data_annotation_world_facts_path(),
+    )
+    if execution_status.get("running"):
+        if hall:
+            current_task = str(execution_status.get("task_type") or "当前 Cell")
+            message = str(execution_status.get("message") or "Kernel 调度器 正在执行其它任务")
+            detail = f"Kernel 调度器忙碌（{current_task}）：{message}，请稍后再从游戏更新"
+        else:
+            detail = f"Kernel 调度器 正在执行其它 Cell，请稍后更新{label}"
+        raise HTTPException(status_code=409, detail=detail)
+    entry_id = DEFAULT_FANXIU_ENTRY_ID
+    try:
+        entry = resolve_fanxiu_entry(entry_id)
+    except Exception as exc:
+        if not hall:
+            raise
+        raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
+    request = FanxiuKernelSchedulerCodeCellRequest(
+        entry_id=entry_id,
+        code=build_catalog_collection_code(kind),
+        timeout_seconds=timeout,
+        max_output_chars=output_limit,
+    )
+    try:
+        _submit_data_annotation_code_cell(entry, entry_id, request, source=source)
+    except Exception as exc:
+        if hall and isinstance(exc, HTTPException):
+            raise
+        action = "实时更新" if hall else "更新"
+        raise HTTPException(status_code=409, detail=f"{label}{action}未执行：{exc}") from exc
+
+
 @inventory_router.post(
     "/inventory/wardrobe-hall/collect",
     response_model=FanxiuWardrobeHallSnapshot,
@@ -4372,40 +4236,7 @@ def collect_fanxiu_wardrobe_hall(
     """Run one ordinary read-only Cell and return the persisted wardrobe snapshot."""
 
     ensure_fanxiu_write_permission(current_user, session)
-    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
-        scheduler_settings_path=_kernel_scheduler_settings_path(),
-        execution_state_path=_kernel_execution_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    if execution_status.get("running"):
-        current_task = str(execution_status.get("task_type") or "当前 Cell")
-        message = str(execution_status.get("message") or "Kernel 调度器 正在执行其它任务")
-        raise HTTPException(
-            status_code=409,
-            detail=f"Kernel 调度器忙碌（{current_task}）：{message}，请稍后再从游戏更新",
-        )
-    entry_id = DEFAULT_FANXIU_ENTRY_ID
-    try:
-        entry = resolve_fanxiu_entry(entry_id)
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
-    request = FanxiuKernelSchedulerCodeCellRequest(
-        entry_id=entry_id,
-        code=build_catalog_collection_code('wardrobe'),
-        timeout_seconds=120.0,
-        max_output_chars=2000,
-    )
-    try:
-        _submit_data_annotation_code_cell(
-            entry,
-            entry_id,
-            request,
-            source="wardrobe-hall",
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"衣装实时更新未执行：{exc}") from exc
+    _submit_catalog_collection('wardrobe')
     session.expire_all()
     payload = load_inventory_hall_snapshot(session, "wardrobe_hall")
     if not payload or not payload.get("runtime_complete"):
@@ -4525,25 +4356,7 @@ def collect_fanxiu_xianyuan_atlas(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
-        scheduler_settings_path=_kernel_scheduler_settings_path(),
-        execution_state_path=_kernel_execution_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    if execution_status.get("running"):
-        raise HTTPException(status_code=409, detail="Kernel 调度器 正在执行其它 Cell，请稍后更新仙缘图鉴")
-    entry_id = DEFAULT_FANXIU_ENTRY_ID
-    entry = resolve_fanxiu_entry(entry_id)
-    request = FanxiuKernelSchedulerCodeCellRequest(
-        entry_id=entry_id,
-        code=build_catalog_collection_code('xianyuan'),
-        timeout_seconds=180.0,
-        max_output_chars=3000,
-    )
-    try:
-        _submit_data_annotation_code_cell(entry, entry_id, request, source="xianyuan-atlas")
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"仙缘图鉴更新未执行：{exc}") from exc
+    _submit_catalog_collection('xianyuan')
     session.expire_all()
     from backend.core.fanxiu.instrumentation.xianyuan_atlas import load_xianyuan_atlas_snapshot
 
@@ -4581,25 +4394,7 @@ def collect_fanxiu_gongfa_atlas(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
-        scheduler_settings_path=_kernel_scheduler_settings_path(),
-        execution_state_path=_kernel_execution_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    if execution_status.get("running"):
-        raise HTTPException(status_code=409, detail="Kernel 调度器 正在执行其它 Cell，请稍后更新个人功法")
-    entry_id = DEFAULT_FANXIU_ENTRY_ID
-    entry = resolve_fanxiu_entry(entry_id)
-    request = FanxiuKernelSchedulerCodeCellRequest(
-        entry_id=entry_id,
-        code=build_catalog_collection_code('gongfa'),
-        timeout_seconds=120.0,
-        max_output_chars=3000,
-    )
-    try:
-        _submit_data_annotation_code_cell(entry, entry_id, request, source="gongfa-atlas")
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"个人功法更新未执行：{exc}") from exc
+    _submit_catalog_collection('gongfa')
     session.expire_all()
     from backend.core.fanxiu.instrumentation.gongfa_atlas import load_gongfa_atlas_snapshot
 
@@ -4649,43 +4444,7 @@ def collect_fanxiu_magic_treasure_hall(
     """Run one ordinary read-only Cell and return its persisted DB snapshot."""
 
     ensure_fanxiu_write_permission(current_user, session)
-    execution_status = _kernel_scheduler_control.kernel_scheduler_status(
-        scheduler_settings_path=_kernel_scheduler_settings_path(),
-        execution_state_path=_kernel_execution_state_path(),
-        world_facts_path=_data_annotation_world_facts_path(),
-    )
-    if execution_status.get("running"):
-        current_task = str(execution_status.get("task_type") or "当前 Cell")
-        message = str(execution_status.get("message") or "Kernel 调度器 正在执行其它任务")
-        raise HTTPException(
-            status_code=409,
-            detail=f"Kernel 调度器忙碌（{current_task}）：{message}，请稍后再从游戏更新",
-        )
-    entry_id = DEFAULT_FANXIU_ENTRY_ID
-    try:
-        entry = resolve_fanxiu_entry(entry_id)
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=f"Kernel 调度器 入口不可用：{exc}") from exc
-    request = FanxiuKernelSchedulerCodeCellRequest(
-        entry_id=entry_id,
-        code=build_catalog_collection_code('magic_treasure'),
-        timeout_seconds=120.0,
-        max_output_chars=2000,
-    )
-    try:
-        _submit_data_annotation_code_cell(
-            entry,
-            entry_id,
-            request,
-            source="magic-treasure-hall",
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=409,
-            detail=f"法宝实时更新未执行：{exc}",
-        ) from exc
+    _submit_catalog_collection('magic_treasure')
     session.expire_all()
     payload = load_inventory_hall_snapshot(session, "magic_treasure_hall")
     if not payload or not payload.get("runtime_complete"):
@@ -4789,306 +4548,9 @@ def update_fanxiu_activity_list(
     return FanxiuActivityListSnapshot(items=saved_payload)
 
 
-@inventory_router.get("/inventory/wardrobe-notes/{item_id}", response_model=Optional[NoteRead])
-def read_fanxiu_wardrobe_note(
-    item_id: str,
-    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
-    session: Session = Depends(get_session),
-):
-    wardrobe_hall = load_wardrobe_hall()
-    _, item = find_wardrobe_item(wardrobe_hall, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Wardrobe item not found")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_WARDROBE_KIND)
-    if not db_note:
-        return None
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-def _upsert_fanxiu_inventory_item_note(
-    session: Session,
-    fanxiu_user: User,
-    item: dict[str, Any],
-    note_in: NoteUpdate,
-    *,
-    note_kind: str,
-    fallback_type: str,
-    item_weight: int | None = None,
-    item_start_at: float | None = None,
-    title_error_message: str = "请先填写条目名称，再编辑文档。",
-    sync_weight: bool = True,
-) -> NoteNode:
-    try:
-        return upsert_inventory_item_note(
-            session, fanxiu_user, item, note_in,
-            note_kind=note_kind,
-            fallback_type=fallback_type,
-            item_weight=item_weight,
-            item_start_at=item_start_at,
-            title_error_message=title_error_message,
-            sync_weight=sync_weight,
-        )
-    except MissingInventoryNoteTitle as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@inventory_router.put("/inventory/wardrobe-notes/{item_id}", response_model=NoteRead)
-def update_fanxiu_wardrobe_note(
-    item_id: str,
-    note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    wardrobe_hall = load_wardrobe_hall()
-    _, item = find_wardrobe_item(wardrobe_hall, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Wardrobe item not found")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = _upsert_fanxiu_inventory_item_note(
-        session,
-        fanxiu_user,
-        item,
-        note_in,
-        note_kind=FANXIU_WARDROBE_KIND,
-        fallback_type=FANXIU_WARDROBE_TYPE,
-    )
-    item["note_id"] = note_public_id(db_note)
-    try:
-        save_wardrobe_hall(wardrobe_hall)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存凡修道具仓库失败：{exc}") from exc
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-@inventory_router.get("/inventory/spirit-beast-notes/{item_id}", response_model=Optional[NoteRead])
-def read_fanxiu_spirit_beast_note(
-    item_id: str,
-    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
-    session: Session = Depends(get_session),
-):
-    spirit_beast_hall = load_spirit_beast_hall()
-    _, item = find_spirit_beast_item(spirit_beast_hall, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Spirit beast item not found")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_SPIRIT_BEAST_KIND)
-    if not db_note:
-        return None
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-@inventory_router.put("/inventory/spirit-beast-notes/{item_id}", response_model=NoteRead)
-def update_fanxiu_spirit_beast_note(
-    item_id: str,
-    note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    spirit_beast_hall = load_spirit_beast_hall()
-    _, item = find_spirit_beast_item(spirit_beast_hall, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Spirit beast item not found")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = _upsert_fanxiu_inventory_item_note(
-        session,
-        fanxiu_user,
-        item,
-        note_in,
-        note_kind=FANXIU_SPIRIT_BEAST_KIND,
-        fallback_type=FANXIU_SPIRIT_BEAST_TYPE,
-    )
-    item["note_id"] = note_public_id(db_note)
-    try:
-        save_spirit_beast_hall(spirit_beast_hall)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存凡修灵兽仓库失败：{exc}") from exc
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-@inventory_router.get("/inventory/magic-treasure-notes/{item_id}", response_model=Optional[NoteRead])
-def read_fanxiu_magic_treasure_note(
-    item_id: str,
-    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
-    session: Session = Depends(get_session),
-):
-    magic_treasure_hall = load_magic_treasure_hall()
-    _, item = find_magic_treasure_item(magic_treasure_hall, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Magic treasure item not found")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_MAGIC_TREASURE_KIND)
-    if not db_note:
-        return None
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-@inventory_router.put("/inventory/magic-treasure-notes/{item_id}", response_model=NoteRead)
-def update_fanxiu_magic_treasure_note(
-    item_id: str,
-    note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    magic_treasure_hall = load_magic_treasure_hall()
-    _, item = find_magic_treasure_item(magic_treasure_hall, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Magic treasure item not found")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = _upsert_fanxiu_inventory_item_note(
-        session,
-        fanxiu_user,
-        item,
-        note_in,
-        note_kind=FANXIU_MAGIC_TREASURE_KIND,
-        fallback_type=FANXIU_MAGIC_TREASURE_TYPE,
-    )
-
-    item["note_id"] = note_public_id(db_note)
-    try:
-        save_magic_treasure_hall(magic_treasure_hall)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存凡修法宝仓库失败：{exc}") from exc
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-@inventory_router.get("/activity-notes/{item_id}", response_model=Optional[NoteRead])
-def read_fanxiu_activity_note(
-    item_id: str,
-    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
-    session: Session = Depends(get_session),
-):
-    activity_list = load_activity_list()
-    item = find_activity_item(activity_list, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="活动条目不存在")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_ACTIVITY_KIND)
-    if not db_note:
-        return None
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
-@inventory_router.put("/activity-notes/{item_id}", response_model=NoteRead)
-def update_fanxiu_activity_note(
-    item_id: str,
-    note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session),
-):
-    ensure_fanxiu_write_permission(current_user, session)
-    activity_list = load_activity_list()
-    item = find_activity_item(activity_list, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="活动条目不存在")
-
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = _upsert_fanxiu_inventory_item_note(
-        session,
-        fanxiu_user,
-        item,
-        note_in,
-        note_kind=FANXIU_ACTIVITY_KIND,
-        fallback_type=FANXIU_ACTIVITY_TYPE,
-        item_weight=0,
-        item_start_at=activity_item_start_to_timestamp(item.get("start_date")),
-        title_error_message="请先填写活动名称，再编辑文档。",
-        sync_weight=False,
-    )
-
-    item["note_id"] = note_public_id(db_note)
-    try:
-        save_activity_list(activity_list)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"保存凡修活动列表失败：{exc}") from exc
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-@chars_router.get("/chars", response_model=List[NoteRead])
-def read_chars(
-    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
-    session: Session = Depends(get_session)
-):
-    """
-    Get all Xianzhou Race characters data.
-    Publicly accessible.
-    """
-    fanxiu_user = get_fanxiu_user(session)
-    notes: list[NoteNode] = []
-    changed = False
-    for char_name in XIANZHOU_RACE_CHAR_NAMES:
-        note = get_or_migrate_fanxiu_char_note(session, fanxiu_user, char_name)
-        if note is None:
-            continue
-        changed = True if note in session.new or note in session.dirty else changed
-        notes.append(note)
-    if changed:
-        session.commit()
-        for note in notes:
-            session.refresh(note)
-    return [serialize_fanxiu_note_read(note, current_user) for note in notes]
-
-@chars_router.get("/chars/{char_name}", response_model=NoteRead)
-def read_char(
-    char_name: str,
-    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
-    session: Session = Depends(get_session)
-):
-    """
-    Get specific character data.
-    Publicly accessible.
-    """
-    fanxiu_user = get_fanxiu_user(session)
-    note = get_or_migrate_fanxiu_char_note(session, fanxiu_user, char_name)
-    
-    if not note:
-        raise HTTPException(status_code=404, detail="Character not found")
-    if note in session.new or note in session.dirty:
-        session.commit()
-        session.refresh(note)
-        
-    return serialize_fanxiu_note_read(note, current_user)
-
-
-@chars_router.put("/chars/{char_name}", response_model=NoteRead)
-def update_char(
-    char_name: str,
-    note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
-    session: Session = Depends(get_session)
-):
-    """
-    Update or create character data.
-    Restricted to specific users.
-    """
-    # STRICT PERMISSION: Only 'fanxiu_official' itself can edit.
-    # Even 'code4101' cannot edit directly via this API unless logged in as 'fanxiu_official'.
-    # This enforces data ownership isolation.
-    
-    ensure_fanxiu_write_permission(current_user, session)
-    fanxiu_user = get_fanxiu_user(session)
-    db_note = upsert_character_note(session, fanxiu_user, char_name, note_in)
-    return serialize_fanxiu_note_read(db_note, current_user)
-
-
 # 复用原导出路由和 URL；服务令牌路由保持原有 scope 校验。
+inventory_router.include_router(inventory_notes_router)
+chars_router.include_router(character_notes_router)
 inventory_router.include_router(activities_router)
 status_router.include_router(questions_router)
 status_router.include_router(players_router)

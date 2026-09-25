@@ -102,10 +102,21 @@ def _enter_node(context, nodes, target):
             raise ValueError('炼神 OCR 序列的列位置与原生格子不符')
         return aligned
 
-    found = yield from locate_first_tree_node(
-        context, nodes=nodes, target_id=target['id'],
-        observe_labels=observe, scroll=scroll, match_labels=match_labels,
-    )
+    # Combat text can cover the progress labels for longer than the locator's
+    # three quick OCR samples. A later clear frame still has an exact Runtime
+    # window match; reobserve before any node click or material spend.
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            found = yield from locate_first_tree_node(
+                context, nodes=nodes, target_id=target['id'],
+                observe_labels=observe, scroll=scroll, match_labels=match_labels,
+            )
+            break
+        except ValueError:
+            if time.monotonic() >= deadline:
+                raise
+            yield from context.wait_action_settle(.5)
     label = found['label']
     context.click_frame_point(771, label['x']+label['w']/2, label['y']-label['h'])
     deadline = time.monotonic()+15
